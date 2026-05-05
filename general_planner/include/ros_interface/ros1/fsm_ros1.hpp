@@ -1,0 +1,763 @@
+/**
+* This file is part of SUPER
+*
+* Copyright 2025 Yunfan REN, MaRS Lab, University of Hong Kong, <mars.hku.hk>
+* Developed by Yunfan REN <renyf at connect dot hku dot hk>
+* for more information see <https://github.com/hku-mars/SUPER>.
+* If you use this code, please cite the respective publications as
+* listed on the above website.
+*
+* SUPER is free software: you can redistribute it and/or modify
+* it under the terms of the GNU Lesser General Public License as published by
+* the Free Software Foundation, either version 3 of the License, or
+* (at your option) any later version.
+*
+* SUPER is distributed in the hope that it will be useful,
+* but WITHOUT ANY WARRANTY; without even the implied warranty of
+* MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+* GNU General Public License for more details.
+*
+* You should have received a copy of the GNU Lesser General Public License
+* along with SUPER. If not, see <http://www.gnu.org/licenses/>.
+*/
+
+
+#ifdef USE_ROS1
+
+#ifndef SRC_FSM_ROS1_HPP
+#define SRC_FSM_ROS1_HPP
+
+#include "fsm/fsm.h"
+
+#include "ros/ros.h"
+#include "geometry_msgs/PoseStamped.h"
+#include "nav_msgs/Path.h"
+#include "nav_msgs/Odometry.h"
+#include "quadrotor_msgs/PositionCommand.h"
+#include "quadrotor_msgs/PolynomialTrajectory.h"
+#include "std_msgs/String.h"
+
+#include <cmath>
+#include <exception>
+#include <map>
+#include <sstream>
+
+
+namespace fsm {
+    class FsmRos1 : public Fsm {
+        ros::NodeHandle nh_;
+        ros::Subscriber goal_sub_;
+        ros::Subscriber task_mode_sub_;
+        ros::Subscriber tracking_target_sub_;
+        ros::Subscriber tracking_prediction_sub_;
+        ros::Subscriber perching_surface_sub_;
+        ros::Subscriber swarm_broadcast_traj_sub_;
+        ros::Subscriber swarm_state_sub_;
+        ros::Publisher cmd_pub, mpc_cmd_pub_, path_pub_;
+        ros::Publisher swarm_traj_pub_, swarm_state_pub_;
+        ros::Timer execution_timer_, replan_timer_, cmd_timer_;
+        quadrotor_msgs::PositionCommand pid_cmd_;
+        rog_map::ROGMapROS::Ptr map_ptr_;
+        quadrotor_msgs::PositionCommand latest_cmd;
+        nav_msgs::Path path;
+        std::vector<ros::Subscriber> swarm_traj_subs_;
+        std::map<int, traj_opt::SwarmTrajectory> swarm_traj_buffer_;
+        std::map<int, nav_msgs::Odometry> swarm_state_buffer_;
+        unsigned int traj_seq_{0};
+        ros::Time last_tracking_prediction_path_time_;
+
+        vector<quadrotor_msgs::PositionCommand> cmd_logs_;
+
+        void resetVisualizedPath() override {
+            path.poses.clear();
+        }
+
+        void publishCurPoseToPath() override {
+            path.header.frame_id = "world";
+            path.header.stamp = ros::Time::now();
+            geometry_msgs::PoseStamped pose;
+            pose.header = path.header;
+            pose.pose.position.x = robot_state_.p(0);
+            pose.pose.position.y = robot_state_.p(1);
+            pose.pose.position.z = robot_state_.p(2);
+            pose.pose.orientation.x = robot_state_.q.x();
+            pose.pose.orientation.y = robot_state_.q.y();
+            pose.pose.orientation.z = robot_state_.q.z();
+            pose.pose.orientation.w = robot_state_.q.w();
+            path.poses.push_back(pose);
+            path_pub_.publish(path);
+        }
+
+        void publishPolyTraj() override {
+            quadrotor_msgs::PolynomialTrajectory cmd_traj;
+            ++traj_seq_;
+            getCommittedTrajectory(cmd_traj);
+            mpc_cmd_pub_.publish(cmd_traj);
+            if (cfg_.swarm_enable && cfg_.swarm_broadcast_enable) {
+                swarm_traj_pub_.publish(cmd_traj);
+            }
+        }
+
+        void getOneHeartBeatMsg(quadrotor_msgs::PolynomialTrajectory &heartbeat, bool &traj_finish) {
+            heartbeat.type = quadrotor_msgs::PolynomialTrajectory::HEART_BEAT;
+            heartbeat.header.stamp = ros::Time::now();
+            heartbeat.header.frame_id = "world";
+            double swt;
+            planner_ptr_->getOneHeartbeatTime(swt, traj_finish);
+            heartbeat.start_WT_pos = ros::Time(swt);
+        }
+
+        void getCommittedTrajectory(quadrotor_msgs::PolynomialTrajectory &cmd_traj) {
+            cmd_traj.header.stamp = ros::Time::now();
+            cmd_traj.header.frame_id = "world";
+            cmd_traj.trajectory_id = traj_seq_;
+            cmd_traj.debug_info = makeSwarmDebugInfo();
+            cmd_traj.type = quadrotor_msgs::PolynomialTrajectory::POSITION_TRAJ |
+                            quadrotor_msgs::PolynomialTrajectory::HEART_BEAT;
+            planner_ptr_->lockCommittedTraj();
+            const Trajectory pos_traj = planner_ptr_->getCommittedPositionTrajectory();
+            const Trajectory yaw_traj = planner_ptr_->getCommittedYawTrajectory();
+            planner_ptr_->unlockCommittedTraj();
+
+            cmd_traj.start_WT_pos = ros::Time(pos_traj.start_WT);
+
+            cmd_traj.piece_num_pos = pos_traj.getPieceNum();
+            cmd_traj.order_pos = 7;
+            cmd_traj.time_pos.resize(pos_traj.getPieceNum());
+            cmd_traj.coef_pos_x.resize(cmd_traj.piece_num_pos * (cmd_traj.order_pos + 1));
+            cmd_traj.coef_pos_y.resize(cmd_traj.piece_num_pos * (cmd_traj.order_pos + 1));
+            cmd_traj.coef_pos_z.resize(cmd_traj.piece_num_pos * (cmd_traj.order_pos + 1));
+            cmd_traj.start_WT_pos = ros::Time(pos_traj.start_WT);
+
+            if (!yaw_traj.empty()) {
+                cmd_traj.type = cmd_traj.type |
+                                quadrotor_msgs::PolynomialTrajectory::YAW_TRAJ;
+                cmd_traj.piece_num_yaw = yaw_traj.getPieceNum();
+                cmd_traj.order_yaw = 7;
+                double col_size = cmd_traj.order_yaw + 1;
+                cmd_traj.coef_yaw.resize(cmd_traj.piece_num_yaw * col_size);
+                cmd_traj.time_yaw.resize(cmd_traj.piece_num_yaw);
+                for (int i = 0; i < cmd_traj.piece_num_yaw; i++) {
+                    Eigen::VectorXd yaw_coef = yaw_traj[i].getCoeffMat().row(0);
+                    Eigen::Map<Eigen::VectorXd>(&cmd_traj.coef_yaw[col_size * i], col_size) = yaw_coef;
+                    cmd_traj.time_yaw[i] = yaw_traj[i].getDuration();
+                }
+                cmd_traj.start_WT_yaw = ros::Time(yaw_traj.start_WT);
+            }
+
+            for (int i = 0; i < cmd_traj.piece_num_pos; i++) {
+                Eigen::Matrix<double, 3, 8> coef = pos_traj[i].getCoeffMat();
+                Eigen::Map<Eigen::VectorXd>(&cmd_traj.coef_pos_x[8 * i], 8) = coef.row(0);
+                Eigen::Map<Eigen::VectorXd>(&cmd_traj.coef_pos_y[8 * i], 8) = coef.row(1);
+                Eigen::Map<Eigen::VectorXd>(&cmd_traj.coef_pos_z[8 * i], 8) = coef.row(2);
+                cmd_traj.time_pos[i] = pos_traj[i].getDuration();
+            }
+        }
+
+        std::string makeSwarmDebugInfo() const {
+            std::ostringstream oss;
+            oss << "drone_id=" << cfg_.swarm_drone_id
+                << ";des_clearance=" << cfg_.swarm_des_clearance;
+            return oss.str();
+        }
+
+        static bool parseKeyValueDebugInfo(const std::string &debug_info,
+                                           const std::string &key,
+                                           std::string &value) {
+            const std::string needle = key + "=";
+            const size_t begin = debug_info.find(needle);
+            if (begin == std::string::npos) {
+                return false;
+            }
+            const size_t value_begin = begin + needle.size();
+            const size_t value_end = debug_info.find(';', value_begin);
+            value = debug_info.substr(value_begin,
+                                      value_end == std::string::npos ? std::string::npos : value_end - value_begin);
+            return !value.empty();
+        }
+
+        static bool parseSwarmDebugInfo(const std::string &debug_info,
+                                        int &drone_id,
+                                        double &des_clearance) {
+            std::string value;
+            bool parsed = false;
+            if (parseKeyValueDebugInfo(debug_info, "drone_id", value)) {
+                try {
+                    drone_id = std::stoi(value);
+                    parsed = true;
+                } catch (const std::exception &) {
+                    return false;
+                }
+            }
+            if (parseKeyValueDebugInfo(debug_info, "des_clearance", value)) {
+                try {
+                    des_clearance = std::stod(value);
+                } catch (const std::exception &) {
+                    return false;
+                }
+            }
+            return parsed;
+        }
+
+        static bool polynomialMsgToTrajectory(const quadrotor_msgs::PolynomialTrajectory &msg,
+                                              Trajectory &traj) {
+            if ((msg.type & quadrotor_msgs::PolynomialTrajectory::POSITION_TRAJ) == 0 ||
+                msg.piece_num_pos <= 0 || msg.order_pos < 1) {
+                return false;
+            }
+            const int coeff_num = msg.order_pos + 1;
+            if (static_cast<int>(msg.time_pos.size()) < msg.piece_num_pos ||
+                static_cast<int>(msg.coef_pos_x.size()) < msg.piece_num_pos * coeff_num ||
+                static_cast<int>(msg.coef_pos_y.size()) < msg.piece_num_pos * coeff_num ||
+                static_cast<int>(msg.coef_pos_z.size()) < msg.piece_num_pos * coeff_num) {
+                return false;
+            }
+
+            traj.clear();
+            traj.reserve(msg.piece_num_pos);
+            for (int i = 0; i < msg.piece_num_pos; ++i) {
+                const double duration = msg.time_pos[i];
+                if (duration <= 1.0e-6) {
+                    return false;
+                }
+                Eigen::MatrixXd coeff(3, coeff_num);
+                for (int j = 0; j < coeff_num; ++j) {
+                    const int offset = i * coeff_num + j;
+                    coeff(0, j) = msg.coef_pos_x[offset];
+                    coeff(1, j) = msg.coef_pos_y[offset];
+                    coeff(2, j) = msg.coef_pos_z[offset];
+                }
+                traj.emplace_back(duration, coeff);
+            }
+            traj.start_WT = msg.start_WT_pos.toSec();
+            return traj.start_WT > 0.0 && !traj.empty();
+        }
+
+        void swarmTrajCallback(const quadrotor_msgs::PolynomialTrajectoryConstPtr &msg,
+                               int drone_id) {
+            double des_clearance = cfg_.swarm_des_clearance;
+            if (drone_id < 0 && !parseSwarmDebugInfo(msg->debug_info, drone_id, des_clearance)) {
+                return;
+            }
+            if (!cfg_.swarm_enable || drone_id == cfg_.swarm_drone_id || planner_ptr_ == nullptr) {
+                return;
+            }
+
+            Trajectory pos_traj;
+            if (!polynomialMsgToTrajectory(*msg, pos_traj)) {
+                return;
+            }
+
+            traj_opt::SwarmTrajectory swarm_traj;
+            swarm_traj.drone_id = drone_id;
+            swarm_traj.traj_id = msg->trajectory_id;
+            swarm_traj.start_wall_time = pos_traj.start_WT;
+            swarm_traj.duration = pos_traj.getTotalDuration();
+            swarm_traj.clearance = des_clearance;
+            swarm_traj.traj = pos_traj;
+            if (!swarm_traj.valid()) {
+                return;
+            }
+
+            swarm_traj_buffer_[drone_id] = swarm_traj;
+            traj_opt::SwarmTrajectories snapshot;
+            snapshot.reserve(swarm_traj_buffer_.size());
+            for (const auto &kv : swarm_traj_buffer_) {
+                snapshot.emplace_back(kv.second);
+            }
+            planner_ptr_->setSwarmTrajectories(snapshot);
+            ROS_INFO_STREAM_THROTTLE(1.0, " -- [Fsm] Swarm traj update from drone "
+                                              << drone_id << ", traj_id=" << swarm_traj.traj_id
+                                              << ", duration=" << swarm_traj.duration
+                                              << ", buffer=" << snapshot.size());
+        }
+
+        void swarmStateCallback(const nav_msgs::OdometryConstPtr &msg) {
+            if (!cfg_.swarm_enable) {
+                return;
+            }
+            int drone_id = -1;
+            const std::string &frame = msg->child_frame_id;
+            const std::string prefix = "drone_";
+            const size_t pos = frame.find(prefix);
+            if (pos != std::string::npos) {
+                try {
+                    drone_id = std::stoi(frame.substr(pos + prefix.size()));
+                } catch (const std::exception &) {
+                    drone_id = -1;
+                }
+            }
+            if (drone_id < 0 || drone_id == cfg_.swarm_drone_id) {
+                return;
+            }
+            swarm_state_buffer_[drone_id] = *msg;
+        }
+
+        void publishSwarmState() {
+            if (!cfg_.swarm_enable || !cfg_.swarm_broadcast_enable || !robot_state_.rcv) {
+                return;
+            }
+            nav_msgs::Odometry state;
+            state.header.stamp = ros::Time::now();
+            state.header.frame_id = "world";
+            state.child_frame_id = "drone_" + std::to_string(cfg_.swarm_drone_id);
+            state.pose.pose.position.x = robot_state_.p.x();
+            state.pose.pose.position.y = robot_state_.p.y();
+            state.pose.pose.position.z = robot_state_.p.z();
+            state.pose.pose.orientation.x = robot_state_.q.x();
+            state.pose.pose.orientation.y = robot_state_.q.y();
+            state.pose.pose.orientation.z = robot_state_.q.z();
+            state.pose.pose.orientation.w = robot_state_.q.w();
+            state.twist.twist.linear.x = robot_state_.v.x();
+            state.twist.twist.linear.y = robot_state_.v.y();
+            state.twist.twist.linear.z = robot_state_.v.z();
+            swarm_state_pub_.publish(state);
+        }
+
+        void getOnePositionCommand(quadrotor_msgs::PositionCommand &pos_cmd, bool &traj_finish) {
+            pos_cmd.trajectory_flag = 0;
+            StatePVAJ pvaj;
+            double yaw, yaw_dot;
+            bool on_backup_traj;
+            planner_ptr_->getOneCommandFromTraj(pvaj, yaw, yaw_dot, on_backup_traj, traj_finish);
+            pos_cmd.header.stamp = ros::Time::now();
+            pos_cmd.header.frame_id = "world";
+            pos_cmd.position.x = pvaj(0, 0);
+            pos_cmd.position.y = pvaj(1, 0);
+            pos_cmd.position.z = pvaj(2, 0);
+            pos_cmd.velocity.x = pvaj(0, 1);
+            pos_cmd.velocity.y = pvaj(1, 1);
+            pos_cmd.velocity.z = pvaj(2, 1);
+            pos_cmd.acceleration.x = pvaj(0, 2);
+            pos_cmd.acceleration.y = pvaj(1, 2);
+            pos_cmd.acceleration.z = pvaj(2, 2);
+            pos_cmd.jerk.x = pvaj(0, 3);
+            pos_cmd.jerk.y = pvaj(1, 3);
+            pos_cmd.jerk.z = pvaj(2, 3);
+            pos_cmd.yaw = yaw;
+            pos_cmd.yaw_dot = yaw_dot;
+            pos_cmd.trajectory_flag = on_backup_traj ? 2 : 1;
+            Vec3f rpy, omg;
+            double aT;
+            geometry_utils::convertFlatOutputToAttAndOmg(pvaj.col(0), pvaj.col(1), pvaj.col(2), pvaj.col(3), yaw,
+                                                         yaw_dot, rpy, omg, aT);
+            pos_cmd.attitude.x = rpy(0);
+            pos_cmd.attitude.y = rpy(1);
+            pos_cmd.attitude.z = rpy(2);
+            pos_cmd.angular_velocity.x = omg(0);
+            pos_cmd.angular_velocity.y = omg(1);
+            pos_cmd.angular_velocity.z = omg(2);
+            pos_cmd.thrust.z = aT;
+            latest_cmd = pos_cmd;
+            cmd_logs_.push_back(latest_cmd);
+        }
+
+    public:
+        FsmRos1() = default;
+
+        ~FsmRos1(){
+            ros::shutdown();
+            saveReplanLogToFile("general_latest_log");
+            exit(0);
+        };
+
+        typedef std::shared_ptr<FsmRos1> Ptr;
+
+        void saveReplanLogToFile(const string &name = "") {
+            // run statistic
+            double total_length{0.0};
+            int total_replan_num{0};
+            double average_compt_t{0.0};
+            Vec3f cur_p{0, 0, 0};
+            for (auto rp: replan_logs_) {
+                if (rp.getRetCode() > 0) {
+                    if (cur_p.norm() < 1e-6) {
+                        cur_p = rp.getRobotP();
+                    } else {
+                        total_length += (rp.getRobotP() - cur_p).norm();
+                        cur_p = rp.getRobotP();
+                    }
+                    total_replan_num++;
+                    average_compt_t += rp.getTotalCompT();
+                }
+            }
+
+
+            fmt::print("Total replan num: {}, total length: {}, average computation time: {} ms\n",
+                       total_replan_num, total_length, average_compt_t / (total_replan_num==0?1:total_replan_num) * 1000);
+
+
+            const std::string save_path = name.empty()
+                                          ? LOG_FILE_DIR(
+                                                  "replan_logs/" + BinaryFileHandler<int>::getCurrentTimeStr() + ".bin")
+                                          : LOG_FILE_DIR("replan_logs/" + name + ".bin");
+            const std::string csv_path = name.empty()
+                                         ? LOG_FILE_DIR(
+                                                 "cmd_logs/" + BinaryFileHandler<int>::getCurrentTimeStr() + ".csv")
+                                         : LOG_FILE_DIR("cmd_logs/" + name + ".csv");
+            BinaryFileHandler<vector<LogOneReplan>>::save(save_path, replan_logs_);
+
+            std::ofstream csv_writer;
+            csv_writer.open(csv_path, std::ios::out | std::ios::trunc);
+            csv_writer
+                    << "time,posi_x,posi_y,posi_z,vel_x,vel_y,vel_z,acc_x,acc_y,acc_z,jerk_x,jerk_y,jerk_z,yaw,yaw_rate,backup"
+                    << std::endl;
+            csv_writer<<std::fixed<<std::setprecision(15);
+            for (const auto &cmd: cmd_logs_) {
+                csv_writer << cmd.header.stamp.toSec() - system_start_time_ << "," << cmd.position.x << "," << cmd.position.y << ","
+                           << cmd.position.z << ","
+                           << cmd.velocity.x << "," << cmd.velocity.y << "," << cmd.velocity.z << ","
+                           << cmd.acceleration.x << "," << cmd.acceleration.y << "," << cmd.acceleration.z << ","
+                           << cmd.jerk.x << "," << cmd.jerk.y << "," << cmd.jerk.z << ","
+                           << cmd.yaw << "," << cmd.yaw_dot << "," << static_cast<int>(cmd.trajectory_flag)
+                           << std::endl;
+            }
+            csv_writer.close();
+        }
+
+        bool getPoseFromTraj(super_utils::Pose &pose) {
+            if (machine_state_ != FOLLOW_TRAJ) {
+                cout << YELLOW << "[Fsm] Not in FOLLOW_TRAJ state, can't get pose from traj." << RESET << endl;
+                return false;
+            }
+            getOnePositionCommand(pid_cmd_, traj_finish_);
+            if (traj_finish_) {
+                cout << GREEN << " -- [Fsm] Traj finish." << RESET << endl;
+                if (shouldGenerateAfterTrajFinish()) {
+                    ChangeState("getPoseFromTraj", GENERATE_TRAJ);
+                } else {
+                    ChangeState("getPoseFromTraj", WAIT_GOAL);
+                }
+            }
+            pose.first = Vec3f{pid_cmd_.position.x, pid_cmd_.position.y, pid_cmd_.position.z};
+            pose.second = eulerToQuaternion(pid_cmd_.attitude.x, pid_cmd_.attitude.y, pid_cmd_.attitude.z);
+
+
+            /// for checking the trajectory continuty
+            static double max_delta_v{0.0};
+            static double last_v = pid_cmd_.vel_norm;
+            double delta_v = std::abs(pid_cmd_.vel_norm - last_v);
+            last_v = pid_cmd_.vel_norm;
+            if (delta_v > max_delta_v) {
+                max_delta_v = delta_v;
+            }
+            fmt::print(" -- [Fsm] Cur vel: {}, delta_v: {}, max_delta_v: {}\n", pid_cmd_.vel_norm, delta_v,
+                       max_delta_v);
+            cmd_logs_.push_back(latest_cmd);
+            return true;
+        }
+
+        void goalCallback(const geometry_msgs::PoseStampedConstPtr &msg) {
+            super_utils::Vec3f goal_p = Vec3f{msg->pose.position.x, msg->pose.position.y, msg->pose.position.z};
+            super_utils::Quatf goal_q = super_utils::Quatf{msg->pose.orientation.w, msg->pose.orientation.x,
+                                                           msg->pose.orientation.y, msg->pose.orientation.z};
+            setGoalPosiAndYaw(goal_p, goal_q);
+        }
+
+        static double yawFromMsgQuat(const geometry_msgs::Quaternion &q_msg) {
+            const double w = q_msg.w;
+            const double x = q_msg.x;
+            const double y = q_msg.y;
+            const double z = q_msg.z;
+            return std::atan2(2.0 * (w * z + x * y),
+                              1.0 - 2.0 * (y * y + z * z));
+        }
+
+        void trackingTargetCallback(const nav_msgs::OdometryConstPtr &msg) {
+            if (cfg_.tracking_use_target_prediction_path &&
+                !cfg_.tracking_target_prediction_topic.empty() &&
+                !last_tracking_prediction_path_time_.isZero() &&
+                (ros::Time::now() - last_tracking_prediction_path_time_).toSec() < 0.5) {
+                return;
+            }
+            const Vec3f p(msg->pose.pose.position.x,
+                          msg->pose.pose.position.y,
+                          msg->pose.pose.position.z);
+            const Vec3f v(msg->twist.twist.linear.x,
+                          msg->twist.twist.linear.y,
+                          msg->twist.twist.linear.z);
+            const Vec3f a = Vec3f::Zero();
+            const double pose_yaw = yawFromMsgQuat(msg->pose.pose.orientation);
+            const double base_yaw = v.head<2>().norm() > 1.0e-3 ? std::atan2(v.y(), v.x()) : pose_yaw;
+            const double dt = std::max(0.05, cfg_.tracking_prediction_dt);
+            const double horizon = std::max(dt, cfg_.tracking_prediction_horizon);
+            const int sample_num = std::max(2, static_cast<int>(std::ceil(horizon / dt)) + 1);
+
+            traj_opt::DynamicTargetStates prediction;
+            prediction.reserve(sample_num);
+            for (int i = 0; i < sample_num; ++i) {
+                const double t = static_cast<double>(i) * dt;
+                traj_opt::DynamicTargetState target;
+                target.t = t;
+                target.position = p + v * t + 0.5 * a * t * t;
+                target.velocity = v + a * t;
+                target.acceleration = a;
+                target.yaw = base_yaw;
+                target.yaw_rate = 0.0;
+                prediction.emplace_back(target);
+            }
+            setTrackingTargetPrediction(prediction);
+        }
+
+        static Vec3f poseMsgPosition(const geometry_msgs::PoseStamped &pose) {
+            return Vec3f(pose.pose.position.x,
+                         pose.pose.position.y,
+                         pose.pose.position.z);
+        }
+
+        void trackingPredictionPathCallback(const nav_msgs::PathConstPtr &msg) {
+            if (!cfg_.tracking_use_target_prediction_path || msg->poses.size() < 2) {
+                return;
+            }
+
+            const double dt = std::max(0.05, cfg_.tracking_prediction_dt);
+            const double horizon = std::max(dt, cfg_.tracking_prediction_horizon);
+            const std::size_t max_samples =
+                static_cast<std::size_t>(std::max(2, static_cast<int>(std::ceil(horizon / dt)) + 1));
+            const std::size_t sample_num = std::min(max_samples, msg->poses.size());
+
+            std::vector<Vec3f> positions;
+            positions.reserve(sample_num);
+            for (std::size_t i = 0; i < sample_num; ++i) {
+                positions.emplace_back(poseMsgPosition(msg->poses[i]));
+            }
+
+            traj_opt::DynamicTargetStates prediction;
+            prediction.reserve(sample_num);
+            for (std::size_t i = 0; i < sample_num; ++i) {
+                Vec3f velocity = Vec3f::Zero();
+                if (i + 1 < sample_num) {
+                    velocity = (positions[i + 1] - positions[i]) / dt;
+                } else if (i > 0) {
+                    velocity = (positions[i] - positions[i - 1]) / dt;
+                }
+
+                Vec3f acceleration = Vec3f::Zero();
+                if (i > 0 && i + 1 < sample_num) {
+                    acceleration = (positions[i + 1] - 2.0 * positions[i] + positions[i - 1]) / (dt * dt);
+                }
+
+                traj_opt::DynamicTargetState target;
+                target.t = static_cast<double>(i) * dt;
+                target.position = positions[i];
+                target.velocity = velocity;
+                target.acceleration = acceleration;
+                const double pose_yaw = yawFromMsgQuat(msg->poses[i].pose.orientation);
+                target.yaw = velocity.head<2>().norm() > 1.0e-3
+                                 ? std::atan2(velocity.y(), velocity.x())
+                                 : pose_yaw;
+                target.yaw_rate = 0.0;
+                prediction.emplace_back(target);
+            }
+
+            last_tracking_prediction_path_time_ = ros::Time::now();
+            setTrackingTargetPrediction(prediction);
+        }
+
+        void perchingSurfaceCallback(const nav_msgs::OdometryConstPtr &msg) {
+            traj_opt::PerchingSurfaceState surface;
+            surface.t = 0.0;
+            surface.position = Vec3f(msg->pose.pose.position.x,
+                                     msg->pose.pose.position.y,
+                                     msg->pose.pose.position.z);
+            surface.velocity = Vec3f(msg->twist.twist.linear.x,
+                                     msg->twist.twist.linear.y,
+                                     msg->twist.twist.linear.z);
+            surface.acceleration.setZero();
+
+            Eigen::Quaterniond q(msg->pose.pose.orientation.w,
+                                 msg->pose.pose.orientation.x,
+                                 msg->pose.pose.orientation.y,
+                                 msg->pose.pose.orientation.z);
+            if (q.norm() < 1.0e-6) {
+                q.setIdentity();
+            } else {
+                q.normalize();
+            }
+            const Eigen::Matrix3d R = q.toRotationMatrix();
+            surface.surface_x = R.col(0);
+            surface.surface_y = R.col(1);
+            surface.surface_z = R.col(2);
+            surface.yaw = yawFromMsgQuat(msg->pose.pose.orientation);
+            surface.yaw_rate = msg->twist.twist.angular.z;
+            setPerchingSurface(surface);
+        }
+
+        void taskModeCallback(const std_msgs::StringConstPtr &msg) {
+            setTaskModeFromString(msg->data);
+        }
+
+        void init(const ros::NodeHandle &nh, const std::string &cfg_path) {
+            // 初始化参数读取
+            nh_ = nh;
+            cfg_ = Config(cfg_path);
+            map_ptr_ = std::make_shared<rog_map::ROGMapROS>(nh, cfg_path);
+            // 初始化Planner
+            ros_ptr_ = std::make_shared<ros_interface::Ros1Interface>(nh_);
+            planner_ptr_ = std::make_shared<GeneralPlanner>(cfg_path, ros_ptr_, map_ptr_);
+            cmd_pub = nh_.advertise<quadrotor_msgs::PositionCommand>(cfg_.cmd_topic, 10);
+            mpc_cmd_pub_ = nh_.advertise<quadrotor_msgs::PolynomialTrajectory>(cfg_.mpc_cmd_topic, 10);
+            path_pub_ = nh_.advertise<nav_msgs::Path>("fsm/path", 100);
+
+            int cmd_cnt = 0;
+
+            if (cfg_.swarm_enable) {
+                if (cfg_.swarm_broadcast_enable) {
+                    swarm_traj_pub_ = nh_.advertise<quadrotor_msgs::PolynomialTrajectory>(
+                        cfg_.swarm_traj_broadcast_topic, 20);
+                    swarm_state_pub_ = nh_.advertise<nav_msgs::Odometry>(
+                        cfg_.swarm_state_broadcast_topic, 50);
+                    swarm_broadcast_traj_sub_ =
+                        nh_.subscribe<quadrotor_msgs::PolynomialTrajectory>(
+                            cfg_.swarm_traj_broadcast_topic, 50,
+                            [this](const quadrotor_msgs::PolynomialTrajectoryConstPtr &msg) {
+                                this->swarmTrajCallback(msg, -1);
+                            });
+                    swarm_state_sub_ = nh_.subscribe(cfg_.swarm_state_broadcast_topic, 50,
+                                                     &FsmRos1::swarmStateCallback, this);
+                    cout << YELLOW << " -- [Fsm] SWARM BROADCAST ENABLE: traj "
+                         << cfg_.swarm_traj_broadcast_topic << ", state "
+                         << cfg_.swarm_state_broadcast_topic << RESET << endl;
+                }
+                for (size_t i = 0; i < cfg_.swarm_traj_topics.size(); ++i) {
+                    const std::string &topic = cfg_.swarm_traj_topics[i];
+                    const int drone_id = i < cfg_.swarm_traj_ids.size()
+                                             ? cfg_.swarm_traj_ids[i]
+                                             : static_cast<int>(i);
+                    if (topic.empty() || drone_id == cfg_.swarm_drone_id) {
+                        continue;
+                    }
+                    swarm_traj_subs_.emplace_back(
+                        nh_.subscribe<quadrotor_msgs::PolynomialTrajectory>(
+                            topic, 20,
+                            [this, drone_id](const quadrotor_msgs::PolynomialTrajectoryConstPtr &msg) {
+                                this->swarmTrajCallback(msg, drone_id);
+                            }));
+                    cout << YELLOW << " -- [Fsm] SWARM TRAJ SUB: drone " << drone_id
+                         << ", topic: " << topic << RESET << endl;
+                }
+            }
+
+            if (cfg_.task_planner_en) {
+                task_mode_sub_ = nh_.subscribe(cfg_.task_mode_topic, 10,
+                                               &FsmRos1::taskModeCallback, this);
+                goal_sub_ = nh_.subscribe(cfg_.click_goal_topic, 10,
+                                          &FsmRos1::goalCallback, this);
+                tracking_target_sub_ = nh_.subscribe(cfg_.tracking_target_odom_topic, 10,
+                                                     &FsmRos1::trackingTargetCallback, this);
+                if (cfg_.tracking_use_target_prediction_path && !cfg_.tracking_target_prediction_topic.empty()) {
+                    tracking_prediction_sub_ =
+                        nh_.subscribe(cfg_.tracking_target_prediction_topic, 10,
+                                      &FsmRos1::trackingPredictionPathCallback, this);
+                }
+                perching_surface_sub_ = nh_.subscribe(cfg_.perching_surface_odom_topic, 10,
+                                                      &FsmRos1::perchingSurfaceCallback, this);
+                cout << YELLOW << " -- [Fsm] TASK PLANNER ENABLE: mode topic "
+                     << cfg_.task_mode_topic << ", state2state goal "
+                     << cfg_.click_goal_topic << ", tracking target "
+                     << cfg_.tracking_target_odom_topic << ", perching surface "
+                     << cfg_.perching_surface_odom_topic << RESET << endl;
+                if (cfg_.tracking_use_target_prediction_path && !cfg_.tracking_target_prediction_topic.empty()) {
+                    cout << YELLOW << " -- [Fsm] TRACKING PREDICTION PATH: "
+                         << cfg_.tracking_target_prediction_topic << RESET << endl;
+                }
+                cmd_cnt++;
+            } else if (state2stateMode() && cfg_.click_goal_en) {
+                goal_sub_ = nh_.subscribe(cfg_.click_goal_topic, 1, &FsmRos1::goalCallback, this);
+                cout << YELLOW << " -- [Fsm] CLICKGOAL ENABLE." << RESET << endl;
+                cmd_cnt++;
+            } else if (trackingMode()) {
+                tracking_target_sub_ = nh_.subscribe(cfg_.tracking_target_odom_topic, 10,
+                                                     &FsmRos1::trackingTargetCallback, this);
+                if (cfg_.tracking_use_target_prediction_path && !cfg_.tracking_target_prediction_topic.empty()) {
+                    tracking_prediction_sub_ =
+                        nh_.subscribe(cfg_.tracking_target_prediction_topic, 10,
+                                      &FsmRos1::trackingPredictionPathCallback, this);
+                }
+                cout << YELLOW << " -- [Fsm] TRACKING TASK ENABLE, target odom: "
+                     << cfg_.tracking_target_odom_topic << RESET << endl;
+                if (cfg_.tracking_use_target_prediction_path && !cfg_.tracking_target_prediction_topic.empty()) {
+                    cout << YELLOW << " -- [Fsm] TRACKING PREDICTION PATH: "
+                         << cfg_.tracking_target_prediction_topic << RESET << endl;
+                }
+                cmd_cnt++;
+            } else if (perchingMode()) {
+                perching_surface_sub_ = nh_.subscribe(cfg_.perching_surface_odom_topic, 10,
+                                                      &FsmRos1::perchingSurfaceCallback, this);
+                cout << YELLOW << " -- [Fsm] PERCHING TASK ENABLE, surface odom: "
+                     << cfg_.perching_surface_odom_topic << RESET << endl;
+                cmd_cnt++;
+            }
+
+            if (cmd_cnt != 1) {
+                cout << YELLOW << " -- [Fsm] CMD INPUT ERROR." << RESET << endl;
+                exit(0);
+            }
+
+            if (cfg_.timer_en) {
+                execution_timer_ = nh_.createTimer(ros::Duration(0.01), &FsmRos1::mainFsmTimerCallback, this); // 100Hz
+                cmd_timer_ = nh_.createTimer(ros::Duration(0.01), &FsmRos1::pubCmdTimerCallback, this); // 100Hz
+                replan_timer_ = nh_.createTimer(ros::Duration(1.0 / cfg_.replan_rate), &FsmRos1::replanTimerCallback,
+                                                this); // 10Hz
+            }
+
+            write_time_.open(DEBUG_FILE_DIR("time_consuming.csv"), std::ios::out | std::ios::trunc);
+            log_module_time.resize(9);
+            for (int i = 0; i < 9; i++) {
+                write_time_ << log_time_str[i];
+                if (i != 8) {
+                    write_time_ << ",";
+                }
+            }
+            write_time_ << endl;
+            machine_state_ = INIT;
+            system_start_time_ = ros_ptr_->getSimTime();
+
+            pid_cmd_.kx[0] = 5.7;
+            pid_cmd_.kx[1] = 5.7;
+            pid_cmd_.kx[2] = 4.2;
+
+            pid_cmd_.kv[0] = 3.4;
+            pid_cmd_.kv[1] = 3.4;
+            pid_cmd_.kv[2] = 4.0;
+        }
+
+        void pubCmdTimerCallback(const ros::TimerEvent &event) {
+            if (stop) {
+                return;
+            }
+            if (machine_state_ != FOLLOW_TRAJ && machine_state_ != EMER_STOP) {
+                return;
+            }
+
+
+            quadrotor_msgs::PolynomialTrajectory heartbeat;
+            getOneHeartBeatMsg(heartbeat, traj_finish_);
+            getOnePositionCommand(pid_cmd_, traj_finish_);
+            publishSwarmState();
+            mpc_cmd_pub_.publish(heartbeat);
+            cmd_pub.publish(pid_cmd_);
+            if (traj_finish_) {
+                cout << GREEN << " -- [Fsm] Traj finish." << RESET << endl;
+                if (shouldGenerateAfterTrajFinish()) {
+                    ChangeState("PubCmdCallback", GENERATE_TRAJ);
+                } else {
+                    ChangeState("PubCmdCallback", WAIT_GOAL);
+                }
+            }
+        }
+
+        void replanTimerCallback(const ros::TimerEvent &event) {
+            callReplanOnce();
+        }
+
+        void mainFsmTimerCallback(const ros::TimerEvent &event) {
+            callMainFsmOnce();
+        }
+
+    };
+}
+
+#endif //SRC_FSM_ROS1_HPP
+
+#endif

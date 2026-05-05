@@ -1,0 +1,34 @@
+task_planner:
+  # 0: wait for RViz click, 1: mavros rc, 2: auto start after delay.
+  start_trigger_type: 2
+  start_program_delay: 1.0
+  odom_timeout: 0.5
+  publish_dt: 0.05
+  switch_dis: 0.8
+  frame_id: "world"
+
+  odom_topic: "/lidar_slam/odom"
+  task_mode_topic: "/planning/task_mode"
+  tracking_target_odom_topic: "/tracking/target_odom"
+  tracking_target_path_topic: "/tracking/target_path"
+  tracking_target_prediction_topic: "/tracking/target_prediction"
+  path_pub_topic: "/task_planner/path"
+  marker_topic: "mkr"
+  tracking_prediction_horizon: 4.0
+  tracking_prediction_dt: 0.25
+
+  tasks:
+    - name: "tracking_target"
+      mode: "tracking"
+      speed: 1.2
+      loop: true
+      hold_duration: -1.0
+      waypoints:
+        - [-2.2, -2.3, 1.25]
+        - [-1.6, 0.25, 1.25]
+        - [0.55, 1.95, 1.25]
+        - [2.4, 0.25, 1.25]
+        - [4.2, 2.15, 1.25]
+        - [2.4, 0.25, 1.25]
+        - [0.55, 1.95, 1.25]
+        - [-1.6, 0.25, 1.25]

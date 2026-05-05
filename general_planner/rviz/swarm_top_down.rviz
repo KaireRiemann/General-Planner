@@ -1,0 +1,171 @@
+Panels:
+  - Class: rviz/Displays
+    Name: Displays
+  - Class: rviz/Views
+    Name: Views
+Visualization Manager:
+  Class: ""
+  Displays:
+    - Class: rviz/Grid
+      Enabled: true
+      Name: Grid
+      Cell Size: 1
+      Plane Cell Count: 30
+      Reference Frame: <Fixed Frame>
+      Value: true
+    - Class: rviz/Group
+      Enabled: true
+      Name: Swarm Robots
+      Displays:
+        - Class: rviz/Marker
+          Enabled: true
+          Marker Topic: /drone_0/perfect_drone/robot
+          Name: Drone0Mesh
+          Queue Size: 20
+          Value: true
+        - Class: rviz/Marker
+          Enabled: true
+          Marker Topic: /drone_1/perfect_drone/robot
+          Name: Drone1Mesh
+          Queue Size: 20
+          Value: true
+        - Class: rviz/Odometry
+          Enabled: true
+          Keep: 10
+          Name: Drone0Odom
+          Queue Size: 10
+          Shape:
+            Axes Length: 0.5
+            Axes Radius: 0.05
+            Value: Axes
+          Topic: /drone_0/lidar_slam/odom
+          Value: true
+        - Class: rviz/Odometry
+          Enabled: true
+          Keep: 10
+          Name: Drone1Odom
+          Queue Size: 10
+          Shape:
+            Axes Length: 0.5
+            Axes Radius: 0.05
+            Value: Axes
+          Topic: /drone_1/lidar_slam/odom
+          Value: true
+        - Class: rviz/Path
+          Color: 25; 120; 255
+          Enabled: true
+          Line Style: Lines
+          Line Width: 0.05
+          Name: Drone0Path
+          Topic: /drone_0/perfect_drone/path
+          Value: true
+        - Class: rviz/Path
+          Color: 255; 120; 25
+          Enabled: true
+          Line Style: Lines
+          Line Width: 0.05
+          Name: Drone1Path
+          Topic: /drone_1/perfect_drone/path
+          Value: true
+    - Class: rviz/Group
+      Enabled: true
+      Name: Map
+      Displays:
+        - Alpha: 0.25
+          Class: rviz/PointCloud2
+          Color: 140; 140; 140
+          Color Transformer: FlatColor
+          Enabled: true
+          Name: Drone0GlobalCloud
+          Queue Size: 5
+          Size (m): 0.08
+          Style: Boxes
+          Topic: /drone_0/global_pc
+          Use Fixed Frame: true
+          Value: true
+        - Alpha: 0.25
+          Class: rviz/PointCloud2
+          Color: 120; 120; 120
+          Color Transformer: FlatColor
+          Enabled: true
+          Name: Drone1GlobalCloud
+          Queue Size: 5
+          Size (m): 0.08
+          Style: Boxes
+          Topic: /drone_1/global_pc
+          Use Fixed Frame: true
+          Value: true
+        - Alpha: 1
+          Class: rviz/PointCloud2
+          Color Transformer: FlatColor
+          Enabled: true
+          Name: Drone0LocalCloud
+          Queue Size: 2
+          Size (m): 0.04
+          Style: Points
+          Topic: /drone_0/cloud_registered
+          Use Fixed Frame: true
+          Value: true
+        - Alpha: 1
+          Class: rviz/PointCloud2
+          Color Transformer: FlatColor
+          Enabled: true
+          Name: Drone1LocalCloud
+          Queue Size: 2
+          Size (m): 0.04
+          Style: Points
+          Topic: /drone_1/cloud_registered
+          Use Fixed Frame: true
+          Value: true
+    - Class: rviz/Group
+      Enabled: true
+      Name: Planner
+      Displays:
+        - Class: rviz/MarkerArray
+          Enabled: true
+          Marker Topic: /drone_0/fsm_node/visualization/exp_traj
+          Name: Drone0ExpTraj
+          Queue Size: 10
+          Value: true
+        - Class: rviz/MarkerArray
+          Enabled: true
+          Marker Topic: /drone_1/fsm_node/visualization/exp_traj
+          Name: Drone1ExpTraj
+          Queue Size: 10
+          Value: true
+        - Class: rviz/MarkerArray
+          Enabled: true
+          Marker Topic: /drone_0/fsm_node/visualization/frontend_path
+          Name: Drone0Frontend
+          Queue Size: 10
+          Value: true
+        - Class: rviz/MarkerArray
+          Enabled: true
+          Marker Topic: /drone_1/fsm_node/visualization/frontend_path
+          Name: Drone1Frontend
+          Queue Size: 10
+          Value: true
+  Enabled: true
+  Global Options:
+    Background Color: 255; 255; 255
+    Fixed Frame: world
+    Frame Rate: 30
+  Name: root
+  Tools:
+    - Class: rviz/Interact
+    - Class: rviz/MoveCamera
+    - Class: rviz/SetGoal
+      Topic: /move_base_simple/goal
+  Value: true
+  Views:
+    Current:
+      Class: rviz/TopDownOrtho
+      Name: TopDown
+      Scale: 18
+      Target Frame: world
+      X: 0
+      Y: 0
+    Saved: ~
+Window Geometry:
+  Height: 1050
+  Width: 1200
