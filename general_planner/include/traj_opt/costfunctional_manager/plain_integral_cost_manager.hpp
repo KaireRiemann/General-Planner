@@ -113,17 +113,13 @@ public:
             }
             if (pv_idx >= 0 && pv_idx < static_cast<int>(pv_pairs->size()))
             {
-                for (const auto &pair : (*pv_pairs)[pv_idx])
-                {
-                    local_cost += cost_functional::accumulatePVPairCollisionPenalty(position,
-                                                                                    pair.base_point,
-                                                                                    pair.direction,
-                                                                                    pv_clearance,
-                                                                                    smooth_eps,
-                                                                                    pv_weight,
-                                                                                    grad_pos,
-                                                                                    &max_violation_(1));
-                }
+                local_cost += cost_functional::accumulatePVPairDistancePenalty((*pv_pairs)[pv_idx],
+                                                                               position,
+                                                                               pv_clearance,
+                                                                               smooth_eps,
+                                                                               pv_weight,
+                                                                               grad_pos,
+                                                                               &max_violation_(1));
             }
         }
 

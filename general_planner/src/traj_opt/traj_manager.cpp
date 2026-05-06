@@ -2351,7 +2351,7 @@ PlainTrajOpt::PlainTrajOpt(const traj_opt::Config &cfg,
   opt_vars_.weight_guide_integral = opt_vars_.weight_guide;
   opt_vars_.weight_guide_vel_integral =
       cfg_.penna_guide_vel > 0.0 ? cfg_.penna_guide_vel : kDefaultPlainGuideVelWeight;
-  opt_vars_.weight_guide_tube = std::max(5.0e+5, 0.05 * opt_vars_.weight_pv);
+  opt_vars_.weight_guide_tube = 0.0;
   opt_vars_.magnitude_bounds.resize(6);
   opt_vars_.penalty_weights.resize(7);
   opt_vars_.magnitude_bounds << cfg_.max_vel, cfg_.max_acc, cfg_.max_jerk,
@@ -2497,8 +2497,8 @@ bool PlainTrajOpt::findPVPairForPoint(const Vec3f &query,
       const double escape_norm = escape_dir.norm();
       if (std::isfinite(escape_norm) && escape_norm > 1.0e-4)
       {
-        base_point = query;
         direction = escape_dir / escape_norm;
+        base_point = nearest_free;
         return true;
       }
     }
@@ -3257,7 +3257,8 @@ bool PlainTrajOpt::initializeFromGuide(const vec_E<Vec3f> &guide_path,
   }
 
   const double target_piece_len = std::clamp(6.0 * map_res, 0.55, 0.85);
-  const bool use_exact_guide = false;
+  const int exact_piece_limit = 12;
+  const bool use_exact_guide = static_cast<int>(filtered_path.size()) - 1 <= exact_piece_limit;
   const int piece_num = use_exact_guide
                             ? static_cast<int>(filtered_path.size()) - 1
                             : std::clamp(static_cast<int>(std::ceil(total_len / target_piece_len)), 1, 28);

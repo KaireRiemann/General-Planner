@@ -894,6 +894,9 @@ namespace general_planner {
         const double replan_process_start_WT = ros_ptr_->getSimTime();
         double replan_process_start_TT, replan_state_TT;
         const bool planning_from_rest = last_exp_traj_info.empty();
+        const bool use_plain_exp_traj = cfg_.plain_traj_en;
+        const bool use_esdf_exp_traj = cfg_.esdf_traj_en && !use_plain_exp_traj;
+        const bool use_distance_field_exp_traj = use_plain_exp_traj || use_esdf_exp_traj;
 
         /* 2) Check last exp traj */
         if (planning_from_rest) {
@@ -1024,15 +1027,14 @@ namespace general_planner {
             }
 
             if (!gi_.new_goal &&
-                cfg_.esdf_traj_en &&
-                !cfg_.plain_traj_en &&
+                use_distance_field_exp_traj &&
                 last_exp_traj_info.connectedToGoal() &&
                 last_exp_traj_info.wholeTrajKnownFree()) {
                 out_exp_traj_info = last_exp_traj_info;
                 if (robot_on_backup_traj_) {
                     if (cfg_.print_log) {
                         ros_ptr_->warn(
-                                " -- [GeneralPlanner] ESDF replan, emergency stop, return FAILED and wait for plan form rest.");
+                                " -- [GeneralPlanner] Distance-field replan, emergency stop, return FAILED and wait for plan form rest.");
                     }
                     return FAILED;
                 }
@@ -1042,9 +1044,8 @@ namespace general_planner {
             // * 6) Decide where to split the original exp trajecory and re-plan a new one with an A*,
             // *    If the whole trajectory if free,  the whole trajectory should be receding and if not, or a new goal
             // *    is given, we should only receiding a small distance and replan new trajectory ASAP
-            double split_dis = cfg_.plain_traj_en ? 0.0 : cfg_.receding_dis;
-            if (!cfg_.plain_traj_en &&
-                last_exp_traj_info.wholeTrajKnownFree() && !gi_.new_goal && cfg_.receding_dis > 0.0) {
+            double split_dis = cfg_.receding_dis;
+            if (last_exp_traj_info.wholeTrajKnownFree() && !gi_.new_goal && cfg_.receding_dis > 0.0) {
                 split_dis = std::numeric_limits<double>::max();
             }
 
@@ -1147,59 +1148,7 @@ namespace general_planner {
 //                        return FAILED;
 //                    }
 //                }
-                if (cfg_.plain_traj_en) {
-                    const Vec3f start = guide_path.back();
-                    Vec3f to_goal = gi_.goal_p - start;
-                    const double dis_to_goal = to_goal.norm();
-                    const double plain_max_vel = std::max(1.0e-3, cfg_.plain_traj_cfg.max_vel);
-                    if (dis_to_goal < 1.0e-3) {
-                        guide_stamp.push_back(guide_stamp.back() + 0.05);
-                        guide_path.push_back(gi_.goal_p);
-                    } else {
-                        const double local_len = std::min(dis_to_goal, std::max(cfg_.resolution * 2.0, temp_horizon));
-                        Vec3f local_goal = start + to_goal / dis_to_goal * local_len;
-                        if (!map_manager_->insideLocalMap(local_goal) ||
-                            map_manager_->getInfGridType(local_goal) == rog_map::GridType::OCCUPIED ||
-                            map_manager_->getInfGridType(local_goal) == rog_map::GridType::OUT_OF_MAP) {
-                            Vec3f shifted_goal = local_goal;
-                            if (map_manager_->getNearestInfCellNot(rog_map::GridType::OCCUPIED,
-                                                                    local_goal,
-                                                                    shifted_goal,
-                                                                    std::max(1.0, cfg_.resolution * 6.0)) &&
-                                map_manager_->insideLocalMap(shifted_goal)) {
-                                local_goal = shifted_goal;
-                            }
-                        }
-                        bool appended_plain_astar_guide = false;
-                        const bool direct_local_free =
-                                map_manager_->insideLocalMap(local_goal) &&
-                                map_manager_->isLineFree(start, local_goal, true, false);
-                        if (!direct_local_free) {
-                            vec_Vec3f plain_astar_path;
-                            const double plain_horizon = std::max(temp_horizon,
-                                                                  (local_goal - start).norm() + cfg_.resolution * 4.0);
-                            if (PathSearch(start, local_goal, plain_horizon, plain_astar_path) &&
-                                plain_astar_path.size() >= 2) {
-                                double time_stamp = guide_stamp.back();
-                                Vec3f last_plain_pt = start;
-                                for (size_t i = 1; i < plain_astar_path.size(); ++i) {
-                                    const Vec3f &plain_pt = plain_astar_path[i];
-                                    time_stamp += std::max(0.05,
-                                                           (plain_pt - last_plain_pt).norm() / plain_max_vel);
-                                    guide_path.emplace_back(plain_pt);
-                                    guide_stamp.emplace_back(time_stamp);
-                                    last_plain_pt = plain_pt;
-                                }
-                                appended_plain_astar_guide = true;
-                            }
-                        }
-                        if (!appended_plain_astar_guide) {
-                            guide_stamp.push_back(guide_stamp.back() +
-                                                  std::max(0.05, (local_goal - start).norm() / plain_max_vel));
-                            guide_path.push_back(local_goal);
-                        }
-                    }
-                } else if (!PathSearch(guide_path.back(), gi_.goal_p, temp_horizon, new_path)) {
+                if (!PathSearch(guide_path.back(), gi_.goal_p, temp_horizon, new_path)) {
                     ros_ptr_->warn(" -- [GeneralPlanner] PathSearch for new path failed");
                     return FAILED;
                 } else if (new_path.size() < 2) {
@@ -1273,8 +1222,6 @@ namespace general_planner {
             time_consuming_[VISUALIZATION] += t_viz.stop();
         }
 
-        const bool use_plain_exp_traj = cfg_.plain_traj_en;
-        const bool use_esdf_exp_traj = cfg_.esdf_traj_en && !use_plain_exp_traj;
         if (use_esdf_exp_traj && !map_manager_->hasESDF()) {
             ros_ptr_->warn(" -- [GeneralPlanner] ESDF exp traj is enabled, but ROGMap ESDF is unavailable.");
             return FAILED;
@@ -1304,34 +1251,6 @@ namespace general_planner {
                 (pos_fina_state.col(0) - gi_.goal_p).norm() < cfg_.resolution * 2;
         if (cfg_.goal_vel_en && (gi_.goal_p - robot_state_.p).norm() > cfg_.planning_horizon / 2) {
             pos_fina_state.col(1) = (gi_.goal_p - robot_state_.p).normalized() * cfg_.exp_traj_cfg.max_vel / 2;
-        }
-        if (use_plain_exp_traj && !local_endpoint_is_global_goal && guide_path.size() >= 2) {
-            const Vec3f terminal_dir = guide_path.back() - guide_path[guide_path.size() - 2];
-            if (terminal_dir.norm() > 1.0e-3) {
-                const double terminal_vel_ratio = std::clamp(cfg_.plain_traj_cfg.terminal_vel_ratio, 0.0, 1.0);
-                const double plain_max_vel = std::max(0.0, cfg_.plain_traj_cfg.max_vel);
-                const double plain_max_acc = std::max(1.0e-3, cfg_.plain_traj_cfg.max_acc);
-                const double terminal_segment_len = terminal_dir.norm();
-                const double guide_len = std::max(terminal_segment_len,
-                                                  geometry_utils::computePathLength(guide_path));
-                const double start_speed = pos_init_state.col(1).norm();
-                const double reachable_speed = std::sqrt(std::max(0.0,
-                                                                  start_speed * start_speed +
-                                                                  2.0 * plain_max_acc * guide_len));
-                const double local_segment_speed = std::sqrt(std::max(0.0,
-                                                                      2.0 * plain_max_acc *
-                                                                      std::max(terminal_segment_len, cfg_.resolution)));
-                const double rest_speed_cap = planning_from_rest
-                                              ? std::max(0.5, 0.45 * plain_max_vel)
-                                              : plain_max_vel;
-                const double terminal_speed = std::min({terminal_vel_ratio * plain_max_vel,
-                                                        reachable_speed,
-                                                        local_segment_speed,
-                                                        rest_speed_cap});
-                if (terminal_speed > 1.0e-3) {
-                    pos_fina_state.col(1) = terminal_dir.normalized() * terminal_speed;
-                }
-            }
         }
         if (local_endpoint_is_global_goal) {
             pos_fina_state.col(1).setZero();
@@ -1818,7 +1737,8 @@ namespace general_planner {
         }
         //add may23, if failed on inf map, use prob map try again
 
-        if (ret_code == NO_PATH && !cfg_.esdf_traj_en) {
+        const bool distance_field_frontend = cfg_.esdf_traj_en || cfg_.plain_traj_en;
+        if (ret_code == NO_PATH && !distance_field_frontend) {
             flag = ON_PROB_MAP | (cfg_.frontend_in_known_free ? UNKNOWN_AS_OCCUPIED : UNKNOWN_AS_FREE) |
                    USE_INF_NEIGHBOR;
             fmt::print(fg(fmt::color::indian_red) | fmt::emphasis::bold,
@@ -1832,9 +1752,9 @@ namespace general_planner {
                 fmt::print(fg(fmt::color::indian_red) | fmt::emphasis::bold,
                            " -- [Astar] Path search failed on prob map still failed.\n");
             }
-        } else if (ret_code == NO_PATH && cfg_.esdf_traj_en) {
+        } else if (ret_code == NO_PATH && distance_field_frontend) {
             fmt::print(fg(fmt::color::indian_red) | fmt::emphasis::bold,
-                       " -- [Astar] Path search failed on inf map in ESDF mode; skip prob-map fallback.\n");
+                       " -- [Astar] Path search failed on inf map in distance-field mode; skip prob-map fallback.\n");
         }
         if (ret_code != REACH_HORIZON && ret_code != REACH_GOAL) {
             ros_ptr_->error(
