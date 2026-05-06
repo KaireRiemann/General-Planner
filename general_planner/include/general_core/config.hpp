@@ -41,13 +41,14 @@ namespace general_planner {
             YAW_TO_GOAL = 2
         };
 
-        traj_opt::Config exp_traj_cfg, back_traj_cfg, esdf_traj_cfg;
+        traj_opt::Config exp_traj_cfg, back_traj_cfg, esdf_traj_cfg, plain_traj_cfg;
 
         // Bool Params
         bool visualization_en{true};
         bool detailed_log_en{false};
         bool backup_traj_en;
         bool esdf_traj_en{false};
+        bool plain_traj_en{false};
         bool use_fov_cut, print_log;
         bool goal_vel_en,goal_yaw_en;
         bool visual_process;
@@ -124,11 +125,24 @@ namespace general_planner {
             exp_traj_cfg = traj_opt::Config(cfg_path, "exp_traj");
             back_traj_cfg = traj_opt::Config(cfg_path, "backup_traj");
             esdf_traj_cfg = traj_opt::Config(cfg_path, "esdf_traj");
+            plain_traj_cfg = traj_opt::Config(cfg_path, "plain_traj");
             loader.LoadParam("general_planner/print_log", print_log, false);
             loader.LoadParam("general_planner/detailed_log_en", detailed_log_en, false);
             loader.LoadParam("general_planner/visualization_en", visualization_en, false);
             loader.LoadParam("general_planner/backup_traj_en", backup_traj_en, false);
             loader.LoadParam("general_planner/esdf_traj_en", esdf_traj_en, false);
+            loader.LoadParam("general_planner/plain_traj_en", plain_traj_en, false);
+            if (plain_traj_en) {
+                if (plain_traj_cfg.penna_t < 0.0) plain_traj_cfg.penna_t = 40000.0;
+                if (plain_traj_cfg.penna_pos < 0.0) plain_traj_cfg.penna_pos = 1.0e+7;
+                if (plain_traj_cfg.penna_vel < 0.0) plain_traj_cfg.penna_vel = 5.0e+5;
+                if (plain_traj_cfg.penna_acc < 0.0) plain_traj_cfg.penna_acc = 5.0e+5;
+                if (plain_traj_cfg.penna_jerk < 0.0) plain_traj_cfg.penna_jerk = 5.0e+5;
+                if (plain_traj_cfg.penna_attract < 0.0) plain_traj_cfg.penna_attract = 2.0e+3;
+                if (plain_traj_cfg.penna_guide_vel < 0.0) plain_traj_cfg.penna_guide_vel = 1.0e+2;
+                if (plain_traj_cfg.penna_omg < 0.0) plain_traj_cfg.penna_omg = 5.0e+5;
+                if (plain_traj_cfg.penna_thr < 0.0) plain_traj_cfg.penna_thr = 1.0e+5;
+            }
             loader.LoadParam("general_planner/esdf_safe_distance", esdf_safe_distance, 0.3);
             loader.LoadParam("general_planner/goal_vel_en", goal_vel_en, false);
             loader.LoadParam("general_planner/goal_yaw_en", goal_yaw_en, false);

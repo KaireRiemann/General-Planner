@@ -14,6 +14,7 @@
 #include "traj_opt/costfunctional_manager/exp_integal_cost_manager.hpp"
 #include "traj_opt/costfunctional_manager/backup_integal_cost_manager.hpp"
 #include "traj_opt/costfunctional_manager/esdf_integral_cost_manager.hpp"
+#include "traj_opt/costfunctional_manager/plain_integral_cost_manager.hpp"
 #include "traj_opt/tracking_perching_traj_opt.hpp"
 #include "traj_opt/swarm_traj.hpp"
 
@@ -23,6 +24,11 @@
 #include <general_core/map_manager.hpp>
 #include <utils/header/type_utils.hpp>
 #include <utils/optimization/lbfgs.h>
+
+namespace path_search
+{
+class Astar;
+}
 
 namespace traj_opt
 {
@@ -97,6 +103,8 @@ public:
   void setMapManager(const general_planner::MapManager::Ptr &map_manager);
   void setSafeDistance(double safe_distance);
   void setWeight(double weight);
+  void setShortcutGuide(bool shortcut_guide);
+  void setLabel(const std::string &label);
   void setSwarmConfig(const SwarmPenaltyConfig &config);
   void setSwarmTrajectories(const SwarmTrajectoriesConstPtr &trajectories);
   void setSwarmCurrentWallTime(double wall_time);
@@ -127,9 +135,12 @@ private:
     double weight_esdf{1.0};
     double weight_guide{0.0};
     double weight_guide_integral{0.0};
+    double weight_guide_vel_integral{0.0};
     double max_violation{0.0};
     Mat3Df guide_points;
     vec_E<Vec3f> guide_path;
+    vec_E<Vec3f> guide_velocities;
+    bool shortcut_guide{true};
   };
 
   struct ValidationReport
@@ -173,6 +184,146 @@ private:
   double swarm_current_wall_time_{0.0};
   OptimizationVariables opt_vars_;
   mutable std::ofstream esdf_debug_log_;
+  std::string label_{"ESDFTrajOpt"};
+};
+
+class PlainTrajOpt
+{
+public:
+  using Ptr = std::shared_ptr<PlainTrajOpt>;
+
+  PlainTrajOpt(const traj_opt::Config &cfg,
+               const ros_interface::RosInterface::Ptr &ros_ptr);
+  ~PlainTrajOpt();
+
+  void setMapManager(const general_planner::MapManager::Ptr &map_manager);
+  void setLocalAstar(const std::shared_ptr<path_search::Astar> &astar);
+  void setSafeDistance(double safe_distance);
+  void setShortcutGuide(bool shortcut_guide);
+  void setSwarmConfig(const SwarmPenaltyConfig &config);
+  void setSwarmTrajectories(const SwarmTrajectoriesConstPtr &trajectories);
+  void setSwarmCurrentWallTime(double wall_time);
+
+  bool optimize(const StatePVAJ &headPVAJ,
+                const StatePVAJ &tailPVAJ,
+                const vec_E<Vec3f> &guide_path,
+                const std::vector<double> &guide_t,
+                Trajectory &out_traj);
+
+private:
+  struct OptimizationVariables
+  {
+    double rho{0.0};
+    bool block_energy_cost{false};
+    double smooth_eps{0.0};
+    int integral_res{1};
+    int iter_num{0};
+    VecDf times;
+    Mat3Df points;
+    VecDf magnitude_bounds;
+    VecDf penalty_weights;
+    VecDf penalty_log;
+    flatness::FlatnessMap quadrotor_flatness;
+    StatePVAJ head_pvaj;
+    StatePVAJ tail_pvaj;
+    double safe_distance{0.5};
+    double weight_pv{1.0};
+    double weight_guide{0.0};
+    double weight_guide_integral{0.0};
+    double weight_guide_vel_integral{0.0};
+    double weight_guide_tube{0.0};
+    double guide_tube_radius{0.0};
+    double guide_tube_radius_sqr{0.0};
+    double guide_tube_violation{0.0};
+    double max_violation{0.0};
+    Mat3Df guide_points;
+    vec_E<Vec3f> guide_path;
+    vec_E<Vec3f> guide_velocities;
+    cost_functional_manager::PlainPVPairBuckets pv_pairs;
+    int pv_samples_per_piece{0};
+    int local_astar_segments{0};
+    int local_astar_success{0};
+    int local_astar_pairs{0};
+    int fallback_pv_pairs{0};
+    bool shortcut_guide{true};
+  };
+
+  struct ValidationReport
+  {
+    bool valid{false};
+    std::string reason{"UNSET"};
+    double duration{0.0};
+    double max_vel{0.0};
+    double max_acc{0.0};
+    double min_clearance{std::numeric_limits<double>::infinity()};
+    double time{0.0};
+    Vec3f position{Vec3f::Zero()};
+    int grid_type{-1};
+  };
+
+  static double costFunctional(void *ptr, const VecDf &x, VecDf &g);
+  double evaluateCurrentCost(const VecDf &x, VecDf &g);
+  double optimize(Trajectory &traj, double rel_cost_tol);
+  void decodeOptimizationVector(const VecDf &x, VecDf &times, Mat3Df &inner) const;
+  void logValidationReport(const std::string &stage,
+                           const ValidationReport &report,
+                           double cost = 0.0) const;
+  static std::string validationReportToString(const ValidationReport &report);
+  static int reboundProgress(void *ptr,
+                             const VecDf &x,
+                             const VecDf &g,
+                             double fx,
+                             double step,
+                             int k,
+                             int ls);
+  bool initializeFromGuide(const vec_E<Vec3f> &guide_path,
+                           const std::vector<double> &guide_t);
+  bool findPVPairForPoint(const Vec3f &query,
+                          const Vec3f &reference,
+                          Vec3f &base_point,
+                          Vec3f &direction) const;
+  bool plainSampleNeedsPVPair(const Vec3f &position) const;
+  bool buildPVPairFromLocalPath(const std::vector<Vec3f> &sample_positions,
+                                int sample_idx,
+                                const vec_E<Vec3f> &local_path,
+                                Vec3f &base_point,
+                                Vec3f &direction) const;
+  void generateLocalAstarPVPairs(const std::vector<Vec3f> &sample_positions,
+                                 std::vector<unsigned char> &pv_filled,
+                                 int &active_pv_pairs);
+  void resetPVPairBuckets(int sample_count);
+  bool appendPVPair(int sample_idx,
+                    const Vec3f &base_point,
+                    const Vec3f &direction,
+                    std::vector<unsigned char> &pv_filled,
+                    int &active_pv_pairs);
+  void collectCurrentTrajectorySamples(std::vector<Vec3f> &sample_positions) const;
+  bool sampleNeedsNewPVPair(int sample_idx,
+                            const Vec3f &position) const;
+  bool maybeRefreshPVPairsForRebound(const VecDf &x, int iteration);
+  int refreshPVPairsFromCurrentTrajectory();
+  bool plainSampleOccupied(const Vec3f &position) const;
+  ValidationReport validateTrajectoryDetailed(const Trajectory &traj) const;
+  bool validateTrajectory(const Trajectory &traj) const;
+
+  static Trajectory toGeometryTrajectory(const SnapTraj &traj);
+  static SnapBoundaryState toSnapBoundary(const StatePVAJ &state);
+
+  traj_opt::Config cfg_;
+  ros_interface::RosInterface::Ptr ros_ptr_;
+  general_planner::MapManager::Ptr map_manager_;
+  std::shared_ptr<path_search::Astar> local_astar_;
+  SnapTraj minco_traj_;
+  temporal_map::QuadInvTimeMap time_map_;
+  cost_functional::LinearTimeCost linear_time_cost_;
+  cost_functional_manager::PlainIntegralCostManager plain_cost_manager_;
+  SwarmPenaltyConfig swarm_config_;
+  SwarmTrajectoriesConstPtr swarm_trajs_;
+  double swarm_current_wall_time_{0.0};
+  OptimizationVariables opt_vars_;
+  ValidationReport last_opt_report_;
+  mutable std::ofstream plain_debug_log_;
+  std::string label_{"PlainTrajOpt"};
 };
 
 class ExpTrajOpt
@@ -400,6 +551,7 @@ public:
 
   TrajManager(const traj_opt::Config &exp_cfg,
               const traj_opt::Config &esdf_cfg,
+              const traj_opt::Config &plain_cfg,
               const traj_opt::Config &backup_cfg,
               double yaw_dot_max,
               double esdf_safe_distance,
@@ -408,6 +560,7 @@ public:
 
   ExpTrajOpt::Ptr exp() const { return exp_traj_opt_; }
   ESDFTrajOpt::Ptr esdf() const { return esdf_traj_opt_; }
+  PlainTrajOpt::Ptr plain() const { return plain_traj_opt_; }
   BackupTrajOpt::Ptr backup() const { return backup_traj_opt_; }
   YawTrajOpt::Ptr yaw() const { return yaw_traj_opt_; }
   TrackingJerkTrajOpt::Ptr trackingJerk() const { return tracking_jerk_traj_opt_; }
@@ -423,6 +576,7 @@ public:
 private:
   ExpTrajOpt::Ptr exp_traj_opt_;
   ESDFTrajOpt::Ptr esdf_traj_opt_;
+  PlainTrajOpt::Ptr plain_traj_opt_;
   BackupTrajOpt::Ptr backup_traj_opt_;
   YawTrajOpt::Ptr yaw_traj_opt_;
   TrackingJerkTrajOpt::Ptr tracking_jerk_traj_opt_;

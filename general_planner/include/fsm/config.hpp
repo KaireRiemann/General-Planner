@@ -49,7 +49,7 @@ namespace fsm {
         std::transform(mode.begin(), mode.end(), mode.begin(),
                        [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
         if (mode == "state_to_state" || mode == "state-2-state" || mode == "state2state" ||
-            mode == "s2s" || mode == "corridor" || mode == "esdf") {
+            mode == "s2s" || mode == "corridor" || mode == "esdf" || mode == "plain") {
             return "state2state";
         }
         if (mode == "track" || mode == "tracking") {

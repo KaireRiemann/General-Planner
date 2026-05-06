@@ -30,7 +30,7 @@ namespace task_planner {
         std::transform(mode.begin(), mode.end(), mode.begin(),
                        [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
         if (mode == "state_to_state" || mode == "state-2-state" || mode == "state2state" ||
-            mode == "waypoint" || mode == "s2s" || mode == "goal") {
+            mode == "waypoint" || mode == "s2s" || mode == "goal" || mode == "plain") {
             return "state2state";
         }
         if (mode == "track" || mode == "tracking") {

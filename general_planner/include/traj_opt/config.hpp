@@ -59,7 +59,7 @@ namespace traj_opt {
         // Penalty cost.
         double penna_scale{-1}, penna_vel{0}, penna_acc{0}, penna_jerk{0}, penna_omg{0}, penna_thr{0};
         // penna_t; penna_pos only for corridor based method.
-        double penna_t{0}, penna_pos{0}, penna_attract{0};
+        double penna_t{0}, penna_pos{0}, penna_attract{0}, penna_guide_vel{0};
         // penna_ts only for backupTraj;
         double penna_ts{0};
         // for backup traj piece num
@@ -70,6 +70,9 @@ namespace traj_opt {
         double smooth_eps{0};
         int integral_reso{0};
         double opt_accuracy{0};
+        double init_profile_vel_ratio{0.65};
+        double init_duration_scale{1.25};
+        double terminal_vel_ratio{0.0};
 
         Config() = default;
 
@@ -99,6 +102,9 @@ namespace traj_opt {
             loader.LoadParam("traj_opt" + ns + "opt_accuracy", opt_accuracy, 1.0e-5);
             loader.LoadParam("traj_opt" + ns + "integral_reso", integral_reso, 10);
             loader.LoadParam("traj_opt" + ns + "smooth_eps", smooth_eps, 0.01);
+            loader.LoadParam("traj_opt" + ns + "init_profile_vel_ratio", init_profile_vel_ratio, 0.65);
+            loader.LoadParam("traj_opt" + ns + "init_duration_scale", init_duration_scale, 1.25);
+            loader.LoadParam("traj_opt" + ns + "terminal_vel_ratio", terminal_vel_ratio, 0.0);
             loader.LoadParam("traj_opt/boundary/max_vel", max_vel, -1.0);
             loader.LoadParam("traj_opt/boundary/max_acc", max_acc, -1.0);
             loader.LoadParam("traj_opt/boundary/max_jerk", max_jerk, -1.0);
@@ -115,6 +121,7 @@ namespace traj_opt {
             loader.LoadParam("traj_opt" + ns + "penna_acc", penna_acc, -1.0);
             loader.LoadParam("traj_opt" + ns + "penna_jerk", penna_jerk, -1.0);
             loader.LoadParam("traj_opt" + ns + "penna_attract", penna_attract, -1.0);
+            loader.LoadParam("traj_opt" + ns + "penna_guide_vel", penna_guide_vel, -1.0);
             loader.LoadParam("traj_opt" + ns + "penna_omg", penna_omg, -1.0);
             loader.LoadParam("traj_opt" + ns + "penna_thr", penna_thr, -1.0);
 
@@ -126,6 +133,7 @@ namespace traj_opt {
                 penna_acc = penna_acc * penna_scale;
                 penna_jerk = penna_jerk * penna_scale;
                 penna_attract = penna_attract * penna_scale;
+                penna_guide_vel = penna_guide_vel * penna_scale;
                 penna_omg = penna_omg * penna_scale;
                 penna_thr = penna_thr * penna_scale;
             }

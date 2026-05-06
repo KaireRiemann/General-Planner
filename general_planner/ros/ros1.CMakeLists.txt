@@ -137,6 +137,17 @@ target_link_libraries(task_target_source
         general_planner_core        ${THIRD_PARTY}
 )
 
+add_executable(tracking_target_relay
+        Apps/tracking_target_relay.cpp
+)
+add_dependencies(tracking_target_relay
+        ${${PROJECT_NAME}_EXPORTED_TARGETS}
+        ${catkin_EXPORTED_TARGETS}
+)
+target_link_libraries(tracking_target_relay
+        general_planner_core        ${THIRD_PARTY}
+)
+
 add_executable(tracking_sim_monitor
         Apps/tracking_sim_monitor.cpp
 )

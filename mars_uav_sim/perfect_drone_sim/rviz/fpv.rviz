@@ -12,6 +12,10 @@ Panels:
         - /Sensing1/LocalCloud1/Autocompute Value Bounds1
         - /Sensing1/Occ1
         - /Sensing1/Occ1/Autocompute Value Bounds1
+        - /Sensing1/InflatedCloud1
+        - /Sensing1/ESDF1
+        - /Sensing1/ESDFNegative1
+        - /Sensing1/ESDFMapBound1
         - /Frontend1
         - /Frontend1/ExpSfc1
         - /Frontend1/ExpSfc1/Namespaces1
@@ -46,7 +50,7 @@ Panels:
   - Class: rviz/Time
     Name: Time
     SyncMode: 0
-    SyncSource: GlobalCloud
+    SyncSource: LocalCloud
 Preferences:
   PromptSaveOnExit: true
 Toolbars:
@@ -91,7 +95,7 @@ Visualization Manager:
               Scale: 1
               Value: true
             Value: true
-          Enabled: false
+          Enabled: true
           Keep: 1
           Name: Odometry
           Position Tolerance: 0
@@ -213,7 +217,7 @@ Visualization Manager:
           Color: 186; 189; 182
           Color Transformer: FlatColor
           Decay Time: 0
-          Enabled: false
+          Enabled: true
           Invert Rainbow: false
           Max Color: 255; 255; 255
           Min Color: 0; 0; 0
@@ -228,7 +232,73 @@ Visualization Manager:
           Unreliable: false
           Use Fixed Frame: true
           Use rainbow: true
-          Value: false
+          Value: true
+        - Alpha: 0.6499999761581421
+          Autocompute Intensity Bounds: false
+          Autocompute Value Bounds:
+            Max Value: 16
+            Min Value: 10
+            Value: false
+          Axis: Z
+          Channel Name: intensity
+          Class: rviz/PointCloud2
+          Color: 115; 210; 255
+          Color Transformer: Intensity
+          Decay Time: 0
+          Enabled: true
+          Invert Rainbow: false
+          Max Color: 239; 41; 41
+          Min Color: 52; 101; 164
+          Name: ESDF
+          Position Transformer: XYZ
+          Queue Size: 1
+          Selectable: true
+          Size (Pixels): 5
+          Size (m): 0.07999999821186066
+          Style: Boxes
+          Topic: /fsm_node/rog_map/esdf
+          Unreliable: false
+          Use Fixed Frame: true
+          Use rainbow: true
+          Value: true
+        - Alpha: 0.44999998807907104
+          Autocompute Intensity Bounds: false
+          Autocompute Value Bounds:
+            Max Value: 4
+            Min Value: 0
+            Value: false
+          Axis: Z
+          Channel Name: intensity
+          Class: rviz/PointCloud2
+          Color: 255; 85; 85
+          Color Transformer: Intensity
+          Decay Time: 0
+          Enabled: true
+          Invert Rainbow: true
+          Max Color: 164; 0; 0
+          Min Color: 255; 238; 238
+          Name: ESDFNegative
+          Position Transformer: XYZ
+          Queue Size: 1
+          Selectable: true
+          Size (Pixels): 5
+          Size (m): 0.07999999821186066
+          Style: Boxes
+          Topic: /fsm_node/rog_map/esdf/neg
+          Unreliable: false
+          Use Fixed Frame: true
+          Use rainbow: true
+          Value: true
+        - Class: rviz/MarkerArray
+          Enabled: true
+          Marker Topic: /fsm_node/rog_map/map_bound
+          Name: ESDFMapBound
+          Namespaces:
+            ESDF Map Text: true
+            ESDF Updating Range: true
+            Local Map Size: true
+          Queue Size: 100
+          Value: true
         - Alpha: 1
           Class: rviz/Axes
           Enabled: false
@@ -425,27 +495,47 @@ Visualization Manager:
   Value: true
   Views:
     Current:
-      Class: rviz/XYOrbit
-      Distance: 26.285547256469727
+      Class: rviz/ThirdPersonFollower
+      Distance: 3
       Enable Stereo Rendering:
         Stereo Eye Separation: 0.05999999865889549
         Stereo Focal Distance: 1
         Swap Stereo Eyes: false
         Value: false
-      Field of View: 0.5
+      Field of View: 1.0471975803375244
       Focal Point:
-        X: 0.36367708444595337
-        Y: -6.063220024108887
-        Z: 4.76837158203125e-07
+        X: 0
+        Y: 0
+        Z: 0
       Focal Shape Fixed Size: true
       Focal Shape Size: 0.05000000074505806
       Invert Z Axis: false
       Name: Current View
       Near Clip Distance: 0.009999999776482582
-      Pitch: 0.6422702074050903
+      Pitch: 0.25
       Target Frame: perfect_drone
-      Yaw: 4.685549736022949
-    Saved: ~
+      Yaw: 0
+    Saved:
+      - Class: rviz/ThirdPersonFollower
+        Distance: 3
+        Enable Stereo Rendering:
+          Stereo Eye Separation: 0.05999999865889549
+          Stereo Focal Distance: 1
+          Swap Stereo Eyes: false
+          Value: false
+        Field of View: 1.0471975803375244
+        Focal Point:
+          X: 0
+          Y: 0
+          Z: 0
+        Focal Shape Fixed Size: true
+        Focal Shape Size: 0.05000000074505806
+        Invert Z Axis: false
+        Name: FPV
+        Near Clip Distance: 0.009999999776482582
+        Pitch: 0.25
+        Target Frame: perfect_drone
+        Yaw: 0
 Window Geometry:
   Displays:
     collapsed: true

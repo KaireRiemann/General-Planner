@@ -3,15 +3,16 @@ fsm:
   click_goal_topic: "/goal"
   click_height: 1.5
   click_yaw_en: true
-  replan_rate: 10.0
+  replan_rate: 5.0
   cmd_topic: "/planning/pos_cmd"
   mpc_cmd_topic: "/planning_cmd/poly_traj"
   timer_en: true
 
 general_planner:
   backup_traj_en: false
-  esdf_traj_en: true
-  esdf_safe_distance: 0.5
+  esdf_traj_en: false
+  plain_traj_en: true
+  esdf_safe_distance: 0.35
   detailed_log_en: false
   visualization_en: true
   use_fov_cut: false
@@ -31,10 +32,8 @@ general_planner:
   receding_dis: 4.0
   robot_r: 0.2
   yaw_dot_max: 3.0
-  # Yaw mode: 1 heading to velocity, 2 heading to goal
   yaw_mode: 1
   mpc_horizon: 15
-
 
 traj_opt:
   switch:
@@ -51,7 +50,6 @@ traj_opt:
     penna_margin: 0.05
 
   exp_traj:
-    # 1 for xi 2 for pos
     pos_constraint_type: 1
     energy_cost_type: 4
     block_energy_cost: false
@@ -65,7 +63,7 @@ traj_opt:
     penna_acc: 5.0e+5
     penna_jerk: -5.0e+5
     penna_attract: 1.0e+3
-    penna_omg:  5.0e+5
+    penna_omg: 5.0e+5
     penna_thr: 1.0e+5
 
   backup_traj:
@@ -103,6 +101,24 @@ traj_opt:
     penna_omg: 5.0e+5
     penna_thr: 1.0e+5
 
+  plain_traj:
+    block_energy_cost: false
+    opt_accuracy: 5.0e-6
+    integral_reso: 16
+    smooth_eps: 0.01
+    init_profile_vel_ratio: 1.0
+    init_duration_scale: 1.0
+    terminal_vel_ratio: 0.95
+    penna_t: 40000.0
+    penna_pos: 1.0e+7
+    penna_vel: 5.0e+5
+    penna_acc: 5.0e+5
+    penna_jerk: 5.0e+5
+    penna_attract: 2.0e+3
+    penna_guide_vel: 1.0e+2
+    penna_omg: 5.0e+5
+    penna_thr: 1.0e+5
+
   flatness:
     mass: 1.64
     dh: 0.35
@@ -111,15 +127,12 @@ traj_opt:
     v_eps: 0.0001
     grav: 9.81
 
-
 astar:
   map_voxel_num: [ 500, 500, 100 ]
   visual_process: false
   allow_diag: true
-  # 0 DIAG; 1 MANHATTAN; 2 EUCLIDEAN
   heu_type: 2
   debug_visualization_en: false
-
 
 rog_map:
   resolution: 0.1
@@ -128,78 +141,48 @@ rog_map:
   unk_inflation_en: false
   unk_inflation_step: 1
   map_size: [ 50,50,6 ]
-  # If the map rolling is disable, the map origin [m] should be set.
   fix_map_origin: [ 0,0,1.5 ]
   frontier_extraction_en: false
-
-  # Virtual ceil and ground
   virtual_ceil_height: 3.5
   virtual_ground_height: -0.1
-
   load_pcd_en: false
 
   map_sliding:
     enable: true
-    # The minimum distance [m] to slide the map.
     threshold: 0.3
 
   esdf:
-    enable: true
+    enable: false
     resolution: 0.2
-    # The range of esdf around the odom [m].
     local_update_box: [ 16,16,4 ]
 
-  # If [enable = true], the ROG-Map will actively take ros topic as input.
-  #  else user should call function [updateMap] to update the map.
   ros_callback:
     enable: true
     cloud_topic: "/cloud_registered"
     odom_topic: "/lidar_slam/odom"
     odom_timeout: 2.0
 
-
   visualization:
     enable: true
-    # when enabled, use rqt_reconfigure to change the visualization parameters.
     use_dynamic_reconfigure: false
-    # The rate of visualization [Hz], if set to 0, the visualization will not be triggered by frame.
     time_rate: 2
-    # The frame rate of visualization [Hz], if set to 0, the visualization will not be triggered by frame.
     frame_rate: 0
-    # visualization range along the odom [m].
-    range: [ 15, 15,4 ]
+    range: [ 15,15,4 ]
     frame_id: "world"
     pub_unknown_map_en: false
 
-  # Intensity filter for input point cloud. If the point intensity is less than this value,
-  # it will be ignored (to avoid noise like dusk).
   intensity_thresh: -10
-  # The temporal downsample rate for input point cloud.
-  #  e.g. if set to k, the point cloud will be downsampled to 1/k.
   point_filt_num: 1
 
-  # Probabilistc update
   raycasting:
-    # if disable, the map will only maintain occupied information, and all other grid
-    # will be considered as unknown.
     enable: false
     batch_update_size: 1
     local_update_box: [ 100,100,5 ]
-    # The range of raycasting [m].
-    ray_range: [0.5, 100 ]
-
+    ray_range: [0.5,100]
     p_min: 0.12
     p_miss: 0.49
     p_free: 0.499
     p_occ: 0.85
     p_hit: 0.9
     p_max: 0.98
-    # The threshold of a non-occupied inf map grid to be considered as free. [0.0-1.0]
-    # for counter map, if each cell contains N cells in prob map, then only when
-    # N_unk > N * unk_thresh cells are unknown, the cell will be considered as unknown.
-    # example: 1) if unk_thresh is set 0.0, then once at least one cell in prob map is unknown,
-    #             the cell will be considered as unknown.
-    #         2) if unk_thresh is set to 1.0, then only all cells in prob map are unknown,
-    #             the cell will be considered as unknown.
-    # in all, 1.0 is more aggressive while 0.0 is more conservative.
     unk_thresh: 1.0
