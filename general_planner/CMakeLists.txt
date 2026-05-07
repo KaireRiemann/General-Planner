@@ -158,3 +158,8 @@ add_dependencies(tracking_sim_monitor
 target_link_libraries(tracking_sim_monitor
         general_planner_core        ${THIRD_PARTY}
 )
+
+catkin_install_python(PROGRAMS
+        scripts/click_state2state_benchmark.py
+        DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
+)
