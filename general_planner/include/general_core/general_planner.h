@@ -175,6 +175,22 @@ namespace general_planner {
         bool prepareESDFGuideEndpoint(vec_Vec3f &guide_path,
                                       std::vector<double> &guide_stamp);
 
+        bool buildTrackingGuideCorridor(traj_opt::TrackingProblem &problem);
+
+        bool tryGenerateTrackingCorridor(const vec_Vec3f &guide_path,
+                                         PolytopeVec &sfcs);
+
+        bool repairTrackingGuideWithAstar(const vec_Vec3f &guide_path,
+                                          vec_Vec3f &repaired_path);
+
+        bool truncateTrackingProblemForCorridor(traj_opt::TrackingProblem &problem,
+                                                const vec_Vec3f &candidate_guide,
+                                                PolytopeVec &sfcs);
+
+        bool trackingGuidePointSafe(const Vec3f &point) const;
+
+        void refreshTrackingGuideTiming(traj_opt::TrackingProblem &problem) const;
+
         StatePVAJ makeTaskHeadState(const bool &from_rest);
 
         bool commitTaskTrajectory(const Trajectory &pos_traj,

@@ -213,6 +213,7 @@ namespace rog_map {
                     esdf_map_->getPositiveESDFPointCloud(box_min, box_max, robot_state_.p.z() - 0.5, tmp_cloud);
                     pcl::toROSMsg(tmp_cloud, cloud_msg);
                     cloud_msg.header.stamp = ros::Time::now();
+                    cloud_msg.header.frame_id = "world";
                     vm_.esdf_pub.publish(cloud_msg);
                 }
 
@@ -221,6 +222,7 @@ namespace rog_map {
                     esdf_map_->getNegativeESDFPointCloud(box_min, box_max, robot_state_.p.z() - 0.5, tmp_cloud);
                     pcl::toROSMsg(tmp_cloud, cloud_msg);
                     cloud_msg.header.stamp = ros::Time::now();
+                    cloud_msg.header.frame_id = "world";
                     vm_.esdf_neg_pub.publish(cloud_msg);
                 }
 

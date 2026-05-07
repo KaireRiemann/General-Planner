@@ -6,6 +6,7 @@
 
 #include <Eigen/Core>
 
+#include "data_structure/base/polytope.h"
 #include "data_structure/base/trajectory.h"
 #include "general_core/map_manager.hpp"
 #include "traj_opt/config.hpp"
@@ -45,6 +46,7 @@ struct TrackingProblem
 
   super_utils::vec_E<super_utils::Vec3f> guide_path;
   std::vector<double> guide_t;
+  geometry_utils::PolytopeVec sfcs;
   super_utils::vec_E<super_utils::Vec3f> viewpoints;
   std::vector<double> target_sample_times;
   DynamicTargetStates target_prediction;
@@ -79,6 +81,7 @@ struct TrackingProblem
   double min_piece_duration{0.12};
   double min_total_duration{0.0};
   double time_lower_bound_weight{0.0};
+  bool use_corridor{false};
 };
 
 struct PerchingSurfaceState

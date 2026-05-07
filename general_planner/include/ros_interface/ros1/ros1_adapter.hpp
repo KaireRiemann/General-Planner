@@ -48,6 +48,8 @@ namespace ros_interface {
         static void deleteAllMarkerArray(const ros::Publisher &pub_) {
             visualization_msgs::Marker del;
             visualization_msgs::MarkerArray arr;
+            del.header.frame_id = DEFAULT_FRAME_ID;
+            del.header.stamp = ros::Time::now();
             del.action = visualization_msgs::Marker::DELETEALL;
             arr.markers.push_back(del);
             pub_.publish(arr);
@@ -55,6 +57,8 @@ namespace ros_interface {
 
         static void deleteAllMarker(const ros::Publisher &pub_) {
             visualization_msgs::Marker del;
+            del.header.frame_id = DEFAULT_FRAME_ID;
+            del.header.stamp = ros::Time::now();
             del.action = visualization_msgs::Marker::DELETEALL;
             pub_.publish(del);
         }

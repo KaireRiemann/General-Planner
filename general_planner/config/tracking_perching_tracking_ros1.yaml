@@ -61,7 +61,8 @@ general_planner:
     weight_tangent_velocity: 5.0
     weight_viewpoint_attractor: 50.0
     unknown_as_occupied: false
-    frontend_astar: false
+    # Keep A* enabled so blocked tracking guide segments fail instead of appending unsafe goals.
+    frontend_astar: true
     use_snap: false
 
 

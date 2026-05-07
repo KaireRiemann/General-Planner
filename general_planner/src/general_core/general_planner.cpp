@@ -24,6 +24,7 @@
 #include <general_core/general_planner.h>
 #include <algorithm>
 #include <cmath>
+#include <exception>
 #include <memory>
 #include <super_utils/scope_timer.hpp>
 #include <utils/optimization/polynomial_interpolation.h>
@@ -80,6 +81,15 @@ namespace general_planner {
                 geometry_utils::normalizeNextYaw(last_yaw, yaw);
             }
             return yaw;
+        }
+
+        void appendGuideUnique(const Vec3f &point, vec_Vec3f &path) {
+            if (!point.allFinite()) {
+                return;
+            }
+            if (path.empty() || (path.back() - point).norm() > 1.0e-4) {
+                path.emplace_back(point);
+            }
         }
     }
 
@@ -741,6 +751,255 @@ namespace general_planner {
         return true;
     }
 
+    bool GeneralPlanner::trackingGuidePointSafe(const Vec3f &point) const {
+        if (!point.allFinite()) {
+            return false;
+        }
+        if (map_manager_ == nullptr || !map_manager_->ready()) {
+            return true;
+        }
+        if (!map_manager_->insideLocalMap(point)) {
+            return false;
+        }
+        const auto grid_type = map_manager_->getInfGridType(point);
+        if (grid_type == rog_map::GridType::OCCUPIED ||
+            grid_type == rog_map::GridType::OUT_OF_MAP) {
+            return false;
+        }
+        if (cfg_.tracking_unknown_as_occupied &&
+            (grid_type == rog_map::GridType::UNKNOWN ||
+             grid_type == rog_map::GridType::UNDEFINED ||
+             grid_type == rog_map::GridType::FRONTIER)) {
+            return false;
+        }
+        return true;
+    }
+
+    void GeneralPlanner::refreshTrackingGuideTiming(traj_opt::TrackingProblem &problem) const {
+        problem.guide_t.clear();
+        problem.guide_t.reserve(problem.guide_path.size());
+        double stamp = 0.0;
+        problem.guide_t.emplace_back(stamp);
+        for (int i = 1; i < static_cast<int>(problem.guide_path.size()); ++i) {
+            stamp += std::max(0.1, (problem.guide_path[i] - problem.guide_path[i - 1]).norm() / 2.0);
+            problem.guide_t.emplace_back(stamp);
+        }
+
+        problem.tail_pvaj.col(0) = problem.guide_path.back();
+        if (!problem.target_prediction.empty()) {
+            Vec3f tail_vel = problem.target_prediction.back().velocity;
+            if (!tail_vel.allFinite() || tail_vel.norm() < 0.05) {
+                tail_vel.setZero();
+            }
+            problem.tail_pvaj.col(1) = tail_vel;
+            problem.min_total_duration = std::max(0.6, problem.target_prediction.back().t);
+        } else {
+            problem.tail_pvaj.col(1).setZero();
+            problem.min_total_duration = std::max(0.6, problem.guide_t.back());
+        }
+    }
+
+    bool GeneralPlanner::tryGenerateTrackingCorridor(const vec_Vec3f &guide_path,
+                                                     PolytopeVec &sfcs) {
+        sfcs.clear();
+        if (cg_ptr_ == nullptr || guide_path.size() < 2) {
+            return false;
+        }
+        for (const auto &point: guide_path) {
+            if (!trackingGuidePointSafe(point)) {
+                return false;
+            }
+        }
+
+        Vec3f shifted_start_pt = Vec3f(9999, 9999, 9999);
+        bool ok = false;
+        try {
+            ok = cg_ptr_->SearchPolytopeOnPath(guide_path, sfcs, shifted_start_pt, false);
+        } catch (const std::exception &e) {
+            ros_ptr_->warn(" -- [GeneralPlanner] Tracking SFC generation threw exception: {}", e.what());
+            sfcs.clear();
+            return false;
+        }
+        if (!ok || sfcs.empty()) {
+            sfcs.clear();
+            return false;
+        }
+
+        for (const auto &poly: sfcs) {
+            const auto planes = poly.GetPlanes();
+            if (planes.rows() == 0 || !std::isfinite(planes.sum())) {
+                sfcs.clear();
+                return false;
+            }
+        }
+
+        for (const auto &point: guide_path) {
+            bool covered = false;
+            for (const auto &poly: sfcs) {
+                if (poly.PointIsInside(point, 0.05)) {
+                    covered = true;
+                    break;
+                }
+            }
+            if (!covered) {
+                sfcs.clear();
+                return false;
+            }
+        }
+        return true;
+    }
+
+    bool GeneralPlanner::repairTrackingGuideWithAstar(const vec_Vec3f &guide_path,
+                                                      vec_Vec3f &repaired_path) {
+        repaired_path.clear();
+        if (guide_path.size() < 2 || astar_ptr_ == nullptr) {
+            return false;
+        }
+        if (!trackingGuidePointSafe(guide_path.front())) {
+            return false;
+        }
+
+        appendGuideUnique(guide_path.front(), repaired_path);
+        const int astar_flag = path_search::ON_INF_MAP |
+                               (cfg_.tracking_unknown_as_occupied
+                                    ? path_search::UNKNOWN_AS_OCCUPIED
+                                    : path_search::UNKNOWN_AS_FREE) |
+                               path_search::USE_INF_NEIGHBOR;
+
+        bool full_repair = true;
+        for (int i = 1; i < static_cast<int>(guide_path.size()); ++i) {
+            const Vec3f start = repaired_path.back();
+            const Vec3f goal = guide_path[i];
+            if (!trackingGuidePointSafe(goal)) {
+                full_repair = false;
+                break;
+            }
+
+            if (map_manager_ == nullptr || !map_manager_->ready() ||
+                map_manager_->isLineFree(start, goal, true, cfg_.tracking_unknown_as_occupied)) {
+                appendGuideUnique(goal, repaired_path);
+                continue;
+            }
+
+            vec_Vec3f astar_path;
+            const RET_CODE ret_code = astar_ptr_->pointToPointPathSearch(start,
+                                                                         goal,
+                                                                         astar_flag,
+                                                                         cfg_.planning_horizon,
+                                                                         astar_path,
+                                                                         0.08);
+            if ((ret_code != SUCCESS && ret_code != REACH_GOAL) || astar_path.empty()) {
+                full_repair = false;
+                break;
+            }
+
+            Vec3f last = start;
+            for (const auto &point: astar_path) {
+                if (!trackingGuidePointSafe(point) ||
+                    (map_manager_ != nullptr && map_manager_->ready() &&
+                     !map_manager_->isLineFree(last, point, true, cfg_.tracking_unknown_as_occupied))) {
+                    full_repair = false;
+                    break;
+                }
+                appendGuideUnique(point, repaired_path);
+                last = point;
+            }
+            if (!full_repair) {
+                break;
+            }
+            if (map_manager_ != nullptr && map_manager_->ready() &&
+                !map_manager_->isLineFree(repaired_path.back(), goal, true, cfg_.tracking_unknown_as_occupied)) {
+                full_repair = false;
+                break;
+            }
+            appendGuideUnique(goal, repaired_path);
+        }
+
+        return full_repair && repaired_path.size() >= 2;
+    }
+
+    bool GeneralPlanner::truncateTrackingProblemForCorridor(traj_opt::TrackingProblem &problem,
+                                                            const vec_Vec3f &candidate_guide,
+                                                            PolytopeVec &sfcs) {
+        if (candidate_guide.size() < 2 || problem.viewpoints.empty()) {
+            return false;
+        }
+
+        const double match_tol = std::max(1.0e-3, 0.25 * cfg_.resolution);
+        for (int view_id = static_cast<int>(problem.viewpoints.size()) - 1; view_id >= 0; --view_id) {
+            const Vec3f &viewpoint = problem.viewpoints[static_cast<std::size_t>(view_id)];
+            int end_id = -1;
+            for (int guide_id = static_cast<int>(candidate_guide.size()) - 1; guide_id >= 1; --guide_id) {
+                if ((candidate_guide[static_cast<std::size_t>(guide_id)] - viewpoint).norm() <= match_tol) {
+                    end_id = guide_id;
+                    break;
+                }
+            }
+            if (end_id < 1 || !trackingGuidePointSafe(candidate_guide[static_cast<std::size_t>(end_id)])) {
+                continue;
+            }
+
+            vec_Vec3f prefix(candidate_guide.begin(), candidate_guide.begin() + end_id + 1);
+            if (!tryGenerateTrackingCorridor(prefix, sfcs)) {
+                continue;
+            }
+
+            problem.guide_path = std::move(prefix);
+            const std::size_t keep_count = static_cast<std::size_t>(view_id + 1);
+            problem.viewpoints.resize(keep_count);
+            problem.target_sample_times.resize(keep_count);
+            problem.target_prediction.resize(keep_count);
+            refreshTrackingGuideTiming(problem);
+            if (cfg_.print_log) {
+                ros_ptr_->warn(" -- [GeneralPlanner] Tracking guide truncated to safe local SFC endpoint, kept {} target samples.",
+                               keep_count);
+            }
+            return true;
+        }
+        return false;
+    }
+
+    bool GeneralPlanner::buildTrackingGuideCorridor(traj_opt::TrackingProblem &problem) {
+        problem.sfcs.clear();
+        problem.use_corridor = false;
+
+        PolytopeVec sfcs;
+        if (tryGenerateTrackingCorridor(problem.guide_path, sfcs)) {
+            problem.sfcs = std::move(sfcs);
+            problem.use_corridor = true;
+            return true;
+        }
+
+        vec_Vec3f astar_repaired;
+        const bool full_astar_repair = repairTrackingGuideWithAstar(problem.guide_path, astar_repaired);
+        if (full_astar_repair && tryGenerateTrackingCorridor(astar_repaired, sfcs)) {
+            problem.guide_path = std::move(astar_repaired);
+            refreshTrackingGuideTiming(problem);
+            problem.sfcs = std::move(sfcs);
+            problem.use_corridor = true;
+            if (cfg_.print_log) {
+                ros_ptr_->warn(" -- [GeneralPlanner] Tracking SFC built after A* guide repair.");
+            }
+            return true;
+        }
+
+        if (!astar_repaired.empty() &&
+            truncateTrackingProblemForCorridor(problem, astar_repaired, sfcs)) {
+            problem.sfcs = std::move(sfcs);
+            problem.use_corridor = true;
+            return true;
+        }
+        if (truncateTrackingProblemForCorridor(problem, problem.guide_path, sfcs)) {
+            problem.sfcs = std::move(sfcs);
+            problem.use_corridor = true;
+            return true;
+        }
+
+        problem.sfcs.clear();
+        problem.use_corridor = false;
+        return false;
+    }
+
     RET_CODE GeneralPlanner::optimizeTrackingTask(const traj_opt::DynamicTargetStates &target_prediction,
                                                 const bool &from_rest) {
         if (target_prediction.empty()) {
@@ -762,6 +1021,7 @@ namespace general_planner {
         frontend_cfg.visibility_samples = cfg_.tracking_visibility_samples;
         frontend_cfg.unknown_as_occupied = cfg_.tracking_unknown_as_occupied;
         frontend_cfg.use_astar = cfg_.tracking_frontend_astar;
+        frontend_cfg.print_log = cfg_.print_log;
 
         traj_opt::TrackingProblem problem;
         TimeConsuming t_frontend("tracking_frontend", false);
@@ -771,9 +1031,20 @@ namespace general_planner {
             ros_ptr_->warn(" -- [GeneralPlanner] Tracking frontend failed.");
             return FAILED;
         }
-        time_consuming_[EPX_TRAJ_FRONTEND] = t_frontend.stop();
+        const double tracking_frontend_t = t_frontend.stop();
+        time_consuming_[EPX_TRAJ_FRONTEND] = tracking_frontend_t;
+
+        TimeConsuming t_tracking_sfc("tracking_sfc", false);
+        if (!buildTrackingGuideCorridor(problem)) {
+            time_consuming_[EPX_TRAJ_FRONTEND] += t_tracking_sfc.stop();
+            ros_ptr_->warn(" -- [GeneralPlanner] Tracking SFC generation failed.");
+            return FAILED;
+        }
+        time_consuming_[EPX_TRAJ_FRONTEND] += t_tracking_sfc.stop();
         latest_replan.setGuidePath(problem.guide_path);
-        latest_replan.setExpCondition(VecDf(), problem.guide_path, problem.head_pvaj, problem.tail_pvaj, PolytopeVec());
+        latest_replan.setExpCondition(VecDf(), problem.guide_path, problem.head_pvaj, problem.tail_pvaj, problem.sfcs);
+        const traj_opt::DynamicTargetStates &active_target_prediction =
+                problem.target_prediction.empty() ? target_prediction : problem.target_prediction;
 
         problem.head_yaw << robot_state_.yaw, 0.0;
         if (!from_rest && !cmd_traj_info_.empty()) {
@@ -790,13 +1061,13 @@ namespace general_planner {
                 problem.head_yaw = yaw_state.row(0).head<2>();
             }
         }
-        double terminal_yaw = target_prediction.back().yaw;
-        const Vec3f face_dir = target_prediction.back().position - problem.tail_pvaj.col(0);
+        double terminal_yaw = active_target_prediction.back().yaw;
+        const Vec3f face_dir = active_target_prediction.back().position - problem.tail_pvaj.col(0);
         if (face_dir.head<2>().norm() > 1.0e-3) {
             terminal_yaw = std::atan2(face_dir.y(), face_dir.x());
             geometry_utils::normalizeNextYaw(problem.head_yaw(0, 0), terminal_yaw);
         }
-        problem.tail_yaw << terminal_yaw, target_prediction.back().yaw_rate;
+        problem.tail_yaw << terminal_yaw, active_target_prediction.back().yaw_rate;
         problem.weight_od_near = cfg_.tracking_weight_od_near;
         problem.weight_od_far = cfg_.tracking_weight_od_far;
         problem.weight_od_vertical = cfg_.tracking_weight_od_vertical;
@@ -810,6 +1081,7 @@ namespace general_planner {
         {
             TimeConsuming t_viz("tracking_frontend_viz", false);
             ros_ptr_->vizFrontendPath(problem.guide_path);
+            ros_ptr_->vizExpSfc(problem.sfcs);
             time_consuming_[VISUALIZATION] += t_viz.stop();
         }
 
@@ -825,7 +1097,10 @@ namespace general_planner {
             return FAILED;
         }
 
-        if (!commitTrackingTrajectory(out_traj, out_yaw_traj, target_prediction, cfg_.tracking_use_snap ? "tracking_snap" : "tracking_jerk")) {
+        if (!commitTrackingTrajectory(out_traj,
+                                      out_yaw_traj,
+                                      active_target_prediction,
+                                      cfg_.tracking_use_snap ? "tracking_snap" : "tracking_jerk")) {
             return FAILED;
         }
         ros_ptr_->info(" -- [GeneralPlanner] Tracking task success: pieces={}, duration={}.",

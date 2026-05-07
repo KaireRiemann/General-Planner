@@ -13,13 +13,16 @@
 #include "traj_opt/costfunctional/spatialcosts/esdf_distance_penalty.hpp"
 #include "traj_opt/costfunctional/spatialcosts/flatness_state.hpp"
 #include "traj_opt/costfunctional/spatialcosts/jerk_bound_penalty.hpp"
+#include "traj_opt/costfunctional/spatialcosts/polytope_position_penalty.hpp"
 #include "traj_opt/costfunctional/spatialcosts/thrust_band_penalty.hpp"
 #include "traj_opt/costfunctional/spatialcosts/velocity_bound_penalty.hpp"
+#include "traj_opt/costfunctional/spatialmap/polytope_spatial_map.hpp"
 #include "traj_opt/costfunctional/temporalcosts/linear_time_cost.hpp"
 #include "traj_opt/costfunctional/temporalmap/quad_inv_time_map.hpp"
 #include "traj_opt/costfunctional_manager/perching_cost_manager.hpp"
 #include "traj_opt/costfunctional_manager/tracking_cost_manager.hpp"
 #include "traj_opt/minco/minco_optimizer.hpp"
+#include "utils/geometry/geometry_utils.h"
 #include "utils/optimization/lbfgs.h"
 
 namespace traj_opt
@@ -159,6 +162,17 @@ double pathLength(const super_utils::vec_E<Vec3f> &path)
     length += (path[i] - path[i - 1]).norm();
   }
   return length;
+}
+
+void normalizeTrackingHPoly(spatial_map::PolyhedronH &poly)
+{
+  if (poly.rows() == 0)
+  {
+    return;
+  }
+  Eigen::ArrayXd norms = poly.leftCols<3>().rowwise().norm();
+  norms = norms.max(1.0e-12);
+  poly.array().colwise() /= norms;
 }
 
 super_utils::vec_E<Vec3f> sanitizeGuide(const super_utils::vec_E<Vec3f> &guide_path,
@@ -603,14 +617,22 @@ public:
       problem_.target_sample_times = problem_.guide_t;
     }
 
-    if (!prepareInitialState<SPos>(cfg_,
-                                   problem_.head_pvaj,
-                                   problem_.tail_pvaj,
-                                   problem_.guide_path,
-                                   problem_.piece_num,
-                                   problem_.min_piece_duration,
-                                   init_times_,
-                                   init_pos_waypoints_))
+    use_corridor_ = problem_.use_corridor && !problem_.sfcs.empty();
+    if (use_corridor_)
+    {
+      if (!setupCorridorInitialState())
+      {
+        return false;
+      }
+    }
+    else if (!prepareInitialState<SPos>(cfg_,
+                                        problem_.head_pvaj,
+                                        problem_.tail_pvaj,
+                                        problem_.guide_path,
+                                        problem_.piece_num,
+                                        problem_.min_piece_duration,
+                                        init_times_,
+                                        init_pos_waypoints_))
     {
       return false;
     }
@@ -667,6 +689,11 @@ public:
     }
 
     out_traj = toGeometryTrajectoryGeneric(pos_traj_);
+    if (use_corridor_ && !validateTrajectoryInCorridor(out_traj))
+    {
+      std::cout << " -- [TrackingJointTrajOpt] optimized trajectory violates tracking SFC." << std::endl;
+      return false;
+    }
     out_traj.start_WT = ros_ptr_ ? ros_ptr_->getSimTime() : 0.0;
     if (out_yaw_traj != nullptr)
     {
@@ -686,7 +713,7 @@ private:
 
   int decisionDim() const
   {
-    return piece_num_ + 4 * std::max(0, piece_num_ - 1);
+    return piece_num_ + posDecisionDim() + std::max(0, piece_num_ - 1);
   }
 
   int posOffset() const
@@ -696,7 +723,211 @@ private:
 
   int yawOffset() const
   {
-    return piece_num_ + 3 * std::max(0, piece_num_ - 1);
+    return piece_num_ + posDecisionDim();
+  }
+
+  int posDecisionDim() const
+  {
+    int dim = 0;
+    for (int i = 1; i < piece_num_; ++i)
+    {
+      dim += positionDof(i);
+    }
+    return dim;
+  }
+
+  int positionDof(int inner_index) const
+  {
+    return use_corridor_ ? corridor_spatial_map_.getUnconstrainedDim(inner_index) : 3;
+  }
+
+  Vec3f toPhysicalPosition(const Eigen::Ref<const Eigen::VectorXd> &xi,
+                           int inner_index) const
+  {
+    return use_corridor_ ? corridor_spatial_map_.toPhysical(xi, inner_index) : xi.head<3>();
+  }
+
+  Eigen::VectorXd toUnconstrainedPosition(const Vec3f &p,
+                                          int inner_index) const
+  {
+    if (use_corridor_)
+    {
+      return corridor_spatial_map_.toUnconstrained(p, inner_index);
+    }
+    Eigen::VectorXd xi(3);
+    xi = p;
+    return xi;
+  }
+
+  Eigen::VectorXd backwardPositionGrad(const Eigen::Ref<const Eigen::VectorXd> &xi,
+                                       const Vec3f &grad_p,
+                                       int inner_index) const
+  {
+    if (use_corridor_)
+    {
+      return corridor_spatial_map_.backwardGrad(xi, grad_p, inner_index);
+    }
+    Eigen::VectorXd grad_xi(3);
+    grad_xi = grad_p;
+    return grad_xi;
+  }
+
+  bool setupCorridorInitialState()
+  {
+    if (problem_.sfcs.empty())
+    {
+      return false;
+    }
+
+    h_polytopes_.clear();
+    h_polytopes_.reserve(problem_.sfcs.size());
+    for (const auto &sfc : problem_.sfcs)
+    {
+      spatial_map::PolyhedronH h_poly = sfc.GetPlanes();
+      normalizeTrackingHPoly(h_poly);
+      if (h_poly.rows() == 0 || !std::isfinite(h_poly.sum()))
+      {
+        return false;
+      }
+      h_polytopes_.push_back(h_poly);
+    }
+
+    piece_num_ = static_cast<int>(h_polytopes_.size());
+    if (piece_num_ <= 0)
+    {
+      return false;
+    }
+
+    init_times_.assign(static_cast<std::size_t>(piece_num_), std::max(0.05, problem_.min_piece_duration));
+    init_pos_waypoints_.resize(piece_num_ + 1, 3);
+    init_pos_waypoints_.row(0) = problem_.head_pvaj.col(0).transpose();
+    init_pos_waypoints_.row(piece_num_) = problem_.tail_pvaj.col(0).transpose();
+
+    v_polytopes_.clear();
+    v_polytopes_.reserve(std::max(1, 2 * (piece_num_ - 1) + 1));
+    h_poly_idx_.resize(piece_num_);
+    v_poly_idx_.resize(std::max(0, piece_num_ - 1));
+
+    spatial_map::PolyhedronV cur_v;
+    spatial_map::PolyhedronV cur_v_local;
+    auto pushLocalVPoly = [&](const spatial_map::PolyhedronV &v_poly) {
+      if (v_poly.cols() <= 0 || !std::isfinite(v_poly.sum()))
+      {
+        return false;
+      }
+      cur_v_local.resize(3, v_poly.cols());
+      cur_v_local.col(0) = v_poly.col(0);
+      if (v_poly.cols() > 1)
+      {
+        cur_v_local.rightCols(v_poly.cols() - 1) =
+            v_poly.rightCols(v_poly.cols() - 1).colwise() - v_poly.col(0);
+      }
+      v_polytopes_.push_back(cur_v_local);
+      return true;
+    };
+
+    std::vector<double> time_stamps(static_cast<std::size_t>(piece_num_ + 1), 0.0);
+    time_stamps.front() = 0.0;
+    time_stamps.back() = std::max(problem_.min_total_duration,
+                                  problem_.guide_t.empty() ? 0.0 : problem_.guide_t.back());
+    if (time_stamps.back() <= 0.0)
+    {
+      time_stamps.back() = static_cast<double>(piece_num_) * std::max(0.1, problem_.min_piece_duration);
+    }
+
+    for (int i = 0; i < piece_num_ - 1; ++i)
+    {
+      h_poly_idx_(i) = i;
+      if (!geometry_utils::enumerateVs(h_polytopes_[static_cast<std::size_t>(i)], cur_v) ||
+          !pushLocalVPoly(cur_v))
+      {
+        return false;
+      }
+
+      spatial_map::PolyhedronH overlap(h_polytopes_[static_cast<std::size_t>(i)].rows() +
+                                           h_polytopes_[static_cast<std::size_t>(i + 1)].rows(),
+                                       4);
+      overlap.topRows(h_polytopes_[static_cast<std::size_t>(i)].rows()) =
+          h_polytopes_[static_cast<std::size_t>(i)];
+      overlap.bottomRows(h_polytopes_[static_cast<std::size_t>(i + 1)].rows()) =
+          h_polytopes_[static_cast<std::size_t>(i + 1)];
+
+      Vec3f interior = Vec3f::Zero();
+      const double interior_depth = geometry_utils::findInteriorDist(overlap, interior);
+      if (!std::isfinite(interior_depth) || interior_depth <= 1.0e-4)
+      {
+        return false;
+      }
+      geometry_utils::enumerateVs(overlap, interior, cur_v);
+      if (!pushLocalVPoly(cur_v))
+      {
+        return false;
+      }
+      v_poly_idx_(i) = 2 * i + 1;
+      init_pos_waypoints_.row(i + 1) = interior.transpose();
+
+      double stamp = time_stamps.back() * static_cast<double>(i + 1) / static_cast<double>(piece_num_);
+      if (problem_.guide_path.size() == problem_.guide_t.size() && !problem_.guide_path.empty())
+      {
+        double min_dist = std::numeric_limits<double>::max();
+        for (int guide_id = 0; guide_id < static_cast<int>(problem_.guide_path.size()); ++guide_id)
+        {
+          const double dist = (problem_.guide_path[static_cast<std::size_t>(guide_id)] - interior).norm();
+          if (dist < min_dist)
+          {
+            min_dist = dist;
+            stamp = problem_.guide_t[static_cast<std::size_t>(guide_id)];
+          }
+        }
+      }
+      time_stamps[static_cast<std::size_t>(i + 1)] = std::clamp(stamp, time_stamps.front(), time_stamps.back());
+    }
+    h_poly_idx_(piece_num_ - 1) = piece_num_ - 1;
+    if (!geometry_utils::enumerateVs(h_polytopes_.back(), cur_v) ||
+        !pushLocalVPoly(cur_v))
+    {
+      return false;
+    }
+
+    std::sort(time_stamps.begin(), time_stamps.end());
+    time_stamps.front() = 0.0;
+    time_stamps.back() = std::max(time_stamps.back(),
+                                  static_cast<double>(piece_num_) * std::max(0.1, problem_.min_piece_duration));
+    for (int i = 0; i < piece_num_; ++i)
+    {
+      init_times_[static_cast<std::size_t>(i)] =
+          std::max(std::max(0.05, problem_.min_piece_duration),
+                   time_stamps[static_cast<std::size_t>(i + 1)] -
+                       time_stamps[static_cast<std::size_t>(i)]);
+    }
+
+    corridor_spatial_map_.reset(&v_polytopes_, &v_poly_idx_, piece_num_ - 1, false);
+    return true;
+  }
+
+  bool validateTrajectoryInCorridor(const Trajectory &traj) const
+  {
+    if (!use_corridor_ || h_polytopes_.empty() || traj.empty())
+    {
+      return true;
+    }
+    const int piece_num = std::min(traj.getPieceNum(), static_cast<int>(h_polytopes_.size()));
+    const int sample_num = std::max(4, samples_per_piece_);
+    for (int i = 0; i < piece_num; ++i)
+    {
+      const double T = traj[i].getDuration();
+      for (int k = 0; k <= sample_num; ++k)
+      {
+        const double t = T * static_cast<double>(k) / static_cast<double>(sample_num);
+        if (!geometry_utils::pointInsidePolytope(traj[i].getPos(t),
+                                                 h_polytopes_[static_cast<std::size_t>(i)],
+                                                 0.02))
+        {
+          return false;
+        }
+      }
+    }
+    return true;
   }
 
   Eigen::VectorXd makeInitialGuess() const
@@ -716,8 +947,9 @@ private:
     int offset = posOffset();
     for (int i = 1; i < piece_num_; ++i)
     {
-      x.segment(offset, 3) = init_pos_waypoints_.row(i).transpose();
-      offset += 3;
+      const Eigen::VectorXd xi = toUnconstrainedPosition(init_pos_waypoints_.row(i).transpose(), i);
+      x.segment(offset, xi.size()) = xi;
+      offset += xi.size();
     }
     offset = yawOffset();
     for (int i = 1; i < piece_num_; ++i)
@@ -730,7 +962,9 @@ private:
   void decodeDecision(const Eigen::Ref<const Eigen::VectorXd> &x,
                       Eigen::VectorXd &durations,
                       PosInnerMat &pos_inner,
-                      YawInnerMat &yaw_inner) const
+                      YawInnerMat &yaw_inner,
+                      double &cost,
+                      Eigen::VectorXd &grad) const
   {
     durations.resize(piece_num_);
     for (int i = 0; i < piece_num_; ++i)
@@ -743,8 +977,16 @@ private:
     int offset = posOffset();
     for (int i = 1; i < piece_num_; ++i)
     {
-      pos_inner.col(i - 1) = x.segment(offset, 3);
-      offset += 3;
+      const int dof = positionDof(i);
+      const Eigen::VectorXd xi = x.segment(offset, dof);
+      pos_inner.col(i - 1) = toPhysicalPosition(xi, i);
+      if (use_corridor_)
+      {
+        Eigen::VectorXd grad_xi = Eigen::VectorXd::Zero(dof);
+        corridor_spatial_map_.addNormPenalty(xi, cost, grad_xi);
+        grad.segment(offset, dof) += grad_xi;
+      }
+      offset += dof;
     }
     offset = yawOffset();
     for (int i = 1; i < piece_num_; ++i)
@@ -1015,7 +1257,8 @@ private:
     Eigen::VectorXd durations;
     PosInnerMat pos_inner;
     YawInnerMat yaw_inner;
-    decodeDecision(x, durations, pos_inner, yaw_inner);
+    double total_cost = 0.0;
+    decodeDecision(x, durations, pos_inner, yaw_inner, total_cost, g);
     if ((durations.array() <= 0.0).any())
     {
       return std::numeric_limits<double>::infinity();
@@ -1026,7 +1269,6 @@ private:
       return std::numeric_limits<double>::infinity();
     }
 
-    double total_cost = 0.0;
     PosCoeffMat gdC_pos = PosCoeffMat::Zero(PosTraj::COEFF_NUM * piece_num_, 3);
     YawCoeffMat gdC_yaw = YawCoeffMat::Zero(YawTraj::COEFF_NUM * piece_num_, 1);
     Eigen::VectorXd gdT_pos = Eigen::VectorXd::Zero(piece_num_);
@@ -1106,6 +1348,16 @@ private:
         Vec3f gv_integral = Vec3f::Zero();
         Vec3f ga_integral = Vec3f::Zero();
         Vec3f gj_integral = Vec3f::Zero();
+        double c_corridor = 0.0;
+        if (use_corridor_ && i < static_cast<int>(h_polytopes_.size()) && cfg_.penna_pos > 0.0)
+        {
+          c_corridor = cost_functional::accumulatePolytopePositionPenalty(
+              h_polytopes_[static_cast<std::size_t>(i)],
+              p,
+              cfg_.smooth_eps,
+              cfg_.penna_pos,
+              gp_integral);
+        }
         const double c_dyn = cost_functional_manager::detail::accumulateDynamicsPenalty(dynamics_,
                                                                                         p,
                                                                                         v,
@@ -1115,14 +1367,15 @@ private:
                                                                                         gv_integral,
                                                                                         ga_integral,
                                                                                         gj_integral);
-        total_cost += c_dyn * common_weight;
+        const double c_integral = c_corridor + c_dyn;
+        total_cost += c_integral * common_weight;
         gdC_pos.template block<PosTraj::COEFF_NUM, 3>(pos_base, 0).noalias() +=
             (bp.transpose() * gp_integral.transpose() +
              bv.transpose() * gv_integral.transpose() +
              ba.transpose() * ga_integral.transpose() +
              bj.transpose() * gj_integral.transpose()) *
             common_weight;
-        gdT_pos(i) += c_dyn * trap_weight * inv_K;
+        gdT_pos(i) += c_integral * trap_weight * inv_K;
         gdT_pos(i) += (gp_integral.dot(v) + gv_integral.dot(a) +
                        ga_integral.dot(j) + gj_integral.dot(s)) *
                       alpha * common_weight;
@@ -1213,8 +1466,10 @@ private:
     int offset = posOffset();
     for (int i = 1; i < piece_num_; ++i)
     {
-      g.segment(offset, 3) += grad_pos_points.col(i - 1);
-      offset += 3;
+      const int dof = positionDof(i);
+      g.segment(offset, dof) +=
+          backwardPositionGrad(x.segment(offset, dof), grad_pos_points.col(i - 1), i);
+      offset += dof;
     }
     offset = yawOffset();
     for (int i = 1; i < piece_num_; ++i)
@@ -1234,12 +1489,18 @@ private:
   double yaw_energy_weight_{0.05};
   int piece_num_{0};
   int samples_per_piece_{5};
+  bool use_corridor_{false};
 
   TrackingProblem problem_;
   std::vector<double> init_times_;
   typename TaskOptimizer<SPos>::WaypointsType init_pos_waypoints_;
   YawInnerMat init_yaw_inner_;
   Eigen::VectorXd warm_start_;
+  spatial_map::PolyhedraH h_polytopes_;
+  spatial_map::PolyhedraV v_polytopes_;
+  Eigen::VectorXi h_poly_idx_;
+  Eigen::VectorXi v_poly_idx_;
+  spatial_map::PolytopeSpatialMap corridor_spatial_map_;
 
   temporal_map::QuadInvTimeMap time_map_;
   TaskTimeCost time_cost_;

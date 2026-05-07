@@ -61,6 +61,9 @@ namespace ros_interface {
         static void deleteAllMarkerArray(const MarkerArrayPubPtr &pub_) {
             visualization_msgs::msg::Marker del;
             visualization_msgs::msg::MarkerArray arr;
+            auto sim_clock = std::make_shared<rclcpp::Clock>(RCL_ROS_TIME);
+            del.header.frame_id = DEFAULT_FRAME_ID;
+            del.header.stamp = sim_clock->now();
             del.action = visualization_msgs::msg::Marker::DELETEALL;
             arr.markers.push_back(del);
             pub_->publish(arr);
@@ -68,6 +71,9 @@ namespace ros_interface {
 
         static void deleteAllMarker(const MarkerPubPtr &pub_) {
             visualization_msgs::msg::Marker del;
+            auto sim_clock = std::make_shared<rclcpp::Clock>(RCL_ROS_TIME);
+            del.header.frame_id = DEFAULT_FRAME_ID;
+            del.header.stamp = sim_clock->now();
             del.action = visualization_msgs::msg::Marker::DELETEALL;
             pub_->publish(del);
         }

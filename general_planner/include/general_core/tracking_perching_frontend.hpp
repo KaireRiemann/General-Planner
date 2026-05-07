@@ -1,6 +1,7 @@
 #pragma once
 
 #include <memory>
+#include <vector>
 
 #include "path_search/astar.h"
 #include "general_core/map_manager.hpp"
@@ -29,6 +30,7 @@ public:
         int visibility_samples{5};
         bool unknown_as_occupied{true};
         bool use_astar{true};
+        bool print_log{false};
     };
 
     TrackingFrontend(const Config &cfg,
@@ -40,11 +42,28 @@ public:
                       traj_opt::TrackingProblem &problem) const;
 
 private:
+    struct ViewpointCandidate
+    {
+        super_utils::Vec3f point{super_utils::Vec3f::Zero()};
+        double score{0.0};
+    };
+
     bool isViewpointVisible(const super_utils::Vec3f &viewpoint,
                             const super_utils::Vec3f &target) const;
     bool isViewpointSafe(const super_utils::Vec3f &viewpoint) const;
-    super_utils::Vec3f chooseVisibleViewpoint(const super_utils::Vec3f &seed,
-                                              const traj_opt::DynamicTargetState &target) const;
+    bool repairViewpointEndpoint(const super_utils::Vec3f &raw_viewpoint,
+                                 const super_utils::Vec3f &target,
+                                 super_utils::Vec3f &repaired_viewpoint) const;
+    bool chooseVisibleViewpoint(const super_utils::Vec3f &seed,
+                                const traj_opt::DynamicTargetState &target,
+                                super_utils::Vec3f &viewpoint) const;
+    bool collectVisibleViewpointCandidates(const super_utils::Vec3f &seed,
+                                           const traj_opt::DynamicTargetState &target,
+                                           std::vector<ViewpointCandidate> &candidates) const;
+    bool chooseConnectedVisibleViewpoint(const super_utils::Vec3f &seed,
+                                         const traj_opt::DynamicTargetState &target,
+                                         super_utils::vec_E<super_utils::Vec3f> &path,
+                                         super_utils::Vec3f &viewpoint) const;
     bool findOcclusionAwareSeed(const super_utils::Vec3f &last_viewpoint,
                                 const super_utils::Vec3f &last_target,
                                 const super_utils::Vec3f &target,
@@ -52,12 +71,20 @@ private:
     super_utils::Vec3f extendToTrackingDistance(const super_utils::Vec3f &seed,
                                                 const super_utils::Vec3f &target,
                                                 const super_utils::Vec3f &fallback) const;
-    super_utils::Vec3f choosePropagatedViewpoint(const super_utils::Vec3f &last_viewpoint,
-                                                 const traj_opt::DynamicTargetState &last_target,
-                                                 const traj_opt::DynamicTargetState &target) const;
+    bool searchVisibleViewpointOnGrid(const super_utils::Vec3f &start,
+                                      const traj_opt::DynamicTargetState &target,
+                                      super_utils::Vec3f &viewpoint,
+                                      super_utils::vec_E<super_utils::Vec3f> &path_to_viewpoint) const;
+    bool choosePropagatedViewpoint(const super_utils::Vec3f &last_viewpoint,
+                                   const traj_opt::DynamicTargetState &last_target,
+                                   const traj_opt::DynamicTargetState &target,
+                                   super_utils::Vec3f &viewpoint,
+                                   super_utils::vec_E<super_utils::Vec3f> &path_to_viewpoint) const;
+    // Fail closed: blocked tracking guide segments must not append unsafe goals.
     bool appendPathSegment(const super_utils::Vec3f &start,
                            const super_utils::Vec3f &goal,
-                           super_utils::vec_E<super_utils::Vec3f> &path) const;
+                           super_utils::vec_E<super_utils::Vec3f> &path,
+                           bool verbose = true) const;
 
 private:
     Config cfg_;

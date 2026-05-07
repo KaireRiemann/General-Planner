@@ -53,7 +53,7 @@ general_planner:
     candidate_radius_num: 3
     visibility_samples: 5
     unknown_as_occupied: false
-    frontend_astar: false
+    frontend_astar: true
     use_snap: false
   perching:
     robot_l: 0.28

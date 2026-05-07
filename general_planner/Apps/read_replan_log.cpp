@@ -159,6 +159,8 @@ int main(int argc, char** argv) {
         fmt::print(" -- [Bench] Visualize replan ID: {}\n", replan_id);
         visualization_msgs::Marker del;
         visualization_msgs::MarkerArray arr;
+        del.header.frame_id = "world";
+        del.header.stamp = ros::Time::now();
         del.action = visualization_msgs::Marker::DELETEALL;
         arr.markers.push_back(del);
         ros_ptr->setVisualizationEn(true);
