@@ -51,13 +51,13 @@ Visualization Manager:
           Queue Size: 20
           Value: true
         - Class: rviz/Marker
-          Enabled: false
+          Enabled: true
           Marker Topic: /drone_1/perfect_drone/robot
           Name: TrackerMesh
           Namespaces:
-            {}
+            mesh: true
           Queue Size: 20
-          Value: false
+          Value: true
         - Angle Tolerance: 0.10000000149011612
           Class: rviz/Odometry
           Covariance:
@@ -427,13 +427,13 @@ Visualization Manager:
           Queue Size: 100
           Value: true
         - Class: rviz/MarkerArray
-          Enabled: true
+          Enabled: false
           Marker Topic: /drone_1/fsm_node/visualization/yaw_traj
           Name: YawTraj
           Namespaces:
             yaw_traj: true
           Queue Size: 100
-          Value: true
+          Value: false
         - Class: rviz/MarkerArray
           Enabled: true
           Marker Topic: /drone_1/fsm_node/visualization/astar_debug

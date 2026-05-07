@@ -114,18 +114,25 @@ bool TrackingFrontend::isViewpointVisible(const Vec3f &viewpoint,
 Vec3f TrackingFrontend::chooseVisibleViewpoint(const Vec3f &seed,
                                                const traj_opt::DynamicTargetState &target) const
 {
-    Vec3f base_dir = target.velocity.head<3>();
-    base_dir.z() = 0.0;
-    if (base_dir.norm() < 1.0e-4)
+    Vec3f preferred_rel_dir = target.velocity;
+    preferred_rel_dir.z() = 0.0;
+    if (preferred_rel_dir.norm() > 1.0e-4)
     {
-        base_dir = seed - target.position;
-        base_dir.z() = 0.0;
+        preferred_rel_dir = -preferred_rel_dir.normalized();
     }
-    base_dir = normalizedOr(base_dir, Vec3f::UnitX());
+    else
+    {
+        preferred_rel_dir = seed - target.position;
+        preferred_rel_dir.z() = 0.0;
+        preferred_rel_dir = normalizedOr(preferred_rel_dir, Vec3f::UnitX());
+    }
 
-    Vec3f best = target.position - cfg_.tracking_distance * base_dir;
-    best.z() = target.position.z() + cfg_.height_offset;
-    double best_score = std::numeric_limits<double>::infinity();
+    Vec3f preferred = target.position + cfg_.tracking_distance * preferred_rel_dir;
+    preferred.z() = target.position.z() + cfg_.height_offset;
+    Vec3f best = preferred;
+    double best_score = isViewpointVisible(best, target.position)
+                            ? (best - seed).squaredNorm()
+                            : std::numeric_limits<double>::infinity();
 
     const int angle_count =
         std::max(8, static_cast<int>(std::ceil(2.0 * M_PI / std::max(0.05, cfg_.candidate_angle_step))));
@@ -140,14 +147,16 @@ Vec3f TrackingFrontend::chooseVisibleViewpoint(const Vec3f &seed,
         {
             const double yaw = static_cast<double>(i) * 2.0 * M_PI / static_cast<double>(angle_count);
             Vec3f dir(std::cos(yaw), std::sin(yaw), 0.0);
-            Vec3f candidate = target.position - radius * dir;
+            Vec3f candidate = target.position + radius * dir;
             candidate.z() = target.position.z() + cfg_.height_offset;
             if (!isViewpointVisible(candidate, target.position))
             {
                 continue;
             }
+            const double radius_error = radius - cfg_.tracking_distance;
             const double score = (candidate - seed).squaredNorm() +
-                                 0.2 * std::abs(radius - cfg_.tracking_distance);
+                                 0.35 * (candidate - preferred).squaredNorm() +
+                                 0.05 * radius_error * radius_error;
             if (score < best_score)
             {
                 best_score = score;
@@ -168,6 +177,118 @@ Vec3f TrackingFrontend::chooseVisibleViewpoint(const Vec3f &seed,
         }
     }
     return best;
+}
+
+bool TrackingFrontend::findOcclusionAwareSeed(const Vec3f &last_viewpoint,
+                                              const Vec3f &last_target,
+                                              const Vec3f &target,
+                                              Vec3f &seed) const
+{
+    auto visibleFrom = [&](const Vec3f &candidate) {
+        if (map_manager_ != nullptr && map_manager_->ready() &&
+            !map_manager_->isLineFree(candidate, target, true, cfg_.unknown_as_occupied))
+        {
+            return false;
+        }
+        return true;
+    };
+
+    const double res = map_manager_ != nullptr ? std::max(0.05, map_manager_->getResolution()) : 0.15;
+    const Vec3f ray = last_target - last_viewpoint;
+    const double ray_len = ray.norm();
+    if (ray_len > 1.0e-4)
+    {
+        const int sample_num = std::max(1, static_cast<int>(std::ceil(ray_len / res)));
+        for (int i = 0; i <= sample_num; ++i)
+        {
+            const double alpha = static_cast<double>(i) / static_cast<double>(sample_num);
+            const Vec3f candidate = last_viewpoint + alpha * ray;
+            if (visibleFrom(candidate))
+            {
+                seed = candidate;
+                return true;
+            }
+        }
+    }
+
+    const Vec3f target_seg = target - last_target;
+    const double target_seg_len = target_seg.norm();
+    if (target_seg_len > 1.0e-4)
+    {
+        const int sample_num = std::max(1, static_cast<int>(std::ceil(target_seg_len / res)));
+        for (int i = 0; i <= sample_num; ++i)
+        {
+            const double alpha = static_cast<double>(i) / static_cast<double>(sample_num);
+            const Vec3f candidate = last_target + alpha * target_seg;
+            if (visibleFrom(candidate))
+            {
+                seed = candidate;
+                return true;
+            }
+        }
+    }
+
+    return false;
+}
+
+Vec3f TrackingFrontend::extendToTrackingDistance(const Vec3f &seed,
+                                                 const Vec3f &target,
+                                                 const Vec3f &fallback) const
+{
+    Vec3f dir = seed - target;
+    dir.z() = 0.0;
+    if (dir.norm() < 1.0e-4)
+    {
+        dir = fallback - target;
+        dir.z() = 0.0;
+    }
+    dir = normalizedOr(dir, Vec3f::UnitX());
+
+    const double res = map_manager_ != nullptr ? std::max(0.05, map_manager_->getResolution()) : 0.15;
+    const double desired = std::max(0.3, cfg_.tracking_distance);
+    const double start_dist = std::clamp((seed - target).head<2>().norm(), 0.3, desired);
+    const int sample_num = std::max(1, static_cast<int>(std::ceil((desired - start_dist) / res)));
+
+    Vec3f best = target + start_dist * dir;
+    best.z() = target.z() + cfg_.height_offset;
+    if (!isViewpointVisible(best, target))
+    {
+        best = fallback;
+    }
+
+    for (int i = 0; i <= sample_num; ++i)
+    {
+        const double alpha = sample_num == 0 ? 1.0 : static_cast<double>(i) / static_cast<double>(sample_num);
+        const double dist = start_dist + alpha * (desired - start_dist);
+        Vec3f candidate = target + dist * dir;
+        candidate.z() = target.z() + cfg_.height_offset;
+        if (!isViewpointSafe(candidate))
+        {
+            break;
+        }
+        if (!isViewpointVisible(candidate, target))
+        {
+            continue;
+        }
+        best = candidate;
+    }
+    return best;
+}
+
+Vec3f TrackingFrontend::choosePropagatedViewpoint(const Vec3f &last_viewpoint,
+                                                  const traj_opt::DynamicTargetState &last_target,
+                                                  const traj_opt::DynamicTargetState &target) const
+{
+    Vec3f seed = Vec3f::Zero();
+    if (findOcclusionAwareSeed(last_viewpoint, last_target.position, target.position, seed))
+    {
+        const Vec3f candidate = extendToTrackingDistance(seed, target.position, last_viewpoint);
+        if (isViewpointVisible(candidate, target.position))
+        {
+            return candidate;
+        }
+    }
+    return chooseVisibleViewpoint(last_viewpoint, target);
 }
 
 bool TrackingFrontend::appendPathSegment(const Vec3f &start,
@@ -243,16 +364,30 @@ bool TrackingFrontend::buildProblem(const StatePVAJ &head_pvaj,
     problem.visibility_safe_distance = cfg_.visibility_safe_distance;
     problem.visibility_cone_ratio = cfg_.visibility_cone_ratio;
     problem.visibility_samples = cfg_.visibility_samples;
+    problem.od_h_lower = std::max(0.05, cfg_.tracking_distance - cfg_.distance_tolerance);
+    problem.od_h_upper = std::max(problem.od_h_lower + 0.05, cfg_.tracking_distance + cfg_.distance_tolerance);
+    problem.od_v_lower = cfg_.height_offset - cfg_.height_tolerance;
+    problem.od_v_upper = cfg_.height_offset + cfg_.height_tolerance;
 
     vec_E<Vec3f> guide;
     appendUnique(head_pvaj.col(0), guide);
+    problem.viewpoints.clear();
+    problem.viewpoints.reserve(target_prediction.size());
+    problem.target_sample_times.clear();
+    problem.target_sample_times.reserve(target_prediction.size());
+    problem.viewpoints.emplace_back(head_pvaj.col(0));
+    problem.target_sample_times.emplace_back(target_prediction.front().t);
 
     Vec3f seed = head_pvaj.col(0);
-    for (const auto &target : target_prediction)
+    for (std::size_t i = 1; i < target_prediction.size(); ++i)
     {
-        const Vec3f viewpoint = chooseVisibleViewpoint(seed, target);
+        const auto &last_target = target_prediction[i - 1];
+        const auto &target = target_prediction[i];
+        const Vec3f viewpoint = choosePropagatedViewpoint(seed, last_target, target);
         appendPathSegment(seed, viewpoint, guide);
         seed = viewpoint;
+        problem.viewpoints.emplace_back(viewpoint);
+        problem.target_sample_times.emplace_back(target.t);
     }
 
     problem.guide_path = guide;
@@ -270,9 +405,12 @@ bool TrackingFrontend::buildProblem(const StatePVAJ &head_pvaj,
     problem.tail_pvaj.col(0) = guide.back();
     if (!target_prediction.empty())
     {
-        const Vec3f rel = problem.tail_pvaj.col(0) - target_prediction.back().position;
-        Vec3f tangent(-rel.y(), rel.x(), 0.0);
-        problem.tail_pvaj.col(1) = 0.3 * normalizedOr(tangent, Vec3f::Zero());
+        Vec3f tail_vel = target_prediction.back().velocity;
+        if (!tail_vel.allFinite() || tail_vel.norm() < 0.05)
+        {
+            tail_vel.setZero();
+        }
+        problem.tail_pvaj.col(1) = tail_vel;
     }
     problem.min_total_duration = std::max(0.0, target_prediction.back().t);
     return problem.guide_path.size() >= 2;

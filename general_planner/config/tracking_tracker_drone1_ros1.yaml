@@ -51,6 +51,14 @@ general_planner:
     candidate_angle_step: 0.3926990817
     candidate_radius_num: 3
     visibility_samples: 5
+    weight_od_near: 20.0
+    weight_od_far: 5.0
+    weight_od_vertical: 8.0
+    weight_oa: 5.0
+    weight_oe: 1.0
+    weight_relative_velocity: 1.0
+    weight_tangent_velocity: 5.0
+    weight_viewpoint_attractor: 50.0
     unknown_as_occupied: false
     frontend_astar: false
     use_snap: false

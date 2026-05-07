@@ -26,11 +26,63 @@
 #include <cmath>
 #include <memory>
 #include <super_utils/scope_timer.hpp>
+#include <utils/optimization/polynomial_interpolation.h>
 #include <fmt/color.h>
 
 using namespace super_utils;
 
 namespace general_planner {
+    namespace {
+        traj_opt::DynamicTargetState interpolateTargetPrediction(const traj_opt::DynamicTargetStates &prediction,
+                                                                 const double &t) {
+            if (prediction.empty()) {
+                return {};
+            }
+            if (prediction.size() == 1 || t <= prediction.front().t) {
+                return prediction.front();
+            }
+            if (t >= prediction.back().t) {
+                return prediction.back();
+            }
+
+            const auto it = std::lower_bound(prediction.begin(),
+                                             prediction.end(),
+                                             t,
+                                             [](const traj_opt::DynamicTargetState &state, double query_t) {
+                                                 return state.t < query_t;
+                                             });
+            const int idx = static_cast<int>(std::distance(prediction.begin(), it));
+            const auto &left = prediction[static_cast<std::size_t>(idx - 1)];
+            const auto &right = prediction[static_cast<std::size_t>(idx)];
+            const double alpha = (t - left.t) / std::max(1.0e-9, right.t - left.t);
+
+            traj_opt::DynamicTargetState out;
+            out.t = t;
+            out.position = left.position + alpha * (right.position - left.position);
+            out.velocity = left.velocity + alpha * (right.velocity - left.velocity);
+            out.acceleration = left.acceleration + alpha * (right.acceleration - left.acceleration);
+            out.yaw = left.yaw + alpha * (right.yaw - left.yaw);
+            out.yaw_rate = left.yaw_rate + alpha * (right.yaw_rate - left.yaw_rate);
+            return out;
+        }
+
+        double yawFacingTarget(const Trajectory &pos_traj,
+                               const traj_opt::DynamicTargetStates &target_prediction,
+                               const double &t,
+                               const double &last_yaw) {
+            const double eval_t = std::clamp(t, 0.0, pos_traj.getTotalDuration());
+            const Vec3f tracker_p = pos_traj.getPos(eval_t);
+            const Vec3f target_p = interpolateTargetPrediction(target_prediction, eval_t).position;
+            const Vec3f face_dir = target_p - tracker_p;
+            double yaw = last_yaw;
+            if (face_dir.head<2>().norm() > 1.0e-4) {
+                yaw = std::atan2(face_dir.y(), face_dir.x());
+                geometry_utils::normalizeNextYaw(last_yaw, yaw);
+            }
+            return yaw;
+        }
+    }
+
     GeneralPlanner::GeneralPlanner
             (const std::string &cfg_path,
              const ros_interface::RosInterface::Ptr &ros_ptr,
@@ -585,6 +637,110 @@ namespace general_planner {
         return true;
     }
 
+    bool GeneralPlanner::buildTrackingTargetYawTrajectory(const Trajectory &pos_traj,
+                                                        const traj_opt::DynamicTargetStates &target_prediction,
+                                                        Trajectory &yaw_traj) {
+        if (pos_traj.empty() || target_prediction.empty()) {
+            return false;
+        }
+
+        Vec4f init_yaw{robot_state_.yaw, 0.0, 0.0, 0.0};
+        if (!cmd_traj_info_.empty()) {
+            cmd_traj_info_.lock();
+            const Trajectory committed_yaw_traj = cmd_traj_info_.yawTraj();
+            const double start_wt = cmd_traj_info_.getStartWallTime();
+            const double total_dur = cmd_traj_info_.getTotalDuration();
+            cmd_traj_info_.unlock();
+
+            const double eval_t = ros_ptr_->getSimTime() - start_wt;
+            StatePVAJ yaw_state;
+            if (!committed_yaw_traj.empty() && eval_t >= 0.0 && eval_t <= total_dur &&
+                committed_yaw_traj.getState(eval_t, yaw_state)) {
+                init_yaw = yaw_state.row(0);
+            }
+        }
+
+        VecDf times;
+        traj_manager_->yaw()->getYawTimeAllocation(pos_traj.getTotalDuration(), times);
+        if (times.size() == 0 || !times.allFinite()) {
+            return false;
+        }
+
+        VecDf way_pts;
+        way_pts.resize(std::max<Eigen::Index>(0, times.size() - 1));
+        double eval_t = 0.0;
+        double last_yaw = init_yaw[0];
+        for (Eigen::Index i = 0; i < way_pts.size(); ++i) {
+            eval_t += times(i);
+            const double yaw = yawFacingTarget(pos_traj, target_prediction, eval_t, last_yaw);
+            way_pts(i) = yaw;
+            last_yaw = yaw;
+        }
+
+        Vec4f goal_yaw{0.0, 0.0, 0.0, 0.0};
+        goal_yaw[0] = yawFacingTarget(pos_traj, target_prediction, pos_traj.getTotalDuration(), last_yaw);
+        if (way_pts.size() == 0) {
+            geometry_utils::normalizeNextYaw(init_yaw[0], goal_yaw[0]);
+        } else {
+            geometry_utils::normalizeNextYaw(way_pts(way_pts.size() - 1), goal_yaw[0]);
+        }
+
+        const Vec2f init_state = init_yaw.head(2);
+        const Vec2f goal_state = goal_yaw.head(2);
+        yaw_traj = poly_interpo::minimumAccInterpolation<1>(init_state,
+                                                            goal_state,
+                                                            way_pts,
+                                                            times);
+        yaw_traj.start_WT = pos_traj.start_WT;
+        return !yaw_traj.empty();
+    }
+
+    bool GeneralPlanner::commitTrackingTrajectory(const Trajectory &pos_traj,
+                                                const Trajectory &optimized_yaw_traj,
+                                                const traj_opt::DynamicTargetStates &target_prediction,
+                                                const std::string &traj_ns) {
+        if (pos_traj.empty()) {
+            ros_ptr_->warn(" -- [GeneralPlanner] Tracking trajectory is empty, cannot commit.");
+            return false;
+        }
+
+        Trajectory yaw_traj = optimized_yaw_traj;
+        if (yaw_traj.empty() && !buildTrackingTargetYawTrajectory(pos_traj, target_prediction, yaw_traj)) {
+            double terminal_yaw = target_prediction.empty() ? robot_state_.yaw : target_prediction.back().yaw;
+            if (!target_prediction.empty()) {
+                const Vec3f face_dir = target_prediction.back().position - pos_traj.getPos(pos_traj.getTotalDuration());
+                if (face_dir.head<2>().norm() > 1.0e-3) {
+                    terminal_yaw = std::atan2(face_dir.y(), face_dir.x());
+                }
+            }
+            ros_ptr_->warn(" -- [GeneralPlanner] Tracking target yaw generation failed, fallback to terminal yaw.");
+            return commitTaskTrajectory(pos_traj, terminal_yaw, true, traj_ns);
+        }
+
+        ExpTraj task_exp_traj;
+        task_exp_traj.setGoalConnectedFlag(true);
+        task_exp_traj.setWholeTrajKnownFreeFlag(true);
+        task_exp_traj.setTrajectory(ros_ptr_->getSimTime(), pos_traj, yaw_traj);
+
+        cmd_traj_info_.setTrajectory(task_exp_traj);
+        last_exp_traj_info_ = task_exp_traj;
+        robot_on_backup_traj_ = false;
+        gi_.new_goal = false;
+
+        {
+            TimeConsuming t_viz("tracking_task_viz", false);
+            ros_ptr_->vizExpTraj(pos_traj, traj_ns);
+            ros_ptr_->vizYawTraj(pos_traj, yaw_traj);
+            ros_ptr_->vizCommittedTraj(cmd_traj_info_.posTraj(), -1.0);
+            time_consuming_[VISUALIZATION] += t_viz.stop();
+        }
+
+        latest_replan.setExpTraj(pos_traj);
+        latest_replan.setExpYawTraj(yaw_traj);
+        latest_replan.setRetCode(GENERAL_SUCCESS_NO_BACKUP);
+        return true;
+    }
+
     RET_CODE GeneralPlanner::optimizeTrackingTask(const traj_opt::DynamicTargetStates &target_prediction,
                                                 const bool &from_rest) {
         if (target_prediction.empty()) {
@@ -619,6 +775,38 @@ namespace general_planner {
         latest_replan.setGuidePath(problem.guide_path);
         latest_replan.setExpCondition(VecDf(), problem.guide_path, problem.head_pvaj, problem.tail_pvaj, PolytopeVec());
 
+        problem.head_yaw << robot_state_.yaw, 0.0;
+        if (!from_rest && !cmd_traj_info_.empty()) {
+            cmd_traj_info_.lock();
+            const Trajectory yaw_traj = cmd_traj_info_.yawTraj();
+            const double start_wt = cmd_traj_info_.getStartWallTime();
+            const double total_dur = cmd_traj_info_.getTotalDuration();
+            cmd_traj_info_.unlock();
+
+            const double eval_t = ros_ptr_->getSimTime() - start_wt + cfg_.replan_forward_dt;
+            StatePVAJ yaw_state;
+            if (!yaw_traj.empty() && eval_t >= 0.0 && eval_t <= total_dur &&
+                yaw_traj.getState(eval_t, yaw_state)) {
+                problem.head_yaw = yaw_state.row(0).head<2>();
+            }
+        }
+        double terminal_yaw = target_prediction.back().yaw;
+        const Vec3f face_dir = target_prediction.back().position - problem.tail_pvaj.col(0);
+        if (face_dir.head<2>().norm() > 1.0e-3) {
+            terminal_yaw = std::atan2(face_dir.y(), face_dir.x());
+            geometry_utils::normalizeNextYaw(problem.head_yaw(0, 0), terminal_yaw);
+        }
+        problem.tail_yaw << terminal_yaw, target_prediction.back().yaw_rate;
+        problem.weight_od_near = cfg_.tracking_weight_od_near;
+        problem.weight_od_far = cfg_.tracking_weight_od_far;
+        problem.weight_od_vertical = cfg_.tracking_weight_od_vertical;
+        problem.weight_oa = cfg_.tracking_weight_oa;
+        problem.weight_oe = cfg_.tracking_weight_oe;
+        problem.weight_visibility = cfg_.tracking_weight_oe;
+        problem.weight_relative_velocity = cfg_.tracking_weight_relative_velocity;
+        problem.weight_tangent_velocity = cfg_.tracking_weight_tangent_velocity;
+        problem.weight_viewpoint_attractor = cfg_.tracking_weight_viewpoint_attractor;
+
         {
             TimeConsuming t_viz("tracking_frontend_viz", false);
             ros_ptr_->vizFrontendPath(problem.guide_path);
@@ -626,22 +814,18 @@ namespace general_planner {
         }
 
         Trajectory out_traj;
+        Trajectory out_yaw_traj;
         TimeConsuming t_opt("tracking_opt", false);
         const bool ok = cfg_.tracking_use_snap
-                            ? traj_manager_->trackingSnap()->optimize(problem, out_traj)
-                            : traj_manager_->trackingJerk()->optimize(problem, out_traj);
+                            ? traj_manager_->trackingSnap()->optimize(problem, out_traj, &out_yaw_traj)
+                            : traj_manager_->trackingJerk()->optimize(problem, out_traj, &out_yaw_traj);
         time_consuming_[EXP_TRAJ_OPT] = t_opt.stop();
         if (!ok || out_traj.empty()) {
             ros_ptr_->warn(" -- [GeneralPlanner] Tracking optimization failed.");
             return FAILED;
         }
 
-        double terminal_yaw = target_prediction.back().yaw;
-        const Vec3f face_dir = target_prediction.back().position - out_traj.getPos(out_traj.getTotalDuration());
-        if (face_dir.head<2>().norm() > 1.0e-3) {
-            terminal_yaw = std::atan2(face_dir.y(), face_dir.x());
-        }
-        if (!commitTaskTrajectory(out_traj, terminal_yaw, true, cfg_.tracking_use_snap ? "tracking_snap" : "tracking_jerk")) {
+        if (!commitTrackingTrajectory(out_traj, out_yaw_traj, target_prediction, cfg_.tracking_use_snap ? "tracking_snap" : "tracking_jerk")) {
             return FAILED;
         }
         ros_ptr_->info(" -- [GeneralPlanner] Tracking task success: pieces={}, duration={}.",

@@ -182,6 +182,15 @@ namespace general_planner {
                                   const bool &fix_terminal_yaw,
                                   const std::string &traj_ns);
 
+        bool buildTrackingTargetYawTrajectory(const Trajectory &pos_traj,
+                                              const traj_opt::DynamicTargetStates &target_prediction,
+                                              Trajectory &yaw_traj);
+
+        bool commitTrackingTrajectory(const Trajectory &pos_traj,
+                                      const Trajectory &yaw_traj,
+                                      const traj_opt::DynamicTargetStates &target_prediction,
+                                      const std::string &traj_ns);
+
         RET_CODE optimizeTrackingTask(const traj_opt::DynamicTargetStates &target_prediction,
                                       const bool &from_rest);
 

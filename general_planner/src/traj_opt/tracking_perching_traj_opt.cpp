@@ -273,6 +273,19 @@ Trajectory toGeometryTrajectory(const TaskTraj<S> &traj)
   return out;
 }
 
+template <int DIM, int S>
+Trajectory toGeometryTrajectoryGeneric(const minco::MINCOTrajectory<DIM, S> &traj)
+{
+  Trajectory out;
+  const auto &durations = traj.getDurations();
+  out.reserve(static_cast<int>(durations.size()));
+  for (int i = 0; i < durations.size(); ++i)
+  {
+    out.emplace_back(durations(i), traj.getPieceCoeffMat(i));
+  }
+  return out;
+}
+
 template <int S>
 bool prepareInitialState(const traj_opt::Config &cfg,
                          const StatePVAJ &head,
@@ -536,6 +549,709 @@ private:
   cost_functional_manager::TrackingCostManager cost_manager_;
 };
 
+template <int SPos>
+class JointTrackingRunner
+{
+public:
+  using PosTraj = minco::MINCOTrajectory<3, SPos>;
+  using YawTraj = minco::MINCOTrajectory<1, 2>;
+  using PosBoundaryState = typename PosTraj::BoundaryState;
+  using YawBoundaryState = typename YawTraj::BoundaryState;
+  using PosInnerMat = typename PosTraj::InnerPointsMat;
+  using YawInnerMat = typename YawTraj::InnerPointsMat;
+  using PosCoeffMat = typename PosTraj::CoeffMat;
+  using YawCoeffMat = typename YawTraj::CoeffMat;
+
+  JointTrackingRunner(const traj_opt::Config &cfg,
+                      const std::shared_ptr<ros_interface::RosInterface> &ros_ptr)
+      : cfg_(cfg),
+        ros_ptr_(ros_ptr)
+  {
+    time_cost_.linear_weight = cfg_.penna_t;
+    time_cost_.smooth_eps = cfg_.smooth_eps;
+    samples_per_piece_ = std::max(1, cfg_.integral_reso);
+    pos_energy_weight_ = cfg_.block_energy_cost ? 0.0 : 1.0;
+    yaw_energy_weight_ = 0.05;
+  }
+
+  void setMapManager(const general_planner::MapManager::Ptr &map_manager)
+  {
+    map_manager_ = map_manager;
+  }
+
+  void setSafeDistance(double safe_distance)
+  {
+    safe_distance_ = safe_distance;
+  }
+
+  bool optimize(TrackingProblem problem,
+                Trajectory &out_traj,
+                Trajectory *out_yaw_traj)
+  {
+    problem_ = std::move(problem);
+    if (problem_.safe_distance <= 0.0)
+    {
+      problem_.safe_distance = safe_distance_;
+    }
+    if (problem_.tail_pvaj.col(0).squaredNorm() < 1.0e-12 && !problem_.guide_path.empty())
+    {
+      problem_.tail_pvaj.col(0) = problem_.guide_path.back();
+    }
+    if (problem_.viewpoints.empty() && !problem_.guide_path.empty())
+    {
+      problem_.viewpoints = problem_.guide_path;
+      problem_.target_sample_times = problem_.guide_t;
+    }
+
+    if (!prepareInitialState<SPos>(cfg_,
+                                   problem_.head_pvaj,
+                                   problem_.tail_pvaj,
+                                   problem_.guide_path,
+                                   problem_.piece_num,
+                                   problem_.min_piece_duration,
+                                   init_times_,
+                                   init_pos_waypoints_))
+    {
+      return false;
+    }
+
+    piece_num_ = static_cast<int>(init_times_.size());
+    init_yaw_inner_.resize(1, std::max(0, piece_num_ - 1));
+    setupBoundaryStatesAndYawGuess();
+
+    Eigen::VectorXd x = makeInitialGuess();
+    if (x.size() == 0 || !x.allFinite())
+    {
+      return false;
+    }
+
+    dynamics_ = cost_functional_manager::detail::makeDynamicsPenaltyConfig(cfg_,
+                                                                           map_manager_.get(),
+                                                                           problem_.safe_distance,
+                                                                           &cfg_.quadrotot_flatness);
+    time_cost_.min_piece_duration = problem_.min_piece_duration;
+    time_cost_.min_total_duration = problem_.min_total_duration;
+    time_cost_.lower_bound_weight =
+        problem_.time_lower_bound_weight > 0.0
+            ? problem_.time_lower_bound_weight
+            : std::max(100.0, std::abs(cfg_.penna_t) * 10.0);
+
+    double min_cost = 0.0;
+    math_utils::lbfgs::lbfgs_parameter_t params;
+    params.mem_size = 64;
+    params.past = 3;
+    params.min_step = 1.0e-32;
+    params.g_epsilon = 0.0;
+    params.delta = std::max(1.0e-8, cfg_.opt_accuracy);
+    params.max_iterations = 120;
+    params.max_linesearch = 32;
+    const int ret =
+        math_utils::lbfgs::lbfgs_optimize(x, min_cost, &JointTrackingRunner::costFunctional, nullptr, nullptr, this, params);
+    const bool recoverable =
+        ret == math_utils::lbfgs::LBFGSERR_MAXIMUMITERATION ||
+        ret == math_utils::lbfgs::LBFGSERR_MAXIMUMLINESEARCH ||
+        ret == math_utils::lbfgs::LBFGSERR_MINIMUMSTEP ||
+        ret == math_utils::lbfgs::LBFGSERR_WIDTHTOOSMALL;
+    if (ret < 0 && !recoverable)
+    {
+      std::cout << " -- [TrackingJointTrajOpt] optimization failed: "
+                << math_utils::lbfgs::lbfgs_strerror(ret) << std::endl;
+      return false;
+    }
+
+    Eigen::VectorXd grad = Eigen::VectorXd::Zero(x.size());
+    min_cost = evaluate(x, grad);
+    if (!std::isfinite(min_cost) || !grad.allFinite())
+    {
+      return false;
+    }
+
+    out_traj = toGeometryTrajectoryGeneric(pos_traj_);
+    out_traj.start_WT = ros_ptr_ ? ros_ptr_->getSimTime() : 0.0;
+    if (out_yaw_traj != nullptr)
+    {
+      *out_yaw_traj = toGeometryTrajectoryGeneric(yaw_traj_);
+      out_yaw_traj->start_WT = out_traj.start_WT;
+    }
+    warm_start_ = x;
+    return !out_traj.empty();
+  }
+
+private:
+  static double costFunctional(void *ptr, const Eigen::VectorXd &x, Eigen::VectorXd &g)
+  {
+    auto *runner = reinterpret_cast<JointTrackingRunner *>(ptr);
+    return runner->evaluate(x, g);
+  }
+
+  int decisionDim() const
+  {
+    return piece_num_ + 4 * std::max(0, piece_num_ - 1);
+  }
+
+  int posOffset() const
+  {
+    return piece_num_;
+  }
+
+  int yawOffset() const
+  {
+    return piece_num_ + 3 * std::max(0, piece_num_ - 1);
+  }
+
+  Eigen::VectorXd makeInitialGuess() const
+  {
+    const int dim = decisionDim();
+    if (warm_start_.size() == dim && warm_start_.allFinite())
+    {
+      return warm_start_;
+    }
+
+    Eigen::VectorXd x(dim);
+    for (int i = 0; i < piece_num_; ++i)
+    {
+      x(i) = time_map_.toTau(init_times_[static_cast<std::size_t>(i)]);
+    }
+
+    int offset = posOffset();
+    for (int i = 1; i < piece_num_; ++i)
+    {
+      x.segment(offset, 3) = init_pos_waypoints_.row(i).transpose();
+      offset += 3;
+    }
+    offset = yawOffset();
+    for (int i = 1; i < piece_num_; ++i)
+    {
+      x(offset++) = init_yaw_inner_(0, i - 1);
+    }
+    return x;
+  }
+
+  void decodeDecision(const Eigen::Ref<const Eigen::VectorXd> &x,
+                      Eigen::VectorXd &durations,
+                      PosInnerMat &pos_inner,
+                      YawInnerMat &yaw_inner) const
+  {
+    durations.resize(piece_num_);
+    for (int i = 0; i < piece_num_; ++i)
+    {
+      durations(i) = time_map_.toTime(x(i));
+    }
+
+    pos_inner.resize(3, std::max(0, piece_num_ - 1));
+    yaw_inner.resize(1, std::max(0, piece_num_ - 1));
+    int offset = posOffset();
+    for (int i = 1; i < piece_num_; ++i)
+    {
+      pos_inner.col(i - 1) = x.segment(offset, 3);
+      offset += 3;
+    }
+    offset = yawOffset();
+    for (int i = 1; i < piece_num_; ++i)
+    {
+      yaw_inner(0, i - 1) = x(offset++);
+    }
+  }
+
+  traj_opt::DynamicTargetState targetAt(double t) const
+  {
+    if (problem_.target_prediction.empty())
+    {
+      return {};
+    }
+    if (problem_.target_prediction.size() == 1 || t <= problem_.target_prediction.front().t)
+    {
+      return problem_.target_prediction.front();
+    }
+    if (t >= problem_.target_prediction.back().t)
+    {
+      return problem_.target_prediction.back();
+    }
+
+    const auto it = std::lower_bound(problem_.target_prediction.begin(),
+                                     problem_.target_prediction.end(),
+                                     t,
+                                     [](const traj_opt::DynamicTargetState &state, double query_t) {
+                                       return state.t < query_t;
+                                     });
+    const int idx = static_cast<int>(std::distance(problem_.target_prediction.begin(), it));
+    const auto &left = problem_.target_prediction[static_cast<std::size_t>(idx - 1)];
+    const auto &right = problem_.target_prediction[static_cast<std::size_t>(idx)];
+    const double alpha = (t - left.t) / std::max(kTiny, right.t - left.t);
+
+    traj_opt::DynamicTargetState out;
+    out.t = t;
+    out.position = left.position + alpha * (right.position - left.position);
+    out.velocity = left.velocity + alpha * (right.velocity - left.velocity);
+    out.acceleration = left.acceleration + alpha * (right.acceleration - left.acceleration);
+    out.yaw = left.yaw + alpha * (right.yaw - left.yaw);
+    out.yaw_rate = left.yaw_rate + alpha * (right.yaw_rate - left.yaw_rate);
+    return out;
+  }
+
+  bool interpolateViewpoint(double t, Vec3f &position, Vec3f &velocity) const
+  {
+    const auto &path = problem_.viewpoints;
+    const auto &times = problem_.target_sample_times;
+    if (path.size() < 2 || path.size() != times.size())
+    {
+      return false;
+    }
+    if (t <= times.front())
+    {
+      const double dt = std::max(kTiny, times[1] - times[0]);
+      position = path.front();
+      velocity = (path[1] - path[0]) / dt;
+      return true;
+    }
+    if (t >= times.back())
+    {
+      position = path.back();
+      velocity.setZero();
+      return true;
+    }
+    const auto it = std::lower_bound(times.begin(), times.end(), t);
+    const int idx = static_cast<int>(std::distance(times.begin(), it));
+    const double left_t = times[static_cast<std::size_t>(idx - 1)];
+    const double right_t = times[static_cast<std::size_t>(idx)];
+    const double dt = std::max(kTiny, right_t - left_t);
+    const double alpha = std::clamp((t - left_t) / dt, 0.0, 1.0);
+    const Vec3f &left_p = path[static_cast<std::size_t>(idx - 1)];
+    const Vec3f &right_p = path[static_cast<std::size_t>(idx)];
+    position = left_p + alpha * (right_p - left_p);
+    velocity = (right_p - left_p) / dt;
+    return true;
+  }
+
+  double faceYaw(const Vec3f &position, const Vec3f &target, double last_yaw) const
+  {
+    const Vec3f dir = target - position;
+    double yaw = last_yaw;
+    if (dir.head<2>().norm() > 1.0e-4)
+    {
+      yaw = std::atan2(dir.y(), dir.x());
+      geometry_utils::normalizeNextYaw(last_yaw, yaw);
+    }
+    return yaw;
+  }
+
+  void setupBoundaryStatesAndYawGuess()
+  {
+    pos_head_state_ = toBoundaryState<SPos>(problem_.head_pvaj);
+    pos_tail_state_ = toBoundaryState<SPos>(problem_.tail_pvaj);
+
+    yaw_head_state_.setZero();
+    yaw_tail_state_.setZero();
+    yaw_head_state_(0, 0) = std::isfinite(problem_.head_yaw(0, 0))
+                                ? problem_.head_yaw(0, 0)
+                                : 0.0;
+    yaw_head_state_(0, 1) = std::isfinite(problem_.head_yaw(0, 1))
+                                ? problem_.head_yaw(0, 1)
+                                : 0.0;
+
+    std::vector<double> cumulative(piece_num_ + 1, 0.0);
+    for (int i = 0; i < piece_num_; ++i)
+    {
+      cumulative[static_cast<std::size_t>(i + 1)] =
+          cumulative[static_cast<std::size_t>(i)] + init_times_[static_cast<std::size_t>(i)];
+    }
+
+    double last_yaw = yaw_head_state_(0, 0);
+    for (int i = 1; i < piece_num_; ++i)
+    {
+      const auto target = targetAt(cumulative[static_cast<std::size_t>(i)]);
+      last_yaw = faceYaw(init_pos_waypoints_.row(i).transpose(), target.position, last_yaw);
+      init_yaw_inner_(0, i - 1) = last_yaw;
+    }
+
+    const auto tail_target = targetAt(cumulative.back());
+    double tail_yaw = faceYaw(problem_.tail_pvaj.col(0), tail_target.position, last_yaw);
+    if (std::isfinite(problem_.tail_yaw(0, 0)) &&
+        (std::abs(problem_.tail_yaw(0, 0)) > 1.0e-6 || problem_.tail_yaw(0, 1) != 0.0))
+    {
+      tail_yaw = problem_.tail_yaw(0, 0);
+      geometry_utils::normalizeNextYaw(last_yaw, tail_yaw);
+    }
+    yaw_tail_state_(0, 0) = tail_yaw;
+    yaw_tail_state_(0, 1) = std::isfinite(problem_.tail_yaw(0, 1)) ? problem_.tail_yaw(0, 1) : 0.0;
+  }
+
+  double addObservationDistanceCost(const Vec3f &p,
+                                    const traj_opt::DynamicTargetState &target,
+                                    Vec3f &grad_p,
+                                    Vec3f &grad_target) const
+  {
+    double cost = 0.0;
+    const Vec3f rel = p - target.position;
+    const double h = rel.head<2>().norm();
+    double f = 0.0;
+    double df = 0.0;
+    if (cost_functional::smoothedL1(problem_.od_h_lower - h, cfg_.smooth_eps, f, df))
+    {
+      cost += problem_.weight_od_near * f;
+      if (h > 1.0e-6)
+      {
+        grad_p.head<2>() -= problem_.weight_od_near * df * rel.head<2>() / h;
+      }
+    }
+    if (cost_functional::smoothedL1(h - problem_.od_h_upper, cfg_.smooth_eps, f, df))
+    {
+      cost += problem_.weight_od_far * f;
+      if (h > 1.0e-6)
+      {
+        grad_p.head<2>() += problem_.weight_od_far * df * rel.head<2>() / h;
+      }
+    }
+
+    const double z = rel.z();
+    if (cost_functional::smoothedL1(problem_.od_v_lower - z, cfg_.smooth_eps, f, df))
+    {
+      cost += problem_.weight_od_vertical * f;
+      grad_p.z() -= problem_.weight_od_vertical * df;
+    }
+    if (cost_functional::smoothedL1(z - problem_.od_v_upper, cfg_.smooth_eps, f, df))
+    {
+      cost += problem_.weight_od_vertical * f;
+      grad_p.z() += problem_.weight_od_vertical * df;
+    }
+    grad_target -= grad_p;
+    return cost;
+  }
+
+  double addObservationAngleCost(const Vec3f &p,
+                                 double yaw,
+                                 const traj_opt::DynamicTargetState &target,
+                                 Vec3f &grad_p,
+                                 Vec3f &grad_target,
+                                 double &grad_yaw) const
+  {
+    if (problem_.weight_oa <= 0.0)
+    {
+      return 0.0;
+    }
+    const Vec3f dir = target.position - p;
+    const double r2 = dir.head<2>().squaredNorm();
+    if (r2 < 1.0e-8)
+    {
+      return 0.0;
+    }
+    const double desired = std::atan2(dir.y(), dir.x());
+    double err = yaw - desired;
+    err = std::atan2(std::sin(err), std::cos(err));
+    const double grad_err = 2.0 * problem_.weight_oa * err;
+    grad_yaw += grad_err;
+    Vec3f local_grad_p = Vec3f::Zero();
+    local_grad_p.x() += -grad_err * dir.y() / r2;
+    local_grad_p.y() += grad_err * dir.x() / r2;
+    grad_p += local_grad_p;
+    grad_target -= local_grad_p;
+    return problem_.weight_oa * err * err;
+  }
+
+  double addStabilityCost(const Vec3f &p,
+                          const Vec3f &v,
+                          const traj_opt::DynamicTargetState &target,
+                          Vec3f &grad_p,
+                          Vec3f &grad_v,
+                          Vec3f &grad_target,
+                          double &grad_t_global) const
+  {
+    (void)grad_p;
+    (void)grad_target;
+
+    double cost = 0.0;
+    const Vec3f rel_v = v - target.velocity;
+    if (problem_.weight_relative_velocity > 0.0)
+    {
+      cost += 0.5 * problem_.weight_relative_velocity * rel_v.squaredNorm();
+      grad_v += problem_.weight_relative_velocity * rel_v;
+      grad_t_global -= problem_.weight_relative_velocity * rel_v.dot(target.acceleration);
+    }
+
+    if (problem_.weight_tangent_velocity > 0.0)
+    {
+      const Vec3f rel = p - target.position;
+      const double h = rel.head<2>().norm();
+      if (h > 1.0e-6)
+      {
+        Vec3f tangent(-rel.y() / h, rel.x() / h, 0.0);
+        const double tv = rel_v.dot(tangent);
+        cost += 0.5 * problem_.weight_tangent_velocity * tv * tv;
+        grad_v += problem_.weight_tangent_velocity * tv * tangent;
+      }
+    }
+    return cost;
+  }
+
+  double addViewpointAttractorCost(const Vec3f &p,
+                                   double t,
+                                   Vec3f &grad_p,
+                                   double &grad_t_global) const
+  {
+    if (problem_.weight_viewpoint_attractor <= 0.0)
+    {
+      return 0.0;
+    }
+    Vec3f ref = Vec3f::Zero();
+    Vec3f ref_v = Vec3f::Zero();
+    if (!interpolateViewpoint(t, ref, ref_v))
+    {
+      return 0.0;
+    }
+    const Vec3f diff = p - ref;
+    grad_p += problem_.weight_viewpoint_attractor * diff;
+    grad_t_global -= problem_.weight_viewpoint_attractor * diff.dot(ref_v);
+    return 0.5 * problem_.weight_viewpoint_attractor * diff.squaredNorm();
+  }
+
+  double evaluate(const Eigen::Ref<const Eigen::VectorXd> &x, Eigen::VectorXd &g)
+  {
+    g.setZero();
+    if (x.size() != decisionDim())
+    {
+      return std::numeric_limits<double>::infinity();
+    }
+
+    Eigen::VectorXd durations;
+    PosInnerMat pos_inner;
+    YawInnerMat yaw_inner;
+    decodeDecision(x, durations, pos_inner, yaw_inner);
+    if ((durations.array() <= 0.0).any())
+    {
+      return std::numeric_limits<double>::infinity();
+    }
+    if (!pos_traj_.generate(pos_inner, pos_head_state_, pos_tail_state_, durations) ||
+        !yaw_traj_.generate(yaw_inner, yaw_head_state_, yaw_tail_state_, durations))
+    {
+      return std::numeric_limits<double>::infinity();
+    }
+
+    double total_cost = 0.0;
+    PosCoeffMat gdC_pos = PosCoeffMat::Zero(PosTraj::COEFF_NUM * piece_num_, 3);
+    YawCoeffMat gdC_yaw = YawCoeffMat::Zero(YawTraj::COEFF_NUM * piece_num_, 1);
+    Eigen::VectorXd gdT_pos = Eigen::VectorXd::Zero(piece_num_);
+    Eigen::VectorXd gdT_yaw = Eigen::VectorXd::Zero(piece_num_);
+
+    if (pos_energy_weight_ > 0.0)
+    {
+      double energy = 0.0;
+      PosCoeffMat energy_grad;
+      Eigen::VectorXd time_grad;
+      pos_traj_.getEnergyPartialGradByCoeffs(energy, energy_grad);
+      pos_traj_.getEnergyPartialGradByTimes(time_grad);
+      total_cost += pos_energy_weight_ * energy;
+      gdC_pos += pos_energy_weight_ * energy_grad;
+      gdT_pos += pos_energy_weight_ * time_grad;
+    }
+    if (yaw_energy_weight_ > 0.0)
+    {
+      double energy = 0.0;
+      YawCoeffMat energy_grad;
+      Eigen::VectorXd time_grad;
+      yaw_traj_.getEnergyPartialGradByCoeffs(energy, energy_grad);
+      yaw_traj_.getEnergyPartialGradByTimes(time_grad);
+      total_cost += yaw_energy_weight_ * energy;
+      gdC_yaw += yaw_energy_weight_ * energy_grad;
+      gdT_yaw += yaw_energy_weight_ * time_grad;
+    }
+
+    std::vector<double> T_vec(durations.data(), durations.data() + durations.size());
+    Eigen::VectorXd gdT_time = Eigen::VectorXd::Zero(piece_num_);
+    total_cost += time_cost_(T_vec, gdT_time);
+    gdT_pos += gdT_time;
+
+    const auto &pos_coeffs = pos_traj_.getCoefficients();
+    const auto &yaw_coeffs = yaw_traj_.getCoefficients();
+    Eigen::VectorXd global_time_grad = Eigen::VectorXd::Zero(piece_num_);
+
+    double seg_start_time = 0.0;
+    for (int i = 0; i < piece_num_; ++i)
+    {
+      const double T = durations(i);
+      const double inv_K = 1.0 / static_cast<double>(samples_per_piece_);
+      const double dt = T * inv_K;
+      const int pos_base = i * PosTraj::COEFF_NUM;
+      const int yaw_base = i * YawTraj::COEFF_NUM;
+      const auto pos_block = pos_coeffs.template block<PosTraj::COEFF_NUM, 3>(pos_base, 0);
+      const auto yaw_block = yaw_coeffs.template block<YawTraj::COEFF_NUM, 1>(yaw_base, 0);
+
+      for (int k = 0; k <= samples_per_piece_; ++k)
+      {
+        const double alpha = static_cast<double>(k) * inv_K;
+        const double t_local = alpha * T;
+        const double t_global = seg_start_time + t_local;
+        const double trap_weight = (k == 0 || k == samples_per_piece_) ? 0.5 : 1.0;
+        const double common_weight = trap_weight * dt;
+
+        typename PosTraj::BasisRow bp, bv, ba, bj, bs;
+        PosTraj::computeBasisFunctions(t_local, bp, bv, ba, bj, bs);
+        Vec3f p = Vec3f::Zero();
+        Vec3f v = Vec3f::Zero();
+        Vec3f a = Vec3f::Zero();
+        Vec3f j = Vec3f::Zero();
+        Vec3f s = Vec3f::Zero();
+        p.transpose().noalias() = bp * pos_block;
+        v.transpose().noalias() = bv * pos_block;
+        a.transpose().noalias() = ba * pos_block;
+        j.transpose().noalias() = bj * pos_block;
+        s.transpose().noalias() = bs * pos_block;
+
+        typename YawTraj::BasisRow ybp, ybv, yba, ybj, ybs;
+        YawTraj::computeBasisFunctions(t_local, ybp, ybv, yba, ybj, ybs);
+        const double yaw = (ybp * yaw_block)(0, 0);
+        const double yaw_dot = (ybv * yaw_block)(0, 0);
+        const double yaw_acc = (yba * yaw_block)(0, 0);
+
+        Vec3f gp_integral = Vec3f::Zero();
+        Vec3f gv_integral = Vec3f::Zero();
+        Vec3f ga_integral = Vec3f::Zero();
+        Vec3f gj_integral = Vec3f::Zero();
+        const double c_dyn = cost_functional_manager::detail::accumulateDynamicsPenalty(dynamics_,
+                                                                                        p,
+                                                                                        v,
+                                                                                        a,
+                                                                                        j,
+                                                                                        gp_integral,
+                                                                                        gv_integral,
+                                                                                        ga_integral,
+                                                                                        gj_integral);
+        total_cost += c_dyn * common_weight;
+        gdC_pos.template block<PosTraj::COEFF_NUM, 3>(pos_base, 0).noalias() +=
+            (bp.transpose() * gp_integral.transpose() +
+             bv.transpose() * gv_integral.transpose() +
+             ba.transpose() * ga_integral.transpose() +
+             bj.transpose() * gj_integral.transpose()) *
+            common_weight;
+        gdT_pos(i) += c_dyn * trap_weight * inv_K;
+        gdT_pos(i) += (gp_integral.dot(v) + gv_integral.dot(a) +
+                       ga_integral.dot(j) + gj_integral.dot(s)) *
+                      alpha * common_weight;
+
+        if (k > 0 || i == 0)
+        {
+          const auto target = targetAt(t_global);
+          Vec3f gp = Vec3f::Zero();
+          Vec3f gv = Vec3f::Zero();
+          Vec3f grad_target = Vec3f::Zero();
+          double gyaw = 0.0;
+          double gyaw_dot = 0.0;
+          double gt_global = 0.0;
+
+          total_cost += addObservationDistanceCost(p, target, gp, grad_target);
+          total_cost += addObservationAngleCost(p, yaw, target, gp, grad_target, gyaw);
+          total_cost += addStabilityCost(p, v, target, gp, gv, grad_target, gt_global);
+          total_cost += addViewpointAttractorCost(p, t_global, gp, gt_global);
+
+          if (problem_.use_esdf_visibility &&
+              problem_.weight_oe > 0.0 &&
+              problem_.visibility_samples > 0 &&
+              map_manager_ != nullptr &&
+              map_manager_->hasESDF())
+          {
+            Vec3f grad_visibility = Vec3f::Zero();
+            Vec3f grad_visibility_target = Vec3f::Zero();
+            total_cost += cost_functional::accumulateConicalLineOfSightESDFPenalty(map_manager_.get(),
+                                                                                   p,
+                                                                                   target.position,
+                                                                                   problem_.visibility_safe_distance,
+                                                                                   problem_.visibility_cone_ratio,
+                                                                                   cfg_.smooth_eps,
+                                                                                   problem_.weight_oe,
+                                                                                   problem_.visibility_samples,
+                                                                                   grad_visibility,
+                                                                                   &grad_visibility_target);
+            gp += grad_visibility;
+            grad_target += grad_visibility_target;
+          }
+
+          gt_global += grad_target.dot(target.velocity);
+          gdC_pos.template block<PosTraj::COEFF_NUM, 3>(pos_base, 0).noalias() +=
+              bp.transpose() * gp.transpose() +
+              bv.transpose() * gv.transpose();
+          gdC_yaw.template block<YawTraj::COEFF_NUM, 1>(yaw_base, 0).noalias() +=
+              ybp.transpose() * Eigen::Matrix<double, 1, 1>::Constant(gyaw) +
+              ybv.transpose() * Eigen::Matrix<double, 1, 1>::Constant(gyaw_dot);
+          gdT_pos(i) += (gp.dot(v) + gv.dot(a)) * alpha;
+          gdT_yaw(i) += (gyaw * yaw_dot + gyaw_dot * yaw_acc) * alpha;
+          global_time_grad(i) += gt_global;
+        }
+      }
+      seg_start_time += T;
+    }
+
+    double accumulator = 0.0;
+    for (int i = piece_num_ - 1; i > 0; --i)
+    {
+      accumulator += global_time_grad(i);
+      gdT_pos(i - 1) += accumulator;
+    }
+
+    PosInnerMat grad_pos_points;
+    YawInnerMat grad_yaw_points;
+    Eigen::VectorXd grad_T_pos;
+    Eigen::VectorXd grad_T_yaw;
+    PosBoundaryState grad_pos_head, grad_pos_tail;
+    YawBoundaryState grad_yaw_head, grad_yaw_tail;
+    pos_traj_.propagateGradFull(gdC_pos,
+                                gdT_pos,
+                                grad_pos_points,
+                                grad_T_pos,
+                                grad_pos_head,
+                                grad_pos_tail);
+    yaw_traj_.propagateGradFull(gdC_yaw,
+                                gdT_yaw,
+                                grad_yaw_points,
+                                grad_T_yaw,
+                                grad_yaw_head,
+                                grad_yaw_tail);
+
+    const Eigen::VectorXd grad_T = grad_T_pos + grad_T_yaw;
+    for (int i = 0; i < piece_num_; ++i)
+    {
+      g(i) += time_map_.backward(x(i), durations(i), grad_T(i));
+    }
+    int offset = posOffset();
+    for (int i = 1; i < piece_num_; ++i)
+    {
+      g.segment(offset, 3) += grad_pos_points.col(i - 1);
+      offset += 3;
+    }
+    offset = yawOffset();
+    for (int i = 1; i < piece_num_; ++i)
+    {
+      g(offset++) += grad_yaw_points(0, i - 1);
+    }
+
+    return total_cost;
+  }
+
+private:
+  traj_opt::Config cfg_;
+  std::shared_ptr<ros_interface::RosInterface> ros_ptr_;
+  general_planner::MapManager::Ptr map_manager_;
+  double safe_distance_{0.45};
+  double pos_energy_weight_{1.0};
+  double yaw_energy_weight_{0.05};
+  int piece_num_{0};
+  int samples_per_piece_{5};
+
+  TrackingProblem problem_;
+  std::vector<double> init_times_;
+  typename TaskOptimizer<SPos>::WaypointsType init_pos_waypoints_;
+  YawInnerMat init_yaw_inner_;
+  Eigen::VectorXd warm_start_;
+
+  temporal_map::QuadInvTimeMap time_map_;
+  TaskTimeCost time_cost_;
+  cost_functional_manager::detail::DynamicsPenaltyConfig dynamics_;
+  PosBoundaryState pos_head_state_;
+  PosBoundaryState pos_tail_state_;
+  YawBoundaryState yaw_head_state_;
+  YawBoundaryState yaw_tail_state_;
+  PosTraj pos_traj_;
+  YawTraj yaw_traj_;
+};
+
 minco::PerchingSemanticConfig deriveTerminalConfig(const PerchingProblem &problem,
                                                    const traj_opt::Config &cfg)
 {
@@ -632,11 +1348,11 @@ private:
 
 } // namespace
 
-struct TrackingJerkTrajOpt::Impl final : public TrackingRunner<3>
+struct TrackingJerkTrajOpt::Impl final : public JointTrackingRunner<3>
 {
   Impl(const traj_opt::Config &cfg,
        const std::shared_ptr<ros_interface::RosInterface> &ros_ptr)
-      : TrackingRunner<3>(cfg, ros_ptr)
+      : JointTrackingRunner<3>(cfg, ros_ptr)
   {
   }
 };
@@ -657,16 +1373,18 @@ void TrackingJerkTrajOpt::setSafeDistance(double safe_distance)
   impl_->setSafeDistance(safe_distance);
 }
 
-bool TrackingJerkTrajOpt::optimize(const TrackingProblem &problem, Trajectory &out_traj)
+bool TrackingJerkTrajOpt::optimize(const TrackingProblem &problem,
+                                   Trajectory &out_traj,
+                                   Trajectory *out_yaw_traj)
 {
-  return impl_->optimize(problem, out_traj);
+  return impl_->optimize(problem, out_traj, out_yaw_traj);
 }
 
-struct TrackingSnapTrajOpt::Impl final : public TrackingRunner<4>
+struct TrackingSnapTrajOpt::Impl final : public JointTrackingRunner<4>
 {
   Impl(const traj_opt::Config &cfg,
        const std::shared_ptr<ros_interface::RosInterface> &ros_ptr)
-      : TrackingRunner<4>(cfg, ros_ptr)
+      : JointTrackingRunner<4>(cfg, ros_ptr)
   {
   }
 };
@@ -687,9 +1405,11 @@ void TrackingSnapTrajOpt::setSafeDistance(double safe_distance)
   impl_->setSafeDistance(safe_distance);
 }
 
-bool TrackingSnapTrajOpt::optimize(const TrackingProblem &problem, Trajectory &out_traj)
+bool TrackingSnapTrajOpt::optimize(const TrackingProblem &problem,
+                                   Trajectory &out_traj,
+                                   Trajectory *out_yaw_traj)
 {
-  return impl_->optimize(problem, out_traj);
+  return impl_->optimize(problem, out_traj, out_yaw_traj);
 }
 
 struct PerchingSnapTrajOpt::Impl final : public PerchingRunner

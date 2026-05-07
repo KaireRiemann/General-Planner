@@ -45,6 +45,16 @@ private:
     bool isViewpointSafe(const super_utils::Vec3f &viewpoint) const;
     super_utils::Vec3f chooseVisibleViewpoint(const super_utils::Vec3f &seed,
                                               const traj_opt::DynamicTargetState &target) const;
+    bool findOcclusionAwareSeed(const super_utils::Vec3f &last_viewpoint,
+                                const super_utils::Vec3f &last_target,
+                                const super_utils::Vec3f &target,
+                                super_utils::Vec3f &seed) const;
+    super_utils::Vec3f extendToTrackingDistance(const super_utils::Vec3f &seed,
+                                                const super_utils::Vec3f &target,
+                                                const super_utils::Vec3f &fallback) const;
+    super_utils::Vec3f choosePropagatedViewpoint(const super_utils::Vec3f &last_viewpoint,
+                                                 const traj_opt::DynamicTargetState &last_target,
+                                                 const traj_opt::DynamicTargetState &target) const;
     bool appendPathSegment(const super_utils::Vec3f &start,
                            const super_utils::Vec3f &goal,
                            super_utils::vec_E<super_utils::Vec3f> &path) const;

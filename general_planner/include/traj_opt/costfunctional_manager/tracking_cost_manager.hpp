@@ -104,11 +104,65 @@ public:
                 grad_target += grad_visibility_target;
             }
             grad_t_global(i) += grad_target.dot(target.velocity);
+
+            Eigen::Vector3d guide_position = Eigen::Vector3d::Zero();
+            Eigen::Vector3d guide_velocity = Eigen::Vector3d::Zero();
+            if (cfg_->penna_attract > 0.0 &&
+                interpolateGuide(sample.t_global, guide_position, guide_velocity))
+            {
+                const Eigen::Vector3d diff = sample.p - guide_position;
+                cost += 0.5 * cfg_->penna_attract * diff.squaredNorm();
+                grad_p.col(i) += cfg_->penna_attract * diff;
+                grad_t_global(i) -= cfg_->penna_attract * diff.dot(guide_velocity);
+            }
         }
         return cost;
     }
 
 private:
+    bool interpolateGuide(double t,
+                          Eigen::Vector3d &position,
+                          Eigen::Vector3d &velocity) const
+    {
+        const auto &path = problem_.guide_path;
+        const auto &times = problem_.guide_t;
+        if (path.size() < 2 || path.size() != times.size())
+        {
+            return false;
+        }
+
+        if (t <= times.front())
+        {
+            const double dt = std::max(1.0e-9, times[1] - times[0]);
+            position = path.front();
+            velocity = (path[1] - path[0]) / dt;
+            return position.allFinite() && velocity.allFinite();
+        }
+        if (t >= times.back())
+        {
+            position = path.back();
+            velocity.setZero();
+            return position.allFinite();
+        }
+
+        const auto it = std::lower_bound(times.begin(), times.end(), t);
+        const int idx = static_cast<int>(std::distance(times.begin(), it));
+        if (idx <= 0 || idx >= static_cast<int>(path.size()))
+        {
+            return false;
+        }
+
+        const double left_t = times[static_cast<std::size_t>(idx - 1)];
+        const double right_t = times[static_cast<std::size_t>(idx)];
+        const double dt = std::max(1.0e-9, right_t - left_t);
+        const double alpha = std::clamp((t - left_t) / dt, 0.0, 1.0);
+        const Eigen::Vector3d &left_p = path[static_cast<std::size_t>(idx - 1)];
+        const Eigen::Vector3d &right_p = path[static_cast<std::size_t>(idx)];
+        position = left_p + alpha * (right_p - left_p);
+        velocity = (right_p - left_p) / dt;
+        return position.allFinite() && velocity.allFinite();
+    }
+
     traj_opt::DynamicTargetState interpolateTarget(double t) const
     {
         if (problem_.target_prediction.empty())

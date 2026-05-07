@@ -40,8 +40,13 @@ struct TrackingProblem
 
   super_utils::StatePVAJ head_pvaj{super_utils::StatePVAJ::Zero()};
   super_utils::StatePVAJ tail_pvaj{super_utils::StatePVAJ::Zero()};
+  Eigen::Matrix<double, 1, 2> head_yaw{Eigen::Matrix<double, 1, 2>::Zero()};
+  Eigen::Matrix<double, 1, 2> tail_yaw{Eigen::Matrix<double, 1, 2>::Zero()};
+
   super_utils::vec_E<super_utils::Vec3f> guide_path;
   std::vector<double> guide_t;
+  super_utils::vec_E<super_utils::Vec3f> viewpoints;
+  std::vector<double> target_sample_times;
   DynamicTargetStates target_prediction;
 
   double safe_distance{0.45};
@@ -49,6 +54,19 @@ struct TrackingProblem
   double distance_tolerance{0.8};
   double height_offset{0.8};
   double height_tolerance{0.6};
+
+  double od_h_lower{2.2};
+  double od_h_upper{3.8};
+  double od_v_lower{0.2};
+  double od_v_upper{1.4};
+  double weight_od_near{20.0};
+  double weight_od_far{5.0};
+  double weight_od_vertical{8.0};
+  double weight_oa{5.0};
+  double weight_oe{1.0};
+  double weight_relative_velocity{1.0};
+  double weight_tangent_velocity{5.0};
+  double weight_viewpoint_attractor{50.0};
 
   double weight_tracking{5.0};
   double weight_visibility{1.0};
@@ -122,7 +140,8 @@ public:
   void setSafeDistance(double safe_distance);
 
   bool optimize(const TrackingProblem &problem,
-                geometry_utils::Trajectory &out_traj);
+                geometry_utils::Trajectory &out_traj,
+                geometry_utils::Trajectory *out_yaw_traj = nullptr);
 
 private:
   struct Impl;
@@ -141,7 +160,8 @@ public:
   void setSafeDistance(double safe_distance);
 
   bool optimize(const TrackingProblem &problem,
-                geometry_utils::Trajectory &out_traj);
+                geometry_utils::Trajectory &out_traj,
+                geometry_utils::Trajectory *out_yaw_traj = nullptr);
 
 private:
   struct Impl;
