@@ -1065,6 +1065,103 @@ private:
     return true;
   }
 
+  bool interpolateVisibleRegion(double t,
+                                Vec3f &visible_point,
+                                Vec3f &visible_velocity,
+                                double &theta,
+                                double &confidence) const
+  {
+    const auto &regions = problem_.visible_regions;
+    if (regions.empty())
+    {
+      return false;
+    }
+
+    auto applyRegion = [&](const traj_opt::TrackingVisibleRegion &region) {
+      if (!region.valid)
+      {
+        return false;
+      }
+      visible_point = region.visible_point;
+      visible_velocity.setZero();
+      theta = region.theta;
+      confidence = std::clamp(region.confidence, 0.0, 1.0);
+      return true;
+    };
+
+    if (t <= regions.front().t)
+    {
+      return applyRegion(regions.front());
+    }
+    if (t >= regions.back().t)
+    {
+      return applyRegion(regions.back());
+    }
+
+    int left_idx = -1;
+    int right_idx = -1;
+    for (int i = 0; i < static_cast<int>(regions.size()); ++i)
+    {
+      if (!regions[static_cast<std::size_t>(i)].valid)
+      {
+        continue;
+      }
+      if (regions[static_cast<std::size_t>(i)].t <= t)
+      {
+        left_idx = i;
+      }
+      if (regions[static_cast<std::size_t>(i)].t >= t)
+      {
+        right_idx = i;
+        break;
+      }
+    }
+
+    if (left_idx < 0 && right_idx < 0)
+    {
+      return false;
+    }
+    if (left_idx < 0)
+    {
+      return applyRegion(regions[static_cast<std::size_t>(right_idx)]);
+    }
+    if (right_idx < 0)
+    {
+      return applyRegion(regions[static_cast<std::size_t>(left_idx)]);
+    }
+    if (left_idx == right_idx)
+    {
+      return applyRegion(regions[static_cast<std::size_t>(left_idx)]);
+    }
+
+    for (int i = left_idx + 1; i < right_idx; ++i)
+    {
+      if (!regions[static_cast<std::size_t>(i)].valid)
+      {
+        return false;
+      }
+    }
+    if (right_idx - left_idx > 1)
+    {
+      return false;
+    }
+
+    const auto &left = regions[static_cast<std::size_t>(left_idx)];
+    const auto &right = regions[static_cast<std::size_t>(right_idx)];
+    if (!left.valid || !right.valid)
+    {
+      return false;
+    }
+
+    const double dt = std::max(kTiny, right.t - left.t);
+    const double alpha = std::clamp((t - left.t) / dt, 0.0, 1.0);
+    visible_point = left.visible_point + alpha * (right.visible_point - left.visible_point);
+    visible_velocity = (right.visible_point - left.visible_point) / dt;
+    theta = left.theta + alpha * (right.theta - left.theta);
+    confidence = std::clamp(left.confidence + alpha * (right.confidence - left.confidence), 0.0, 1.0);
+    return true;
+  }
+
   double faceYaw(const Vec3f &position, const Vec3f &target, double last_yaw) const
   {
     const Vec3f dir = target - position;
@@ -1246,6 +1343,66 @@ private:
     return 0.5 * problem_.weight_viewpoint_attractor * diff.squaredNorm();
   }
 
+  double addVisibleRegionCost(const Vec3f &p,
+                              double t,
+                              const traj_opt::DynamicTargetState &target,
+                              Vec3f &grad_p,
+                              double &grad_t_global) const
+  {
+    if (!problem_.use_visible_region ||
+        problem_.weight_visible_region <= 0.0 ||
+        problem_.visible_regions.empty())
+    {
+      return 0.0;
+    }
+
+    Vec3f visible_ref = Vec3f::Zero();
+    Vec3f visible_ref_v = Vec3f::Zero();
+    double theta = 0.0;
+    double confidence = 0.0;
+    if (!interpolateVisibleRegion(t, visible_ref, visible_ref_v, theta, confidence) ||
+        confidence <= 0.0)
+    {
+      return 0.0;
+    }
+
+    const Vec3f a = p - target.position;
+    const Vec3f b = visible_ref - target.position;
+    const double norm_a = a.norm();
+    const double norm_b = b.norm();
+    if (norm_a < 1.0e-6 || norm_b < 1.0e-6)
+    {
+      return 0.0;
+    }
+
+    const double theta_limit = std::max(0.0, theta - std::max(0.0, problem_.visibility_angle_clearance));
+    const double cos_limit = std::cos(theta_limit);
+    const double inner = a.dot(b);
+    const double cos_ab = std::clamp(inner / (norm_a * norm_b), -1.0, 1.0);
+    const double violation = cos_limit - cos_ab;
+
+    double f = 0.0;
+    double df = 0.0;
+    if (!cost_functional::smoothedL1(violation, cfg_.smooth_eps, f, df))
+    {
+      return 0.0;
+    }
+
+    const Vec3f dcos_da = b / (norm_a * norm_b) -
+                          inner * a / (norm_a * norm_a * norm_a * norm_b);
+    const Vec3f dcos_db = a / (norm_a * norm_b) -
+                          inner * b / (norm_a * norm_b * norm_b * norm_b);
+    const double soft_weight = problem_.weight_visible_region * confidence;
+    const Vec3f local_grad_p = -soft_weight * df * dcos_da;
+    const Vec3f local_grad_center = soft_weight * df * (dcos_da + dcos_db);
+    const Vec3f local_grad_visible = -soft_weight * df * dcos_db;
+
+    grad_p += local_grad_p;
+    grad_t_global += local_grad_center.dot(target.velocity) +
+                     local_grad_visible.dot(visible_ref_v);
+    return soft_weight * f;
+  }
+
   double evaluate(const Eigen::Ref<const Eigen::VectorXd> &x, Eigen::VectorXd &g)
   {
     g.setZero();
@@ -1394,6 +1551,7 @@ private:
           total_cost += addObservationAngleCost(p, yaw, target, gp, grad_target, gyaw);
           total_cost += addStabilityCost(p, v, target, gp, gv, grad_target, gt_global);
           total_cost += addViewpointAttractorCost(p, t_global, gp, gt_global);
+          total_cost += addVisibleRegionCost(p, t_global, target, gp, gt_global);
 
           if (problem_.use_esdf_visibility &&
               problem_.weight_oe > 0.0 &&
@@ -1403,16 +1561,16 @@ private:
           {
             Vec3f grad_visibility = Vec3f::Zero();
             Vec3f grad_visibility_target = Vec3f::Zero();
-            total_cost += cost_functional::accumulateConicalLineOfSightESDFPenalty(map_manager_.get(),
-                                                                                   p,
-                                                                                   target.position,
-                                                                                   problem_.visibility_safe_distance,
-                                                                                   problem_.visibility_cone_ratio,
-                                                                                   cfg_.smooth_eps,
-                                                                                   problem_.weight_oe,
-                                                                                   problem_.visibility_samples,
-                                                                                   grad_visibility,
-                                                                                   &grad_visibility_target);
+            total_cost += cost_functional::accumulateBallLineOfSightESDFPenalty(map_manager_.get(),
+                                                                                p,
+                                                                                target.position,
+                                                                                problem_.visibility_safe_distance,
+                                                                                problem_.visibility_cone_ratio,
+                                                                                cfg_.smooth_eps,
+                                                                                problem_.weight_oe,
+                                                                                problem_.visibility_samples,
+                                                                                grad_visibility,
+                                                                                &grad_visibility_target);
             gp += grad_visibility;
             grad_target += grad_visibility_target;
           }

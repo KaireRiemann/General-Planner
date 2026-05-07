@@ -37,10 +37,16 @@
 #include "quadrotor_msgs/PolynomialTrajectory.h"
 #include "std_msgs/String.h"
 
+#include <algorithm>
+#include <array>
 #include <cmath>
 #include <exception>
+#include <functional>
+#include <limits>
 #include <map>
+#include <queue>
 #include <sstream>
+#include <utility>
 
 
 namespace fsm {
@@ -463,6 +469,160 @@ namespace fsm {
                               1.0 - 2.0 * (y * y + z * z));
         }
 
+        bool trackingPredictionStateValid(const Vec3f &p, const Vec3f &v) const {
+            if (cfg_.tracking_prediction_vmax > 0.0 &&
+                v.norm() > cfg_.tracking_prediction_vmax) {
+                return false;
+            }
+            if (map_ptr_ == nullptr) {
+                return true;
+            }
+            if (!map_ptr_->insideLocalMap(p)) {
+                return true;
+            }
+            const auto inf_grid_type = map_ptr_->getInfGridType(p);
+            return inf_grid_type != super_utils::GridType::OCCUPIED &&
+                   inf_grid_type != super_utils::GridType::OUT_OF_MAP;
+        }
+
+        void buildConstantVelocityTrackingPrediction(const Vec3f &p,
+                                                     const Vec3f &v,
+                                                     const double pose_yaw,
+                                                     traj_opt::DynamicTargetStates &prediction) const {
+            const Vec3f a = Vec3f::Zero();
+            const double base_yaw = v.head<2>().norm() > 1.0e-3 ? std::atan2(v.y(), v.x()) : pose_yaw;
+            const double dt = std::max(0.05, cfg_.tracking_prediction_dt);
+            const double horizon = std::max(dt, cfg_.tracking_prediction_horizon);
+            const int sample_num = std::max(2, static_cast<int>(std::ceil(horizon / dt)) + 1);
+
+            prediction.clear();
+            prediction.reserve(sample_num);
+            for (int i = 0; i < sample_num; ++i) {
+                const double t = static_cast<double>(i) * dt;
+                traj_opt::DynamicTargetState target;
+                target.t = t;
+                target.position = p + v * t + 0.5 * a * t * t;
+                target.velocity = v + a * t;
+                target.acceleration = a;
+                target.yaw = base_yaw;
+                target.yaw_rate = 0.0;
+                prediction.emplace_back(target);
+            }
+        }
+
+        bool buildKinodynamicTrackingPrediction(const Vec3f &p,
+                                                const Vec3f &v,
+                                                const double pose_yaw,
+                                                traj_opt::DynamicTargetStates &prediction) const {
+            const double dt = std::max(0.05, cfg_.tracking_prediction_dt);
+            const double horizon = std::max(dt, cfg_.tracking_prediction_horizon);
+            const double acc = std::max(0.0, cfg_.tracking_prediction_accel);
+            if (acc <= 1.0e-6) {
+                return false;
+            }
+
+            struct PredictNode {
+                Vec3f p{Vec3f::Zero()};
+                Vec3f v{Vec3f::Zero()};
+                Vec3f a{Vec3f::Zero()};
+                double t{0.0};
+                double score{0.0};
+                int parent{-1};
+            };
+
+            std::vector<PredictNode> nodes;
+            nodes.reserve(512);
+            nodes.push_back(PredictNode{p, v, Vec3f::Zero(), 0.0, 0.0, -1});
+
+            const Vec3f nominal_end = p + v * horizon;
+            auto heuristic = [&](const PredictNode &node) {
+                return 0.001 * (node.p - nominal_end).norm();
+            };
+            using QueueEntry = std::pair<double, int>;
+            std::priority_queue<QueueEntry, std::vector<QueueEntry>, std::greater<QueueEntry>> open_set;
+
+            int cur = 0;
+            const double dt2_2 = 0.5 * dt * dt;
+            const double max_wall_time = std::max(0.001, cfg_.tracking_prediction_max_time);
+            const ros::WallTime start_wall = ros::WallTime::now();
+            const int max_nodes = 1 << 16;
+            const std::array<double, 3> acc_samples{-acc, 0.0, acc};
+
+            while (nodes[static_cast<std::size_t>(cur)].t + 0.5 * dt < horizon) {
+                const PredictNode &cur_node = nodes[static_cast<std::size_t>(cur)];
+                for (const double ax : acc_samples) {
+                    for (const double ay : acc_samples) {
+                        Vec3f input(ax, ay, 0.0);
+                        const Vec3f next_p = cur_node.p + cur_node.v * dt + input * dt2_2;
+                        const Vec3f next_v = cur_node.v + input * dt;
+                        if (!trackingPredictionStateValid(next_p, next_v)) {
+                            continue;
+                        }
+                        if (static_cast<int>(nodes.size()) >= max_nodes) {
+                            return false;
+                        }
+                        if ((ros::WallTime::now() - start_wall).toSec() > max_wall_time) {
+                            return false;
+                        }
+                        PredictNode next;
+                        next.p = next_p;
+                        next.v = next_v;
+                        next.a = input;
+                        next.t = cur_node.t + dt;
+                        next.score = cur_node.score + cfg_.tracking_prediction_rho_accel * input.norm();
+                        next.parent = cur;
+                        nodes.emplace_back(next);
+                        const int next_id = static_cast<int>(nodes.size()) - 1;
+                        open_set.emplace(next.score + heuristic(next), next_id);
+                    }
+                }
+                if (open_set.empty()) {
+                    return false;
+                }
+                cur = open_set.top().second;
+                open_set.pop();
+            }
+
+            std::vector<int> ids;
+            for (int id = cur; id >= 0; id = nodes[static_cast<std::size_t>(id)].parent) {
+                ids.emplace_back(id);
+            }
+            std::reverse(ids.begin(), ids.end());
+            if (ids.size() < 2) {
+                return false;
+            }
+
+            prediction.clear();
+            prediction.reserve(ids.size());
+            double last_yaw = pose_yaw;
+            for (const int id : ids) {
+                const PredictNode &node = nodes[static_cast<std::size_t>(id)];
+                traj_opt::DynamicTargetState target;
+                target.t = node.t;
+                target.position = node.p;
+                target.velocity = node.v;
+                target.acceleration = node.a;
+                if (node.v.head<2>().norm() > 1.0e-3) {
+                    target.yaw = std::atan2(node.v.y(), node.v.x());
+                    target.yaw = last_yaw + std::atan2(std::sin(target.yaw - last_yaw),
+                                                       std::cos(target.yaw - last_yaw));
+                } else {
+                    target.yaw = last_yaw;
+                }
+                target.yaw_rate = 0.0;
+                last_yaw = target.yaw;
+                prediction.emplace_back(target);
+            }
+            for (std::size_t i = 1; i < prediction.size(); ++i) {
+                const double local_dt = std::max(0.05, prediction[i].t - prediction[i - 1].t);
+                prediction[i - 1].yaw_rate = (prediction[i].yaw - prediction[i - 1].yaw) / local_dt;
+            }
+            prediction.back().yaw_rate = prediction.size() > 1
+                                             ? prediction[prediction.size() - 2].yaw_rate
+                                             : 0.0;
+            return true;
+        }
+
         void trackingTargetCallback(const nav_msgs::OdometryConstPtr &msg) {
             if (cfg_.tracking_use_target_prediction_path &&
                 !cfg_.tracking_target_prediction_topic.empty() &&
@@ -476,25 +636,12 @@ namespace fsm {
             const Vec3f v(msg->twist.twist.linear.x,
                           msg->twist.twist.linear.y,
                           msg->twist.twist.linear.z);
-            const Vec3f a = Vec3f::Zero();
             const double pose_yaw = yawFromMsgQuat(msg->pose.pose.orientation);
-            const double base_yaw = v.head<2>().norm() > 1.0e-3 ? std::atan2(v.y(), v.x()) : pose_yaw;
-            const double dt = std::max(0.05, cfg_.tracking_prediction_dt);
-            const double horizon = std::max(dt, cfg_.tracking_prediction_horizon);
-            const int sample_num = std::max(2, static_cast<int>(std::ceil(horizon / dt)) + 1);
 
             traj_opt::DynamicTargetStates prediction;
-            prediction.reserve(sample_num);
-            for (int i = 0; i < sample_num; ++i) {
-                const double t = static_cast<double>(i) * dt;
-                traj_opt::DynamicTargetState target;
-                target.t = t;
-                target.position = p + v * t + 0.5 * a * t * t;
-                target.velocity = v + a * t;
-                target.acceleration = a;
-                target.yaw = base_yaw;
-                target.yaw_rate = 0.0;
-                prediction.emplace_back(target);
+            if (!cfg_.tracking_prediction_use_kinodynamic ||
+                !buildKinodynamicTrackingPrediction(p, v, pose_yaw, prediction)) {
+                buildConstantVelocityTrackingPrediction(p, v, pose_yaw, prediction);
             }
             setTrackingTargetPrediction(prediction);
         }

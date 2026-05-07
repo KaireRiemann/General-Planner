@@ -93,6 +93,11 @@ namespace fsm {
         string perching_surface_odom_topic{"/perching/surface_odom"};
         double tracking_prediction_horizon{4.0};
         double tracking_prediction_dt{0.25};
+        bool tracking_prediction_use_kinodynamic{true};
+        double tracking_prediction_accel{3.0};
+        double tracking_prediction_vmax{4.0};
+        double tracking_prediction_rho_accel{1.0};
+        double tracking_prediction_max_time{0.03};
         double task_timeout{0.6};
         double yaw_dot_max{};
         bool swarm_enable{false};
@@ -131,6 +136,11 @@ namespace fsm {
                              string("/perching/surface_odom"));
             loader.LoadParam("fsm/tracking_prediction_horizon", tracking_prediction_horizon, 4.0);
             loader.LoadParam("fsm/tracking_prediction_dt", tracking_prediction_dt, 0.25);
+            loader.LoadParam("fsm/tracking_prediction_use_kinodynamic", tracking_prediction_use_kinodynamic, true);
+            loader.LoadParam("fsm/tracking_prediction_accel", tracking_prediction_accel, 3.0);
+            loader.LoadParam("fsm/tracking_prediction_vmax", tracking_prediction_vmax, 4.0);
+            loader.LoadParam("fsm/tracking_prediction_rho_accel", tracking_prediction_rho_accel, 1.0);
+            loader.LoadParam("fsm/tracking_prediction_max_time", tracking_prediction_max_time, 0.03);
             loader.LoadParam("fsm/task_timeout", task_timeout, 0.6);
             loader.LoadParam("general_planner/swarm/enable", swarm_enable, false);
             loader.LoadParam("general_planner/swarm/drone_id", swarm_drone_id, -1);

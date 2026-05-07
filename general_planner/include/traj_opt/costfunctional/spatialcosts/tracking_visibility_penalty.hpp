@@ -187,6 +187,71 @@ inline double accumulateConicalLineOfSightESDFPenalty(const MapT *map,
     return cost;
 }
 
+template <typename MapT>
+inline double accumulateBallLineOfSightESDFPenalty(const MapT *map,
+                                                   const Eigen::Vector3d &position,
+                                                   const Eigen::Vector3d &target_position,
+                                                   const double base_clearance,
+                                                   const double fov_radius_ratio,
+                                                   const double smooth_eps,
+                                                   const double weight,
+                                                   const int sample_num,
+                                                   Eigen::Vector3d &grad_position,
+                                                   Eigen::Vector3d *grad_target_position = nullptr)
+{
+    if (map == nullptr || weight <= 0.0 || sample_num <= 0)
+    {
+        return 0.0;
+    }
+
+    const Eigen::Vector3d rel_pt = position - target_position;
+    const double view_dist = rel_pt.norm();
+    if (view_dist < 1.0e-6)
+    {
+        return 0.0;
+    }
+
+    double cost = 0.0;
+    const int los_samples = std::max(1, sample_num);
+    const double ratio = std::max(0.0, fov_radius_ratio);
+    for (int k = 1; k <= los_samples; ++k)
+    {
+        const double lambda = static_cast<double>(k) / static_cast<double>(los_samples + 1);
+        const Eigen::Vector3d center = position + lambda * (target_position - position);
+        double dist = 0.0;
+        Eigen::Vector3d grad_dist = Eigen::Vector3d::Zero();
+        if (!map->evaluateESDF(center, dist, grad_dist))
+        {
+            continue;
+        }
+
+        const double radius = std::max(0.0, base_clearance) + ratio * lambda * view_dist;
+        const double violation = radius - dist;
+
+        double penalty = 0.0;
+        double penalty_grad = 0.0;
+        if (!smoothedL1(violation, smooth_eps, penalty, penalty_grad))
+        {
+            continue;
+        }
+
+        const Eigen::Vector3d grad_radius_pos = ratio * lambda * rel_pt / view_dist;
+        const Eigen::Vector3d grad_radius_target = -grad_radius_pos;
+        const Eigen::Vector3d grad_center_pos = (1.0 - lambda) * grad_dist;
+        const Eigen::Vector3d grad_center_target = lambda * grad_dist;
+
+        grad_position += weight * penalty_grad *
+                         (grad_radius_pos - grad_center_pos);
+        if (grad_target_position != nullptr)
+        {
+            *grad_target_position += weight * penalty_grad *
+                                     (grad_radius_target - grad_center_target);
+        }
+        cost += weight * penalty;
+    }
+    return cost;
+}
+
 inline double yawReferenceToTarget(const Eigen::Vector3d &position,
                                    const Eigen::Vector3d &target_position)
 {

@@ -563,7 +563,7 @@ Visualization Manager:
             {}
           Queue Size: 100
           Value: false
-      Enabled: false
+      Enabled: true
       Name: TargetPlanner
     - Class: rviz/Group
       Displays:
@@ -639,7 +639,7 @@ Visualization Manager:
             {}
           Queue Size: 100
           Value: true
-      Enabled: true
+      Enabled: false
       Name: TrackerPlanner
   Enabled: true
   Global Options:
@@ -674,9 +674,9 @@ Visualization Manager:
       Invert Z Axis: false
       Name: Current View
       Near Clip Distance: 0.009999999776482582
+      Pitch: 1.2349997758865356
       Target Frame: world
-      Pitch: 1.05
-      Yaw: 5.75
+      Yaw: 6.100000858306885
     Saved: ~
 Window Geometry:
   Displays:

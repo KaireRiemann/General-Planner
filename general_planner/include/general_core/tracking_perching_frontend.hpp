@@ -24,12 +24,15 @@ public:
         double safe_distance{0.45};
         double visibility_safe_distance{0.25};
         double visibility_cone_ratio{0.12};
+        double visibility_angle_clearance{0.08726646259971647};
+        double reacquire_distance{6.0};
         double searching_horizon{8.0};
         double candidate_angle_step{0.3926990817};
         int candidate_radius_num{3};
         int visibility_samples{5};
         bool unknown_as_occupied{true};
         bool use_astar{true};
+        bool use_visible_region{true};
         bool print_log{false};
     };
 
@@ -51,6 +54,7 @@ private:
     bool isViewpointVisible(const super_utils::Vec3f &viewpoint,
                             const super_utils::Vec3f &target) const;
     bool isViewpointSafe(const super_utils::Vec3f &viewpoint) const;
+    bool isGuideStartUsable(const super_utils::Vec3f &point) const;
     bool repairViewpointEndpoint(const super_utils::Vec3f &raw_viewpoint,
                                  const super_utils::Vec3f &target,
                                  super_utils::Vec3f &repaired_viewpoint) const;
@@ -64,6 +68,9 @@ private:
                                          const traj_opt::DynamicTargetState &target,
                                          super_utils::vec_E<super_utils::Vec3f> &path,
                                          super_utils::Vec3f &viewpoint) const;
+    bool computeVisibleRegion(const traj_opt::DynamicTargetState &target,
+                              const super_utils::Vec3f &seed,
+                              traj_opt::TrackingVisibleRegion &region) const;
     bool findOcclusionAwareSeed(const super_utils::Vec3f &last_viewpoint,
                                 const super_utils::Vec3f &last_target,
                                 const super_utils::Vec3f &target,

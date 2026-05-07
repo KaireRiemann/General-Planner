@@ -10,6 +10,11 @@ fsm:
   perching_surface_odom_topic: "/perching/surface_odom"
   tracking_prediction_horizon: 4.0
   tracking_prediction_dt: 0.25
+  tracking_prediction_use_kinodynamic: true
+  tracking_prediction_accel: 3.0
+  tracking_prediction_vmax: 4.0
+  tracking_prediction_rho_accel: 1.0
+  tracking_prediction_max_time: 0.03
   task_timeout: 1.0
   replan_rate: 15.0
   cmd_topic: "/planning/pos_cmd"
@@ -49,10 +54,16 @@ general_planner:
     height_tolerance: 0.6
     safe_distance: 0.35
     visibility_safe_distance: 0.25
+    visibility_cone_ratio: 0.12
+    visibility_angle_clearance: 0.0872664626
+    reacquire_distance: 6.0
+    min_commit_duration: 0.8
     candidate_angle_step: 0.3926990817
     candidate_radius_num: 3
     visibility_samples: 5
+    weight_visible_region: 3.0
     unknown_as_occupied: false
+    use_visible_region: true
     frontend_astar: true
     use_snap: false
   perching:

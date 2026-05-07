@@ -91,6 +91,14 @@ namespace general_planner {
                 path.emplace_back(point);
             }
         }
+
+        int validVisibleRegionCount(const traj_opt::TrackingProblem &problem) {
+            return static_cast<int>(std::count_if(problem.visible_regions.begin(),
+                                                  problem.visible_regions.end(),
+                                                  [](const traj_opt::TrackingVisibleRegion &region) {
+                                                      return region.valid;
+                                                  }));
+        }
     }
 
     GeneralPlanner::GeneralPlanner
@@ -949,6 +957,9 @@ namespace general_planner {
             problem.viewpoints.resize(keep_count);
             problem.target_sample_times.resize(keep_count);
             problem.target_prediction.resize(keep_count);
+            if (problem.visible_regions.size() > keep_count) {
+                problem.visible_regions.resize(keep_count);
+            }
             refreshTrackingGuideTiming(problem);
             if (cfg_.print_log) {
                 ros_ptr_->warn(" -- [GeneralPlanner] Tracking guide truncated to safe local SFC endpoint, kept {} target samples.",
@@ -1015,12 +1026,15 @@ namespace general_planner {
         frontend_cfg.safe_distance = cfg_.tracking_safe_distance;
         frontend_cfg.visibility_safe_distance = cfg_.tracking_visibility_safe_distance;
         frontend_cfg.visibility_cone_ratio = cfg_.tracking_visibility_cone_ratio;
+        frontend_cfg.visibility_angle_clearance = cfg_.tracking_visibility_angle_clearance;
+        frontend_cfg.reacquire_distance = cfg_.tracking_reacquire_distance;
         frontend_cfg.searching_horizon = cfg_.planning_horizon;
         frontend_cfg.candidate_angle_step = cfg_.tracking_candidate_angle_step;
         frontend_cfg.candidate_radius_num = cfg_.tracking_candidate_radius_num;
         frontend_cfg.visibility_samples = cfg_.tracking_visibility_samples;
         frontend_cfg.unknown_as_occupied = cfg_.tracking_unknown_as_occupied;
         frontend_cfg.use_astar = cfg_.tracking_frontend_astar;
+        frontend_cfg.use_visible_region = cfg_.tracking_use_visible_region;
         frontend_cfg.print_log = cfg_.print_log;
 
         traj_opt::TrackingProblem problem;
@@ -1077,6 +1091,20 @@ namespace general_planner {
         problem.weight_relative_velocity = cfg_.tracking_weight_relative_velocity;
         problem.weight_tangent_velocity = cfg_.tracking_weight_tangent_velocity;
         problem.weight_viewpoint_attractor = cfg_.tracking_weight_viewpoint_attractor;
+        problem.weight_visible_region = cfg_.tracking_weight_visible_region;
+        if (problem.reacquire_mode) {
+            problem.weight_visible_region *= 0.25;
+        }
+        const int valid_visible_regions = validVisibleRegionCount(problem);
+        problem.use_visible_region = cfg_.tracking_use_visible_region && valid_visible_regions > 0;
+        problem.visibility_angle_clearance = cfg_.tracking_visibility_angle_clearance;
+        if (cfg_.print_log && cfg_.tracking_use_visible_region) {
+            ros_ptr_->info(" -- [GeneralPlanner] Tracking visible-region soft prior: valid={}/{}, enabled={}, reacquire={}.",
+                           valid_visible_regions,
+                           problem.visible_regions.size(),
+                           problem.use_visible_region,
+                           problem.reacquire_mode);
+        }
 
         {
             TimeConsuming t_viz("tracking_frontend_viz", false);
@@ -1094,6 +1122,12 @@ namespace general_planner {
         time_consuming_[EXP_TRAJ_OPT] = t_opt.stop();
         if (!ok || out_traj.empty()) {
             ros_ptr_->warn(" -- [GeneralPlanner] Tracking optimization failed.");
+            return FAILED;
+        }
+        if (out_traj.getTotalDuration() < cfg_.tracking_min_commit_duration) {
+            ros_ptr_->warn(" -- [GeneralPlanner] Tracking trajectory too short ({:.3f}s < {:.3f}s), keep previous valid trajectory.",
+                           out_traj.getTotalDuration(),
+                           cfg_.tracking_min_commit_duration);
             return FAILED;
         }
 

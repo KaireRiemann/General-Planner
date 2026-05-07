@@ -90,16 +90,16 @@ public:
             {
                 Eigen::Vector3d grad_visibility = Eigen::Vector3d::Zero();
                 Eigen::Vector3d grad_visibility_target = Eigen::Vector3d::Zero();
-                cost += cost_functional::accumulateConicalLineOfSightESDFPenalty(map_manager_.get(),
-                                                                                 sample.p,
-                                                                                 target.position,
-                                                                                 problem_.visibility_safe_distance,
-                                                                                 problem_.visibility_cone_ratio,
-                                                                                 cfg_->smooth_eps,
-                                                                                 problem_.weight_visibility,
-                                                                                 problem_.visibility_samples,
-                                                                                 grad_visibility,
-                                                                                 &grad_visibility_target);
+                cost += cost_functional::accumulateBallLineOfSightESDFPenalty(map_manager_.get(),
+                                                                              sample.p,
+                                                                              target.position,
+                                                                              problem_.visibility_safe_distance,
+                                                                              problem_.visibility_cone_ratio,
+                                                                              cfg_->smooth_eps,
+                                                                              problem_.weight_visibility,
+                                                                              problem_.visibility_samples,
+                                                                              grad_visibility,
+                                                                              &grad_visibility_target);
                 grad_p.col(i) += grad_visibility;
                 grad_target += grad_visibility_target;
             }

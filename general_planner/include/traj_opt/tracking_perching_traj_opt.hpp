@@ -35,6 +35,18 @@ struct DynamicTargetState
 
 using DynamicTargetStates = super_utils::vec_E<DynamicTargetState>;
 
+struct TrackingVisibleRegion
+{
+  EIGEN_MAKE_ALIGNED_OPERATOR_NEW
+
+  double t{0.0};
+  super_utils::Vec3f target_position{super_utils::Vec3f::Zero()};
+  super_utils::Vec3f visible_point{super_utils::Vec3f::Zero()};
+  double theta{3.14159265358979323846};
+  double confidence{0.0};
+  bool valid{false};
+};
+
 struct TrackingProblem
 {
   EIGEN_MAKE_ALIGNED_OPERATOR_NEW
@@ -50,6 +62,7 @@ struct TrackingProblem
   super_utils::vec_E<super_utils::Vec3f> viewpoints;
   std::vector<double> target_sample_times;
   DynamicTargetStates target_prediction;
+  super_utils::vec_E<TrackingVisibleRegion> visible_regions;
 
   double safe_distance{0.45};
   double tracking_distance{3.0};
@@ -69,13 +82,17 @@ struct TrackingProblem
   double weight_relative_velocity{1.0};
   double weight_tangent_velocity{5.0};
   double weight_viewpoint_attractor{50.0};
+  double weight_visible_region{3.0};
 
   double weight_tracking{5.0};
   double weight_visibility{1.0};
   double visibility_safe_distance{0.25};
   double visibility_cone_ratio{0.12};
+  double visibility_angle_clearance{0.08726646259971647};
   int visibility_samples{5};
   bool use_esdf_visibility{true};
+  bool use_visible_region{true};
+  bool reacquire_mode{false};
 
   int piece_num{0};
   double min_piece_duration{0.12};

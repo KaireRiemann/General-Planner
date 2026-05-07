@@ -143,6 +143,42 @@ bool TrackingFrontend::isViewpointSafe(const Vec3f &viewpoint) const
     return true;
 }
 
+bool TrackingFrontend::isGuideStartUsable(const Vec3f &point) const
+{
+    if (!point.allFinite())
+    {
+        return false;
+    }
+    if (map_manager_ == nullptr || !map_manager_->ready())
+    {
+        return true;
+    }
+    if (!map_manager_->insideLocalMap(point))
+    {
+        logUnsafeViewpointRejection(cfg_.print_log,
+                                    "Guide start rejected: outside local map, p=" + pointToString(point));
+        return false;
+    }
+    const auto inf_grid_type = map_manager_->getInfGridType(point);
+    if (inf_grid_type == super_utils::GridType::OCCUPIED ||
+        inf_grid_type == super_utils::GridType::OUT_OF_MAP)
+    {
+        logUnsafeViewpointRejection(cfg_.print_log,
+                                    "Guide start rejected: occupied/out-of-map, p=" + pointToString(point));
+        return false;
+    }
+    if (cfg_.unknown_as_occupied &&
+        (inf_grid_type == super_utils::GridType::UNKNOWN ||
+         inf_grid_type == super_utils::GridType::UNDEFINED ||
+         inf_grid_type == super_utils::GridType::FRONTIER))
+    {
+        logUnsafeViewpointRejection(cfg_.print_log,
+                                    "Guide start rejected: unknown treated as occupied, p=" + pointToString(point));
+        return false;
+    }
+    return true;
+}
+
 bool TrackingFrontend::isViewpointVisible(const Vec3f &viewpoint,
                                           const Vec3f &target) const
 {
@@ -350,6 +386,120 @@ bool TrackingFrontend::chooseConnectedVisibleViewpoint(
     return false;
 }
 
+bool TrackingFrontend::computeVisibleRegion(const traj_opt::DynamicTargetState &target,
+                                            const Vec3f &seed,
+                                            traj_opt::TrackingVisibleRegion &region) const
+{
+    if (!target.position.allFinite() || !seed.allFinite())
+    {
+        return false;
+    }
+
+    Vec3f seed_dir = seed - target.position;
+    seed_dir.z() = 0.0;
+    if (seed_dir.norm() < 1.0e-4)
+    {
+        return false;
+    }
+
+    const double desired_dist = std::max(0.3, cfg_.tracking_distance);
+    const double res = map_manager_ != nullptr && map_manager_->ready()
+                           ? std::max(0.05, map_manager_->getInfResolution())
+                           : 0.1;
+    const double d_theta = std::clamp(res / desired_dist / 2.0,
+                                      0.01,
+                                      std::max(0.01, cfg_.candidate_angle_step));
+    const double theta0 = std::atan2(seed_dir.y(), seed_dir.x());
+    const double desired_z = target.position.z() + cfg_.height_offset;
+    const double tol = std::max(0.0, cfg_.distance_tolerance);
+    const double min_radius = std::max(0.3, desired_dist - tol);
+    const double max_radius = std::max(min_radius, desired_dist + tol);
+    const double seed_radius = std::clamp(seed_dir.norm(), min_radius, max_radius);
+
+    auto pointAtYaw = [&](const double yaw, const double radius) {
+        Vec3f p = target.position;
+        p.x() += radius * std::cos(yaw);
+        p.y() += radius * std::sin(yaw);
+        p.z() = desired_z;
+        return p;
+    };
+
+    auto visiblePointAtYaw = [&](const double yaw, Vec3f &visible_point) {
+        const std::array<double, 5> radii{
+            desired_dist,
+            seed_radius,
+            0.5 * (min_radius + max_radius),
+            min_radius,
+            max_radius};
+        for (const double radius : radii)
+        {
+            const Vec3f p = pointAtYaw(yaw, radius);
+            if (isViewpointVisible(p, target.position))
+            {
+                visible_point = p;
+                return true;
+            }
+        }
+        return false;
+    };
+
+    Vec3f center_visible_point = Vec3f::Zero();
+    if (!visiblePointAtYaw(theta0, center_visible_point))
+    {
+        logTrackingFrontendDebug(cfg_.print_log,
+                                 "Visible region rejected: seed ray is not visible, target=" +
+                                     pointToString(target.position) + ", seed=" + pointToString(seed));
+        return false;
+    }
+
+    double theta_left = theta0;
+    for (double yaw = theta0 - d_theta; yaw > theta0 - M_PI; yaw -= d_theta)
+    {
+        Vec3f p = Vec3f::Zero();
+        if (!visiblePointAtYaw(yaw, p))
+        {
+            break;
+        }
+        theta_left = yaw;
+    }
+
+    double theta_right = theta0;
+    for (double yaw = theta0 + d_theta; yaw < theta0 + M_PI; yaw += d_theta)
+    {
+        Vec3f p = Vec3f::Zero();
+        if (!visiblePointAtYaw(yaw, p))
+        {
+            break;
+        }
+        theta_right = yaw;
+    }
+
+    const double half_angle = 0.5 * std::max(0.0, theta_right - theta_left);
+    if (half_angle < 0.5 * d_theta)
+    {
+        logTrackingFrontendDebug(cfg_.print_log,
+                                 "Visible region rejected: angular fan too narrow at target=" +
+                                     pointToString(target.position));
+        return false;
+    }
+
+    const double theta_mid = 0.5 * (theta_left + theta_right);
+    Vec3f visible_mid = center_visible_point;
+    visiblePointAtYaw(theta_mid, visible_mid);
+    region.t = target.t;
+    region.target_position = target.position;
+    region.visible_point = visible_mid;
+    region.theta = half_angle;
+    region.confidence = std::clamp(half_angle / std::max(d_theta, cfg_.candidate_angle_step), 0.0, 1.0);
+    region.valid = true;
+
+    logTrackingFrontendDebug(cfg_.print_log,
+                             "Visible region success: target=" + pointToString(target.position) +
+                                 ", visible_point=" + pointToString(region.visible_point) +
+                                 ", theta=" + std::to_string(region.theta));
+    return true;
+}
+
 bool TrackingFrontend::findOcclusionAwareSeed(const Vec3f &last_viewpoint,
                                               const Vec3f &last_target,
                                               const Vec3f &target,
@@ -444,10 +594,10 @@ bool TrackingFrontend::searchVisibleViewpointOnGrid(
         return true;
     }
 
-    if (!isViewpointSafe(start))
+    if (!isGuideStartUsable(start))
     {
         logTrackingFrontendFailure(cfg_.print_log,
-                                   "Visible grid search start is not safe: " + pointToString(start));
+                                   "Visible grid search start is not usable: " + pointToString(start));
         return false;
     }
 
@@ -463,6 +613,7 @@ bool TrackingFrontend::searchVisibleViewpointOnGrid(
     const double max_h = std::max(min_h + res, cfg_.tracking_distance + tol);
     const double desired_z = target.position.z() + cfg_.height_offset;
     const double z_tol = std::max(0.5 * res, std::max(0.0, cfg_.height_tolerance));
+    const double start_target_dist = (start - target.position).norm();
 
     Vec3f preferred_rel_dir = target.velocity;
     preferred_rel_dir.z() = 0.0;
@@ -556,7 +707,11 @@ bool TrackingFrontend::searchVisibleViewpointOnGrid(
     if (!insideSearchBox(start_id) || !map_manager_->insideLocalMap(start_id))
     {
         logTrackingFrontendDebug(cfg_.print_log,
-                                 "Visible grid search start is outside the bounded search box.");
+                                 "Visible grid search start is outside the bounded search box: start=" +
+                                     pointToString(start) + ", target=" +
+                                     pointToString(target.position) + ", box_min=" +
+                                     pointToString(box_min) + ", box_max=" +
+                                     pointToString(box_max));
         return false;
     }
 
@@ -576,6 +731,14 @@ bool TrackingFrontend::searchVisibleViewpointOnGrid(
     const double horizon = std::max({cfg_.searching_horizon,
                                      (start - target.position).norm() + max_h,
                                      2.0 * max_h});
+    logTrackingFrontendDebug(cfg_.print_log,
+                             "Visible grid search setup: start=" + pointToString(start) +
+                                 ", target=" + pointToString(target.position) +
+                                 ", start_target_dist=" + std::to_string(start_target_dist) +
+                                 ", local_horizon=" + std::to_string(horizon) +
+                                 ", tracking_band=[" + std::to_string(min_h) + ", " +
+                                 std::to_string(max_h) + "], desired_z=" +
+                                 std::to_string(desired_z));
     const int max_expand = 25000;
     int expanded = 0;
 
@@ -688,20 +851,57 @@ bool TrackingFrontend::choosePropagatedViewpoint(const Vec3f &last_viewpoint,
             {
                 return true;
             }
+            logTrackingFrontendDebug(cfg_.print_log,
+                                     "Propagated viewpoint found but cannot connect: last_viewpoint=" +
+                                         pointToString(last_viewpoint) + ", viewpoint=" +
+                                         pointToString(viewpoint) + ", target=" +
+                                         pointToString(target.position));
         }
+        else
+        {
+            logTrackingFrontendDebug(cfg_.print_log,
+                                     "Propagated viewpoint repair failed: candidate=" +
+                                         pointToString(candidate) + ", target=" +
+                                         pointToString(target.position));
+        }
+    }
+    else
+    {
+        logTrackingFrontendDebug(cfg_.print_log,
+                                 "Occlusion-aware seed search failed: last_viewpoint=" +
+                                     pointToString(last_viewpoint) + ", last_target=" +
+                                     pointToString(last_target.position) + ", target=" +
+                                     pointToString(target.position));
     }
 
     if (searchVisibleViewpointOnGrid(last_viewpoint, target, viewpoint, path_to_viewpoint))
     {
         return true;
     }
+    logTrackingFrontendDebug(cfg_.print_log,
+                             "Visible grid fallback failed: start=" + pointToString(last_viewpoint) +
+                                 ", target=" + pointToString(target.position) +
+                                 ", start_target_dist=" +
+                                 std::to_string((last_viewpoint - target.position).norm()));
 
     if (!chooseVisibleViewpoint(last_viewpoint, target, viewpoint))
     {
+        logTrackingFrontendDebug(cfg_.print_log,
+                                 "Ring candidate fallback failed: start=" + pointToString(last_viewpoint) +
+                                     ", target=" + pointToString(target.position));
         return false;
     }
     path_to_viewpoint.clear();
-    return appendPathSegment(last_viewpoint, viewpoint, path_to_viewpoint, true);
+    const bool connected = appendPathSegment(last_viewpoint, viewpoint, path_to_viewpoint, true);
+    if (!connected)
+    {
+        logTrackingFrontendDebug(cfg_.print_log,
+                                 "Ring candidate fallback found viewpoint but cannot connect: start=" +
+                                     pointToString(last_viewpoint) + ", viewpoint=" +
+                                     pointToString(viewpoint) + ", target=" +
+                                     pointToString(target.position));
+    }
+    return connected;
 }
 
 bool TrackingFrontend::appendPathSegment(const Vec3f &start,
@@ -720,12 +920,12 @@ bool TrackingFrontend::appendPathSegment(const Vec3f &start,
         return true;
     }
 
-    if (!isViewpointSafe(start))
+    if (!isGuideStartUsable(start))
     {
         if (verbose)
         {
             logTrackingFrontendFailure(cfg_.print_log,
-                                       "A* segment start is not safe: " + pointToString(start));
+                                       "A* segment start is not usable: " + pointToString(start));
         }
         return false;
     }
@@ -740,6 +940,7 @@ bool TrackingFrontend::appendPathSegment(const Vec3f &start,
     }
 
     const Vec3f search_start = start;
+    const double segment_dist = (search_start - goal).norm();
 
     if (map_manager_->isLineFree(search_start, goal, true, cfg_.unknown_as_occupied))
     {
@@ -783,7 +984,9 @@ bool TrackingFrontend::appendPathSegment(const Vec3f &start,
         {
             logTrackingFrontendDebug(cfg_.print_log,
                                      "A* failure: inflated-map search cannot connect tracking guide segment, start=" +
-                                     pointToString(search_start) + ", goal=" + pointToString(goal));
+                                         pointToString(search_start) + ", goal=" + pointToString(goal) +
+                                         ", segment_dist=" + std::to_string(segment_dist) +
+                                         ", search_horizon=" + std::to_string(cfg_.searching_horizon));
         }
         return false;
     }
@@ -862,16 +1065,40 @@ bool TrackingFrontend::buildProblem(const StatePVAJ &head_pvaj,
     problem.height_tolerance = cfg_.height_tolerance;
     problem.visibility_safe_distance = cfg_.visibility_safe_distance;
     problem.visibility_cone_ratio = cfg_.visibility_cone_ratio;
+    problem.visibility_angle_clearance = cfg_.visibility_angle_clearance;
     problem.visibility_samples = cfg_.visibility_samples;
+    problem.use_visible_region = cfg_.use_visible_region;
+    const double initial_horizontal_dist =
+        (head_pvaj.col(0) - target_prediction.front().position).head<2>().norm();
+    problem.reacquire_mode =
+        initial_horizontal_dist >
+        std::max(cfg_.tracking_distance + cfg_.distance_tolerance,
+                 cfg_.reacquire_distance);
     problem.od_h_lower = std::max(0.05, cfg_.tracking_distance - cfg_.distance_tolerance);
     problem.od_h_upper = std::max(problem.od_h_lower + 0.05, cfg_.tracking_distance + cfg_.distance_tolerance);
     problem.od_v_lower = cfg_.height_offset - cfg_.height_tolerance;
     problem.od_v_upper = cfg_.height_offset + cfg_.height_tolerance;
 
+    logTrackingFrontendDebug(cfg_.print_log,
+                             "BuildProblem start: head=" + pointToString(head_pvaj.col(0)) +
+                                 ", first_target=" + pointToString(target_prediction.front().position) +
+                                 ", first_target_dist=" +
+                                 std::to_string((head_pvaj.col(0) - target_prediction.front().position).norm()) +
+                                 ", samples=" + std::to_string(target_prediction.size()) +
+                                 ", search_horizon=" + std::to_string(cfg_.searching_horizon) +
+                                 ", tracking_band=[" + std::to_string(problem.od_h_lower) +
+                                 ", " + std::to_string(problem.od_h_upper) +
+                                 "], use_visible_region=" +
+                                 (cfg_.use_visible_region ? "true" : "false") +
+                                 ", reacquire_mode=" +
+                                 (problem.reacquire_mode ? "true" : "false"));
+
     vec_E<Vec3f> guide;
     appendUnique(head_pvaj.col(0), guide);
     problem.viewpoints.clear();
     problem.viewpoints.reserve(target_prediction.size());
+    problem.visible_regions.clear();
+    problem.visible_regions.reserve(target_prediction.size());
     problem.target_sample_times.clear();
     problem.target_sample_times.reserve(target_prediction.size());
     traj_opt::DynamicTargetStates used_prediction;
@@ -882,6 +1109,13 @@ bool TrackingFrontend::buildProblem(const StatePVAJ &head_pvaj,
     {
         const auto &last_target = used_prediction.empty() ? target_prediction.front() : used_prediction.back();
         const auto &target = target_prediction[i];
+        logTrackingFrontendDebug(cfg_.print_log,
+                                 "BuildProblem sample " + std::to_string(i) +
+                                     ": seed=" + pointToString(seed) +
+                                     ", target=" + pointToString(target.position) +
+                                     ", seed_target_dist=" +
+                                     std::to_string((seed - target.position).norm()) +
+                                     ", t=" + std::to_string(target.t));
         Vec3f viewpoint = Vec3f::Zero();
         vec_E<Vec3f> path_to_viewpoint;
         if (!choosePropagatedViewpoint(seed, last_target, target, viewpoint, path_to_viewpoint))
@@ -903,6 +1137,24 @@ bool TrackingFrontend::buildProblem(const StatePVAJ &head_pvaj,
         for (const auto &p : path_to_viewpoint)
         {
             appendUnique(p, guide);
+        }
+        if (cfg_.use_visible_region)
+        {
+            traj_opt::TrackingVisibleRegion region;
+            if (!computeVisibleRegion(target, viewpoint, region))
+            {
+                region.t = target.t;
+                region.target_position = target.position;
+                region.visible_point = viewpoint;
+                region.theta = 0.0;
+                region.confidence = 0.0;
+                region.valid = false;
+                logTrackingFrontendDebug(cfg_.print_log,
+                                         "Visible region unavailable at target sample " +
+                                             std::to_string(i) + ", t=" + std::to_string(target.t) +
+                                             "; skip fan soft prior and keep OD/OA/OE/FoV costs.");
+            }
+            problem.visible_regions.emplace_back(region);
         }
         seed = viewpoint;
         problem.viewpoints.emplace_back(viewpoint);
