@@ -651,6 +651,10 @@ public:
                                                                            map_manager_.get(),
                                                                            problem_.safe_distance,
                                                                            &cfg_.quadrotot_flatness);
+    cost_manager_.reset(cfg_,
+                        map_manager_,
+                        problem_,
+                        &cfg_.quadrotot_flatness);
     time_cost_.min_piece_duration = problem_.min_piece_duration;
     time_cost_.min_total_duration = problem_.min_total_duration;
     time_cost_.lower_bound_weight =
@@ -1505,6 +1509,8 @@ private:
         Vec3f gv_integral = Vec3f::Zero();
         Vec3f ga_integral = Vec3f::Zero();
         Vec3f gj_integral = Vec3f::Zero();
+        double gyaw_integral = 0.0;
+        double gyaw_dot_integral = 0.0;
         double c_corridor = 0.0;
         if (use_corridor_ && i < static_cast<int>(h_polytopes_.size()) && cfg_.penna_pos > 0.0)
         {
@@ -1520,10 +1526,14 @@ private:
                                                                                         v,
                                                                                         a,
                                                                                         j,
+                                                                                        yaw,
+                                                                                        yaw_dot,
                                                                                         gp_integral,
                                                                                         gv_integral,
                                                                                         ga_integral,
-                                                                                        gj_integral);
+                                                                                        gj_integral,
+                                                                                        gyaw_integral,
+                                                                                        gyaw_dot_integral);
         const double c_integral = c_corridor + c_dyn;
         total_cost += c_integral * common_weight;
         gdC_pos.template block<PosTraj::COEFF_NUM, 3>(pos_base, 0).noalias() +=
@@ -1536,55 +1546,45 @@ private:
         gdT_pos(i) += (gp_integral.dot(v) + gv_integral.dot(a) +
                        ga_integral.dot(j) + gj_integral.dot(s)) *
                       alpha * common_weight;
+        gdC_yaw.template block<YawTraj::COEFF_NUM, 1>(yaw_base, 0).noalias() +=
+            (ybp.transpose() * Eigen::Matrix<double, 1, 1>::Constant(gyaw_integral) +
+             ybv.transpose() * Eigen::Matrix<double, 1, 1>::Constant(gyaw_dot_integral)) *
+            common_weight;
+        gdT_yaw(i) += (gyaw_integral * yaw_dot + gyaw_dot_integral * yaw_acc) *
+                      alpha * common_weight;
 
         if (k > 0 || i == 0)
         {
-          const auto target = targetAt(t_global);
           Vec3f gp = Vec3f::Zero();
           Vec3f gv = Vec3f::Zero();
-          Vec3f grad_target = Vec3f::Zero();
           double gyaw = 0.0;
           double gyaw_dot = 0.0;
           double gt_global = 0.0;
 
-          total_cost += addObservationDistanceCost(p, target, gp, grad_target);
-          total_cost += addObservationAngleCost(p, yaw, target, gp, grad_target, gyaw);
-          total_cost += addStabilityCost(p, v, target, gp, gv, grad_target, gt_global);
-          total_cost += addViewpointAttractorCost(p, t_global, gp, gt_global);
-          total_cost += addVisibleRegionCost(p, t_global, target, gp, gt_global);
-
-          if (problem_.use_esdf_visibility &&
-              problem_.weight_oe > 0.0 &&
-              problem_.visibility_samples > 0 &&
-              map_manager_ != nullptr &&
-              map_manager_->hasESDF())
-          {
-            Vec3f grad_visibility = Vec3f::Zero();
-            Vec3f grad_visibility_target = Vec3f::Zero();
-            total_cost += cost_functional::accumulateBallLineOfSightESDFPenalty(map_manager_.get(),
-                                                                                p,
-                                                                                target.position,
-                                                                                problem_.visibility_safe_distance,
-                                                                                problem_.visibility_cone_ratio,
-                                                                                cfg_.smooth_eps,
-                                                                                problem_.weight_oe,
-                                                                                problem_.visibility_samples,
-                                                                                grad_visibility,
-                                                                                &grad_visibility_target);
-            gp += grad_visibility;
-            grad_target += grad_visibility_target;
-          }
-
-          gt_global += grad_target.dot(target.velocity);
+          const double c_track = cost_manager_.evaluateJointSample(t_global,
+                                                                   p,
+                                                                   v,
+                                                                   yaw,
+                                                                   yaw_dot,
+                                                                   gp,
+                                                                   gv,
+                                                                   gyaw,
+                                                                   gyaw_dot,
+                                                                   gt_global);
+          total_cost += c_track * common_weight;
           gdC_pos.template block<PosTraj::COEFF_NUM, 3>(pos_base, 0).noalias() +=
-              bp.transpose() * gp.transpose() +
-              bv.transpose() * gv.transpose();
+              (bp.transpose() * gp.transpose() +
+               bv.transpose() * gv.transpose()) *
+              common_weight;
           gdC_yaw.template block<YawTraj::COEFF_NUM, 1>(yaw_base, 0).noalias() +=
-              ybp.transpose() * Eigen::Matrix<double, 1, 1>::Constant(gyaw) +
-              ybv.transpose() * Eigen::Matrix<double, 1, 1>::Constant(gyaw_dot);
-          gdT_pos(i) += (gp.dot(v) + gv.dot(a)) * alpha;
-          gdT_yaw(i) += (gyaw * yaw_dot + gyaw_dot * yaw_acc) * alpha;
-          global_time_grad(i) += gt_global;
+              (ybp.transpose() * Eigen::Matrix<double, 1, 1>::Constant(gyaw) +
+               ybv.transpose() * Eigen::Matrix<double, 1, 1>::Constant(gyaw_dot)) *
+              common_weight;
+          gdT_pos(i) += c_track * trap_weight * inv_K;
+          gdT_pos(i) += (gp.dot(v) + gv.dot(a)) * alpha * common_weight;
+          gdT_yaw(i) += (gyaw * yaw_dot + gyaw_dot * yaw_acc) * alpha * common_weight;
+          gdT_pos(i) += gt_global * alpha * common_weight;
+          global_time_grad(i) += gt_global * common_weight;
         }
       }
       seg_start_time += T;
@@ -1663,6 +1663,7 @@ private:
   temporal_map::QuadInvTimeMap time_map_;
   TaskTimeCost time_cost_;
   cost_functional_manager::detail::DynamicsPenaltyConfig dynamics_;
+  cost_functional_manager::TrackingCostManager cost_manager_;
   PosBoundaryState pos_head_state_;
   PosBoundaryState pos_tail_state_;
   YawBoundaryState yaw_head_state_;

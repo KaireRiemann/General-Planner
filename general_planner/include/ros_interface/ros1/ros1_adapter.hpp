@@ -33,6 +33,9 @@
 #include "nav_msgs/Path.h"
 #include "data_structure/base/trajectory.h"
 #include "utils/header/color_text.hpp"
+#include <algorithm>
+#include <array>
+#include <cmath>
 #include <random>
 
 
@@ -555,6 +558,81 @@ namespace ros_interface {
                 }
                 eval_t += 0.05;
             }
+        }
+
+        static void addTrackingFovToMarkerArray(visualization_msgs::MarkerArray &mkr_arr,
+                                                const Trajectory &pos_traj,
+                                                const Trajectory &yaw_traj,
+                                                const double &horizontal_fov_deg,
+                                                const double &vertical_fov_deg,
+                                                const double &range,
+                                                const string &ns = "tracking_fov") {
+            if (pos_traj.empty() || yaw_traj.empty()) {
+                return;
+            }
+
+            const double t_sum = std::min(pos_traj.getTotalDuration(), yaw_traj.getTotalDuration());
+            if (t_sum <= 1.0e-3) {
+                return;
+            }
+
+            const double deg2rad = M_PI / 180.0;
+            const double half_h = std::max(1.0, horizontal_fov_deg) * 0.5 * deg2rad;
+            const double half_v = std::max(1.0, vertical_fov_deg) * 0.5 * deg2rad;
+            const double fov_range = std::max(0.2, range);
+            const double y = fov_range * std::tan(half_h);
+            const double z = fov_range * std::tan(half_v);
+            const std::array<Vec3f, 4> camera_corners = {
+                Vec3f(fov_range, y, z),
+                Vec3f(fov_range, -y, z),
+                Vec3f(fov_range, -y, -z),
+                Vec3f(fov_range, y, -z)
+            };
+
+            visualization_msgs::Marker line_list;
+            line_list.header.frame_id = DEFAULT_FRAME_ID;
+            line_list.header.stamp = ros::Time::now();
+            line_list.ns = ns;
+            line_list.id = 0;
+            line_list.action = visualization_msgs::Marker::ADD;
+            line_list.pose.orientation.w = 1.0;
+            line_list.type = visualization_msgs::Marker::LINE_LIST;
+            line_list.scale.x = 0.035;
+            line_list.color = Color(Color::Teal(), 0.85);
+
+            auto addPoint = [&line_list](const Vec3f &p) {
+                geometry_msgs::Point point;
+                point.x = p.x();
+                point.y = p.y();
+                point.z = p.z();
+                line_list.points.push_back(point);
+            };
+            auto addLine = [&addPoint](const Vec3f &a, const Vec3f &b) {
+                addPoint(a);
+                addPoint(b);
+            };
+
+            const int sample_num = std::max(2, std::min(12, static_cast<int>(std::ceil(t_sum / 0.35)) + 1));
+            for (int i = 0; i < sample_num; ++i) {
+                const double eval_t = t_sum * static_cast<double>(i) / static_cast<double>(sample_num - 1);
+                const Vec3f origin = pos_traj.getPos(eval_t);
+                const double yaw = yaw_traj.getPos(eval_t)[0];
+                Eigen::Matrix3d R = Eigen::Matrix3d::Identity();
+                R.block<2, 2>(0, 0) << std::cos(yaw), -std::sin(yaw),
+                                        std::sin(yaw), std::cos(yaw);
+
+                std::array<Vec3f, 4> corners;
+                for (int c = 0; c < 4; ++c) {
+                    corners[c] = origin + R * camera_corners[c];
+                    addLine(origin, corners[c]);
+                }
+                for (int c = 0; c < 4; ++c) {
+                    addLine(corners[c], corners[(c + 1) % 4]);
+                }
+                addLine(origin, origin + R * Vec3f(fov_range, 0.0, 0.0));
+            }
+
+            mkr_arr.markers.push_back(line_list);
         }
 
         static void addBoundingBoxToMarkerArray(visualization_msgs::MarkerArray &mkrarr,

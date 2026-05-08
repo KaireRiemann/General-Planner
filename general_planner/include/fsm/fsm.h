@@ -184,6 +184,13 @@ namespace fsm {
 
         bool shouldGenerateAfterTrajFinish();
 
+        bool trackingPredictionChanged(const traj_opt::DynamicTargetStates &a,
+                                       const traj_opt::DynamicTargetStates &b) const;
+
+        bool trackingPredictionStatic(const traj_opt::DynamicTargetStates &prediction) const;
+
+        bool shouldSkipStaticTrackingReplan(const traj_opt::DynamicTargetStates &prediction) const;
+
         void setTrackingTargetPrediction(const traj_opt::DynamicTargetStates &prediction);
 
         void setPerchingSurface(const traj_opt::PerchingSurfaceState &surface);

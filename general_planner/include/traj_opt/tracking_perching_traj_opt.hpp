@@ -78,6 +78,7 @@ struct TrackingProblem
   double weight_od_far{5.0};
   double weight_od_vertical{8.0};
   double weight_oa{5.0};
+  double weight_fov{20.0};
   double weight_oe{1.0};
   double weight_relative_velocity{1.0};
   double weight_tangent_velocity{5.0};
@@ -89,6 +90,9 @@ struct TrackingProblem
   double visibility_safe_distance{0.25};
   double visibility_cone_ratio{0.12};
   double visibility_angle_clearance{0.08726646259971647};
+  double fov_half_angle{0.7853981633974483};
+  double fov_vertical_half_angle{0.5235987755982988};
+  double fov_margin{0.08726646259971647};
   int visibility_samples{5};
   bool use_esdf_visibility{true};
   bool use_visible_region{true};

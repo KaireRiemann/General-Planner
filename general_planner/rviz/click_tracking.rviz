@@ -3,7 +3,9 @@ Panels:
     Help Height: 70
     Name: Displays
     Property Tree Widget:
-      Expanded: ~
+      Expanded:
+        - /Robots1
+        - /Robots1/TrackerExecutedPath1
       Splitter Ratio: 0.5
     Tree Height: 775
   - Class: rviz/Views
@@ -132,8 +134,8 @@ Visualization Manager:
           Head Diameter: 0.30000001192092896
           Head Length: 0.20000000298023224
           Length: 0.30000001192092896
-          Line Style: Lines
-          Line Width: 0.05000000074505806
+          Line Style: Billboards
+          Line Width: 0.20000000298023224
           Name: TargetExecutedPath
           Offset:
             X: 0
@@ -156,8 +158,8 @@ Visualization Manager:
           Head Diameter: 0.30000001192092896
           Head Length: 0.20000000298023224
           Length: 0.30000001192092896
-          Line Style: Lines
-          Line Width: 0.05000000074505806
+          Line Style: Billboards
+          Line Width: 0.20000000298023224
           Name: TrackerExecutedPath
           Offset:
             X: 0
@@ -220,7 +222,7 @@ Visualization Manager:
           Head Length: 0.20000000298023224
           Length: 0.30000001192092896
           Line Style: Lines
-          Line Width: 0.05999999865889549
+          Line Width: 0.11999999731779099
           Name: RelayedTargetPath
           Offset:
             X: 0
@@ -244,7 +246,7 @@ Visualization Manager:
           Head Length: 0.20000000298023224
           Length: 0.30000001192092896
           Line Style: Lines
-          Line Width: 0.07999999821186066
+          Line Width: 0.11999999731779099
           Name: TargetPrediction
           Offset:
             X: 0
@@ -291,11 +293,11 @@ Visualization Manager:
           Use Fixed Frame: true
           Use rainbow: true
           Value: true
-        - Alpha: 0.5
+        - Alpha: 1
           Autocompute Intensity Bounds: true
           Autocompute Value Bounds:
-            Max Value: 10
-            Min Value: -10
+            Max Value: 2.8499999046325684
+            Min Value: 0.44999998807907104
             Value: true
           Axis: Z
           Channel Name: intensity
@@ -322,14 +324,14 @@ Visualization Manager:
         - Alpha: 0.11999999731779099
           Autocompute Intensity Bounds: true
           Autocompute Value Bounds:
-            Max Value: 10
-            Min Value: -10
+            Max Value: 2.9000000953674316
+            Min Value: 0.30000001192092896
             Value: true
           Axis: Z
           Channel Name: intensity
           Class: rviz/PointCloud2
           Color: 245; 121; 0
-          Color Transformer: FlatColor
+          Color Transformer: AxisColor
           Decay Time: 0
           Enabled: true
           Invert Rainbow: false
@@ -483,19 +485,10 @@ Visualization Manager:
           Marker Topic: /drone_1/fsm_node/rog_map/map_bound
           Name: TrackerMapBound
           Namespaces:
-            ESDF Map Text: true
-            ESDF Updating Range: true
-            Local Map Origin: true
-            Local Map Origin_text: true
-            Local Map Range: true
-            Local Map Range Text: true
-            Updating Range: true
-            Updating Range Text: true
-            Visualization Range: true
-            Visualization Range Text: true
+            {}
           Queue Size: 100
           Value: true
-      Enabled: true
+      Enabled: false
       Name: TrackerMap
     - Class: rviz/Group
       Displays:
@@ -504,7 +497,8 @@ Visualization Manager:
           Marker Topic: /fsm_node/visualization/goal
           Name: TargetGoal
           Namespaces:
-            {}
+            goal: true
+            goal_line: true
           Queue Size: 100
           Value: true
         - Class: rviz/MarkerArray
@@ -512,7 +506,8 @@ Visualization Manager:
           Marker Topic: /fsm_node/visualization/frontend_path
           Name: TargetFrontend
           Namespaces:
-            {}
+            guide_path: true
+            guide_path_line: true
           Queue Size: 100
           Value: true
         - Class: rviz/MarkerArray
@@ -520,7 +515,10 @@ Visualization Manager:
           Marker Topic: /fsm_node/visualization/exp_sfc
           Name: TargetExpSfc
           Namespaces:
-            {}
+            exp_sfc edge: true
+            exp_sfc line: true
+            exp_sfc mesh: true
+            exp_sfc pt: true
           Queue Size: 100
           Value: true
         - Class: rviz/MarkerArray
@@ -528,7 +526,10 @@ Visualization Manager:
           Marker Topic: /fsm_node/visualization/backup_sfc
           Name: TargetBackupSfc
           Namespaces:
-            {}
+            backup_sfc edge: true
+            backup_sfc line: true
+            backup_sfc mesh: true
+            backup_sfc pt: true
           Queue Size: 100
           Value: true
         - Class: rviz/MarkerArray
@@ -536,7 +537,8 @@ Visualization Manager:
           Marker Topic: /fsm_node/visualization/exp_traj
           Name: TargetExpTraj
           Namespaces:
-            {}
+            exp_traj: true
+            exp_traj_waypoints: true
           Queue Size: 100
           Value: true
         - Class: rviz/MarkerArray
@@ -544,7 +546,9 @@ Visualization Manager:
           Marker Topic: /fsm_node/visualization/backup_traj
           Name: TargetBackupTraj
           Namespaces:
-            {}
+            backup_traj: true
+            backup_traj_start: true
+            backup_traj_waypoints: true
           Queue Size: 100
           Value: true
         - Class: rviz/MarkerArray
@@ -552,7 +556,9 @@ Visualization Manager:
           Marker Topic: /fsm_node/visualization/committed_traj
           Name: TargetCommittedTraj
           Namespaces:
-            {}
+            committed_backup: true
+            committed_exp: true
+            committed_exp_waypoints: true
           Queue Size: 100
           Value: true
         - Class: rviz/MarkerArray
@@ -633,6 +639,14 @@ Visualization Manager:
           Value: false
         - Class: rviz/MarkerArray
           Enabled: true
+          Marker Topic: /drone_1/fsm_node/visualization/tracking_fov
+          Name: TrackerFov
+          Namespaces:
+            {}
+          Queue Size: 100
+          Value: true
+        - Class: rviz/MarkerArray
+          Enabled: true
           Marker Topic: /drone_1/fsm_node/visualization/astar_debug
           Name: TrackerAstarDebug
           Namespaces:
@@ -666,17 +680,17 @@ Visualization Manager:
         Value: false
       Field of View: 0.7853981852531433
       Focal Point:
-        X: 6.102329254150391
-        Y: -1.6600078344345093
-        Z: 0
+        X: -8.068100929260254
+        Y: 1.0308892726898193
+        Z: 6.1528520584106445
       Focal Shape Fixed Size: true
       Focal Shape Size: 0.05000000074505806
       Invert Z Axis: false
       Name: Current View
       Near Clip Distance: 0.009999999776482582
-      Pitch: 1.2349997758865356
+      Pitch: 1.1649994850158691
       Target Frame: world
-      Yaw: 6.100000858306885
+      Yaw: 6.215000629425049
     Saved: ~
 Window Geometry:
   Displays:

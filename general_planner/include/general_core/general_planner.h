@@ -127,6 +127,8 @@ namespace general_planner {
 
         Trajectory getCommittedYawTrajectory();
 
+        double getCommittedTrajectoryRemainingDuration();
+
         void getOneCommandFromTraj(StatePVAJ &pvaj,
                                    double &yaw,
                                    double &yaw_dot,
@@ -181,15 +183,24 @@ namespace general_planner {
                                          PolytopeVec &sfcs);
 
         bool repairTrackingGuideWithAstar(const vec_Vec3f &guide_path,
-                                          vec_Vec3f &repaired_path);
+                                          const std::vector<double> &guide_t,
+                                          vec_Vec3f &repaired_path,
+                                          std::vector<double> &repaired_t);
+
+        bool densifyTrackingGuideForCorridor(const vec_Vec3f &guide_path,
+                                             const std::vector<double> &guide_t,
+                                             vec_Vec3f &dense_path,
+                                             std::vector<double> &dense_t) const;
 
         bool truncateTrackingProblemForCorridor(traj_opt::TrackingProblem &problem,
                                                 const vec_Vec3f &candidate_guide,
+                                                const std::vector<double> &candidate_guide_t,
                                                 PolytopeVec &sfcs);
 
         bool trackingGuidePointSafe(const Vec3f &point) const;
 
         void refreshTrackingGuideTiming(traj_opt::TrackingProblem &problem) const;
+        void refreshTrackingGuideEndpoint(traj_opt::TrackingProblem &problem) const;
 
         StatePVAJ makeTaskHeadState(const bool &from_rest);
 

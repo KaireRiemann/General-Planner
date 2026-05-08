@@ -5,9 +5,9 @@ Panels:
     Property Tree Widget:
       Expanded:
         - /Robots1
-        - /TrackingInput1
+        - /Robots1/TrackerExecutedPath1
         - /TrackerMap1
-        - /TrackerPlanner1
+        - /TrackerMap1/InflatedOcc1
       Splitter Ratio: 0.5
     Tree Height: 775
   - Class: rviz/Views
@@ -101,8 +101,8 @@ Visualization Manager:
           Head Diameter: 0.30000001192092896
           Head Length: 0.20000000298023224
           Length: 0.30000001192092896
-          Line Style: Lines
-          Line Width: 0.05000000074505806
+          Line Style: Billboards
+          Line Width: 0.15000000596046448
           Name: TrackerExecutedPath
           Offset:
             X: 0
@@ -189,7 +189,7 @@ Visualization Manager:
           Head Length: 0.20000000298023224
           Length: 0.30000001192092896
           Line Style: Lines
-          Line Width: 0.05000000074505806
+          Line Width: 0.11999999731779099
           Name: TargetPath
           Offset:
             X: 0
@@ -236,7 +236,7 @@ Visualization Manager:
           Use Fixed Frame: true
           Use rainbow: true
           Value: true
-        - Alpha: 0.6499999761581421
+        - Alpha: 1
           Autocompute Intensity Bounds: true
           Autocompute Value Bounds:
             Max Value: 10
@@ -264,17 +264,17 @@ Visualization Manager:
           Use Fixed Frame: true
           Use rainbow: true
           Value: true
-        - Alpha: 0.1599999964237213
+        - Alpha: 0.20000000298023224
           Autocompute Intensity Bounds: true
           Autocompute Value Bounds:
-            Max Value: 10
-            Min Value: -10
+            Max Value: 2.9000000953674316
+            Min Value: 0.30000001192092896
             Value: true
           Axis: Z
           Channel Name: intensity
           Class: rviz/PointCloud2
           Color: 235; 120; 40
-          Color Transformer: FlatColor
+          Color Transformer: AxisColor
           Decay Time: 0
           Enabled: true
           Invert Rainbow: false
@@ -391,7 +391,10 @@ Visualization Manager:
           Marker Topic: /drone_1/fsm_node/visualization/exp_sfc
           Name: ExpSfc
           Namespaces:
-            {}
+            exp_sfc edge: true
+            exp_sfc line: true
+            exp_sfc mesh: true
+            exp_sfc pt: true
           Queue Size: 100
           Value: true
         - Class: rviz/MarkerArray
@@ -408,6 +411,7 @@ Visualization Manager:
           Name: ExpTraj
           Namespaces:
             tracking_jerk: true
+            tracking_jerk_waypoints: true
           Queue Size: 100
           Value: true
         - Class: rviz/MarkerArray
@@ -424,6 +428,7 @@ Visualization Manager:
           Name: CommittedTraj
           Namespaces:
             committed_exp: true
+            committed_exp_waypoints: true
           Queue Size: 100
           Value: true
         - Class: rviz/MarkerArray
@@ -431,9 +436,17 @@ Visualization Manager:
           Marker Topic: /drone_1/fsm_node/visualization/yaw_traj
           Name: YawTraj
           Namespaces:
-            yaw_traj: true
+            {}
           Queue Size: 100
           Value: false
+        - Class: rviz/MarkerArray
+          Enabled: true
+          Marker Topic: /drone_1/fsm_node/visualization/tracking_fov
+          Name: TrackerFov
+          Namespaces:
+            tracking_fov: true
+          Queue Size: 100
+          Value: true
         - Class: rviz/MarkerArray
           Enabled: true
           Marker Topic: /drone_1/fsm_node/visualization/astar_debug
@@ -461,7 +474,7 @@ Visualization Manager:
   Views:
     Current:
       Class: rviz/ThirdPersonFollower
-      Distance: 15.790581703186035
+      Distance: 10.680925369262695
       Enable Stereo Rendering:
         Stereo Eye Separation: 0.05999999865889549
         Stereo Focal Distance: 1
@@ -469,17 +482,17 @@ Visualization Manager:
         Value: false
       Field of View: 0.7853981852531433
       Focal Point:
-        X: 0
-        Y: 0
-        Z: 0
+        X: -1.8876261711120605
+        Y: 0.17636090517044067
+        Z: -1.2114132914575748e-05
       Focal Shape Fixed Size: true
       Focal Shape Size: 0.20000000298023224
       Invert Z Axis: false
       Name: Current View
       Near Clip Distance: 0.009999999776482582
-      Pitch: 1.0749990940093994
+      Pitch: 0.869999349117279
       Target Frame: drone_1/base_link
-      Yaw: 3.270003080368042
+      Yaw: 2.9600095748901367
     Saved: ~
 Window Geometry:
   Displays:

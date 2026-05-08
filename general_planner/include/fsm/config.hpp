@@ -98,6 +98,10 @@ namespace fsm {
         double tracking_prediction_vmax{4.0};
         double tracking_prediction_rho_accel{1.0};
         double tracking_prediction_max_time{0.03};
+        double tracking_static_position_epsilon{0.05};
+        double tracking_static_velocity_epsilon{0.05};
+        double tracking_static_yaw_epsilon{0.05};
+        double tracking_static_replan_remaining_time{0.8};
         double task_timeout{0.6};
         double yaw_dot_max{};
         bool swarm_enable{false};
@@ -141,6 +145,10 @@ namespace fsm {
             loader.LoadParam("fsm/tracking_prediction_vmax", tracking_prediction_vmax, 4.0);
             loader.LoadParam("fsm/tracking_prediction_rho_accel", tracking_prediction_rho_accel, 1.0);
             loader.LoadParam("fsm/tracking_prediction_max_time", tracking_prediction_max_time, 0.03);
+            loader.LoadParam("fsm/tracking_static_position_epsilon", tracking_static_position_epsilon, 0.05);
+            loader.LoadParam("fsm/tracking_static_velocity_epsilon", tracking_static_velocity_epsilon, 0.05);
+            loader.LoadParam("fsm/tracking_static_yaw_epsilon", tracking_static_yaw_epsilon, 0.05);
+            loader.LoadParam("fsm/tracking_static_replan_remaining_time", tracking_static_replan_remaining_time, 0.8);
             loader.LoadParam("fsm/task_timeout", task_timeout, 0.6);
             loader.LoadParam("general_planner/swarm/enable", swarm_enable, false);
             loader.LoadParam("general_planner/swarm/drone_id", swarm_drone_id, -1);

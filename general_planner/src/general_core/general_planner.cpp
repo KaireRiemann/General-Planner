@@ -92,6 +92,36 @@ namespace general_planner {
             }
         }
 
+        void appendGuideTimedUnique(const Vec3f &point,
+                                    const double stamp,
+                                    vec_Vec3f &path,
+                                    std::vector<double> &path_t) {
+            if (!point.allFinite() || !std::isfinite(stamp)) {
+                return;
+            }
+            if (path.empty() || (path.back() - point).norm() > 1.0e-4) {
+                path.emplace_back(point);
+                path_t.emplace_back(stamp);
+            } else if (!path_t.empty()) {
+                path_t.back() = stamp;
+            }
+        }
+
+        double interpolateSegmentStamp(const std::vector<double> &times,
+                                       const int left_id,
+                                       const double alpha,
+                                       const double fallback_start_t,
+                                       const double fallback_end_t) {
+            if (times.size() > static_cast<std::size_t>(left_id + 1) &&
+                std::isfinite(times[static_cast<std::size_t>(left_id)]) &&
+                std::isfinite(times[static_cast<std::size_t>(left_id + 1)])) {
+                const double left_t = times[static_cast<std::size_t>(left_id)];
+                const double right_t = std::max(left_t, times[static_cast<std::size_t>(left_id + 1)]);
+                return left_t + alpha * (right_t - left_t);
+            }
+            return fallback_start_t + alpha * std::max(0.0, fallback_end_t - fallback_start_t);
+        }
+
         int validVisibleRegionCount(const traj_opt::TrackingProblem &problem) {
             return static_cast<int>(std::count_if(problem.visible_regions.begin(),
                                                   problem.visible_regions.end(),
@@ -783,6 +813,78 @@ namespace general_planner {
         return true;
     }
 
+    bool GeneralPlanner::densifyTrackingGuideForCorridor(const vec_Vec3f &guide_path,
+                                                         const std::vector<double> &guide_t,
+                                                         vec_Vec3f &dense_path,
+                                                         std::vector<double> &dense_t) const {
+        dense_path.clear();
+        dense_t.clear();
+        if (guide_path.size() < 2) {
+            return false;
+        }
+
+        double max_step = 0.8 * cfg_.corridor_line_max_length;
+        if (!std::isfinite(max_step) || max_step <= 1.0e-3) {
+            max_step = map_manager_ != nullptr ? 4.0 * std::max(0.05, map_manager_->getResolution()) : 0.5;
+        }
+        max_step = std::clamp(max_step, 0.2, std::max(0.2, cfg_.corridor_line_max_length));
+
+        if (!trackingGuidePointSafe(guide_path.front())) {
+            return false;
+        }
+        const bool has_valid_times = guide_t.size() == guide_path.size();
+        double fallback_stamp = has_valid_times && std::isfinite(guide_t.front()) ? guide_t.front() : 0.0;
+        appendGuideTimedUnique(guide_path.front(), fallback_stamp, dense_path, dense_t);
+
+        for (int i = 1; i < static_cast<int>(guide_path.size()); ++i) {
+            const Vec3f start = dense_path.back();
+            const Vec3f goal = guide_path[static_cast<std::size_t>(i)];
+            if (!trackingGuidePointSafe(goal)) {
+                dense_path.clear();
+                dense_t.clear();
+                return false;
+            }
+
+            const double segment_len = (goal - start).norm();
+            if (!std::isfinite(segment_len)) {
+                dense_path.clear();
+                dense_t.clear();
+                return false;
+            }
+            const int segment_num = std::max(1, static_cast<int>(std::ceil(segment_len / max_step)));
+            Vec3f last = start;
+            const double fallback_start_t = fallback_stamp;
+            fallback_stamp += std::max(0.05, segment_len / 2.0);
+            for (int seg = 1; seg <= segment_num; ++seg) {
+                const double alpha = static_cast<double>(seg) / static_cast<double>(segment_num);
+                Vec3f point = start + alpha * (goal - start);
+                if (seg == segment_num) {
+                    point = goal;
+                }
+                if (!trackingGuidePointSafe(point)) {
+                    dense_path.clear();
+                    dense_t.clear();
+                    return false;
+                }
+                if (map_manager_ != nullptr && map_manager_->ready() &&
+                    !map_manager_->isLineFree(last, point, true, cfg_.tracking_unknown_as_occupied)) {
+                    dense_path.clear();
+                    dense_t.clear();
+                    return false;
+                }
+                const double stamp = interpolateSegmentStamp(guide_t,
+                                                             i - 1,
+                                                             alpha,
+                                                             fallback_start_t,
+                                                             fallback_stamp);
+                appendGuideTimedUnique(point, stamp, dense_path, dense_t);
+                last = point;
+            }
+        }
+
+        return dense_path.size() >= 2 && dense_path.size() == dense_t.size();
+    }
+
     void GeneralPlanner::refreshTrackingGuideTiming(traj_opt::TrackingProblem &problem) const {
         problem.guide_t.clear();
         problem.guide_t.reserve(problem.guide_path.size());
@@ -802,6 +904,24 @@ namespace general_planner {
             problem.tail_pvaj.col(1) = tail_vel;
             problem.min_total_duration = std::max(0.6, problem.target_prediction.back().t);
         } else {
+            problem.tail_pvaj.col(1).setZero();
+            problem.min_total_duration = std::max(0.6, problem.guide_t.back());
+        }
+    }
+
+    void GeneralPlanner::refreshTrackingGuideEndpoint(traj_opt::TrackingProblem &problem) const {
+        if (problem.guide_path.empty()) {
+            return;
+        }
+        problem.tail_pvaj.col(0) = problem.guide_path.back();
+        if (!problem.target_prediction.empty()) {
+            Vec3f tail_vel = problem.target_prediction.back().velocity;
+            if (!tail_vel.allFinite() || tail_vel.norm() < 0.05) {
+                tail_vel.setZero();
+            }
+            problem.tail_pvaj.col(1) = tail_vel;
+            problem.min_total_duration = std::max(0.6, problem.target_prediction.back().t);
+        } else if (!problem.guide_t.empty()) {
             problem.tail_pvaj.col(1).setZero();
             problem.min_total_duration = std::max(0.6, problem.guide_t.back());
         }
@@ -858,8 +978,11 @@ namespace general_planner {
     }
 
     bool GeneralPlanner::repairTrackingGuideWithAstar(const vec_Vec3f &guide_path,
-                                                      vec_Vec3f &repaired_path) {
+                                                      const std::vector<double> &guide_t,
+                                                      vec_Vec3f &repaired_path,
+                                                      std::vector<double> &repaired_t) {
         repaired_path.clear();
+        repaired_t.clear();
         if (guide_path.size() < 2 || astar_ptr_ == nullptr) {
             return false;
         }
@@ -867,7 +990,9 @@ namespace general_planner {
             return false;
         }
 
-        appendGuideUnique(guide_path.front(), repaired_path);
+        const bool has_valid_times = guide_t.size() == guide_path.size();
+        double fallback_stamp = has_valid_times && std::isfinite(guide_t.front()) ? guide_t.front() : 0.0;
+        appendGuideTimedUnique(guide_path.front(), fallback_stamp, repaired_path, repaired_t);
         const int astar_flag = path_search::ON_INF_MAP |
                                (cfg_.tracking_unknown_as_occupied
                                     ? path_search::UNKNOWN_AS_OCCUPIED
@@ -885,7 +1010,10 @@ namespace general_planner {
 
             if (map_manager_ == nullptr || !map_manager_->ready() ||
                 map_manager_->isLineFree(start, goal, true, cfg_.tracking_unknown_as_occupied)) {
-                appendGuideUnique(goal, repaired_path);
+                const double stamp = has_valid_times ? guide_t[static_cast<std::size_t>(i)]
+                                                     : fallback_stamp + std::max(0.05, (goal - start).norm() / 2.0);
+                appendGuideTimedUnique(goal, stamp, repaired_path, repaired_t);
+                fallback_stamp = stamp;
                 continue;
             }
 
@@ -909,7 +1037,6 @@ namespace general_planner {
                     full_repair = false;
                     break;
                 }
-                appendGuideUnique(point, repaired_path);
                 last = point;
             }
             if (!full_repair) {
@@ -920,16 +1047,47 @@ namespace general_planner {
                 full_repair = false;
                 break;
             }
-            appendGuideUnique(goal, repaired_path);
+
+            vec_Vec3f segment_path;
+            appendGuideUnique(start, segment_path);
+            for (const auto &point: astar_path) {
+                appendGuideUnique(point, segment_path);
+            }
+            appendGuideUnique(goal, segment_path);
+
+            std::vector<double> segment_accum(segment_path.size(), 0.0);
+            for (int sid = 1; sid < static_cast<int>(segment_path.size()); ++sid) {
+                segment_accum[static_cast<std::size_t>(sid)] =
+                        segment_accum[static_cast<std::size_t>(sid - 1)] +
+                        (segment_path[static_cast<std::size_t>(sid)] -
+                         segment_path[static_cast<std::size_t>(sid - 1)]).norm();
+            }
+            const double start_t = repaired_t.empty() ? fallback_stamp : repaired_t.back();
+            const double goal_t = has_valid_times
+                                      ? std::max(start_t, guide_t[static_cast<std::size_t>(i)])
+                                      : start_t + std::max(0.05, segment_accum.back() / 2.0);
+            for (int sid = 1; sid < static_cast<int>(segment_path.size()); ++sid) {
+                const double ratio = segment_accum.back() > 1.0e-6
+                                         ? segment_accum[static_cast<std::size_t>(sid)] / segment_accum.back()
+                                         : 1.0;
+                appendGuideTimedUnique(segment_path[static_cast<std::size_t>(sid)],
+                                       start_t + ratio * (goal_t - start_t),
+                                       repaired_path,
+                                       repaired_t);
+            }
+            fallback_stamp = goal_t;
         }
 
-        return full_repair && repaired_path.size() >= 2;
+        return full_repair && repaired_path.size() >= 2 && repaired_path.size() == repaired_t.size();
     }
 
     bool GeneralPlanner::truncateTrackingProblemForCorridor(traj_opt::TrackingProblem &problem,
                                                             const vec_Vec3f &candidate_guide,
+                                                            const std::vector<double> &candidate_guide_t,
                                                             PolytopeVec &sfcs) {
-        if (candidate_guide.size() < 2 || problem.viewpoints.empty()) {
+        if (candidate_guide.size() < 2 ||
+            candidate_guide.size() != candidate_guide_t.size() ||
+            problem.viewpoints.empty()) {
             return false;
         }
 
@@ -948,11 +1106,13 @@ namespace general_planner {
             }
 
             vec_Vec3f prefix(candidate_guide.begin(), candidate_guide.begin() + end_id + 1);
+            std::vector<double> prefix_t(candidate_guide_t.begin(), candidate_guide_t.begin() + end_id + 1);
             if (!tryGenerateTrackingCorridor(prefix, sfcs)) {
                 continue;
             }
 
             problem.guide_path = std::move(prefix);
+            problem.guide_t = std::move(prefix_t);
             const std::size_t keep_count = static_cast<std::size_t>(view_id + 1);
             problem.viewpoints.resize(keep_count);
             problem.target_sample_times.resize(keep_count);
@@ -960,7 +1120,7 @@ namespace general_planner {
             if (problem.visible_regions.size() > keep_count) {
                 problem.visible_regions.resize(keep_count);
             }
-            refreshTrackingGuideTiming(problem);
+            refreshTrackingGuideEndpoint(problem);
             if (cfg_.print_log) {
                 ros_ptr_->warn(" -- [GeneralPlanner] Tracking guide truncated to safe local SFC endpoint, kept {} target samples.",
                                keep_count);
@@ -974,18 +1134,67 @@ namespace general_planner {
         problem.sfcs.clear();
         problem.use_corridor = false;
 
+        if (cg_ptr_ != nullptr && !problem.guide_path.empty()) {
+            double guide_length = 0.0;
+            for (int i = 1; i < static_cast<int>(problem.guide_path.size()); ++i) {
+                guide_length += (problem.guide_path[static_cast<std::size_t>(i)] -
+                                 problem.guide_path[static_cast<std::size_t>(i - 1)]).norm();
+            }
+            if (guide_length < 1.0e-4) {
+                const Vec3f hover_point = problem.guide_path.front();
+                if (!trackingGuidePointSafe(hover_point)) {
+                    return false;
+                }
+                Polytope hover_sfc;
+                if (!cg_ptr_->GeneratePolytopeFromPoint(hover_point, hover_sfc)) {
+                    return false;
+                }
+                problem.guide_path.clear();
+                problem.guide_path.emplace_back(hover_point);
+                if (problem.guide_t.empty()) {
+                    const double hover_t = !problem.target_prediction.empty()
+                                               ? problem.target_prediction.back().t
+                                               : std::max(0.6, problem.min_total_duration);
+                    problem.guide_t.emplace_back(std::max(0.6, hover_t));
+                } else {
+                    problem.guide_t.resize(1);
+                    problem.guide_t.front() = std::max(0.6, problem.guide_t.front());
+                }
+                problem.sfcs.emplace_back(hover_sfc);
+                problem.use_corridor = true;
+                refreshTrackingGuideEndpoint(problem);
+                return true;
+            }
+        }
+
         PolytopeVec sfcs;
-        if (tryGenerateTrackingCorridor(problem.guide_path, sfcs)) {
+        vec_Vec3f dense_guide;
+        std::vector<double> dense_guide_t;
+        if (densifyTrackingGuideForCorridor(problem.guide_path, problem.guide_t, dense_guide, dense_guide_t) &&
+            tryGenerateTrackingCorridor(dense_guide, sfcs)) {
+            problem.guide_path = std::move(dense_guide);
+            problem.guide_t = std::move(dense_guide_t);
+            refreshTrackingGuideEndpoint(problem);
             problem.sfcs = std::move(sfcs);
             problem.use_corridor = true;
             return true;
         }
 
         vec_Vec3f astar_repaired;
-        const bool full_astar_repair = repairTrackingGuideWithAstar(problem.guide_path, astar_repaired);
-        if (full_astar_repair && tryGenerateTrackingCorridor(astar_repaired, sfcs)) {
-            problem.guide_path = std::move(astar_repaired);
-            refreshTrackingGuideTiming(problem);
+        std::vector<double> astar_repaired_t;
+        const bool full_astar_repair =
+                repairTrackingGuideWithAstar(problem.guide_path, problem.guide_t, astar_repaired, astar_repaired_t);
+        vec_Vec3f dense_astar_repaired;
+        std::vector<double> dense_astar_repaired_t;
+        if (full_astar_repair &&
+            densifyTrackingGuideForCorridor(astar_repaired,
+                                            astar_repaired_t,
+                                            dense_astar_repaired,
+                                            dense_astar_repaired_t) &&
+            tryGenerateTrackingCorridor(dense_astar_repaired, sfcs)) {
+            problem.guide_path = std::move(dense_astar_repaired);
+            problem.guide_t = std::move(dense_astar_repaired_t);
+            refreshTrackingGuideEndpoint(problem);
             problem.sfcs = std::move(sfcs);
             problem.use_corridor = true;
             if (cfg_.print_log) {
@@ -994,13 +1203,14 @@ namespace general_planner {
             return true;
         }
 
-        if (!astar_repaired.empty() &&
-            truncateTrackingProblemForCorridor(problem, astar_repaired, sfcs)) {
+        if (!dense_astar_repaired.empty() &&
+            truncateTrackingProblemForCorridor(problem, dense_astar_repaired, dense_astar_repaired_t, sfcs)) {
             problem.sfcs = std::move(sfcs);
             problem.use_corridor = true;
             return true;
         }
-        if (truncateTrackingProblemForCorridor(problem, problem.guide_path, sfcs)) {
+        if (!dense_guide.empty() &&
+            truncateTrackingProblemForCorridor(problem, dense_guide, dense_guide_t, sfcs)) {
             problem.sfcs = std::move(sfcs);
             problem.use_corridor = true;
             return true;
@@ -1086,12 +1296,16 @@ namespace general_planner {
         problem.weight_od_far = cfg_.tracking_weight_od_far;
         problem.weight_od_vertical = cfg_.tracking_weight_od_vertical;
         problem.weight_oa = cfg_.tracking_weight_oa;
+        problem.weight_fov = cfg_.tracking_weight_fov;
         problem.weight_oe = cfg_.tracking_weight_oe;
         problem.weight_visibility = cfg_.tracking_weight_oe;
         problem.weight_relative_velocity = cfg_.tracking_weight_relative_velocity;
         problem.weight_tangent_velocity = cfg_.tracking_weight_tangent_velocity;
         problem.weight_viewpoint_attractor = cfg_.tracking_weight_viewpoint_attractor;
         problem.weight_visible_region = cfg_.tracking_weight_visible_region;
+        problem.fov_half_angle = 0.5 * std::max(1.0, cfg_.tracking_fov_horizontal_deg) * M_PI / 180.0;
+        problem.fov_vertical_half_angle = 0.5 * std::max(1.0, cfg_.tracking_fov_vertical_deg) * M_PI / 180.0;
+        problem.fov_margin = std::max(0.0, cfg_.tracking_fov_margin_deg) * M_PI / 180.0;
         if (problem.reacquire_mode) {
             problem.weight_visible_region *= 0.25;
         }
@@ -1129,6 +1343,19 @@ namespace general_planner {
                            out_traj.getTotalDuration(),
                            cfg_.tracking_min_commit_duration);
             return FAILED;
+        }
+
+        {
+            TimeConsuming t_viz("tracking_fov_viz", false);
+            const double fov_range = cfg_.tracking_fov_range > 0.0
+                                         ? cfg_.tracking_fov_range
+                                         : cfg_.tracking_distance + cfg_.tracking_distance_tolerance;
+            ros_ptr_->vizTrackingFov(out_traj,
+                                     out_yaw_traj,
+                                     cfg_.tracking_fov_horizontal_deg,
+                                     cfg_.tracking_fov_vertical_deg,
+                                     fov_range);
+            time_consuming_[VISUALIZATION] += t_viz.stop();
         }
 
         if (!commitTrackingTrajectory(out_traj,
@@ -1301,6 +1528,18 @@ namespace general_planner {
 
     Trajectory GeneralPlanner::getCommittedYawTrajectory() {
         return cmd_traj_info_.yawTraj();
+    }
+
+    double GeneralPlanner::getCommittedTrajectoryRemainingDuration() {
+        cmd_traj_info_.lock();
+        if (cmd_traj_info_.empty()) {
+            cmd_traj_info_.unlock();
+            return 0.0;
+        }
+        const double remaining = cmd_traj_info_.getTotalDuration() -
+                                 (ros_ptr_->getSimTime() - cmd_traj_info_.getStartWallTime());
+        cmd_traj_info_.unlock();
+        return std::max(0.0, remaining);
     }
 
 

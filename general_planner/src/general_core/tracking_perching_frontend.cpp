@@ -35,6 +35,59 @@ void appendUnique(const Vec3f &p, vec_E<Vec3f> &path)
     }
 }
 
+void appendTimedUnique(const Vec3f &p,
+                       const double t,
+                       vec_E<Vec3f> &path,
+                       std::vector<double> &path_t)
+{
+    if (!p.allFinite() || !std::isfinite(t))
+    {
+        return;
+    }
+    if (path.empty() || (path.back() - p).norm() > 1.0e-4)
+    {
+        path.emplace_back(p);
+        path_t.emplace_back(t);
+    }
+    else if (!path_t.empty())
+    {
+        path_t.back() = t;
+    }
+}
+
+void appendTimedPath(const vec_E<Vec3f> &segment_path,
+                     const double start_t,
+                     const double end_t,
+                     vec_E<Vec3f> &path,
+                     std::vector<double> &path_t)
+{
+    if (segment_path.empty())
+    {
+        return;
+    }
+
+    std::vector<double> accum(segment_path.size(), 0.0);
+    for (int i = 1; i < static_cast<int>(segment_path.size()); ++i)
+    {
+        accum[static_cast<std::size_t>(i)] =
+            accum[static_cast<std::size_t>(i - 1)] +
+            (segment_path[static_cast<std::size_t>(i)] -
+             segment_path[static_cast<std::size_t>(i - 1)])
+                .norm();
+    }
+
+    const double total_len = accum.back();
+    const double safe_end_t = std::max(end_t, start_t);
+    for (int i = 0; i < static_cast<int>(segment_path.size()); ++i)
+    {
+        const double ratio = total_len > 1.0e-6
+                                 ? accum[static_cast<std::size_t>(i)] / total_len
+                                 : 1.0;
+        const double stamp = start_t + ratio * (safe_end_t - start_t);
+        appendTimedUnique(segment_path[static_cast<std::size_t>(i)], stamp, path, path_t);
+    }
+}
+
 void logTrackingFrontendFailure(const bool print_log, const std::string &message)
 {
     if (!print_log)
@@ -552,9 +605,10 @@ bool TrackingFrontend::findOcclusionAwareSeed(const Vec3f &last_viewpoint,
     return false;
 }
 
-Vec3f TrackingFrontend::extendToTrackingDistance(const Vec3f &seed,
+bool TrackingFrontend::extendToTrackingViewpoint(const Vec3f &seed,
                                                  const Vec3f &target,
-                                                 const Vec3f &fallback) const
+                                                 const Vec3f &fallback,
+                                                 Vec3f &viewpoint) const
 {
     Vec3f dir = seed - target;
     dir.z() = 0.0;
@@ -566,9 +620,41 @@ Vec3f TrackingFrontend::extendToTrackingDistance(const Vec3f &seed,
     dir = normalizedOr(dir, Vec3f::UnitX());
 
     const double desired = std::max(0.3, cfg_.tracking_distance);
-    Vec3f candidate = target + desired * dir;
-    candidate.z() = target.z() + cfg_.height_offset;
-    return candidate;
+    const double seed_radius = std::max(0.3, (seed - target).head<2>().norm());
+    const double start_radius = std::min(seed_radius, desired);
+    const double res = map_manager_ != nullptr && map_manager_->ready()
+                           ? std::max(0.05, map_manager_->getInfResolution())
+                           : 0.15;
+    const int sample_num =
+        std::max(1, static_cast<int>(std::ceil(std::abs(desired - start_radius) / res)));
+
+    bool found = false;
+    Vec3f best = Vec3f::Zero();
+    for (int i = 0; i <= sample_num; ++i)
+    {
+        const double alpha = static_cast<double>(i) / static_cast<double>(sample_num);
+        const double radius = start_radius + alpha * (desired - start_radius);
+        Vec3f candidate = target + radius * dir;
+        candidate.z() = target.z() + cfg_.height_offset;
+
+        if (!isViewpointVisible(candidate, target))
+        {
+            if (found)
+            {
+                break;
+            }
+            continue;
+        }
+        best = candidate;
+        found = true;
+    }
+
+    if (!found)
+    {
+        return false;
+    }
+    viewpoint = best;
+    return true;
 }
 
 bool TrackingFrontend::searchVisibleViewpointOnGrid(
@@ -844,8 +930,7 @@ bool TrackingFrontend::choosePropagatedViewpoint(const Vec3f &last_viewpoint,
     Vec3f seed = Vec3f::Zero();
     if (findOcclusionAwareSeed(last_viewpoint, last_target.position, target.position, seed))
     {
-        const Vec3f candidate = extendToTrackingDistance(seed, target.position, last_viewpoint);
-        if (repairViewpointEndpoint(candidate, target.position, viewpoint))
+        if (extendToTrackingViewpoint(seed, target.position, last_viewpoint, viewpoint))
         {
             if (appendPathSegment(last_viewpoint, viewpoint, path_to_viewpoint, true))
             {
@@ -860,8 +945,8 @@ bool TrackingFrontend::choosePropagatedViewpoint(const Vec3f &last_viewpoint,
         else
         {
             logTrackingFrontendDebug(cfg_.print_log,
-                                     "Propagated viewpoint repair failed: candidate=" +
-                                         pointToString(candidate) + ", target=" +
+                                     "Propagated viewpoint extension failed: seed=" +
+                                         pointToString(seed) + ", target=" +
                                          pointToString(target.position));
         }
     }
@@ -916,8 +1001,7 @@ bool TrackingFrontend::appendPathSegment(const Vec3f &start,
 
     if (map_manager_ == nullptr || !map_manager_->ready())
     {
-        appendUnique(goal, path);
-        return true;
+        return appendLineSegmentSamples(start, goal, path);
     }
 
     if (!isGuideStartUsable(start))
@@ -950,9 +1034,7 @@ bool TrackingFrontend::appendPathSegment(const Vec3f &start,
                                      "Line-free success for tracking guide segment: start=" +
                                      pointToString(search_start) + ", goal=" + pointToString(goal));
         }
-        appendUnique(search_start, path);
-        appendUnique(goal, path);
-        return true;
+        return appendLineSegmentSamples(search_start, goal, path);
     }
 
     if (!cfg_.use_astar || astar_ == nullptr)
@@ -1039,11 +1121,61 @@ bool TrackingFrontend::appendPathSegment(const Vec3f &start,
                                  std::to_string(astar_path.size()));
     }
     appendUnique(search_start, path);
+    Vec3f last_appended = search_start;
     for (const auto &p : astar_path)
     {
-        appendUnique(p, path);
+        if (!appendLineSegmentSamples(last_appended, p, path))
+        {
+            return false;
+        }
+        last_appended = p;
     }
-    appendUnique(goal, path);
+    return appendLineSegmentSamples(last_appended, goal, path);
+}
+
+bool TrackingFrontend::appendLineSegmentSamples(const Vec3f &start,
+                                                const Vec3f &goal,
+                                                vec_E<Vec3f> &path) const
+{
+    if (!start.allFinite() || !goal.allFinite())
+    {
+        return false;
+    }
+
+    double max_step = 0.25;
+    if (map_manager_ != nullptr && map_manager_->ready())
+    {
+        max_step = std::max(0.05, 1.5 * map_manager_->getInfResolution());
+    }
+    const double len = (goal - start).norm();
+    if (len < 1.0e-4)
+    {
+        appendUnique(goal, path);
+        return true;
+    }
+    const int segment_num = std::max(1, static_cast<int>(std::ceil(len / max_step)));
+
+    appendUnique(start, path);
+    Vec3f last = start;
+    for (int i = 1; i <= segment_num; ++i)
+    {
+        const double alpha = static_cast<double>(i) / static_cast<double>(segment_num);
+        Vec3f point = start + alpha * (goal - start);
+        if (i == segment_num)
+        {
+            point = goal;
+        }
+        if (map_manager_ != nullptr && map_manager_->ready())
+        {
+            if (!isViewpointSafe(point) ||
+                !map_manager_->isLineFree(last, point, true, cfg_.unknown_as_occupied))
+            {
+                return false;
+            }
+        }
+        appendUnique(point, path);
+        last = point;
+    }
     return true;
 }
 
@@ -1094,7 +1226,8 @@ bool TrackingFrontend::buildProblem(const StatePVAJ &head_pvaj,
                                  (problem.reacquire_mode ? "true" : "false"));
 
     vec_E<Vec3f> guide;
-    appendUnique(head_pvaj.col(0), guide);
+    std::vector<double> guide_t;
+    appendTimedUnique(head_pvaj.col(0), target_prediction.front().t, guide, guide_t);
     problem.viewpoints.clear();
     problem.viewpoints.reserve(target_prediction.size());
     problem.visible_regions.clear();
@@ -1105,9 +1238,24 @@ bool TrackingFrontend::buildProblem(const StatePVAJ &head_pvaj,
     used_prediction.reserve(target_prediction.size());
 
     Vec3f seed = head_pvaj.col(0);
-    for (std::size_t i = 0; i < target_prediction.size(); ++i)
+    problem.viewpoints.emplace_back(seed);
+    problem.target_sample_times.emplace_back(target_prediction.front().t);
+    used_prediction.emplace_back(target_prediction.front());
+    if (cfg_.use_visible_region)
     {
-        const auto &last_target = used_prediction.empty() ? target_prediction.front() : used_prediction.back();
+        traj_opt::TrackingVisibleRegion region;
+        region.t = target_prediction.front().t;
+        region.target_position = target_prediction.front().position;
+        region.visible_point = seed;
+        region.theta = 0.0;
+        region.confidence = 0.0;
+        region.valid = false;
+        problem.visible_regions.emplace_back(region);
+    }
+
+    for (std::size_t i = 1; i < target_prediction.size(); ++i)
+    {
+        const auto &last_target = used_prediction.back();
         const auto &target = target_prediction[i];
         logTrackingFrontendDebug(cfg_.print_log,
                                  "BuildProblem sample " + std::to_string(i) +
@@ -1134,10 +1282,11 @@ bool TrackingFrontend::buildProblem(const StatePVAJ &head_pvaj,
                                        ", viewpoint=" + pointToString(viewpoint) + ".");
             return false;
         }
-        for (const auto &p : path_to_viewpoint)
-        {
-            appendUnique(p, guide);
-        }
+        appendTimedPath(path_to_viewpoint,
+                        guide_t.empty() ? target_prediction.front().t : guide_t.back(),
+                        target.t,
+                        guide,
+                        guide_t);
         if (cfg_.use_visible_region)
         {
             traj_opt::TrackingVisibleRegion region;
@@ -1170,15 +1319,7 @@ bool TrackingFrontend::buildProblem(const StatePVAJ &head_pvaj,
     }
 
     problem.guide_path = guide;
-    problem.guide_t.clear();
-    problem.guide_t.reserve(guide.size());
-    double stamp = 0.0;
-    problem.guide_t.emplace_back(stamp);
-    for (int i = 1; i < static_cast<int>(guide.size()); ++i)
-    {
-        stamp += std::max(0.1, (guide[i] - guide[i - 1]).norm() / 2.0);
-        problem.guide_t.emplace_back(stamp);
-    }
+    problem.guide_t = guide_t;
 
     problem.tail_pvaj.setZero();
     problem.tail_pvaj.col(0) = guide.back();
@@ -1193,7 +1334,7 @@ bool TrackingFrontend::buildProblem(const StatePVAJ &head_pvaj,
         problem.tail_pvaj.col(1) = tail_vel;
     }
     problem.min_total_duration = std::max(0.6, used_prediction.back().t);
-    return problem.guide_path.size() >= 2;
+    return !problem.guide_path.empty() && problem.guide_path.size() == problem.guide_t.size();
 }
 
 PerchingFrontend::PerchingFrontend(const Config &cfg,

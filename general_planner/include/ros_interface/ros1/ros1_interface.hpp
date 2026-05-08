@@ -50,6 +50,7 @@ namespace ros_interface {
             guide_path_pub_ = nh_.advertise<visualization_msgs::MarkerArray>("visualization/frontend_path", 100);
 
             yaw_traj_pub_ = nh_.advertise<visualization_msgs::MarkerArray>("visualization/yaw_traj", 100);
+            fov_pub_ = nh_.advertise<visualization_msgs::MarkerArray>("visualization/tracking_fov", 100);
 
             /*=============================FOR A* debug ========================================*/
             astar_mkr_pub_ = nh_.advertise<visualization_msgs::MarkerArray>("visualization/astar_debug", 100);
@@ -259,6 +260,29 @@ namespace ros_interface {
             visualization_msgs::MarkerArray mkr_arr;
             Ros1Adapter::addYawTrajectoryToMarkerArray(mkr_arr, pos_traj, yaw_traj);
             yaw_traj_pub_.publish(mkr_arr);
+        }
+
+        void vizTrackingFov(const Trajectory &pos_traj,
+                            const Trajectory &yaw_traj,
+                            const double &horizontal_fov_deg,
+                            const double &vertical_fov_deg,
+                            const double &range) override {
+            if (!visualization_en_ || pos_traj.empty() || yaw_traj.empty()) {
+                return;
+            }
+            if (fov_pub_.getNumSubscribers() <= 0) {
+                return;
+            }
+
+            Ros1Adapter::deleteAllMarkerArray(fov_pub_);
+            visualization_msgs::MarkerArray mkr_arr;
+            Ros1Adapter::addTrackingFovToMarkerArray(mkr_arr,
+                                                     pos_traj,
+                                                     yaw_traj,
+                                                     horizontal_fov_deg,
+                                                     vertical_fov_deg,
+                                                     range);
+            fov_pub_.publish(mkr_arr);
         }
 
 

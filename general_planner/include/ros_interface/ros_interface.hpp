@@ -111,6 +111,12 @@ namespace ros_interface{
 
         virtual void vizYawTraj(const Trajectory & pos_traj, const Trajectory & yaw_traj) = 0;
 
+        virtual void vizTrackingFov(const Trajectory &pos_traj,
+                                    const Trajectory &yaw_traj,
+                                    const double &horizontal_fov_deg,
+                                    const double &vertical_fov_deg,
+                                    const double &range) {}
+
         /*For Astar debug ==================================*/
         virtual void vizAstarBoundingBox(const Vec3f & bbox_min, const Vec3f & bbox_max) = 0;
 

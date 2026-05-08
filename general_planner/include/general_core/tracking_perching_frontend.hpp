@@ -75,9 +75,10 @@ private:
                                 const super_utils::Vec3f &last_target,
                                 const super_utils::Vec3f &target,
                                 super_utils::Vec3f &seed) const;
-    super_utils::Vec3f extendToTrackingDistance(const super_utils::Vec3f &seed,
-                                                const super_utils::Vec3f &target,
-                                                const super_utils::Vec3f &fallback) const;
+    bool extendToTrackingViewpoint(const super_utils::Vec3f &seed,
+                                   const super_utils::Vec3f &target,
+                                   const super_utils::Vec3f &fallback,
+                                   super_utils::Vec3f &viewpoint) const;
     bool searchVisibleViewpointOnGrid(const super_utils::Vec3f &start,
                                       const traj_opt::DynamicTargetState &target,
                                       super_utils::Vec3f &viewpoint,
@@ -92,6 +93,9 @@ private:
                            const super_utils::Vec3f &goal,
                            super_utils::vec_E<super_utils::Vec3f> &path,
                            bool verbose = true) const;
+    bool appendLineSegmentSamples(const super_utils::Vec3f &start,
+                                  const super_utils::Vec3f &goal,
+                                  super_utils::vec_E<super_utils::Vec3f> &path) const;
 
 private:
     Config cfg_;
