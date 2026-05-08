@@ -102,6 +102,12 @@ namespace fsm {
         double tracking_static_velocity_epsilon{0.05};
         double tracking_static_yaw_epsilon{0.05};
         double tracking_static_replan_remaining_time{0.8};
+        double tracking_static_task_position_epsilon{0.12};
+        double tracking_static_task_velocity_epsilon{0.10};
+        double tracking_static_prediction_filter_velocity_epsilon{0.08};
+        double tracking_static_safety_check_horizon{1.5};
+        double tracking_static_safety_check_dt{0.12};
+        double tracking_static_replan_log_period{1.0};
         double task_timeout{0.6};
         double yaw_dot_max{};
         bool swarm_enable{false};
@@ -149,6 +155,13 @@ namespace fsm {
             loader.LoadParam("fsm/tracking_static_velocity_epsilon", tracking_static_velocity_epsilon, 0.05);
             loader.LoadParam("fsm/tracking_static_yaw_epsilon", tracking_static_yaw_epsilon, 0.05);
             loader.LoadParam("fsm/tracking_static_replan_remaining_time", tracking_static_replan_remaining_time, 0.8);
+            loader.LoadParam("fsm/tracking_static_task_position_epsilon", tracking_static_task_position_epsilon, 0.12);
+            loader.LoadParam("fsm/tracking_static_task_velocity_epsilon", tracking_static_task_velocity_epsilon, 0.10);
+            loader.LoadParam("fsm/tracking_static_prediction_filter_velocity_epsilon",
+                             tracking_static_prediction_filter_velocity_epsilon, 0.08);
+            loader.LoadParam("fsm/tracking_static_safety_check_horizon", tracking_static_safety_check_horizon, 1.5);
+            loader.LoadParam("fsm/tracking_static_safety_check_dt", tracking_static_safety_check_dt, 0.12);
+            loader.LoadParam("fsm/tracking_static_replan_log_period", tracking_static_replan_log_period, 1.0);
             loader.LoadParam("fsm/task_timeout", task_timeout, 0.6);
             loader.LoadParam("general_planner/swarm/enable", swarm_enable, false);
             loader.LoadParam("general_planner/swarm/drone_id", swarm_drone_id, -1);

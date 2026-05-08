@@ -18,6 +18,12 @@ fsm:
   tracking_static_velocity_epsilon: 0.05
   tracking_static_yaw_epsilon: 0.05
   tracking_static_replan_remaining_time: 0.8
+  tracking_static_task_position_epsilon: 0.12
+  tracking_static_task_velocity_epsilon: 0.10
+  tracking_static_prediction_filter_velocity_epsilon: 0.08
+  tracking_static_safety_check_horizon: 1.5
+  tracking_static_safety_check_dt: 0.12
+  tracking_static_replan_log_period: 1.0
   task_timeout: 1.0
   replan_rate: 15.0
   cmd_topic: "/drone_1/planning/pos_cmd"
@@ -67,15 +73,17 @@ general_planner:
     weight_od_far: 5.0
     weight_od_vertical: 8.0
     weight_oa: 5.0
-    weight_fov: 20.0
     weight_oe: 1.0
     weight_relative_velocity: 1.0
     weight_tangent_velocity: 5.0
     weight_viewpoint_attractor: 50.0
     weight_visible_region: 3.0
+    static_distance_tolerance_scale: 0.35
+    static_height_tolerance_scale: 0.5
+    static_tangent_weight_scale: 3.0
+    static_tail_speed_epsilon: 0.08
     fov_horizontal_deg: 90.0
     fov_vertical_deg: 60.0
-    fov_margin_deg: 5.0
     fov_range: 4.0
     unknown_as_occupied: false
     use_visible_region: true
@@ -88,7 +96,7 @@ traj_opt:
     print_optimizer_log: false
 
   boundary:
-    max_vel: 5.0
+    max_vel: 2.5
     max_acc: 5.0
     max_jerk: 120.0
     max_omg: 2.5

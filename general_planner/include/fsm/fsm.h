@@ -77,6 +77,7 @@ namespace fsm {
         double tracking_target_rcv_time_{-1.0};
         double perching_surface_rcv_time_{-1.0};
         bool task_new_{false};
+        double last_static_tracking_replan_log_time_{-1.0};
         std::mutex task_mutex_;
 
         // execution states
@@ -86,6 +87,8 @@ namespace fsm {
             YAWING,
             GENERATE_TRAJ,
             FOLLOW_TRAJ,
+            STATIC_TRACKING,
+            HOLD_TRACKING,
             EMER_STOP
         };
 
@@ -94,7 +97,10 @@ namespace fsm {
                 "WAIT_GOAL",
                 "YAWING",
                 "GENERATE_TRAJ",
-                "FOLLOW_TRAJ", "EMER_STOP"
+                "FOLLOW_TRAJ",
+                "STATIC_TRACKING",
+                "HOLD_TRACKING",
+                "EMER_STOP"
         };
 
 
@@ -184,12 +190,21 @@ namespace fsm {
 
         bool shouldGenerateAfterTrajFinish();
 
+        bool trackingExecutionState() const;
+
+        void logStaticTrackingReplanDecision(const std::string &reason);
+
+        bool trackingCommittedTrajectoryUnsafe() const;
+
+        traj_opt::DynamicTargetStates filterStaticTrackingPrediction(
+                const traj_opt::DynamicTargetStates &prediction) const;
+
         bool trackingPredictionChanged(const traj_opt::DynamicTargetStates &a,
                                        const traj_opt::DynamicTargetStates &b) const;
 
         bool trackingPredictionStatic(const traj_opt::DynamicTargetStates &prediction) const;
 
-        bool shouldSkipStaticTrackingReplan(const traj_opt::DynamicTargetStates &prediction) const;
+        bool shouldSkipStaticTrackingReplan(const traj_opt::DynamicTargetStates &prediction);
 
         void setTrackingTargetPrediction(const traj_opt::DynamicTargetStates &prediction);
 

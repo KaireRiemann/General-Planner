@@ -29,6 +29,12 @@
 using namespace super_utils;
 
 namespace fsm {
+    namespace {
+        double yawDiff(const double lhs, const double rhs) {
+            return std::atan2(std::sin(lhs - rhs), std::cos(lhs - rhs));
+        }
+    }
+
     Fsm::~Fsm() {
         write_time_.close();
     }
@@ -49,7 +55,11 @@ namespace fsm {
             return;
         }
 
-        if (machine_state_ != FOLLOW_TRAJ) {
+        if (trackingMode()) {
+            if (!trackingExecutionState()) {
+                return;
+            }
+        } else if (machine_state_ != FOLLOW_TRAJ) {
             return;
         }
 
@@ -65,6 +75,7 @@ namespace fsm {
         TimeConsuming replan_once_time("replan_once_time", false);
 
         RET_CODE ret_code = FAILED;
+        bool replan_tracking_static = false;
         if (state2stateMode()) {
             planner_ptr_->getMapManager()->getNearestInfCellNot(GridType::OCCUPIED, gi_.goal_p, gi_.goal_p, 3.0);
             ret_code = planner_ptr_->ReplanOnce(gi_.goal_p, gi_.goal_yaw, gi_.new_goal);
@@ -73,7 +84,11 @@ namespace fsm {
             if (!getTrackingTargetPrediction(prediction)) {
                 return;
             }
+            replan_tracking_static = trackingPredictionStatic(prediction);
             if (shouldSkipStaticTrackingReplan(prediction)) {
+                if (machine_state_ != HOLD_TRACKING) {
+                    ChangeState("StaticTrackingHold", HOLD_TRACKING);
+                }
                 return;
             }
             ret_code = planner_ptr_->ReplanTrackingOnce(prediction, task_new_);
@@ -96,6 +111,13 @@ namespace fsm {
             gi_.new_goal = false;
             task_new_ = false;
             publishPolyTraj();
+            if (trackingMode()) {
+                if (replan_tracking_static) {
+                    ChangeState("ReplanTimerCallback", STATIC_TRACKING);
+                } else if (machine_state_ != FOLLOW_TRAJ) {
+                    ChangeState("ReplanTimerCallback", FOLLOW_TRAJ);
+                }
+            }
         }
 
         planner_ptr_->getModuleTimeConsuming(log_module_time);
@@ -157,6 +179,7 @@ namespace fsm {
                     return;
                 }
                 int retcode = FAILED;
+                bool planned_tracking_static = false;
                 if (state2stateMode()) {
                     retcode = planner_ptr_->PlanFromRest(gi_.goal_p, gi_.goal_yaw, gi_.new_goal);
                 } else if (trackingMode()) {
@@ -164,6 +187,7 @@ namespace fsm {
                     if (!getTrackingTargetPrediction(prediction)) {
                         return;
                     }
+                    planned_tracking_static = trackingPredictionStatic(prediction);
                     retcode = planner_ptr_->PlanTrackingFromRest(prediction, task_new_);
                 } else if (perchingMode()) {
                     traj_opt::PerchingSurfaceState surface;
@@ -188,7 +212,8 @@ namespace fsm {
 
                     publishPolyTraj();
 
-                    ChangeState("MainFsmCallback", FOLLOW_TRAJ);
+                    ChangeState("MainFsmCallback",
+                                trackingMode() && planned_tracking_static ? STATIC_TRACKING : FOLLOW_TRAJ);
                 } else {
                     cout << YELLOW << " -- [Fsm] PlanFromRest failed, try replan." << RESET << endl;
                     // ros::Duration(0.1).sleep();
@@ -197,6 +222,11 @@ namespace fsm {
                 break;
             }
             case FOLLOW_TRAJ: {
+                publishCurPoseToPath();
+                break;
+            }
+            case STATIC_TRACKING:
+            case HOLD_TRACKING: {
                 publishCurPoseToPath();
                 break;
             }
@@ -227,6 +257,12 @@ namespace fsm {
 
     bool Fsm::perchingMode() const {
         return cfg_.task_mode == TaskMode::PERCHING;
+    }
+
+    bool Fsm::trackingExecutionState() const {
+        return machine_state_ == FOLLOW_TRAJ ||
+               machine_state_ == STATIC_TRACKING ||
+               machine_state_ == HOLD_TRACKING;
     }
 
     void Fsm::setTaskModeFromString(const std::string &mode) {
@@ -279,6 +315,95 @@ namespace fsm {
         return activeTaskReady();
     }
 
+    void Fsm::logStaticTrackingReplanDecision(const std::string &reason) {
+        const double now = ros_ptr_->getSimTime();
+        const double log_period = std::max(0.0, cfg_.tracking_static_replan_log_period);
+        if (last_static_tracking_replan_log_time_ >= 0.0 &&
+            now - last_static_tracking_replan_log_time_ < log_period) {
+            return;
+        }
+        last_static_tracking_replan_log_time_ = now;
+        ros_ptr_->info(" -- [Fsm] Static tracking replan decision: {}", reason);
+    }
+
+    bool Fsm::trackingCommittedTrajectoryUnsafe() const {
+        const auto map_manager = planner_ptr_->getMapManager();
+        if (map_manager == nullptr || !map_manager->ready()) {
+            return false;
+        }
+
+        const Trajectory traj = planner_ptr_->getCommittedPositionTrajectory();
+        if (traj.empty()) {
+            return true;
+        }
+
+        const double remaining = planner_ptr_->getCommittedTrajectoryRemainingDuration();
+        if (remaining <= 1.0e-3) {
+            return false;
+        }
+
+        const double current_t = std::clamp(ros_ptr_->getSimTime() - traj.start_WT,
+                                            0.0,
+                                            traj.getTotalDuration());
+        const double horizon = std::min(remaining, std::max(0.0, cfg_.tracking_static_safety_check_horizon));
+        const double dt = std::max(0.05, cfg_.tracking_static_safety_check_dt);
+
+        Vec3f last = traj.getPos(current_t);
+        if (!last.allFinite()) {
+            return true;
+        }
+
+        for (double offset = 0.0; offset <= horizon + 1.0e-6; offset += dt) {
+            const double t = std::min(traj.getTotalDuration(), current_t + offset);
+            const Vec3f pos = traj.getPos(t);
+            if (!pos.allFinite() || !map_manager->insideLocalMap(pos)) {
+                return true;
+            }
+            const GridType grid_type = map_manager->getInfGridType(pos);
+            if (grid_type == GridType::OCCUPIED || grid_type == GridType::OUT_OF_MAP) {
+                return true;
+            }
+            if ((pos - last).norm() > 1.0e-4 &&
+                !map_manager->isLineFree(last, pos, true, false)) {
+                return true;
+            }
+            last = pos;
+        }
+        return false;
+    }
+
+    traj_opt::DynamicTargetStates Fsm::filterStaticTrackingPrediction(
+            const traj_opt::DynamicTargetStates &prediction) const {
+        if (prediction.empty()) {
+            return prediction;
+        }
+
+        traj_opt::DynamicTargetStates filtered = prediction;
+        const Vec3f ref = filtered.front().position;
+        double max_span = 0.0;
+        double max_vel = 0.0;
+        for (const auto &state : filtered) {
+            max_span = std::max(max_span, (state.position - ref).norm());
+            max_vel = std::max(max_vel, state.velocity.norm());
+        }
+
+        const double pos_eps = std::max(0.0, cfg_.tracking_static_position_epsilon);
+        const double vel_eps = std::max(0.0, cfg_.tracking_static_prediction_filter_velocity_epsilon);
+        if (max_span > pos_eps && max_vel > vel_eps) {
+            return filtered;
+        }
+
+        const double static_yaw = filtered.front().yaw;
+        for (auto &state : filtered) {
+            state.position = ref;
+            state.velocity.setZero();
+            state.acceleration.setZero();
+            state.yaw = static_yaw;
+            state.yaw_rate = 0.0;
+        }
+        return filtered;
+    }
+
     bool Fsm::trackingPredictionChanged(const traj_opt::DynamicTargetStates &a,
                                         const traj_opt::DynamicTargetStates &b) const {
         if (a.empty() || b.empty()) {
@@ -293,15 +418,21 @@ namespace fsm {
         const double vel_eps = std::max(0.0, cfg_.tracking_static_velocity_epsilon);
         const double yaw_eps = std::max(0.0, cfg_.tracking_static_yaw_epsilon);
 
+        const bool both_static = trackingPredictionStatic(a) && trackingPredictionStatic(b);
+        const double task_pos_eps = both_static
+                                        ? std::max(pos_eps, cfg_.tracking_static_task_position_epsilon)
+                                        : pos_eps;
+        const double task_vel_eps = both_static
+                                        ? std::max(vel_eps, cfg_.tracking_static_task_velocity_epsilon)
+                                        : vel_eps;
         const auto yawChanged = [yaw_eps](double lhs, double rhs) {
-            const double err = std::atan2(std::sin(lhs - rhs), std::cos(lhs - rhs));
-            return std::abs(err) > yaw_eps;
+            return std::abs(yawDiff(lhs, rhs)) > yaw_eps;
         };
 
-        return (a_front.position - b_front.position).norm() > pos_eps ||
-               (a_back.position - b_back.position).norm() > pos_eps ||
-               (a_front.velocity - b_front.velocity).norm() > vel_eps ||
-               (a_back.velocity - b_back.velocity).norm() > vel_eps ||
+        return (a_front.position - b_front.position).norm() > task_pos_eps ||
+               (a_back.position - b_back.position).norm() > task_pos_eps ||
+               (a_front.velocity - b_front.velocity).norm() > task_vel_eps ||
+               (a_back.velocity - b_back.velocity).norm() > task_vel_eps ||
                yawChanged(a_front.yaw, b_front.yaw) ||
                yawChanged(a_back.yaw, b_back.yaw);
     }
@@ -323,28 +454,46 @@ namespace fsm {
         return true;
     }
 
-    bool Fsm::shouldSkipStaticTrackingReplan(const traj_opt::DynamicTargetStates &prediction) const {
-        if (task_new_ || !trackingPredictionStatic(prediction)) {
+    bool Fsm::shouldSkipStaticTrackingReplan(const traj_opt::DynamicTargetStates &prediction) {
+        if (!trackingPredictionStatic(prediction)) {
+            logStaticTrackingReplanDecision("target prediction is moving");
+            return false;
+        }
+        if (task_new_) {
+            logStaticTrackingReplanDecision("task_new is true; target moved outside static hold noise band");
             return false;
         }
         const double remaining = planner_ptr_->getCommittedTrajectoryRemainingDuration();
-        return remaining > std::max(0.0, cfg_.tracking_static_replan_remaining_time);
+        const double replan_time = std::max(0.0, cfg_.tracking_static_replan_remaining_time);
+        if (remaining <= replan_time) {
+            logStaticTrackingReplanDecision(
+                    fmt::format("trajectory ending soon: remaining={:.3f}s <= {:.3f}s", remaining, replan_time));
+            return false;
+        }
+        if (trackingCommittedTrajectoryUnsafe()) {
+            logStaticTrackingReplanDecision("committed trajectory has safety risk");
+            return false;
+        }
+        logStaticTrackingReplanDecision(
+                fmt::format("skip static hold replan: remaining={:.3f}s, target static, trajectory safe", remaining));
+        return true;
     }
 
     void Fsm::setTrackingTargetPrediction(const traj_opt::DynamicTargetStates &prediction) {
         if (prediction.empty()) {
             return;
         }
+        const traj_opt::DynamicTargetStates filtered_prediction = filterStaticTrackingPrediction(prediction);
         bool changed = true;
         {
             std::lock_guard<std::mutex> lock(task_mutex_);
-            changed = trackingPredictionChanged(tracking_target_prediction_, prediction);
-            tracking_target_prediction_ = prediction;
+            changed = trackingPredictionChanged(tracking_target_prediction_, filtered_prediction);
+            tracking_target_prediction_ = filtered_prediction;
             tracking_target_rcv_time_ = ros_ptr_->getSimTime();
             task_new_ = task_new_ || changed;
         }
-        gi_.goal_p = prediction.back().position;
-        gi_.goal_yaw = prediction.back().yaw;
+        gi_.goal_p = filtered_prediction.back().position;
+        gi_.goal_yaw = filtered_prediction.back().yaw;
         gi_.new_goal = gi_.new_goal || changed;
         started_ = true;
     }

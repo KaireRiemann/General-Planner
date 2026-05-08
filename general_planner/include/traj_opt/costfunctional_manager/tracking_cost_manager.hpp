@@ -92,12 +92,6 @@ public:
                                         grad_position,
                                         grad_target,
                                         grad_yaw);
-        cost += addFovCost(position,
-                           yaw,
-                           target,
-                           grad_position,
-                           grad_target,
-                           grad_yaw);
         cost += addStabilityCost(position,
                                  velocity,
                                  target,
@@ -275,28 +269,6 @@ private:
                                                                           grad_position,
                                                                           grad_yaw,
                                                                           &grad_target);
-    }
-
-    double addFovCost(const Eigen::Vector3d &position,
-                      double yaw,
-                      const traj_opt::DynamicTargetState &target,
-                      Eigen::Vector3d &grad_position,
-                      Eigen::Vector3d &grad_target,
-                      double &grad_yaw) const
-    {
-        cost_functional::TrackingFovConfig config;
-        config.half_angle = problem_.fov_half_angle;
-        config.vertical_half_angle = problem_.fov_vertical_half_angle;
-        config.margin = problem_.fov_margin;
-        config.weight = problem_.weight_fov;
-        config.smooth_eps = cfg_->smooth_eps;
-        return cost_functional::accumulateTrackingFovPenalty(position,
-                                                             yaw,
-                                                             target.position,
-                                                             config,
-                                                             grad_position,
-                                                             grad_yaw,
-                                                             &grad_target);
     }
 
     double addStabilityCost(const Eigen::Vector3d &position,

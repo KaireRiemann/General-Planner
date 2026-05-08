@@ -394,9 +394,21 @@ namespace path_search {
             if (searching_horizon > 0 && current->distance_score > searching_horizon / md_.resolution) {
                 GridNodePtr local_goal = current;
                 if (md_.unknown_as_occ && !frontier_queue.empty()) {
-                    local_goal = frontier_queue.top()->father_ptr;
-                    if (local_goal->distance_to_goal > current->distance_to_goal) {
-                        local_goal = current;
+                    while (!frontier_queue.empty()) {
+                        const GridNodePtr frontier = frontier_queue.top();
+                        frontier_queue.pop();
+                        rog_map::Vec3f pos;
+                        globalIndexToPos(frontier->id_g, pos);
+                        if ((pos - start_pt).norm() < 1.0) {
+                            continue;
+                        }
+                        const GridNodePtr known_frontier =
+                                frontier->father_ptr == nullptr ? frontier : frontier->father_ptr;
+                        if (known_frontier != nullptr &&
+                            known_frontier->distance_to_goal <= current->distance_to_goal) {
+                            local_goal = known_frontier;
+                        }
+                        break;
                     }
                 }
                 retrievePath(local_goal, node_path);
@@ -451,10 +463,6 @@ namespace path_search {
                         }
 
                         if (neighbor_type == OCCUPIED || neighbor_type == OUT_OF_MAP) {
-                            continue;
-                        }
-
-                        if (md_.unknown_as_occ && neighbor_type == UNKNOWN) {
                             continue;
                         }
 
@@ -521,18 +529,19 @@ namespace path_search {
         }
 
         if (md_.unknown_as_occ && !frontier_queue.empty()) {
-            GridNodePtr local_goal;
+            GridNodePtr local_goal = nullptr;
             while (!frontier_queue.empty()) {
-                local_goal = frontier_queue.top();
+                const GridNodePtr frontier = frontier_queue.top();
                 frontier_queue.pop();
                 rog_map::Vec3f pos;
-                globalIndexToPos(local_goal->id_g, pos);
+                globalIndexToPos(frontier->id_g, pos);
                 if ((pos - start_pt).norm() < 1.0) {
                     continue;
                 }
+                local_goal = frontier->father_ptr == nullptr ? frontier : frontier->father_ptr;
                 break;
             }
-            if (frontier_queue.empty()) {
+            if (local_goal == nullptr) {
                 cout << rog_map::RED << " -- [A*] Frontier queue is empty, return." << rog_map::RESET << endl;
                 return NO_PATH;
             }

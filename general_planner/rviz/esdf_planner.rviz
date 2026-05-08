@@ -5,8 +5,6 @@ Panels:
     Property Tree Widget:
       Expanded:
         - /Global Options1
-        - /Grid1
-        - /Sensing1
         - /Sensing1/Odometry1/Shape1
         - /Sensing1/Odometry1/Covariance1
         - /Sensing1/GlobalCloud1/Autocompute Value Bounds1
@@ -19,6 +17,7 @@ Panels:
         - /Frontend1/ExpSfc1/Namespaces1
         - /Frontend1/FreeSfc1
         - /Frontend1/FreeSfc1/Namespaces1
+        - /Backend1
         - /Backend1/BackupTraj1
         - /Backend1/BackupTraj1/Namespaces1
         - /Backend1/Path1
@@ -32,12 +31,9 @@ Panels:
         - /Debug1/sfc1
         - /Debug1/sfc1/Namespaces1
         - /MarkerArray3/Namespaces1
-        - /MarkerArray4
         - /MarkerArray4/Namespaces1
-        - /MarkerArray6
-        - /Path1
       Splitter Ratio: 0.5484460592269897
-    Tree Height: 367
+    Tree Height: 948
   - Class: rviz/Selection
     Name: Selection
   - Class: rviz/Tool Properties
@@ -257,7 +253,8 @@ Visualization Manager:
           Marker Topic: /fsm_node/visualization/frontend_path
           Name: Astar
           Namespaces:
-            {}
+            guide_path: true
+            guide_path_line: true
           Queue Size: 100
           Value: true
         - Class: rviz/MarkerArray
@@ -265,7 +262,8 @@ Visualization Manager:
           Marker Topic: /fsm_node/visualization/goal
           Name: Goal
           Namespaces:
-            {}
+            goal: true
+            goal_line: true
           Queue Size: 100
           Value: true
         - Class: rviz/MarkerArray
@@ -301,7 +299,8 @@ Visualization Manager:
           Marker Topic: /fsm_node/visualization/exp_traj
           Name: ESDFTraj
           Namespaces:
-            {}
+            plain_traj: true
+            plain_traj_waypoints: true
           Queue Size: 100
           Value: true
         - Class: rviz/MarkerArray
@@ -329,7 +328,7 @@ Visualization Manager:
           Head Length: 0.20000000298023224
           Length: 0.30000001192092896
           Line Style: Billboards
-          Line Width: 0.30000001192092896
+          Line Width: 0.15000000596046448
           Name: Path
           Offset:
             X: 0
@@ -369,7 +368,7 @@ Visualization Manager:
           Marker Topic: /fsm_node/visualization/yaw_traj
           Name: Yaw
           Namespaces:
-            {}
+            yaw_traj: true
           Queue Size: 100
           Value: true
       Enabled: true
@@ -407,8 +406,6 @@ Visualization Manager:
       Marker Topic: /fsm_node/rog_map/map_bound
       Name: MarkerArray
       Namespaces:
-        ESDF Map Text: true
-        ESDF Updating Range: true
         Local Map Origin: true
         Local Map Origin_text: true
         Local Map Range: true
@@ -496,7 +493,7 @@ Visualization Manager:
       Head Length: 0.20000000298023224
       Length: 0.30000001192092896
       Line Style: Billboards
-      Line Width: 0.20000000298023224
+      Line Width: 0.15000000596046448
       Name: Path
       Offset:
         X: 0
@@ -528,7 +525,7 @@ Visualization Manager:
   Views:
     Current:
       Class: rviz/Orbit
-      Distance: 54.977272033691406
+      Distance: 44.347591400146484
       Enable Stereo Rendering:
         Stereo Eye Separation: 0.05999999865889549
         Stereo Focal Distance: 1
@@ -536,9 +533,9 @@ Visualization Manager:
         Value: false
       Field of View: 0.7853981852531433
       Focal Point:
-        X: -0.2669336199760437
-        Y: -1.6860289573669434
-        Z: -3.814697265625e-06
+        X: 2.655574321746826
+        Y: -1.2122021913528442
+        Z: 0.3752135634422302
       Focal Shape Fixed Size: false
       Focal Shape Size: 0.05000000074505806
       Invert Z Axis: false

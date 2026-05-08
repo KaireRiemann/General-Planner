@@ -230,7 +230,8 @@ inline double accumulateBallLineOfSightESDFPenalty(const MapT *map,
 
         double penalty = 0.0;
         double penalty_grad = 0.0;
-        if (!smoothedL1(violation, smooth_eps, penalty, penalty_grad))
+        (void)smooth_eps;
+        if (!positivePartCubic(violation, penalty, penalty_grad))
         {
             continue;
         }

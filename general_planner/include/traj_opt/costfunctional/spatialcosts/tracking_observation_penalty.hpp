@@ -27,15 +27,6 @@ struct TrackingObservationAngleConfig
     double weight{0.0};
 };
 
-struct TrackingFovConfig
-{
-    double half_angle{0.7853981633974483};
-    double vertical_half_angle{0.5235987755982988};
-    double margin{0.08726646259971647};
-    double weight{0.0};
-    double smooth_eps{0.01};
-};
-
 struct TrackingVelocityConfig
 {
     double weight_relative{0.0};
@@ -140,81 +131,6 @@ inline double accumulateTrackingObservationAnglePenalty(const Eigen::Vector3d &p
         *grad_target_position -= local_grad;
     }
     return config.weight * err * err;
-}
-
-inline double accumulateTrackingFovPenalty(const Eigen::Vector3d &position,
-                                           const double yaw,
-                                           const Eigen::Vector3d &target_position,
-                                           const TrackingFovConfig &config,
-                                           Eigen::Vector3d &grad_position,
-                                           double &grad_yaw,
-                                           Eigen::Vector3d *grad_target_position = nullptr)
-{
-    if (config.weight <= 0.0)
-    {
-        return 0.0;
-    }
-
-    const double horizontal_limit = std::max(0.0, config.half_angle - std::max(0.0, config.margin));
-    const double vertical_limit = std::max(0.0, config.vertical_half_angle - std::max(0.0, config.margin));
-    if (horizontal_limit <= 1.0e-6 && vertical_limit <= 1.0e-6)
-    {
-        return 0.0;
-    }
-
-    const Eigen::Vector3d dir = target_position - position;
-    const double r2 = dir.head<2>().squaredNorm();
-    const double horizontal = std::sqrt(r2);
-    if (r2 < 1.0e-8 && std::abs(dir.z()) < 1.0e-8)
-    {
-        return 0.0;
-    }
-
-    Eigen::Vector3d local_grad = Eigen::Vector3d::Zero();
-    double cost = 0.0;
-    double f = 0.0;
-    double df = 0.0;
-
-    if (horizontal_limit > 1.0e-6 && r2 >= 1.0e-8)
-    {
-        const double desired = std::atan2(dir.y(), dir.x());
-        const double err = std::atan2(std::sin(yaw - desired), std::cos(yaw - desired));
-        const double abs_err = std::abs(err);
-        if (smoothedL1(abs_err - horizontal_limit, config.smooth_eps, f, df))
-        {
-            const double sign_err = err >= 0.0 ? 1.0 : -1.0;
-            const double grad_err = config.weight * df * sign_err;
-            grad_yaw += grad_err;
-            local_grad.x() += -grad_err * dir.y() / r2;
-            local_grad.y() += grad_err * dir.x() / r2;
-            cost += config.weight * f;
-        }
-    }
-
-    if (vertical_limit > 1.0e-6 && horizontal > 1.0e-6)
-    {
-        const double elevation = std::atan2(dir.z(), horizontal);
-        const double abs_elevation = std::abs(elevation);
-        if (smoothedL1(abs_elevation - vertical_limit, config.smooth_eps, f, df))
-        {
-            const double sign_err = elevation >= 0.0 ? 1.0 : -1.0;
-            const double grad_elevation = config.weight * df * sign_err;
-            const double denom = r2 + dir.z() * dir.z();
-            Eigen::Vector3d grad_dir = Eigen::Vector3d::Zero();
-            grad_dir.x() = grad_elevation * (-dir.z() * dir.x()) / (horizontal * denom);
-            grad_dir.y() = grad_elevation * (-dir.z() * dir.y()) / (horizontal * denom);
-            grad_dir.z() = grad_elevation * horizontal / denom;
-            local_grad -= grad_dir;
-            cost += config.weight * f;
-        }
-    }
-
-    grad_position += local_grad;
-    if (grad_target_position != nullptr)
-    {
-        *grad_target_position -= local_grad;
-    }
-    return cost;
 }
 
 inline double accumulateTrackingVelocityPenalty(const Eigen::Vector3d &position,

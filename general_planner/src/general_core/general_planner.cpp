@@ -129,6 +129,23 @@ namespace general_planner {
                                                       return region.valid;
                                                   }));
         }
+
+        bool staticTargetPrediction(const traj_opt::DynamicTargetStates &prediction,
+                                    const double position_epsilon,
+                                    const double velocity_epsilon) {
+            if (prediction.empty()) {
+                return false;
+            }
+            const Vec3f ref = prediction.front().position;
+            double max_span = 0.0;
+            double max_vel = 0.0;
+            for (const auto &state : prediction) {
+                max_span = std::max(max_span, (state.position - ref).norm());
+                max_vel = std::max(max_vel, state.velocity.norm());
+            }
+            return max_span <= std::max(0.0, position_epsilon) &&
+                   max_vel <= std::max(0.0, velocity_epsilon);
+        }
     }
 
     GeneralPlanner::GeneralPlanner
@@ -765,10 +782,65 @@ namespace general_planner {
             return commitTaskTrajectory(pos_traj, terminal_yaw, true, traj_ns);
         }
 
+        Trajectory committed_pos_traj = pos_traj;
+        Trajectory committed_yaw_traj = yaw_traj;
+        const double commit_wt = ros_ptr_->getSimTime();
+        if (!cmd_traj_info_.empty()) {
+            cmd_traj_info_.lock();
+            const Trajectory old_pos_traj = cmd_traj_info_.posTraj();
+            const Trajectory old_yaw_traj = cmd_traj_info_.yawTraj();
+            const double old_start_wt = cmd_traj_info_.getStartWallTime();
+            const double old_total_dur = cmd_traj_info_.getTotalDuration();
+            cmd_traj_info_.unlock();
+
+            const double prefix_start_t = commit_wt - old_start_wt;
+            const double prefix_end_t = prefix_start_t + std::max(0.0, cfg_.replan_forward_dt);
+            const bool prefix_window_valid =
+                    !old_pos_traj.empty() &&
+                    !old_yaw_traj.empty() &&
+                    prefix_start_t >= 0.0 &&
+                    prefix_end_t > prefix_start_t + 1.0e-4 &&
+                    prefix_end_t <= old_total_dur + 1.0e-6;
+
+            if (prefix_window_valid) {
+                Trajectory prefix_pos_traj;
+                Trajectory prefix_yaw_traj;
+                if (old_pos_traj.getPartialTrajectoryByTime(prefix_start_t,
+                                                            std::min(prefix_end_t, old_total_dur),
+                                                            prefix_pos_traj) &&
+                    old_yaw_traj.getPartialTrajectoryByTime(prefix_start_t,
+                                                            std::min(prefix_end_t, old_yaw_traj.getTotalDuration()),
+                                                            prefix_yaw_traj)) {
+                    committed_pos_traj = prefix_pos_traj + pos_traj;
+                    committed_yaw_traj = prefix_yaw_traj + yaw_traj;
+                    committed_pos_traj.start_WT = commit_wt;
+                    committed_yaw_traj.start_WT = commit_wt;
+
+                    if (cfg_.print_log) {
+                        const StatePVAJ old_tail = prefix_pos_traj.getState(prefix_pos_traj.getTotalDuration());
+                        const StatePVAJ new_head = pos_traj.getState(0.0);
+                        const double pos_jump = (old_tail.col(0) - new_head.col(0)).norm();
+                        const double vel_jump = (old_tail.col(1) - new_head.col(1)).norm();
+                        ros_ptr_->info(" -- [GeneralPlanner] Tracking replan stitched old prefix: dt={:.3f}s, pos_jump={:.4f}, vel_jump={:.4f}.",
+                                       prefix_pos_traj.getTotalDuration(),
+                                       pos_jump,
+                                       vel_jump);
+                    }
+                } else if (cfg_.print_log) {
+                    ros_ptr_->warn(" -- [GeneralPlanner] Tracking replan prefix extraction failed; commit raw tracking trajectory.");
+                }
+            } else if (cfg_.print_log && prefix_start_t >= 0.0) {
+                ros_ptr_->warn(" -- [GeneralPlanner] Tracking replan prefix unavailable: start_t={:.3f}, end_t={:.3f}, total={:.3f}.",
+                               prefix_start_t,
+                               prefix_end_t,
+                               old_total_dur);
+            }
+        }
+
         ExpTraj task_exp_traj;
         task_exp_traj.setGoalConnectedFlag(true);
         task_exp_traj.setWholeTrajKnownFreeFlag(true);
-        task_exp_traj.setTrajectory(ros_ptr_->getSimTime(), pos_traj, yaw_traj);
+        task_exp_traj.setTrajectory(commit_wt, committed_pos_traj, committed_yaw_traj);
 
         cmd_traj_info_.setTrajectory(task_exp_traj);
         last_exp_traj_info_ = task_exp_traj;
@@ -777,14 +849,14 @@ namespace general_planner {
 
         {
             TimeConsuming t_viz("tracking_task_viz", false);
-            ros_ptr_->vizExpTraj(pos_traj, traj_ns);
-            ros_ptr_->vizYawTraj(pos_traj, yaw_traj);
+            ros_ptr_->vizExpTraj(committed_pos_traj, traj_ns);
+            ros_ptr_->vizYawTraj(committed_pos_traj, committed_yaw_traj);
             ros_ptr_->vizCommittedTraj(cmd_traj_info_.posTraj(), -1.0);
             time_consuming_[VISUALIZATION] += t_viz.stop();
         }
 
-        latest_replan.setExpTraj(pos_traj);
-        latest_replan.setExpYawTraj(yaw_traj);
+        latest_replan.setExpTraj(committed_pos_traj);
+        latest_replan.setExpYawTraj(committed_yaw_traj);
         latest_replan.setRetCode(GENERAL_SUCCESS_NO_BACKUP);
         return true;
     }
@@ -898,7 +970,9 @@ namespace general_planner {
         problem.tail_pvaj.col(0) = problem.guide_path.back();
         if (!problem.target_prediction.empty()) {
             Vec3f tail_vel = problem.target_prediction.back().velocity;
-            if (!tail_vel.allFinite() || tail_vel.norm() < 0.05) {
+            if (problem.static_tracking_mode ||
+                !tail_vel.allFinite() ||
+                tail_vel.norm() < cfg_.tracking_static_tail_speed_epsilon) {
                 tail_vel.setZero();
             }
             problem.tail_pvaj.col(1) = tail_vel;
@@ -916,7 +990,9 @@ namespace general_planner {
         problem.tail_pvaj.col(0) = problem.guide_path.back();
         if (!problem.target_prediction.empty()) {
             Vec3f tail_vel = problem.target_prediction.back().velocity;
-            if (!tail_vel.allFinite() || tail_vel.norm() < 0.05) {
+            if (problem.static_tracking_mode ||
+                !tail_vel.allFinite() ||
+                tail_vel.norm() < cfg_.tracking_static_tail_speed_epsilon) {
                 tail_vel.setZero();
             }
             problem.tail_pvaj.col(1) = tail_vel;
@@ -1228,11 +1304,26 @@ namespace general_planner {
             return FAILED;
         }
 
+        const bool static_tracking =
+                staticTargetPrediction(target_prediction,
+                                       0.05,
+                                       cfg_.tracking_static_tail_speed_epsilon);
+        const double static_distance_tolerance =
+                std::max(0.05,
+                         cfg_.tracking_distance_tolerance *
+                         std::clamp(cfg_.tracking_static_distance_tolerance_scale, 0.05, 1.0));
+        const double static_height_tolerance =
+                std::max(0.05,
+                         cfg_.tracking_height_tolerance *
+                         std::clamp(cfg_.tracking_static_height_tolerance_scale, 0.05, 1.0));
+
         TrackingFrontend::Config frontend_cfg;
         frontend_cfg.tracking_distance = cfg_.tracking_distance;
-        frontend_cfg.distance_tolerance = cfg_.tracking_distance_tolerance;
+        frontend_cfg.distance_tolerance = static_tracking ? static_distance_tolerance
+                                                          : cfg_.tracking_distance_tolerance;
         frontend_cfg.height_offset = cfg_.tracking_height_offset;
-        frontend_cfg.height_tolerance = cfg_.tracking_height_tolerance;
+        frontend_cfg.height_tolerance = static_tracking ? static_height_tolerance
+                                                        : cfg_.tracking_height_tolerance;
         frontend_cfg.safe_distance = cfg_.tracking_safe_distance;
         frontend_cfg.visibility_safe_distance = cfg_.tracking_visibility_safe_distance;
         frontend_cfg.visibility_cone_ratio = cfg_.tracking_visibility_cone_ratio;
@@ -1255,6 +1346,7 @@ namespace general_planner {
             ros_ptr_->warn(" -- [GeneralPlanner] Tracking frontend failed.");
             return FAILED;
         }
+        problem.static_tracking_mode = static_tracking;
         const double tracking_frontend_t = t_frontend.stop();
         time_consuming_[EPX_TRAJ_FRONTEND] = tracking_frontend_t;
 
@@ -1291,23 +1383,38 @@ namespace general_planner {
             terminal_yaw = std::atan2(face_dir.y(), face_dir.x());
             geometry_utils::normalizeNextYaw(problem.head_yaw(0, 0), terminal_yaw);
         }
-        problem.tail_yaw << terminal_yaw, active_target_prediction.back().yaw_rate;
+        problem.tail_yaw << terminal_yaw, static_tracking ? 0.0 : active_target_prediction.back().yaw_rate;
         problem.weight_od_near = cfg_.tracking_weight_od_near;
         problem.weight_od_far = cfg_.tracking_weight_od_far;
         problem.weight_od_vertical = cfg_.tracking_weight_od_vertical;
         problem.weight_oa = cfg_.tracking_weight_oa;
-        problem.weight_fov = cfg_.tracking_weight_fov;
         problem.weight_oe = cfg_.tracking_weight_oe;
         problem.weight_visibility = cfg_.tracking_weight_oe;
         problem.weight_relative_velocity = cfg_.tracking_weight_relative_velocity;
         problem.weight_tangent_velocity = cfg_.tracking_weight_tangent_velocity;
         problem.weight_viewpoint_attractor = cfg_.tracking_weight_viewpoint_attractor;
         problem.weight_visible_region = cfg_.tracking_weight_visible_region;
-        problem.fov_half_angle = 0.5 * std::max(1.0, cfg_.tracking_fov_horizontal_deg) * M_PI / 180.0;
-        problem.fov_vertical_half_angle = 0.5 * std::max(1.0, cfg_.tracking_fov_vertical_deg) * M_PI / 180.0;
-        problem.fov_margin = std::max(0.0, cfg_.tracking_fov_margin_deg) * M_PI / 180.0;
         if (problem.reacquire_mode) {
             problem.weight_visible_region *= 0.25;
+        }
+        if (static_tracking) {
+            problem.distance_tolerance = static_distance_tolerance;
+            problem.height_tolerance = static_height_tolerance;
+            problem.od_h_lower = std::max(0.05, cfg_.tracking_distance - static_distance_tolerance);
+            problem.od_h_upper = std::max(problem.od_h_lower + 0.05,
+                                          cfg_.tracking_distance + static_distance_tolerance);
+            problem.od_v_lower = cfg_.tracking_height_offset - static_height_tolerance;
+            problem.od_v_upper = cfg_.tracking_height_offset + static_height_tolerance;
+            problem.tail_pvaj.col(1).setZero();
+            problem.tail_pvaj.col(2).setZero();
+            problem.tail_pvaj.col(3).setZero();
+            for (auto &state : problem.target_prediction) {
+                state.velocity.setZero();
+                state.acceleration.setZero();
+                state.yaw_rate = 0.0;
+            }
+            problem.weight_tangent_velocity *=
+                    std::max(1.0, cfg_.tracking_static_tangent_weight_scale);
         }
         const int valid_visible_regions = validVisibleRegionCount(problem);
         problem.use_visible_region = cfg_.tracking_use_visible_region && valid_visible_regions > 0;
@@ -1318,6 +1425,14 @@ namespace general_planner {
                            problem.visible_regions.size(),
                            problem.use_visible_region,
                            problem.reacquire_mode);
+        }
+        if (static_tracking && cfg_.print_log) {
+            ros_ptr_->info(" -- [GeneralPlanner] Static tracking mode: OD_h=[{:.2f},{:.2f}], OD_v=[{:.2f},{:.2f}], tangent_weight={:.2f}.",
+                           problem.od_h_lower,
+                           problem.od_h_upper,
+                           problem.od_v_lower,
+                           problem.od_v_upper,
+                           problem.weight_tangent_velocity);
         }
 
         {
@@ -2409,6 +2524,24 @@ namespace general_planner {
         return min_id;
     }
 
+    namespace {
+        void appendPathPointUnique(const Vec3f &point, vec_Vec3f &path) {
+            if (!point.allFinite()) {
+                return;
+            }
+            if (path.empty() || (path.back() - point).norm() > 1.0e-4) {
+                path.emplace_back(point);
+            }
+        }
+
+        double pathForwardProgress(const vec_Vec3f &path, const Vec3f &origin, const Vec3f &dir) {
+            if (path.empty() || dir.norm() < 1.0e-6) {
+                return 0.0;
+            }
+            return (path.back() - origin).dot(dir.normalized());
+        }
+    }
+
     bool
     GeneralPlanner::PathSearch(const Vec3f &start_pt, const Vec3f &goal,
                              const double &searching_horizon,
@@ -2458,10 +2591,28 @@ namespace general_planner {
         double temp_plannning_horizon = searching_horizon;
         //            int start_id = getNearestFurtherGoalPoint(goal_waypoints, start_pt);
 
-        int flag = ON_INF_MAP | (cfg_.frontend_in_known_free ? UNKNOWN_AS_OCCUPIED : UNKNOWN_AS_FREE) | DONT_USE_INF_NEIGHBOR;
+        const bool goal_inside_local_map = map_manager_->insideLocalMap(goal);
+        const rog_map::GridType goal_inf_type =
+                goal_inside_local_map ? map_manager_->getInfGridType(goal) : OUT_OF_MAP;
+        const bool hidden_unknown_goal = cfg_.unknown_goal_reveal_en &&
+                                         goal_inside_local_map &&
+                                         goal_inf_type == UNKNOWN;
+        const bool unknown_as_occupied_for_frontend = cfg_.frontend_in_known_free || hidden_unknown_goal;
+        if (hidden_unknown_goal && cfg_.print_log) {
+            ros_ptr_->info(" -- [GeneralPlanner] Click goal is unknown; search a reveal/frontier waypoint first.");
+        }
 
-        RET_CODE ret_code = astar_ptr_->pointToPointPathSearch(temp_start_point, goal, flag, temp_plannning_horizon,
-                                                               path);
+        int flag = ON_INF_MAP |
+                   (unknown_as_occupied_for_frontend ? UNKNOWN_AS_OCCUPIED : UNKNOWN_AS_FREE) |
+                   DONT_USE_INF_NEIGHBOR;
+
+        vec_Vec3f normal_path;
+        RET_CODE ret_code = astar_ptr_->pointToPointPathSearch(temp_start_point,
+                                                               goal,
+                                                               flag,
+                                                               temp_plannning_horizon,
+                                                               normal_path,
+                                                               cfg_.frontend_astar_time_out);
 
         if(ret_code == INIT_ERROR){
             gi_.goal_valid = false;
@@ -2471,12 +2622,13 @@ namespace general_planner {
 
         const bool distance_field_frontend = cfg_.esdf_traj_en || cfg_.plain_traj_en;
         if (ret_code == NO_PATH && !distance_field_frontend) {
-            flag = ON_PROB_MAP | (cfg_.frontend_in_known_free ? UNKNOWN_AS_OCCUPIED : UNKNOWN_AS_FREE) |
+            flag = ON_PROB_MAP |
+                   (unknown_as_occupied_for_frontend ? UNKNOWN_AS_OCCUPIED : UNKNOWN_AS_FREE) |
                    USE_INF_NEIGHBOR;
             fmt::print(fg(fmt::color::indian_red) | fmt::emphasis::bold,
                        " -- [Astar] Path search failed on inf map, try again on prob map.\n");
             ret_code = astar_ptr_->pointToPointPathSearch(temp_start_point, goal, flag, temp_plannning_horizon,
-                                                          path);
+                                                          normal_path, cfg_.frontend_astar_time_out);
             if (ret_code == SUCCESS || ret_code == REACH_HORIZON || ret_code == REACH_GOAL) {
                 fmt::print(fg(fmt::color::lime_green) | fmt::emphasis::bold,
                            " -- [Astar] Path search on prob map success.\n");
@@ -2488,23 +2640,161 @@ namespace general_planner {
             fmt::print(fg(fmt::color::indian_red) | fmt::emphasis::bold,
                        " -- [Astar] Path search failed on inf map in distance-field mode; skip prob-map fallback.\n");
         }
-        if (ret_code != REACH_HORIZON && ret_code != REACH_GOAL) {
+
+        auto pointUsable = [&](const Vec3f &point) {
+            if (!point.allFinite() || !map_manager_->insideLocalMap(point)) {
+                return false;
+            }
+            const rog_map::GridType inf_type = map_manager_->getInfGridType(point);
+            if (inf_type == OCCUPIED || inf_type == OUT_OF_MAP) {
+                return false;
+            }
+            return !(unknown_as_occupied_for_frontend && inf_type == UNKNOWN);
+        };
+
+        auto lineUsable = [&](const Vec3f &a, const Vec3f &b) {
+            return pointUsable(a) &&
+                   pointUsable(b) &&
+                   map_manager_->isLineFree(a, b, true, unknown_as_occupied_for_frontend);
+        };
+
+        auto blockedSpanOnDirectLine = [&]() {
+            const Vec3f delta = goal - temp_start_point;
+            const double len = std::min(delta.norm(), std::max(0.0, searching_horizon));
+            if (len < 1.0e-4) {
+                return 0.0;
+            }
+            const Vec3f dir = delta / std::max(1.0e-6, delta.norm());
+            const double step = std::max(0.2, map_manager_->getInfResolution());
+            double blocked_span = 0.0;
+            double current_span = 0.0;
+            for (double s = 0.0; s <= len + 1.0e-6; s += step) {
+                const Vec3f sample = temp_start_point + dir * std::min(s, len);
+                const bool blocked = !pointUsable(sample);
+                if (blocked) {
+                    current_span += step;
+                    blocked_span = std::max(blocked_span, current_span);
+                } else {
+                    current_span = 0.0;
+                }
+            }
+            return blocked_span;
+        };
+
+        auto buildOverWallCandidate = [&](vec_Vec3f &candidate, RET_CODE &candidate_ret) {
+            candidate.clear();
+            candidate_ret = FAILED;
+            if (!cfg_.over_wall_search_en) {
+                return false;
+            }
+
+            const Vec3f delta = goal - temp_start_point;
+            const double goal_dist = delta.norm();
+            if (goal_dist < std::max(0.5, cfg_.resolution * 5.0)) {
+                return false;
+            }
+            const Vec3f horizontal_delta(delta.x(), delta.y(), 0.0);
+            const double horizontal_dist = horizontal_delta.norm();
+            if (horizontal_dist < 1.0e-3) {
+                return false;
+            }
+            const double blocked_span = blockedSpanOnDirectLine();
+            if (blocked_span < std::max(0.0, cfg_.over_wall_min_blocked_span) &&
+                ret_code == REACH_GOAL) {
+                return false;
+            }
+
+            const Vec3f dir_xy = horizontal_delta / horizontal_dist;
+            const double max_climb = std::max(0.0, cfg_.over_wall_max_climb);
+            const double height_step = std::max(map_manager_->getInfResolution(), cfg_.over_wall_height_step);
+            const double base_z = std::max(temp_start_point.z(), goal.z());
+            const double forward_ratio = std::clamp(cfg_.over_wall_forward_ratio, 0.2, 1.0);
+
+            for (double climb = height_step; climb <= max_climb + 1.0e-6; climb += height_step) {
+                const double level_z = base_z + climb;
+                const Vec3f elevated_start(temp_start_point.x(), temp_start_point.y(), level_z);
+                if (!lineUsable(temp_start_point, elevated_start)) {
+                    continue;
+                }
+
+                const double goal_detour = (elevated_start - temp_start_point).norm() +
+                                           (Vec3f(goal.x(), goal.y(), level_z) - elevated_start).norm() +
+                                           std::abs(level_z - goal.z());
+                if (goal_detour <= searching_horizon * 1.15) {
+                    const Vec3f elevated_goal(goal.x(), goal.y(), level_z);
+                    if (lineUsable(elevated_start, elevated_goal) &&
+                        lineUsable(elevated_goal, goal)) {
+                        appendPathPointUnique(temp_start_point, candidate);
+                        appendPathPointUnique(elevated_start, candidate);
+                        appendPathPointUnique(elevated_goal, candidate);
+                        appendPathPointUnique(goal, candidate);
+                        candidate_ret = REACH_GOAL;
+                        return true;
+                    }
+                }
+
+                double forward_dist = std::min(horizontal_dist,
+                                               std::max(0.0, searching_horizon - climb) * forward_ratio);
+                while (forward_dist > std::max(0.5, cfg_.resolution * 5.0)) {
+                    const Vec3f elevated_forward = elevated_start + dir_xy * forward_dist;
+                    if (lineUsable(elevated_start, elevated_forward)) {
+                        appendPathPointUnique(temp_start_point, candidate);
+                        appendPathPointUnique(elevated_start, candidate);
+                        appendPathPointUnique(elevated_forward, candidate);
+                        candidate_ret = REACH_HORIZON;
+                        return true;
+                    }
+                    forward_dist -= std::max(0.5, 2.0 * map_manager_->getInfResolution());
+                }
+            }
+            return false;
+        };
+
+        vec_Vec3f selected_path = normal_path;
+        RET_CODE selected_ret = ret_code;
+        vec_Vec3f over_wall_path;
+        RET_CODE over_wall_ret = FAILED;
+        if (buildOverWallCandidate(over_wall_path, over_wall_ret)) {
+            const Vec3f goal_dir = (goal - temp_start_point).norm() > 1.0e-6
+                                       ? (goal - temp_start_point).normalized()
+                                       : Vec3f::Zero();
+            const double normal_progress = pathForwardProgress(normal_path, temp_start_point, goal_dir);
+            const double over_wall_progress = pathForwardProgress(over_wall_path, temp_start_point, goal_dir);
+            const bool normal_failed = ret_code != REACH_HORIZON && ret_code != REACH_GOAL;
+            const bool over_reaches_goal = over_wall_ret == REACH_GOAL && ret_code != REACH_GOAL;
+            const bool progress_better =
+                    over_wall_progress > normal_progress + std::max(0.0, cfg_.over_wall_min_progress_gain);
+            if (normal_failed || over_reaches_goal || (ret_code == REACH_HORIZON && progress_better)) {
+                selected_path = over_wall_path;
+                selected_ret = over_wall_ret;
+                if (cfg_.print_log) {
+                    ros_ptr_->info(" -- [GeneralPlanner] Use over-wall frontend candidate: ret={}, progress {:.2f}->{:.2f}.",
+                                   RET_CODE_STR[over_wall_ret],
+                                   normal_progress,
+                                   over_wall_progress);
+                }
+            }
+        }
+
+        if (selected_ret != REACH_HORIZON && selected_ret != REACH_GOAL) {
             ros_ptr_->error(
-                    " -- [GeneralPlanner] Path search failed with [{}], force return.\n", RET_CODE_STR[ret_code].c_str());
+                    " -- [GeneralPlanner] Path search failed with [{}], force return.\n",
+                    RET_CODE_STR[ret_code].c_str());
             return false;
         }
         if (!start_point_escape_path.empty()) {
-            path.insert(path.begin(), start_point_escape_path.begin(),
-                        start_point_escape_path.end());
+            selected_path.insert(selected_path.begin(), start_point_escape_path.begin(),
+                                 start_point_escape_path.end());
         }
 
-        if (path.empty()) {
+        if (selected_path.empty()) {
             ros_ptr_->warn(
                     " -- [GeneralPlanner] Path search failed with empty segments, force return.");
             return false;
         }
+        path = selected_path;
         path.insert(path.begin(), start_pt);
-        if (ret_code == REACH_GOAL) {
+        if (selected_ret == REACH_GOAL) {
             path.push_back(goal);
         }
         return true;
