@@ -3,7 +3,10 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <fstream>
+#include <iomanip>
 #include <iostream>
+#include <limits>
 #include <queue>
 #include <string>
 #include <unordered_map>
@@ -134,6 +137,78 @@ std::string pointToString(const Vec3f &p)
            std::to_string(p.z()) + "]";
 }
 
+std::string trackingFrontendLogPath()
+{
+    return std::string(ROOT_DIR) + "log/tracking_frontend_latest.csv";
+}
+
+struct TrackingFrontendLogQuality
+{
+    bool tracking_success{false};
+    std::string tracking_state{"lost"};
+    bool in_od_band{false};
+    bool in_height_band{false};
+    bool visible{false};
+    double visibility_margin{0.0};
+};
+
+void writeTrackingFrontendLogHeader(std::ofstream &log)
+{
+    log << "sample,t,stage,success,frontend_success,tracking_state,"
+           "target_x,target_y,target_z,seed_x,seed_y,seed_z,"
+           "viewpoint_x,viewpoint_y,viewpoint_z,horizontal_dist,vertical_offset,"
+           "in_od_band,in_height_band,visible,visibility_margin,"
+           "score,od_cost,oe_margin,path_cost,preferred_cost,source_bias,path_points,message\n";
+}
+
+void writeTrackingFrontendLogRow(std::ofstream &log,
+                                 const std::size_t sample,
+                                 const double t,
+                                 const std::string &stage,
+                                 const bool frontend_success,
+                                 const TrackingFrontendLogQuality &quality,
+                                 const Vec3f &target,
+                                 const Vec3f &seed,
+                                 const Vec3f &viewpoint,
+                                 const double score,
+                                 const double od_cost,
+                                 const double oe_margin,
+                                 const double path_cost,
+                                 const double preferred_cost,
+                                 const double source_bias,
+                                 const std::size_t path_points,
+                                 const std::string &message)
+{
+    if (!log.is_open() || !log.good())
+    {
+        return;
+    }
+    const Vec3f rel = viewpoint - target;
+    const double horizontal = rel.head<2>().norm();
+    const double vertical = rel.z();
+    log << sample << ','
+        << std::fixed << std::setprecision(6) << t << ','
+        << stage << ','
+        << (quality.tracking_success ? 1 : 0) << ','
+        << (frontend_success ? 1 : 0) << ','
+        << quality.tracking_state << ','
+        << target.x() << ',' << target.y() << ',' << target.z() << ','
+        << seed.x() << ',' << seed.y() << ',' << seed.z() << ','
+        << viewpoint.x() << ',' << viewpoint.y() << ',' << viewpoint.z() << ','
+        << horizontal << ',' << vertical << ','
+        << (quality.in_od_band ? 1 : 0) << ','
+        << (quality.in_height_band ? 1 : 0) << ','
+        << (quality.visible ? 1 : 0) << ','
+        << quality.visibility_margin << ',';
+    log << score << ','
+        << od_cost << ','
+        << oe_margin << ','
+        << path_cost << ','
+        << preferred_cost << ','
+        << source_bias << ',';
+    log << path_points << ',' << message << '\n';
+}
+
 } // namespace
 
 TrackingFrontend::TrackingFrontend(const Config &cfg,
@@ -143,6 +218,131 @@ TrackingFrontend::TrackingFrontend(const Config &cfg,
       map_manager_(map_manager),
       astar_(astar)
 {
+}
+
+Vec3f TrackingFrontend::preferredViewpoint(const Vec3f &seed,
+                                           const traj_opt::DynamicTargetState &target) const
+{
+    Vec3f preferred_rel_dir = target.velocity;
+    preferred_rel_dir.z() = 0.0;
+    if (preferred_rel_dir.norm() > 1.0e-4)
+    {
+        preferred_rel_dir = -preferred_rel_dir.normalized();
+    }
+    else
+    {
+        preferred_rel_dir = seed - target.position;
+        preferred_rel_dir.z() = 0.0;
+        preferred_rel_dir = normalizedOr(preferred_rel_dir, Vec3f::UnitX());
+    }
+
+    Vec3f preferred = target.position + cfg_.tracking_distance * preferred_rel_dir;
+    preferred.z() = target.position.z() + cfg_.height_offset;
+    return preferred;
+}
+
+double TrackingFrontend::estimateVisibilityMargin(const Vec3f &viewpoint,
+                                                  const Vec3f &target) const
+{
+    if (!viewpoint.allFinite() || !target.allFinite())
+    {
+        return -std::max(0.0, cfg_.visibility_safe_distance);
+    }
+    if (map_manager_ == nullptr || !map_manager_->ready())
+    {
+        return cfg_.visibility_safe_distance;
+    }
+    if (!isViewpointSafe(viewpoint) ||
+        !map_manager_->isLineFree(viewpoint, target, false, cfg_.unknown_as_occupied))
+    {
+        return -std::max(0.0, cfg_.visibility_safe_distance);
+    }
+    if (!map_manager_->hasESDF())
+    {
+        return cfg_.visibility_safe_distance;
+    }
+
+    const Vec3f rel = target - viewpoint;
+    const double view_dist = rel.norm();
+    if (view_dist < 1.0e-6)
+    {
+        return -std::max(0.0, cfg_.visibility_safe_distance);
+    }
+
+    double min_margin = std::numeric_limits<double>::infinity();
+    const int sample_num = std::max(1, cfg_.visibility_samples);
+    const double cone_ratio = std::max(0.0, cfg_.visibility_cone_ratio);
+    for (int k = 1; k <= sample_num; ++k)
+    {
+        const double alpha = static_cast<double>(k) / static_cast<double>(sample_num + 1);
+        const Vec3f center = viewpoint + alpha * rel;
+        double dist = 0.0;
+        Vec3f grad = Vec3f::Zero();
+        if (!map_manager_->evaluateESDF(center, dist, grad))
+        {
+            continue;
+        }
+        const double radius = std::max(0.0, cfg_.visibility_safe_distance) +
+                              cone_ratio * alpha * view_dist;
+        min_margin = std::min(min_margin, dist - radius);
+    }
+
+    if (!std::isfinite(min_margin))
+    {
+        return cfg_.visibility_safe_distance;
+    }
+    return min_margin;
+}
+
+bool TrackingFrontend::scoreViewpointCandidate(const Vec3f &candidate,
+                                               const Vec3f &seed,
+                                               const Vec3f &preferred,
+                                               const traj_opt::DynamicTargetState &target,
+                                               const double source_bias,
+                                               ViewpointCandidate &scored) const
+{
+    if (!isViewpointSafe(candidate))
+    {
+        return false;
+    }
+
+    const Vec3f rel = candidate - target.position;
+    const double horizontal = rel.head<2>().norm();
+    const double min_h = std::max(0.3, cfg_.tracking_distance - std::max(0.0, cfg_.distance_tolerance));
+    const double max_h = std::max(min_h + 0.05,
+                                  cfg_.tracking_distance + std::max(0.0, cfg_.distance_tolerance));
+    const double vertical = rel.z();
+    const double vertical_error =
+        std::max(0.0, std::abs(vertical - cfg_.height_offset) - std::max(0.0, cfg_.height_tolerance));
+    const double near_error = std::max(0.0, min_h - horizontal);
+    const double far_error = std::max(0.0, horizontal - max_h);
+    const double desired_error = std::abs(horizontal - cfg_.tracking_distance);
+    const double od_cost = 4.0 * near_error * near_error +
+                           far_error * far_error +
+                           vertical_error * vertical_error +
+                           0.05 * desired_error * desired_error;
+
+    const double oe_margin = estimateVisibilityMargin(candidate, target.position);
+    const double oe_violation = std::max(0.0, -oe_margin);
+    const double path_cost = (candidate - seed).norm();
+    const double preferred_cost = (candidate - preferred).norm();
+    const double clearance_reward =
+        std::clamp(oe_margin, 0.0, std::max(0.3, cfg_.tracking_distance));
+
+    scored.point = candidate;
+    scored.od_cost = od_cost;
+    scored.oe_margin = oe_margin;
+    scored.path_cost = path_cost;
+    scored.preferred_cost = preferred_cost;
+    scored.source_bias = source_bias;
+    scored.score =
+        std::max(0.0, cfg_.score_path_weight) * path_cost +
+        std::max(0.0, cfg_.score_preferred_weight) * preferred_cost +
+        std::max(0.0, cfg_.score_od_weight) * od_cost +
+        std::max(0.0, cfg_.score_oe_weight) * oe_violation * oe_violation +
+        std::max(0.0, cfg_.score_source_bias_weight) * source_bias -
+        std::max(0.0, cfg_.score_clearance_reward) * clearance_reward;
+    return std::isfinite(scored.score);
 }
 
 bool TrackingFrontend::isViewpointSafe(const Vec3f &viewpoint) const
@@ -266,7 +466,8 @@ bool TrackingFrontend::repairViewpointEndpoint(const Vec3f &raw_viewpoint,
         return false;
     }
 
-    if (isViewpointVisible(raw_viewpoint, target))
+    (void)target;
+    if (isViewpointSafe(raw_viewpoint))
     {
         repaired_viewpoint = raw_viewpoint;
         return true;
@@ -288,7 +489,7 @@ bool TrackingFrontend::repairViewpointEndpoint(const Vec3f &raw_viewpoint,
                                           cfg_.safe_distance,
                                           nearest,
                                           repair_radius) &&
-        isViewpointVisible(nearest, target))
+        isViewpointSafe(nearest))
     {
         repaired_viewpoint = nearest;
         return true;
@@ -299,7 +500,7 @@ bool TrackingFrontend::repairViewpointEndpoint(const Vec3f &raw_viewpoint,
                                            raw_viewpoint,
                                            nearest,
                                            repair_radius) &&
-        isViewpointVisible(nearest, target))
+        isViewpointSafe(nearest))
     {
         repaired_viewpoint = nearest;
         return true;
@@ -314,21 +515,7 @@ bool TrackingFrontend::collectVisibleViewpointCandidates(
     std::vector<ViewpointCandidate> &candidates) const
 {
     candidates.clear();
-    Vec3f preferred_rel_dir = target.velocity;
-    preferred_rel_dir.z() = 0.0;
-    if (preferred_rel_dir.norm() > 1.0e-4)
-    {
-        preferred_rel_dir = -preferred_rel_dir.normalized();
-    }
-    else
-    {
-        preferred_rel_dir = seed - target.position;
-        preferred_rel_dir.z() = 0.0;
-        preferred_rel_dir = normalizedOr(preferred_rel_dir, Vec3f::UnitX());
-    }
-
-    Vec3f preferred = target.position + cfg_.tracking_distance * preferred_rel_dir;
-    preferred.z() = target.position.z() + cfg_.height_offset;
+    const Vec3f preferred = preferredViewpoint(seed, target);
 
     auto tryCandidate = [&](const Vec3f &raw_candidate, const double bias) {
         Vec3f candidate = raw_candidate;
@@ -337,17 +524,11 @@ bool TrackingFrontend::collectVisibleViewpointCandidates(
             return;
         }
 
-        const double horizontal_error =
-            (candidate - target.position).head<2>().norm() - cfg_.tracking_distance;
-        const double vertical_error =
-            (candidate.z() - target.position.z()) - cfg_.height_offset;
-        const double score =
-            (candidate - seed).squaredNorm() +
-            0.35 * (candidate - preferred).squaredNorm() +
-            2.0 * horizontal_error * horizontal_error +
-            2.0 * vertical_error * vertical_error +
-            bias;
-        candidates.push_back(ViewpointCandidate{candidate, score});
+        ViewpointCandidate scored;
+        if (scoreViewpointCandidate(candidate, seed, preferred, target, bias, scored))
+        {
+            candidates.emplace_back(scored);
+        }
     };
 
     tryCandidate(preferred, 0.0);
@@ -355,6 +536,9 @@ bool TrackingFrontend::collectVisibleViewpointCandidates(
 
     const int angle_count =
         std::max(8, static_cast<int>(std::ceil(2.0 * M_PI / std::max(0.05, cfg_.candidate_angle_step))));
+    Vec3f preferred_rel_dir = preferred - target.position;
+    preferred_rel_dir.z() = 0.0;
+    preferred_rel_dir = normalizedOr(preferred_rel_dir, Vec3f::UnitX());
     const double base_yaw = std::atan2(preferred_rel_dir.y(), preferred_rel_dir.x());
     const std::array<double, 7> z_offsets{
         0.0,
@@ -620,24 +804,67 @@ bool TrackingFrontend::extendToTrackingViewpoint(const Vec3f &seed,
     dir = normalizedOr(dir, Vec3f::UnitX());
 
     const double desired = std::max(0.3, cfg_.tracking_distance);
+    const double min_radius = std::max(0.3, desired - std::max(0.0, cfg_.distance_tolerance));
+    const double max_radius = std::max(min_radius + 0.05,
+                                       desired + std::max(0.0, cfg_.distance_tolerance));
     const double seed_radius = std::max(0.3, (seed - target).head<2>().norm());
-    const double start_radius = std::min(seed_radius, desired);
     const double res = map_manager_ != nullptr && map_manager_->ready()
                            ? std::max(0.05, map_manager_->getInfResolution())
                            : 0.15;
-    const int sample_num =
-        std::max(1, static_cast<int>(std::ceil(std::abs(desired - start_radius) / res)));
 
     bool found = false;
-    Vec3f best = Vec3f::Zero();
-    for (int i = 0; i <= sample_num; ++i)
+    ViewpointCandidate best;
+    traj_opt::DynamicTargetState target_state;
+    target_state.position = target;
+    target_state.velocity.setZero();
+    const Vec3f preferred = target + desired * dir + Vec3f(0.0, 0.0, cfg_.height_offset);
+
+    std::vector<double> radii;
+    auto appendRadius = [&](const double r) {
+        const double clamped = std::clamp(r, 0.3, max_radius);
+        if (radii.empty() || std::abs(radii.back() - clamped) > 0.5 * res)
+        {
+            radii.emplace_back(clamped);
+        }
+    };
+
+    const double start_radius = std::clamp(seed_radius, 0.3, max_radius);
+    const double elastic_goal_radius = std::clamp(desired, 0.3, max_radius);
+    const int primary_num =
+        std::max(1, static_cast<int>(std::ceil(std::abs(elastic_goal_radius - start_radius) / res)));
+    for (int i = 0; i <= primary_num; ++i)
     {
-        const double alpha = static_cast<double>(i) / static_cast<double>(sample_num);
-        const double radius = start_radius + alpha * (desired - start_radius);
+        const double alpha = static_cast<double>(i) / static_cast<double>(primary_num);
+        appendRadius(start_radius + alpha * (elastic_goal_radius - start_radius));
+    }
+    if (max_radius > elastic_goal_radius + 0.5 * res)
+    {
+        const int extra_num =
+            std::max(1, static_cast<int>(std::ceil((max_radius - elastic_goal_radius) / res)));
+        for (int i = 1; i <= extra_num; ++i)
+        {
+            const double alpha = static_cast<double>(i) / static_cast<double>(extra_num);
+            appendRadius(elastic_goal_radius + alpha * (max_radius - elastic_goal_radius));
+        }
+    }
+
+    bool has_last_extension_point = false;
+    Vec3f last_extension_point = Vec3f::Zero();
+    for (const double radius : radii)
+    {
         Vec3f candidate = target + radius * dir;
         candidate.z() = target.z() + cfg_.height_offset;
+        if (has_last_extension_point &&
+            map_manager_ != nullptr &&
+            map_manager_->ready() &&
+            !map_manager_->isLineFree(last_extension_point, candidate, true, cfg_.unknown_as_occupied))
+        {
+            break;
+        }
 
-        if (!isViewpointVisible(candidate, target))
+        ViewpointCandidate scored;
+        const double source_bias = 0.05 * std::abs(radius - std::clamp(seed_radius, min_radius, max_radius));
+        if (!scoreViewpointCandidate(candidate, fallback, preferred, target_state, source_bias, scored))
         {
             if (found)
             {
@@ -645,15 +872,20 @@ bool TrackingFrontend::extendToTrackingViewpoint(const Vec3f &seed,
             }
             continue;
         }
-        best = candidate;
-        found = true;
+        has_last_extension_point = true;
+        last_extension_point = candidate;
+        if (!found || scored.score < best.score)
+        {
+            best = scored;
+            found = true;
+        }
     }
 
     if (!found)
     {
         return false;
     }
-    viewpoint = best;
+    viewpoint = best.point;
     return true;
 }
 
@@ -700,21 +932,22 @@ bool TrackingFrontend::searchVisibleViewpointOnGrid(
     const double desired_z = target.position.z() + cfg_.height_offset;
     const double z_tol = std::max(0.5 * res, std::max(0.0, cfg_.height_tolerance));
     const double start_target_dist = (start - target.position).norm();
+    const bool reacquire_mode =
+        start_target_dist >
+        std::max(cfg_.reacquire_distance, cfg_.tracking_distance + cfg_.distance_tolerance);
 
-    Vec3f preferred_rel_dir = target.velocity;
-    preferred_rel_dir.z() = 0.0;
-    if (preferred_rel_dir.norm() > 1.0e-4)
+    Vec3f preferred = preferredViewpoint(start, target);
+    if (reacquire_mode)
     {
-        preferred_rel_dir = -preferred_rel_dir.normalized();
+        Vec3f approach_dir = target.position - start;
+        approach_dir.z() = 0.0;
+        approach_dir = normalizedOr(approach_dir, Vec3f::UnitX());
+        const double approach_step =
+            std::min(std::max(0.8, 0.8 * cfg_.searching_horizon),
+                     std::max(0.8, start_target_dist - cfg_.reacquire_distance));
+        preferred = start + approach_step * approach_dir;
+        preferred.z() = desired_z;
     }
-    else
-    {
-        preferred_rel_dir = start - target.position;
-        preferred_rel_dir.z() = 0.0;
-        preferred_rel_dir = normalizedOr(preferred_rel_dir, Vec3f::UnitX());
-    }
-    Vec3f preferred = target.position + cfg_.tracking_distance * preferred_rel_dir;
-    preferred.z() = desired_z;
 
     Vec3f box_min(std::min(start.x(), target.position.x() - max_h) - res,
                   std::min(start.y(), target.position.y() - max_h) - res,
@@ -748,12 +981,54 @@ bool TrackingFrontend::searchVisibleViewpointOnGrid(
     };
 
     auto isVisibleTrackingCandidate = [&](const Vec3f &candidate) {
+        if (reacquire_mode)
+        {
+            const double candidate_target_dist = (candidate - target.position).norm();
+            const double min_progress =
+                std::min(1.0, std::max(2.0 * res, 0.05 * start_target_dist));
+            return isViewpointSafe(candidate) &&
+                   (start_target_dist - candidate_target_dist >= min_progress ||
+                    candidate_target_dist <= cfg_.reacquire_distance) &&
+                   std::abs(candidate.z() - desired_z) <= std::max(1.5, 2.0 * z_tol);
+        }
+
         const Vec3f rel = candidate - target.position;
         const double h = rel.head<2>().norm();
         return h >= min_h &&
                h <= max_h &&
                std::abs(candidate.z() - desired_z) <= z_tol &&
-               isViewpointVisible(candidate, target.position);
+               isViewpointSafe(candidate);
+    };
+
+    auto scoreVisibleTrackingCandidate = [&](const Vec3f &candidate, ViewpointCandidate &scored) {
+        if (!isVisibleTrackingCandidate(candidate))
+        {
+            return false;
+        }
+        if (reacquire_mode)
+        {
+            const double oe_margin = estimateVisibilityMargin(candidate, target.position);
+            const double oe_violation = std::max(0.0, -oe_margin);
+            const double path_cost = (candidate - start).norm();
+            const double preferred_cost = (candidate - preferred).norm();
+            const double target_dist = (candidate - target.position).norm();
+            const double clearance_reward =
+                std::clamp(oe_margin, 0.0, std::max(0.3, cfg_.tracking_distance));
+            scored.point = candidate;
+            scored.od_cost = target_dist;
+            scored.oe_margin = oe_margin;
+            scored.path_cost = path_cost;
+            scored.preferred_cost = preferred_cost;
+            scored.source_bias = 0.0;
+            scored.score =
+                std::max(0.0, cfg_.score_path_weight) * path_cost +
+                std::max(0.0, cfg_.score_preferred_weight) * preferred_cost +
+                0.25 * target_dist +
+                std::max(0.0, cfg_.score_oe_weight) * oe_violation * oe_violation -
+                std::max(0.0, cfg_.score_clearance_reward) * clearance_reward;
+            return std::isfinite(scored.score);
+        }
+        return scoreViewpointCandidate(candidate, start, preferred, target, 0.0, scored);
     };
 
     struct QueueNode
@@ -866,14 +1141,17 @@ bool TrackingFrontend::searchVisibleViewpointOnGrid(
         record.closed = true;
         ++expanded;
 
-        if (isVisibleTrackingCandidate(record.position))
+        ViewpointCandidate scored;
+        if (scoreVisibleTrackingCandidate(record.position, scored))
         {
             viewpoint = record.position;
             reconstructPath(node.id);
             logTrackingFrontendDebug(cfg_.print_log,
                                      "Visible grid search success: viewpoint=" +
                                      pointToString(viewpoint) + ", expanded=" +
-                                     std::to_string(expanded) + ", path_points=" +
+                                     std::to_string(expanded) + ", score=" +
+                                     std::to_string(scored.score) + ", oe_margin=" +
+                                     std::to_string(scored.oe_margin) + ", path_points=" +
                                      std::to_string(path_to_viewpoint.size()));
             return true;
         }
@@ -917,6 +1195,78 @@ bool TrackingFrontend::searchVisibleViewpointOnGrid(
                              "Visible grid search failed: expanded=" +
                              std::to_string(expanded) + ", open_remaining=" +
                              std::to_string(open_set.size()));
+    return false;
+}
+
+bool TrackingFrontend::chooseApproachViewpoint(const Vec3f &start,
+                                               const traj_opt::DynamicTargetState &target,
+                                               Vec3f &viewpoint,
+                                               vec_E<Vec3f> &path_to_viewpoint) const
+{
+    path_to_viewpoint.clear();
+    if (!start.allFinite() || !target.position.allFinite())
+    {
+        return false;
+    }
+
+    const double start_target_dist = (start - target.position).norm();
+    if (start_target_dist <= std::max(cfg_.reacquire_distance,
+                                      cfg_.tracking_distance + cfg_.distance_tolerance))
+    {
+        return false;
+    }
+
+    Vec3f dir = target.position - start;
+    dir.z() = 0.0;
+    dir = normalizedOr(dir, Vec3f::UnitX());
+    const double desired_z = target.position.z() + cfg_.height_offset;
+    const double max_step = std::min(std::max(0.8, 0.8 * cfg_.searching_horizon),
+                                     std::max(0.8, start_target_dist - cfg_.reacquire_distance));
+
+    const std::array<double, 6> step_scales{1.0, 0.75, 0.5, 0.35, 0.2, 0.1};
+    const std::array<double, 5> z_offsets{
+        0.0,
+        -0.5 * std::max(0.0, cfg_.height_tolerance),
+        0.5 * std::max(0.0, cfg_.height_tolerance),
+        -std::max(0.0, cfg_.height_tolerance),
+        std::max(0.0, cfg_.height_tolerance)};
+
+    for (const double step_scale : step_scales)
+    {
+        for (const double z_offset : z_offsets)
+        {
+            Vec3f raw = start + std::max(0.5, max_step * step_scale) * dir;
+            raw.z() = desired_z + z_offset;
+            Vec3f candidate = raw;
+            if (!repairViewpointEndpoint(raw, target.position, candidate))
+            {
+                continue;
+            }
+            if ((candidate - target.position).norm() >= start_target_dist)
+            {
+                continue;
+            }
+            vec_E<Vec3f> trial_path;
+            if (appendPathSegment(start, candidate, trial_path, true))
+            {
+                viewpoint = candidate;
+                path_to_viewpoint = std::move(trial_path);
+                logTrackingFrontendDebug(cfg_.print_log,
+                                         "Approach viewpoint success: start=" +
+                                             pointToString(start) + ", target=" +
+                                             pointToString(target.position) + ", viewpoint=" +
+                                             pointToString(viewpoint) + ", dist_progress=" +
+                                             std::to_string(start_target_dist -
+                                                            (viewpoint - target.position).norm()));
+                return true;
+            }
+        }
+    }
+
+    logTrackingFrontendDebug(cfg_.print_log,
+                             "Approach viewpoint failed: start=" + pointToString(start) +
+                                 ", target=" + pointToString(target.position) +
+                                 ", start_target_dist=" + std::to_string(start_target_dist));
     return false;
 }
 
@@ -968,6 +1318,11 @@ bool TrackingFrontend::choosePropagatedViewpoint(const Vec3f &last_viewpoint,
                                  ", target=" + pointToString(target.position) +
                                  ", start_target_dist=" +
                                  std::to_string((last_viewpoint - target.position).norm()));
+
+    if (chooseApproachViewpoint(last_viewpoint, target, viewpoint, path_to_viewpoint))
+    {
+        return true;
+    }
 
     if (!chooseVisibleViewpoint(last_viewpoint, target, viewpoint))
     {
@@ -1050,7 +1405,13 @@ bool TrackingFrontend::appendPathSegment(const Vec3f &start,
     auto searchSegment = [&](const int flag, vec_E<Vec3f> &astar_path) {
         astar_path.clear();
         const auto ret =
-            astar_->pointToPointPathSearch(search_start, goal, flag, cfg_.searching_horizon, astar_path, 0.08);
+            astar_->pointToPointPathSearch(search_start,
+                                           goal,
+                                           flag,
+                                           std::max(cfg_.searching_horizon,
+                                                    segment_dist + 2.0 * cfg_.tracking_distance),
+                                           astar_path,
+                                           0.08);
         return (ret == super_utils::SUCCESS || ret == super_utils::REACH_GOAL) && !astar_path.empty();
     };
 
@@ -1068,7 +1429,9 @@ bool TrackingFrontend::appendPathSegment(const Vec3f &start,
                                      "A* failure: inflated-map search cannot connect tracking guide segment, start=" +
                                          pointToString(search_start) + ", goal=" + pointToString(goal) +
                                          ", segment_dist=" + std::to_string(segment_dist) +
-                                         ", search_horizon=" + std::to_string(cfg_.searching_horizon));
+                                         ", search_horizon=" +
+                                         std::to_string(std::max(cfg_.searching_horizon,
+                                                                 segment_dist + 2.0 * cfg_.tracking_distance)));
         }
         return false;
     }
@@ -1225,6 +1588,49 @@ bool TrackingFrontend::buildProblem(const StatePVAJ &head_pvaj,
                                  ", reacquire_mode=" +
                                  (problem.reacquire_mode ? "true" : "false"));
 
+    std::ofstream frontend_log;
+    if (cfg_.save_log)
+    {
+        frontend_log.open(trackingFrontendLogPath(), std::ios::out | std::ios::trunc);
+        if (frontend_log.good())
+        {
+            writeTrackingFrontendLogHeader(frontend_log);
+        }
+    }
+
+    auto makeLogQuality = [&](const Vec3f &viewpoint,
+                              const traj_opt::DynamicTargetState &target) {
+        TrackingFrontendLogQuality quality;
+        const Vec3f rel = viewpoint - target.position;
+        const double horizontal = rel.head<2>().norm();
+        const double vertical = rel.z();
+        const double min_h = std::max(0.05, cfg_.tracking_distance - std::max(0.0, cfg_.distance_tolerance));
+        const double max_h = std::max(min_h + 0.05, cfg_.tracking_distance + std::max(0.0, cfg_.distance_tolerance));
+        const double min_z = cfg_.height_offset - std::max(0.0, cfg_.height_tolerance);
+        const double max_z = cfg_.height_offset + std::max(0.0, cfg_.height_tolerance);
+        quality.in_od_band = horizontal >= min_h && horizontal <= max_h;
+        quality.in_height_band = vertical >= min_z && vertical <= max_z;
+        quality.visible = isViewpointVisible(viewpoint, target.position);
+        quality.visibility_margin = estimateVisibilityMargin(viewpoint, target.position);
+        quality.tracking_success = quality.in_od_band &&
+                                   quality.in_height_band &&
+                                   quality.visible &&
+                                   quality.visibility_margin >= -1.0e-3;
+        if (quality.tracking_success)
+        {
+            quality.tracking_state = "tracking";
+        }
+        else if (horizontal > max_h)
+        {
+            quality.tracking_state = "acquiring";
+        }
+        else
+        {
+            quality.tracking_state = "lost";
+        }
+        return quality;
+    };
+
     vec_E<Vec3f> guide;
     std::vector<double> guide_t;
     appendTimedUnique(head_pvaj.col(0), target_prediction.front().t, guide, guide_t);
@@ -1237,10 +1643,83 @@ bool TrackingFrontend::buildProblem(const StatePVAJ &head_pvaj,
     traj_opt::DynamicTargetStates used_prediction;
     used_prediction.reserve(target_prediction.size());
 
+    auto finalizeProblem = [&]() -> bool {
+        if (used_prediction.empty() || guide.empty() || guide.size() != guide_t.size())
+        {
+            logTrackingFrontendFailure(cfg_.print_log,
+                                       "No usable tracking guide can be finalized.");
+            return false;
+        }
+
+        problem.guide_path = guide;
+        problem.guide_t = guide_t;
+        problem.tail_pvaj.setZero();
+        problem.tail_pvaj.col(0) = guide.back();
+        problem.target_prediction = used_prediction;
+        Vec3f tail_vel = used_prediction.back().velocity;
+        if (!tail_vel.allFinite() || tail_vel.norm() < 0.05)
+        {
+            tail_vel.setZero();
+        }
+        problem.tail_pvaj.col(1) = tail_vel;
+        problem.min_total_duration = std::max(0.6, used_prediction.back().t);
+        int tracking_ready_count = 0;
+        int visible_count = 0;
+        for (std::size_t k = 0; k < problem.viewpoints.size() && k < used_prediction.size(); ++k)
+        {
+            const auto quality = makeLogQuality(problem.viewpoints[k], used_prediction[k]);
+            if (quality.tracking_success)
+            {
+                ++tracking_ready_count;
+            }
+            if (quality.visible)
+            {
+                ++visible_count;
+            }
+        }
+        const double denom = std::max(1.0, static_cast<double>(std::min(problem.viewpoints.size(),
+                                                                         used_prediction.size())));
+        const auto terminal_quality = makeLogQuality(problem.viewpoints.back(), used_prediction.back());
+        problem.frontend_initial_horizontal_distance =
+            (problem.viewpoints.front() - used_prediction.front().position).head<2>().norm();
+        problem.frontend_terminal_horizontal_distance =
+            (problem.viewpoints.back() - used_prediction.back().position).head<2>().norm();
+        problem.frontend_terminal_vertical_offset =
+            (problem.viewpoints.back() - used_prediction.back().position).z();
+        problem.frontend_tracking_ready = terminal_quality.tracking_success;
+        problem.frontend_acquiring = !terminal_quality.tracking_success &&
+                                     problem.frontend_terminal_horizontal_distance <
+                                         problem.frontend_initial_horizontal_distance;
+        problem.frontend_in_band_ratio = static_cast<double>(tracking_ready_count) / denom;
+        problem.frontend_visible_ratio = static_cast<double>(visible_count) / denom;
+        return true;
+    };
+
+    auto canUsePartialGuide = [&]() -> bool {
+        return used_prediction.size() >= 2 && !guide.empty() && guide.size() == guide_t.size();
+    };
+
     Vec3f seed = head_pvaj.col(0);
     problem.viewpoints.emplace_back(seed);
     problem.target_sample_times.emplace_back(target_prediction.front().t);
     used_prediction.emplace_back(target_prediction.front());
+    writeTrackingFrontendLogRow(frontend_log,
+                                0,
+                                target_prediction.front().t,
+                                "head",
+                                true,
+                                makeLogQuality(seed, target_prediction.front()),
+                                target_prediction.front().position,
+                                seed,
+                                seed,
+                                0.0,
+                                0.0,
+                                estimateVisibilityMargin(seed, target_prediction.front().position),
+                                0.0,
+                                0.0,
+                                0.0,
+                                1,
+                                "initial_state");
     if (cfg_.use_visible_region)
     {
         traj_opt::TrackingVisibleRegion region;
@@ -1252,6 +1731,90 @@ bool TrackingFrontend::buildProblem(const StatePVAJ &head_pvaj,
         region.valid = false;
         problem.visible_regions.emplace_back(region);
     }
+
+    auto appendEmergencyPartialGuide = [&](const traj_opt::DynamicTargetState &target,
+                                           const std::string &reason) -> bool {
+        Vec3f emergency = preferredViewpoint(seed, target);
+        bool found = repairViewpointEndpoint(emergency, target.position, emergency);
+        Vec3f fallback_dir = head_pvaj.col(1);
+        fallback_dir.z() = 0.0;
+        if (fallback_dir.norm() < 1.0e-3)
+        {
+            fallback_dir = seed - target.position;
+            fallback_dir.z() = 0.0;
+        }
+        fallback_dir = normalizedOr(fallback_dir, Vec3f::UnitX());
+
+        if (!found || (emergency - seed).norm() < 0.05)
+        {
+            const std::array<double, 8> yaw_offsets{
+                0.0, M_PI_2, -M_PI_2, M_PI, M_PI / 4.0, -M_PI / 4.0, 3.0 * M_PI / 4.0, -3.0 * M_PI / 4.0};
+            const std::array<double, 4> step_sizes{0.25, 0.4, 0.6, 0.8};
+            const double base_yaw = std::atan2(fallback_dir.y(), fallback_dir.x());
+            found = false;
+            for (const double step : step_sizes)
+            {
+                for (const double yaw_offset : yaw_offsets)
+                {
+                    Vec3f dir(std::cos(base_yaw + yaw_offset),
+                              std::sin(base_yaw + yaw_offset),
+                              0.0);
+                    Vec3f candidate = seed + step * dir;
+                    candidate.z() = seed.z();
+                    if (isViewpointSafe(candidate))
+                    {
+                        emergency = candidate;
+                        found = true;
+                        break;
+                    }
+                }
+                if (found)
+                {
+                    break;
+                }
+            }
+        }
+
+        if (!found || (emergency - seed).norm() < 1.0e-4)
+        {
+            return false;
+        }
+
+        appendTimedUnique(emergency, target.t, guide, guide_t);
+        problem.viewpoints.emplace_back(emergency);
+        problem.target_sample_times.emplace_back(target.t);
+        used_prediction.emplace_back(target);
+        writeTrackingFrontendLogRow(frontend_log,
+                                    problem.viewpoints.size() - 1,
+                                    target.t,
+                                    "emergency_partial",
+                                    true,
+                                    makeLogQuality(emergency, target),
+                                    target.position,
+                                    seed,
+                                    emergency,
+                                    0.0,
+                                    0.0,
+                                    estimateVisibilityMargin(emergency, target.position),
+                                    0.0,
+                                    0.0,
+                                    0.0,
+                                    1,
+                                    reason);
+        if (cfg_.use_visible_region)
+        {
+            traj_opt::TrackingVisibleRegion region;
+            region.t = target.t;
+            region.target_position = target.position;
+            region.visible_point = emergency;
+            region.theta = 0.0;
+            region.confidence = 0.0;
+            region.valid = false;
+            problem.visible_regions.emplace_back(region);
+        }
+        seed = emergency;
+        return true;
+    };
 
     for (std::size_t i = 1; i < target_prediction.size(); ++i)
     {
@@ -1268,18 +1831,72 @@ bool TrackingFrontend::buildProblem(const StatePVAJ &head_pvaj,
         vec_E<Vec3f> path_to_viewpoint;
         if (!choosePropagatedViewpoint(seed, last_target, target, viewpoint, path_to_viewpoint))
         {
+            writeTrackingFrontendLogRow(frontend_log,
+                                        i,
+                                        target.t,
+                                        "choose_viewpoint",
+                                        false,
+                                        makeLogQuality(seed, target),
+                                        target.position,
+                                        seed,
+                                        seed,
+                                        0.0,
+                                        0.0,
+                                        estimateVisibilityMargin(seed, target.position),
+                                        0.0,
+                                        0.0,
+                                        0.0,
+                                        0,
+                                        "no_safe_visible_viewpoint");
             logTrackingFrontendFailure(cfg_.print_log,
                                        "No safe visible tracking viewpoint found at target sample " +
                                        std::to_string(i) + ", t=" + std::to_string(target.t) + ".");
+            if (canUsePartialGuide())
+            {
+                logTrackingFrontendDebug(cfg_.print_log,
+                                         "Truncate tracking frontend at last valid sample instead of failing.");
+                return finalizeProblem();
+            }
+            if (appendEmergencyPartialGuide(target, "emergency_after_no_safe_visible_viewpoint"))
+            {
+                return finalizeProblem();
+            }
             return false;
         }
         if (path_to_viewpoint.empty())
         {
+            writeTrackingFrontendLogRow(frontend_log,
+                                        i,
+                                        target.t,
+                                        "connect_viewpoint",
+                                        false,
+                                        makeLogQuality(viewpoint, target),
+                                        target.position,
+                                        seed,
+                                        viewpoint,
+                                        0.0,
+                                        0.0,
+                                        estimateVisibilityMargin(viewpoint, target.position),
+                                        0.0,
+                                        0.0,
+                                        0.0,
+                                        0,
+                                        "empty_path_to_viewpoint");
             logTrackingFrontendFailure(cfg_.print_log,
                                        "Failed to connect required tracking viewpoint at target sample " +
                                        std::to_string(i) + ", t=" + std::to_string(target.t) +
                                        ", seed=" + pointToString(seed) +
                                        ", viewpoint=" + pointToString(viewpoint) + ".");
+            if (canUsePartialGuide())
+            {
+                logTrackingFrontendDebug(cfg_.print_log,
+                                         "Truncate tracking frontend at last connected sample instead of failing.");
+                return finalizeProblem();
+            }
+            if (appendEmergencyPartialGuide(target, "emergency_after_empty_path_to_viewpoint"))
+            {
+                return finalizeProblem();
+            }
             return false;
         }
         appendTimedPath(path_to_viewpoint,
@@ -1287,6 +1904,32 @@ bool TrackingFrontend::buildProblem(const StatePVAJ &head_pvaj,
                         target.t,
                         guide,
                         guide_t);
+        ViewpointCandidate metrics;
+        const Vec3f preferred = preferredViewpoint(seed, target);
+        const bool scored = scoreViewpointCandidate(viewpoint,
+                                                    seed,
+                                                    preferred,
+                                                    target,
+                                                    0.0,
+                                                    metrics);
+        writeTrackingFrontendLogRow(frontend_log,
+                                    i,
+                                    target.t,
+                                    "viewpoint",
+                                    true,
+                                    makeLogQuality(viewpoint, target),
+                                    target.position,
+                                    seed,
+                                    viewpoint,
+                                    scored ? metrics.score : 0.0,
+                                    scored ? metrics.od_cost : 0.0,
+                                    scored ? metrics.oe_margin
+                                           : estimateVisibilityMargin(viewpoint, target.position),
+                                    scored ? metrics.path_cost : 0.0,
+                                    scored ? metrics.preferred_cost : 0.0,
+                                    scored ? metrics.source_bias : 0.0,
+                                    path_to_viewpoint.size(),
+                                    "ok");
         if (cfg_.use_visible_region)
         {
             traj_opt::TrackingVisibleRegion region;
@@ -1311,30 +1954,7 @@ bool TrackingFrontend::buildProblem(const StatePVAJ &head_pvaj,
         used_prediction.emplace_back(target);
     }
 
-    if (used_prediction.empty())
-    {
-        logTrackingFrontendFailure(cfg_.print_log,
-                                   "No safe connected visible tracking viewpoint found.");
-        return false;
-    }
-
-    problem.guide_path = guide;
-    problem.guide_t = guide_t;
-
-    problem.tail_pvaj.setZero();
-    problem.tail_pvaj.col(0) = guide.back();
-    problem.target_prediction = used_prediction;
-    if (!used_prediction.empty())
-    {
-        Vec3f tail_vel = used_prediction.back().velocity;
-        if (!tail_vel.allFinite() || tail_vel.norm() < 0.05)
-        {
-            tail_vel.setZero();
-        }
-        problem.tail_pvaj.col(1) = tail_vel;
-    }
-    problem.min_total_duration = std::max(0.6, used_prediction.back().t);
-    return !problem.guide_path.empty() && problem.guide_path.size() == problem.guide_t.size();
+    return finalizeProblem();
 }
 
 PerchingFrontend::PerchingFrontend(const Config &cfg,

@@ -651,6 +651,10 @@ public:
                                                                            map_manager_.get(),
                                                                            problem_.safe_distance,
                                                                            &cfg_.quadrotot_flatness);
+    if (problem_.use_esdf_obstacle && problem_.weight_esdf_obstacle > 0.0)
+    {
+      dynamics_.weight_esdf = 0.0;
+    }
     cost_manager_.reset(cfg_,
                         map_manager_,
                         problem_,

@@ -366,8 +366,7 @@ Visualization Manager:
           Marker Topic: /fsm_node/visualization/exp_traj
           Name: ExpTraj
           Namespaces:
-            plain_traj: true
-            plain_traj_waypoints: true
+            {}
           Queue Size: 100
           Value: true
         - Class: rviz/MarkerArray
@@ -509,9 +508,9 @@ Visualization Manager:
       Invert Z Axis: false
       Name: Current View
       Near Clip Distance: 0.009999999776482582
-      Pitch: 0.4549991190433502
+      Pitch: 0.32999905943870544
       Target Frame: perfect_drone
-      Yaw: 5.398187637329102
+      Yaw: 3.018186092376709
     Saved:
       - Class: rviz/ThirdPersonFollower
         Distance: 3

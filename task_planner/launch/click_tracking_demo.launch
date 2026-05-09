@@ -36,6 +36,8 @@
         <param name="prediction_dt" value="0.25" type="double"/>
         <param name="path_dt" value="0.1" type="double"/>
         <param name="publish_rate" value="30.0" type="double"/>
+        <param name="prediction_publish_rate" value="8.0" type="double"/>
+        <param name="trajectory_log_period" value="1.0" type="double"/>
         <param name="publish_before_trajectory" value="false" type="bool"/>
     </node>
 
@@ -44,6 +46,7 @@
         <param name="drone_odom_topic" value="/drone_1/lidar_slam/odom" type="string"/>
         <param name="target_odom_topic" value="/tracking/target_odom" type="string"/>
         <param name="desired_distance" value="2.2" type="double"/>
+        <param name="distance_tolerance" value="0.8" type="double"/>
         <param name="height_offset" value="0.7" type="double"/>
         <param name="warmup_time" value="3.0" type="double"/>
         <param name="sample_rate" value="20.0" type="double"/>

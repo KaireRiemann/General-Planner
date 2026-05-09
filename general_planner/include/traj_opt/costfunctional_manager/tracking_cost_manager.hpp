@@ -4,6 +4,7 @@
 #include <cmath>
 #include <utility>
 
+#include "traj_opt/costfunctional/spatialcosts/tracking_esdf_obstacle_penalty.hpp"
 #include "traj_opt/costfunctional/spatialcosts/tracking_observation_penalty.hpp"
 #include "traj_opt/costfunctional/spatialcosts/tracking_visibility_penalty.hpp"
 #include "traj_opt/costfunctional_manager/task_dynamics_penalty.hpp"
@@ -27,6 +28,10 @@ public:
                                                        map_manager_.get(),
                                                        problem_.safe_distance,
                                                        flatness);
+        if (problem_.use_esdf_obstacle && problem_.weight_esdf_obstacle > 0.0)
+        {
+            dynamics_.weight_esdf = 0.0;
+        }
     }
 
     double evaluateIntegral(int,
@@ -86,6 +91,8 @@ public:
                                            target,
                                            grad_position,
                                            grad_target);
+        cost += addESDFObstacleCost(position,
+                                    grad_position);
         cost += addObservationAngleCost(position,
                                         yaw,
                                         target,
@@ -208,6 +215,8 @@ private:
                                            target,
                                            grad_position,
                                            grad_target);
+        cost += addESDFObstacleCost(position,
+                                    grad_position);
         cost += addStabilityCost(position,
                                  velocity,
                                  target,
@@ -251,6 +260,25 @@ private:
                                                                              config,
                                                                              grad_position,
                                                                              &grad_target);
+    }
+
+    double addESDFObstacleCost(const Eigen::Vector3d &position,
+                               Eigen::Vector3d &grad_position) const
+    {
+        if (!problem_.use_esdf_obstacle ||
+            problem_.weight_esdf_obstacle <= 0.0 ||
+            map_manager_ == nullptr ||
+            !map_manager_->hasESDF())
+        {
+            return 0.0;
+        }
+
+        return cost_functional::accumulateTrackingESDFObstaclePenalty(map_manager_.get(),
+                                                                      position,
+                                                                      problem_.safe_distance,
+                                                                      cfg_->smooth_eps,
+                                                                      problem_.weight_esdf_obstacle,
+                                                                      grad_position);
     }
 
     double addObservationAngleCost(const Eigen::Vector3d &position,

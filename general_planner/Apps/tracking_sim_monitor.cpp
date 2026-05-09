@@ -1,5 +1,7 @@
 #include <algorithm>
 #include <cmath>
+#include <fstream>
+#include <iomanip>
 #include <limits>
 #include <string>
 
@@ -17,6 +19,13 @@ Eigen::Vector3d positionOf(const nav_msgs::Odometry &odom)
                            odom.pose.pose.position.z);
 }
 
+Eigen::Vector3d velocityOf(const nav_msgs::Odometry &odom)
+{
+    return Eigen::Vector3d(odom.twist.twist.linear.x,
+                           odom.twist.twist.linear.y,
+                           odom.twist.twist.linear.z);
+}
+
 class TrackingSimMonitor
 {
 public:
@@ -26,9 +35,13 @@ public:
         nh_.param<std::string>("drone_odom_topic", drone_odom_topic_, "/lidar_slam/odom");
         nh_.param<std::string>("target_odom_topic", target_odom_topic_, "/tracking/target_odom");
         nh_.param<double>("desired_distance", desired_distance_, 2.2);
+        nh_.param<double>("distance_tolerance", distance_tolerance_, 0.8);
         nh_.param<double>("height_offset", height_offset_, 0.7);
         nh_.param<double>("warmup_time", warmup_time_, 3.0);
         nh_.param<double>("sample_rate", sample_rate_, 20.0);
+        nh_.param<std::string>("log_path", log_path_, std::string(ROOT_DIR) + "log/tracking_monitor_latest.csv");
+
+        openLog();
 
         drone_sub_ = nh_.subscribe(drone_odom_topic_, 20, &TrackingSimMonitor::droneCallback, this);
         target_sub_ = nh_.subscribe(target_odom_topic_, 20, &TrackingSimMonitor::targetCallback, this);
@@ -36,11 +49,12 @@ public:
                                         &TrackingSimMonitor::sampleTimerCallback,
                                         this);
         start_time_ = ros::Time::now();
-        ROS_INFO("Tracking sim monitor: drone=%s target=%s desired_distance=%.3f height_offset=%.3f",
+        ROS_INFO("Tracking sim monitor: drone=%s target=%s desired_distance=%.3f height_offset=%.3f log=%s",
                  drone_odom_topic_.c_str(),
                  target_odom_topic_.c_str(),
                  desired_distance_,
-                 height_offset_);
+                 height_offset_,
+                 log_path_.c_str());
     }
 
     void printSummary() const
@@ -63,6 +77,23 @@ public:
     }
 
 private:
+    void openLog()
+    {
+        if (log_path_.empty())
+        {
+            return;
+        }
+        log_.open(log_path_, std::ios::out | std::ios::trunc);
+        if (!log_.good())
+        {
+            ROS_WARN("Tracking sim monitor cannot open log file: %s", log_path_.c_str());
+            return;
+        }
+        log_ << "time,elapsed,drone_x,drone_y,drone_z,target_x,target_y,target_z,"
+                "drone_speed,target_speed,horizontal_dist,dist_error,height_error,"
+                "closing_speed,dist_rate,rel_vx,rel_vy,rel_vz,in_distance_band,moving_closer\n";
+    }
+
     void droneCallback(const nav_msgs::OdometryConstPtr &msg)
     {
         latest_drone_ = *msg;
@@ -89,10 +120,21 @@ private:
 
         const Eigen::Vector3d drone_p = positionOf(latest_drone_);
         const Eigen::Vector3d target_p = positionOf(latest_target_);
+        const Eigen::Vector3d drone_v = velocityOf(latest_drone_);
+        const Eigen::Vector3d target_v = velocityOf(latest_target_);
         const Eigen::Vector2d rel_xy = (drone_p - target_p).head<2>();
         const double horizontal_dist = rel_xy.norm();
         const double dist_error = std::abs(horizontal_dist - desired_distance_);
         const double height_error = std::abs((drone_p.z() - target_p.z()) - height_offset_);
+        const Eigen::Vector3d rel_v = drone_v - target_v;
+        double dist_rate = 0.0;
+        if (horizontal_dist > 1.0e-6)
+        {
+            dist_rate = rel_xy.dot(rel_v.head<2>()) / horizontal_dist;
+        }
+        const double closing_speed = -dist_rate;
+        const bool in_distance_band =
+            std::abs(horizontal_dist - desired_distance_) <= std::max(0.0, distance_tolerance_);
 
         ++sample_count_;
         sum_dist_error_ += dist_error;
@@ -102,9 +144,29 @@ private:
         min_horizontal_distance_ = std::min(min_horizontal_distance_, horizontal_dist);
         max_horizontal_distance_ = std::max(max_horizontal_distance_, horizontal_dist);
 
+        if (log_.good())
+        {
+            log_ << std::fixed << std::setprecision(6)
+                 << ros::Time::now().toSec() << ','
+                 << elapsed << ','
+                 << drone_p.x() << ',' << drone_p.y() << ',' << drone_p.z() << ','
+                 << target_p.x() << ',' << target_p.y() << ',' << target_p.z() << ','
+                 << drone_v.norm() << ','
+                 << target_v.norm() << ','
+                 << horizontal_dist << ','
+                 << dist_error << ','
+                 << height_error << ','
+                 << closing_speed << ','
+                 << dist_rate << ','
+                 << rel_v.x() << ',' << rel_v.y() << ',' << rel_v.z() << ','
+                 << (in_distance_band ? 1 : 0) << ','
+                 << (closing_speed > 0.0 ? 1 : 0) << '\n';
+        }
+
         ROS_INFO_STREAM_THROTTLE(2.0, "Tracking monitor: horizontal_dist=" << horizontal_dist
                                       << ", dist_err=" << dist_error
                                       << ", height_err=" << height_error
+                                      << ", closing_speed=" << closing_speed
                                       << ", samples=" << sample_count_);
         ROS_INFO_STREAM_THROTTLE(5.0, "Tracking sim monitor running summary: samples=" << sample_count_
                                       << ", avg_dist_err="
@@ -125,7 +187,10 @@ private:
 
     std::string drone_odom_topic_;
     std::string target_odom_topic_;
+    std::string log_path_;
+    std::ofstream log_;
     double desired_distance_{2.2};
+    double distance_tolerance_{0.8};
     double height_offset_{0.7};
     double warmup_time_{3.0};
     double sample_rate_{20.0};

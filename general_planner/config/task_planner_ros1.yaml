@@ -70,6 +70,11 @@ general_planner:
     candidate_radius_num: 3
     visibility_samples: 5
     weight_visible_region: 3.0
+    quality_gate_en: true
+    quality_sample_dt: 0.1
+    quality_tail_window: 1.0
+    quality_min_tail_ratio: 0.75
+    quality_visibility_margin: -0.05
     unknown_as_occupied: false
     use_visible_region: true
     frontend_astar: true

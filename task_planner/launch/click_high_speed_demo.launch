@@ -1,0 +1,15 @@
+<launch>
+    <arg name="sim_config" default="click.yaml"/>
+    <arg name="planner_config" default="click_high_speed.yaml"/>
+    <arg name="rviz" default="true"/>
+    <arg name="fpv_rviz" default="true"/>
+    <arg name="rviz_config" default="$(find perfect_drone_sim)/rviz/top_down.rviz"/>
+
+    <include file="$(find task_planner)/launch/click_demo.launch">
+        <arg name="sim_config" value="$(arg sim_config)"/>
+        <arg name="planner_config" value="$(arg planner_config)"/>
+        <arg name="rviz" value="$(arg rviz)"/>
+        <arg name="fpv_rviz" value="$(arg fpv_rviz)"/>
+        <arg name="rviz_config" value="$(arg rviz_config)"/>
+    </include>
+</launch>

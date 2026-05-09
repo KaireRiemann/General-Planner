@@ -158,7 +158,7 @@ inline double accumulateConicalLineOfSightESDFPenalty(const MapT *map,
         }
 
         const double radius = std::max(0.0, base_clearance) +
-                              clamped_cone_ratio * (1.0 - alpha) * view_dist;
+                              clamped_cone_ratio * alpha * view_dist;
         const double violation = radius - dist;
 
         double penalty = 0.0;
@@ -170,7 +170,7 @@ inline double accumulateConicalLineOfSightESDFPenalty(const MapT *map,
 
         const Eigen::Vector3d grad_dist_to_pos = rel_pt / view_dist;
         const Eigen::Vector3d grad_radius_pos =
-            clamped_cone_ratio * (1.0 - alpha) * grad_dist_to_pos;
+            clamped_cone_ratio * alpha * grad_dist_to_pos;
         const Eigen::Vector3d grad_radius_target = -grad_radius_pos;
         const Eigen::Vector3d grad_center_pos = (1.0 - alpha) * grad_dist;
         const Eigen::Vector3d grad_center_target = alpha * grad_dist;

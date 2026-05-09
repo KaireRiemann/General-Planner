@@ -38,6 +38,15 @@ general_planner:
   over_wall_min_progress_gain: 0.5
   over_wall_forward_ratio: 0.9
   unknown_goal_reveal_en: true
+  unknown_goal_frontier_en: true
+  frontier_reveal_min_unknown_span: 0.6
+  frontier_reveal_search_radius: 10.0
+  frontier_reveal_goal_weight: 1.0
+  frontier_reveal_info_weight: 0.15
+  frontier_reveal_dist_weight: 0.2
+  frontier_reveal_switch_penalty: 1.0
+  frontier_reveal_hysteresis_dist: 1.5
+  frontier_reveal_max_candidates: 30
   yaw_dot_max: 3.0
   # Yaw mode: 1 heading to velocity, 2 heading to goal
   yaw_mode: 1
@@ -138,7 +147,7 @@ rog_map:
   map_size: [ 50,50,6 ]
   # If the map rolling is disable, the map origin [m] should be set.
   fix_map_origin: [ 0,0,1.5 ]
-  frontier_extraction_en: false
+  frontier_extraction_en: true
 
   # Virtual ceil and ground
   virtual_ceil_height: 3.5

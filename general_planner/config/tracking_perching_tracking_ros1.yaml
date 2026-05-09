@@ -75,10 +75,23 @@ general_planner:
     weight_od_vertical: 8.0
     weight_oa: 5.0
     weight_oe: 1.0
+    weight_esdf_obstacle: 500.0
     weight_relative_velocity: 1.0
     weight_tangent_velocity: 5.0
     weight_viewpoint_attractor: 50.0
     weight_visible_region: 3.0
+    frontend_score_path_weight: 1.0
+    frontend_score_preferred_weight: 0.25
+    frontend_score_od_weight: 6.0
+    frontend_score_oe_weight: 5.0
+    frontend_score_clearance_reward: 1.5
+    frontend_score_source_bias_weight: 1.0
+    frontend_log_en: true
+    quality_gate_en: true
+    quality_sample_dt: 0.1
+    quality_tail_window: 1.0
+    quality_min_tail_ratio: 0.75
+    quality_visibility_margin: -0.05
     static_distance_tolerance_scale: 0.35
     static_height_tolerance_scale: 0.5
     static_tangent_weight_scale: 3.0
@@ -87,6 +100,8 @@ general_planner:
     fov_vertical_deg: 60.0
     fov_range: 4.0
     unknown_as_occupied: false
+    use_corridor: false
+    use_esdf_obstacle: true
     use_visible_region: true
     # Keep A* enabled so blocked tracking guide segments fail instead of appending unsafe goals.
     frontend_astar: true
@@ -110,6 +125,7 @@ traj_opt:
   exp_traj:
     # 1 for xi 2 for pos
     pos_constraint_type: 1
+    piece_num: 4
     energy_cost_type: 4
     block_energy_cost: false
     opt_accuracy: 5.0e-6
