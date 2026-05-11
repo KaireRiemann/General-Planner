@@ -101,21 +101,6 @@ namespace fsm {
         }
         if (ret_code == FAILED) {
 //            cout << YELLOW << " -- [Fsm] ReplanOnce failed." << RESET << endl;
-        } else if (trackingMode() && (ret_code == SUCCESS || ret_code == FINISH)) {
-            if (planner_ptr_->lastTrackingSucceeded()) {
-                cout << GREEN << " -- [Fsm] ReplanTrackingOnce tracking succeed." << RESET << endl;
-            } else if (planner_ptr_->lastTrackingAcquiring()) {
-                cout << YELLOW << std::fixed << std::setprecision(2)
-                     << " -- [Fsm] ReplanTrackingOnce acquisition committed: first_h="
-                     << planner_ptr_->lastTrackingFirstHorizontalDistance()
-                     << ", terminal_h=" << planner_ptr_->lastTrackingTerminalHorizontalDistance()
-                     << ", state=" << planner_ptr_->lastTrackingState() << RESET << endl;
-            } else {
-                cout << YELLOW << " -- [Fsm] ReplanTrackingOnce committed non-tracking state="
-                     << planner_ptr_->lastTrackingState()
-                     << ", reason=" << planner_ptr_->lastTrackingFailureReason()
-                     << RESET << endl;
-            }
         } else { cout << GREEN << " -- [Fsm] ReplanOnce succeed." << RESET << endl; }
 
         if (ret_code == EMER) {
@@ -478,11 +463,17 @@ namespace fsm {
             logStaticTrackingReplanDecision("task_new is true; target moved outside static hold noise band");
             return false;
         }
+        const double remaining = planner_ptr_->getCommittedTrajectoryRemainingDuration();
+        const double replan_time = std::max(0.0, cfg_.tracking_static_replan_remaining_time);
+        if (remaining <= replan_time) {
+            logStaticTrackingReplanDecision(
+                    fmt::format("trajectory ending soon: remaining={:.3f}s <= {:.3f}s", remaining, replan_time));
+            return false;
+        }
         if (trackingCommittedTrajectoryUnsafe()) {
             logStaticTrackingReplanDecision("committed trajectory has safety risk");
             return false;
         }
-        const double remaining = planner_ptr_->getCommittedTrajectoryRemainingDuration();
         logStaticTrackingReplanDecision(
                 fmt::format("skip static hold replan: remaining={:.3f}s, target static, trajectory safe", remaining));
         return true;

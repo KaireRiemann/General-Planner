@@ -30,16 +30,9 @@ public:
         double candidate_angle_step{0.3926990817};
         int candidate_radius_num{3};
         int visibility_samples{5};
-        double score_path_weight{1.0};
-        double score_preferred_weight{0.25};
-        double score_od_weight{6.0};
-        double score_oe_weight{5.0};
-        double score_clearance_reward{1.5};
-        double score_source_bias_weight{1.0};
         bool unknown_as_occupied{true};
         bool use_astar{true};
         bool use_visible_region{true};
-        bool save_log{false};
         bool print_log{false};
     };
 
@@ -56,23 +49,8 @@ private:
     {
         super_utils::Vec3f point{super_utils::Vec3f::Zero()};
         double score{0.0};
-        double od_cost{0.0};
-        double oe_margin{0.0};
-        double path_cost{0.0};
-        double preferred_cost{0.0};
-        double source_bias{0.0};
     };
 
-    super_utils::Vec3f preferredViewpoint(const super_utils::Vec3f &seed,
-                                          const traj_opt::DynamicTargetState &target) const;
-    double estimateVisibilityMargin(const super_utils::Vec3f &viewpoint,
-                                    const super_utils::Vec3f &target) const;
-    bool scoreViewpointCandidate(const super_utils::Vec3f &candidate,
-                                 const super_utils::Vec3f &seed,
-                                 const super_utils::Vec3f &preferred,
-                                 const traj_opt::DynamicTargetState &target,
-                                 double source_bias,
-                                 ViewpointCandidate &scored) const;
     bool isViewpointVisible(const super_utils::Vec3f &viewpoint,
                             const super_utils::Vec3f &target) const;
     bool isViewpointSafe(const super_utils::Vec3f &viewpoint) const;
@@ -105,10 +83,6 @@ private:
                                       const traj_opt::DynamicTargetState &target,
                                       super_utils::Vec3f &viewpoint,
                                       super_utils::vec_E<super_utils::Vec3f> &path_to_viewpoint) const;
-    bool chooseApproachViewpoint(const super_utils::Vec3f &start,
-                                 const traj_opt::DynamicTargetState &target,
-                                 super_utils::Vec3f &viewpoint,
-                                 super_utils::vec_E<super_utils::Vec3f> &path_to_viewpoint) const;
     bool choosePropagatedViewpoint(const super_utils::Vec3f &last_viewpoint,
                                    const traj_opt::DynamicTargetState &last_target,
                                    const traj_opt::DynamicTargetState &target,

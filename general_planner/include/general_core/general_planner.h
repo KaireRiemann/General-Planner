@@ -25,7 +25,6 @@
 
 #include <iostream>
 #include <fstream>
-#include <string>
 #include "Eigen/Eigen"
 
 
@@ -92,28 +91,6 @@ namespace general_planner {
             bool goal_valid{true};
         } gi_;
 
-        struct TrackingQualitySummary {
-            bool tracking_success{false};
-            bool acquiring{false};
-            std::string state{"lost"};
-            std::string failure_reason{"not_evaluated"};
-            int sample_count{0};
-            double first_horizontal_dist{0.0};
-            double terminal_horizontal_dist{0.0};
-            double terminal_vertical_offset{0.0};
-            double in_band_ratio{0.0};
-            double tail_success_ratio{0.0};
-            double visible_ratio{0.0};
-            double fov_ratio{0.0};
-            double yaw_ratio{0.0};
-            double safe_ratio{0.0};
-            double min_visibility_margin{0.0};
-            double max_yaw_error{0.0};
-        };
-
-        TrackingQualitySummary last_tracking_quality_;
-        bool last_tracking_commit_valid_{false};
-
         FOVChecker::Ptr fov_checker_;
 
         CmdTraj cmd_traj_info_;
@@ -159,34 +136,6 @@ namespace general_planner {
                                    bool &traj_finish);
 
         void getModuleTimeConsuming(vector<double> &time);
-
-        bool lastTrackingCommitValid() const {
-            return last_tracking_commit_valid_;
-        }
-
-        bool lastTrackingSucceeded() const {
-            return last_tracking_quality_.tracking_success;
-        }
-
-        bool lastTrackingAcquiring() const {
-            return last_tracking_quality_.acquiring;
-        }
-
-        std::string lastTrackingState() const {
-            return last_tracking_quality_.state;
-        }
-
-        std::string lastTrackingFailureReason() const {
-            return last_tracking_quality_.failure_reason;
-        }
-
-        double lastTrackingFirstHorizontalDistance() const {
-            return last_tracking_quality_.first_horizontal_dist;
-        }
-
-        double lastTrackingTerminalHorizontalDistance() const {
-            return last_tracking_quality_.terminal_horizontal_dist;
-        }
 
         void setSwarmTrajectories(const traj_opt::SwarmTrajectories &trajectories);
 
@@ -267,20 +216,7 @@ namespace general_planner {
         bool commitTrackingTrajectory(const Trajectory &pos_traj,
                                       const Trajectory &yaw_traj,
                                       const traj_opt::DynamicTargetStates &target_prediction,
-                                      const traj_opt::TrackingProblem &problem,
-                                      const std::string &traj_ns,
-                                      TrackingQualitySummary *quality_out = nullptr);
-
-        bool evaluateTrackingTrajectory(const Trajectory &pos_traj,
-                                        const Trajectory &yaw_traj,
-                                        const traj_opt::DynamicTargetStates &target_prediction,
-                                        const traj_opt::TrackingProblem &problem,
-                                        TrackingQualitySummary &quality) const;
-
-        void appendTrackingQualityLog(const TrackingQualitySummary &quality,
-                                      const std::string &traj_ns,
-                                      bool optimizer_success,
-                                      bool commit_success) const;
+                                      const std::string &traj_ns);
 
         RET_CODE optimizeTrackingTask(const traj_opt::DynamicTargetStates &target_prediction,
                                       const bool &from_rest);

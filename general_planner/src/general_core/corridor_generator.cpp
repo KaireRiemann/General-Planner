@@ -111,6 +111,7 @@ namespace general_planner {
             if ((path[first_id] - path[second_id]).norm() > seed_line_max_length_ * 1.5) {
                 fmt::print("first: {}\n second: {}\n seed line max: {}\n", path[first_id].transpose(),
                            path[second_id].transpose(), seed_line_max_length_);
+                throw std::runtime_error("seed line too long");
                 return false;
             }
             if (!GeneratePolytopeFromLine(seed_lines.back(), temp_poly)) {

@@ -873,10 +873,7 @@ namespace fsm {
             if (stop) {
                 return;
             }
-            if (machine_state_ != FOLLOW_TRAJ &&
-                machine_state_ != STATIC_TRACKING &&
-                machine_state_ != HOLD_TRACKING &&
-                machine_state_ != EMER_STOP) {
+            if (machine_state_ != FOLLOW_TRAJ && machine_state_ != EMER_STOP) {
                 return;
             }
 
@@ -888,13 +885,6 @@ namespace fsm {
             mpc_cmd_pub_.publish(heartbeat);
             cmd_pub.publish(pid_cmd_);
             if (traj_finish_) {
-                if (trackingMode() &&
-                    (machine_state_ == STATIC_TRACKING || machine_state_ == HOLD_TRACKING)) {
-                    if (machine_state_ != HOLD_TRACKING) {
-                        ChangeState("PubCmdCallback", HOLD_TRACKING);
-                    }
-                    return;
-                }
                 cout << GREEN << " -- [Fsm] Traj finish." << RESET << endl;
                 if (shouldGenerateAfterTrajFinish()) {
                     ChangeState("PubCmdCallback", GENERATE_TRAJ);

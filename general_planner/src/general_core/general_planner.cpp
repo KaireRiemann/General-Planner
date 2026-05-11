@@ -25,11 +25,7 @@
 #include <algorithm>
 #include <cmath>
 #include <exception>
-#include <fstream>
-#include <iomanip>
-#include <limits>
 #include <memory>
-#include <sstream>
 #include <super_utils/scope_timer.hpp>
 #include <utils/optimization/polynomial_interpolation.h>
 #include <fmt/color.h>
@@ -87,20 +83,6 @@ namespace general_planner {
             return yaw;
         }
 
-        double angleDiff(const double lhs, const double rhs) {
-            return std::atan2(std::sin(lhs - rhs), std::cos(lhs - rhs));
-        }
-
-        std::string trackingQualityLogPath() {
-            return std::string(ROOT_DIR) + "log/tracking_quality_latest.csv";
-        }
-
-        std::string csvSafe(std::string value) {
-            std::replace(value.begin(), value.end(), ',', ';');
-            std::replace(value.begin(), value.end(), '\n', ' ');
-            return value;
-        }
-
         void appendGuideUnique(const Vec3f &point, vec_Vec3f &path) {
             if (!point.allFinite()) {
                 return;
@@ -108,15 +90,6 @@ namespace general_planner {
             if (path.empty() || (path.back() - point).norm() > 1.0e-4) {
                 path.emplace_back(point);
             }
-        }
-
-        double guidePathLength(const vec_Vec3f &path) {
-            double length = 0.0;
-            for (int i = 1; i < static_cast<int>(path.size()); ++i) {
-                length += (path[static_cast<std::size_t>(i)] -
-                           path[static_cast<std::size_t>(i - 1)]).norm();
-            }
-            return length;
         }
 
         void appendGuideTimedUnique(const Vec3f &point,
@@ -787,308 +760,10 @@ namespace general_planner {
         return !yaw_traj.empty();
     }
 
-    bool GeneralPlanner::evaluateTrackingTrajectory(const Trajectory &pos_traj,
-                                                    const Trajectory &yaw_traj,
-                                                    const traj_opt::DynamicTargetStates &target_prediction,
-                                                    const traj_opt::TrackingProblem &problem,
-                                                    TrackingQualitySummary &quality) const {
-        quality = TrackingQualitySummary{};
-        if (!cfg_.tracking_quality_gate_en) {
-            quality.tracking_success = true;
-            quality.state = "tracking";
-            quality.failure_reason = "quality_gate_disabled";
-            return true;
-        }
-        if (pos_traj.empty() || target_prediction.empty()) {
-            quality.failure_reason = "empty_trajectory_or_target";
-            return false;
-        }
-
-        const double total_dur = pos_traj.getTotalDuration();
-        if (!std::isfinite(total_dur) || total_dur <= 1.0e-6) {
-            quality.failure_reason = "invalid_duration";
-            return false;
-        }
-
-        const double dt = std::clamp(cfg_.tracking_quality_sample_dt, 0.03, 0.25);
-        const int sample_count = std::max(2, static_cast<int>(std::ceil(total_dur / dt)) + 1);
-        const double tail_window = std::clamp(cfg_.tracking_quality_tail_window,
-                                             std::min(0.2, total_dur),
-                                             total_dur);
-        const double tail_start_t = std::max(0.0, total_dur - tail_window);
-        const double min_tail_ratio = std::clamp(cfg_.tracking_quality_min_tail_ratio, 0.1, 1.0);
-        const double min_h = problem.od_h_lower;
-        const double max_h = problem.od_h_upper;
-        const double min_v = problem.od_v_lower;
-        const double max_v = problem.od_v_upper;
-        const double half_hfov = 0.5 * std::max(1.0, cfg_.tracking_fov_horizontal_deg) * M_PI / 180.0;
-        const double half_vfov = 0.5 * std::max(1.0, cfg_.tracking_fov_vertical_deg) * M_PI / 180.0;
-        const double fov_range = std::max(0.0, cfg_.tracking_fov_range);
-        const bool map_ready = map_manager_ != nullptr && map_manager_->ready();
-        const bool use_esdf_visibility = map_ready && map_manager_->hasESDF() &&
-                                         problem.visibility_samples > 0;
-
-        int in_band_count = 0;
-        int visible_count = 0;
-        int fov_count = 0;
-        int yaw_count = 0;
-        int safe_count = 0;
-        int tail_count = 0;
-        int tail_success_count = 0;
-        bool terminal_success = false;
-        bool terminal_in_band = false;
-        bool terminal_visible = false;
-        bool terminal_fov = false;
-        bool terminal_yaw = false;
-        bool terminal_safe = false;
-        quality.sample_count = sample_count;
-        quality.min_visibility_margin =
-            use_esdf_visibility ? std::numeric_limits<double>::infinity() : 0.0;
-        quality.max_yaw_error = 0.0;
-
-        auto positionSafe = [&](const Vec3f &position) {
-            if (!position.allFinite()) {
-                return false;
-            }
-            if (!map_ready) {
-                return true;
-            }
-            if (!map_manager_->insideLocalMap(position)) {
-                return false;
-            }
-            const auto inf_grid_type = map_manager_->getInfGridType(position);
-            if (inf_grid_type == super_utils::GridType::OCCUPIED ||
-                inf_grid_type == super_utils::GridType::OUT_OF_MAP) {
-                return false;
-            }
-            if (cfg_.tracking_unknown_as_occupied &&
-                (inf_grid_type == super_utils::GridType::UNKNOWN ||
-                 inf_grid_type == super_utils::GridType::UNDEFINED ||
-                 inf_grid_type == super_utils::GridType::FRONTIER)) {
-                return false;
-            }
-            if (map_manager_->hasESDF()) {
-                double dist = 0.0;
-                Vec3f grad = Vec3f::Zero();
-                if (map_manager_->evaluateESDF(position, dist, grad) &&
-                    std::isfinite(dist) &&
-                    dist < problem.safe_distance) {
-                    return false;
-                }
-            }
-            return true;
-        };
-
-        auto visibilityMargin = [&](const Vec3f &position, const Vec3f &target) {
-            if (!use_esdf_visibility) {
-                return 0.0;
-            }
-            const Vec3f rel = position - target;
-            const double view_dist = rel.norm();
-            if (view_dist < 1.0e-6) {
-                return -std::numeric_limits<double>::infinity();
-            }
-            double min_margin = std::numeric_limits<double>::infinity();
-            const int samples = std::max(1, problem.visibility_samples);
-            for (int k = 1; k <= samples; ++k) {
-                const double alpha = static_cast<double>(k) / static_cast<double>(samples + 1);
-                const Vec3f center = position + alpha * (target - position);
-                double dist = 0.0;
-                Vec3f grad = Vec3f::Zero();
-                if (!map_manager_->evaluateESDF(center, dist, grad)) {
-                    continue;
-                }
-                const double radius = std::max(0.0, problem.visibility_safe_distance) +
-                                      std::max(0.0, problem.visibility_cone_ratio) *
-                                      alpha * view_dist;
-                min_margin = std::min(min_margin, dist - radius);
-            }
-            if (!std::isfinite(min_margin)) {
-                return 0.0;
-            }
-            return min_margin;
-        };
-
-        for (int i = 0; i < sample_count; ++i) {
-            const double alpha = static_cast<double>(i) / static_cast<double>(sample_count - 1);
-            const double t = alpha * total_dur;
-            const Vec3f tracker = pos_traj.getPos(t);
-            const auto target = interpolateTargetPrediction(target_prediction, t);
-            const Vec3f rel = tracker - target.position;
-            const double horizontal = rel.head<2>().norm();
-            const double vertical = rel.z();
-            const bool in_band = horizontal >= min_h && horizontal <= max_h &&
-                                 vertical >= min_v && vertical <= max_v;
-
-            double yaw = target.yaw;
-            StatePVAJ yaw_state;
-            if (!yaw_traj.empty() && yaw_traj.getState(std::min(t, yaw_traj.getTotalDuration()), yaw_state)) {
-                yaw = yaw_state(0, 0);
-            } else {
-                yaw = yawFacingTarget(pos_traj, target_prediction, t, yaw);
-            }
-            const Vec3f target_dir = target.position - tracker;
-            const double target_yaw = target_dir.head<2>().norm() > 1.0e-6
-                                          ? std::atan2(target_dir.y(), target_dir.x())
-                                          : yaw;
-            const double yaw_error = std::abs(angleDiff(yaw, target_yaw));
-            const bool yaw_ok = yaw_error <= half_hfov;
-            const double vertical_angle =
-                std::atan2(target_dir.z(), std::max(1.0e-6, target_dir.head<2>().norm()));
-            const bool fov_ok = (fov_range <= 1.0e-6 || target_dir.norm() <= fov_range) &&
-                                yaw_ok &&
-                                std::abs(vertical_angle) <= half_vfov;
-            const bool los_line_ok =
-                !map_ready ||
-                map_manager_->isLineFree(tracker,
-                                         target.position,
-                                         false,
-                                         cfg_.tracking_unknown_as_occupied);
-            const double margin = visibilityMargin(tracker, target.position);
-            const bool los_margin_ok = !use_esdf_visibility ||
-                                       margin >= cfg_.tracking_quality_visibility_margin;
-            const bool visible = los_line_ok && los_margin_ok;
-            const bool safe = positionSafe(tracker);
-            const bool sample_success = in_band && visible && fov_ok && yaw_ok && safe;
-
-            if (i == 0) {
-                quality.first_horizontal_dist = horizontal;
-            }
-            if (i == sample_count - 1) {
-                quality.terminal_horizontal_dist = horizontal;
-                quality.terminal_vertical_offset = vertical;
-                terminal_success = sample_success;
-                terminal_in_band = in_band;
-                terminal_visible = visible;
-                terminal_fov = fov_ok;
-                terminal_yaw = yaw_ok;
-                terminal_safe = safe;
-            }
-            if (in_band) {
-                ++in_band_count;
-            }
-            if (visible) {
-                ++visible_count;
-            }
-            if (fov_ok) {
-                ++fov_count;
-            }
-            if (yaw_ok) {
-                ++yaw_count;
-            }
-            if (safe) {
-                ++safe_count;
-            }
-            if (t >= tail_start_t - 1.0e-9) {
-                ++tail_count;
-                if (sample_success) {
-                    ++tail_success_count;
-                }
-            }
-            if (use_esdf_visibility) {
-                quality.min_visibility_margin = std::min(quality.min_visibility_margin, margin);
-            }
-            quality.max_yaw_error = std::max(quality.max_yaw_error, yaw_error);
-        }
-
-        const double denom = std::max(1, sample_count);
-        quality.in_band_ratio = static_cast<double>(in_band_count) / static_cast<double>(denom);
-        quality.visible_ratio = static_cast<double>(visible_count) / static_cast<double>(denom);
-        quality.fov_ratio = static_cast<double>(fov_count) / static_cast<double>(denom);
-        quality.yaw_ratio = static_cast<double>(yaw_count) / static_cast<double>(denom);
-        quality.safe_ratio = static_cast<double>(safe_count) / static_cast<double>(denom);
-        quality.tail_success_ratio =
-            tail_count > 0 ? static_cast<double>(tail_success_count) / static_cast<double>(tail_count) : 0.0;
-        if (!std::isfinite(quality.min_visibility_margin)) {
-            quality.min_visibility_margin = 0.0;
-        }
-
-        quality.tracking_success = terminal_success &&
-                                   quality.tail_success_ratio >= min_tail_ratio;
-        quality.acquiring = !quality.tracking_success &&
-                            quality.terminal_horizontal_dist + 0.5 <
-                                quality.first_horizontal_dist;
-        if (quality.tracking_success) {
-            quality.state = "tracking";
-            quality.failure_reason = "ok";
-        } else if (quality.acquiring) {
-            quality.state = "acquiring";
-            quality.failure_reason = "not_yet_trackable";
-        } else {
-            quality.state = "lost";
-            quality.failure_reason = "tracking_quality_failed";
-        }
-
-        if (!quality.tracking_success) {
-            if (!terminal_safe) {
-                quality.failure_reason = "terminal_not_safe";
-            } else if (!terminal_in_band) {
-                quality.failure_reason = "terminal_out_of_od_band";
-            } else if (!terminal_visible) {
-                quality.failure_reason = "terminal_not_visible";
-            } else if (!terminal_fov) {
-                quality.failure_reason = "terminal_out_of_fov";
-            } else if (!terminal_yaw) {
-                quality.failure_reason = "terminal_yaw_error";
-            } else if (quality.tail_success_ratio < min_tail_ratio) {
-                quality.failure_reason = "tail_tracking_ratio_low";
-            }
-        }
-
-        return quality.tracking_success;
-    }
-
-    void GeneralPlanner::appendTrackingQualityLog(const TrackingQualitySummary &quality,
-                                                  const std::string &traj_ns,
-                                                  const bool optimizer_success,
-                                                  const bool commit_success) const {
-        if (!cfg_.tracking_frontend_log_en) {
-            return;
-        }
-        const std::string path = trackingQualityLogPath();
-        bool write_header = true;
-        {
-            std::ifstream existing(path);
-            write_header = !existing.good() || existing.peek() == std::ifstream::traits_type::eof();
-        }
-        std::ofstream log(path, std::ios::out | std::ios::app);
-        if (!log.good()) {
-            return;
-        }
-        if (write_header) {
-            log << "time,traj_ns,optimizer_success,commit_success,track_success,state,"
-                   "failure_reason,samples,first_horizontal_dist,terminal_horizontal_dist,"
-                   "terminal_vertical_offset,in_band_ratio,tail_success_ratio,visible_ratio,"
-                   "fov_ratio,yaw_ratio,safe_ratio,min_visibility_margin,max_yaw_error\n";
-        }
-        log << std::fixed << std::setprecision(6)
-            << ros_ptr_->getSimTime() << ','
-            << csvSafe(traj_ns) << ','
-            << (optimizer_success ? 1 : 0) << ','
-            << (commit_success ? 1 : 0) << ','
-            << (quality.tracking_success ? 1 : 0) << ','
-            << csvSafe(quality.state) << ','
-            << csvSafe(quality.failure_reason) << ','
-            << quality.sample_count << ','
-            << quality.first_horizontal_dist << ','
-            << quality.terminal_horizontal_dist << ','
-            << quality.terminal_vertical_offset << ','
-            << quality.in_band_ratio << ','
-            << quality.tail_success_ratio << ','
-            << quality.visible_ratio << ','
-            << quality.fov_ratio << ','
-            << quality.yaw_ratio << ','
-            << quality.safe_ratio << ','
-            << quality.min_visibility_margin << ','
-            << quality.max_yaw_error << '\n';
-    }
-
     bool GeneralPlanner::commitTrackingTrajectory(const Trajectory &pos_traj,
                                                 const Trajectory &optimized_yaw_traj,
                                                 const traj_opt::DynamicTargetStates &target_prediction,
-                                                const traj_opt::TrackingProblem &problem,
-                                                const std::string &traj_ns,
-                                                TrackingQualitySummary *quality_out) {
+                                                const std::string &traj_ns) {
         if (pos_traj.empty()) {
             ros_ptr_->warn(" -- [GeneralPlanner] Tracking trajectory is empty, cannot commit.");
             return false;
@@ -1096,47 +771,15 @@ namespace general_planner {
 
         Trajectory yaw_traj = optimized_yaw_traj;
         if (yaw_traj.empty() && !buildTrackingTargetYawTrajectory(pos_traj, target_prediction, yaw_traj)) {
-            ros_ptr_->warn(" -- [GeneralPlanner] Tracking target yaw generation failed; reject tracking trajectory.");
-            TrackingQualitySummary quality;
-            quality.failure_reason = "yaw_generation_failed";
-            if (quality_out != nullptr) {
-                *quality_out = quality;
+            double terminal_yaw = target_prediction.empty() ? robot_state_.yaw : target_prediction.back().yaw;
+            if (!target_prediction.empty()) {
+                const Vec3f face_dir = target_prediction.back().position - pos_traj.getPos(pos_traj.getTotalDuration());
+                if (face_dir.head<2>().norm() > 1.0e-3) {
+                    terminal_yaw = std::atan2(face_dir.y(), face_dir.x());
+                }
             }
-            appendTrackingQualityLog(quality, traj_ns, true, false);
-            return false;
-        }
-
-        TrackingQualitySummary quality;
-        const bool tracking_ok = evaluateTrackingTrajectory(pos_traj,
-                                                            yaw_traj,
-                                                            target_prediction,
-                                                            problem,
-                                                            quality);
-        const bool acquiring_ok =
-            cfg_.tracking_quality_gate_en &&
-            !tracking_ok &&
-            (quality.acquiring || problem.frontend_acquiring) &&
-            quality.safe_ratio >= 0.99 &&
-            quality.terminal_horizontal_dist + 0.5 < quality.first_horizontal_dist;
-        if (!tracking_ok && !acquiring_ok) {
-            if (quality_out != nullptr) {
-                *quality_out = quality;
-            }
-            appendTrackingQualityLog(quality, traj_ns, true, false);
-            ros_ptr_->warn(" -- [GeneralPlanner] Tracking semantic gate rejected trajectory: state={}, reason={}, first_h={:.2f}, terminal_h={:.2f}, tail_ratio={:.2f}, visible_ratio={:.2f}.",
-                           quality.state,
-                           quality.failure_reason,
-                           quality.first_horizontal_dist,
-                           quality.terminal_horizontal_dist,
-                           quality.tail_success_ratio,
-                           quality.visible_ratio);
-            return false;
-        }
-        if (acquiring_ok && cfg_.print_log) {
-            ros_ptr_->warn(" -- [GeneralPlanner] Commit acquisition trajectory, not tracking success: first_h={:.2f}, terminal_h={:.2f}, safe_ratio={:.2f}.",
-                           quality.first_horizontal_dist,
-                           quality.terminal_horizontal_dist,
-                           quality.safe_ratio);
+            ros_ptr_->warn(" -- [GeneralPlanner] Tracking target yaw generation failed, fallback to terminal yaw.");
+            return commitTaskTrajectory(pos_traj, terminal_yaw, true, traj_ns);
         }
 
         Trajectory committed_pos_traj = pos_traj;
@@ -1215,10 +858,6 @@ namespace general_planner {
         latest_replan.setExpTraj(committed_pos_traj);
         latest_replan.setExpYawTraj(committed_yaw_traj);
         latest_replan.setRetCode(GENERAL_SUCCESS_NO_BACKUP);
-        if (quality_out != nullptr) {
-            *quality_out = quality;
-        }
-        appendTrackingQualityLog(quality, traj_ns, true, true);
         return true;
     }
 
@@ -1660,10 +1299,7 @@ namespace general_planner {
 
     RET_CODE GeneralPlanner::optimizeTrackingTask(const traj_opt::DynamicTargetStates &target_prediction,
                                                 const bool &from_rest) {
-        last_tracking_commit_valid_ = false;
-        last_tracking_quality_ = TrackingQualitySummary{};
         if (target_prediction.empty()) {
-            last_tracking_quality_.failure_reason = "empty_target_prediction";
             ros_ptr_->warn(" -- [GeneralPlanner] Tracking task has no target prediction.");
             return FAILED;
         }
@@ -1697,16 +1333,9 @@ namespace general_planner {
         frontend_cfg.candidate_angle_step = cfg_.tracking_candidate_angle_step;
         frontend_cfg.candidate_radius_num = cfg_.tracking_candidate_radius_num;
         frontend_cfg.visibility_samples = cfg_.tracking_visibility_samples;
-        frontend_cfg.score_path_weight = cfg_.tracking_frontend_score_path_weight;
-        frontend_cfg.score_preferred_weight = cfg_.tracking_frontend_score_preferred_weight;
-        frontend_cfg.score_od_weight = cfg_.tracking_frontend_score_od_weight;
-        frontend_cfg.score_oe_weight = cfg_.tracking_frontend_score_oe_weight;
-        frontend_cfg.score_clearance_reward = cfg_.tracking_frontend_score_clearance_reward;
-        frontend_cfg.score_source_bias_weight = cfg_.tracking_frontend_score_source_bias_weight;
         frontend_cfg.unknown_as_occupied = cfg_.tracking_unknown_as_occupied;
         frontend_cfg.use_astar = cfg_.tracking_frontend_astar;
         frontend_cfg.use_visible_region = cfg_.tracking_use_visible_region;
-        frontend_cfg.save_log = cfg_.tracking_frontend_log_en;
         frontend_cfg.print_log = cfg_.print_log;
 
         traj_opt::TrackingProblem problem;
@@ -1714,71 +1343,24 @@ namespace general_planner {
         TrackingFrontend frontend(frontend_cfg, map_manager_, astar_ptr_);
         if (!frontend.buildProblem(makeTaskHeadState(from_rest), target_prediction, problem)) {
             time_consuming_[EPX_TRAJ_FRONTEND] = t_frontend.stop();
-            last_tracking_quality_.failure_reason = "frontend_failed";
             ros_ptr_->warn(" -- [GeneralPlanner] Tracking frontend failed.");
             return FAILED;
         }
         problem.static_tracking_mode = static_tracking;
         const double tracking_frontend_t = t_frontend.stop();
         time_consuming_[EPX_TRAJ_FRONTEND] = tracking_frontend_t;
-        if (cfg_.tracking_quality_gate_en && !problem.frontend_tracking_ready) {
-            ros_ptr_->warn(" -- [GeneralPlanner] Tracking frontend is not trackable yet: acquiring={}, initial_h={:.2f}, terminal_h={:.2f}, terminal_z={:.2f}, in_band_ratio={:.2f}, visible_ratio={:.2f}.",
-                           problem.frontend_acquiring,
-                           problem.frontend_initial_horizontal_distance,
-                           problem.frontend_terminal_horizontal_distance,
-                           problem.frontend_terminal_vertical_offset,
-                           problem.frontend_in_band_ratio,
-                           problem.frontend_visible_ratio);
-        }
 
-        const bool can_use_tracking_esdf =
-                cfg_.tracking_use_esdf_obstacle &&
-                cfg_.tracking_weight_esdf_obstacle > 0.0 &&
-                map_manager_ != nullptr &&
-                map_manager_->hasESDF();
-        const bool require_tracking_corridor = cfg_.tracking_use_corridor || !can_use_tracking_esdf;
         TimeConsuming t_tracking_sfc("tracking_sfc", false);
-        if (require_tracking_corridor) {
-            if (!buildTrackingGuideCorridor(problem)) {
-                time_consuming_[EPX_TRAJ_FRONTEND] += t_tracking_sfc.stop();
-                last_tracking_quality_.failure_reason = "sfc_generation_failed";
-                ros_ptr_->warn(" -- [GeneralPlanner] Tracking SFC generation failed.");
-                return FAILED;
-            }
-        } else {
-            problem.sfcs.clear();
-            problem.use_corridor = false;
-            if (cfg_.print_log) {
-                ros_ptr_->info(" -- [GeneralPlanner] Tracking corridor disabled; ESDF obstacle cost will handle collision avoidance.");
-            }
+        if (!buildTrackingGuideCorridor(problem)) {
+            time_consuming_[EPX_TRAJ_FRONTEND] += t_tracking_sfc.stop();
+            ros_ptr_->warn(" -- [GeneralPlanner] Tracking SFC generation failed.");
+            return FAILED;
         }
         time_consuming_[EPX_TRAJ_FRONTEND] += t_tracking_sfc.stop();
         latest_replan.setGuidePath(problem.guide_path);
         latest_replan.setExpCondition(VecDf(), problem.guide_path, problem.head_pvaj, problem.tail_pvaj, problem.sfcs);
         const traj_opt::DynamicTargetStates &active_target_prediction =
                 problem.target_prediction.empty() ? target_prediction : problem.target_prediction;
-
-        if (!problem.use_corridor && problem.piece_num <= 0) {
-            const double guide_length =
-                    std::max(guidePathLength(problem.guide_path),
-                             (problem.tail_pvaj.col(0) - problem.head_pvaj.col(0)).norm());
-            const double segment_length = std::max(0.8, 0.45 * std::max(0.2, cfg_.exp_traj_cfg.max_vel));
-            const int dynamic_piece_num = static_cast<int>(std::ceil(guide_length / segment_length));
-            const int configured_piece_num = std::max(0, cfg_.exp_traj_cfg.piece_num);
-            const int min_piece_num = problem.reacquire_mode ? 4 : 2;
-            problem.piece_num = std::clamp(std::max({dynamic_piece_num,
-                                                     configured_piece_num,
-                                                     min_piece_num}),
-                                           min_piece_num,
-                                           16);
-            if (cfg_.print_log) {
-                ros_ptr_->info(" -- [GeneralPlanner] Tracking dynamic piece allocation: pieces={}, guide_len={:.2f}, segment_len={:.2f}, reacquire={}.",
-                               problem.piece_num,
-                               guide_length,
-                               segment_length,
-                               problem.reacquire_mode);
-            }
-        }
 
         problem.head_yaw << robot_state_.yaw, 0.0;
         if (!from_rest && !cmd_traj_info_.empty()) {
@@ -1807,7 +1389,6 @@ namespace general_planner {
         problem.weight_od_vertical = cfg_.tracking_weight_od_vertical;
         problem.weight_oa = cfg_.tracking_weight_oa;
         problem.weight_oe = cfg_.tracking_weight_oe;
-        problem.weight_esdf_obstacle = cfg_.tracking_weight_esdf_obstacle;
         problem.weight_visibility = cfg_.tracking_weight_oe;
         problem.weight_relative_velocity = cfg_.tracking_weight_relative_velocity;
         problem.weight_tangent_velocity = cfg_.tracking_weight_tangent_velocity;
@@ -1837,7 +1418,6 @@ namespace general_planner {
         }
         const int valid_visible_regions = validVisibleRegionCount(problem);
         problem.use_visible_region = cfg_.tracking_use_visible_region && valid_visible_regions > 0;
-        problem.use_esdf_obstacle = cfg_.tracking_use_esdf_obstacle && can_use_tracking_esdf;
         problem.visibility_angle_clearance = cfg_.tracking_visibility_angle_clearance;
         if (cfg_.print_log && cfg_.tracking_use_visible_region) {
             ros_ptr_->info(" -- [GeneralPlanner] Tracking visible-region soft prior: valid={}/{}, enabled={}, reacquire={}.",
@@ -1870,43 +1450,37 @@ namespace general_planner {
                             : traj_manager_->trackingJerk()->optimize(problem, out_traj, &out_yaw_traj);
         time_consuming_[EXP_TRAJ_OPT] = t_opt.stop();
         if (!ok || out_traj.empty()) {
-            last_tracking_quality_.failure_reason = "optimizer_failed";
             ros_ptr_->warn(" -- [GeneralPlanner] Tracking optimization failed.");
             return FAILED;
         }
         if (out_traj.getTotalDuration() < cfg_.tracking_min_commit_duration) {
-            last_tracking_quality_.failure_reason = "trajectory_too_short";
             ros_ptr_->warn(" -- [GeneralPlanner] Tracking trajectory too short ({:.3f}s < {:.3f}s), keep previous valid trajectory.",
                            out_traj.getTotalDuration(),
                            cfg_.tracking_min_commit_duration);
             return FAILED;
         }
 
-        TrackingQualitySummary tracking_quality;
+        {
+            TimeConsuming t_viz("tracking_fov_viz", false);
+            const double fov_range = cfg_.tracking_fov_range > 0.0
+                                         ? cfg_.tracking_fov_range
+                                         : cfg_.tracking_distance + cfg_.tracking_distance_tolerance;
+            ros_ptr_->vizTrackingFov(out_traj,
+                                     out_yaw_traj,
+                                     cfg_.tracking_fov_horizontal_deg,
+                                     cfg_.tracking_fov_vertical_deg,
+                                     fov_range);
+            time_consuming_[VISUALIZATION] += t_viz.stop();
+        }
+
         if (!commitTrackingTrajectory(out_traj,
                                       out_yaw_traj,
                                       active_target_prediction,
-                                      problem,
-                                      cfg_.tracking_use_snap ? "tracking_snap" : "tracking_jerk",
-                                      &tracking_quality)) {
-            last_tracking_quality_ = tracking_quality;
-            last_tracking_commit_valid_ = false;
+                                      cfg_.tracking_use_snap ? "tracking_snap" : "tracking_jerk")) {
             return FAILED;
         }
-        last_tracking_quality_ = tracking_quality;
-        last_tracking_commit_valid_ = true;
-        if (tracking_quality.tracking_success) {
-            ros_ptr_->info(" -- [GeneralPlanner] Tracking task success: pieces={}, duration={}, tail_ratio={:.2f}.",
-                           out_traj.getPieceNum(),
-                           out_traj.getTotalDuration(),
-                           tracking_quality.tail_success_ratio);
-        } else {
-            ros_ptr_->warn(" -- [GeneralPlanner] Tracking acquisition committed: pieces={}, duration={}, first_h={:.2f}, terminal_h={:.2f}, track_success=0.",
-                           out_traj.getPieceNum(),
-                           out_traj.getTotalDuration(),
-                           tracking_quality.first_horizontal_dist,
-                           tracking_quality.terminal_horizontal_dist);
-        }
+        ros_ptr_->info(" -- [GeneralPlanner] Tracking task success: pieces={}, duration={}.",
+                       out_traj.getPieceNum(), out_traj.getTotalDuration());
         return SUCCESS;
     }
 

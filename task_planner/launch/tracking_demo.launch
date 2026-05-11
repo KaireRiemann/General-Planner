@@ -24,7 +24,6 @@
         <param name="drone_odom_topic" value="/lidar_slam/odom" type="string"/>
         <param name="target_odom_topic" value="/tracking/target_odom" type="string"/>
         <param name="desired_distance" value="2.2" type="double"/>
-        <param name="distance_tolerance" value="0.8" type="double"/>
         <param name="height_offset" value="0.7" type="double"/>
         <param name="warmup_time" value="3.0" type="double"/>
         <param name="sample_rate" value="20.0" type="double"/>

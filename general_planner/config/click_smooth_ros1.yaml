@@ -30,16 +30,14 @@ general_planner:
   sensing_horizon: -1
   receding_dis: 4.0
   robot_r: 0.2
+  frontend_astar_time_out: 0.2
+  over_wall_search_en: true
+  over_wall_max_climb: 3.0
+  over_wall_height_step: 0.3
+  over_wall_min_blocked_span: 0.8
+  over_wall_min_progress_gain: 0.5
+  over_wall_forward_ratio: 0.9
   unknown_goal_reveal_en: true
-  unknown_goal_frontier_en: true
-  frontier_reveal_min_unknown_span: 0.6
-  frontier_reveal_search_radius: 10.0
-  frontier_reveal_goal_weight: 1.0
-  frontier_reveal_info_weight: 0.15
-  frontier_reveal_dist_weight: 0.2
-  frontier_reveal_switch_penalty: 1.0
-  frontier_reveal_hysteresis_dist: 1.5
-  frontier_reveal_max_candidates: 30
   yaw_dot_max: 3.0
   # Yaw mode: 1 heading to velocity, 2 heading to goal
   yaw_mode: 1
@@ -52,7 +50,7 @@ traj_opt:
     print_optimizer_log: false
 
   boundary:
-    max_vel: 5.0
+    max_vel: 2.5
     max_acc: 5.0
     max_jerk: 120.0
     max_omg: 2.5
@@ -124,7 +122,7 @@ astar:
   visual_process: false
   allow_diag: true
   # 0 DIAG; 1 MANHATTAN; 2 EUCLIDEAN
-  heu_type: 2
+  heu_type: 0
   debug_visualization_en: false
 
 
@@ -137,7 +135,7 @@ rog_map:
   map_size: [ 50,50,6 ]
   # If the map rolling is disable, the map origin [m] should be set.
   fix_map_origin: [ 0,0,1.5 ]
-  frontier_extraction_en: true
+  frontier_extraction_en: false
 
   # Virtual ceil and ground
   virtual_ceil_height: 3.5

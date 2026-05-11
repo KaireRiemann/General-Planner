@@ -280,35 +280,7 @@ bool Trajectory::getPartialTrajectoryByTime(const double &start_TT, const double
     double t0 = start_TT;
     double local_end_t = end_TT;
     int pieceIdx = locatePieceIdx(t0);
-    if (pieces[pieceIdx].getDegree() == 3) {
-        int pieceEndIdx = locatePieceIdx(local_end_t);
-        double t02 = t0 * t0;
-        double t03 = t02 * t0;
-
-        Eigen::MatrixXd coef_mat = pieces[pieceIdx].getCoeffMat();
-        Eigen::Matrix<double, 4, 4> cvt_M;
-        cvt_M << 1, 0, 0, 0,
-                3 * t0, 1, 0, 0,
-                3 * t02, 2 * t0, 1, 0,
-                t03, t02, t0, 1;
-
-        coef_mat = coef_mat * cvt_M.transpose();
-        double p1_t = std::min(pieces[pieceIdx].getDuration() - t0, end_TT - start_TT);
-        Piece new_pie(p1_t, coef_mat);
-        out_traj.pieces.push_back(new_pie);
-        if (pieceIdx == pieceEndIdx) {
-            out_traj.start_WT = start_WT + start_TT;
-            return true;
-        }
-        for (int i = pieceIdx + 1; i < pieceEndIdx; i++) {
-            out_traj.pieces.push_back(pieces[i]);
-        }
-        Eigen::MatrixXd end_coef = pieces[pieceEndIdx].getCoeffMat();
-        Piece new_pie_end(local_end_t, end_coef);
-        out_traj.pieces.push_back(new_pie_end);
-        out_traj.start_WT = start_WT + start_TT;
-        return true;
-    } else if (pieces[pieceIdx].getDegree() == 5) {
+    if (pieces[pieceIdx].getDegree() == 5) {
         int pieceEndIdx = locatePieceIdx(local_end_t);
         double t02 = t0 * t0;
         double t03 = t02 * t0;
@@ -381,7 +353,7 @@ bool Trajectory::getPartialTrajectoryByTime(const double &start_TT, const double
         return true;
 
     } else {
-        std::cout << "[getPartialTrajectory] ERROR, the piece degree is neither 3, 5 nor 7" << std::endl;
+        std::cout << "[getPartialTrajectory] ERROR, the piece degree is neither 5 n or 7" << std::endl;
         Trajectory out_empty;
         return false;
     }

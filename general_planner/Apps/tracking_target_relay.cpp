@@ -124,9 +124,7 @@ class TrackingTargetRelay
         nh_.param<double>("prediction_dt", prediction_dt_, 0.25);
         nh_.param<double>("path_dt", path_dt_, 0.1);
         nh_.param<double>("publish_rate", publish_rate_, 30.0);
-        nh_.param<double>("prediction_publish_rate", prediction_publish_rate_, 8.0);
         nh_.param<double>("trajectory_finish_hold", trajectory_finish_hold_, 1.0);
-        nh_.param<double>("trajectory_log_period", trajectory_log_period_, 1.0);
         nh_.param<bool>("publish_before_trajectory", publish_before_trajectory_, false);
 
         target_odom_pub_ = nh_.advertise<nav_msgs::Odometry>(tracking_target_odom_topic_, 10);
@@ -176,16 +174,10 @@ class TrackingTargetRelay
         {
             target_path_pub_.publish(target_path);
         }
-        const ros::Time now = ros::Time::now();
-        if (last_traj_log_time_.isZero() ||
-            (now - last_traj_log_time_).toSec() >= std::max(0.0, trajectory_log_period_))
-        {
-            last_traj_log_time_ = now;
-            ROS_INFO("Tracking target relay received target trajectory id=%u, pieces=%d, duration=%.3f s.",
-                     static_cast<unsigned int>(msg->trajectory_id),
-                     parsed_traj.getPieceNum(),
-                     parsed_traj.getTotalDuration());
-        }
+        ROS_INFO("Tracking target relay received target trajectory id=%u, pieces=%d, duration=%.3f s.",
+                 static_cast<unsigned int>(msg->trajectory_id),
+                 parsed_traj.getPieceNum(),
+                 parsed_traj.getTotalDuration());
     }
 
     bool trajectoryUsableLocked(const ros::Time &now) const
@@ -347,19 +339,8 @@ class TrackingTargetRelay
             {
                 target_odom = buildTargetOdomLocked(stamp);
             }
-            const double prediction_interval =
-                prediction_publish_rate_ > 1.0e-6 ? 1.0 / prediction_publish_rate_ : 0.0;
-            if (last_prediction_pub_time_.isZero() ||
-                prediction_interval <= 0.0 ||
-                (stamp - last_prediction_pub_time_).toSec() >= prediction_interval)
-            {
-                prediction = buildPredictionLocked(stamp);
-                publish_prediction = prediction.poses.size() >= 2;
-                if (publish_prediction)
-                {
-                    last_prediction_pub_time_ = stamp;
-                }
-            }
+            prediction = buildPredictionLocked(stamp);
+            publish_prediction = prediction.poses.size() >= 2;
         }
 
         if (publish_odom)
@@ -388,8 +369,6 @@ class TrackingTargetRelay
     bool has_traj_{false};
     uint32_t last_traj_id_{0};
     ros::Time last_traj_time_;
-    ros::Time last_traj_log_time_;
-    ros::Time last_prediction_pub_time_;
 
     std::string target_odom_topic_;
     std::string target_traj_topic_;
@@ -402,9 +381,7 @@ class TrackingTargetRelay
     double prediction_dt_{0.25};
     double path_dt_{0.1};
     double publish_rate_{30.0};
-    double prediction_publish_rate_{8.0};
     double trajectory_finish_hold_{1.0};
-    double trajectory_log_period_{1.0};
     bool publish_before_trajectory_{false};
 };
 } // namespace

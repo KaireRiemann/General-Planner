@@ -64,14 +64,6 @@ struct TrackingProblem
   DynamicTargetStates target_prediction;
   super_utils::vec_E<TrackingVisibleRegion> visible_regions;
 
-  bool frontend_tracking_ready{false};
-  bool frontend_acquiring{false};
-  double frontend_initial_horizontal_distance{0.0};
-  double frontend_terminal_horizontal_distance{0.0};
-  double frontend_terminal_vertical_offset{0.0};
-  double frontend_in_band_ratio{0.0};
-  double frontend_visible_ratio{0.0};
-
   double safe_distance{0.45};
   double tracking_distance{3.0};
   double distance_tolerance{0.8};
@@ -87,7 +79,6 @@ struct TrackingProblem
   double weight_od_vertical{8.0};
   double weight_oa{5.0};
   double weight_oe{1.0};
-  double weight_esdf_obstacle{500.0};
   double weight_relative_velocity{1.0};
   double weight_tangent_velocity{5.0};
   double weight_viewpoint_attractor{50.0};
@@ -99,7 +90,6 @@ struct TrackingProblem
   double visibility_cone_ratio{0.12};
   double visibility_angle_clearance{0.08726646259971647};
   int visibility_samples{5};
-  bool use_esdf_obstacle{true};
   bool use_esdf_visibility{true};
   bool use_visible_region{true};
   bool reacquire_mode{false};

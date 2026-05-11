@@ -85,7 +85,7 @@ class TrajectoryEvent:
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Autonomous benchmark for state-to-state click demos."
+        description="Benchmark for state-to-state click demos."
     )
     parser.add_argument(
         "--demo",
@@ -121,8 +121,16 @@ def parse_args():
     parser.add_argument("--goal-publish-time", type=float, default=1.0)
     parser.add_argument("--goal-publish-rate", type=float, default=20.0)
     parser.add_argument("--sample-max-attempts", type=int, default=5000)
-    parser.add_argument("--rviz", type=str_to_bool, default=False)
-    parser.add_argument("--fpv-rviz", type=str_to_bool, default=False)
+    parser.add_argument("--manual-goals", type=str_to_bool, default=True)
+    parser.add_argument("--manual-goal-topic", default="/goal")
+    parser.add_argument(
+        "--manual-goal-timeout",
+        type=float,
+        default=0.0,
+        help="Seconds to wait for each manually clicked goal; <=0 waits forever.",
+    )
+    parser.add_argument("--rviz", type=str_to_bool, default=True)
+    parser.add_argument("--fpv-rviz", type=str_to_bool, default=True)
     return parser.parse_args(rospy.myargv(argv=sys.argv)[1:])
 
 
@@ -293,12 +301,18 @@ class BenchmarkNode:
         self.odom_seq = 0
         self.cloud_seq = 0
         self.traj_events = []
-        self.goal_pub = rospy.Publisher("/goal", PoseStamped, queue_size=1)
+        self.manual_goal = None
+        self.manual_goal_seq = 0
+        self.goal_pub = None if args.manual_goals else rospy.Publisher("/goal", PoseStamped, queue_size=1)
         self.odom_sub = rospy.Subscriber("/lidar_slam/odom", Odometry, self.odom_cb, queue_size=50)
         self.cloud_sub = rospy.Subscriber("/global_pc", PointCloud2, self.cloud_cb, queue_size=1)
         self.traj_sub = rospy.Subscriber(
             "/planning_cmd/poly_traj", PolynomialTrajectory, self.traj_cb, queue_size=100
         )
+        if args.manual_goals:
+            self.manual_goal_sub = rospy.Subscriber(
+                args.manual_goal_topic, PoseStamped, self.manual_goal_cb, queue_size=10
+            )
 
     def odom_cb(self, msg):
         with self.lock:
@@ -318,6 +332,16 @@ class BenchmarkNode:
         event = TrajectoryEvent(msg=msg, wall_time=time.monotonic(), ros_time=rospy.Time.now().to_sec())
         with self.lock:
             self.traj_events.append(event)
+
+    def manual_goal_cb(self, msg):
+        goal = (
+            msg.pose.position.x,
+            msg.pose.position.y,
+            self.args.goal_z,
+        )
+        with self.lock:
+            self.manual_goal = goal
+            self.manual_goal_seq += 1
 
     def reset_trial_events(self):
         with self.lock:
@@ -350,7 +374,10 @@ class BenchmarkNode:
             with self.lock:
                 odom_ready = self.latest_odom is not None and self.odom_seq > previous_odom_seq
                 cloud_ready = self.latest_cloud is not None and self.cloud_seq > previous_cloud_seq
-            if odom_ready and cloud_ready and self.goal_pub.get_num_connections() > 0:
+                goal_ready = self.args.manual_goals or (
+                    self.goal_pub is not None and self.goal_pub.get_num_connections() > 0
+                )
+            if odom_ready and cloud_ready and goal_ready:
                 return True
             time.sleep(0.1)
         return False
@@ -363,11 +390,30 @@ class BenchmarkNode:
         with self.lock:
             return self.odom_seq
 
+    def current_manual_goal_seq(self):
+        with self.lock:
+            return self.manual_goal_seq
+
     def latest_cloud_msg(self):
         with self.lock:
             return self.latest_cloud
 
+    def wait_for_manual_goal(self, previous_goal_seq):
+        deadline = (
+            None if self.args.manual_goal_timeout <= 0.0
+            else time.monotonic() + self.args.manual_goal_timeout
+        )
+        while not rospy.is_shutdown():
+            with self.lock:
+                if self.manual_goal_seq > previous_goal_seq and self.manual_goal is not None:
+                    return self.manual_goal
+            if deadline is not None and time.monotonic() >= deadline:
+                return None
+            time.sleep(0.05)
+
     def publish_goal(self, goal, start):
+        if self.goal_pub is None:
+            return
         msg = PoseStamped()
         msg.header.frame_id = "world"
         msg.pose.position.x = goal[0]
@@ -644,13 +690,32 @@ def run_trial(node, args, rng, occupancy, demo, trial_index, goal_history):
     if state is None:
         raise RuntimeError("No odometry available.")
     start_pos, _ = state
-    goal, attempts, clearance, phase, required_distance, nearest_recent = sample_safe_goal(
-        args, rng, occupancy, start_pos, trial_index, goal_history
-    )
+    if args.manual_goals:
+        previous_goal_seq = node.current_manual_goal_seq()
+        rospy.loginfo(
+            "[%s trial %d/%d] Waiting for manual goal on %s. Use RViz 2D Nav Goal.",
+            demo,
+            trial_index,
+            args.trials,
+            args.manual_goal_topic,
+        )
+        goal = node.wait_for_manual_goal(previous_goal_seq)
+        if goal is None:
+            raise RuntimeError("Timed out waiting for manually selected goal.")
+        attempts = 1
+        clearance = occupancy.clearance(goal, args.goal_clearance)
+        phase = "manual"
+        required_distance = 0.0
+        nearest_recent = recent_goal_distance(goal, goal_history, args.recent_goal_window)
+    else:
+        goal, attempts, clearance, phase, required_distance, nearest_recent = sample_safe_goal(
+            args, rng, occupancy, start_pos, trial_index, goal_history
+        )
 
     node.reset_trial_events()
     start_wall = time.monotonic()
-    node.publish_goal(goal, start_pos)
+    if not args.manual_goals:
+        node.publish_goal(goal, start_pos)
 
     first_event = None
     deadline = time.monotonic() + args.plan_timeout
@@ -890,6 +955,9 @@ def main():
         "goal_clearance": args.goal_clearance,
         "collision_clearance": args.collision_clearance,
         "trajectory_sample_dt": args.trajectory_sample_dt,
+        "manual_goals": args.manual_goals,
+        "manual_goal_topic": args.manual_goal_topic,
+        "manual_goal_timeout": args.manual_goal_timeout,
         "rviz": args.rviz,
         "fpv_rviz": args.fpv_rviz,
         "log_dir": str(run_dir),

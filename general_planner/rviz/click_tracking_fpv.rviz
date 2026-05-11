@@ -440,13 +440,13 @@ Visualization Manager:
           Queue Size: 100
           Value: false
         - Class: rviz/MarkerArray
-          Enabled: false
+          Enabled: true
           Marker Topic: /drone_1/fsm_node/visualization/tracking_fov
           Name: TrackerFov
           Namespaces:
-            tracking_fov: false
+            tracking_fov: true
           Queue Size: 100
-          Value: false
+          Value: true
         - Class: rviz/MarkerArray
           Enabled: true
           Marker Topic: /drone_1/fsm_node/visualization/astar_debug

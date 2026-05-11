@@ -4,6 +4,9 @@
     <arg name="seed" default="7"/>
     <arg name="rviz" default="true"/>
     <arg name="fpv_rviz" default="true"/>
+    <arg name="manual_goals" default="true"/>
+    <arg name="manual_goal_topic" default="/goal"/>
+    <arg name="manual_goal_timeout" default="0.0"/>
     <arg name="log_dir" default="$(find general_planner)/log"/>
     <arg name="x_min" default="-30.0"/>
     <arg name="x_max" default="30.0"/>
@@ -46,6 +49,9 @@
                 --plan-timeout $(arg plan_timeout)
                 --trial-timeout $(arg trial_timeout)
                 --startup-wait $(arg startup_wait)
+                --manual-goals $(arg manual_goals)
+                --manual-goal-topic $(arg manual_goal_topic)
+                --manual-goal-timeout $(arg manual_goal_timeout)
                 --rviz $(arg rviz)
                 --fpv-rviz $(arg fpv_rviz)"/>
 </launch>
