@@ -8,6 +8,7 @@ Panels:
         - /Robots1/TrackerExecutedPath1
         - /TrackerMap1
         - /TrackerMap1/InflatedOcc1
+        - /TrackerPlanner1
       Splitter Ratio: 0.5
     Tree Height: 775
   - Class: rviz/Views
@@ -267,7 +268,7 @@ Visualization Manager:
         - Alpha: 0.20000000298023224
           Autocompute Intensity Bounds: true
           Autocompute Value Bounds:
-            Max Value: 2.9000000953674316
+            Max Value: 1.899999976158142
             Min Value: 0.30000001192092896
             Value: true
           Axis: Z
@@ -440,13 +441,13 @@ Visualization Manager:
           Queue Size: 100
           Value: false
         - Class: rviz/MarkerArray
-          Enabled: true
+          Enabled: false
           Marker Topic: /drone_1/fsm_node/visualization/tracking_fov
           Name: TrackerFov
           Namespaces:
-            tracking_fov: true
+            {}
           Queue Size: 100
-          Value: true
+          Value: false
         - Class: rviz/MarkerArray
           Enabled: true
           Marker Topic: /drone_1/fsm_node/visualization/astar_debug
@@ -490,9 +491,9 @@ Visualization Manager:
       Invert Z Axis: false
       Name: Current View
       Near Clip Distance: 0.009999999776482582
-      Pitch: 0.869999349117279
+      Pitch: 0.7799989581108093
       Target Frame: drone_1/base_link
-      Yaw: 2.9600095748901367
+      Yaw: 2.9450087547302246
     Saved: ~
 Window Geometry:
   Displays:

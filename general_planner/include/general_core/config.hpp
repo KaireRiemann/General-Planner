@@ -94,9 +94,23 @@ namespace general_planner {
         double tracking_visibility_angle_clearance{0.08726646259971647};
         double tracking_reacquire_distance{6.0};
         double tracking_min_commit_duration{0.8};
+        double tracking_low_speed_velocity_threshold{0.25};
+        double tracking_angular_hysteresis{0.35};
+        bool tracking_anti_rollback_enable{true};
+        double tracking_anti_rollback_horizon{1.0};
+        double tracking_anti_rollback_dt{0.25};
+        double tracking_anti_rollback_margin{0.35};
+        double tracking_keep_old_horizon{1.0};
+        double tracking_keep_old_safety_dt{0.10};
         double tracking_candidate_angle_step{0.3926990817};
         int tracking_candidate_radius_num{3};
         int tracking_visibility_samples{5};
+        bool tracking_fallback_relax_enable{true};
+        double tracking_fallback_distance_tolerance_scale{1.6};
+        double tracking_fallback_height_tolerance_scale{1.5};
+        int tracking_fallback_candidate_radius_extra{2};
+        double tracking_fallback_candidate_angle_step_scale{0.5};
+        double tracking_fallback_search_horizon_scale{1.3};
         double tracking_weight_od_near{20.0};
         double tracking_weight_od_far{5.0};
         double tracking_weight_od_vertical{8.0};
@@ -209,9 +223,33 @@ namespace general_planner {
                              tracking_visibility_angle_clearance, 0.08726646259971647);
             loader.LoadParam("general_planner/tracking/reacquire_distance", tracking_reacquire_distance, 6.0);
             loader.LoadParam("general_planner/tracking/min_commit_duration", tracking_min_commit_duration, 0.8);
+            loader.LoadParam("general_planner/tracking/low_speed_velocity_threshold",
+                             tracking_low_speed_velocity_threshold, 0.25);
+            loader.LoadParam("general_planner/tracking/angular_hysteresis", tracking_angular_hysteresis, 0.35);
+            loader.LoadParam("general_planner/tracking/anti_rollback_enable",
+                             tracking_anti_rollback_enable, true);
+            loader.LoadParam("general_planner/tracking/anti_rollback_horizon",
+                             tracking_anti_rollback_horizon, 1.0);
+            loader.LoadParam("general_planner/tracking/anti_rollback_dt", tracking_anti_rollback_dt, 0.25);
+            loader.LoadParam("general_planner/tracking/anti_rollback_margin",
+                             tracking_anti_rollback_margin, 0.35);
+            loader.LoadParam("general_planner/tracking/keep_old_horizon", tracking_keep_old_horizon, 1.0);
+            loader.LoadParam("general_planner/tracking/keep_old_safety_dt", tracking_keep_old_safety_dt, 0.10);
             loader.LoadParam("general_planner/tracking/candidate_angle_step", tracking_candidate_angle_step, 0.3926990817);
             loader.LoadParam("general_planner/tracking/candidate_radius_num", tracking_candidate_radius_num, 3);
             loader.LoadParam("general_planner/tracking/visibility_samples", tracking_visibility_samples, 5);
+            loader.LoadParam("general_planner/tracking/fallback_relax_enable",
+                             tracking_fallback_relax_enable, true);
+            loader.LoadParam("general_planner/tracking/fallback_distance_tolerance_scale",
+                             tracking_fallback_distance_tolerance_scale, 1.6);
+            loader.LoadParam("general_planner/tracking/fallback_height_tolerance_scale",
+                             tracking_fallback_height_tolerance_scale, 1.5);
+            loader.LoadParam("general_planner/tracking/fallback_candidate_radius_extra",
+                             tracking_fallback_candidate_radius_extra, 2);
+            loader.LoadParam("general_planner/tracking/fallback_candidate_angle_step_scale",
+                             tracking_fallback_candidate_angle_step_scale, 0.5);
+            loader.LoadParam("general_planner/tracking/fallback_search_horizon_scale",
+                             tracking_fallback_search_horizon_scale, 1.3);
             loader.LoadParam("general_planner/tracking/weight_od_near", tracking_weight_od_near, 20.0);
             loader.LoadParam("general_planner/tracking/weight_od_far", tracking_weight_od_far, 5.0);
             loader.LoadParam("general_planner/tracking/weight_od_vertical", tracking_weight_od_vertical, 8.0);

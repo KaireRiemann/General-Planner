@@ -25,10 +25,12 @@
 #include <algorithm>
 #include <cmath>
 #include <exception>
+#include <limits>
 #include <memory>
 #include <super_utils/scope_timer.hpp>
 #include <utils/optimization/polynomial_interpolation.h>
 #include <fmt/color.h>
+#include <fmt/format.h>
 
 using namespace super_utils;
 
@@ -769,8 +771,12 @@ namespace general_planner {
             return false;
         }
 
+        const double commit_wt = ros_ptr_->getSimTime();
         Trajectory yaw_traj = optimized_yaw_traj;
         if (yaw_traj.empty() && !buildTrackingTargetYawTrajectory(pos_traj, target_prediction, yaw_traj)) {
+            if (!trackingCommitPassesAntiRollback(pos_traj, target_prediction, commit_wt)) {
+                return false;
+            }
             double terminal_yaw = target_prediction.empty() ? robot_state_.yaw : target_prediction.back().yaw;
             if (!target_prediction.empty()) {
                 const Vec3f face_dir = target_prediction.back().position - pos_traj.getPos(pos_traj.getTotalDuration());
@@ -784,7 +790,6 @@ namespace general_planner {
 
         Trajectory committed_pos_traj = pos_traj;
         Trajectory committed_yaw_traj = yaw_traj;
-        const double commit_wt = ros_ptr_->getSimTime();
         if (!cmd_traj_info_.empty()) {
             cmd_traj_info_.lock();
             const Trajectory old_pos_traj = cmd_traj_info_.posTraj();
@@ -837,6 +842,10 @@ namespace general_planner {
             }
         }
 
+        if (!trackingCommitPassesAntiRollback(committed_pos_traj, target_prediction, commit_wt)) {
+            return false;
+        }
+
         ExpTraj task_exp_traj;
         task_exp_traj.setGoalConnectedFlag(true);
         task_exp_traj.setWholeTrajKnownFreeFlag(true);
@@ -858,6 +867,183 @@ namespace general_planner {
         latest_replan.setExpTraj(committed_pos_traj);
         latest_replan.setExpYawTraj(committed_yaw_traj);
         latest_replan.setRetCode(GENERAL_SUCCESS_NO_BACKUP);
+        return true;
+    }
+
+    bool GeneralPlanner::trackingTrajectorySafeForHorizon(const Trajectory &traj,
+                                                          const double start_t,
+                                                          const double horizon,
+                                                          const double dt) const {
+        if (traj.empty()) {
+            return false;
+        }
+        if (horizon <= 1.0e-6) {
+            return true;
+        }
+        const double total_dur = traj.getTotalDuration();
+        if (!std::isfinite(start_t) ||
+            start_t < -1.0e-6 ||
+            start_t + horizon > total_dur + 1.0e-6) {
+            return false;
+        }
+        if (map_manager_ == nullptr || !map_manager_->ready()) {
+            return true;
+        }
+
+        const double safe_dt = std::max(0.05, dt);
+        Vec3f last = traj.getPos(std::clamp(start_t, 0.0, total_dur));
+        if (!last.allFinite()) {
+            return false;
+        }
+
+        for (double offset = 0.0; offset <= horizon + 1.0e-6; offset += safe_dt) {
+            const double t = std::clamp(start_t + offset, 0.0, total_dur);
+            const Vec3f pos = traj.getPos(t);
+            if (!pos.allFinite() || !map_manager_->insideLocalMap(pos)) {
+                return false;
+            }
+            const auto grid_type = map_manager_->getInfGridType(pos);
+            if (grid_type == rog_map::GridType::OCCUPIED ||
+                grid_type == rog_map::GridType::OUT_OF_MAP) {
+                return false;
+            }
+            if (cfg_.tracking_unknown_as_occupied &&
+                (grid_type == rog_map::GridType::UNKNOWN ||
+                 grid_type == rog_map::GridType::UNDEFINED ||
+                 grid_type == rog_map::GridType::FRONTIER)) {
+                return false;
+            }
+            if (map_manager_->hasESDF()) {
+                double dist = 0.0;
+                Vec3f grad = Vec3f::Zero();
+                if (map_manager_->evaluateESDF(pos, dist, grad) &&
+                    dist < cfg_.tracking_safe_distance) {
+                    return false;
+                }
+            }
+            if ((pos - last).norm() > 1.0e-4 &&
+                !map_manager_->isLineFree(last, pos, true, cfg_.tracking_unknown_as_occupied)) {
+                return false;
+            }
+            last = pos;
+        }
+        return true;
+    }
+
+    bool GeneralPlanner::currentTrackingTrajectorySafeForHorizon(const double horizon) {
+        if (cmd_traj_info_.empty()) {
+            return false;
+        }
+
+        cmd_traj_info_.lock();
+        const Trajectory old_pos_traj = cmd_traj_info_.posTraj();
+        const double old_start_wt = cmd_traj_info_.getStartWallTime();
+        cmd_traj_info_.unlock();
+
+        const double start_t = ros_ptr_->getSimTime() - old_start_wt;
+        return trackingTrajectorySafeForHorizon(old_pos_traj,
+                                                start_t,
+                                                std::max(0.0, horizon),
+                                                cfg_.tracking_keep_old_safety_dt);
+    }
+
+    bool GeneralPlanner::keepOldTrackingTrajectory(const std::string &reason) {
+        const double keep_horizon = std::max(0.0, cfg_.tracking_keep_old_horizon);
+        if (!currentTrackingTrajectorySafeForHorizon(keep_horizon)) {
+            return false;
+        }
+
+        cmd_traj_info_.lock();
+        const Trajectory old_pos_traj = cmd_traj_info_.posTraj();
+        const Trajectory old_yaw_traj = cmd_traj_info_.yawTraj();
+        cmd_traj_info_.unlock();
+
+        latest_replan.setExpTraj(old_pos_traj);
+        latest_replan.setExpYawTraj(old_yaw_traj);
+        latest_replan.setRetCode(GENERAL_SUCCESS_NO_BACKUP);
+        ros_ptr_->info(" -- [GeneralPlanner] {}; keep old tracking trajectory for {:.2f}s.",
+                       reason,
+                       keep_horizon);
+        return true;
+    }
+
+    double GeneralPlanner::trackingViewpointErrorScore(const Vec3f &tracker,
+                                                       const Vec3f &target) const {
+        if (!tracker.allFinite() || !target.allFinite()) {
+            return std::numeric_limits<double>::infinity();
+        }
+        const Vec3f rel = tracker - target;
+        const double horizontal_error =
+                std::abs(rel.head<2>().norm() - cfg_.tracking_distance);
+        const double vertical_error =
+                std::abs(rel.z() - cfg_.tracking_height_offset);
+        return horizontal_error + 0.5 * vertical_error;
+    }
+
+    bool GeneralPlanner::trackingCommitPassesAntiRollback(
+            const Trajectory &candidate_pos_traj,
+            const traj_opt::DynamicTargetStates &target_prediction,
+            const double commit_wt) {
+        if (!cfg_.tracking_anti_rollback_enable ||
+            candidate_pos_traj.empty() ||
+            target_prediction.empty() ||
+            cmd_traj_info_.empty()) {
+            return true;
+        }
+
+        cmd_traj_info_.lock();
+        const Trajectory old_pos_traj = cmd_traj_info_.posTraj();
+        const double old_start_wt = cmd_traj_info_.getStartWallTime();
+        const double old_total_dur = cmd_traj_info_.getTotalDuration();
+        cmd_traj_info_.unlock();
+
+        const double old_eval_t = commit_wt - old_start_wt;
+        if (old_pos_traj.empty() || old_eval_t < -1.0e-6) {
+            return true;
+        }
+
+        const double dt = std::max(0.05, cfg_.tracking_anti_rollback_dt);
+        const double horizon =
+                std::min({std::max(0.0, cfg_.tracking_anti_rollback_horizon),
+                          std::max(0.0, old_total_dur - old_eval_t),
+                          candidate_pos_traj.getTotalDuration(),
+                          std::max(0.0, target_prediction.back().t)});
+        if (horizon < dt + 1.0e-6) {
+            return true;
+        }
+        if (!trackingTrajectorySafeForHorizon(old_pos_traj, old_eval_t, horizon, dt)) {
+            return true;
+        }
+
+        const double margin = std::max(0.0, cfg_.tracking_anti_rollback_margin);
+        int worse_count = 0;
+        double max_regression = 0.0;
+        for (double offset = dt; offset <= horizon + 1.0e-6; offset += dt) {
+            const Vec3f old_pos =
+                    old_pos_traj.getPos(std::clamp(old_eval_t + offset,
+                                                   0.0,
+                                                   old_pos_traj.getTotalDuration()));
+            const Vec3f new_pos =
+                    candidate_pos_traj.getPos(std::clamp(offset,
+                                                         0.0,
+                                                         candidate_pos_traj.getTotalDuration()));
+            const Vec3f target_pos = interpolateTargetPrediction(target_prediction, offset).position;
+            const double old_score = trackingViewpointErrorScore(old_pos, target_pos);
+            const double new_score = trackingViewpointErrorScore(new_pos, target_pos);
+            const double regression = new_score - old_score;
+            if (regression > margin) {
+                ++worse_count;
+                max_regression = std::max(max_regression, regression);
+            }
+        }
+
+        if (worse_count >= 2 || max_regression > 2.0 * margin) {
+            ros_ptr_->warn(" -- [GeneralPlanner] Tracking commit rejected by anti-rollback gate: worse_count={}, max_regression={:.3f}, horizon={:.2f}s.",
+                           worse_count,
+                           max_regression,
+                           horizon);
+            return false;
+        }
         return true;
     }
 
@@ -1304,6 +1490,14 @@ namespace general_planner {
             return FAILED;
         }
 
+        auto failOrKeepOld = [this](const std::string &reason) -> RET_CODE {
+            if (keepOldTrackingTrajectory(reason)) {
+                return NO_NEED;
+            }
+            ros_ptr_->warn(" -- [GeneralPlanner] {}", reason);
+            return FAILED;
+        };
+
         const bool static_tracking =
                 staticTargetPrediction(target_prediction,
                                        0.05,
@@ -1330,9 +1524,17 @@ namespace general_planner {
         frontend_cfg.visibility_angle_clearance = cfg_.tracking_visibility_angle_clearance;
         frontend_cfg.reacquire_distance = cfg_.tracking_reacquire_distance;
         frontend_cfg.searching_horizon = cfg_.planning_horizon;
+        frontend_cfg.low_speed_velocity_threshold = cfg_.tracking_low_speed_velocity_threshold;
+        frontend_cfg.angular_hysteresis = cfg_.tracking_angular_hysteresis;
         frontend_cfg.candidate_angle_step = cfg_.tracking_candidate_angle_step;
         frontend_cfg.candidate_radius_num = cfg_.tracking_candidate_radius_num;
         frontend_cfg.visibility_samples = cfg_.tracking_visibility_samples;
+        frontend_cfg.fallback_relax_enable = cfg_.tracking_fallback_relax_enable;
+        frontend_cfg.fallback_distance_tolerance_scale = cfg_.tracking_fallback_distance_tolerance_scale;
+        frontend_cfg.fallback_height_tolerance_scale = cfg_.tracking_fallback_height_tolerance_scale;
+        frontend_cfg.fallback_candidate_radius_extra = cfg_.tracking_fallback_candidate_radius_extra;
+        frontend_cfg.fallback_candidate_angle_step_scale = cfg_.tracking_fallback_candidate_angle_step_scale;
+        frontend_cfg.fallback_search_horizon_scale = cfg_.tracking_fallback_search_horizon_scale;
         frontend_cfg.unknown_as_occupied = cfg_.tracking_unknown_as_occupied;
         frontend_cfg.use_astar = cfg_.tracking_frontend_astar;
         frontend_cfg.use_visible_region = cfg_.tracking_use_visible_region;
@@ -1343,8 +1545,7 @@ namespace general_planner {
         TrackingFrontend frontend(frontend_cfg, map_manager_, astar_ptr_);
         if (!frontend.buildProblem(makeTaskHeadState(from_rest), target_prediction, problem)) {
             time_consuming_[EPX_TRAJ_FRONTEND] = t_frontend.stop();
-            ros_ptr_->warn(" -- [GeneralPlanner] Tracking frontend failed.");
-            return FAILED;
+            return failOrKeepOld("Tracking frontend failed.");
         }
         problem.static_tracking_mode = static_tracking;
         const double tracking_frontend_t = t_frontend.stop();
@@ -1353,8 +1554,7 @@ namespace general_planner {
         TimeConsuming t_tracking_sfc("tracking_sfc", false);
         if (!buildTrackingGuideCorridor(problem)) {
             time_consuming_[EPX_TRAJ_FRONTEND] += t_tracking_sfc.stop();
-            ros_ptr_->warn(" -- [GeneralPlanner] Tracking SFC generation failed.");
-            return FAILED;
+            return failOrKeepOld("Tracking SFC generation failed.");
         }
         time_consuming_[EPX_TRAJ_FRONTEND] += t_tracking_sfc.stop();
         latest_replan.setGuidePath(problem.guide_path);
@@ -1450,14 +1650,12 @@ namespace general_planner {
                             : traj_manager_->trackingJerk()->optimize(problem, out_traj, &out_yaw_traj);
         time_consuming_[EXP_TRAJ_OPT] = t_opt.stop();
         if (!ok || out_traj.empty()) {
-            ros_ptr_->warn(" -- [GeneralPlanner] Tracking optimization failed.");
-            return FAILED;
+            return failOrKeepOld("Tracking optimization failed.");
         }
         if (out_traj.getTotalDuration() < cfg_.tracking_min_commit_duration) {
-            ros_ptr_->warn(" -- [GeneralPlanner] Tracking trajectory too short ({:.3f}s < {:.3f}s), keep previous valid trajectory.",
-                           out_traj.getTotalDuration(),
-                           cfg_.tracking_min_commit_duration);
-            return FAILED;
+            return failOrKeepOld(fmt::format("Tracking trajectory too short ({:.3f}s < {:.3f}s).",
+                                             out_traj.getTotalDuration(),
+                                             cfg_.tracking_min_commit_duration));
         }
 
         {
@@ -1477,7 +1675,7 @@ namespace general_planner {
                                       out_yaw_traj,
                                       active_target_prediction,
                                       cfg_.tracking_use_snap ? "tracking_snap" : "tracking_jerk")) {
-            return FAILED;
+            return failOrKeepOld("Tracking trajectory commit rejected.");
         }
         ros_ptr_->info(" -- [GeneralPlanner] Tracking task success: pieces={}, duration={}.",
                        out_traj.getPieceNum(), out_traj.getTotalDuration());

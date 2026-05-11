@@ -27,6 +27,11 @@ Vec3f normalizedOr(const Vec3f &v, const Vec3f &fallback)
     return v.normalized();
 }
 
+double angleDiff(const double lhs, const double rhs)
+{
+    return std::atan2(std::sin(lhs - rhs), std::cos(lhs - rhs));
+}
+
 void appendUnique(const Vec3f &p, vec_E<Vec3f> &path)
 {
     if (path.empty() || (path.back() - p).norm() > 1.0e-4)
@@ -314,17 +319,22 @@ bool TrackingFrontend::collectVisibleViewpointCandidates(
     std::vector<ViewpointCandidate> &candidates) const
 {
     candidates.clear();
-    Vec3f preferred_rel_dir = target.velocity;
-    preferred_rel_dir.z() = 0.0;
-    if (preferred_rel_dir.norm() > 1.0e-4)
+
+    Vec3f seed_rel_dir = seed - target.position;
+    seed_rel_dir.z() = 0.0;
+    seed_rel_dir = normalizedOr(seed_rel_dir, Vec3f::UnitX());
+    const double hold_yaw = std::atan2(seed_rel_dir.y(), seed_rel_dir.x());
+
+    Vec3f target_vel_xy = target.velocity;
+    target_vel_xy.z() = 0.0;
+    const double target_speed_xy = target_vel_xy.norm();
+    const bool low_speed_target =
+        target_speed_xy < std::max(0.0, cfg_.low_speed_velocity_threshold);
+
+    Vec3f preferred_rel_dir = seed_rel_dir;
+    if (!low_speed_target && target_speed_xy > 1.0e-4)
     {
-        preferred_rel_dir = -preferred_rel_dir.normalized();
-    }
-    else
-    {
-        preferred_rel_dir = seed - target.position;
-        preferred_rel_dir.z() = 0.0;
-        preferred_rel_dir = normalizedOr(preferred_rel_dir, Vec3f::UnitX());
+        preferred_rel_dir = -target_vel_xy.normalized();
     }
 
     Vec3f preferred = target.position + cfg_.tracking_distance * preferred_rel_dir;
@@ -341,11 +351,28 @@ bool TrackingFrontend::collectVisibleViewpointCandidates(
             (candidate - target.position).head<2>().norm() - cfg_.tracking_distance;
         const double vertical_error =
             (candidate.z() - target.position.z()) - cfg_.height_offset;
+        double angular_hysteresis_penalty = 0.0;
+        if (low_speed_target)
+        {
+            Vec3f candidate_rel = candidate - target.position;
+            candidate_rel.z() = 0.0;
+            if (candidate_rel.norm() > 1.0e-4)
+            {
+                const double candidate_yaw = std::atan2(candidate_rel.y(), candidate_rel.x());
+                const double yaw_error =
+                    std::max(0.0,
+                             std::abs(angleDiff(candidate_yaw, hold_yaw)) -
+                                 std::max(0.0, cfg_.angular_hysteresis));
+                angular_hysteresis_penalty =
+                    0.75 * cfg_.tracking_distance * cfg_.tracking_distance * yaw_error * yaw_error;
+            }
+        }
         const double score =
             (candidate - seed).squaredNorm() +
             0.35 * (candidate - preferred).squaredNorm() +
             2.0 * horizontal_error * horizontal_error +
             2.0 * vertical_error * vertical_error +
+            angular_hysteresis_penalty +
             bias;
         candidates.push_back(ViewpointCandidate{candidate, score});
     };
@@ -920,6 +947,87 @@ bool TrackingFrontend::searchVisibleViewpointOnGrid(
     return false;
 }
 
+bool TrackingFrontend::chooseRelaxedFallbackViewpoint(
+    const Vec3f &last_viewpoint,
+    const traj_opt::DynamicTargetState &target,
+    Vec3f &viewpoint,
+    vec_E<Vec3f> &path_to_viewpoint) const
+{
+    if (!cfg_.fallback_relax_enable)
+    {
+        return false;
+    }
+
+    Config relaxed_cfg = cfg_;
+    relaxed_cfg.fallback_relax_enable = false;
+    relaxed_cfg.distance_tolerance =
+        std::max(cfg_.distance_tolerance,
+                 cfg_.distance_tolerance *
+                     std::max(1.0, cfg_.fallback_distance_tolerance_scale));
+    relaxed_cfg.height_tolerance =
+        std::max(cfg_.height_tolerance,
+                 cfg_.height_tolerance *
+                     std::max(1.0, cfg_.fallback_height_tolerance_scale));
+    relaxed_cfg.candidate_radius_num =
+        std::max(cfg_.candidate_radius_num,
+                 cfg_.candidate_radius_num +
+                     std::max(0, cfg_.fallback_candidate_radius_extra));
+    relaxed_cfg.candidate_angle_step =
+        std::clamp(cfg_.candidate_angle_step *
+                       std::clamp(cfg_.fallback_candidate_angle_step_scale, 0.2, 1.0),
+                   0.08,
+                   std::max(0.08, cfg_.candidate_angle_step));
+    relaxed_cfg.searching_horizon =
+        std::max(cfg_.searching_horizon,
+                 cfg_.searching_horizon *
+                     std::max(1.0, cfg_.fallback_search_horizon_scale));
+
+    TrackingFrontend relaxed_frontend(relaxed_cfg, map_manager_, astar_);
+    if (relaxed_frontend.searchVisibleViewpointOnGrid(last_viewpoint,
+                                                      target,
+                                                      viewpoint,
+                                                      path_to_viewpoint))
+    {
+        logTrackingFrontendDebug(cfg_.print_log,
+                                 "Relaxed fallback grid search success: viewpoint=" +
+                                     pointToString(viewpoint) + ", target=" +
+                                     pointToString(target.position));
+        return true;
+    }
+
+    path_to_viewpoint.clear();
+    if (relaxed_frontend.chooseConnectedVisibleViewpoint(last_viewpoint,
+                                                        target,
+                                                        path_to_viewpoint,
+                                                        viewpoint))
+    {
+        logTrackingFrontendDebug(cfg_.print_log,
+                                 "Relaxed fallback ring search success: viewpoint=" +
+                                     pointToString(viewpoint) + ", target=" +
+                                     pointToString(target.position));
+        return true;
+    }
+
+    if (relaxed_frontend.chooseVisibleViewpoint(last_viewpoint, target, viewpoint))
+    {
+        path_to_viewpoint.clear();
+        if (relaxed_frontend.appendPathSegment(last_viewpoint, viewpoint, path_to_viewpoint, true))
+        {
+            logTrackingFrontendDebug(cfg_.print_log,
+                                     "Relaxed fallback direct candidate success: viewpoint=" +
+                                         pointToString(viewpoint) + ", target=" +
+                                         pointToString(target.position));
+            return true;
+        }
+    }
+
+    logTrackingFrontendDebug(cfg_.print_log,
+                             "Relaxed fallback failed: start=" +
+                                 pointToString(last_viewpoint) + ", target=" +
+                                 pointToString(target.position));
+    return false;
+}
+
 bool TrackingFrontend::choosePropagatedViewpoint(const Vec3f &last_viewpoint,
                                                  const traj_opt::DynamicTargetState &last_target,
                                                  const traj_opt::DynamicTargetState &target,
@@ -974,11 +1082,15 @@ bool TrackingFrontend::choosePropagatedViewpoint(const Vec3f &last_viewpoint,
         logTrackingFrontendDebug(cfg_.print_log,
                                  "Ring candidate fallback failed: start=" + pointToString(last_viewpoint) +
                                      ", target=" + pointToString(target.position));
-        return false;
+        return chooseRelaxedFallbackViewpoint(last_viewpoint, target, viewpoint, path_to_viewpoint);
     }
     path_to_viewpoint.clear();
     const bool connected = appendPathSegment(last_viewpoint, viewpoint, path_to_viewpoint, true);
-    if (!connected)
+    if (connected)
+    {
+        return true;
+    }
+    else
     {
         logTrackingFrontendDebug(cfg_.print_log,
                                  "Ring candidate fallback found viewpoint but cannot connect: start=" +
@@ -986,7 +1098,7 @@ bool TrackingFrontend::choosePropagatedViewpoint(const Vec3f &last_viewpoint,
                                      pointToString(viewpoint) + ", target=" +
                                      pointToString(target.position));
     }
-    return connected;
+    return chooseRelaxedFallbackViewpoint(last_viewpoint, target, viewpoint, path_to_viewpoint);
 }
 
 bool TrackingFrontend::appendPathSegment(const Vec3f &start,

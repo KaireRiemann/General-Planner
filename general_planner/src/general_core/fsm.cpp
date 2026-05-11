@@ -107,6 +107,13 @@ namespace fsm {
             ChangeState("ReplanTimerCallback", EMER_STOP);
         } else if (ret_code == NEW_TRAJ) {
             ChangeState("ReplanTimerCallback", GENERATE_TRAJ);
+        } else if (ret_code == NO_NEED && trackingMode()) {
+            publishPolyTraj();
+            if (replan_tracking_static) {
+                ChangeState("ReplanTimerCallback", HOLD_TRACKING);
+            } else if (machine_state_ != FOLLOW_TRAJ) {
+                ChangeState("ReplanTimerCallback", FOLLOW_TRAJ);
+            }
         } else if (ret_code == SUCCESS || ret_code == FINISH) {
             gi_.new_goal = false;
             task_new_ = false;
@@ -201,7 +208,13 @@ namespace fsm {
                     ChangeState("MainFsmCallback", WAIT_GOAL);
                     return;
                 }
-                if (retcode == SUCCESS || retcode == FINISH) {
+                if (retcode == NO_NEED && trackingMode()) {
+                    plan_from_rest_ = true;
+                    finish_plan = false;
+                    publishPolyTraj();
+                    ChangeState("MainFsmCallback",
+                                planned_tracking_static ? HOLD_TRACKING : FOLLOW_TRAJ);
+                } else if (retcode == SUCCESS || retcode == FINISH) {
                     gi_.new_goal = false;
                     task_new_ = false;
                     plan_from_rest_ = true;

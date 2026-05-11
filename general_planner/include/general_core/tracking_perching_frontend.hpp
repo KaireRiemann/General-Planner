@@ -27,9 +27,17 @@ public:
         double visibility_angle_clearance{0.08726646259971647};
         double reacquire_distance{6.0};
         double searching_horizon{8.0};
+        double low_speed_velocity_threshold{0.25};
+        double angular_hysteresis{0.35};
         double candidate_angle_step{0.3926990817};
         int candidate_radius_num{3};
         int visibility_samples{5};
+        bool fallback_relax_enable{true};
+        double fallback_distance_tolerance_scale{1.6};
+        double fallback_height_tolerance_scale{1.5};
+        int fallback_candidate_radius_extra{2};
+        double fallback_candidate_angle_step_scale{0.5};
+        double fallback_search_horizon_scale{1.3};
         bool unknown_as_occupied{true};
         bool use_astar{true};
         bool use_visible_region{true};
@@ -88,6 +96,10 @@ private:
                                    const traj_opt::DynamicTargetState &target,
                                    super_utils::Vec3f &viewpoint,
                                    super_utils::vec_E<super_utils::Vec3f> &path_to_viewpoint) const;
+    bool chooseRelaxedFallbackViewpoint(const super_utils::Vec3f &last_viewpoint,
+                                        const traj_opt::DynamicTargetState &target,
+                                        super_utils::Vec3f &viewpoint,
+                                        super_utils::vec_E<super_utils::Vec3f> &path_to_viewpoint) const;
     // Fail closed: blocked tracking guide segments must not append unsafe goals.
     bool appendPathSegment(const super_utils::Vec3f &start,
                            const super_utils::Vec3f &goal,

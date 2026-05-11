@@ -218,6 +218,22 @@ namespace general_planner {
                                       const traj_opt::DynamicTargetStates &target_prediction,
                                       const std::string &traj_ns);
 
+        bool trackingTrajectorySafeForHorizon(const Trajectory &traj,
+                                              double start_t,
+                                              double horizon,
+                                              double dt) const;
+
+        bool currentTrackingTrajectorySafeForHorizon(double horizon);
+
+        bool keepOldTrackingTrajectory(const std::string &reason);
+
+        double trackingViewpointErrorScore(const Vec3f &tracker,
+                                           const Vec3f &target) const;
+
+        bool trackingCommitPassesAntiRollback(const Trajectory &candidate_pos_traj,
+                                              const traj_opt::DynamicTargetStates &target_prediction,
+                                              double commit_wt);
+
         RET_CODE optimizeTrackingTask(const traj_opt::DynamicTargetStates &target_prediction,
                                       const bool &from_rest);
 

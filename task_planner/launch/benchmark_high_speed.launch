@@ -1,31 +1,34 @@
 <launch>
-    <node pkg="task_planner" name="waypoint_mission" type="waypoint_mission" output="screen">
-            <!--     1. use absolute path -->
-            <!--         <param name="config_path" value="" type="string"></param> -->
-            <!--     2. use file name in general_planner/config/... -->
-                    <param name="data_name" value="benchmark.txt" type="string"></param>
+    <arg name="sim_config" default="high_speed.yaml"/>
+    <arg name="planner_config" default="static_high_speed.yaml"/>
+    <arg name="manual_goal_topic" default="/planning/click_goal"/>
+    <arg name="rviz" default="true"/>
+    <arg name="fpv_rviz" default="true"/>
+    <arg name="top_down_rviz_config" default="$(find perfect_drone_sim)/rviz/benchmark.rviz"/>
+    <arg name="fpv_rviz_config" default="$(find perfect_drone_sim)/rviz/fpv.rviz"/>
+
+    <node pkg="perfect_drone_sim" type="perfect_drone" name="perfect_drone" output="log">
+        <!--     1. use absolute path -->
+        <!--         <param name="config_path" value="" type="string"></param> -->
+        <!--     2. use file name in general_planner/config/... -->
+        <param name="config_name" value="$(arg sim_config)" type="string"></param>
     </node>
-
-        <node pkg="perfect_drone_sim" type="perfect_drone" name="perfect_drone" output="log">
-            <!--     1. use absolute path -->
-            <!--         <param name="config_path" value="" type="string"></param> -->
-            <!--     2. use file name in general_planner/config/... -->
-                    <param name="config_name" value="high_speed.yaml" type="string"></param>
-        </node>
-
-    <!--     click_demo_high_speed.launch -->
 
     <node pkg="general_planner" name="fsm_node" type="fsm_node" output="screen">
-<!--     1. use absolute path -->
-<!--         <param name="config_path" value="" type="string"></param> -->
-<!--     2. use file name in general_planner/config/... -->
-        <param name="config_name" value="static_high_speed.yaml" type="string"></param>
+        <!--     1. use absolute path -->
+        <!--         <param name="config_path" value="" type="string"></param> -->
+        <!--     2. use file name in general_planner/config/... -->
+        <param name="config_name" value="$(arg planner_config)" type="string"></param>
     </node>
 
+    <!-- Manual high-speed benchmark: RViz goal clicks go straight to fsm_node. -->
+    <node if="$(arg rviz)" pkg="rviz" type="rviz" name="top_down"
+          args="-d $(arg top_down_rviz_config)" output="log">
+        <remap from="goal" to="$(arg manual_goal_topic)"/>
+    </node>
 
-        <node pkg="rviz" type="rviz" name="top_down" args="-d $(find perfect_drone_sim)/rviz/benchmark.rviz" output="log"/>
-<!--         <node pkg="rviz" type="rviz" name="fpv" args="-d $(find perfect_drone_sim)/rviz/fpv.rviz" output="log"/> -->
-
-
-
+    <node if="$(arg fpv_rviz)" pkg="rviz" type="rviz" name="fpv"
+          args="-d $(arg fpv_rviz_config)" output="log">
+        <remap from="goal" to="$(arg manual_goal_topic)"/>
+    </node>
 </launch>
