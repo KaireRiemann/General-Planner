@@ -36,6 +36,12 @@ using namespace super_utils;
 
 namespace general_planner {
     namespace {
+        void setFailureReason(std::string *out, const std::string &reason) {
+            if (out != nullptr) {
+                *out = reason;
+            }
+        }
+
         traj_opt::DynamicTargetState interpolateTargetPrediction(const traj_opt::DynamicTargetStates &prediction,
                                                                  const double &t) {
             if (prediction.empty()) {
@@ -1390,9 +1396,7 @@ namespace general_planner {
 
             const double max_err =
                     cfg_.tracking_keep_old_max_tracking_error_scale *
-                    std::max({0.1,
-                              cfg_.tracking_distance_tolerance,
-                              cfg_.tracking_distance_upper_tolerance});
+                    std::max(0.1, cfg_.tracking_distance_tolerance);
             if (out.avg_tracking_error > max_err) {
                 out.reason = "tracking error too large";
                 return out;
@@ -2185,21 +2189,9 @@ namespace general_planner {
                 staticTargetPrediction(target_prediction,
                                        0.05,
                                        cfg_.tracking_static_tail_speed_epsilon);
-        const double dynamic_distance_lower_tolerance =
-                std::max(0.05, cfg_.tracking_distance_lower_tolerance);
-        const double dynamic_distance_upper_tolerance =
-                std::max(0.05, cfg_.tracking_distance_upper_tolerance);
         const double static_distance_tolerance =
                 std::max(0.05,
                          cfg_.tracking_distance_tolerance *
-                         std::clamp(cfg_.tracking_static_distance_tolerance_scale, 0.05, 1.0));
-        const double static_distance_lower_tolerance =
-                std::max(0.05,
-                         dynamic_distance_lower_tolerance *
-                         std::clamp(cfg_.tracking_static_distance_tolerance_scale, 0.05, 1.0));
-        const double static_distance_upper_tolerance =
-                std::max(0.05,
-                         dynamic_distance_upper_tolerance *
                          std::clamp(cfg_.tracking_static_distance_tolerance_scale, 0.05, 1.0));
         const double static_height_tolerance =
                 std::max(0.05,
@@ -2210,10 +2202,6 @@ namespace general_planner {
         frontend_cfg.tracking_distance = cfg_.tracking_distance;
         frontend_cfg.distance_tolerance = static_tracking ? static_distance_tolerance
                                                           : cfg_.tracking_distance_tolerance;
-        frontend_cfg.distance_lower_tolerance = static_tracking ? static_distance_lower_tolerance
-                                                                : dynamic_distance_lower_tolerance;
-        frontend_cfg.distance_upper_tolerance = static_tracking ? static_distance_upper_tolerance
-                                                                : dynamic_distance_upper_tolerance;
         frontend_cfg.height_offset = cfg_.tracking_height_offset;
         frontend_cfg.height_tolerance = static_tracking ? static_height_tolerance
                                                         : cfg_.tracking_height_tolerance;
@@ -2304,14 +2292,10 @@ namespace general_planner {
         }
         if (static_tracking) {
             problem.distance_tolerance = static_distance_tolerance;
-            problem.distance_lower_tolerance = static_distance_lower_tolerance;
-            problem.distance_upper_tolerance = static_distance_upper_tolerance;
             problem.height_tolerance = static_height_tolerance;
-            problem.od_h_lower =
-                    std::max(0.05,
-                             cfg_.tracking_distance - static_distance_lower_tolerance);
+            problem.od_h_lower = std::max(0.05, cfg_.tracking_distance - static_distance_tolerance);
             problem.od_h_upper = std::max(problem.od_h_lower + 0.05,
-                                          cfg_.tracking_distance + static_distance_upper_tolerance);
+                                          cfg_.tracking_distance + static_distance_tolerance);
             problem.od_v_lower = cfg_.tracking_height_offset - static_height_tolerance;
             problem.od_v_upper = cfg_.tracking_height_offset + static_height_tolerance;
             problem.tail_pvaj.col(1).setZero();
@@ -2475,9 +2459,7 @@ namespace general_planner {
             TimeConsuming t_viz("tracking_fov_viz", false);
             const double fov_range = cfg_.tracking_fov_range > 0.0
                                          ? cfg_.tracking_fov_range
-                                         : cfg_.tracking_distance +
-                                               std::max(cfg_.tracking_distance_tolerance,
-                                                        cfg_.tracking_distance_upper_tolerance);
+                                         : cfg_.tracking_distance + cfg_.tracking_distance_tolerance;
             ros_ptr_->vizTrackingFov(out_traj,
                                      out_yaw_traj,
                                      cfg_.tracking_fov_horizontal_deg,
@@ -3434,46 +3416,18 @@ namespace general_planner {
         double t0 = ros_ptr_->getSimTime() -
                     ref_exp_traj.getStartWallTime() + 0.01;
         double te = seed_point_t;
-        t0 = std::clamp(t0, 0.0, total_dur);
-        te = std::clamp(te, 0.0, total_dur);
-        const double backup_time_window = te - t0;
-        const double min_backup_time_window =
-                std::max(0.03, 2.0 * cfg_.sample_traj_dt);
-        if (!std::isfinite(backup_time_window) ||
-            backup_time_window <= min_backup_time_window) {
-            if (cfg_.print_log) {
-                ros_ptr_->warn(" -- [GeneralPlanner] Backup optimization skipped: time window too short, t0={:.3f}, te={:.3f}, dt={:.3f}.",
-                               t0,
-                               te,
-                               backup_time_window);
-            }
-            back_traj_info.setEmpty();
-            return NO_NEED;
-        }
         //            cout << "t0: " << t0 << endl;
         //            cout << "te: " << te << endl;
         //            cout << "exp_traj_dur: " << ref_exp_traj.optimized_exp_traj.getTotalDuration() << endl;
         double vel_e_n = ref_exp_traj.getVel(te).norm();
-        if (!std::isfinite(vel_e_n)) {
-            ros_ptr_->warn(" -- [GeneralPlanner] Backup optimization skipped: non-finite reference velocity.");
-            back_traj_info.setEmpty();
-            return NO_NEED;
-        }
         double heu_ts = std::max((t0 + te) / 2, te - vel_e_n / cfg_.back_traj_cfg.max_acc);
-        heu_ts = std::clamp(heu_ts, t0 + 1.0e-4, te - 1.0e-4);
         double heu_dur = te - heu_ts;
         Vec3f heu_p = seed_point;
-        if (!std::isfinite(heu_dur) || heu_dur <= 1.0e-4 || !heu_p.allFinite()) {
-            ros_ptr_->warn(" -- [GeneralPlanner] Backup optimization skipped: invalid heuristic state, heu_ts={:.3f}, heu_dur={:.3f}.",
-                           heu_ts,
-                           heu_dur);
-            back_traj_info.setEmpty();
-            return NO_NEED;
-        }
         time_consuming_[BACK_TRAJ_FRONTEND] = t_back_frontend.stop();
         TimeConsuming t_back_opt("t_back_opt", false);
         double opt_ts = heu_ts;
         Trajectory temp_pos_traj;
+        auto sfc0 = back_traj_info.getSFC();
         bool temp_ret = traj_manager_->backup()->optimize(ref_exp_traj.posTraj(),
                                                  t0,
                                                  te,
@@ -3493,6 +3447,19 @@ namespace general_planner {
             latest_replan.setBackupCondition(init_ts, init_times, init_ps,
                                              t0, te,
                                              back_traj_info.getSFC());
+            Trajectory traj;
+            double out_ts;
+            traj_manager_->backup()->optimize(ref_exp_traj.posTraj(),
+                                     t0,
+                                     te,
+                                     init_ts,
+                                     sfc0,
+                                     init_times,
+                                     init_ps,
+                                     traj,
+                                     out_ts
+            );
+
         }
 
         if (!temp_ret) {

@@ -161,6 +161,14 @@ namespace general_planner {
 
         void getModuleTimeConsuming(vector<double> &time);
 
+        double getLatestOptimizationTime() const {
+            if (time_consuming_.size() <= LogTime::BACK_TRAJ_OPT) {
+                return 0.0;
+            }
+            return time_consuming_[LogTime::EXP_TRAJ_OPT] +
+                   time_consuming_[LogTime::BACK_TRAJ_OPT];
+        }
+
         void setSwarmTrajectories(const traj_opt::SwarmTrajectories &trajectories);
 
         /* Tow type of replan strategy */
@@ -201,15 +209,18 @@ namespace general_planner {
         bool prepareESDFGuideEndpoint(vec_Vec3f &guide_path,
                                       std::vector<double> &guide_stamp);
 
-        bool buildTrackingGuideCorridor(traj_opt::TrackingProblem &problem);
+        bool buildTrackingGuideCorridor(traj_opt::TrackingProblem &problem,
+                                        std::string *failure_reason = nullptr);
 
         bool tryGenerateTrackingCorridor(const vec_Vec3f &guide_path,
-                                         PolytopeVec &sfcs);
+                                         PolytopeVec &sfcs,
+                                         std::string *failure_reason = nullptr);
 
         bool repairTrackingGuideWithAstar(const vec_Vec3f &guide_path,
                                           const std::vector<double> &guide_t,
                                           vec_Vec3f &repaired_path,
-                                          std::vector<double> &repaired_t);
+                                          std::vector<double> &repaired_t,
+                                          std::string *failure_reason = nullptr);
 
         bool densifyTrackingGuideForCorridor(const vec_Vec3f &guide_path,
                                              const std::vector<double> &guide_t,
@@ -219,7 +230,8 @@ namespace general_planner {
         bool truncateTrackingProblemForCorridor(traj_opt::TrackingProblem &problem,
                                                 const vec_Vec3f &candidate_guide,
                                                 const std::vector<double> &candidate_guide_t,
-                                                PolytopeVec &sfcs);
+                                                PolytopeVec &sfcs,
+                                                std::string *failure_reason = nullptr);
 
         bool trackingGuidePointSafe(const Vec3f &point) const;
 

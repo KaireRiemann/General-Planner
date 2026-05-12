@@ -1021,11 +1021,6 @@ double BackupTrajOpt::evaluateCurrentCost(const VecDf &x, VecDf &g)
 {
   opt_vars_.iter_num++;
   g.setZero();
-  constexpr double kInvalidCost = 1.0e30;
-  if (!x.allFinite())
-  {
-    return kInvalidCost;
-  }
 
   const int time_dim = opt_vars_.uniform_time_en ? 1 : opt_vars_.piece_num;
   spatial_map_.reset(&opt_vars_.v_polytope,
@@ -1036,20 +1031,9 @@ double BackupTrajOpt::evaluateCurrentCost(const VecDf &x, VecDf &g)
   Mat3Df points;
   double ts = 0.0;
   decodeDecisionVector(x, times, points, ts);
-  if (!times.allFinite() || !points.allFinite() || !std::isfinite(ts) ||
-      (times.array() <= 1.0e-6).any() ||
-      ts < opt_vars_.min_ts - 1.0e-6 ||
-      ts > opt_vars_.max_ts + 1.0e-6)
-  {
-    return kInvalidCost;
-  }
 
   StatePVAJ head;
   opt_vars_.exp_traj.getState(ts, head);
-  if (!head.allFinite())
-  {
-    return kInvalidCost;
-  }
   StatePVAJ tail = StatePVAJ::Zero();
   tail.col(0) = points.rightCols(1);
 
@@ -1057,10 +1041,6 @@ double BackupTrajOpt::evaluateCurrentCost(const VecDf &x, VecDf &g)
                        toSnapBoundary(head),
                        toSnapBoundary(tail),
                        times);
-  if (!minco_traj_.getCoefficients().allFinite())
-  {
-    return kInvalidCost;
-  }
 
   double cost = 0.0;
   typename SnapTraj::CoeffMat gdC(minco_traj_.getCoefficients().rows(), 3);
@@ -1110,11 +1090,6 @@ double BackupTrajOpt::evaluateCurrentCost(const VecDf &x, VecDf &g)
       Vec3f a = coeff_block.transpose() * ba.transpose();
       Vec3f j = coeff_block.transpose() * bj.transpose();
       Vec3f s = coeff_block.transpose() * bs.transpose();
-      if (!p.allFinite() || !v.allFinite() || !a.allFinite() ||
-          !j.allFinite() || !s.allFinite())
-      {
-        return kInvalidCost;
-      }
       Vec3f gp = Vec3f::Zero();
       Vec3f gv = Vec3f::Zero();
       Vec3f ga = Vec3f::Zero();
@@ -1122,12 +1097,6 @@ double BackupTrajOpt::evaluateCurrentCost(const VecDf &x, VecDf &g)
       Vec3f gs = Vec3f::Zero();
       double gt = 0.0;
       const double sample_cost = backup_cost_manager_(t, t, i, k, p, v, a, j, s, gp, gv, ga, gj, gs, gt);
-      if (!std::isfinite(sample_cost) ||
-          !gp.allFinite() || !gv.allFinite() || !ga.allFinite() ||
-          !gj.allFinite() || !gs.allFinite() || !std::isfinite(gt))
-      {
-        return kInvalidCost;
-      }
       cost += common * sample_cost;
       gdC.template block<SnapTraj::COEFF_NUM, TRAJ_DIM>(base, 0).noalias() +=
           (bp.transpose() * gp.transpose() +
@@ -1144,11 +1113,6 @@ double BackupTrajOpt::evaluateCurrentCost(const VecDf &x, VecDf &g)
   cost += opt_vars_.weight_ts * (opt_vars_.max_ts - ts);
 
   const auto grad_result = minco_traj_.propagateGradFull(gdC, gdT);
-  if (!std::isfinite(cost) || !gdC.allFinite() || !gdT.allFinite())
-  {
-    g.setZero();
-    return kInvalidCost;
-  }
 
   if (opt_vars_.uniform_time_en)
   {
@@ -1188,11 +1152,6 @@ double BackupTrajOpt::evaluateCurrentCost(const VecDf &x, VecDf &g)
                                     exp_state_grad.col(3).dot(opt_vars_.exp_traj.getSnap(ts)) -
                                     opt_vars_.weight_ts;
   g(offset) += grad_ts_from_state * logisticIntervalGrad(opt_vars_.min_ts, opt_vars_.max_ts, x(offset));
-  if (!g.allFinite())
-  {
-    g.setZero();
-    return kInvalidCost;
-  }
 
   opt_vars_.penalty_log.tail(7) = backup_cost_manager_.getPenaltyLog().tail(7);
   opt_vars_.ts = ts;
@@ -1285,18 +1244,7 @@ bool BackupTrajOpt::optimize(const Trajectory &exp_traj,
 {
   (void)debug;
   opt_vars_.h_polytope = sfc.GetPlanes();
-  if (exp_traj.empty() ||
-      !std::isfinite(t_0) ||
-      !std::isfinite(t_e) ||
-      !std::isfinite(heu_ts) ||
-      !std::isfinite(heu_dur) ||
-      !heu_end_pt.allFinite() ||
-      t_0 < -1.0e-6 ||
-      t_e <= t_0 + 1.0e-3 ||
-      t_e > exp_traj.getTotalDuration() + 1.0e-6 ||
-      opt_vars_.h_polytope.rows() == 0 ||
-      opt_vars_.h_polytope.cols() != 4 ||
-      !std::isfinite(opt_vars_.h_polytope.sum()))
+  if (!std::isfinite(opt_vars_.h_polytope.sum()))
   {
     return false;
   }
@@ -1306,21 +1254,10 @@ bool BackupTrajOpt::optimize(const Trajectory &exp_traj,
   opt_vars_.max_ts = t_e;
   opt_vars_.ts = std::clamp(heu_ts, t_0 + 1.0e-4, t_e - 1.0e-4);
   opt_vars_.head_pvaj = exp_traj.getState(opt_vars_.ts);
-  if (!opt_vars_.head_pvaj.allFinite())
-  {
-    return false;
-  }
   opt_vars_.tail_pvaj.setZero();
   opt_vars_.tail_pvaj.col(0) = heu_end_pt;
   opt_vars_.times.resize(opt_vars_.piece_num);
-  const double fallback_dur = std::max(1.0e-3, t_e - opt_vars_.ts);
-  const double init_dur =
-      std::isfinite(heu_dur) && heu_dur > 1.0e-3 ? heu_dur : fallback_dur;
-  opt_vars_.times.setConstant(std::max(1.0e-3, init_dur / static_cast<double>(opt_vars_.piece_num)));
-  if (!opt_vars_.times.allFinite())
-  {
-    return false;
-  }
+  opt_vars_.times.setConstant(std::max(1.0e-3, heu_dur / static_cast<double>(opt_vars_.piece_num)));
 
   if (!setupProblemAndCheck())
   {

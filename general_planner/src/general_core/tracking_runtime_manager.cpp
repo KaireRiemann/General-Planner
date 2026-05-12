@@ -332,9 +332,7 @@ TrackingRuntimeManager::Activity TrackingRuntimeManager::evaluateActivity(
 
         const double max_err =
                 cfg_.tracking_keep_old_max_tracking_error_scale *
-                std::max({0.1,
-                          cfg_.tracking_distance_tolerance,
-                          cfg_.tracking_distance_upper_tolerance});
+                std::max(0.1, cfg_.tracking_distance_tolerance);
         if (out.avg_tracking_error > max_err) {
             out.reason = "tracking error too large";
             return out;

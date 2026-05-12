@@ -140,28 +140,6 @@ std::string pointToString(const Vec3f &p)
            std::to_string(p.z()) + "]";
 }
 
-double distanceLowerTolerance(const TrackingFrontend::Config &cfg)
-{
-    const double legacy_tol = std::max(0.0, cfg.distance_tolerance);
-    if (!std::isfinite(cfg.distance_lower_tolerance) ||
-        cfg.distance_lower_tolerance < 0.0)
-    {
-        return legacy_tol;
-    }
-    return cfg.distance_lower_tolerance;
-}
-
-double distanceUpperTolerance(const TrackingFrontend::Config &cfg)
-{
-    const double legacy_tol = std::max(0.0, cfg.distance_tolerance);
-    if (!std::isfinite(cfg.distance_upper_tolerance) ||
-        cfg.distance_upper_tolerance < 0.0)
-    {
-        return legacy_tol;
-    }
-    return cfg.distance_upper_tolerance;
-}
-
 } // namespace
 
 TrackingFrontend::TrackingFrontend(const Config &cfg,
@@ -308,9 +286,7 @@ bool TrackingFrontend::repairViewpointEndpoint(const Vec3f &raw_viewpoint,
     const double res = std::max(0.05, map_manager_->getResolution());
     const double repair_radius = std::max({1.0,
                                            2.0 * res,
-                                           cfg_.safe_distance + cfg_.visibility_safe_distance +
-                                               std::max(distanceLowerTolerance(cfg_),
-                                                        distanceUpperTolerance(cfg_))});
+                                           cfg_.safe_distance + cfg_.visibility_safe_distance + cfg_.distance_tolerance});  
 
     Vec3f nearest = raw_viewpoint;
     if (map_manager_->hasESDF() &&
@@ -372,10 +348,8 @@ bool TrackingFrontend::collectVisibleViewpointCandidates(
             return;
         }
 
-        const double horizontal =
-            (candidate - target.position).head<2>().norm();
-        const double near_error = std::max(0.0, cfg_.tracking_distance - horizontal);
-        const double far_error = std::max(0.0, horizontal - cfg_.tracking_distance);
+        const double horizontal_error =
+            (candidate - target.position).head<2>().norm() - cfg_.tracking_distance;
         const double vertical_error =
             (candidate.z() - target.position.z()) - cfg_.height_offset;
         double angular_hysteresis_penalty = 0.0;
@@ -397,8 +371,7 @@ bool TrackingFrontend::collectVisibleViewpointCandidates(
         const double score =
             (candidate - seed).squaredNorm() +
             0.35 * (candidate - preferred).squaredNorm() +
-            2.8 * near_error * near_error +
-            1.2 * far_error * far_error +
+            2.0 - horizontal_error * horizontal_error +
             2.0 * vertical_error * vertical_error +
             angular_hysteresis_penalty +
             bias;
@@ -420,11 +393,9 @@ bool TrackingFrontend::collectVisibleViewpointCandidates(
         -1.5 * std::max(0.0, cfg_.height_tolerance),
         1.5 * std::max(0.0, cfg_.height_tolerance)};
     const double min_radius =
-        std::max(0.3, cfg_.tracking_distance - distanceLowerTolerance(cfg_));
+        std::max(0.3, cfg_.tracking_distance - std::max(0.0, cfg_.distance_tolerance));
     const double max_radius =
-        std::max(min_radius,
-                 cfg_.tracking_distance +
-                     std::max(2.0, 3.0 * distanceUpperTolerance(cfg_)));
+        std::max(min_radius, cfg_.tracking_distance + std::max(2.0, 3.0 * std::max(0.0, cfg_.distance_tolerance)));
     const int radius_count = std::max(5, 2 * std::max(1, cfg_.candidate_radius_num) + 3);
     for (int r = 0; r < radius_count; ++r)
     {
@@ -520,10 +491,9 @@ bool TrackingFrontend::computeVisibleRegion(const traj_opt::DynamicTargetState &
                                       std::max(0.01, cfg_.candidate_angle_step));
     const double theta0 = std::atan2(seed_dir.y(), seed_dir.x());
     const double desired_z = target.position.z() + cfg_.height_offset;
-    const double lower_tol = distanceLowerTolerance(cfg_);
-    const double upper_tol = distanceUpperTolerance(cfg_);
-    const double min_radius = std::max(0.3, desired_dist - lower_tol);
-    const double max_radius = std::max(min_radius, desired_dist + upper_tol);
+    const double tol = std::max(0.0, cfg_.distance_tolerance);
+    const double min_radius = std::max(0.3, desired_dist - tol);
+    const double max_radius = std::max(min_radius, desired_dist + tol);
     const double seed_radius = std::clamp(seed_dir.norm(), min_radius, max_radius);
 
     auto pointAtYaw = [&](const double yaw, const double radius) {
@@ -752,46 +722,35 @@ bool TrackingFrontend::searchVisibleViewpointOnGrid(
     res = std::max(0.05, res);
 
     const double desired_dist = std::max(0.3, cfg_.tracking_distance);
-    const double lower_tol = distanceLowerTolerance(cfg_);
-    const double upper_tol = distanceUpperTolerance(cfg_);
-    const double ideal_min_h = std::max(0.3, desired_dist - lower_tol);
-    const double ideal_max_h = std::max(ideal_min_h + res, desired_dist + upper_tol);
+    const double tol = std::max(0.0,cfg_.distance_tolerance);
+    const double ideal_min_h = std::max(0.3,desired_dist - tol);
+    const double ideal_max_h = std::max(0.0,cfg_.distance_tolerance);
     const double elastic_distance_scale =
         cfg_.elastic_guide_enable
             ? std::max(1.0, cfg_.elastic_distance_tolerance_scale)
             : 1.0;
-    const double elastic_height_scale =
+    const double elastic_tol = 
         cfg_.elastic_guide_enable
-            ? std::max(1.0, cfg_.elastic_height_tolerance_scale)
-            : 1.0;
-    const double elastic_lower_tol =
-        cfg_.elastic_guide_enable
-            ? std::max({lower_tol,
-                        std::min(lower_tol * 1.2, 0.35 * desired_dist),
-                        1.5 * res})
-            : lower_tol;
-    const double elastic_upper_tol =
-        cfg_.elastic_guide_enable
-            ? std::max({upper_tol * elastic_distance_scale,
+            ? std::max({tol * elastic_distance_scale,
                         1.5 * res,
                         0.25 * desired_dist})
-            : upper_tol;
+            : tol;
     const double min_h = cfg_.elastic_guide_enable
-                             ? std::max(0.3, desired_dist - elastic_lower_tol)
+                             ? std::max(0.25, desired_dist - elastic_tol)
                              : ideal_min_h;
     const double max_h = cfg_.elastic_guide_enable
-                             ? std::max(min_h + res, desired_dist + elastic_upper_tol)
+                             ? std::max(min_h + res, desired_dist + elastic_tol)
                              : ideal_max_h;
     const double desired_z = target.position.z() + cfg_.height_offset;
     const double base_z_tol = std::max(0.5 * res, std::max(0.0, cfg_.height_tolerance));
     const double z_tol =
         cfg_.elastic_guide_enable
-            ? std::max({base_z_tol * elastic_height_scale,
+            ? std::max({base_z_tol * elastic_distance_scale,
                         2.0 * res,
                         0.35})
             : base_z_tol;
     const double search_radius = cfg_.elastic_guide_enable
-                                     ? max_h + std::max(1.0, elastic_upper_tol)
+                                     ? max_h + std::max(1.0, elastic_tol)
                                      : max_h;
     const double search_z_tol = cfg_.elastic_guide_enable
                                     ? z_tol + std::max(0.5, base_z_tol)
@@ -856,7 +815,7 @@ bool TrackingFrontend::searchVisibleViewpointOnGrid(
         cfg_.elastic_guide_enable
             ? std::max(0.25,
                        desired_dist -
-                           std::max({1.2 * lower_tol, 0.25 * desired_dist, 2.0 * res}))
+                           std::max({1.2 * elastic_tol, 0.25 * desired_dist, res}))
             : min_h;
     const double fallback_max_h = cfg_.elastic_guide_enable ? search_radius : max_h;
     const double fallback_z_tol = cfg_.elastic_guide_enable ? search_z_tol : z_tol;
@@ -908,11 +867,10 @@ bool TrackingFrontend::searchVisibleViewpointOnGrid(
     auto visibleFallbackScore = [&](const Vec3f &p, const double g) {
         const Vec3f rel = p - target.position;
         const double h = rel.head<2>().norm();
-        const double h_near_err = std::max(0.0, desired_dist - h);
-        const double h_far_err = std::max(0.0, h - desired_dist);
+        const double h_err = std::abs(h - desired_dist);
         const double z_err = std::abs(p.z() - desired_z);
         const double preferred_err = (p - preferred).norm();
-        return g + 1.25 * h_near_err + 0.55 * h_far_err + 0.75 * z_err + 0.25 * preferred_err;
+        return g + 0.75 * h_err + 0.75 * z_err + 0.25 * preferred_err;
     };
 
     rog_map::Vec3i start_id;
@@ -1100,14 +1058,6 @@ bool TrackingFrontend::chooseRelaxedFallbackViewpoint(
     relaxed_cfg.distance_tolerance =
         std::max(cfg_.distance_tolerance,
                  cfg_.distance_tolerance *
-                     std::max(1.0, cfg_.fallback_distance_tolerance_scale));
-    relaxed_cfg.distance_lower_tolerance =
-        std::max(distanceLowerTolerance(cfg_),
-                 distanceLowerTolerance(cfg_) *
-                     std::clamp(cfg_.fallback_distance_tolerance_scale, 1.0, 1.6));
-    relaxed_cfg.distance_upper_tolerance =
-        std::max(distanceUpperTolerance(cfg_),
-                 distanceUpperTolerance(cfg_) *
                      std::max(1.0, cfg_.fallback_distance_tolerance_scale));
     relaxed_cfg.height_tolerance =
         std::max(cfg_.height_tolerance,
@@ -1496,8 +1446,6 @@ bool TrackingFrontend::buildProblem(const StatePVAJ &head_pvaj,
     problem.safe_distance = cfg_.safe_distance;
     problem.tracking_distance = cfg_.tracking_distance;
     problem.distance_tolerance = cfg_.distance_tolerance;
-    problem.distance_lower_tolerance = distanceLowerTolerance(cfg_);
-    problem.distance_upper_tolerance = distanceUpperTolerance(cfg_);
     problem.height_offset = cfg_.height_offset;
     problem.height_tolerance = cfg_.height_tolerance;
     problem.visibility_safe_distance = cfg_.visibility_safe_distance;
@@ -1509,12 +1457,10 @@ bool TrackingFrontend::buildProblem(const StatePVAJ &head_pvaj,
         (head_pvaj.col(0) - target_prediction.front().position).head<2>().norm();
     problem.reacquire_mode =
         initial_horizontal_dist >
-        std::max(cfg_.tracking_distance + problem.distance_upper_tolerance,
+        std::max(cfg_.tracking_distance + cfg_.distance_tolerance,
                  cfg_.reacquire_distance);
-    problem.od_h_lower = std::max(0.05, cfg_.tracking_distance - problem.distance_lower_tolerance);
-    problem.od_h_upper =
-        std::max(problem.od_h_lower + 0.05,
-                 cfg_.tracking_distance + problem.distance_upper_tolerance);
+    problem.od_h_lower = std::max(0.05, cfg_.tracking_distance - cfg_.distance_tolerance);
+    problem.od_h_upper =std::max(problem.od_h_lower + 0.05, cfg_.tracking_distance + cfg_.distance_tolerance);
     problem.od_v_lower = cfg_.height_offset - cfg_.height_tolerance;
     problem.od_v_upper = cfg_.height_offset + cfg_.height_tolerance;
 

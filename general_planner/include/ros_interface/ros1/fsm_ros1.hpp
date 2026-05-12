@@ -163,7 +163,8 @@ namespace fsm {
         std::string makeSwarmDebugInfo() const {
             std::ostringstream oss;
             oss << "drone_id=" << cfg_.swarm_drone_id
-                << ";des_clearance=" << cfg_.swarm_des_clearance;
+                << ";des_clearance=" << cfg_.swarm_des_clearance
+                << ";optimization_time_ms=" << planner_ptr_->getLatestOptimizationTime() * 1000.0;
             return oss.str();
         }
 

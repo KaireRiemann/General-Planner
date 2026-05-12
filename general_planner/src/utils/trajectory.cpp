@@ -23,51 +23,9 @@
 
 #include <data_structure/base/trajectory.h>
 
-#include <algorithm>
-#include <cmath>
-
 using namespace geometry_utils;
 using namespace super_utils;
 using namespace color_text;
-
-namespace {
-    double binomialCoefficient(const int n, const int k) {
-        if (k < 0 || k > n) {
-            return 0.0;
-        }
-        const int kk = std::min(k, n - k);
-        double out = 1.0;
-        for (int i = 1; i <= kk; ++i) {
-            out *= static_cast<double>(n - kk + i);
-            out /= static_cast<double>(i);
-        }
-        return out;
-    }
-
-    Eigen::MatrixXd shiftCoeffMatByTime(const Eigen::MatrixXd &coeff_mat,
-                                        const double t0) {
-        const int degree = static_cast<int>(coeff_mat.cols()) - 1;
-        Eigen::MatrixXd shifted = Eigen::MatrixXd::Zero(coeff_mat.rows(), coeff_mat.cols());
-        if (degree < 0) {
-            return shifted;
-        }
-
-        // Piece stores coefficients in descending powers:
-        // col 0 -> t^D, col D -> t^0. Convert p(t) to p(t0 + tau).
-        for (int original_power = 0; original_power <= degree; ++original_power) {
-            const Eigen::VectorXd a =
-                coeff_mat.col(degree - original_power);
-            for (int new_power = 0; new_power <= original_power; ++new_power) {
-                const double scale =
-                    binomialCoefficient(original_power, new_power) *
-                    std::pow(t0, original_power - new_power);
-                shifted.col(degree - new_power).noalias() += scale * a;
-            }
-        }
-        return shifted;
-    }
-} // namespace
-
 // Trasjectory==================================================
 
 Trajectory::Trajectory(const std::vector<double> &durs,
@@ -318,56 +276,87 @@ bool Trajectory::getPartialTrajectoryByTime(const double &start_TT, const double
         return true;
     }
 
+    // Get the start piece id
     double t0 = start_TT;
     double local_end_t = end_TT;
     int pieceIdx = locatePieceIdx(t0);
-    int pieceEndIdx = locatePieceIdx(local_end_t);
+    if (pieces[pieceIdx].getDegree() == 5) {
+        int pieceEndIdx = locatePieceIdx(local_end_t);
+        double t02 = t0 * t0;
+        double t03 = t02 * t0;
+        double t04 = t03 * t0;
+        double t05 = t04 * t0;
+        // Cut current traj;
+        Eigen::MatrixXd coef_mat = pieces[pieceIdx].getCoeffMat();
+        Eigen::Matrix<double, 6, 6> cvt_M;
+        cvt_M << 1, 0, 0, 0, 0, 0,
+                5 * t0, 1, 0, 0, 0, 0,
+                10 * t02, 4 * t0, 1, 0, 0, 0,
+                10 * t03, 6 * t02, 3 * t0, 1, 0, 0,
+                5 * t04, 4 * t03, 3 * t02, 2 * t0, 1, 0,
+                t05, 1 * t04, 1 * t03, t02, t0, 1;
 
-    if (pieceIdx < 0 || pieceIdx >= getPieceNum() ||
-        pieceEndIdx < 0 || pieceEndIdx >= getPieceNum()) {
-        return false;
-    }
-
-    // For a cut that starts exactly on a piece junction, locatePieceIdx() returns
-    // the previous piece with local time equal to its duration.  Move the start
-    // to the next piece so the extracted trajectory never begins with a
-    // zero-duration segment.
-    while (pieceIdx + 1 < getPieceNum() &&
-           std::abs(t0 - pieces[pieceIdx].getDuration()) <= 1.0e-8) {
-        ++pieceIdx;
-        t0 = 0.0;
-    }
-
-    const int degree = pieces[pieceIdx].getDegree();
-    if (degree < 0) {
-        std::cout << "[getPartialTrajectory] ERROR, invalid piece degree: "
-                  << degree << std::endl;
-        return false;
-    }
-
-    Eigen::MatrixXd coef_mat = shiftCoeffMatByTime(pieces[pieceIdx].getCoeffMat(), t0);
-    double first_piece_duration =
-        std::min(pieces[pieceIdx].getDuration() - t0, end_TT - start_TT);
-    if (first_piece_duration <= 0.0 || !std::isfinite(first_piece_duration)) {
-        return false;
-    }
-
-    out_traj.pieces.emplace_back(first_piece_duration, coef_mat);
-    if (pieceIdx == pieceEndIdx) {
+        coef_mat = coef_mat * cvt_M.transpose();
+        double p1_t = std::min(pieces[pieceIdx].getDuration() - t0, end_TT - start_TT);
+        Piece new_pie(p1_t, coef_mat);
+        out_traj.pieces.push_back(new_pie);
+        if (pieceIdx == pieceEndIdx) {
+            out_traj.start_WT = start_WT + start_TT;
+            return true;
+        }
+        // input the rest traj;
+        for (int i = pieceIdx + 1; i < pieceEndIdx; i++) {
+            out_traj.pieces.push_back(pieces[i]);
+        }
+        Eigen::MatrixXd end_coef = pieces[pieceEndIdx].getCoeffMat();
+        Piece new_pie_end(local_end_t, end_coef);
+        out_traj.pieces.push_back(new_pie_end);
         out_traj.start_WT = start_WT + start_TT;
         return true;
-    }
+    } else if (pieces[pieceIdx].getDegree() == 7) {
+        int pieceEndIdx = locatePieceIdx(local_end_t);
+        double t02 = t0 * t0;
+        double t03 = t02 * t0;
+        double t04 = t03 * t0;
+        double t05 = t04 * t0;
+        double t06 = t03 * t03;
+        double t07 = t03 * t04;
 
-    for (int i = pieceIdx + 1; i < pieceEndIdx; i++) {
-        out_traj.pieces.push_back(pieces[i]);
-    }
+        // Cut current traj;
+        Eigen::MatrixXd coef_mat = pieces[pieceIdx].getCoeffMat();
+        Eigen::Matrix<double, 8, 8> cvt_M;
+        cvt_M << 1, 0, 0, 0, 0, 0, 0, 0,
+                7 * t0, 1, 0, 0, 0, 0, 0, 0,
+                21 * t02, 6 * t0, 1, 0, 0, 0, 0, 0,
+                35 * t03, 15 * t02, 5 * t0, 1, 0, 0, 0, 0,
+                35 * t04, 20 * t03, 10 * t02, 4 * t0, 1, 0, 0, 0,
+                21 * t05, 15 * t04, 10 * t03, 6 * t02, 3 * t0, 1, 0, 0,
+                7 * t06, 6 * t05, 5 * t04, 4 * t03, 3 * t02, 2 * t0, 1, 0,
+                t07, t06, 1 * t05, t04, t03, t02, t0, 1;
 
-    if (local_end_t > 1.0e-9) {
-        Piece new_pie_end(local_end_t, pieces[pieceEndIdx].getCoeffMat());
+        coef_mat = coef_mat * cvt_M.transpose();
+        double p1_t = std::min(pieces[pieceIdx].getDuration() - t0, end_TT - start_TT);
+        Piece new_pie(p1_t, coef_mat);
+        out_traj.pieces.push_back(new_pie);
+        if (pieceIdx == pieceEndIdx) {
+            out_traj.start_WT = start_WT + start_TT;
+            return true;
+        }
+        // input the rest traj;
+        for (int i = pieceIdx + 1; i < pieceEndIdx; i++) {
+            out_traj.pieces.push_back(pieces[i]);
+        }
+        Eigen::MatrixXd end_coef = pieces[pieceEndIdx].getCoeffMat();
+        Piece new_pie_end(local_end_t, end_coef);
         out_traj.pieces.push_back(new_pie_end);
+        out_traj.start_WT = start_WT + start_TT;
+        return true;
+
+    } else {
+        std::cout << "[getPartialTrajectory] ERROR, the piece degree is neither 5 n or 7" << std::endl;
+        Trajectory out_empty;
+        return false;
     }
-    out_traj.start_WT = start_WT + start_TT;
-    return true;
 }
 
 double Trajectory::getMaxVelRate() const {

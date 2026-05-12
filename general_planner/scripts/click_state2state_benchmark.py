@@ -37,42 +37,21 @@ CSV_FIELDS = [
     "trial",
     "success",
     "failure_reason",
-    "goal_x",
-    "goal_y",
-    "goal_z",
-    "start_x",
-    "start_y",
-    "start_z",
-    "goal_distance_m",
-    "sampling_phase",
-    "required_goal_distance_m",
-    "nearest_recent_goal_distance_m",
-    "sample_attempts",
-    "goal_clearance_m",
-    "first_plan_latency_ms",
-    "elapsed_s",
-    "trajectory_count",
+    "avg_speed_mps",
+    "total_length_m",
+    "avg_optimization_time_ms",
     "replan_count",
-    "planned_total_traj_duration_s",
-    "planned_total_traj_length_m",
-    "planned_total_traj_avg_speed_mps",
-    "planned_total_traj_max_speed_mps",
-    "first_traj_id",
-    "last_traj_id",
-    "first_traj_duration_s",
-    "first_traj_length_m",
-    "first_traj_avg_speed_mps",
-    "first_traj_max_speed_mps",
-    "last_traj_duration_s",
-    "last_traj_length_m",
-    "last_traj_avg_speed_mps",
-    "last_traj_max_speed_mps",
-    "executed_length_m",
-    "executed_avg_speed_mps",
-    "planned_collision_traj_count",
-    "planned_collision_sample_count",
-    "executed_collision_sample_count",
-    "collision",
+]
+
+SUMMARY_FIELDS = [
+    "demo",
+    "trials",
+    "successes",
+    "failures",
+    "collision_trials",
+    "total_length_m",
+    "mean_optimization_time_ms",
+    "mean_speed_mps",
 ]
 
 
@@ -225,6 +204,31 @@ def safe_float(value):
             return ""
         return f"{value:.6f}"
     return value
+
+
+def parse_debug_info(debug_info):
+    items = {}
+    if not debug_info:
+        return items
+    for part in debug_info.split(";"):
+        if "=" not in part:
+            continue
+        key, value = part.split("=", 1)
+        key = key.strip()
+        if key:
+            items[key] = value.strip()
+    return items
+
+
+def debug_float(debug_info, key):
+    value = parse_debug_info(debug_info).get(key)
+    if value is None:
+        return None
+    try:
+        number = float(value)
+    except ValueError:
+        return None
+    return number if math.isfinite(number) else None
 
 
 class OccupancyIndex:
@@ -534,6 +538,7 @@ def compute_trajectory_metrics(msg, occupancy, sample_dt, collision_clearance):
         "length_m": length,
         "avg_speed_mps": avg_speed,
         "max_speed_mps": max_speed,
+        "optimization_time_ms": debug_float(getattr(msg, "debug_info", ""), "optimization_time_ms"),
         "collision_samples": collision_samples,
         "sample_count": sample_count,
         "start": start_pos,
@@ -630,27 +635,11 @@ def write_manifest(path, data):
 def write_summary(run_dir, summaries):
     csv_path = run_dir / "summary.csv"
     json_path = run_dir / "summary.json"
-    fields = [
-        "demo",
-        "trials",
-        "successes",
-        "failures",
-        "collision_trials",
-        "total_replans",
-        "mean_first_plan_latency_ms",
-        "mean_planned_total_traj_length_m",
-        "mean_planned_total_traj_duration_s",
-        "mean_planned_total_traj_avg_speed_mps",
-        "mean_last_traj_length_m",
-        "mean_last_traj_duration_s",
-        "mean_last_traj_avg_speed_mps",
-        "mean_executed_length_m",
-    ]
     with open(csv_path, "w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=fields)
+        writer = csv.DictWriter(f, fieldnames=SUMMARY_FIELDS)
         writer.writeheader()
         for item in summaries:
-            writer.writerow({k: safe_float(item.get(k)) for k in fields})
+            writer.writerow({k: safe_float(item.get(k)) for k in SUMMARY_FIELDS})
     with open(json_path, "w") as f:
         json.dump(summaries, f, indent=2, sort_keys=True)
 
@@ -662,21 +651,27 @@ def mean(values):
 
 def summarize_demo(demo, rows):
     successes = [r for r in rows if r["success"]]
+    total_length = sum(r["total_length_m"] for r in successes)
+    total_duration = sum(r["planned_total_traj_duration_s"] for r in successes)
+    opt_total = sum(r.get("_optimization_time_total_ms", 0.0) for r in successes)
+    opt_count = sum(r.get("_optimization_time_sample_count", 0) for r in successes)
     return {
         "demo": demo,
         "trials": len(rows),
         "successes": len(successes),
         "failures": len(rows) - len(successes),
         "collision_trials": sum(1 for r in rows if r["collision"]),
-        "total_replans": sum(r["replan_count"] for r in rows),
-        "mean_first_plan_latency_ms": mean([r["first_plan_latency_ms"] for r in successes]),
-        "mean_planned_total_traj_length_m": mean([r["planned_total_traj_length_m"] for r in successes]),
-        "mean_planned_total_traj_duration_s": mean([r["planned_total_traj_duration_s"] for r in successes]),
-        "mean_planned_total_traj_avg_speed_mps": mean([r["planned_total_traj_avg_speed_mps"] for r in successes]),
-        "mean_last_traj_length_m": mean([r["last_traj_length_m"] for r in successes]),
-        "mean_last_traj_duration_s": mean([r["last_traj_duration_s"] for r in successes]),
-        "mean_last_traj_avg_speed_mps": mean([r["last_traj_avg_speed_mps"] for r in successes]),
-        "mean_executed_length_m": mean([r["executed_length_m"] for r in successes]),
+        "total_length_m": total_length,
+        "mean_optimization_time_ms": (
+            opt_total / opt_count
+            if opt_count > 0
+            else mean([r["avg_optimization_time_ms"] for r in successes])
+        ),
+        "mean_speed_mps": (
+            total_length / total_duration
+            if total_duration > 1.0e-6
+            else mean([r["avg_speed_mps"] for r in successes])
+        ),
     }
 
 
@@ -754,6 +749,11 @@ def run_trial(node, args, rng, occupancy, demo, trial_index, goal_history):
         "elapsed_s": None,
         "trajectory_count": 0,
         "replan_count": 0,
+        "avg_speed_mps": None,
+        "total_length_m": 0.0,
+        "avg_optimization_time_ms": None,
+        "_optimization_time_total_ms": 0.0,
+        "_optimization_time_sample_count": 0,
         "planned_total_traj_duration_s": 0.0,
         "planned_total_traj_length_m": 0.0,
         "planned_total_traj_avg_speed_mps": None,
@@ -777,7 +777,7 @@ def run_trial(node, args, rng, occupancy, demo, trial_index, goal_history):
     }
 
     if first_event is None:
-        row["failure_reason"] = "plan_timeout"
+        row["failure_reason"] = "ros_shutdown" if rospy.is_shutdown() else "plan_timeout"
         row["elapsed_s"] = time.monotonic() - start_wall
         return row
 
@@ -811,6 +811,8 @@ def run_trial(node, args, rng, occupancy, demo, trial_index, goal_history):
     elapsed = time.monotonic() - start_wall
     row["elapsed_s"] = elapsed
     row["executed_avg_speed_mps"] = row["executed_length_m"] / elapsed if elapsed > 1.0e-6 else 0.0
+    if rospy.is_shutdown() and finish_reason == "trial_timeout":
+        finish_reason = "ros_shutdown"
 
     unique_events = []
     seen_ids = set()
@@ -836,11 +838,22 @@ def run_trial(node, args, rng, occupancy, demo, trial_index, goal_history):
         last = metrics[-1]
         total_duration = sum(item["duration_s"] for item in metrics)
         total_length = sum(item["length_m"] for item in metrics)
+        optimization_times = [
+            item["optimization_time_ms"]
+            for item in metrics
+            if isinstance(item["optimization_time_ms"], (int, float))
+            and not math.isnan(item["optimization_time_ms"])
+        ]
         row["trajectory_count"] = len(metrics)
         row["replan_count"] = max(0, len(metrics) - 1)
+        row["total_length_m"] = total_length
+        row["avg_speed_mps"] = total_length / total_duration if total_duration > 1.0e-6 else 0.0
+        row["_optimization_time_total_ms"] = sum(optimization_times)
+        row["_optimization_time_sample_count"] = len(optimization_times)
+        row["avg_optimization_time_ms"] = mean(optimization_times)
         row["planned_total_traj_duration_s"] = total_duration
         row["planned_total_traj_length_m"] = total_length
-        row["planned_total_traj_avg_speed_mps"] = total_length / total_duration if total_duration > 1.0e-6 else 0.0
+        row["planned_total_traj_avg_speed_mps"] = row["avg_speed_mps"]
         row["planned_total_traj_max_speed_mps"] = max(item["max_speed_mps"] for item in metrics)
         row["first_traj_id"] = first["trajectory_id"]
         row["last_traj_id"] = last["trajectory_id"]
@@ -900,16 +913,16 @@ def run_demo(node, args, rng, demo, run_dir):
                 goal_history.append((row["goal_x"], row["goal_y"], row["goal_z"]))
                 write_row(writer, csv_file, row)
                 rospy.loginfo(
-                    "[%s %d/%d] success=%s phase=%s replans=%s traj_len=%.3f exec_len=%.3f duration=%.3f collision=%s",
+                    "[%s %d/%d] success=%s phase=%s replans=%s traj_len=%.3f avg_speed=%.3f opt_time=%.3f ms collision=%s",
                     demo,
                     trial,
                     args.trials,
                     row["success"],
                     row["sampling_phase"],
                     row["replan_count"],
-                    row["planned_total_traj_length_m"] or 0.0,
-                    row["executed_length_m"] or 0.0,
-                    row["planned_total_traj_duration_s"] or 0.0,
+                    row["total_length_m"] or 0.0,
+                    row["avg_speed_mps"] or 0.0,
+                    row["avg_optimization_time_ms"] or 0.0,
                     row["collision"],
                 )
     finally:

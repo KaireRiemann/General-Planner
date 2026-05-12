@@ -67,8 +67,6 @@ struct TrackingProblem
   double safe_distance{0.45};
   double tracking_distance{3.0};
   double distance_tolerance{0.8};
-  double distance_lower_tolerance{0.45};
-  double distance_upper_tolerance{0.9};
   double height_offset{0.8};
   double height_tolerance{0.6};
 
