@@ -58,6 +58,8 @@ general_planner:
   tracking:
     distance: 2.2
     distance_tolerance: 0.8
+    distance_lower_tolerance: 0.45
+    distance_upper_tolerance: 0.9
     height_offset: 0.7
     height_tolerance: 0.6
     safe_distance: 0.35
@@ -68,12 +70,24 @@ general_planner:
     min_commit_duration: 0.8
     low_speed_velocity_threshold: 0.25
     angular_hysteresis: 0.35
+    runtime_manager_enable: true
     anti_rollback_enable: true
-    anti_rollback_horizon: 1.0
-    anti_rollback_dt: 0.25
-    anti_rollback_margin: 0.35
-    keep_old_horizon: 1.0
-    keep_old_safety_dt: 0.10
+    anti_rollback_horizon: 0.8
+    anti_rollback_dt: 0.10
+    anti_rollback_margin: 0.45
+    keep_old_horizon: 0.6
+    keep_old_safety_dt: 0.08
+    keep_old_min_remaining: 0.45
+    keep_old_min_speed: 0.15
+    keep_old_min_displacement: 0.04
+    keep_old_min_progress_ratio: 0.10
+    keep_old_max_tracking_error_scale: 1.25
+    max_consecutive_keep_old: 2
+    no_motion_guard_enable: true
+    no_motion_check_horizon: 0.35
+    no_motion_min_displacement: 0.04
+    no_motion_target_speed_threshold: 0.25
+    commit_start_time_tolerance: 0.05
     candidate_angle_step: 0.3926990817
     candidate_radius_num: 3
     visibility_samples: 5
@@ -83,7 +97,13 @@ general_planner:
     fallback_candidate_radius_extra: 2
     fallback_candidate_angle_step_scale: 0.5
     fallback_search_horizon_scale: 1.3
-    weight_od_near: 20.0
+    frontend_elastic_enable: true
+    frontend_elastic_distance_tolerance_scale: 2.0
+    frontend_elastic_height_tolerance_scale: 2.0
+    frontend_partial_guide_enable: true
+    frontend_partial_min_duration: 0.45
+    frontend_partial_min_samples: 2
+    weight_od_near: 35.0
     weight_od_far: 5.0
     weight_od_vertical: 8.0
     weight_oa: 5.0
@@ -192,10 +212,10 @@ rog_map:
   map_size: [50, 50, 6]
   fix_map_origin: [0, 0, 1.5]
   frontier_extraction_en: false
-  virtual_ceil_height: 3.5
+  virtual_ceil_height: 5.5
   virtual_ground_height: -0.1
   load_pcd_en: true
-  pcd_name: "${CMAKE_ROOT_DIR}/../mars_uav_sim/perfect_drone_sim/pcd/big_field.pcd"
+  pcd_name: "${CMAKE_ROOT_DIR}/../mars_uav_sim/perfect_drone_sim/pcd/small_forest01cutoff.pcd"
   map_sliding:
     enable: true
     threshold: 0.3

@@ -151,7 +151,7 @@ rog_map:
   map_size: [ 50,50,6 ]
   fix_map_origin: [ 0,0,1.5 ]
   frontier_extraction_en: false
-  virtual_ceil_height: 3.5
+  virtual_ceil_height: 5.5
   virtual_ground_height: -0.1
   load_pcd_en: false
 

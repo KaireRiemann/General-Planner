@@ -5,6 +5,7 @@
 #include "traj_opt/minco/minco_trajectory.hpp"
 #include <Eigen/Dense>
 #include <algorithm>
+#include <cmath>
 #include <functional>
 #include <limits>
 #include <memory>
@@ -60,6 +61,17 @@ namespace optimizer_traits
                                      decltype(static_cast<double>(std::declval<T>()(
                                          std::declval<const std::vector<double> &>(),
                                          std::declval<Eigen::VectorXd &>())))>> : std::true_type
+  {
+  };
+
+  template <typename T, typename = void>
+  struct HasDiscreteSampleTimes : std::false_type
+  {
+  };
+
+  template <typename T>
+  struct HasDiscreteSampleTimes<T, void_t<
+                                       decltype(std::declval<const T>().discreteSampleTimes())>> : std::true_type
   {
   };
 } // namespace optimizer_traits
@@ -574,37 +586,125 @@ private:
     workspace_->gdC_sample.setZero();
     workspace_->gdT_sample.setZero();
 
-    const Eigen::Index sample_count = static_cast<Eigen::Index>(workspace_->samples.size());
+    SampleBuffer discrete_samples;
+    const SampleBuffer *active_samples = &workspace_->samples;
+    constexpr bool uses_absolute_sample_times =
+        optimizer_traits::HasDiscreteSampleTimes<typename std::decay<CostManager>::type>::value;
+    if constexpr (uses_absolute_sample_times)
+    {
+      buildAbsoluteTimeSamples(cost_manager.discreteSampleTimes(), discrete_samples);
+      active_samples = &discrete_samples;
+    }
+
+    const Eigen::Index sample_count = static_cast<Eigen::Index>(active_samples->size());
     workspace_->sample_grad_p.resize(DIM, sample_count);
     workspace_->sample_grad_p.setZero();
     workspace_->sample_grad_t_global.resize(sample_count);
     workspace_->sample_grad_t_global.setZero();
 
-    cost += cost_manager.evaluateSample(workspace_->samples,
+    cost += cost_manager.evaluateSample(*active_samples,
                                         workspace_->sample_grad_p,
                                         workspace_->sample_grad_t_global);
 
     Eigen::VectorXd global_time_grad = Eigen::VectorXd::Zero(piece_num_);
     for (Eigen::Index sample_idx = 0; sample_idx < sample_count; ++sample_idx)
     {
-      const auto &sample = workspace_->samples[sample_idx];
+      const auto &sample = (*active_samples)[sample_idx];
       const int base_row = sample.seg_idx * TrajType::COEFF_NUM;
       const VectorType grad_position = workspace_->sample_grad_p.col(sample_idx);
 
       workspace_->gdC_sample.template block<TrajType::COEFF_NUM, DIM>(base_row, 0).noalias() +=
           sample.b_p.transpose() * grad_position.transpose();
-      workspace_->gdT_sample(sample.seg_idx) += grad_position.dot(sample.v) * sample.alpha;
 
-      const double grad_time = workspace_->sample_grad_t_global(sample_idx);
-      workspace_->gdT_sample(sample.seg_idx) += grad_time * sample.alpha;
-      global_time_grad(sample.seg_idx) += grad_time;
+      if constexpr (uses_absolute_sample_times)
+      {
+        const double absolute_time_grad = grad_position.dot(sample.v);
+        for (int time_idx = 0; time_idx < sample.seg_idx; ++time_idx)
+        {
+          workspace_->gdT_sample(time_idx) -= absolute_time_grad;
+        }
+      }
+      else
+      {
+        workspace_->gdT_sample(sample.seg_idx) += grad_position.dot(sample.v) * sample.alpha;
+
+        const double grad_time = workspace_->sample_grad_t_global(sample_idx);
+        workspace_->gdT_sample(sample.seg_idx) += grad_time * sample.alpha;
+        global_time_grad(sample.seg_idx) += grad_time;
+      }
     }
 
-    double accumulator = 0.0;
-    for (int i = piece_num_ - 1; i > 0; --i)
+    if constexpr (!uses_absolute_sample_times)
     {
-      accumulator += global_time_grad(i);
-      workspace_->gdT_sample(i - 1) += accumulator;
+      double accumulator = 0.0;
+      for (int i = piece_num_ - 1; i > 0; --i)
+      {
+        accumulator += global_time_grad(i);
+        workspace_->gdT_sample(i - 1) += accumulator;
+      }
+    }
+  }
+
+  void buildAbsoluteTimeSamples(const std::vector<double> &sample_times,
+                                SampleBuffer &samples) const
+  {
+    samples.clear();
+    if (piece_num_ <= 0 || sample_times.empty())
+    {
+      return;
+    }
+
+    double total_duration = 0.0;
+    for (int i = 0; i < piece_num_; ++i)
+    {
+      total_duration += workspace_->cache_T(i);
+    }
+
+    const auto &coeffs = traj_.getCoefficients();
+    samples.reserve(sample_times.size());
+    for (std::size_t sample_id = 0; sample_id < sample_times.size(); ++sample_id)
+    {
+      const double raw_t = sample_times[sample_id];
+      if (!std::isfinite(raw_t) || raw_t < -1.0e-6 || raw_t > total_duration + 1.0e-6)
+      {
+        continue;
+      }
+
+      const double t_global = std::clamp(raw_t, 0.0, total_duration);
+      double seg_start_time = 0.0;
+      for (int i = 0; i < piece_num_; ++i)
+      {
+        const double T = workspace_->cache_T(i);
+        const bool in_segment =
+            i == piece_num_ - 1 || t_global <= seg_start_time + T + 1.0e-9;
+        if (!in_segment)
+        {
+          seg_start_time += T;
+          continue;
+        }
+
+        const double t_local = std::clamp(t_global - seg_start_time, 0.0, T);
+        const double alpha = T > 1.0e-9 ? t_local / T : 0.0;
+        typename TrajType::BasisRow b_p, b_v, b_a, b_j, b_s;
+        TrajType::computeBasisFunctions(t_local, b_p, b_v, b_a, b_j, b_s);
+
+        const int base_row = i * TrajType::COEFF_NUM;
+        const auto coeff_block = coeffs.template block<TrajType::COEFF_NUM, DIM>(base_row, 0);
+        Sample sample;
+        sample.seg_idx = i;
+        sample.step_in_seg = -1;
+        sample.logical_idx = static_cast<int>(sample_id);
+        sample.alpha = alpha;
+        sample.t_local = t_local;
+        sample.t_global = t_global;
+        sample.trap_weight = 1.0;
+        sample.dt = 0.0;
+        sample.b_p = b_p;
+        sample.p.transpose().noalias() = b_p * coeff_block;
+        sample.v.transpose().noalias() = b_v * coeff_block;
+        samples.push_back(sample);
+        break;
+      }
     }
   }
 

@@ -19,6 +19,8 @@ public:
     {
         double tracking_distance{3.0};
         double distance_tolerance{0.8};
+        double distance_lower_tolerance{0.45};
+        double distance_upper_tolerance{0.9};
         double height_offset{0.8};
         double height_tolerance{0.6};
         double safe_distance{0.45};
@@ -38,6 +40,12 @@ public:
         int fallback_candidate_radius_extra{2};
         double fallback_candidate_angle_step_scale{0.5};
         double fallback_search_horizon_scale{1.3};
+        bool elastic_guide_enable{true};
+        double elastic_distance_tolerance_scale{2.0};
+        double elastic_height_tolerance_scale{2.0};
+        bool partial_guide_enable{true};
+        double partial_guide_min_duration{0.45};
+        int partial_guide_min_samples{2};
         bool unknown_as_occupied{true};
         bool use_astar{true};
         bool use_visible_region{true};
@@ -100,6 +108,11 @@ private:
                                         const traj_opt::DynamicTargetState &target,
                                         super_utils::Vec3f &viewpoint,
                                         super_utils::vec_E<super_utils::Vec3f> &path_to_viewpoint) const;
+    bool centerViewpointInVisibleRegion(const super_utils::Vec3f &start,
+                                        const traj_opt::DynamicTargetState &target,
+                                        super_utils::Vec3f &viewpoint,
+                                        super_utils::vec_E<super_utils::Vec3f> &path_to_viewpoint,
+                                        traj_opt::TrackingVisibleRegion &region) const;
     // Fail closed: blocked tracking guide segments must not append unsafe goals.
     bool appendPathSegment(const super_utils::Vec3f &start,
                            const super_utils::Vec3f &goal,

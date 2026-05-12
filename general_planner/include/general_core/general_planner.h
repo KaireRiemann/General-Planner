@@ -25,6 +25,7 @@
 
 #include <iostream>
 #include <fstream>
+#include <memory>
 #include "Eigen/Eigen"
 
 
@@ -42,6 +43,7 @@
 #include "general_core/corridor_generator.h"
 #include "general_core/fov_checker.h"
 #include "general_core/tracking_perching_frontend.hpp"
+#include "general_core/tracking_runtime_manager.hpp"
 
 #include "general_core/general_ret_code.hpp"
 #include "utils/header/fmt_eigen.hpp"
@@ -95,8 +97,30 @@ namespace general_planner {
 
         CmdTraj cmd_traj_info_;
         ExpTraj last_exp_traj_info_;
+        std::unique_ptr<TrackingRuntimeManager> tracking_runtime_manager_;
 
         vector<double> time_consuming_;
+
+        int tracking_consecutive_keep_old_{0};
+        int tracking_consecutive_reject_{0};
+        double last_tracking_commit_wt_{-1.0};
+
+        struct TrackingTrajectoryActivity {
+            bool valid{false};
+            bool safe{false};
+            bool active{false};
+            bool target_moving{false};
+
+            double remaining{0.0};
+            double speed0{0.0};
+            double displacement{0.0};
+            double progress{0.0};
+            double expected_progress{0.0};
+            double tracking_error{0.0};
+            double avg_tracking_error{0.0};
+
+            std::string reason;
+        };
 
     public:
         EIGEN_MAKE_ALIGNED_OPERATOR_NEW
@@ -226,6 +250,30 @@ namespace general_planner {
         bool currentTrackingTrajectorySafeForHorizon(double horizon);
 
         bool keepOldTrackingTrajectory(const std::string &reason);
+
+        TrackingTrajectoryActivity evaluateTrackingTrajectoryActivity(
+            const Trajectory &traj,
+            double local_start_t,
+            const traj_opt::DynamicTargetStates &target_prediction,
+            double horizon,
+            double dt) const;
+
+        bool currentTrackingTrajectorySafeAndActive(
+            const traj_opt::DynamicTargetStates &target_prediction,
+            TrackingTrajectoryActivity *activity = nullptr) const;
+
+        bool candidateTrackingTrajectoryCommandable(
+            const Trajectory &candidate_pos_traj,
+            const traj_opt::DynamicTargetStates &target_prediction,
+            std::string *reason = nullptr) const;
+
+        bool keepOldTrackingTrajectoryIfActive(
+            const traj_opt::DynamicTargetStates &target_prediction,
+            const std::string &reason);
+
+        bool trackingCandidateSafeForCommit(const Trajectory &candidate_pos_traj) const;
+
+        void resetTrackingCommitCounters();
 
         double trackingViewpointErrorScore(const Vec3f &tracker,
                                            const Vec3f &target) const;

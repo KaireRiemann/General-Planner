@@ -192,7 +192,13 @@ private:
             l = v_idx(i);
             k = v_polys[l].cols();
             q = xi.segment(j, k);
-            norm_inv = 1.0 / q.norm();
+            const double q_norm = q.norm();
+            if (!std::isfinite(q_norm) || q_norm < 1.0e-10)
+            {
+                grad_xi.segment(j, k).setZero();
+                continue;
+            }
+            norm_inv = 1.0 / q_norm;
             unit_q = q * norm_inv;
             grad_q.resize(k);
             grad_q.head(k - 1) = (v_polys[l].rightCols(k - 1).transpose() * grad_p.col(i)).array() *
