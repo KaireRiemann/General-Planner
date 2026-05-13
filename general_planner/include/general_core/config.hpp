@@ -182,6 +182,22 @@ namespace general_planner {
         bool perching_rotate_surface_with_yaw_rate{true};
         bool perching_frontend_astar{true};
         bool perching_use_dynamics_terminal_accel{true};
+        bool perching_contact_occupancy_allowance_enable{true};
+        bool perching_contact_linefree_allowance_enable{true};
+        double perching_contact_occupancy_normal_tolerance{0.20};
+        double perching_contact_occupancy_tangent_margin{0.15};
+        double perching_duration_margin{0.20};
+        double perching_duration_tolerance{0.15};
+        bool perching_allow_long_standalone{false};
+        double perching_time_upper_bound_weight{5000.0};
+        double perching_duration_seed_weight{50.0};
+        double perching_max_piece_duration{1.2};
+        int perching_min_piece_num{3};
+        int perching_max_piece_num{8};
+        bool perching_multi_point_guide_enable{true};
+        int perching_moving_guide_sample_num{4};
+        double perching_tau_f_seed_limit{1.30};
+        bool perching_reset_surface_time{true};
 
         bool swarm_enable{false};
         int swarm_drone_id{-1};
@@ -390,6 +406,38 @@ namespace general_planner {
             loader.LoadParam("general_planner/perching/frontend_astar", perching_frontend_astar, true);
             loader.LoadParam("general_planner/perching/use_dynamics_terminal_accel",
                              perching_use_dynamics_terminal_accel, true);
+            loader.LoadParam("general_planner/perching/contact_occupancy_allowance_enable",
+                             perching_contact_occupancy_allowance_enable, true);
+            loader.LoadParam("general_planner/perching/contact_linefree_allowance_enable",
+                             perching_contact_linefree_allowance_enable, true);
+            loader.LoadParam("general_planner/perching/contact_occupancy_normal_tolerance",
+                             perching_contact_occupancy_normal_tolerance, 0.20);
+            loader.LoadParam("general_planner/perching/contact_occupancy_tangent_margin",
+                             perching_contact_occupancy_tangent_margin, 0.15);
+            loader.LoadParam("general_planner/perching/duration_margin",
+                             perching_duration_margin, 0.20);
+            loader.LoadParam("general_planner/perching/duration_tolerance",
+                             perching_duration_tolerance, 0.15);
+            loader.LoadParam("general_planner/perching/allow_long_standalone",
+                             perching_allow_long_standalone, false);
+            loader.LoadParam("general_planner/perching/time_upper_bound_weight",
+                             perching_time_upper_bound_weight, 5000.0);
+            loader.LoadParam("general_planner/perching/duration_seed_weight",
+                             perching_duration_seed_weight, 50.0);
+            loader.LoadParam("general_planner/perching/max_piece_duration",
+                             perching_max_piece_duration, 1.2);
+            loader.LoadParam("general_planner/perching/min_piece_num",
+                             perching_min_piece_num, 3);
+            loader.LoadParam("general_planner/perching/max_piece_num",
+                             perching_max_piece_num, 8);
+            loader.LoadParam("general_planner/perching/multi_point_guide_enable",
+                             perching_multi_point_guide_enable, true);
+            loader.LoadParam("general_planner/perching/moving_guide_sample_num",
+                             perching_moving_guide_sample_num, 4);
+            loader.LoadParam("general_planner/perching/tau_f_seed_limit",
+                             perching_tau_f_seed_limit, 1.30);
+            loader.LoadParam("general_planner/perching/reset_surface_time",
+                             perching_reset_surface_time, true);
             loader.LoadParam("general_planner/swarm/enable", swarm_enable, false);
             loader.LoadParam("general_planner/swarm/drone_id", swarm_drone_id, -1);
             loader.LoadParam("general_planner/swarm/clearance", swarm_clearance, 0.75);

@@ -81,7 +81,11 @@ struct TaskTimeCost
   double linear_weight{0.0};
   double min_piece_duration{0.0};
   double min_total_duration{0.0};
+  double max_total_duration{-1.0};
+  double upper_bound_weight{0.0};
   double lower_bound_weight{0.0};
+  double duration_seed{0.0};
+  double duration_seed_weight{0.0};
   double smooth_eps{0.01};
 
   double operator()(const std::vector<double> &Ts, Eigen::VectorXd &grad) const
@@ -121,6 +125,28 @@ struct TaskTimeCost
       for (Eigen::Index i = 0; i < grad.size(); ++i)
       {
         grad(i) -= lower_bound_weight * df;
+      }
+    }
+    if (upper_bound_weight > 0.0 &&
+        max_total_duration > 0.0 &&
+        cost_functional::smoothedL1(total_t - max_total_duration,
+                                    smooth_eps,
+                                    f,
+                                    df))
+    {
+      cost += upper_bound_weight * f;
+      for (Eigen::Index i = 0; i < grad.size(); ++i)
+      {
+        grad(i) += upper_bound_weight * df;
+      }
+    }
+    if (duration_seed_weight > 0.0 && duration_seed > 0.0)
+    {
+      const double err = total_t - duration_seed;
+      cost += duration_seed_weight * err * err;
+      for (Eigen::Index i = 0; i < grad.size(); ++i)
+      {
+        grad(i) += 2.0 * duration_seed_weight * err;
       }
     }
     return cost;
@@ -685,6 +711,10 @@ protected:
            double min_piece_duration,
            double min_total_duration,
            double time_lower_bound_weight,
+           double max_total_duration,
+           double time_upper_bound_weight,
+           double duration_seed,
+           double duration_seed_weight,
            CostManager &cost_manager,
            Trajectory &out_traj,
            const minco::TerminalMappingBase<3, S> *terminal_mapping = nullptr,
@@ -740,10 +770,14 @@ protected:
     active_terminal_mapping_ = terminal_mapping;
     time_cost_.min_piece_duration = min_piece_duration;
     time_cost_.min_total_duration = min_total_duration;
+    time_cost_.max_total_duration = max_total_duration;
     time_cost_.lower_bound_weight =
         time_lower_bound_weight > 0.0
             ? time_lower_bound_weight
             : std::max(100.0, std::abs(cfg_.penna_t) * 10.0);
+    time_cost_.upper_bound_weight = std::max(0.0, time_upper_bound_weight);
+    time_cost_.duration_seed = duration_seed;
+    time_cost_.duration_seed_weight = std::max(0.0, duration_seed_weight);
     Eigen::VectorXd x =
         initial_extra_vars != nullptr
             ? optimizer_.encodeDecisionVector(times,
@@ -883,6 +917,10 @@ public:
                      problem.min_piece_duration,
                      problem.min_total_duration,
                      problem.time_lower_bound_weight,
+                     -1.0,
+                     0.0,
+                     0.0,
+                     0.0,
                      cost_manager_,
                      out_traj);
   }
@@ -1841,6 +1879,11 @@ public:
                         Base::mapManager(),
                         problem,
                         &Base::mutableConfig().quadrotot_flatness);
+    std::cout << " -- [PerchingSnapTrajOpt] PERCHING_TIME_BOUND max_total_duration="
+              << problem.max_total_duration
+              << ", duration_seed=" << problem.duration_seed
+              << ", upper_weight=" << problem.time_upper_bound_weight
+              << ", seed_weight=" << problem.duration_seed_weight << std::endl;
     const bool ok = Base::run(problem.head_pvaj,
                               problem.nominal_tail_pvaj,
                               problem.guide_path,
@@ -1848,6 +1891,10 @@ public:
                               problem.min_piece_duration,
                               problem.min_total_duration,
                               problem.time_lower_bound_weight,
+                              problem.max_total_duration,
+                              problem.time_upper_bound_weight,
+                              problem.duration_seed,
+                              problem.duration_seed_weight,
                               cost_manager_,
                               out_traj,
                               terminal_mapping_enabled ? &terminal_mapping_ : nullptr,

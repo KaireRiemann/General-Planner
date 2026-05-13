@@ -2,7 +2,10 @@
 
 #include <algorithm>
 #include <cmath>
+#include <iomanip>
+#include <iostream>
 #include <limits>
+#include <sstream>
 
 namespace general_planner {
 namespace {
@@ -95,6 +98,65 @@ PerchingRuntimeManager::frameAt(const traj_opt::PerchingSurfaceState &surface,
     return frame;
 }
 
+bool PerchingRuntimeManager::isFinalContactWindow(const double eval_t,
+                                                  const double duration) const
+{
+    return duration - eval_t <= std::max(0.0, cfg_.perching_contact_time_margin);
+}
+
+bool PerchingRuntimeManager::isExpectedContactSample(const Eigen::Vector3d &p,
+                                                     const SurfaceFrame &frame,
+                                                     const traj_opt::PerchingProblem &problem,
+                                                     const double eval_t,
+                                                     const double duration,
+                                                     double *normal_dist,
+                                                     double *tangent_dist) const
+{
+    const Eigen::Vector3d rel = p - frame.origin;
+    const double normal = rel.dot(frame.z);
+    const double tangent = std::hypot(rel.dot(frame.x), rel.dot(frame.y));
+    if (normal_dist != nullptr) {
+        *normal_dist = normal;
+    }
+    if (tangent_dist != nullptr) {
+        *tangent_dist = tangent;
+    }
+    if (!isFinalContactWindow(eval_t, duration)) {
+        return false;
+    }
+
+    const double expected_normal = std::max(0.0, problem.robot_l);
+    const bool normal_ok =
+            std::abs(normal - expected_normal) <=
+            std::max(0.0, cfg_.perching_contact_occupancy_normal_tolerance) +
+            std::max(0.0, problem.platform_clearance);
+    const bool tangent_ok =
+            tangent <= std::max(0.0, problem.platform_radius) +
+                       std::max(0.0, problem.robot_radius) +
+                       std::max(0.0, cfg_.perching_contact_occupancy_tangent_margin);
+    return normal_ok && tangent_ok;
+}
+
+std::string PerchingRuntimeManager::gridTypeName(const rog_map::GridType type) const
+{
+    switch (type) {
+    case rog_map::GridType::OCCUPIED:
+        return "OCCUPIED";
+    case rog_map::GridType::OUT_OF_MAP:
+        return "OUT_OF_MAP";
+    case rog_map::GridType::UNKNOWN:
+        return "UNKNOWN";
+    case rog_map::GridType::FRONTIER:
+        return "FRONTIER";
+    case rog_map::GridType::KNOWN_FREE:
+        return "KNOWN_FREE";
+    case rog_map::GridType::UNDEFINED:
+        return "UNDEFINED";
+    default:
+        return "UNKNOWN_GRID_TYPE";
+    }
+}
+
 double PerchingRuntimeManager::platformMargin(const Eigen::Vector3d &position,
                                               const Eigen::Vector3d &acceleration,
                                               const SurfaceFrame &frame,
@@ -153,10 +215,35 @@ PerchingRuntimeManager::checkCandidate(const geometry_utils::Trajectory &pos_tra
     }
 
     const double duration = pos_traj.getTotalDuration();
-    if (!std::isfinite(duration) ||
-        duration < cfg_.perching_min_duration ||
-        duration > cfg_.perching_max_duration) {
-        out.reason = "duration outside perching bounds";
+    const double duration_tol = std::max(0.0, cfg_.perching_duration_tolerance);
+    auto rejectDuration = [&](const std::string &reason) {
+        std::cout << " -- [PerchingRuntime] PERCHING_REJECT_DURATION duration="
+                  << duration << ", min=" << cfg_.perching_min_duration
+                  << ", max=" << cfg_.perching_max_duration
+                  << ", tol=" << duration_tol
+                  << ", reason=" << reason << std::endl;
+        out.reason = reason;
+    };
+    if (!std::isfinite(duration)) {
+        rejectDuration("duration not finite");
+        return out;
+    }
+    if (duration < cfg_.perching_min_duration - duration_tol) {
+        std::ostringstream ss;
+        ss << std::fixed << std::setprecision(3)
+           << "duration below perching bound: duration=" << duration
+           << ", min=" << cfg_.perching_min_duration
+           << ", tol=" << duration_tol;
+        rejectDuration(ss.str());
+        return out;
+    }
+    if (duration > cfg_.perching_max_duration + duration_tol) {
+        std::ostringstream ss;
+        ss << std::fixed << std::setprecision(3)
+           << "duration above perching bound: duration=" << duration
+           << ", max=" << cfg_.perching_max_duration
+           << ", tol=" << duration_tol;
+        rejectDuration(ss.str());
         return out;
     }
 
@@ -165,7 +252,6 @@ PerchingRuntimeManager::checkCandidate(const geometry_utils::Trajectory &pos_tra
     out.dynamics_feasible = true;
 
     const double sample_dt = std::clamp(duration / 80.0, 0.03, 0.08);
-    const double contact_margin = std::max(0.0, cfg_.perching_contact_time_margin);
     const double gravity = std::abs(cfg_.esdf_traj_cfg.grav);
     const double max_vel = cfg_.esdf_traj_cfg.max_vel > 0.0
                                ? cfg_.esdf_traj_cfg.max_vel
@@ -181,6 +267,32 @@ PerchingRuntimeManager::checkCandidate(const geometry_utils::Trajectory &pos_tra
                                  : std::numeric_limits<double>::infinity();
 
     Eigen::Vector3d last_p = pos_traj.getPos(0.0);
+    const auto last_frame0 = frameAt(surface, problem, 0.0);
+    bool last_expected_contact_sample =
+            isExpectedContactSample(last_p, last_frame0, problem, 0.0, duration);
+    auto logMapReject = [&](const double eval_t,
+                            const Eigen::Vector3d &p,
+                            const rog_map::GridType grid_type,
+                            const bool final_contact_window,
+                            const bool expected_contact_sample,
+                            const double normal_dist,
+                            const double tangent_dist,
+                            const bool inside_local_map,
+                            const std::string &reason) {
+        std::cout << " -- [PerchingRuntime] PERCHING_REJECT_MAP_SAMPLE t="
+                  << eval_t << ", T=" << duration
+                  << ", p=[" << p.x() << ", " << p.y() << ", " << p.z() << "]"
+                  << ", grid=" << gridTypeName(grid_type)
+                  << ", final_contact_window=" << final_contact_window
+                  << ", expected_contact_sample=" << expected_contact_sample
+                  << ", normal_dist=" << normal_dist
+                  << ", tangent_dist=" << tangent_dist
+                  << ", inside_local_map=" << inside_local_map
+                  << ", surface_z=[" << frameAt(surface, problem, eval_t).z.x()
+                  << ", " << frameAt(surface, problem, eval_t).z.y()
+                  << ", " << frameAt(surface, problem, eval_t).z.z() << "]"
+                  << ", reason=" << reason << std::endl;
+    };
     for (double t = 0.0; t <= duration + 1.0e-6; t += sample_dt) {
         const double eval_t = std::min(t, duration);
         const Eigen::Vector3d p = pos_traj.getPos(eval_t);
@@ -209,9 +321,17 @@ PerchingRuntimeManager::checkCandidate(const geometry_utils::Trajectory &pos_tra
         const auto frame = frameAt(surface, problem, eval_t);
         const double margin = platformMargin(p, a, frame, problem);
         out.min_platform_margin = std::min(out.min_platform_margin, margin);
-        const bool final_contact_window = duration - eval_t <= contact_margin;
-        const double tangent_dist =
-                std::hypot((p - frame.origin).dot(frame.x), (p - frame.origin).dot(frame.y));
+        const bool final_contact_window = isFinalContactWindow(eval_t, duration);
+        double normal_dist = 0.0;
+        double tangent_dist = 0.0;
+        const bool expected_contact_sample =
+                isExpectedContactSample(p,
+                                        frame,
+                                        problem,
+                                        eval_t,
+                                        duration,
+                                        &normal_dist,
+                                        &tangent_dist);
         if (!final_contact_window &&
             tangent_dist <= std::max(0.1, problem.platform_collision_activation_distance) &&
             margin < -1.0e-3) {
@@ -224,14 +344,50 @@ PerchingRuntimeManager::checkCandidate(const geometry_utils::Trajectory &pos_tra
             if (!map_manager_->insideLocalMap(p)) {
                 out.safe = false;
                 out.reason = "outside local map";
+                logMapReject(eval_t,
+                             p,
+                             rog_map::GridType::OUT_OF_MAP,
+                             final_contact_window,
+                             expected_contact_sample,
+                             normal_dist,
+                             tangent_dist,
+                             false,
+                             out.reason);
                 return out;
             }
             const auto grid_type = map_manager_->getInfGridType(p);
-            if (grid_type == rog_map::GridType::OCCUPIED ||
-                grid_type == rog_map::GridType::OUT_OF_MAP) {
+            if (grid_type == rog_map::GridType::OUT_OF_MAP) {
                 out.safe = false;
-                out.reason = "occupied or out-of-map";
+                out.reason = "out-of-map grid";
+                logMapReject(eval_t,
+                             p,
+                             grid_type,
+                             final_contact_window,
+                             expected_contact_sample,
+                             normal_dist,
+                             tangent_dist,
+                             true,
+                             out.reason);
                 return out;
+            }
+            if (grid_type == rog_map::GridType::OCCUPIED) {
+                const bool allow_contact_occupancy =
+                        cfg_.perching_contact_occupancy_allowance_enable &&
+                        expected_contact_sample;
+                if (!allow_contact_occupancy) {
+                    out.safe = false;
+                    out.reason = "occupied grid before contact";
+                    logMapReject(eval_t,
+                                 p,
+                                 grid_type,
+                                 final_contact_window,
+                                 expected_contact_sample,
+                                 normal_dist,
+                                 tangent_dist,
+                                 true,
+                                 out.reason);
+                    return out;
+                }
             }
             if (map_manager_->hasESDF()) {
                 double dist = 0.0;
@@ -249,12 +405,27 @@ PerchingRuntimeManager::checkCandidate(const geometry_utils::Trajectory &pos_tra
             }
             if ((p - last_p).norm() > 1.0e-4 &&
                 !map_manager_->isLineFree(last_p, p, true, false)) {
-                out.safe = false;
-                out.reason = "sample segment not line-free";
-                return out;
+                const bool allow_contact_line =
+                        cfg_.perching_contact_linefree_allowance_enable &&
+                        (expected_contact_sample || last_expected_contact_sample);
+                if (!allow_contact_line) {
+                    out.safe = false;
+                    out.reason = "sample segment not line-free";
+                    logMapReject(eval_t,
+                                 p,
+                                 grid_type,
+                                 final_contact_window,
+                                 expected_contact_sample,
+                                 normal_dist,
+                                 tangent_dist,
+                                 true,
+                                 out.reason);
+                    return out;
+                }
             }
         }
         last_p = p;
+        last_expected_contact_sample = expected_contact_sample;
     }
 
     const Eigen::Vector3d terminal_p = pos_traj.getPos(duration);

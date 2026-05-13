@@ -1,5 +1,6 @@
 #pragma once
 
+#include <limits>
 #include <memory>
 #include <string>
 #include <vector>
@@ -163,7 +164,11 @@ struct PerchingProblem
   int piece_num{0};
   double min_piece_duration{0.12};
   double min_total_duration{0.0};
+  double max_total_duration{-1.0};
   double time_lower_bound_weight{0.0};
+  double time_upper_bound_weight{0.0};
+  double duration_seed{0.0};
+  double duration_seed_weight{0.0};
 };
 
 class TrackingJerkTrajOpt

@@ -2734,6 +2734,7 @@ namespace general_planner {
         frontend_cfg.min_duration = cfg_.perching_min_duration;
         frontend_cfg.max_duration = cfg_.perching_max_duration;
         frontend_cfg.reference_speed = cfg_.perching_reference_speed;
+        frontend_cfg.max_speed = cfg_.esdf_traj_cfg.max_vel;
         frontend_cfg.relative_z_min = cfg_.perching_relative_z_min;
         frontend_cfg.relative_z_max = cfg_.perching_relative_z_max;
         frontend_cfg.weight_relative_height = cfg_.perching_weight_relative_height;
@@ -2747,7 +2748,19 @@ namespace general_planner {
         frontend_cfg.min_piece_duration = std::max(0.05, cfg_.perching_min_duration /
                                                          static_cast<double>(std::max(2, frontend_cfg.piece_num)));
         frontend_cfg.min_total_duration = cfg_.perching_min_duration;
+        frontend_cfg.max_total_duration = cfg_.perching_max_duration;
         frontend_cfg.time_lower_bound_weight = std::max(100.0, std::abs(cfg_.esdf_traj_cfg.penna_t) * 10.0);
+        frontend_cfg.time_upper_bound_weight = cfg_.perching_time_upper_bound_weight;
+        frontend_cfg.duration_seed_weight = cfg_.perching_duration_seed_weight;
+        frontend_cfg.duration_margin = cfg_.perching_duration_margin;
+        frontend_cfg.allow_long_standalone = cfg_.perching_allow_long_standalone;
+        frontend_cfg.max_piece_duration = cfg_.perching_max_piece_duration;
+        frontend_cfg.min_piece_num = cfg_.perching_min_piece_num;
+        frontend_cfg.max_piece_num = cfg_.perching_max_piece_num;
+        frontend_cfg.multi_point_guide_enable = cfg_.perching_multi_point_guide_enable;
+        frontend_cfg.moving_guide_sample_num = cfg_.perching_moving_guide_sample_num;
+        frontend_cfg.tau_f_seed_limit = cfg_.perching_tau_f_seed_limit;
+        frontend_cfg.reset_surface_time = cfg_.perching_reset_surface_time;
         frontend_cfg.use_astar = cfg_.perching_frontend_astar;
         frontend_cfg.use_dynamics_terminal_accel = cfg_.perching_use_dynamics_terminal_accel;
         frontend_cfg.rotate_surface_with_yaw_rate = cfg_.perching_rotate_surface_with_yaw_rate;
@@ -2780,12 +2793,14 @@ namespace general_planner {
         latest_replan.setGuidePath(problem.guide_path);
         latest_replan.setExpCondition(VecDf(), problem.guide_path, problem.head_pvaj,
                                       problem.nominal_tail_pvaj, PolytopeVec());
-        ros_ptr_->info(" -- [Perching] PERCHING_BUILD_PROBLEM_SUCCESS T0={:.3f}, guide_size={}, nu_seed=[{:.3f},{:.3f}], tau_f_seed={:.3f}",
+        ros_ptr_->info(" -- [Perching] PERCHING_BUILD_PROBLEM_SUCCESS T0={:.3f}, piece_num={}, guide_size={}, nu_seed=[{:.3f},{:.3f}], tau_f_seed={:.3f}, max_total_duration={:.3f}",
                        problem.initial_guess.total_time,
+                       problem.piece_num,
                        problem.guide_path.size(),
                        problem.initial_guess.nu.x(),
                        problem.initial_guess.nu.y(),
-                       problem.initial_guess.tau_f);
+                       problem.initial_guess.tau_f,
+                       problem.max_total_duration);
 
         auto checkCurrentPerching = [&](PerchingRuntimeManager::CheckResult &current_check) -> bool {
             if (!perching_runtime_manager_ ||
@@ -2818,7 +2833,7 @@ namespace general_planner {
                 partial_pos,
                 has_partial_yaw ? &partial_yaw : nullptr,
                 problem,
-                surface);
+                problem.surface);
             return current_check.valid;
         };
 
@@ -2875,7 +2890,7 @@ namespace general_planner {
 
         const auto candidate_check =
             perching_runtime_manager_
-                ? perching_runtime_manager_->checkCandidate(out_traj, &yaw_traj, problem, surface)
+                ? perching_runtime_manager_->checkCandidate(out_traj, &yaw_traj, problem, problem.surface)
                 : PerchingRuntimeManager::CheckResult{};
         PerchingRuntimeManager::CheckResult current_check;
         const bool has_current = !from_rest && checkCurrentPerching(current_check);

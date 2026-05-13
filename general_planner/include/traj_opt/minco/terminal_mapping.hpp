@@ -156,10 +156,10 @@ public:
  *   tail_acc(T) = (tau_m + tau_r * sin(tau_f)) * z_s + g
  *   tail_jerk(T) = 0                              (when S >= 4)
  *
- * Here Xi(T) is predicted with a constant-velocity landing-plate model and
- * the surface frame {x_s, y_s, z_s} is assumed constant over one planning
- * cycle. That keeps the current perching pipeline compatible with the generic
- * MINCO backend while exposing the correct chain rule:
+ * Here Xi(T) is predicted with a constant-acceleration landing-plate model,
+ * and the surface frame {x_s, y_s, z_s} can rotate with yaw_rate over one
+ * planning cycle. That keeps the current perching pipeline compatible with the
+ * generic MINCO backend while exposing the correct chain rule:
  *
  *   dJ / d extra = (d tail_state / d extra)^T * dJ / d tail_state
  *   dJ / d T_i  += (d tail_state / d T)^T * dJ / d tail_state

@@ -148,6 +148,7 @@ public:
         double min_duration{0.6};
         double max_duration{4.0};
         double reference_speed{2.0};
+        double max_speed{5.0};
         double relative_z_min{0.1};
         double relative_z_max{3.0};
         double weight_relative_height{1.0};
@@ -160,7 +161,19 @@ public:
         int piece_num{0};
         double min_piece_duration{0.12};
         double min_total_duration{0.0};
+        double max_total_duration{-1.0};
         double time_lower_bound_weight{0.0};
+        double time_upper_bound_weight{0.0};
+        double duration_seed_weight{0.0};
+        double duration_margin{0.20};
+        bool allow_long_standalone{false};
+        double max_piece_duration{1.2};
+        int min_piece_num{3};
+        int max_piece_num{8};
+        bool multi_point_guide_enable{true};
+        int moving_guide_sample_num{4};
+        double tau_f_seed_limit{1.30};
+        bool reset_surface_time{true};
         bool use_astar{true};
         bool use_dynamics_terminal_accel{true};
         bool rotate_surface_with_yaw_rate{true};

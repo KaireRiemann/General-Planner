@@ -156,6 +156,22 @@ general_planner:
     rotate_surface_with_yaw_rate: true
     frontend_astar: true
     use_dynamics_terminal_accel: true
+    contact_occupancy_allowance_enable: true
+    contact_linefree_allowance_enable: true
+    contact_occupancy_normal_tolerance: 0.20
+    contact_occupancy_tangent_margin: 0.15
+    duration_margin: 0.20
+    duration_tolerance: 0.15
+    allow_long_standalone: false
+    time_upper_bound_weight: 5000.0
+    duration_seed_weight: 50.0
+    max_piece_duration: 1.2
+    min_piece_num: 3
+    max_piece_num: 8
+    multi_point_guide_enable: true
+    moving_guide_sample_num: 4
+    tau_f_seed_limit: 1.30
+    reset_surface_time: true
 
 
 traj_opt:

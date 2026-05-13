@@ -82,6 +82,18 @@ private:
                          const traj_opt::PerchingProblem &problem,
                          double t) const;
 
+    bool isFinalContactWindow(double eval_t, double duration) const;
+
+    bool isExpectedContactSample(const Eigen::Vector3d &p,
+                                 const SurfaceFrame &frame,
+                                 const traj_opt::PerchingProblem &problem,
+                                 double eval_t,
+                                 double duration,
+                                 double *normal_dist = nullptr,
+                                 double *tangent_dist = nullptr) const;
+
+    std::string gridTypeName(rog_map::GridType type) const;
+
     double platformMargin(const Eigen::Vector3d &position,
                           const Eigen::Vector3d &acceleration,
                           const SurfaceFrame &frame,
