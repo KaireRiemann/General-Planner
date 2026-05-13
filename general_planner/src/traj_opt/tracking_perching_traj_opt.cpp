@@ -353,6 +353,303 @@ bool prepareInitialState(const traj_opt::Config &cfg,
   return true;
 }
 
+template <int S>
+bool prepareTimedInitialState(const traj_opt::Config &cfg,
+                              const StatePVAJ &head,
+                              const StatePVAJ &tail,
+                              const PerchingInitialGuess &initial_guess,
+                              int requested_piece_num,
+                              double min_piece_duration,
+                              std::vector<double> &times,
+                              typename TaskOptimizer<S>::WaypointsType &waypoints)
+{
+  if (!initial_guess.valid ||
+      initial_guess.guide_path.size() < 2 ||
+      !std::isfinite(initial_guess.total_time) ||
+      initial_guess.total_time <= 0.0)
+  {
+    return false;
+  }
+
+  const auto path = sanitizeGuide(initial_guess.guide_path, head.col(0), tail.col(0));
+  if (path.size() < 2)
+  {
+    return false;
+  }
+
+  std::vector<double> arc(path.size(), 0.0);
+  for (int i = 1; i < static_cast<int>(path.size()); ++i)
+  {
+    arc[static_cast<std::size_t>(i)] =
+        arc[static_cast<std::size_t>(i - 1)] + (path[i] - path[i - 1]).norm();
+  }
+  const double length = std::max(arc.back(), (tail.col(0) - head.col(0)).norm());
+  if (length < 1.0e-5)
+  {
+    return false;
+  }
+
+  std::vector<double> path_t;
+  bool timed_path_valid =
+      initial_guess.guide_t.size() == initial_guess.guide_path.size() &&
+      initial_guess.guide_t.size() >= 2;
+  if (timed_path_valid)
+  {
+    path_t = initial_guess.guide_t;
+    path_t.front() = 0.0;
+    path_t.back() = initial_guess.total_time;
+    for (int i = 1; i < static_cast<int>(path_t.size()); ++i)
+    {
+      if (!std::isfinite(path_t[static_cast<std::size_t>(i)]) ||
+          path_t[static_cast<std::size_t>(i)] <= path_t[static_cast<std::size_t>(i - 1)])
+      {
+        timed_path_valid = false;
+        break;
+      }
+    }
+  }
+
+  int piece_num = requested_piece_num > 0
+                      ? requested_piece_num
+                      : static_cast<int>(path.size()) - 1;
+  piece_num = std::clamp(piece_num, 1, 32);
+  const double total_time =
+      std::max({initial_guess.total_time,
+                static_cast<double>(piece_num) * std::max(0.05, min_piece_duration),
+                static_cast<double>(piece_num) * 0.05});
+
+  times.assign(static_cast<std::size_t>(piece_num), total_time / static_cast<double>(piece_num));
+  waypoints.resize(piece_num + 1, 3);
+  waypoints.row(0) = head.col(0).transpose();
+  waypoints.row(piece_num) = tail.col(0).transpose();
+
+  if (timed_path_valid && piece_num == static_cast<int>(path.size()) - 1)
+  {
+    for (int i = 0; i <= piece_num; ++i)
+    {
+      waypoints.row(i) = path[static_cast<std::size_t>(i)].transpose();
+      if (i > 0)
+      {
+        times[static_cast<std::size_t>(i - 1)] =
+            std::max(0.05,
+                     path_t[static_cast<std::size_t>(i)] -
+                         path_t[static_cast<std::size_t>(i - 1)]);
+      }
+    }
+    return true;
+  }
+
+  for (int i = 1; i < piece_num; ++i)
+  {
+    const double s = length * static_cast<double>(i) / static_cast<double>(piece_num);
+    waypoints.row(i) = interpolateByArc(path, arc, s).transpose();
+  }
+
+  (void)cfg;
+  return true;
+}
+
+using BvpCoeffMat = Eigen::Matrix<double, 3, 8>;
+
+BvpCoeffMat solveSeventhOrderBvp(const TaskBoundaryState<4> &head,
+                                 const TaskBoundaryState<4> &tail,
+                                 const double T)
+{
+  const double t1 = T;
+  const double t2 = t1 * t1;
+  const double t3 = t2 * t1;
+  const double t4 = t2 * t2;
+  const double t5 = t3 * t2;
+  const double t6 = t3 * t3;
+  const double t7 = t4 * t3;
+
+  BvpCoeffMat coeff;
+  coeff.col(0) = (tail.col(3) / 6.0 + head.col(3) / 6.0) * t3 +
+                 (-2.0 * tail.col(2) + 2.0 * head.col(2)) * t2 +
+                 (10.0 * tail.col(1) + 10.0 * head.col(1)) * t1 +
+                 (-20.0 * tail.col(0) + 20.0 * head.col(0));
+  coeff.col(1) = (-0.5 * tail.col(3) - head.col(3) / 1.5) * t3 +
+                 (6.5 * tail.col(2) - 7.5 * head.col(2)) * t2 +
+                 (-34.0 * tail.col(1) - 36.0 * head.col(1)) * t1 +
+                 (70.0 * tail.col(0) - 70.0 * head.col(0));
+  coeff.col(2) = (0.5 * tail.col(3) + head.col(3)) * t3 +
+                 (-7.0 * tail.col(2) + 10.0 * head.col(2)) * t2 +
+                 (39.0 * tail.col(1) + 45.0 * head.col(1)) * t1 +
+                 (-84.0 * tail.col(0) + 84.0 * head.col(0));
+  coeff.col(3) = (-tail.col(3) / 6.0 - head.col(3) / 1.5) * t3 +
+                 (2.5 * tail.col(2) - 5.0 * head.col(2)) * t2 +
+                 (-15.0 * tail.col(1) - 20.0 * head.col(1)) * t1 +
+                 (35.0 * tail.col(0) - 35.0 * head.col(0));
+  coeff.col(4) = head.col(3) / 6.0;
+  coeff.col(5) = head.col(2) / 2.0;
+  coeff.col(6) = head.col(1);
+  coeff.col(7) = head.col(0);
+
+  coeff.col(0) /= t7;
+  coeff.col(1) /= t6;
+  coeff.col(2) /= t5;
+  coeff.col(3) /= t4;
+  return coeff;
+}
+
+double approximateMaxOmegaFromBvp(const Trajectory &traj,
+                                  const double gravity,
+                                  const double dt)
+{
+  if (traj.empty())
+  {
+    return std::numeric_limits<double>::infinity();
+  }
+  double max_omega = 0.0;
+  const double duration = traj.getTotalDuration();
+  const double sample_dt = std::max(0.005, dt);
+  for (double t = 0.0; t <= duration + 1.0e-9; t += sample_dt)
+  {
+    const double eval_t = std::min(t, duration);
+    const Eigen::Vector3d acc = traj.getAcc(eval_t);
+    const Eigen::Vector3d jerk = traj.getJer(eval_t);
+    const Eigen::Vector3d thrust = acc + Eigen::Vector3d(0.0, 0.0, std::abs(gravity));
+    const double thrust_norm = thrust.norm();
+    if (!std::isfinite(thrust_norm) || thrust_norm < 1.0e-6)
+    {
+      return std::numeric_limits<double>::infinity();
+    }
+    const Eigen::Vector3d zb = thrust / thrust_norm;
+    const Eigen::Matrix3d d_norm =
+        (Eigen::Matrix3d::Identity() - zb * zb.transpose()) / thrust_norm;
+    const double omega12 = (d_norm * jerk).norm();
+    if (!std::isfinite(omega12))
+    {
+      return std::numeric_limits<double>::infinity();
+    }
+    max_omega = std::max(max_omega, omega12);
+  }
+  return max_omega;
+}
+
+Trajectory makeBvpTrajectory(const BvpCoeffMat &coeff,
+                             const double duration)
+{
+  Trajectory traj;
+  traj.reserve(1);
+  traj.emplace_back(duration, Eigen::MatrixXd(coeff));
+  return traj;
+}
+
+template <int S>
+bool prepareBvpInitialState(const traj_opt::Config &cfg,
+                            const StatePVAJ &head,
+                            const StatePVAJ &nominal_tail,
+                            const minco::TerminalMappingBase<3, S> &terminal_mapping,
+                            const PerchingInitialGuess &initial_guess,
+                            int requested_piece_num,
+                            double min_piece_duration,
+                            std::vector<double> &times,
+                            typename TaskOptimizer<S>::WaypointsType &waypoints,
+                            Eigen::VectorXd &extra_vars)
+{
+  static_assert(S == 4, "BVP perching initial guess is implemented for T4 MINCO.");
+  if (!terminal_mapping.enabled())
+  {
+    return false;
+  }
+
+  int piece_num = requested_piece_num > 0 ? requested_piece_num : cfg.piece_num;
+  if (piece_num <= 0)
+  {
+    piece_num = 3;
+  }
+  piece_num = std::clamp(piece_num, 1, 32);
+
+  const int extra_dim = terminal_mapping.extraVariableDim();
+  extra_vars.resize(extra_dim);
+  if (extra_dim > 0)
+  {
+    terminal_mapping.setInitialExtraVariables(extra_vars);
+    if (initial_guess.valid && extra_dim >= 3)
+    {
+      extra_vars(0) = initial_guess.nu.x();
+      extra_vars(1) = initial_guess.nu.y();
+      extra_vars(2) = initial_guess.tau_f;
+    }
+  }
+
+  const double distance = (nominal_tail.col(0) - head.col(0)).norm();
+  const double max_vel = clampPositive(cfg.max_vel, 2.0);
+  double bvp_T =
+      initial_guess.valid && std::isfinite(initial_guess.total_time) && initial_guess.total_time > 0.0
+          ? initial_guess.total_time
+          : std::max(0.5, distance / max_vel);
+  bvp_T = std::max(bvp_T, static_cast<double>(piece_num) * std::max(0.05, min_piece_duration));
+
+  const TaskBoundaryState<4> head_state = toBoundaryState<4>(head);
+  const TaskBoundaryState<4> nominal_tail_state = toBoundaryState<4>(nominal_tail);
+  const double omega_limit =
+      cfg.max_omg > 0.0 ? 1.5 * cfg.max_omg : std::numeric_limits<double>::infinity();
+  const double max_bvp_T = std::max(8.0, 3.0 * bvp_T);
+
+  BvpCoeffMat best_coeff = BvpCoeffMat::Zero();
+  TaskBoundaryState<4> best_tail = nominal_tail_state;
+  double best_T = bvp_T;
+  double best_omega = std::numeric_limits<double>::infinity();
+
+  for (int iter = 0; iter < 12; ++iter)
+  {
+    Eigen::VectorXd cache_T(piece_num);
+    cache_T.setConstant(bvp_T / static_cast<double>(piece_num));
+    TaskBoundaryState<4> mapped_head = head_state;
+    TaskBoundaryState<4> mapped_tail = nominal_tail_state;
+    terminal_mapping.mapBoundaryStates(head_state,
+                                       nominal_tail_state,
+                                       cache_T,
+                                       extra_vars,
+                                       mapped_head,
+                                       mapped_tail);
+    const BvpCoeffMat coeff = solveSeventhOrderBvp(mapped_head, mapped_tail, bvp_T);
+    const Trajectory bvp_traj = makeBvpTrajectory(coeff, bvp_T);
+    const double max_omega =
+        approximateMaxOmegaFromBvp(bvp_traj, cfg.grav, std::clamp(bvp_T / 100.0, 0.01, 0.05));
+    if (max_omega < best_omega)
+    {
+      best_omega = max_omega;
+      best_T = bvp_T;
+      best_coeff = coeff;
+      best_tail = mapped_tail;
+    }
+    if (max_omega <= omega_limit)
+    {
+      break;
+    }
+    bvp_T = std::min(max_bvp_T, bvp_T + std::max(0.25, 0.25 * bvp_T));
+    if (bvp_T >= max_bvp_T - 1.0e-6)
+    {
+      break;
+    }
+  }
+
+  const Trajectory bvp_traj = makeBvpTrajectory(best_coeff, best_T);
+  if (bvp_traj.empty() || !std::isfinite(best_omega))
+  {
+    return false;
+  }
+
+  times.assign(static_cast<std::size_t>(piece_num), best_T / static_cast<double>(piece_num));
+  waypoints.resize(piece_num + 1, 3);
+  for (int i = 0; i <= piece_num; ++i)
+  {
+    const double t = best_T * static_cast<double>(i) / static_cast<double>(piece_num);
+    waypoints.row(i) = bvp_traj.getPos(t).transpose();
+  }
+  waypoints.row(0) = head_state.col(0).transpose();
+  waypoints.row(piece_num) = best_tail.col(0).transpose();
+
+  std::cout << " -- [PerchingSnapTrajOpt] PERCHING_BVP_INITIAL_GUESS T="
+            << best_T << ", max_omega=" << best_omega
+            << ", omega_limit=" << omega_limit
+            << ", pieces=" << piece_num << std::endl;
+  return waypoints.allFinite();
+}
+
 template <int S, typename CostManager>
 class TaskRunner
 {
@@ -390,18 +687,43 @@ protected:
            double time_lower_bound_weight,
            CostManager &cost_manager,
            Trajectory &out_traj,
-           const minco::TerminalMappingBase<3, S> *terminal_mapping = nullptr)
+           const minco::TerminalMappingBase<3, S> *terminal_mapping = nullptr,
+           const std::vector<double> *initial_times = nullptr,
+           const typename TaskOptimizer<S>::WaypointsType *initial_waypoints = nullptr,
+           const Eigen::VectorXd *initial_extra_vars = nullptr)
   {
     std::vector<double> times;
     typename TaskOptimizer<S>::WaypointsType waypoints;
-    if (!prepareInitialState<S>(cfg_,
-                                head,
-                                tail,
-                                guide_path,
-                                piece_num,
-                                min_piece_duration,
-                                times,
-                                waypoints))
+    const bool use_explicit_initial_state =
+        initial_times != nullptr &&
+        initial_waypoints != nullptr &&
+        static_cast<int>(initial_times->size()) > 0 &&
+        initial_waypoints->rows() == static_cast<int>(initial_times->size()) + 1 &&
+        initial_waypoints->cols() == 3;
+    if (use_explicit_initial_state)
+    {
+      times = *initial_times;
+      waypoints = *initial_waypoints;
+      for (const double t : times)
+      {
+        if (!std::isfinite(t) || t <= 0.0)
+        {
+          return false;
+        }
+      }
+      if (!waypoints.allFinite())
+      {
+        return false;
+      }
+    }
+    else if (!prepareInitialState<S>(cfg_,
+                                     head,
+                                     tail,
+                                     guide_path,
+                                     piece_num,
+                                     min_piece_duration,
+                                     times,
+                                     waypoints))
     {
       return false;
     }
@@ -422,7 +744,13 @@ protected:
         time_lower_bound_weight > 0.0
             ? time_lower_bound_weight
             : std::max(100.0, std::abs(cfg_.penna_t) * 10.0);
-    Eigen::VectorXd x = optimizer_.generateInitialGuess(active_terminal_mapping_);
+    Eigen::VectorXd x =
+        initial_extra_vars != nullptr
+            ? optimizer_.encodeDecisionVector(times,
+                                              waypoints,
+                                              active_terminal_mapping_,
+                                              initial_extra_vars)
+            : optimizer_.generateInitialGuess(active_terminal_mapping_);
     if (x.size() == 0 || !x.allFinite())
     {
       return false;
@@ -1393,6 +1721,11 @@ minco::PerchingSemanticConfig deriveTerminalConfig(const PerchingProblem &proble
   terminal.surface_x = problem.surface.surface_x;
   terminal.surface_y = problem.surface.surface_y;
   terminal.surface_z = problem.surface.surface_z;
+  terminal.yaw = problem.surface.yaw;
+  terminal.yaw_rate = problem.surface.yaw_rate;
+  terminal.rotate_surface_with_yaw_rate = true;
+  terminal.gravity = cfg.grav;
+  terminal.terminal_time_seed = 0.0;
 
   const double projected_l =
       (problem.nominal_tail_pvaj.col(0) - problem.surface.position).dot(problem.surface.surface_z);
@@ -1449,21 +1782,88 @@ public:
       problem.guide_path.emplace_back(problem.nominal_tail_pvaj.col(0));
     }
 
-    terminal_mapping_.configure(deriveTerminalConfig(problem, Base::mutableConfig()));
+    TaskOptimizer<4>::WaypointsType initial_waypoints;
+    std::vector<double> initial_times;
+    Eigen::VectorXd initial_extra_vars;
+    const std::vector<double> *initial_times_ptr = nullptr;
+    const TaskOptimizer<4>::WaypointsType *initial_waypoints_ptr = nullptr;
+    const Eigen::VectorXd *initial_extra_vars_ptr = nullptr;
+
+    const bool terminal_mapping_enabled = problem.use_terminal_config;
+    if (terminal_mapping_enabled)
+    {
+      terminal_mapping_.configure(deriveTerminalConfig(problem, Base::mutableConfig()));
+      std::cout << " -- [PerchingSnapTrajOpt] PERCHING_TERMINAL_MAPPING_ENABLED"
+                << std::endl;
+    }
+
+    if (terminal_mapping_enabled &&
+        prepareBvpInitialState<4>(Base::mutableConfig(),
+                                  problem.head_pvaj,
+                                  problem.nominal_tail_pvaj,
+                                  terminal_mapping_,
+                                  problem.initial_guess,
+                                  problem.piece_num,
+                                  problem.min_piece_duration,
+                                  initial_times,
+                                  initial_waypoints,
+                                  initial_extra_vars))
+    {
+      initial_times_ptr = &initial_times;
+      initial_waypoints_ptr = &initial_waypoints;
+      initial_extra_vars_ptr = &initial_extra_vars;
+    }
+    else if (problem.use_initial_guess &&
+             prepareTimedInitialState<4>(Base::mutableConfig(),
+                                         problem.head_pvaj,
+                                         problem.nominal_tail_pvaj,
+                                         problem.initial_guess,
+                                         problem.piece_num,
+                                         problem.min_piece_duration,
+                                         initial_times,
+                                         initial_waypoints))
+    {
+      initial_extra_vars.resize(minco::PerchingTerminalMapping<3, 4>::EXTRA_DIM);
+      initial_extra_vars.setZero();
+      initial_extra_vars(minco::PerchingTerminalMapping<3, 4>::IDX_NU_X) =
+          problem.initial_guess.nu.x();
+      initial_extra_vars(minco::PerchingTerminalMapping<3, 4>::IDX_NU_Y) =
+          problem.initial_guess.nu.y();
+      initial_extra_vars(minco::PerchingTerminalMapping<3, 4>::IDX_TAU_F) =
+          problem.initial_guess.tau_f;
+      initial_times_ptr = &initial_times;
+      initial_waypoints_ptr = &initial_waypoints;
+      initial_extra_vars_ptr = &initial_extra_vars;
+      std::cout << " -- [PerchingSnapTrajOpt] PERCHING_BVP_INITIAL_GUESS_FAILED_USE_TIMED_GUIDE"
+                << std::endl;
+    }
     cost_manager_.reset(Base::mutableConfig(),
                         Base::mapManager(),
                         problem,
                         &Base::mutableConfig().quadrotot_flatness);
-    return Base::run(problem.head_pvaj,
-                     problem.nominal_tail_pvaj,
-                     problem.guide_path,
-                     problem.piece_num,
-                     problem.min_piece_duration,
-                     problem.min_total_duration,
-                     problem.time_lower_bound_weight,
-                     cost_manager_,
-                     out_traj,
-                     &terminal_mapping_);
+    const bool ok = Base::run(problem.head_pvaj,
+                              problem.nominal_tail_pvaj,
+                              problem.guide_path,
+                              problem.piece_num,
+                              problem.min_piece_duration,
+                              problem.min_total_duration,
+                              problem.time_lower_bound_weight,
+                              cost_manager_,
+                              out_traj,
+                              terminal_mapping_enabled ? &terminal_mapping_ : nullptr,
+                              initial_times_ptr,
+                              initial_waypoints_ptr,
+                              initial_extra_vars_ptr);
+    if (ok)
+    {
+      std::cout << " -- [PerchingSnapTrajOpt] PERCHING_OPT_SUCCESS duration="
+                << out_traj.getTotalDuration() << std::endl;
+    }
+    else
+    {
+      std::cout << " -- [PerchingSnapTrajOpt] PERCHING_OPT_FAILED" << std::endl;
+    }
+    return ok;
   }
 
 private:

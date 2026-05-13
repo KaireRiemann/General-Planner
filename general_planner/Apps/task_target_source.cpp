@@ -1,14 +1,19 @@
 #include <algorithm>
 #include <cctype>
 #include <cmath>
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <vector>
 
 #include <Eigen/Geometry>
+#include <geometry_msgs/Point.h>
 #include <nav_msgs/Odometry.h>
 #include <nav_msgs/Path.h>
+#include <quadrotor_msgs/PolynomialTrajectory.h>
 #include <ros/ros.h>
+#include <std_msgs/ColorRGBA.h>
+#include <visualization_msgs/MarkerArray.h>
 
 #include "path_search/astar.h"
 #include "rog_map/rog_map.h"
@@ -35,18 +40,14 @@ geometry_msgs::Quaternion quatFromYaw(const double yaw)
     return msg;
 }
 
-geometry_msgs::Quaternion quatFromRpy(const double roll, const double pitch, const double yaw)
+std_msgs::ColorRGBA colorRgba(const double r, const double g, const double b, const double a)
 {
-    const Eigen::Quaterniond q =
-        Eigen::AngleAxisd(yaw, Eigen::Vector3d::UnitZ()) *
-        Eigen::AngleAxisd(pitch, Eigen::Vector3d::UnitY()) *
-        Eigen::AngleAxisd(roll, Eigen::Vector3d::UnitX());
-    geometry_msgs::Quaternion msg;
-    msg.w = q.w();
-    msg.x = q.x();
-    msg.y = q.y();
-    msg.z = q.z();
-    return msg;
+    std_msgs::ColorRGBA color;
+    color.r = static_cast<float>(r);
+    color.g = static_cast<float>(g);
+    color.b = static_cast<float>(b);
+    color.a = static_cast<float>(a);
+    return color;
 }
 
 std::vector<double> allocatePathTime(const super_utils::vec_E<Vec3f> &path, double speed)
@@ -261,7 +262,8 @@ void fillOdom(nav_msgs::Odometry &odom,
               const std::string &child_frame_id,
               const Vec3f &p,
               const Vec3f &v,
-              const geometry_msgs::Quaternion &q)
+              const geometry_msgs::Quaternion &q,
+              const Vec3f &omega = Vec3f::Zero())
 {
     odom.header.stamp = ros::Time::now();
     odom.header.frame_id = frame_id;
@@ -273,6 +275,109 @@ void fillOdom(nav_msgs::Odometry &odom,
     odom.twist.twist.linear.x = v.x();
     odom.twist.twist.linear.y = v.y();
     odom.twist.twist.linear.z = v.z();
+    odom.twist.twist.angular.x = omega.x();
+    odom.twist.twist.angular.y = omega.y();
+    odom.twist.twist.angular.z = omega.z();
+}
+
+geometry_msgs::Point pointMsg(const Vec3f &p)
+{
+    geometry_msgs::Point point;
+    point.x = p.x();
+    point.y = p.y();
+    point.z = p.z();
+    return point;
+}
+
+struct PerchingSurfaceSample
+{
+    Vec3f position{Vec3f::Zero()};
+    Vec3f velocity{Vec3f::Zero()};
+    Vec3f omega{Vec3f::Zero()};
+    double roll{0.0};
+    double pitch{0.0};
+    double yaw{0.0};
+};
+
+visualization_msgs::Marker makeArrowMarker(const std::string &frame_id,
+                                           const ros::Time &stamp,
+                                           const std::string &ns,
+                                           const int id,
+                                           const Vec3f &start,
+                                           const Vec3f &vec,
+                                           const std_msgs::ColorRGBA &color,
+                                           const double shaft_diameter,
+                                           const double head_diameter)
+{
+    visualization_msgs::Marker marker;
+    marker.header.frame_id = frame_id;
+    marker.header.stamp = stamp;
+    marker.ns = ns;
+    marker.id = id;
+    marker.type = visualization_msgs::Marker::ARROW;
+    marker.action = visualization_msgs::Marker::ADD;
+    marker.points.push_back(pointMsg(start));
+    marker.points.push_back(pointMsg(start + vec));
+    marker.scale.x = shaft_diameter;
+    marker.scale.y = head_diameter;
+    marker.scale.z = head_diameter * 1.4;
+    marker.color = color;
+    marker.lifetime = ros::Duration(0.2);
+    return marker;
+}
+
+visualization_msgs::MarkerArray makeSurfaceMarkers(const Vec3f &p,
+                                                   const Eigen::Matrix3d &R,
+                                                   const geometry_msgs::Quaternion &q_msg,
+                                                   const double platform_radius,
+                                                   const double normal_length,
+                                                   const std::string &frame_id)
+{
+    const ros::Time stamp = ros::Time::now();
+    visualization_msgs::MarkerArray markers;
+
+    visualization_msgs::Marker disk;
+    disk.header.frame_id = frame_id;
+    disk.header.stamp = stamp;
+    disk.ns = "perching_surface";
+    disk.id = 0;
+    disk.type = visualization_msgs::Marker::CYLINDER;
+    disk.action = visualization_msgs::Marker::ADD;
+    disk.pose.position = pointMsg(p);
+    disk.pose.orientation = q_msg;
+    disk.scale.x = std::max(0.05, 2.0 * platform_radius);
+    disk.scale.y = std::max(0.05, 2.0 * platform_radius);
+    disk.scale.z = 0.035;
+    disk.color = colorRgba(0.1, 0.6, 1.0, 0.42);
+    disk.lifetime = ros::Duration(0.2);
+    markers.markers.push_back(disk);
+
+    const Vec3f x_axis = R.col(0) * (platform_radius * 0.95);
+    const Vec3f y_axis = R.col(1) * (platform_radius * 0.95);
+    const Vec3f z_axis = R.col(2) * normal_length;
+    markers.markers.push_back(makeArrowMarker(frame_id, stamp, "perching_surface", 1, p, x_axis,
+                                              colorRgba(1.0, 0.15, 0.1, 0.95), 0.025, 0.06));
+    markers.markers.push_back(makeArrowMarker(frame_id, stamp, "perching_surface", 2, p, y_axis,
+                                              colorRgba(0.1, 0.85, 0.2, 0.95), 0.025, 0.06));
+    markers.markers.push_back(makeArrowMarker(frame_id, stamp, "perching_surface", 3, p, z_axis,
+                                              colorRgba(1.0, 0.9, 0.05, 1.0), 0.04, 0.095));
+
+    visualization_msgs::Marker text;
+    text.header.frame_id = frame_id;
+    text.header.stamp = stamp;
+    text.ns = "perching_surface";
+    text.id = 4;
+    text.type = visualization_msgs::Marker::TEXT_VIEW_FACING;
+    text.action = visualization_msgs::Marker::ADD;
+    text.pose.position = pointMsg(p + z_axis * 1.08);
+    text.pose.orientation.w = 1.0;
+    text.scale.z = 0.16;
+    text.color = colorRgba(1.0, 1.0, 1.0, 0.9);
+    text.text = "perching surface";
+    text.lifetime = ros::Duration(0.2);
+    markers.markers.push_back(text);
+
+    return markers;
 }
 
 } // namespace
@@ -374,14 +479,31 @@ int main(int argc, char **argv)
     }
 
     std::string surface_topic;
+    std::string surface_marker_topic;
     Vec3f p0(3.6, 0.4, 0.95);
     Vec3f v(0.12, 0.0, 0.0);
     double yaw = 0.0;
     double pitch = 0.0;
     double roll = 0.0;
+    double yaw_rate = 0.0;
+    double pitch_rate = 0.0;
+    double roll_rate = 0.0;
     double oscillation_amp = 0.0;
     double oscillation_freq = 0.4;
+    double yaw_oscillation_amp = 0.0;
+    double yaw_oscillation_freq = 0.4;
+    double pitch_oscillation_amp = 0.0;
+    double pitch_oscillation_freq = 0.4;
+    double roll_oscillation_amp = 0.0;
+    double roll_oscillation_freq = 0.4;
+    double platform_radius = 0.35;
+    double normal_length = 0.9;
+    std::string surface_traj_topic;
+    bool stop_surface_on_traj_arrival = false;
+    double surface_stop_margin = 0.05;
     nh.param<std::string>("surface_odom_topic", surface_topic, "/perching/surface_odom");
+    nh.param<std::string>("surface_marker_topic", surface_marker_topic, "/perching/surface_markers");
+    nh.param<std::string>("surface_traj_topic", surface_traj_topic, "/planning_cmd/poly_traj");
     nh.param<double>("surface_x", p0.x(), p0.x());
     nh.param<double>("surface_y", p0.y(), p0.y());
     nh.param<double>("surface_z", p0.z(), p0.z());
@@ -391,23 +513,163 @@ int main(int argc, char **argv)
     nh.param<double>("surface_yaw", yaw, yaw);
     nh.param<double>("surface_pitch", pitch, pitch);
     nh.param<double>("surface_roll", roll, roll);
+    nh.param<double>("surface_yaw_rate", yaw_rate, yaw_rate);
+    nh.param<double>("surface_pitch_rate", pitch_rate, pitch_rate);
+    nh.param<double>("surface_roll_rate", roll_rate, roll_rate);
     nh.param<double>("oscillation_amp", oscillation_amp, oscillation_amp);
     nh.param<double>("oscillation_freq", oscillation_freq, oscillation_freq);
+    nh.param<double>("yaw_oscillation_amp", yaw_oscillation_amp, yaw_oscillation_amp);
+    nh.param<double>("yaw_oscillation_freq", yaw_oscillation_freq, yaw_oscillation_freq);
+    nh.param<double>("pitch_oscillation_amp", pitch_oscillation_amp, pitch_oscillation_amp);
+    nh.param<double>("pitch_oscillation_freq", pitch_oscillation_freq, pitch_oscillation_freq);
+    nh.param<double>("roll_oscillation_amp", roll_oscillation_amp, roll_oscillation_amp);
+    nh.param<double>("roll_oscillation_freq", roll_oscillation_freq, roll_oscillation_freq);
+    nh.param<double>("platform_radius", platform_radius, platform_radius);
+    nh.param<double>("normal_length", normal_length, normal_length);
+    nh.param<bool>("stop_surface_on_traj_arrival",
+                   stop_surface_on_traj_arrival,
+                   stop_surface_on_traj_arrival);
+    nh.param<double>("surface_stop_margin", surface_stop_margin, surface_stop_margin);
 
     ros::Publisher odom_pub = nh.advertise<nav_msgs::Odometry>(surface_topic, 10);
+    ros::Publisher marker_pub = nh.advertise<visualization_msgs::MarkerArray>(surface_marker_topic, 10);
     const ros::Time start_time = ros::Time::now();
-    ROS_INFO("Perching surface source publishes %s.", surface_topic.c_str());
+    bool stop_scheduled = false;
+    bool surface_frozen = false;
+    uint32_t scheduled_traj_id = 0;
+    ros::Time scheduled_stop_time;
+    PerchingSurfaceSample frozen_surface;
+
+    auto sampleSurface = [&](const double t) {
+        PerchingSurfaceSample sample;
+        sample.position = p0 + v * t;
+        sample.position.y() += oscillation_amp * std::sin(oscillation_freq * t);
+        sample.velocity = v;
+        sample.velocity.y() += oscillation_amp * oscillation_freq * std::cos(oscillation_freq * t);
+        sample.roll = roll + roll_rate * t +
+                      roll_oscillation_amp * std::sin(roll_oscillation_freq * t);
+        sample.pitch = pitch + pitch_rate * t +
+                       pitch_oscillation_amp * std::sin(pitch_oscillation_freq * t);
+        sample.yaw = yaw + yaw_rate * t +
+                     yaw_oscillation_amp * std::sin(yaw_oscillation_freq * t);
+        sample.omega = Vec3f(roll_rate + roll_oscillation_amp * roll_oscillation_freq *
+                                             std::cos(roll_oscillation_freq * t),
+                             pitch_rate + pitch_oscillation_amp * pitch_oscillation_freq *
+                                              std::cos(pitch_oscillation_freq * t),
+                             yaw_rate + yaw_oscillation_amp * yaw_oscillation_freq *
+                                            std::cos(yaw_oscillation_freq * t));
+        return sample;
+    };
+
+    ros::Subscriber traj_sub;
+    if (stop_surface_on_traj_arrival)
+    {
+        traj_sub = nh.subscribe<quadrotor_msgs::PolynomialTrajectory>(
+            surface_traj_topic,
+            10,
+            [&](const quadrotor_msgs::PolynomialTrajectoryConstPtr &msg) {
+                if (surface_frozen)
+                {
+                    return;
+                }
+                if ((msg->type & quadrotor_msgs::PolynomialTrajectory::POSITION_TRAJ) == 0 ||
+                    msg->piece_num_pos <= 0)
+                {
+                    return;
+                }
+                const int piece_num = std::min<int>(msg->piece_num_pos,
+                                                    static_cast<int>(msg->time_pos.size()));
+                if (piece_num <= 0)
+                {
+                    return;
+                }
+
+                double duration = 0.0;
+                for (int i = 0; i < piece_num; ++i)
+                {
+                    duration += std::max(0.0, msg->time_pos[static_cast<std::size_t>(i)]);
+                }
+                if (duration <= 1.0e-3)
+                {
+                    return;
+                }
+
+                ros::Time traj_start = msg->start_WT_pos;
+                if (traj_start.isZero())
+                {
+                    traj_start = ros::Time::now();
+                }
+                const ros::Time next_stop_time =
+                    traj_start + ros::Duration(duration + std::max(0.0, surface_stop_margin));
+                if (stop_scheduled &&
+                    std::abs((next_stop_time - scheduled_stop_time).toSec()) < 1.0e-3)
+                {
+                    return;
+                }
+                scheduled_stop_time = next_stop_time;
+                stop_scheduled = true;
+                scheduled_traj_id = msg->trajectory_id;
+                ROS_INFO("Perching surface will stop at planned arrival. traj_id=%u, duration=%.3f, stop_in=%.3f.",
+                         scheduled_traj_id,
+                         duration,
+                         (scheduled_stop_time - ros::Time::now()).toSec());
+            });
+    }
+    ROS_INFO("Perching surface source publishes %s and markers %s. p0=(%.2f, %.2f, %.2f), v=(%.2f, %.2f, %.2f), rpy=(%.2f, %.2f, %.2f), yaw_rate=%.2f.",
+             surface_topic.c_str(),
+             surface_marker_topic.c_str(),
+             p0.x(),
+             p0.y(),
+             p0.z(),
+             v.x(),
+             v.y(),
+             v.z(),
+             roll,
+             pitch,
+             yaw,
+             yaw_rate);
     while (ros::ok())
     {
-        const double t = (ros::Time::now() - start_time).toSec();
-        Vec3f p = p0 + v * t;
-        p.y() += oscillation_amp * std::sin(oscillation_freq * t);
-        Vec3f vel = v;
-        vel.y() += oscillation_amp * oscillation_freq * std::cos(oscillation_freq * t);
+        const ros::Time now = ros::Time::now();
+        if (stop_scheduled && !surface_frozen && now >= scheduled_stop_time)
+        {
+            const double stop_t = std::max(0.0, (scheduled_stop_time - start_time).toSec());
+            frozen_surface = sampleSurface(stop_t);
+            frozen_surface.velocity.setZero();
+            frozen_surface.omega.setZero();
+            surface_frozen = true;
+            stop_scheduled = false;
+            ROS_INFO("Perching surface stopped at planned arrival. traj_id=%u, p=(%.3f, %.3f, %.3f), rpy=(%.3f, %.3f, %.3f).",
+                     scheduled_traj_id,
+                     frozen_surface.position.x(),
+                     frozen_surface.position.y(),
+                     frozen_surface.position.z(),
+                     frozen_surface.roll,
+                     frozen_surface.pitch,
+                     frozen_surface.yaw);
+        }
+
+        const double t = std::max(0.0, (now - start_time).toSec());
+        const PerchingSurfaceSample sample = surface_frozen ? frozen_surface : sampleSurface(t);
+        const Eigen::Quaterniond q =
+            Eigen::AngleAxisd(sample.yaw, Eigen::Vector3d::UnitZ()) *
+            Eigen::AngleAxisd(sample.pitch, Eigen::Vector3d::UnitY()) *
+            Eigen::AngleAxisd(sample.roll, Eigen::Vector3d::UnitX());
+        geometry_msgs::Quaternion q_msg;
+        q_msg.w = q.w();
+        q_msg.x = q.x();
+        q_msg.y = q.y();
+        q_msg.z = q.z();
 
         nav_msgs::Odometry odom;
-        fillOdom(odom, "world", "perching_surface", p, vel, quatFromRpy(roll, pitch, yaw));
+        fillOdom(odom, "world", "perching_surface", sample.position, sample.velocity, q_msg, sample.omega);
         odom_pub.publish(odom);
+        marker_pub.publish(makeSurfaceMarkers(sample.position,
+                                               q.toRotationMatrix(),
+                                               q_msg,
+                                               std::max(0.05, platform_radius),
+                                               std::max(0.1, normal_length),
+                                               "world"));
         ros::spinOnce();
         rate.sleep();
     }

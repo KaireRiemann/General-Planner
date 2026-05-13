@@ -203,6 +203,7 @@ namespace general_planner {
         ros_ptr_->setResolution(cfg_.resolution);
         ros_ptr_->setVisualizationEn(cfg_.visualization_en);
         tracking_runtime_manager_ = std::make_unique<TrackingRuntimeManager>(cfg_, map_manager_);
+        perching_runtime_manager_ = std::make_unique<PerchingRuntimeManager>(cfg_, map_manager_);
         traj_manager_ = std::make_shared<traj_opt::TrajManager>(cfg_.exp_traj_cfg,
                                                                 cfg_.esdf_traj_cfg,
                                                                 cfg_.plain_traj_cfg,
@@ -803,6 +804,88 @@ namespace general_planner {
                                                             times);
         yaw_traj.start_WT = pos_traj.start_WT;
         return !yaw_traj.empty();
+    }
+
+    bool GeneralPlanner::buildPerchingYawTrajectory(const Trajectory &pos_traj,
+                                                    const traj_opt::PerchingSurfaceState &surface,
+                                                    Trajectory &yaw_traj) {
+        if (pos_traj.empty()) {
+            return false;
+        }
+
+        Vec4f init_yaw{robot_state_.yaw, 0.0, 0.0, 0.0};
+        if (!cmd_traj_info_.empty()) {
+            cmd_traj_info_.lock();
+            const Trajectory committed_yaw_traj = cmd_traj_info_.yawTraj();
+            const double start_wt = cmd_traj_info_.getStartWallTime();
+            const double total_dur = cmd_traj_info_.getTotalDuration();
+            cmd_traj_info_.unlock();
+
+            const double eval_t = ros_ptr_->getSimTime() - start_wt;
+            StatePVAJ yaw_state;
+            if (!committed_yaw_traj.empty() && eval_t >= 0.0 && eval_t <= total_dur &&
+                committed_yaw_traj.getState(eval_t, yaw_state)) {
+                init_yaw = yaw_state.row(0);
+            }
+        }
+
+        Vec4f terminal_yaw{0.0, 0.0, 0.0, 0.0};
+        terminal_yaw[0] = surface.yaw + surface.yaw_rate * pos_traj.getTotalDuration();
+        geometry_utils::normalizeNextYaw(init_yaw[0], terminal_yaw[0]);
+        terminal_yaw[1] = surface.yaw_rate;
+
+        if (!traj_manager_->yaw()->optimize(init_yaw,
+                                            terminal_yaw,
+                                            pos_traj,
+                                            yaw_traj,
+                                            3,
+                                            false,
+                                            false)) {
+            return false;
+        }
+        yaw_traj.start_WT = pos_traj.start_WT;
+        return !yaw_traj.empty();
+    }
+
+    bool GeneralPlanner::commitPerchingTrajectory(const Trajectory &pos_traj,
+                                                  const Trajectory &yaw_traj,
+                                                  const std::string &traj_ns) {
+        if (pos_traj.empty() || yaw_traj.empty()) {
+            ros_ptr_->warn(" -- [Perching] PERCHING_CANDIDATE_REJECTED reason=empty_pos_or_yaw");
+            return false;
+        }
+
+        Trajectory committed_pos = pos_traj;
+        Trajectory committed_yaw = yaw_traj;
+        const double commit_wt = ros_ptr_->getSimTime();
+        committed_pos.start_WT = commit_wt;
+        committed_yaw.start_WT = commit_wt;
+
+        ExpTraj perching_exp_traj;
+        perching_exp_traj.setGoalConnectedFlag(true);
+        perching_exp_traj.setWholeTrajKnownFreeFlag(true);
+        perching_exp_traj.setTrajectory(commit_wt, committed_pos, committed_yaw);
+
+        cmd_traj_info_.setTrajectory(perching_exp_traj);
+        last_exp_traj_info_ = perching_exp_traj;
+        robot_on_backup_traj_ = false;
+        gi_.new_goal = false;
+
+        {
+            TimeConsuming t_viz("perching_task_viz", false);
+            ros_ptr_->vizExpTraj(committed_pos, traj_ns);
+            ros_ptr_->vizYawTraj(committed_pos, committed_yaw);
+            ros_ptr_->vizCommittedTraj(cmd_traj_info_.posTraj(), -1.0);
+            time_consuming_[VISUALIZATION] += t_viz.stop();
+        }
+
+        latest_replan.setExpTraj(committed_pos);
+        latest_replan.setExpYawTraj(committed_yaw);
+        latest_replan.setRetCode(GENERAL_SUCCESS_NO_BACKUP);
+        if (perching_runtime_manager_) {
+            perching_runtime_manager_->updateStatusAfterCommit();
+        }
+        return true;
     }
 
     bool GeneralPlanner::commitTrackingTrajectory(const Trajectory &pos_traj,
@@ -1874,13 +1957,24 @@ namespace general_planner {
     }
 
     bool GeneralPlanner::tryGenerateTrackingCorridor(const vec_Vec3f &guide_path,
-                                                     PolytopeVec &sfcs) {
+                                                     PolytopeVec &sfcs,
+                                                     std::string *failure_reason) {
         sfcs.clear();
-        if (cg_ptr_ == nullptr || guide_path.size() < 2) {
+        if (cg_ptr_ == nullptr) {
+            setFailureReason(failure_reason, "corridor_generator_null");
             return false;
         }
-        for (const auto &point: guide_path) {
+        if (guide_path.size() < 2) {
+            setFailureReason(failure_reason,
+                             fmt::format("guide_path_too_short(size={})", guide_path.size()));
+            return false;
+        }
+        for (std::size_t i = 0; i < guide_path.size(); ++i) {
+            const auto &point = guide_path[i];
             if (!trackingGuidePointSafe(point)) {
+                setFailureReason(failure_reason,
+                                 fmt::format("unsafe_guide_point(index={}, p=[{:.3f},{:.3f},{:.3f}])",
+                                             i, point.x(), point.y(), point.z()));
                 return false;
             }
         }
@@ -1891,23 +1985,37 @@ namespace general_planner {
             ok = cg_ptr_->SearchPolytopeOnPath(guide_path, sfcs, shifted_start_pt, false);
         } catch (const std::exception &e) {
             ros_ptr_->warn(" -- [GeneralPlanner] Tracking SFC generation threw exception: {}", e.what());
+            setFailureReason(failure_reason, fmt::format("SearchPolytopeOnPath_exception({})", e.what()));
             sfcs.clear();
             return false;
         }
-        if (!ok || sfcs.empty()) {
+        if (!ok) {
+            setFailureReason(failure_reason,
+                             fmt::format("SearchPolytopeOnPath_returned_false(guide_size={})",
+                                         guide_path.size()));
+            sfcs.clear();
+            return false;
+        }
+        if (sfcs.empty()) {
+            setFailureReason(failure_reason, "SearchPolytopeOnPath_returned_empty_sfc");
             sfcs.clear();
             return false;
         }
 
-        for (const auto &poly: sfcs) {
+        for (std::size_t i = 0; i < sfcs.size(); ++i) {
+            const auto &poly = sfcs[i];
             const auto planes = poly.GetPlanes();
             if (planes.rows() == 0 || !std::isfinite(planes.sum())) {
+                setFailureReason(failure_reason,
+                                 fmt::format("invalid_sfc_poly(index={}, rows={}, finite={})",
+                                             i, planes.rows(), std::isfinite(planes.sum())));
                 sfcs.clear();
                 return false;
             }
         }
 
-        for (const auto &point: guide_path) {
+        for (std::size_t i = 0; i < guide_path.size(); ++i) {
+            const auto &point = guide_path[i];
             bool covered = false;
             for (const auto &poly: sfcs) {
                 if (poly.PointIsInside(point, 0.05)) {
@@ -1916,6 +2024,9 @@ namespace general_planner {
                 }
             }
             if (!covered) {
+                setFailureReason(failure_reason,
+                                 fmt::format("guide_point_not_covered_by_sfc(index={}, p=[{:.3f},{:.3f},{:.3f}], sfc_count={})",
+                                             i, point.x(), point.y(), point.z(), sfcs.size()));
                 sfcs.clear();
                 return false;
             }
@@ -1926,13 +2037,24 @@ namespace general_planner {
     bool GeneralPlanner::repairTrackingGuideWithAstar(const vec_Vec3f &guide_path,
                                                       const std::vector<double> &guide_t,
                                                       vec_Vec3f &repaired_path,
-                                                      std::vector<double> &repaired_t) {
+                                                      std::vector<double> &repaired_t,
+                                                      std::string *failure_reason) {
         repaired_path.clear();
         repaired_t.clear();
-        if (guide_path.size() < 2 || astar_ptr_ == nullptr) {
+        if (guide_path.size() < 2) {
+            setFailureReason(failure_reason,
+                             fmt::format("astar_repair_guide_too_short(size={})", guide_path.size()));
+            return false;
+        }
+        if (astar_ptr_ == nullptr) {
+            setFailureReason(failure_reason, "astar_repair_astar_null");
             return false;
         }
         if (!trackingGuidePointSafe(guide_path.front())) {
+            const auto &p = guide_path.front();
+            setFailureReason(failure_reason,
+                             fmt::format("astar_repair_start_unsafe(p=[{:.3f},{:.3f},{:.3f}])",
+                                         p.x(), p.y(), p.z()));
             return false;
         }
 
@@ -1950,6 +2072,9 @@ namespace general_planner {
             const Vec3f start = repaired_path.back();
             const Vec3f goal = guide_path[i];
             if (!trackingGuidePointSafe(goal)) {
+                setFailureReason(failure_reason,
+                                 fmt::format("astar_repair_goal_unsafe(segment={}, goal=[{:.3f},{:.3f},{:.3f}])",
+                                             i, goal.x(), goal.y(), goal.z()));
                 full_repair = false;
                 break;
             }
@@ -1971,15 +2096,32 @@ namespace general_planner {
                                                                          astar_path,
                                                                          0.08);
             if ((ret_code != SUCCESS && ret_code != REACH_GOAL) || astar_path.empty()) {
+                setFailureReason(failure_reason,
+                                 fmt::format("astar_repair_search_failed(segment={}, ret={}, path_size={}, start=[{:.3f},{:.3f},{:.3f}], goal=[{:.3f},{:.3f},{:.3f}])",
+                                             i, ret_code, astar_path.size(),
+                                             start.x(), start.y(), start.z(),
+                                             goal.x(), goal.y(), goal.z()));
                 full_repair = false;
                 break;
             }
 
             Vec3f last = start;
-            for (const auto &point: astar_path) {
-                if (!trackingGuidePointSafe(point) ||
-                    (map_manager_ != nullptr && map_manager_->ready() &&
-                     !map_manager_->isLineFree(last, point, true, cfg_.tracking_unknown_as_occupied))) {
+            for (std::size_t path_id = 0; path_id < astar_path.size(); ++path_id) {
+                const auto &point = astar_path[path_id];
+                if (!trackingGuidePointSafe(point)) {
+                    setFailureReason(failure_reason,
+                                     fmt::format("astar_repair_path_point_unsafe(segment={}, path_index={}, p=[{:.3f},{:.3f},{:.3f}])",
+                                                 i, path_id, point.x(), point.y(), point.z()));
+                    full_repair = false;
+                    break;
+                }
+                if (map_manager_ != nullptr && map_manager_->ready() &&
+                    !map_manager_->isLineFree(last, point, true, cfg_.tracking_unknown_as_occupied)) {
+                    setFailureReason(failure_reason,
+                                     fmt::format("astar_repair_path_segment_blocked(segment={}, path_index={}, from=[{:.3f},{:.3f},{:.3f}], to=[{:.3f},{:.3f},{:.3f}])",
+                                                 i, path_id,
+                                                 last.x(), last.y(), last.z(),
+                                                 point.x(), point.y(), point.z()));
                     full_repair = false;
                     break;
                 }
@@ -1990,6 +2132,11 @@ namespace general_planner {
             }
             if (map_manager_ != nullptr && map_manager_->ready() &&
                 !map_manager_->isLineFree(repaired_path.back(), goal, true, cfg_.tracking_unknown_as_occupied)) {
+                setFailureReason(failure_reason,
+                                 fmt::format("astar_repair_final_segment_blocked(segment={}, from=[{:.3f},{:.3f},{:.3f}], goal=[{:.3f},{:.3f},{:.3f}])",
+                                             i,
+                                             repaired_path.back().x(), repaired_path.back().y(), repaired_path.back().z(),
+                                             goal.x(), goal.y(), goal.z()));
                 full_repair = false;
                 break;
             }
@@ -2024,20 +2171,44 @@ namespace general_planner {
             fallback_stamp = goal_t;
         }
 
-        return full_repair && repaired_path.size() >= 2 && repaired_path.size() == repaired_t.size();
+        if (!full_repair) {
+            if (failure_reason != nullptr && failure_reason->empty()) {
+                *failure_reason = "astar_repair_failed";
+            }
+            return false;
+        }
+        if (repaired_path.size() < 2 || repaired_path.size() != repaired_t.size()) {
+            setFailureReason(failure_reason,
+                             fmt::format("astar_repair_invalid_output(path_size={}, time_size={})",
+                                         repaired_path.size(), repaired_t.size()));
+            return false;
+        }
+        return true;
     }
 
     bool GeneralPlanner::truncateTrackingProblemForCorridor(traj_opt::TrackingProblem &problem,
                                                             const vec_Vec3f &candidate_guide,
                                                             const std::vector<double> &candidate_guide_t,
-                                                            PolytopeVec &sfcs) {
-        if (candidate_guide.size() < 2 ||
-            candidate_guide.size() != candidate_guide_t.size() ||
-            problem.viewpoints.empty()) {
+                                                            PolytopeVec &sfcs,
+                                                            std::string *failure_reason) {
+        if (candidate_guide.size() < 2) {
+            setFailureReason(failure_reason,
+                             fmt::format("truncate_candidate_too_short(size={})", candidate_guide.size()));
+            return false;
+        }
+        if (candidate_guide.size() != candidate_guide_t.size()) {
+            setFailureReason(failure_reason,
+                             fmt::format("truncate_candidate_time_size_mismatch(path_size={}, time_size={})",
+                                         candidate_guide.size(), candidate_guide_t.size()));
+            return false;
+        }
+        if (problem.viewpoints.empty()) {
+            setFailureReason(failure_reason, "truncate_no_viewpoints");
             return false;
         }
 
         const double match_tol = std::max(1.0e-3, 0.25 * cfg_.resolution);
+        std::string last_prefix_reason;
         for (int view_id = static_cast<int>(problem.viewpoints.size()) - 1; view_id >= 0; --view_id) {
             const Vec3f &viewpoint = problem.viewpoints[static_cast<std::size_t>(view_id)];
             int end_id = -1;
@@ -2047,13 +2218,24 @@ namespace general_planner {
                     break;
                 }
             }
-            if (end_id < 1 || !trackingGuidePointSafe(candidate_guide[static_cast<std::size_t>(end_id)])) {
+            if (end_id < 1) {
+                last_prefix_reason = fmt::format("viewpoint_not_found_in_candidate(view_id={}, viewpoint=[{:.3f},{:.3f},{:.3f}])",
+                                                 view_id, viewpoint.x(), viewpoint.y(), viewpoint.z());
+                continue;
+            }
+            if (!trackingGuidePointSafe(candidate_guide[static_cast<std::size_t>(end_id)])) {
+                const auto &p = candidate_guide[static_cast<std::size_t>(end_id)];
+                last_prefix_reason = fmt::format("truncate_endpoint_unsafe(view_id={}, end_id={}, p=[{:.3f},{:.3f},{:.3f}])",
+                                                 view_id, end_id, p.x(), p.y(), p.z());
                 continue;
             }
 
             vec_Vec3f prefix(candidate_guide.begin(), candidate_guide.begin() + end_id + 1);
             std::vector<double> prefix_t(candidate_guide_t.begin(), candidate_guide_t.begin() + end_id + 1);
-            if (!tryGenerateTrackingCorridor(prefix, sfcs)) {
+            std::string prefix_reason;
+            if (!tryGenerateTrackingCorridor(prefix, sfcs, &prefix_reason)) {
+                last_prefix_reason = fmt::format("truncate_prefix_sfc_failed(view_id={}, end_id={}, reason={})",
+                                                 view_id, end_id, prefix_reason);
                 continue;
             }
 
@@ -2073,10 +2255,15 @@ namespace general_planner {
             }
             return true;
         }
+        setFailureReason(failure_reason,
+                         last_prefix_reason.empty()
+                             ? "truncate_no_safe_prefix_found"
+                             : last_prefix_reason);
         return false;
     }
 
-    bool GeneralPlanner::buildTrackingGuideCorridor(traj_opt::TrackingProblem &problem) {
+    bool GeneralPlanner::buildTrackingGuideCorridor(traj_opt::TrackingProblem &problem,
+                                                    std::string *failure_reason) {
         problem.sfcs.clear();
         problem.use_corridor = false;
 
@@ -2089,10 +2276,16 @@ namespace general_planner {
             if (guide_length < 1.0e-4) {
                 const Vec3f hover_point = problem.guide_path.front();
                 if (!trackingGuidePointSafe(hover_point)) {
+                    setFailureReason(failure_reason,
+                                     fmt::format("hover_guide_point_unsafe(p=[{:.3f},{:.3f},{:.3f}])",
+                                                 hover_point.x(), hover_point.y(), hover_point.z()));
                     return false;
                 }
                 Polytope hover_sfc;
                 if (!cg_ptr_->GeneratePolytopeFromPoint(hover_point, hover_sfc)) {
+                    setFailureReason(failure_reason,
+                                     fmt::format("hover_GeneratePolytopeFromPoint_failed(p=[{:.3f},{:.3f},{:.3f}])",
+                                                 hover_point.x(), hover_point.y(), hover_point.z()));
                     return false;
                 }
                 problem.guide_path.clear();
@@ -2116,8 +2309,15 @@ namespace general_planner {
         PolytopeVec sfcs;
         vec_Vec3f dense_guide;
         std::vector<double> dense_guide_t;
-        if (densifyTrackingGuideForCorridor(problem.guide_path, problem.guide_t, dense_guide, dense_guide_t) &&
-            tryGenerateTrackingCorridor(dense_guide, sfcs)) {
+        std::string dense_reason;
+        const bool dense_ok =
+                densifyTrackingGuideForCorridor(problem.guide_path, problem.guide_t, dense_guide, dense_guide_t);
+        if (!dense_ok) {
+            dense_reason = fmt::format("densify_original_guide_failed(guide_size={}, guide_t_size={})",
+                                       problem.guide_path.size(), problem.guide_t.size());
+        } else if (!tryGenerateTrackingCorridor(dense_guide, sfcs, &dense_reason)) {
+            dense_reason = "original_dense_sfc_failed:" + dense_reason;
+        } else {
             problem.guide_path = std::move(dense_guide);
             problem.guide_t = std::move(dense_guide_t);
             refreshTrackingGuideEndpoint(problem);
@@ -2128,16 +2328,28 @@ namespace general_planner {
 
         vec_Vec3f astar_repaired;
         std::vector<double> astar_repaired_t;
+        std::string astar_reason;
         const bool full_astar_repair =
-                repairTrackingGuideWithAstar(problem.guide_path, problem.guide_t, astar_repaired, astar_repaired_t);
+                repairTrackingGuideWithAstar(problem.guide_path,
+                                             problem.guide_t,
+                                             astar_repaired,
+                                             astar_repaired_t,
+                                             &astar_reason);
         vec_Vec3f dense_astar_repaired;
         std::vector<double> dense_astar_repaired_t;
-        if (full_astar_repair &&
-            densifyTrackingGuideForCorridor(astar_repaired,
-                                            astar_repaired_t,
-                                            dense_astar_repaired,
-                                            dense_astar_repaired_t) &&
-            tryGenerateTrackingCorridor(dense_astar_repaired, sfcs)) {
+        std::string dense_astar_reason;
+        if (full_astar_repair) {
+            const bool dense_astar_ok =
+                    densifyTrackingGuideForCorridor(astar_repaired,
+                                                    astar_repaired_t,
+                                                    dense_astar_repaired,
+                                                    dense_astar_repaired_t);
+            if (!dense_astar_ok) {
+                dense_astar_reason = fmt::format("densify_astar_repair_failed(path_size={}, time_size={})",
+                                                 astar_repaired.size(), astar_repaired_t.size());
+            } else if (!tryGenerateTrackingCorridor(dense_astar_repaired, sfcs, &dense_astar_reason)) {
+                dense_astar_reason = "astar_dense_sfc_failed:" + dense_astar_reason;
+            } else {
             problem.guide_path = std::move(dense_astar_repaired);
             problem.guide_t = std::move(dense_astar_repaired_t);
             refreshTrackingGuideEndpoint(problem);
@@ -2147,16 +2359,27 @@ namespace general_planner {
                 ros_ptr_->warn(" -- [GeneralPlanner] Tracking SFC built after A* guide repair.");
             }
             return true;
+            }
         }
 
+        std::string truncate_astar_reason;
         if (!dense_astar_repaired.empty() &&
-            truncateTrackingProblemForCorridor(problem, dense_astar_repaired, dense_astar_repaired_t, sfcs)) {
+            truncateTrackingProblemForCorridor(problem,
+                                               dense_astar_repaired,
+                                               dense_astar_repaired_t,
+                                               sfcs,
+                                               &truncate_astar_reason)) {
             problem.sfcs = std::move(sfcs);
             problem.use_corridor = true;
             return true;
         }
+        std::string truncate_dense_reason;
         if (!dense_guide.empty() &&
-            truncateTrackingProblemForCorridor(problem, dense_guide, dense_guide_t, sfcs)) {
+            truncateTrackingProblemForCorridor(problem,
+                                               dense_guide,
+                                               dense_guide_t,
+                                               sfcs,
+                                               &truncate_dense_reason)) {
             problem.sfcs = std::move(sfcs);
             problem.use_corridor = true;
             return true;
@@ -2164,6 +2387,15 @@ namespace general_planner {
 
         problem.sfcs.clear();
         problem.use_corridor = false;
+        setFailureReason(failure_reason,
+                         fmt::format("guide_size={}, target_samples={}, dense={}, astar={}, dense_astar={}, truncate_astar={}, truncate_dense={}",
+                                     problem.guide_path.size(),
+                                     problem.target_prediction.size(),
+                                     dense_reason.empty() ? "ok-but-unused" : dense_reason,
+                                     full_astar_repair ? "ok" : astar_reason,
+                                     dense_astar_reason.empty() ? "not_attempted_or_ok" : dense_astar_reason,
+                                     truncate_astar_reason.empty() ? "not_attempted" : truncate_astar_reason,
+                                     truncate_dense_reason.empty() ? "not_attempted" : truncate_dense_reason));
         return false;
     }
 
@@ -2499,22 +2731,125 @@ namespace general_planner {
         frontend_cfg.thrust_range = cfg_.perching_thrust_range;
         frontend_cfg.weight_nu = cfg_.perching_weight_nu;
         frontend_cfg.weight_tau_f = cfg_.perching_weight_tau_f;
+        frontend_cfg.min_duration = cfg_.perching_min_duration;
+        frontend_cfg.max_duration = cfg_.perching_max_duration;
+        frontend_cfg.reference_speed = cfg_.perching_reference_speed;
+        frontend_cfg.relative_z_min = cfg_.perching_relative_z_min;
+        frontend_cfg.relative_z_max = cfg_.perching_relative_z_max;
+        frontend_cfg.weight_relative_height = cfg_.perching_weight_relative_height;
+        frontend_cfg.visual_min_distance = cfg_.perching_visual_min_distance;
+        frontend_cfg.visual_activation_distance = cfg_.perching_visual_activation_distance;
+        frontend_cfg.visual_fx = cfg_.perching_visual_fx;
+        frontend_cfg.visual_fy = cfg_.perching_visual_fy;
+        frontend_cfg.gravity = cfg_.esdf_traj_cfg.grav;
         frontend_cfg.searching_horizon = cfg_.planning_horizon;
+        frontend_cfg.piece_num = std::max(2, cfg_.esdf_traj_cfg.piece_num);
+        frontend_cfg.min_piece_duration = std::max(0.05, cfg_.perching_min_duration /
+                                                         static_cast<double>(std::max(2, frontend_cfg.piece_num)));
+        frontend_cfg.min_total_duration = cfg_.perching_min_duration;
+        frontend_cfg.time_lower_bound_weight = std::max(100.0, std::abs(cfg_.esdf_traj_cfg.penna_t) * 10.0);
         frontend_cfg.use_astar = cfg_.perching_frontend_astar;
         frontend_cfg.use_dynamics_terminal_accel = cfg_.perching_use_dynamics_terminal_accel;
+        frontend_cfg.rotate_surface_with_yaw_rate = cfg_.perching_rotate_surface_with_yaw_rate;
 
         traj_opt::PerchingProblem problem;
         TimeConsuming t_frontend("perching_frontend", false);
         PerchingFrontend frontend(frontend_cfg, map_manager_, astar_ptr_);
-        if (!frontend.buildProblem(makeTaskHeadState(from_rest), surface, problem)) {
+        StatePVAJ head_state = makeTaskHeadState(from_rest);
+        if (!from_rest &&
+            perching_runtime_manager_ &&
+            perching_runtime_manager_->hasCommittedPerching() &&
+            !cmd_traj_info_.empty()) {
+            cmd_traj_info_.lock();
+            const Trajectory committed_pos = cmd_traj_info_.posTraj();
+            const double start_wt = cmd_traj_info_.getStartWallTime();
+            const double total_dur = cmd_traj_info_.getTotalDuration();
+            cmd_traj_info_.unlock();
+            const double eval_t = ros_ptr_->getSimTime() - start_wt + cfg_.replan_forward_dt;
+            if (!committed_pos.empty() && eval_t >= 0.0 && eval_t <= total_dur) {
+                head_state = committed_pos.getState(eval_t);
+            }
+        }
+
+        if (!frontend.buildProblem(head_state, surface, problem)) {
             time_consuming_[EPX_TRAJ_FRONTEND] = t_frontend.stop();
-            ros_ptr_->warn(" -- [GeneralPlanner] Perching frontend failed.");
+            ros_ptr_->warn(" -- [Perching] PERCHING_CANDIDATE_REJECTED reason=frontend_failed");
             return FAILED;
         }
         time_consuming_[EPX_TRAJ_FRONTEND] = t_frontend.stop();
         latest_replan.setGuidePath(problem.guide_path);
         latest_replan.setExpCondition(VecDf(), problem.guide_path, problem.head_pvaj,
                                       problem.nominal_tail_pvaj, PolytopeVec());
+        ros_ptr_->info(" -- [Perching] PERCHING_BUILD_PROBLEM_SUCCESS T0={:.3f}, guide_size={}, nu_seed=[{:.3f},{:.3f}], tau_f_seed={:.3f}",
+                       problem.initial_guess.total_time,
+                       problem.guide_path.size(),
+                       problem.initial_guess.nu.x(),
+                       problem.initial_guess.nu.y(),
+                       problem.initial_guess.tau_f);
+
+        auto checkCurrentPerching = [&](PerchingRuntimeManager::CheckResult &current_check) -> bool {
+            if (!perching_runtime_manager_ ||
+                !perching_runtime_manager_->hasCommittedPerching() ||
+                cmd_traj_info_.empty()) {
+                return false;
+            }
+            cmd_traj_info_.lock();
+            const Trajectory current_pos = cmd_traj_info_.posTraj();
+            const Trajectory current_yaw = cmd_traj_info_.yawTraj();
+            const double start_wt = cmd_traj_info_.getStartWallTime();
+            const double total_dur = cmd_traj_info_.getTotalDuration();
+            cmd_traj_info_.unlock();
+
+            const double local_t = ros_ptr_->getSimTime() - start_wt;
+            if (current_pos.empty() || local_t < 0.0 || local_t >= total_dur) {
+                return false;
+            }
+            Trajectory partial_pos;
+            Trajectory partial_yaw;
+            if (!current_pos.getPartialTrajectoryByTime(local_t, total_dur, partial_pos)) {
+                return false;
+            }
+            const bool has_partial_yaw =
+                !current_yaw.empty() &&
+                current_yaw.getPartialTrajectoryByTime(local_t,
+                                                       std::min(total_dur, current_yaw.getTotalDuration()),
+                                                       partial_yaw);
+            current_check = perching_runtime_manager_->checkCandidate(
+                partial_pos,
+                has_partial_yaw ? &partial_yaw : nullptr,
+                problem,
+                surface);
+            return current_check.valid;
+        };
+
+        auto failOrKeepCurrent = [&](const std::string &reason) -> RET_CODE {
+            PerchingRuntimeManager::CheckResult failed_candidate;
+            failed_candidate.reason = reason;
+            PerchingRuntimeManager::CheckResult current_check;
+            const bool has_current = checkCurrentPerching(current_check);
+            const auto decision =
+                perching_runtime_manager_
+                    ? perching_runtime_manager_->decideCommit(failed_candidate,
+                                                              has_current ? &current_check : nullptr)
+                    : PerchingRuntimeManager::DecisionType::REJECT;
+            if (decision == PerchingRuntimeManager::DecisionType::KEEP_CURRENT_PERCHING) {
+                ros_ptr_->info(" -- [Perching] PERCHING_KEEP_CURRENT_TRAJ reason={}, terminal_pos_err={:.3f}, terminal_vel_err={:.3f}, max_thrust={:.3f}, max_omega={:.3f}, esdf_min={:.3f}, platform_margin_min={:.3f}",
+                               reason,
+                               current_check.terminal_position_error,
+                               current_check.terminal_velocity_error,
+                               current_check.max_thrust,
+                               current_check.max_omega,
+                               current_check.min_esdf_clearance,
+                               current_check.min_platform_margin);
+                latest_replan.setRetCode(GENERAL_SUCCESS_NO_BACKUP);
+                return SUCCESS;
+            }
+            ros_ptr_->warn(" -- [Perching] PERCHING_CANDIDATE_REJECTED reason={}, has_current={}, current_reason={}",
+                           reason,
+                           has_current,
+                           has_current ? current_check.reason : "none");
+            return FAILED;
+        };
 
         {
             TimeConsuming t_viz("perching_frontend_viz", false);
@@ -2527,11 +2862,67 @@ namespace general_planner {
         const bool ok = traj_manager_->perchingSnap()->optimize(problem, out_traj);
         time_consuming_[EXP_TRAJ_OPT] = t_opt.stop();
         if (!ok || out_traj.empty()) {
-            ros_ptr_->warn(" -- [GeneralPlanner] Perching optimization failed.");
+            ros_ptr_->warn(" -- [Perching] PERCHING_OPT_FAILED");
+            return failOrKeepCurrent("optimization_failed");
+        }
+        ros_ptr_->info(" -- [Perching] PERCHING_OPT_SUCCESS optimized_duration={:.3f}",
+                       out_traj.getTotalDuration());
+
+        Trajectory yaw_traj;
+        if (!buildPerchingYawTrajectory(out_traj, surface, yaw_traj)) {
+            return failOrKeepCurrent("yaw_generation_failed");
+        }
+
+        const auto candidate_check =
+            perching_runtime_manager_
+                ? perching_runtime_manager_->checkCandidate(out_traj, &yaw_traj, problem, surface)
+                : PerchingRuntimeManager::CheckResult{};
+        PerchingRuntimeManager::CheckResult current_check;
+        const bool has_current = !from_rest && checkCurrentPerching(current_check);
+        const auto decision =
+            perching_runtime_manager_
+                ? perching_runtime_manager_->decideCommit(candidate_check,
+                                                          has_current ? &current_check : nullptr)
+                : PerchingRuntimeManager::DecisionType::COMMIT_CANDIDATE;
+
+        ros_ptr_->info(" -- [Perching] candidate_check valid={}, safe={}, terminal_sync={}, dynamics_feasible={}, contact_imminent={}, terminal_pos_err={:.3f}, terminal_vel_err={:.3f}, max_thrust={:.3f}, max_omega={:.3f}, esdf_min={:.3f}, platform_margin_min={:.3f}, reason={}",
+                       candidate_check.valid,
+                       candidate_check.safe,
+                       candidate_check.terminal_sync,
+                       candidate_check.dynamics_feasible,
+                       candidate_check.contact_imminent,
+                       candidate_check.terminal_position_error,
+                       candidate_check.terminal_velocity_error,
+                       candidate_check.max_thrust,
+                       candidate_check.max_omega,
+                       candidate_check.min_esdf_clearance,
+                       candidate_check.min_platform_margin,
+                       candidate_check.reason);
+
+        if (decision == PerchingRuntimeManager::DecisionType::KEEP_CURRENT_PERCHING) {
+            ros_ptr_->info(" -- [Perching] PERCHING_KEEP_CURRENT_TRAJ reason=candidate_rejected_current_contact_imminent");
+            latest_replan.setRetCode(GENERAL_SUCCESS_NO_BACKUP);
+            return SUCCESS;
+        }
+        if (decision != PerchingRuntimeManager::DecisionType::COMMIT_CANDIDATE) {
+            ros_ptr_->warn(" -- [Perching] PERCHING_CANDIDATE_REJECTED reason={}",
+                           candidate_check.reason);
             return FAILED;
         }
 
-        if (!commitTaskTrajectory(out_traj, surface.yaw, true, "perching_snap")) {
+        ros_ptr_->info(" -- [Perching] PERCHING_CANDIDATE_ACCEPTED optimized_duration={:.3f}, terminal_pos_err={:.3f}, terminal_vel_err={:.3f}, max_thrust={:.3f}, max_omega={:.3f}, esdf_min={:.3f}, platform_margin_min={:.3f}",
+                       out_traj.getTotalDuration(),
+                       candidate_check.terminal_position_error,
+                       candidate_check.terminal_velocity_error,
+                       candidate_check.max_thrust,
+                       candidate_check.max_omega,
+                       candidate_check.min_esdf_clearance,
+                       candidate_check.min_platform_margin);
+        if (candidate_check.contact_imminent) {
+            ros_ptr_->info(" -- [Perching] PERCHING_CONTACT_IMMINENT");
+        }
+
+        if (!commitPerchingTrajectory(out_traj, yaw_traj, "perching")) {
             return FAILED;
         }
         ros_ptr_->info(" -- [GeneralPlanner] Perching task success: pieces={}, duration={}.",
@@ -2602,6 +2993,9 @@ namespace general_planner {
         gi_.goal_yaw = surface.yaw;
         gi_.new_goal = new_task;
         last_exp_traj_info_.setEmpty();
+        if (perching_runtime_manager_) {
+            perching_runtime_manager_->reset();
+        }
 
         const RET_CODE ret = optimizePerchingTask(surface, true);
         time_consuming_[TOTAL_REPLAN] = total_t.stop();
@@ -2621,6 +3015,27 @@ namespace general_planner {
         gi_.goal_p = surface.position;
         gi_.goal_yaw = surface.yaw;
         gi_.new_goal = new_task;
+        if (!new_task &&
+            perching_runtime_manager_ &&
+            perching_runtime_manager_->hasCommittedPerching() &&
+            !cmd_traj_info_.empty()) {
+            cmd_traj_info_.lock();
+            const double start_wt = cmd_traj_info_.getStartWallTime();
+            const double total_dur = cmd_traj_info_.getTotalDuration();
+            const bool has_active_traj = !cmd_traj_info_.posTraj().empty();
+            cmd_traj_info_.unlock();
+            const double local_t = ros_ptr_->getSimTime() - start_wt;
+            const double keep_until =
+                    total_dur + std::max(0.0, cfg_.perching_contact_time_margin);
+            if (has_active_traj && local_t >= 0.0 && local_t <= keep_until) {
+                latest_replan.setRetCode(GENERAL_SUCCESS_NO_BACKUP);
+                time_consuming_[TOTAL_REPLAN] = total_t.stop();
+                return SUCCESS;
+            }
+        }
+        if (new_task && perching_runtime_manager_) {
+            perching_runtime_manager_->reset();
+        }
 
         const RET_CODE ret = optimizePerchingTask(surface, false);
         time_consuming_[TOTAL_REPLAN] = total_t.stop();

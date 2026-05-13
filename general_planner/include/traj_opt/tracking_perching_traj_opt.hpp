@@ -117,6 +117,18 @@ struct PerchingSurfaceState
   double yaw_rate{0.0};
 };
 
+struct PerchingInitialGuess
+{
+  EIGEN_MAKE_ALIGNED_OPERATOR_NEW
+
+  bool valid{false};
+  double total_time{0.0};
+  Eigen::Vector2d nu{Eigen::Vector2d::Zero()};
+  double tau_f{0.0};
+  super_utils::vec_E<super_utils::Vec3f> guide_path;
+  std::vector<double> guide_t;
+};
+
 struct PerchingProblem
 {
   EIGEN_MAKE_ALIGNED_OPERATOR_NEW
@@ -129,6 +141,8 @@ struct PerchingProblem
 
   minco::PerchingSemanticConfig terminal;
   bool use_terminal_config{false};
+  bool use_initial_guess{false};
+  PerchingInitialGuess initial_guess;
 
   double safe_distance{0.45};
   double robot_l{0.28};
@@ -142,6 +156,9 @@ struct PerchingProblem
   double visual_activation_distance{3.0};
   double visual_fx{1.0};
   double visual_fy{1.0};
+  double relative_z_min{0.1};
+  double relative_z_max{3.0};
+  double weight_relative_height{1.0};
 
   int piece_num{0};
   double min_piece_duration{0.12};

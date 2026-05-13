@@ -44,6 +44,7 @@
 #include "general_core/fov_checker.h"
 #include "general_core/tracking_perching_frontend.hpp"
 #include "general_core/tracking_runtime_manager.hpp"
+#include "general_core/perching_runtime_manager.hpp"
 
 #include "general_core/general_ret_code.hpp"
 #include "utils/header/fmt_eigen.hpp"
@@ -98,6 +99,7 @@ namespace general_planner {
         CmdTraj cmd_traj_info_;
         ExpTraj last_exp_traj_info_;
         std::unique_ptr<TrackingRuntimeManager> tracking_runtime_manager_;
+        std::unique_ptr<PerchingRuntimeManager> perching_runtime_manager_;
 
         vector<double> time_consuming_;
 
@@ -252,6 +254,14 @@ namespace general_planner {
         bool commitTrackingTrajectory(const Trajectory &pos_traj,
                                       const Trajectory &yaw_traj,
                                       const traj_opt::DynamicTargetStates &target_prediction,
+                                      const std::string &traj_ns);
+
+        bool buildPerchingYawTrajectory(const Trajectory &pos_traj,
+                                        const traj_opt::PerchingSurfaceState &surface,
+                                        Trajectory &yaw_traj);
+
+        bool commitPerchingTrajectory(const Trajectory &pos_traj,
+                                      const Trajectory &yaw_traj,
                                       const std::string &traj_ns);
 
         bool trackingTrajectorySafeForHorizon(const Trajectory &traj,

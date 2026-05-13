@@ -28,6 +28,15 @@ Vec3f normalizedOr(const Vec3f &v, const Vec3f &fallback)
     return v.normalized();
 }
 
+Vec3f rotateYaw(const Vec3f &v, const double yaw)
+{
+    const double c = std::cos(yaw);
+    const double s = std::sin(yaw);
+    return Vec3f(c * v.x() - s * v.y(),
+                 s * v.x() + c * v.y(),
+                 v.z());
+}
+
 double angleDiff(const double lhs, const double rhs)
 {
     return std::atan2(std::sin(lhs - rhs), std::cos(lhs - rhs));
@@ -1654,8 +1663,7 @@ bool PerchingFrontend::appendPathSegment(const Vec3f &start,
 
     if (!cfg_.use_astar || astar_ == nullptr)
     {
-        appendUnique(goal, path);
-        return true;
+        return false;
     }
 
     auto searchSegment = [&](const int flag, vec_E<Vec3f> &astar_path) {
@@ -1674,7 +1682,6 @@ bool PerchingFrontend::appendPathSegment(const Vec3f &start,
                          path_search::USE_INF_NEIGHBOR;
     if (!searchSegment(prob_flag, astar_path) && !searchSegment(inf_flag, astar_path))
     {
-        appendUnique(goal, path);
         return false;
     }
     for (const auto &p : astar_path)
@@ -1693,12 +1700,43 @@ bool PerchingFrontend::buildProblem(const StatePVAJ &head_pvaj,
     Vec3f y_s = normalizedOr(z_s.cross(x_s), Vec3f::UnitY());
     x_s = normalizedOr(y_s.cross(z_s), Vec3f::UnitX());
 
-    const Vec3f contact = surface.position + cfg_.robot_l * z_s;
-    const Vec3f pre_contact = surface.position + (cfg_.robot_l + cfg_.pre_contact_distance) * z_s;
+    const Vec3f contact_seed = surface.position + cfg_.robot_l * z_s;
+    const double distance = (head_pvaj.col(0) - contact_seed).norm();
+    const double v_ref = std::max(0.5, std::min(std::max(0.5, cfg_.reference_speed), 2.0));
+    const double max_duration = std::max(cfg_.min_duration, cfg_.max_duration);
+    const double T0 = std::clamp(distance / v_ref,
+                                 std::max(0.05, cfg_.min_duration),
+                                 max_duration);
+
+    Vec3f x_s_T = x_s;
+    Vec3f y_s_T = y_s;
+    Vec3f z_s_T = z_s;
+    if (cfg_.rotate_surface_with_yaw_rate && std::abs(surface.yaw_rate) > 1.0e-9)
+    {
+        const double yaw_dt = surface.yaw_rate * T0;
+        x_s_T = rotateYaw(x_s, yaw_dt);
+        y_s_T = rotateYaw(y_s, yaw_dt);
+        z_s_T = rotateYaw(z_s, yaw_dt);
+        z_s_T = normalizedOr(z_s_T, z_s);
+        x_s_T = normalizedOr(x_s_T, x_s);
+        y_s_T = normalizedOr(z_s_T.cross(x_s_T), y_s);
+        x_s_T = normalizedOr(y_s_T.cross(z_s_T), x_s);
+    }
+
+    const Vec3f surface_p_T =
+        surface.position + surface.velocity * T0 + 0.5 * surface.acceleration * T0 * T0;
+    const Vec3f surface_v_T = surface.velocity + surface.acceleration * T0;
+    const double surface_yaw_T = surface.yaw + surface.yaw_rate * T0;
+    (void)surface_yaw_T;
+
+    const Vec3f contact = surface_p_T + cfg_.robot_l * z_s_T;
+    const Vec3f pre_contact = contact + cfg_.pre_contact_distance * z_s_T;
+    const Vec3f gravity_vector(0.0, 0.0, -std::abs(cfg_.gravity));
 
     problem = traj_opt::PerchingProblem{};
     problem.head_pvaj = head_pvaj;
     problem.surface = surface;
+    problem.surface.t = 0.0;
     problem.surface.surface_x = x_s;
     problem.surface.surface_y = y_s;
     problem.surface.surface_z = z_s;
@@ -1707,18 +1745,35 @@ bool PerchingFrontend::buildProblem(const StatePVAJ &head_pvaj,
     problem.platform_radius = cfg_.platform_radius;
     problem.robot_radius = cfg_.robot_radius;
     problem.platform_clearance = cfg_.platform_clearance;
+    problem.relative_z_min = cfg_.relative_z_min;
+    problem.relative_z_max = cfg_.relative_z_max;
+    problem.weight_relative_height = cfg_.weight_relative_height;
+    problem.visual_min_distance = cfg_.visual_min_distance;
+    problem.visual_activation_distance = cfg_.visual_activation_distance;
+    problem.visual_fx = cfg_.visual_fx;
+    problem.visual_fy = cfg_.visual_fy;
+    problem.piece_num = std::max(cfg_.piece_num, 2);
+    problem.min_piece_duration = cfg_.min_piece_duration;
+    problem.min_total_duration = std::max(cfg_.min_total_duration, cfg_.min_duration);
+    problem.time_lower_bound_weight = cfg_.time_lower_bound_weight;
 
     problem.nominal_tail_pvaj.setZero();
     problem.nominal_tail_pvaj.col(0) = contact;
-    problem.nominal_tail_pvaj.col(1) = surface.velocity - cfg_.v_plus * z_s;
+    problem.nominal_tail_pvaj.col(1) = surface_v_T - cfg_.v_plus * z_s_T;
+    problem.nominal_tail_pvaj.col(2) = cfg_.thrust_nominal * z_s_T + gravity_vector;
 
     problem.terminal.plate_position = surface.position;
     problem.terminal.plate_velocity = surface.velocity;
     problem.terminal.plate_acceleration = surface.acceleration;
-    problem.terminal.reference_time = surface.t;
+    problem.terminal.reference_time = 0.0;
     problem.terminal.surface_x = x_s;
     problem.terminal.surface_y = y_s;
     problem.terminal.surface_z = z_s;
+    problem.terminal.yaw = surface.yaw;
+    problem.terminal.yaw_rate = surface.yaw_rate;
+    problem.terminal.rotate_surface_with_yaw_rate = cfg_.rotate_surface_with_yaw_rate;
+    problem.terminal.gravity = std::abs(cfg_.gravity);
+    problem.terminal.terminal_time_seed = T0;
     problem.terminal.robot_l = cfg_.robot_l;
     problem.terminal.v_plus = cfg_.v_plus;
     problem.terminal.thrust_nominal = cfg_.thrust_nominal;
@@ -1730,19 +1785,70 @@ bool PerchingFrontend::buildProblem(const StatePVAJ &head_pvaj,
     problem.terminal.weight_tau_f = cfg_.weight_tau_f;
     problem.use_terminal_config = true;
 
+    double tau0 = cfg_.thrust_nominal;
+    if (head_pvaj.col(2).allFinite())
+    {
+        tau0 = (head_pvaj.col(2) - gravity_vector).dot(z_s_T);
+    }
+    const double thrust_range = std::max(1.0e-6, cfg_.thrust_range);
+    const double tau_min = cfg_.thrust_nominal - thrust_range + 1.0e-4;
+    const double tau_max = cfg_.thrust_nominal + thrust_range - 1.0e-4;
+    tau0 = std::clamp(tau0, tau_min, tau_max);
+    const double tau_f_seed = std::asin(
+        std::clamp((tau0 - cfg_.thrust_nominal) / thrust_range, -1.0, 1.0));
+    problem.terminal.nu_seed = Eigen::Vector2d::Zero();
+    problem.terminal.tau_f_seed = tau_f_seed;
+
     appendUnique(head_pvaj.col(0), problem.guide_path);
-    appendPathSegment(head_pvaj.col(0), pre_contact, problem.guide_path);
-    appendPathSegment(pre_contact, contact, problem.guide_path);
+    if (!appendPathSegment(head_pvaj.col(0), pre_contact, problem.guide_path))
+    {
+        appendUnique(pre_contact, problem.guide_path);
+        std::cout << " -- [PerchingFrontend] PERCHING_GUIDE_ASTAR_FALLBACK segment=head_to_pre_contact"
+                  << std::endl;
+    }
+    if (!appendPathSegment(pre_contact, contact, problem.guide_path))
+    {
+        appendUnique(contact, problem.guide_path);
+        std::cout << " -- [PerchingFrontend] PERCHING_GUIDE_ASTAR_FALLBACK segment=pre_contact_to_contact"
+                  << std::endl;
+    }
 
     problem.guide_t.clear();
     problem.guide_t.reserve(problem.guide_path.size());
-    double stamp = 0.0;
-    problem.guide_t.emplace_back(stamp);
+    std::vector<double> arc(problem.guide_path.size(), 0.0);
     for (int i = 1; i < static_cast<int>(problem.guide_path.size()); ++i)
     {
-        stamp += std::max(0.1, (problem.guide_path[i] - problem.guide_path[i - 1]).norm() / 1.5);
-        problem.guide_t.emplace_back(stamp);
+        arc[static_cast<std::size_t>(i)] =
+            arc[static_cast<std::size_t>(i - 1)] +
+            (problem.guide_path[static_cast<std::size_t>(i)] -
+             problem.guide_path[static_cast<std::size_t>(i - 1)])
+                .norm();
     }
+    const double total_arc = arc.empty() ? 0.0 : arc.back();
+    for (int i = 0; i < static_cast<int>(problem.guide_path.size()); ++i)
+    {
+        const double ratio = total_arc > 1.0e-6
+                                 ? arc[static_cast<std::size_t>(i)] / total_arc
+                                 : (i == 0 ? 0.0 : 1.0);
+        problem.guide_t.emplace_back(ratio * T0);
+    }
+    if (!problem.guide_t.empty())
+    {
+        problem.guide_t.front() = 0.0;
+        problem.guide_t.back() = T0;
+    }
+
+    problem.use_initial_guess = true;
+    problem.initial_guess.valid = true;
+    problem.initial_guess.total_time = T0;
+    problem.initial_guess.guide_path = problem.guide_path;
+    problem.initial_guess.guide_t = problem.guide_t;
+    problem.initial_guess.nu = Eigen::Vector2d::Zero();
+    problem.initial_guess.tau_f = tau_f_seed;
+
+    std::cout << " -- [PerchingFrontend] PERCHING_BUILD_PROBLEM_SUCCESS T0="
+              << T0 << ", guide_size=" << problem.guide_path.size()
+              << ", tau_f_seed=" << tau_f_seed << std::endl;
     return problem.guide_path.size() >= 2;
 }
 

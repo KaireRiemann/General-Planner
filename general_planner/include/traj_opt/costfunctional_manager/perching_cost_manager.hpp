@@ -74,6 +74,12 @@ public:
                                                                            grad_acceleration);
         grad_time += -(grad_position - platform_grad_before).dot(frame_velocity);
 
+        const Eigen::Vector3d relative_height_grad_before = grad_position;
+        cost += accumulateRelativeHeightPenalty(frame,
+                                                position,
+                                                grad_position);
+        grad_time += -(grad_position - relative_height_grad_before).dot(frame_velocity);
+
         Eigen::Vector3d visual_grad_origin = Eigen::Vector3d::Zero();
         cost += accumulatePixelVisualPenalty(frame,
                                              frame_velocity,
@@ -109,6 +115,21 @@ private:
         frame.x = problem_.surface.surface_x;
         frame.y = problem_.surface.surface_y;
         frame.z = problem_.surface.surface_z;
+        if (problem_.terminal.rotate_surface_with_yaw_rate &&
+            std::abs(problem_.surface.yaw_rate) > 1.0e-9)
+        {
+            const double theta = problem_.surface.yaw_rate * dt;
+            const double c = std::cos(theta);
+            const double s = std::sin(theta);
+            const Eigen::Matrix3d R =
+                (Eigen::Matrix3d() << c, -s, 0.0,
+                                      s, c, 0.0,
+                                      0.0, 0.0, 1.0)
+                    .finished();
+            frame.x = R * frame.x;
+            frame.y = R * frame.y;
+            frame.z = R * frame.z;
+        }
         frame.normalize();
         return frame;
     }
@@ -117,6 +138,40 @@ private:
     {
         const double dt = t_global - problem_.surface.t;
         return problem_.surface.velocity + problem_.surface.acceleration * dt;
+    }
+
+    double accumulateRelativeHeightPenalty(const cost_functional::PerchingPlatformFrame &frame,
+                                           const Eigen::Vector3d &position,
+                                           Eigen::Vector3d &grad_position) const
+    {
+        const double weight = problem_.weight_relative_height;
+        if (weight <= 0.0)
+        {
+            return 0.0;
+        }
+
+        const Eigen::Vector3d world_e3 = Eigen::Vector3d::UnitZ();
+        const double relative_z = (position - frame.origin).dot(world_e3);
+        double penalty = 0.0;
+        double penalty_grad = 0.0;
+        double cost = 0.0;
+        if (cost_functional::smoothedL1(problem_.relative_z_min - relative_z,
+                                        cfg_->smooth_eps,
+                                        penalty,
+                                        penalty_grad))
+        {
+            cost += weight * penalty;
+            grad_position += -weight * penalty_grad * world_e3;
+        }
+        if (cost_functional::smoothedL1(relative_z - problem_.relative_z_max,
+                                        cfg_->smooth_eps,
+                                        penalty,
+                                        penalty_grad))
+        {
+            cost += weight * penalty;
+            grad_position += weight * penalty_grad * world_e3;
+        }
+        return cost;
     }
 
     double projectionCostOnly(const cost_functional::PerchingPlatformFrame &frame,

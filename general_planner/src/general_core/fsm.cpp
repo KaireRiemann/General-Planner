@@ -290,6 +290,7 @@ namespace fsm {
         cfg_.task_mode = new_mode;
         finish_plan = false;
         task_new_ = true;
+        perching_contact_reached_ = false;
     }
 
     bool Fsm::trackingTaskReady() {
@@ -316,7 +317,7 @@ namespace fsm {
             return trackingTaskReady();
         }
         if (perchingMode()) {
-            return perchingTaskReady();
+            return !perching_contact_reached_ && task_new_ && perchingTaskReady();
         }
         return false;
     }
@@ -324,6 +325,9 @@ namespace fsm {
     bool Fsm::shouldGenerateAfterTrajFinish() {
         if (state2stateMode()) {
             return !closeToGoal(0.1);
+        }
+        if (perchingMode()) {
+            return false;
         }
         return activeTaskReady();
     }
@@ -512,15 +516,52 @@ namespace fsm {
     }
 
     void Fsm::setPerchingSurface(const traj_opt::PerchingSurfaceState &surface) {
+        bool changed = true;
         {
             std::lock_guard<std::mutex> lock(task_mutex_);
+            const double now = ros_ptr_->getSimTime();
+            if (perching_surface_rcv_time_ >= 0.0) {
+                const double dt = std::max(0.0, now - perching_surface_rcv_time_);
+                const Vec3f predicted_position =
+                        perching_surface_.position +
+                        perching_surface_.velocity * dt +
+                        0.5 * perching_surface_.acceleration * dt * dt;
+                const Vec3f predicted_velocity =
+                        perching_surface_.velocity + perching_surface_.acceleration * dt;
+                const double predicted_yaw = perching_surface_.yaw + perching_surface_.yaw_rate * dt;
+                const double position_error = (surface.position - predicted_position).norm();
+                const double velocity_error = (surface.velocity - predicted_velocity).norm();
+                const double yaw_error = std::abs(yawDiff(surface.yaw, predicted_yaw));
+                const double yaw_rate_error = std::abs(surface.yaw_rate - perching_surface_.yaw_rate);
+                const Vec3f new_z = surface.surface_z.norm() > 1.0e-6
+                                         ? surface.surface_z.normalized()
+                                         : Vec3f::UnitZ();
+                const Vec3f old_z = perching_surface_.surface_z.norm() > 1.0e-6
+                                         ? perching_surface_.surface_z.normalized()
+                                         : Vec3f::UnitZ();
+                const double normal_error = (new_z - old_z).norm();
+                changed = position_error > 0.35 ||
+                          velocity_error > 0.35 ||
+                          yaw_error > 0.35 ||
+                          yaw_rate_error > 0.35 ||
+                          normal_error > 0.35;
+            }
+            if (perching_contact_reached_) {
+                const double unlock_dist = 0.35;
+                if ((surface.position - perching_contact_surface_position_).norm() <= unlock_dist) {
+                    changed = false;
+                } else {
+                    perching_contact_reached_ = false;
+                    changed = true;
+                }
+            }
             perching_surface_ = surface;
-            perching_surface_rcv_time_ = ros_ptr_->getSimTime();
-            task_new_ = true;
+            perching_surface_rcv_time_ = now;
+            task_new_ = task_new_ || changed;
         }
         gi_.goal_p = surface.position;
         gi_.goal_yaw = surface.yaw;
-        gi_.new_goal = true;
+        gi_.new_goal = gi_.new_goal || changed;
         started_ = true;
     }
 

@@ -145,9 +145,25 @@ public:
         double thrust_range{2.0};
         double weight_nu{1.0e-2};
         double weight_tau_f{1.0e-3};
+        double min_duration{0.6};
+        double max_duration{4.0};
+        double reference_speed{2.0};
+        double relative_z_min{0.1};
+        double relative_z_max{3.0};
+        double weight_relative_height{1.0};
+        double visual_min_distance{0.2};
+        double visual_activation_distance{3.0};
+        double visual_fx{1.0};
+        double visual_fy{1.0};
+        double gravity{9.81};
         double searching_horizon{8.0};
+        int piece_num{0};
+        double min_piece_duration{0.12};
+        double min_total_duration{0.0};
+        double time_lower_bound_weight{0.0};
         bool use_astar{true};
         bool use_dynamics_terminal_accel{true};
+        bool rotate_surface_with_yaw_rate{true};
     };
 
     PerchingFrontend(const Config &cfg,

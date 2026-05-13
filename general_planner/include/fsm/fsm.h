@@ -77,6 +77,8 @@ namespace fsm {
         double tracking_target_rcv_time_{-1.0};
         double perching_surface_rcv_time_{-1.0};
         bool task_new_{false};
+        bool perching_contact_reached_{false};
+        Vec3f perching_contact_surface_position_{Vec3f::Zero()};
         double last_static_tracking_replan_log_time_{-1.0};
         std::mutex task_mutex_;
 

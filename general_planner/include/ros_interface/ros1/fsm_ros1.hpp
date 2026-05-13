@@ -887,6 +887,16 @@ namespace fsm {
             cmd_pub.publish(pid_cmd_);
             if (traj_finish_) {
                 cout << GREEN << " -- [Fsm] Traj finish." << RESET << endl;
+                if (perchingMode()) {
+                    {
+                        std::lock_guard<std::mutex> lock(task_mutex_);
+                        perching_contact_reached_ = true;
+                        perching_contact_surface_position_ = perching_surface_.position;
+                        task_new_ = false;
+                    }
+                    gi_.new_goal = false;
+                    cout << GREEN << " -- [Perching] PERCHING_CONTACT" << RESET << endl;
+                }
                 if (shouldGenerateAfterTrajFinish()) {
                     ChangeState("PubCmdCallback", GENERATE_TRAJ);
                 } else {

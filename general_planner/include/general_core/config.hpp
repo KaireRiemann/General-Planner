@@ -164,6 +164,22 @@ namespace general_planner {
         double perching_thrust_range{2.0};
         double perching_weight_nu{1.0e-2};
         double perching_weight_tau_f{1.0e-3};
+        double perching_min_duration{0.6};
+        double perching_max_duration{4.0};
+        double perching_reference_speed{2.0};
+        double perching_relative_z_min{0.1};
+        double perching_relative_z_max{3.0};
+        double perching_weight_relative_height{1.0};
+        double perching_visual_min_distance{0.2};
+        double perching_visual_activation_distance{3.0};
+        double perching_visual_fx{1.0};
+        double perching_visual_fy{1.0};
+        double perching_terminal_pos_tolerance{0.15};
+        double perching_terminal_vel_tolerance{0.5};
+        double perching_contact_time_margin{0.15};
+        double perching_contact_distance_tolerance{0.12};
+        int perching_max_replan_fail_keep{3};
+        bool perching_rotate_surface_with_yaw_rate{true};
         bool perching_frontend_astar{true};
         bool perching_use_dynamics_terminal_accel{true};
 
@@ -346,6 +362,31 @@ namespace general_planner {
             loader.LoadParam("general_planner/perching/thrust_range", perching_thrust_range, 2.0);
             loader.LoadParam("general_planner/perching/weight_nu", perching_weight_nu, 1.0e-2);
             loader.LoadParam("general_planner/perching/weight_tau_f", perching_weight_tau_f, 1.0e-3);
+            loader.LoadParam("general_planner/perching/min_duration", perching_min_duration, 0.6);
+            loader.LoadParam("general_planner/perching/max_duration", perching_max_duration, 4.0);
+            loader.LoadParam("general_planner/perching/reference_speed", perching_reference_speed, 2.0);
+            loader.LoadParam("general_planner/perching/relative_z_min", perching_relative_z_min, 0.1);
+            loader.LoadParam("general_planner/perching/relative_z_max", perching_relative_z_max, 3.0);
+            loader.LoadParam("general_planner/perching/weight_relative_height",
+                             perching_weight_relative_height, 1.0);
+            loader.LoadParam("general_planner/perching/visual_min_distance",
+                             perching_visual_min_distance, 0.2);
+            loader.LoadParam("general_planner/perching/visual_activation_distance",
+                             perching_visual_activation_distance, 3.0);
+            loader.LoadParam("general_planner/perching/visual_fx", perching_visual_fx, 1.0);
+            loader.LoadParam("general_planner/perching/visual_fy", perching_visual_fy, 1.0);
+            loader.LoadParam("general_planner/perching/terminal_pos_tolerance",
+                             perching_terminal_pos_tolerance, 0.15);
+            loader.LoadParam("general_planner/perching/terminal_vel_tolerance",
+                             perching_terminal_vel_tolerance, 0.5);
+            loader.LoadParam("general_planner/perching/contact_time_margin",
+                             perching_contact_time_margin, 0.15);
+            loader.LoadParam("general_planner/perching/contact_distance_tolerance",
+                             perching_contact_distance_tolerance, 0.12);
+            loader.LoadParam("general_planner/perching/max_replan_fail_keep",
+                             perching_max_replan_fail_keep, 3);
+            loader.LoadParam("general_planner/perching/rotate_surface_with_yaw_rate",
+                             perching_rotate_surface_with_yaw_rate, true);
             loader.LoadParam("general_planner/perching/frontend_astar", perching_frontend_astar, true);
             loader.LoadParam("general_planner/perching/use_dynamics_terminal_accel",
                              perching_use_dynamics_terminal_accel, true);
