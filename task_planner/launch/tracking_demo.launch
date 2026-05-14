@@ -15,7 +15,7 @@
         <param name="config_name" value="$(arg task_config)" type="string"/>
     </node>
 
-    <node pkg="general_planner" name="fsm_node" type="fsm_node" output="screen">
+    <node pkg="general_planner" name="fsm_node" type="fsm_node" output="screen" clear_params="true">
         <param name="config_name" value="$(arg planner_config)" type="string"/>
     </node>
 

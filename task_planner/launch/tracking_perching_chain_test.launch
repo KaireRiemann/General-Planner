@@ -1,19 +1,19 @@
 <launch>
-    <arg name="sim_config" default="perching.yaml"/>
-    <arg name="planner_config" default="tracking_perching_perching_ros1.yaml"/>
+    <arg name="sim_config" default="tracking_perching_chain.yaml"/>
+    <arg name="planner_config" default="tracking_perching_chain_ros1.yaml"/>
     <arg name="rviz" default="true"/>
     <arg name="marsim" default="true"/>
-    <arg name="rviz_config" default="$(find general_planner)/rviz/esdf_planner.rviz"/>
-
-    <!-- Platform pose/velocity are in world frame. Angles are radians. -->
-    <arg name="surface_x" default="3.0"/>
+    <arg name="monitor" default="true"/>
+    <arg name="auto_request" default="true"/>
+    <arg name="perching_request_delay" default="3.0"/>
+    <arg name="surface_x" default="2.0"/>
     <arg name="surface_y" default="-3.0"/>
     <arg name="surface_z" default="0.50"/>
-    <arg name="surface_vx" default="1.5"/>
+    <arg name="surface_vx" default="2.0"/>
     <arg name="surface_vy" default="0.0"/>
     <arg name="surface_vz" default="0.0"/>
     <arg name="surface_roll" default="0.0"/>
-    <arg name="surface_pitch" default="-1.5"/>
+    <arg name="surface_pitch" default="-0.75"/>
     <arg name="surface_yaw" default="0.0"/>
     <arg name="surface_roll_rate" default="0.0"/>
     <arg name="surface_pitch_rate" default="0.0"/>
@@ -28,20 +28,29 @@
     <arg name="surface_yaw_osc_freq" default="0.4"/>
     <arg name="platform_radius" default="0.35"/>
     <arg name="normal_length" default="0.9"/>
-    <arg name="stop_surface_on_traj_arrival" default="true"/>
-    <arg name="surface_stop_margin" default="0.05"/>
-    <arg name="surface_traj_topic" default="/planning_cmd/poly_traj"/>
+    <arg name="tracking_prediction_horizon" default="4.0"/>
+    <arg name="tracking_prediction_dt" default="0.25"/>
+    <arg name="tracking_target_normal_offset" default="0.0"/>
 
-    <node if="$(arg marsim)" pkg="perfect_drone_sim" type="perfect_drone" name="perfect_drone" output="log">
+    <node if="$(arg marsim)" pkg="perfect_drone_sim" type="perfect_drone"
+          name="perfect_drone" output="log">
         <param name="config_name" value="$(arg sim_config)" type="string"/>
     </node>
 
-    <node pkg="general_planner" name="perching_surface_source" type="task_target_source" output="screen">
+    <node pkg="general_planner" name="tracking_perching_platform_source"
+          type="task_target_source" output="screen">
         <param name="config_name" value="$(arg planner_config)" type="string"/>
         <param name="mode" value="perching" type="string"/>
         <param name="surface_odom_topic" value="/perching/surface_odom" type="string"/>
         <param name="surface_marker_topic" value="/perching/surface_markers" type="string"/>
-        <param name="surface_traj_topic" value="$(arg surface_traj_topic)" type="string"/>
+        <param name="surface_traj_topic" value="/planning_cmd/poly_traj" type="string"/>
+        <param name="publish_tracking_target" value="true" type="bool"/>
+        <param name="tracking_target_odom_topic" value="/tracking/target_odom" type="string"/>
+        <param name="tracking_target_path_topic" value="/tracking/target_path" type="string"/>
+        <param name="tracking_target_prediction_topic" value="/tracking/target_prediction" type="string"/>
+        <param name="tracking_prediction_horizon" value="$(arg tracking_prediction_horizon)" type="double"/>
+        <param name="tracking_prediction_dt" value="$(arg tracking_prediction_dt)" type="double"/>
+        <param name="tracking_target_normal_offset" value="$(arg tracking_target_normal_offset)" type="double"/>
         <param name="surface_x" value="$(arg surface_x)" type="double"/>
         <param name="surface_y" value="$(arg surface_y)" type="double"/>
         <param name="surface_z" value="$(arg surface_z)" type="double"/>
@@ -64,16 +73,32 @@
         <param name="yaw_oscillation_freq" value="$(arg surface_yaw_osc_freq)" type="double"/>
         <param name="platform_radius" value="$(arg platform_radius)" type="double"/>
         <param name="normal_length" value="$(arg normal_length)" type="double"/>
-        <param name="stop_surface_on_traj_arrival" value="$(arg stop_surface_on_traj_arrival)" type="bool"/>
-        <param name="surface_stop_margin" value="$(arg surface_stop_margin)" type="double"/>
+        <param name="stop_surface_on_traj_arrival" value="true" type="bool"/>
+        <param name="stop_surface_require_perching_trajectory" value="true" type="bool"/>
     </node>
 
-    <node pkg="general_planner" name="fsm_node" type="fsm_node" output="screen" clear_params="true">
+    <node pkg="general_planner" name="fsm_node" type="fsm_node"
+          output="screen" clear_params="true">
         <param name="config_name" value="$(arg planner_config)" type="string"/>
     </node>
 
+    <node if="$(arg auto_request)" pkg="rostopic" type="rostopic"
+          name="tracking_perching_request_once" output="screen"
+          launch-prefix="bash -c 'sleep $(arg perching_request_delay); exec $0 $@'"
+          args="pub -1 /planning/task_mode std_msgs/String perching"/>
+
+    <node if="$(arg monitor)" pkg="general_planner" name="tracking_sim_monitor"
+          type="tracking_sim_monitor" output="screen">
+        <param name="drone_odom_topic" value="/lidar_slam/odom" type="string"/>
+        <param name="target_odom_topic" value="/tracking/target_odom" type="string"/>
+        <param name="desired_distance" value="2.2" type="double"/>
+        <param name="height_offset" value="0.7" type="double"/>
+        <param name="warmup_time" value="3.0" type="double"/>
+        <param name="sample_rate" value="20.0" type="double"/>
+    </node>
+
     <group if="$(arg rviz)">
-        <node pkg="rviz" type="rviz" name="perching"
+        <node pkg="rviz" type="rviz" name="tracking_perching_chain_fpv"
               args="-d $(find perfect_drone_sim)/rviz/perching.rviz" output="log"/>
     </group>
 </launch>

@@ -45,6 +45,8 @@
 #include "general_core/tracking_perching_frontend.hpp"
 #include "general_core/tracking_runtime_manager.hpp"
 #include "general_core/perching_runtime_manager.hpp"
+#include "general_core/tracking_perching_transition_manager.hpp"
+#include "general_core/tracking_to_perching_initializer.hpp"
 
 #include "general_core/general_ret_code.hpp"
 #include "utils/header/fmt_eigen.hpp"
@@ -100,6 +102,8 @@ namespace general_planner {
         ExpTraj last_exp_traj_info_;
         std::unique_ptr<TrackingRuntimeManager> tracking_runtime_manager_;
         std::unique_ptr<PerchingRuntimeManager> perching_runtime_manager_;
+        std::unique_ptr<TrackingPerchingTransitionManager> tracking_perching_manager_;
+        std::unique_ptr<TrackingToPerchingInitializer> tracking_to_perching_initializer_;
 
         vector<double> time_consuming_;
 
@@ -154,6 +158,10 @@ namespace general_planner {
         Trajectory getCommittedYawTrajectory();
 
         double getCommittedTrajectoryRemainingDuration();
+
+        bool trackingPerchingPerchingActive() const;
+
+        void markTrackingPerchingContact();
 
         void getOneCommandFromTraj(StatePVAJ &pvaj,
                                    double &yaw,
@@ -231,6 +239,12 @@ namespace general_planner {
         RET_CODE ReplanTrackingOnce(const traj_opt::DynamicTargetStates &target_prediction,
                                     const bool &new_task);
 
+        RET_CODE ReplanTrackingOnce(const traj_opt::DynamicTargetStates &target_prediction,
+                                    const traj_opt::PerchingSurfaceState &surface,
+                                    const bool &new_task);
+
+        void setTrackingPerchingRequest(bool request);
+
         RET_CODE PlanPerchingFromRest(const traj_opt::PerchingSurfaceState &surface,
                                       const bool &new_task);
 
@@ -302,9 +316,22 @@ namespace general_planner {
                                         const traj_opt::PerchingSurfaceState &surface,
                                         Trajectory &yaw_traj);
 
+        bool buildPerchingYawTrajectoryFromHead(const Trajectory &pos_traj,
+                                                const traj_opt::PerchingSurfaceState &surface,
+                                                const Eigen::Matrix<double, 1, 2> &head_yaw,
+                                                Trajectory &yaw_traj);
+
         bool commitPerchingTrajectory(const Trajectory &pos_traj,
                                       const Trajectory &yaw_traj,
                                       const std::string &traj_ns);
+
+        bool commitTrackingToPerchingTrajectory(const Trajectory &tracking_pos,
+                                                const Trajectory &tracking_yaw,
+                                                double current_tracking_local_t,
+                                                double handover_delay,
+                                                const Trajectory &perching_pos,
+                                                const Trajectory &perching_yaw,
+                                                const std::string &traj_ns);
 
         bool trackingTrajectorySafeForHorizon(const Trajectory &traj,
                                               double start_t,
@@ -351,6 +378,13 @@ namespace general_planner {
 
         RET_CODE optimizePerchingTask(const traj_opt::PerchingSurfaceState &surface,
                                       const bool &from_rest);
+
+        PerchingFrontend::Config makePerchingFrontendConfig() const;
+
+        RET_CODE tryCommitPerchingFromTracking(
+            const traj_opt::DynamicTargetStates &target_prediction,
+            const traj_opt::PerchingSurfaceState &surface,
+            RET_CODE tracking_ret);
 
     public:
         void getRobotState(rog_map::RobotState &out);

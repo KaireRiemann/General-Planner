@@ -505,6 +505,14 @@ PerchingRuntimeManager::decideCommit(const CheckResult &candidate_check,
     return status_ == Status::ABORT ? DecisionType::ABORT : DecisionType::REJECT;
 }
 
+bool PerchingRuntimeManager::candidateAccepted(const CheckResult &candidate_check) const
+{
+    return candidate_check.valid &&
+           candidate_check.safe &&
+           candidate_check.terminal_sync &&
+           candidate_check.dynamics_feasible;
+}
+
 void PerchingRuntimeManager::updateStatusAfterCommit()
 {
     has_committed_perching_ = true;

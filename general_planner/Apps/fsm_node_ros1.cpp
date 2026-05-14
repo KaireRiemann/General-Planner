@@ -53,11 +53,16 @@ int main(int argc, char **argv) {
 #define CONFIG_FILE_DIR(name) (string(string(ROOT_DIR) + "config/"+name))
     std::string dft_cfg_path = CONFIG_FILE_DIR("click.yaml");
     std::string cfg_path, cfg_name;
-    if (nh.param("config_path", cfg_path, dft_cfg_path)) {
-        cout << " -- [Fsm-Test] Load config from: " << cfg_path << endl;
-    } else if(nh.param("config_name", cfg_name, dft_cfg_path)){
+    const bool has_cfg_path = nh.getParam("config_path", cfg_path) && !cfg_path.empty();
+    const bool has_cfg_name = nh.getParam("config_name", cfg_name) && !cfg_name.empty();
+    if(has_cfg_name){
         cfg_path = CONFIG_FILE_DIR(cfg_name);
         cout << " -- [Fsm-Test] Load config by file name: " << cfg_name << endl;
+    } else if (has_cfg_path) {
+        cout << " -- [Fsm-Test] Load config from: " << cfg_path << endl;
+    } else {
+        cfg_path = dft_cfg_path;
+        cout << " -- [Fsm-Test] Load default config: " << cfg_path << endl;
     }
 
     fsm_ptr = make_shared<FsmRos1>();
@@ -70,4 +75,3 @@ int main(int argc, char **argv) {
     ros::waitForShutdown();
     return 0;
 }
-

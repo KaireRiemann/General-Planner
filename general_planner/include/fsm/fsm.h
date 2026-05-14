@@ -194,6 +194,8 @@ namespace fsm {
 
         bool trackingExecutionState() const;
 
+        bool trackingPerchingPerchingActive() const;
+
         void logStaticTrackingReplanDecision(const std::string &reason);
 
         bool trackingCommittedTrajectoryUnsafe() const;

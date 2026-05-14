@@ -1750,6 +1750,17 @@ bool PerchingFrontend::buildProblem(const StatePVAJ &head_pvaj,
                                     const traj_opt::PerchingSurfaceState &surface,
                                     traj_opt::PerchingProblem &problem) const
 {
+    const bool use_tracking_warm_start =
+        problem.use_tracking_warm_start &&
+        problem.init_total_time > 0.0 &&
+        problem.warm_start_guide_path.size() >= 2;
+    const double warm_start_total_time = problem.init_total_time;
+    const Eigen::Vector2d warm_start_nu = problem.init_nu;
+    const double warm_start_tau_f = problem.init_tau_f;
+    const auto warm_start_guide_path = problem.warm_start_guide_path;
+    const auto warm_start_guide_t = problem.warm_start_guide_t;
+    const auto warm_start_head_yaw = problem.warm_start_head_yaw;
+
     Vec3f z_s = normalizedOr(surface.surface_z, Vec3f::UnitZ());
     Vec3f x_s = normalizedOr(surface.surface_x, Vec3f::UnitX());
     Vec3f y_s = normalizedOr(z_s.cross(x_s), Vec3f::UnitY());
@@ -1781,13 +1792,18 @@ bool PerchingFrontend::buildProblem(const StatePVAJ &head_pvaj,
                    0.5,
                    std::max(0.5, 0.95 * max_speed));
     const double max_duration = std::max(cfg_.min_duration, cfg_.max_duration);
-    const double T0 = estimateMovingTargetInterceptTime(head_pvaj.col(0),
-                                                        head_pvaj.col(1),
-                                                        contact_seed,
-                                                        surface.velocity,
-                                                        v_ref,
-                                                        std::max(0.05, cfg_.min_duration),
-                                                        max_duration);
+    double T0 = estimateMovingTargetInterceptTime(head_pvaj.col(0),
+                                                  head_pvaj.col(1),
+                                                  contact_seed,
+                                                  surface.velocity,
+                                                  v_ref,
+                                                  std::max(0.05, cfg_.min_duration),
+                                                  max_duration);
+    if (use_tracking_warm_start) {
+        T0 = std::clamp(warm_start_total_time,
+                        std::max(0.05, cfg_.min_duration),
+                        max_duration);
+    }
     
     if (!cfg_.allow_long_standalone &&
         T0 > max_duration - std::max(0.0, cfg_.duration_margin))
@@ -1874,6 +1890,11 @@ bool PerchingFrontend::buildProblem(const StatePVAJ &head_pvaj,
     problem.terminal.weight_nu = cfg_.weight_nu;
     problem.terminal.weight_tau_f = cfg_.weight_tau_f;
     problem.use_terminal_config = true;
+    problem.use_tracking_warm_start = use_tracking_warm_start;
+    problem.init_total_time = use_tracking_warm_start ? T0 : 0.0;
+    problem.init_nu = use_tracking_warm_start ? warm_start_nu : Eigen::Vector2d::Zero();
+    problem.init_tau_f = use_tracking_warm_start ? warm_start_tau_f : 0.0;
+    problem.warm_start_head_yaw = warm_start_head_yaw;
 
     double tau0 = cfg_.thrust_nominal;
     if (head_pvaj.col(2).allFinite())
@@ -1891,55 +1912,77 @@ bool PerchingFrontend::buildProblem(const StatePVAJ &head_pvaj,
         std::clamp(tau_f_seed,
                    -std::max(0.0, cfg_.tau_f_seed_limit),
                    std::max(0.0, cfg_.tau_f_seed_limit));;
+    if (use_tracking_warm_start) {
+        problem.terminal.nu_seed = warm_start_nu;
+        problem.terminal.tau_f_seed =
+            std::clamp(warm_start_tau_f,
+                       -std::max(0.0, cfg_.tau_f_seed_limit),
+                       std::max(0.0, cfg_.tau_f_seed_limit));
+    }
 
     problem.guide_path.clear();
     problem.guide_t.clear();
-    vec_E<Vec3f> guide_nodes;
-    std::vector<double> guide_node_t;
-    appendTimedUnique(head_pvaj.col(0), 0.0, guide_nodes, guide_node_t);
-    if (cfg_.multi_point_guide_enable && T0 > 2.0)
-    {
-       const int sample_num = std::max(2, cfg_.moving_guide_sample_num);
-        for (int k = 1; k < sample_num; ++k)
-        {
-            const double tk = T0 * static_cast<double>(k) / static_cast<double>(sample_num);
-            Vec3f x_k, y_k, z_k;
-            surfaceFrameAt(tk, x_k, y_k, z_k);
-            (void)x_k;
-            (void)y_k;
-            const Vec3f surface_p_k =
-                surface.position + surface.velocity * tk + 0.5 * surface.acceleration * tk * tk;
-            const Vec3f pre_k =
-                surface_p_k + cfg_.robot_l * z_k + cfg_.pre_contact_distance * z_k;
-            appendTimedUnique(pre_k, tk, guide_nodes, guide_node_t);
+    if (use_tracking_warm_start) {
+        problem.guide_path = warm_start_guide_path;
+        problem.guide_t = warm_start_guide_t;
+        if (problem.guide_t.size() != problem.guide_path.size()) {
+            problem.guide_t.clear();
+            problem.guide_t.reserve(problem.guide_path.size());
+            for (int i = 0; i < static_cast<int>(problem.guide_path.size()); ++i) {
+                problem.guide_t.emplace_back(T0 * static_cast<double>(i) /
+                                             static_cast<double>(std::max(1, static_cast<int>(problem.guide_path.size()) - 1)));
+            }
         }
-        appendTimedUnique(contact, T0, guide_nodes, guide_node_t);        
-    }
-    else
-    {
-        appendTimedUnique(pre_contact, 0.7 * T0, guide_nodes, guide_node_t);
-        appendTimedUnique(contact, T0, guide_nodes, guide_node_t);
-    }
+        problem.guide_t.front() = 0.0;
+        problem.guide_t.back() = T0;
+    } else {
+        vec_E<Vec3f> guide_nodes;
+        std::vector<double> guide_node_t;
+        appendTimedUnique(head_pvaj.col(0), 0.0, guide_nodes, guide_node_t);
+        if (cfg_.multi_point_guide_enable && T0 > 2.0)
+        {
+           const int sample_num = std::max(2, cfg_.moving_guide_sample_num);
+            for (int k = 1; k < sample_num; ++k)
+            {
+                const double tk = T0 * static_cast<double>(k) / static_cast<double>(sample_num);
+                Vec3f x_k, y_k, z_k;
+                surfaceFrameAt(tk, x_k, y_k, z_k);
+                (void)x_k;
+                (void)y_k;
+                const Vec3f surface_p_k =
+                    surface.position + surface.velocity * tk + 0.5 * surface.acceleration * tk * tk;
+                const Vec3f pre_k =
+                    surface_p_k + cfg_.robot_l * z_k + cfg_.pre_contact_distance * z_k;
+                appendTimedUnique(pre_k, tk, guide_nodes, guide_node_t);
+            }
+            appendTimedUnique(contact, T0, guide_nodes, guide_node_t);
+        }
+        else
+        {
+            appendTimedUnique(pre_contact, 0.7 * T0, guide_nodes, guide_node_t);
+            appendTimedUnique(contact, T0, guide_nodes, guide_node_t);
+        }
 
-    for (int i = 0; i + 1 < static_cast<int>(guide_nodes.size()); ++i)
-    {
-        vec_E<Vec3f> segment;
-        appendUnique(guide_nodes[static_cast<std::size_t>(i)], segment);
-        if (!appendPathSegment(guide_nodes[static_cast<std::size_t>(i)],
-                               guide_nodes[static_cast<std::size_t>(i + 1)],
-                               segment))
+        for (int i = 0; i + 1 < static_cast<int>(guide_nodes.size()); ++i)
         {
-            std::cout << " -- [PerchingFrontend] PERCHING_GUIDE_SEGMENT_BLOCKED from="
-                      << pointToString(guide_nodes[static_cast<std::size_t>(i)])
-                      << ", to=" << pointToString(guide_nodes[static_cast<std::size_t>(i + 1)])
-                      << std::endl;
-            return false;
+            vec_E<Vec3f> segment;
+            appendUnique(guide_nodes[static_cast<std::size_t>(i)], segment);
+            if (!appendPathSegment(guide_nodes[static_cast<std::size_t>(i)],
+                                   guide_nodes[static_cast<std::size_t>(i + 1)],
+                                   segment))
+            {
+                std::cout << " -- [PerchingFrontend] PERCHING_GUIDE_SEGMENT_BLOCKED from="
+                          << pointToString(guide_nodes[static_cast<std::size_t>(i)])
+                          << ", to=" << pointToString(guide_nodes[static_cast<std::size_t>(i + 1)])
+                          << std::endl;
+                return false;
+            }
+            appendTimedPath(segment,
+                            guide_node_t[static_cast<std::size_t>(i)],
+                            guide_node_t[static_cast<std::size_t>(i + 1)],
+                            problem.guide_path,
+                            problem.guide_t);
         }
-        appendTimedPath(segment,
-                        guide_node_t[static_cast<std::size_t>(i)],
-                        guide_node_t[static_cast<std::size_t>(i + 1)],
-                        problem.guide_path,
-                        problem.guide_t);
     }
 
     problem.use_initial_guess = true;
@@ -1947,12 +1990,15 @@ bool PerchingFrontend::buildProblem(const StatePVAJ &head_pvaj,
     problem.initial_guess.total_time = T0;
     problem.initial_guess.guide_path = problem.guide_path;
     problem.initial_guess.guide_t = problem.guide_t;
-    problem.initial_guess.nu = Eigen::Vector2d::Zero();
+    problem.initial_guess.nu = problem.terminal.nu_seed;
     problem.initial_guess.tau_f = problem.terminal.tau_f_seed;
 
     std::cout << " -- [PerchingFrontend] PERCHING_BUILD_PROBLEM_SUCCESS T0="
               << T0 << ", piece_num=" << problem.piece_num
               << ", guide_size=" << problem.guide_path.size()
+              << ", tracking_warm_start=" << use_tracking_warm_start
+              << ", nu_seed=[" << problem.initial_guess.nu.x()
+              << ", " << problem.initial_guess.nu.y() << "]"
               << ", tau_f_seed=" << problem.terminal.tau_f_seed
               << ", max_total_duration=" << problem.max_total_duration << std::endl;
     return problem.guide_path.size() >= 2;

@@ -91,7 +91,12 @@ namespace fsm {
                 }
                 return;
             }
-            ret_code = planner_ptr_->ReplanTrackingOnce(prediction, task_new_);
+            traj_opt::PerchingSurfaceState surface;
+            if (cfg_.tracking_perching_enable && getPerchingSurface(surface)) {
+                ret_code = planner_ptr_->ReplanTrackingOnce(prediction, surface, task_new_);
+            } else {
+                ret_code = planner_ptr_->ReplanTrackingOnce(prediction, task_new_);
+            }
         } else if (perchingMode()) {
             traj_opt::PerchingSurfaceState surface;
             if (!getPerchingSurface(surface)) {
@@ -278,9 +283,34 @@ namespace fsm {
                machine_state_ == HOLD_TRACKING;
     }
 
+    bool Fsm::trackingPerchingPerchingActive() const {
+        return cfg_.tracking_perching_enable &&
+               cfg_.task_mode == TaskMode::TRACKING &&
+               planner_ptr_ &&
+               planner_ptr_->trackingPerchingPerchingActive();
+    }
+
     void Fsm::setTaskModeFromString(const std::string &mode) {
         const std::string normalized = normalizeTaskMode(mode);
         const TaskMode new_mode = taskModeFromString(normalized);
+        if (cfg_.tracking_perching_enable &&
+            cfg_.task_mode == TaskMode::TRACKING &&
+            new_mode == TaskMode::PERCHING) {
+            cout << YELLOW << " -- [Fsm] Tracking-perching request received." << RESET << endl;
+            if (planner_ptr_) {
+                planner_ptr_->setTrackingPerchingRequest(true);
+            }
+            finish_plan = false;
+            task_new_ = true;
+            started_ = true;
+            return;
+        }
+        if (cfg_.tracking_perching_enable &&
+            cfg_.task_mode == TaskMode::TRACKING &&
+            new_mode == TaskMode::TRACKING &&
+            planner_ptr_) {
+            planner_ptr_->setTrackingPerchingRequest(false);
+        }
         if (new_mode == cfg_.task_mode) {
             return;
         }
@@ -314,6 +344,9 @@ namespace fsm {
             return gi_.new_goal;
         }
         if (trackingMode()) {
+            if (trackingPerchingPerchingActive()) {
+                return false;
+            }
             return trackingTaskReady();
         }
         if (perchingMode()) {
@@ -327,6 +360,9 @@ namespace fsm {
             return !closeToGoal(0.1);
         }
         if (perchingMode()) {
+            return false;
+        }
+        if (trackingMode() && trackingPerchingPerchingActive()) {
             return false;
         }
         return activeTaskReady();

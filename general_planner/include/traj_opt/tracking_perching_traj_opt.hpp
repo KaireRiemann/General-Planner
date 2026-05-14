@@ -145,6 +145,14 @@ struct PerchingProblem
   bool use_initial_guess{false};
   PerchingInitialGuess initial_guess;
 
+  bool use_tracking_warm_start{false};
+  double init_total_time{0.0};
+  Eigen::Vector2d init_nu{Eigen::Vector2d::Zero()};
+  double init_tau_f{0.0};
+  super_utils::vec_E<super_utils::Vec3f> warm_start_guide_path;
+  std::vector<double> warm_start_guide_t;
+  Eigen::Matrix<double, 1, 2> warm_start_head_yaw{Eigen::Matrix<double, 1, 2>::Zero()};
+
   double safe_distance{0.45};
   double robot_l{0.28};
   double platform_radius{0.35};

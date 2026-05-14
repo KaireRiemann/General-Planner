@@ -70,6 +70,21 @@ std::string normalizedMode(std::string mode)
     return mode;
 }
 
+bool isTrackingPerchingMode(const std::string &mode)
+{
+    const std::string normalized = normalizedMode(mode);
+    return normalized == "tracking_perching" ||
+           normalized == "tracking-perching" ||
+           normalized == "trackingperching" ||
+           normalized == "joint";
+}
+
+bool debugInfoIndicatesPerchingTrajectory(const std::string &debug_info)
+{
+    return debug_info.find("task_phase=perching") != std::string::npos ||
+           debug_info.find("task_phase=tracking_perching_perching") != std::string::npos;
+}
+
 super_utils::vec_E<Vec3f> makeRuntimePath(const super_utils::vec_E<Vec3f> &path,
                                           const bool loop,
                                           const std::string &loop_mode)
@@ -393,6 +408,8 @@ int main(int argc, char **argv)
     nh.param<std::string>("config_name", cfg_name, "tracking_perching_tracking_ros1.yaml");
     nh.param<std::string>("config_path", cfg_path, CONFIG_FILE_DIR(cfg_name));
     nh.param<std::string>("mode", mode, "tracking");
+    mode = normalizedMode(mode);
+    const bool tracking_perching_mode = isTrackingPerchingMode(mode);
 
     auto ros_ptr = std::make_shared<ros_interface::Ros1Interface>(nh);
     ros_ptr->setVisualizationEn(true);
@@ -480,8 +497,16 @@ int main(int argc, char **argv)
 
     std::string surface_topic;
     std::string surface_marker_topic;
+    std::string tracking_target_odom_topic;
+    std::string tracking_target_path_topic;
+    std::string tracking_target_prediction_topic;
+    std::string target_loop_mode;
     Vec3f p0(3.6, 0.4, 0.95);
     Vec3f v(0.12, 0.0, 0.0);
+    Vec3f target_start(3.0, 0.0, 1.0);
+    Vec3f target_goal(15.0, 0.0, 1.0);
+    bool target_loop = false;
+    double target_speed = 1.2;
     double yaw = 0.0;
     double pitch = 0.0;
     double roll = 0.0;
@@ -498,12 +523,29 @@ int main(int argc, char **argv)
     double roll_oscillation_freq = 0.4;
     double platform_radius = 0.35;
     double normal_length = 0.9;
+    bool publish_tracking_target = tracking_perching_mode;
+    double tracking_prediction_horizon = 4.0;
+    double tracking_prediction_dt = 0.25;
+    double tracking_target_normal_offset = 0.0;
     std::string surface_traj_topic;
     bool stop_surface_on_traj_arrival = false;
+    bool stop_surface_require_perching_trajectory = false;
     double surface_stop_margin = 0.05;
     nh.param<std::string>("surface_odom_topic", surface_topic, "/perching/surface_odom");
     nh.param<std::string>("surface_marker_topic", surface_marker_topic, "/perching/surface_markers");
+    nh.param<std::string>("tracking_target_odom_topic", tracking_target_odom_topic, "/tracking/target_odom");
+    nh.param<std::string>("tracking_target_path_topic", tracking_target_path_topic, "/tracking/target_path");
+    nh.param<std::string>("tracking_target_prediction_topic", tracking_target_prediction_topic, "/tracking/target_prediction");
     nh.param<std::string>("surface_traj_topic", surface_traj_topic, "/planning_cmd/poly_traj");
+    nh.param<std::string>("target_loop_mode", target_loop_mode, "teleport");
+    nh.param<bool>("target_loop", target_loop, target_loop);
+    nh.param<double>("target_speed", target_speed, target_speed);
+    nh.param<double>("target_start_x", target_start.x(), target_start.x());
+    nh.param<double>("target_start_y", target_start.y(), target_start.y());
+    nh.param<double>("target_start_z", target_start.z(), target_start.z());
+    nh.param<double>("target_goal_x", target_goal.x(), target_goal.x());
+    nh.param<double>("target_goal_y", target_goal.y(), target_goal.y());
+    nh.param<double>("target_goal_z", target_goal.z(), target_goal.z());
     nh.param<double>("surface_x", p0.x(), p0.x());
     nh.param<double>("surface_y", p0.y(), p0.y());
     nh.param<double>("surface_z", p0.z(), p0.z());
@@ -526,25 +568,93 @@ int main(int argc, char **argv)
     nh.param<double>("roll_oscillation_freq", roll_oscillation_freq, roll_oscillation_freq);
     nh.param<double>("platform_radius", platform_radius, platform_radius);
     nh.param<double>("normal_length", normal_length, normal_length);
+    nh.param<bool>("publish_tracking_target", publish_tracking_target, publish_tracking_target);
+    publish_tracking_target = publish_tracking_target || tracking_perching_mode;
+    nh.param<double>("tracking_prediction_horizon", tracking_prediction_horizon, tracking_prediction_horizon);
+    nh.param<double>("tracking_prediction_dt", tracking_prediction_dt, tracking_prediction_dt);
+    nh.param<double>("tracking_target_normal_offset", tracking_target_normal_offset, tracking_target_normal_offset);
     nh.param<bool>("stop_surface_on_traj_arrival",
                    stop_surface_on_traj_arrival,
                    stop_surface_on_traj_arrival);
+    nh.param<bool>("stop_surface_require_perching_trajectory",
+                   stop_surface_require_perching_trajectory,
+                   stop_surface_require_perching_trajectory);
     nh.param<double>("surface_stop_margin", surface_stop_margin, surface_stop_margin);
 
     ros::Publisher odom_pub = nh.advertise<nav_msgs::Odometry>(surface_topic, 10);
     ros::Publisher marker_pub = nh.advertise<visualization_msgs::MarkerArray>(surface_marker_topic, 10);
+    ros::Publisher tracking_odom_pub;
+    ros::Publisher tracking_path_pub;
+    ros::Publisher tracking_prediction_pub;
+    if (publish_tracking_target)
+    {
+        tracking_odom_pub = nh.advertise<nav_msgs::Odometry>(tracking_target_odom_topic, 10);
+        tracking_path_pub = nh.advertise<nav_msgs::Path>(tracking_target_path_topic, 10);
+        tracking_prediction_pub = nh.advertise<nav_msgs::Path>(tracking_target_prediction_topic, 10);
+    }
     const ros::Time start_time = ros::Time::now();
     bool stop_scheduled = false;
     bool surface_frozen = false;
     uint32_t scheduled_traj_id = 0;
     ros::Time scheduled_stop_time;
     PerchingSurfaceSample frozen_surface;
+    super_utils::vec_E<Vec3f> joint_path;
+    std::vector<double> joint_times;
+    double joint_total_t = 0.1;
+    nav_msgs::Path joint_path_msg;
+
+    if (tracking_perching_mode)
+    {
+        p0 = target_start;
+        Vec3f displacement = target_goal - target_start;
+        double travel_distance = displacement.norm();
+        Vec3f direction = Vec3f::UnitX();
+        if (travel_distance > 1.0e-6)
+        {
+            direction = displacement / travel_distance;
+        }
+        if (v.norm() > 1.0e-6)
+        {
+            direction = v.normalized();
+            target_speed = v.norm();
+        }
+        target_speed = std::max(0.2, target_speed);
+        travel_distance = std::max(travel_distance,
+                                   std::max(6.0, target_speed * std::max(6.0, tracking_prediction_horizon)));
+        target_goal = target_start + direction * travel_distance;
+        super_utils::vec_E<Vec3f> base_path;
+        base_path.emplace_back(target_start);
+        base_path.emplace_back(target_goal);
+        joint_path = makeRuntimePath(base_path, target_loop, target_loop_mode);
+        joint_times = allocatePathTime(joint_path, target_speed);
+        joint_total_t = std::max(0.1, joint_times.back());
+        joint_path_msg = buildPathMsg(joint_path, joint_times, "world");
+        ROS_INFO("Tracking-perching source uses one moving platform from (%.2f, %.2f, %.2f) to (%.2f, %.2f, %.2f), speed %.2f, duration %.2f s.",
+                 target_start.x(),
+                 target_start.y(),
+                 target_start.z(),
+                 target_goal.x(),
+                 target_goal.y(),
+                 target_goal.z(),
+                 target_speed,
+                 joint_total_t);
+    }
 
     auto sampleSurface = [&](const double t) {
         PerchingSurfaceSample sample;
-        sample.position = p0 + v * t;
+        if (tracking_perching_mode)
+        {
+            const double path_t = normalizePathTime(t,
+                                                    joint_total_t,
+                                                    target_loop);
+            sample.position = interpolatePath(joint_path, joint_times, path_t, sample.velocity);
+        }
+        else
+        {
+            sample.position = p0 + v * t;
+            sample.velocity = v;
+        }
         sample.position.y() += oscillation_amp * std::sin(oscillation_freq * t);
-        sample.velocity = v;
         sample.velocity.y() += oscillation_amp * oscillation_freq * std::cos(oscillation_freq * t);
         sample.roll = roll + roll_rate * t +
                       roll_oscillation_amp * std::sin(roll_oscillation_freq * t);
@@ -561,6 +671,61 @@ int main(int argc, char **argv)
         return sample;
     };
 
+    auto surfaceQuaternion = [](const PerchingSurfaceSample &sample) {
+        return Eigen::Quaterniond(Eigen::AngleAxisd(sample.yaw, Eigen::Vector3d::UnitZ()) *
+                                  Eigen::AngleAxisd(sample.pitch, Eigen::Vector3d::UnitY()) *
+                                  Eigen::AngleAxisd(sample.roll, Eigen::Vector3d::UnitX()));
+    };
+
+    auto trackingTargetYaw = [](const PerchingSurfaceSample &sample) {
+        return sample.velocity.head<2>().norm() > 1.0e-3
+                   ? std::atan2(sample.velocity.y(), sample.velocity.x())
+                   : sample.yaw;
+    };
+
+    auto trackingTargetState = [&](const PerchingSurfaceSample &sample,
+                                   Vec3f &target_p,
+                                   Vec3f &target_v) {
+        target_p = sample.position;
+        target_v = sample.velocity;
+        if (std::abs(tracking_target_normal_offset) > 1.0e-6)
+        {
+            const Vec3f offset =
+                tracking_target_normal_offset * surfaceQuaternion(sample).toRotationMatrix().col(2);
+            target_p += offset;
+            target_v += sample.omega.cross(offset);
+        }
+    };
+
+    auto buildSurfaceTrackingPrediction = [&](const double t0) {
+        nav_msgs::Path msg;
+        msg.header.frame_id = "world";
+        msg.header.stamp = ros::Time::now();
+        const double dt = std::max(0.05, tracking_prediction_dt);
+        const double horizon = std::max(dt, tracking_prediction_horizon);
+        const int sample_num = std::max(2, static_cast<int>(std::ceil(horizon / dt)) + 1);
+        msg.poses.reserve(static_cast<std::size_t>(sample_num));
+        for (int i = 0; i < sample_num; ++i)
+        {
+            const PerchingSurfaceSample future = surface_frozen
+                                                     ? frozen_surface
+                                                     : sampleSurface(t0 + static_cast<double>(i) * dt);
+            Vec3f target_p;
+            Vec3f target_v;
+            trackingTargetState(future, target_p, target_v);
+            auto pose = makePose("world",
+                                 msg.header.stamp + ros::Duration(static_cast<double>(i) * dt),
+                                 target_p,
+                                 target_v);
+            if (target_v.head<2>().norm() <= 1.0e-3)
+            {
+                pose.pose.orientation = quatFromYaw(trackingTargetYaw(future));
+            }
+            msg.poses.emplace_back(pose);
+        }
+        return msg;
+    };
+
     ros::Subscriber traj_sub;
     if (stop_surface_on_traj_arrival)
     {
@@ -574,6 +739,11 @@ int main(int argc, char **argv)
                 }
                 if ((msg->type & quadrotor_msgs::PolynomialTrajectory::POSITION_TRAJ) == 0 ||
                     msg->piece_num_pos <= 0)
+                {
+                    return;
+                }
+                if (stop_surface_require_perching_trajectory &&
+                    !debugInfoIndicatesPerchingTrajectory(msg->debug_info))
                 {
                     return;
                 }
@@ -628,6 +798,16 @@ int main(int argc, char **argv)
              pitch,
              yaw,
              yaw_rate);
+    if (publish_tracking_target)
+    {
+        ROS_INFO("Perching surface source also publishes tracking target %s and prediction %s from the same moving platform.",
+                 tracking_target_odom_topic.c_str(),
+                 tracking_target_prediction_topic.c_str());
+        if (tracking_perching_mode)
+        {
+            tracking_path_pub.publish(joint_path_msg);
+        }
+    }
     while (ros::ok())
     {
         const ros::Time now = ros::Time::now();
@@ -670,6 +850,23 @@ int main(int argc, char **argv)
                                                std::max(0.05, platform_radius),
                                                std::max(0.1, normal_length),
                                                "world"));
+        if (publish_tracking_target)
+        {
+            Vec3f target_p;
+            Vec3f target_v;
+            trackingTargetState(sample, target_p, target_v);
+            nav_msgs::Odometry target_odom;
+            fillOdom(target_odom,
+                     "world",
+                     "tracking_target",
+                     target_p,
+                     target_v,
+                     quatFromYaw(trackingTargetYaw(sample)));
+            tracking_odom_pub.publish(target_odom);
+            const auto prediction = buildSurfaceTrackingPrediction(t);
+            tracking_prediction_pub.publish(prediction);
+            tracking_path_pub.publish(tracking_perching_mode ? joint_path_msg : prediction);
+        }
         ros::spinOnce();
         rate.sleep();
     }

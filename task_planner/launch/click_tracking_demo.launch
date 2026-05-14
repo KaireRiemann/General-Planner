@@ -21,7 +21,7 @@
             <param name="config_name" value="$(arg tracker_sim_config)" type="string"/>
         </node>
 
-        <node pkg="general_planner" type="fsm_node" name="fsm_node" output="screen">
+        <node pkg="general_planner" type="fsm_node" name="fsm_node" output="screen" clear_params="true">
             <param name="config_name" value="$(arg tracker_planner_config)" type="string"/>
         </node>
     </group>

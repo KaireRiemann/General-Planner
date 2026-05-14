@@ -39,6 +39,51 @@ struct PerchingPlatformFrame
     }
 };
 
+struct SmoothActivation
+{
+    double value{0.0};
+    double derivative{0.0};
+};
+
+inline SmoothActivation smoothLogisticActivation(const double x,
+                                                 const double epsilon)
+{
+    const double eps = std::max(1.0e-9, epsilon);
+    if (x <= -eps)
+    {
+        return {};
+    }
+    if (x >= eps)
+    {
+        return {1.0, 0.0};
+    }
+
+    const double inv_eps4 = 1.0 / (eps * eps * eps * eps);
+    if (x <= 0.0)
+    {
+        const double xp = x + eps;
+        return {0.5 * xp * xp * xp * (eps - x) * inv_eps4,
+                xp * xp * (eps - 2.0 * x) * inv_eps4};
+    }
+
+    const double xm = x - eps;
+    return {0.5 * xm * xm * xm * (eps + x) * inv_eps4 + 1.0,
+            xm * xm * (eps + 2.0 * x) * inv_eps4};
+}
+
+inline SmoothActivation perchingCollisionActivation(const Eigen::Vector3d &rel,
+                                                    const double activation_distance,
+                                                    const double smooth_eps)
+{
+    if (activation_distance <= 0.0 || !rel.allFinite())
+    {
+        return {};
+    }
+    const double distance_gate =
+        activation_distance * activation_distance - rel.squaredNorm();
+    return smoothLogisticActivation(distance_gate, smooth_eps);
+}
+
 inline double accumulatePerchingPlatformClearancePenalty(const Eigen::Vector3d &position,
                                                          const PerchingPlatformFrame &frame,
                                                          const double robot_radius,
@@ -54,8 +99,9 @@ inline double accumulatePerchingPlatformClearancePenalty(const Eigen::Vector3d &
     }
 
     const Eigen::Vector3d rel = position - frame.origin;
-    const double tangent_dist = std::hypot(rel.dot(frame.x), rel.dot(frame.y));
-    if (tangent_dist > activation_distance)
+    const SmoothActivation gate =
+        perchingCollisionActivation(rel, activation_distance, smooth_eps);
+    if (gate.value <= 0.0)
     {
         return 0.0;
     }
@@ -69,9 +115,9 @@ inline double accumulatePerchingPlatformClearancePenalty(const Eigen::Vector3d &
         return 0.0;
     }
 
-    const double gate = 1.0 - std::clamp(tangent_dist / std::max(1.0e-3, activation_distance), 0.0, 1.0);
-    grad_position += -weight * gate * penalty_grad * frame.z;
-    return weight * gate * penalty;
+    grad_position += -weight * gate.value * penalty_grad * frame.z;
+    grad_position += -2.0 * weight * penalty * gate.derivative * rel;
+    return weight * gate.value * penalty;
 }
 
 inline double accumulatePerchingSE3DiskClearancePenalty(const Eigen::Vector3d &position,
@@ -93,8 +139,9 @@ inline double accumulatePerchingSE3DiskClearancePenalty(const Eigen::Vector3d &p
     }
 
     const Eigen::Vector3d rel = position - frame.origin;
-    const double tangent_dist = std::hypot(rel.dot(frame.x), rel.dot(frame.y));
-    if (tangent_dist > activation_distance)
+    const SmoothActivation gate =
+        perchingCollisionActivation(rel, activation_distance, smooth_eps);
+    if (gate.value <= 0.0)
     {
         return 0.0;
     }
@@ -131,10 +178,9 @@ inline double accumulatePerchingSE3DiskClearancePenalty(const Eigen::Vector3d &p
         return 0.0;
     }
 
-    const double gate =
-        1.0 - std::clamp(tangent_dist / std::max(1.0e-3, activation_distance), 0.0, 1.0);
-    const double weighted_grad = weight * gate * penalty_grad;
+    const double weighted_grad = weight * gate.value * penalty_grad;
     grad_position += weighted_grad * (-frame.z);
+    grad_position += -2.0 * weight * penalty * gate.derivative * rel;
 
     const double d_tangent_d_align = -normal_align / tangent_component;
     const double d_violation_d_align =
@@ -145,7 +191,7 @@ inline double accumulatePerchingSE3DiskClearancePenalty(const Eigen::Vector3d &p
         (Eigen::Matrix3d::Identity() - body_z * body_z.transpose()) / thrust_norm;
     grad_acceleration += d_body_z_d_acc.transpose() * grad_body_z;
 
-    return weight * gate * penalty;
+    return weight * gate.value * penalty;
 }
 
 inline double accumulatePerchingVisualAxisPenalty(const Eigen::Vector3d &position,

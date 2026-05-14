@@ -1819,6 +1819,26 @@ public:
       problem.guide_path.emplace_back(problem.head_pvaj.col(0));
       problem.guide_path.emplace_back(problem.nominal_tail_pvaj.col(0));
     }
+    if (problem.use_tracking_warm_start &&
+        problem.init_total_time > 0.0 &&
+        problem.warm_start_guide_path.size() >= 2)
+    {
+      problem.use_initial_guess = true;
+      problem.initial_guess.valid = true;
+      problem.initial_guess.total_time = problem.init_total_time;
+      problem.initial_guess.nu = problem.init_nu;
+      problem.initial_guess.tau_f = problem.init_tau_f;
+      problem.initial_guess.guide_path = problem.warm_start_guide_path;
+      problem.initial_guess.guide_t = problem.warm_start_guide_t;
+      problem.guide_path = problem.warm_start_guide_path;
+      problem.guide_t = problem.warm_start_guide_t;
+      std::cout << " -- [PerchingSnapTrajOpt] TRACKING_TO_PERCHING_WARM_START_CONSUMED"
+                << " T0=" << problem.initial_guess.total_time
+                << ", guide_size=" << problem.initial_guess.guide_path.size()
+                << ", nu_seed=[" << problem.initial_guess.nu.x()
+                << ", " << problem.initial_guess.nu.y() << "]"
+                << ", tau_f_seed=" << problem.initial_guess.tau_f << std::endl;
+    }
 
     TaskOptimizer<4>::WaypointsType initial_waypoints;
     std::vector<double> initial_times;

@@ -91,6 +91,7 @@ namespace fsm {
         string tracking_target_prediction_topic{"/tracking/target_prediction"};
         bool tracking_use_target_prediction_path{true};
         string perching_surface_odom_topic{"/perching/surface_odom"};
+        bool tracking_perching_enable{false};
         double tracking_prediction_horizon{4.0};
         double tracking_prediction_dt{0.25};
         bool tracking_prediction_use_kinodynamic{true};
@@ -144,6 +145,7 @@ namespace fsm {
             loader.LoadParam("fsm/tracking_use_target_prediction_path", tracking_use_target_prediction_path, true);
             loader.LoadParam("fsm/perching_surface_odom_topic", perching_surface_odom_topic,
                              string("/perching/surface_odom"));
+            loader.LoadParam("general_planner/tracking_perching/enable", tracking_perching_enable, false);
             loader.LoadParam("fsm/tracking_prediction_horizon", tracking_prediction_horizon, 4.0);
             loader.LoadParam("fsm/tracking_prediction_dt", tracking_prediction_dt, 0.25);
             loader.LoadParam("fsm/tracking_prediction_use_kinodynamic", tracking_prediction_use_kinodynamic, true);

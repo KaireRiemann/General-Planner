@@ -201,6 +201,25 @@ namespace general_planner {
         double perching_tau_f_seed_limit{1.30};
         bool perching_reset_surface_time{true};
 
+        bool tracking_perching_enable{true};
+        bool tracking_perching_auto_trigger_enable{false};
+        bool tracking_perching_require_external_request{true};
+        double tracking_perching_readiness_min_distance{0.5};
+        double tracking_perching_readiness_max_distance{3.0};
+        double tracking_perching_readiness_max_relative_speed{2.0};
+        double tracking_perching_readiness_max_lateral_speed{1.5};
+        double tracking_perching_readiness_max_required_duration{3.0};
+        double tracking_perching_readiness_min_prediction_time{1.2};
+        int tracking_perching_readiness_hold_cycles{3};
+        double tracking_to_perching_handover_delay{0.0};
+        double tracking_to_perching_prefix_ratio{0.4};
+        double tracking_to_perching_reference_speed{2.0};
+        double tracking_to_perching_max_seed_duration{3.0};
+        bool tracking_to_perching_use_tracking_suffix{true};
+        bool tracking_to_perching_stitch_prefix{true};
+        bool perching_commit_only_after_candidate_check{true};
+        bool perching_abort_to_tracking_enable{true};
+
         bool swarm_enable{false};
         int swarm_drone_id{-1};
         double swarm_clearance{0.75};
@@ -442,6 +461,42 @@ namespace general_planner {
                              perching_tau_f_seed_limit, 1.30);
             loader.LoadParam("general_planner/perching/reset_surface_time",
                              perching_reset_surface_time, true);
+            loader.LoadParam("general_planner/tracking_perching/enable",
+                             tracking_perching_enable, true);
+            loader.LoadParam("general_planner/tracking_perching/auto_trigger_enable",
+                             tracking_perching_auto_trigger_enable, false);
+            loader.LoadParam("general_planner/tracking_perching/require_external_request",
+                             tracking_perching_require_external_request, true);
+            loader.LoadParam("general_planner/tracking_perching/readiness_min_distance",
+                             tracking_perching_readiness_min_distance, 0.5);
+            loader.LoadParam("general_planner/tracking_perching/readiness_max_distance",
+                             tracking_perching_readiness_max_distance, 3.0);
+            loader.LoadParam("general_planner/tracking_perching/readiness_max_relative_speed",
+                             tracking_perching_readiness_max_relative_speed, 2.0);
+            loader.LoadParam("general_planner/tracking_perching/readiness_max_lateral_speed",
+                             tracking_perching_readiness_max_lateral_speed, 1.5);
+            loader.LoadParam("general_planner/tracking_perching/readiness_max_required_duration",
+                             tracking_perching_readiness_max_required_duration, 3.0);
+            loader.LoadParam("general_planner/tracking_perching/readiness_min_prediction_time",
+                             tracking_perching_readiness_min_prediction_time, 1.2);
+            loader.LoadParam("general_planner/tracking_perching/readiness_hold_cycles",
+                             tracking_perching_readiness_hold_cycles, 3);
+            loader.LoadParam("general_planner/tracking_perching/handover_delay",
+                             tracking_to_perching_handover_delay, 0.0);
+            loader.LoadParam("general_planner/tracking_perching/prefix_ratio",
+                             tracking_to_perching_prefix_ratio, 0.4);
+            loader.LoadParam("general_planner/tracking_perching/reference_speed",
+                             tracking_to_perching_reference_speed, 2.0);
+            loader.LoadParam("general_planner/tracking_perching/max_seed_duration",
+                             tracking_to_perching_max_seed_duration, 3.0);
+            loader.LoadParam("general_planner/tracking_perching/use_tracking_suffix",
+                             tracking_to_perching_use_tracking_suffix, true);
+            loader.LoadParam("general_planner/tracking_perching/stitch_prefix",
+                             tracking_to_perching_stitch_prefix, true);
+            loader.LoadParam("general_planner/tracking_perching/commit_only_after_candidate_check",
+                             perching_commit_only_after_candidate_check, true);
+            loader.LoadParam("general_planner/tracking_perching/abort_to_tracking_enable",
+                             perching_abort_to_tracking_enable, true);
             loader.LoadParam("general_planner/swarm/enable", swarm_enable, false);
             loader.LoadParam("general_planner/swarm/drone_id", swarm_drone_id, -1);
             loader.LoadParam("general_planner/swarm/clearance", swarm_clearance, 0.75);

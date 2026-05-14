@@ -61,6 +61,8 @@ public:
     DecisionType decideCommit(const CheckResult &candidate_check,
                               const CheckResult *current_perching_check);
 
+    bool candidateAccepted(const CheckResult &candidate_check) const;
+
     void updateStatusAfterCommit();
     void updateStatusAfterContact();
 

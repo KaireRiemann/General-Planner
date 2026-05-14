@@ -162,9 +162,19 @@ namespace fsm {
 
         std::string makeSwarmDebugInfo() const {
             const double corridor_time = planner_ptr_->getLatestCorridorTime();
+            const char *task_phase = "state_to_state";
+            if (perchingMode()) {
+                task_phase = "perching";
+            } else if (trackingPerchingPerchingActive()) {
+                task_phase = "tracking_perching_perching";
+            } else if (trackingMode()) {
+                task_phase = "tracking";
+            }
             std::ostringstream oss;
             oss << "drone_id=" << cfg_.swarm_drone_id
                 << ";des_clearance=" << cfg_.swarm_des_clearance
+                << ";task_mode=" << cfg_.task_mode_str
+                << ";task_phase=" << task_phase
                 << ";ellipsoid_optimizer=" << planner_ptr_->getEllipsoidOptimizerName()
                 << ";corridor_time_ms=" << (corridor_time >= 0.0 ? corridor_time * 1000.0 : -1.0)
                 << ";mvie_lbfgs_iterations=" << planner_ptr_->getLatestMvieLbfgsIterations()
@@ -440,6 +450,20 @@ namespace fsm {
             getOnePositionCommand(pid_cmd_, traj_finish_);
             if (traj_finish_) {
                 cout << GREEN << " -- [Fsm] Traj finish." << RESET << endl;
+                const bool tracking_perching_contact = trackingPerchingPerchingActive();
+                if (perchingMode() || tracking_perching_contact) {
+                    {
+                        std::lock_guard<std::mutex> lock(task_mutex_);
+                        perching_contact_reached_ = true;
+                        perching_contact_surface_position_ = perching_surface_.position;
+                        task_new_ = false;
+                    }
+                    gi_.new_goal = false;
+                    if (tracking_perching_contact) {
+                        planner_ptr_->markTrackingPerchingContact();
+                    }
+                    cout << GREEN << " -- [Perching] PERCHING_CONTACT" << RESET << endl;
+                }
                 if (shouldGenerateAfterTrajFinish()) {
                     ChangeState("getPoseFromTraj", GENERATE_TRAJ);
                 } else {
@@ -834,6 +858,15 @@ namespace fsm {
                 }
                 cout << YELLOW << " -- [Fsm] TRACKING TASK ENABLE, target odom: "
                      << cfg_.tracking_target_odom_topic << RESET << endl;
+                if (cfg_.tracking_perching_enable) {
+                    task_mode_sub_ = nh_.subscribe(cfg_.task_mode_topic, 10,
+                                                   &FsmRos1::taskModeCallback, this);
+                    perching_surface_sub_ = nh_.subscribe(cfg_.perching_surface_odom_topic, 10,
+                                                          &FsmRos1::perchingSurfaceCallback, this);
+                    cout << YELLOW << " -- [Fsm] TRACKING-PERCHING ENABLE, request mode topic: "
+                         << cfg_.task_mode_topic << ", surface odom: "
+                         << cfg_.perching_surface_odom_topic << RESET << endl;
+                }
                 if (cfg_.tracking_use_target_prediction_path && !cfg_.tracking_target_prediction_topic.empty()) {
                     cout << YELLOW << " -- [Fsm] TRACKING PREDICTION PATH: "
                          << cfg_.tracking_target_prediction_topic << RESET << endl;
@@ -897,7 +930,8 @@ namespace fsm {
             cmd_pub.publish(pid_cmd_);
             if (traj_finish_) {
                 cout << GREEN << " -- [Fsm] Traj finish." << RESET << endl;
-                if (perchingMode()) {
+                const bool tracking_perching_contact = trackingPerchingPerchingActive();
+                if (perchingMode() || tracking_perching_contact) {
                     {
                         std::lock_guard<std::mutex> lock(task_mutex_);
                         perching_contact_reached_ = true;
@@ -905,6 +939,9 @@ namespace fsm {
                         task_new_ = false;
                     }
                     gi_.new_goal = false;
+                    if (tracking_perching_contact) {
+                        planner_ptr_->markTrackingPerchingContact();
+                    }
                     cout << GREEN << " -- [Perching] PERCHING_CONTACT" << RESET << endl;
                 }
                 if (shouldGenerateAfterTrajFinish()) {

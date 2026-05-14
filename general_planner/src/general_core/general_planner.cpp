@@ -42,6 +42,14 @@ namespace general_planner {
             }
         }
 
+        bool trackingPerchingPerchingStatus(
+                const TrackingPerchingTransitionManager::Status status) {
+            return status == TrackingPerchingTransitionManager::Status::PERCHING_COMMITTED ||
+                   status == TrackingPerchingTransitionManager::Status::PERCHING_EXECUTING ||
+                   status == TrackingPerchingTransitionManager::Status::CONTACT_IMMINENT ||
+                   status == TrackingPerchingTransitionManager::Status::CONTACT;
+        }
+
         traj_opt::DynamicTargetState interpolateTargetPrediction(const traj_opt::DynamicTargetStates &prediction,
                                                                  const double &t) {
             if (prediction.empty()) {
@@ -73,6 +81,91 @@ namespace general_planner {
             out.yaw = left.yaw + alpha * (right.yaw - left.yaw);
             out.yaw_rate = left.yaw_rate + alpha * (right.yaw_rate - left.yaw_rate);
             return out;
+        }
+
+        bool buildYawPrefixFromSamples(const Trajectory &yaw_traj,
+                                       const double sample_start_t,
+                                       const double sample_end_t,
+                                       const double prefix_duration,
+                                       Trajectory &prefix_yaw) {
+            if (yaw_traj.empty() ||
+                prefix_duration <= 1.0e-5 ||
+                sample_start_t < -1.0e-6 ||
+                sample_end_t < sample_start_t - 1.0e-6) {
+                return false;
+            }
+
+            const double total_duration = yaw_traj.getTotalDuration();
+            if (sample_start_t > total_duration + 1.0e-6) {
+                return false;
+            }
+
+            const double clamped_start = std::clamp(sample_start_t, 0.0, total_duration);
+            const double clamped_end = std::clamp(sample_end_t, clamped_start, total_duration);
+            StatePVAJ start_state;
+            StatePVAJ end_state;
+            if (!yaw_traj.getState(clamped_start, start_state) ||
+                !yaw_traj.getState(clamped_end, end_state)) {
+                return false;
+            }
+
+            Eigen::Matrix<double, 1, 2> init_state;
+            Eigen::Matrix<double, 1, 2> goal_state;
+            init_state << start_state(0, 0), start_state(0, 1);
+            goal_state << end_state(0, 0), end_state(0, 1);
+            geometry_utils::normalizeNextYaw(init_state(0, 0), goal_state(0, 0));
+
+            Eigen::Matrix<double, 1, -1> waypoints(1, 0);
+            VecDf times(1);
+            times(0) = prefix_duration;
+            prefix_yaw = poly_interpo::minimumAccInterpolation<1>(init_state,
+                                                                  goal_state,
+                                                                  waypoints,
+                                                                  times);
+            prefix_yaw.start_WT = yaw_traj.start_WT + clamped_start;
+            return !prefix_yaw.empty();
+        }
+
+        bool extractYawPrefixForStitching(const Trajectory &tracking_yaw,
+                                          const double prefix_start,
+                                          const double prefix_duration,
+                                          Trajectory &prefix_yaw,
+                                          bool &used_sampled_fallback) {
+            used_sampled_fallback = false;
+            if (tracking_yaw.empty() || prefix_duration <= 1.0e-5) {
+                return false;
+            }
+
+            const double yaw_total = tracking_yaw.getTotalDuration();
+            if (prefix_start < -1.0e-6 || prefix_start > yaw_total + 1.0e-6) {
+                return false;
+            }
+
+            const double prefix_end = prefix_start + prefix_duration;
+            const double sample_end = std::min(prefix_end, yaw_total);
+            const double query_t = std::clamp(prefix_start, 0.0, std::max(0.0, yaw_total - 1.0e-7));
+            double local_query_t = query_t;
+            const int piece_idx = tracking_yaw.locatePieceIdx(local_query_t);
+            const int degree = tracking_yaw[piece_idx].getDegree();
+            if ((degree == 5 || degree == 7) &&
+                sample_end > prefix_start + 1.0e-5 &&
+                tracking_yaw.getPartialTrajectoryByTime(prefix_start, sample_end, prefix_yaw)) {
+                if (std::abs(prefix_yaw.getTotalDuration() - prefix_duration) > 1.0e-4) {
+                    return buildYawPrefixFromSamples(tracking_yaw,
+                                                     prefix_start,
+                                                     sample_end,
+                                                     prefix_duration,
+                                                     prefix_yaw);
+                }
+                return true;
+            }
+
+            used_sampled_fallback = true;
+            return buildYawPrefixFromSamples(tracking_yaw,
+                                             prefix_start,
+                                             sample_end,
+                                             prefix_duration,
+                                             prefix_yaw);
         }
 
         double yawFacingTarget(const Trajectory &pos_traj,
@@ -204,6 +297,8 @@ namespace general_planner {
         ros_ptr_->setVisualizationEn(cfg_.visualization_en);
         tracking_runtime_manager_ = std::make_unique<TrackingRuntimeManager>(cfg_, map_manager_);
         perching_runtime_manager_ = std::make_unique<PerchingRuntimeManager>(cfg_, map_manager_);
+        tracking_perching_manager_ = std::make_unique<TrackingPerchingTransitionManager>();
+        tracking_to_perching_initializer_ = std::make_unique<TrackingToPerchingInitializer>();
         traj_manager_ = std::make_shared<traj_opt::TrajManager>(cfg_.exp_traj_cfg,
                                                                 cfg_.esdf_traj_cfg,
                                                                 cfg_.plain_traj_cfg,
@@ -851,6 +946,34 @@ namespace general_planner {
         return !yaw_traj.empty();
     }
 
+    bool GeneralPlanner::buildPerchingYawTrajectoryFromHead(
+            const Trajectory &pos_traj,
+            const traj_opt::PerchingSurfaceState &surface,
+            const Eigen::Matrix<double, 1, 2> &head_yaw,
+            Trajectory &yaw_traj) {
+        if (pos_traj.empty()) {
+            return false;
+        }
+
+        Vec4f init_yaw{head_yaw(0, 0), head_yaw(0, 1), 0.0, 0.0};
+        Vec4f terminal_yaw{0.0, 0.0, 0.0, 0.0};
+        terminal_yaw[0] = surface.yaw + surface.yaw_rate * pos_traj.getTotalDuration();
+        geometry_utils::normalizeNextYaw(init_yaw[0], terminal_yaw[0]);
+        terminal_yaw[1] = surface.yaw_rate;
+
+        if (!traj_manager_->yaw()->optimize(init_yaw,
+                                            terminal_yaw,
+                                            pos_traj,
+                                            yaw_traj,
+                                            3,
+                                            false,
+                                            false)) {
+            return false;
+        }
+        yaw_traj.start_WT = pos_traj.start_WT;
+        return !yaw_traj.empty();
+    }
+
     bool GeneralPlanner::commitPerchingTrajectory(const Trajectory &pos_traj,
                                                   const Trajectory &yaw_traj,
                                                   const std::string &traj_ns) {
@@ -889,6 +1012,106 @@ namespace general_planner {
         if (perching_runtime_manager_) {
             perching_runtime_manager_->updateStatusAfterCommit();
         }
+        return true;
+    }
+
+    bool GeneralPlanner::commitTrackingToPerchingTrajectory(
+            const Trajectory &tracking_pos,
+            const Trajectory &tracking_yaw,
+            const double current_tracking_local_t,
+            const double handover_delay,
+            const Trajectory &perching_pos,
+            const Trajectory &perching_yaw,
+            const std::string &traj_ns) {
+        if (perching_pos.empty() || perching_yaw.empty()) {
+            ros_ptr_->warn(" -- [TrackingPerching] TRACKING_PERCHING_CANDIDATE_REJECTED reason=empty_perching_suffix");
+            return false;
+        }
+
+        const double commit_wt = ros_ptr_->getSimTime();
+        Trajectory committed_pos = perching_pos;
+        Trajectory committed_yaw = perching_yaw;
+        bool stitched = false;
+        const bool use_prefix =
+                cfg_.tracking_to_perching_stitch_prefix &&
+                handover_delay > 1.0e-4 &&
+                !tracking_pos.empty() &&
+                !tracking_yaw.empty();
+        if (use_prefix) {
+            const double prefix_start = current_tracking_local_t;
+            const double prefix_end =
+                    std::min(current_tracking_local_t + handover_delay,
+                             tracking_pos.getTotalDuration());
+            const double prefix_duration = prefix_end - prefix_start;
+            Trajectory prefix_pos;
+            Trajectory prefix_yaw;
+            bool used_sampled_yaw_prefix = false;
+            const bool prefix_pos_ok =
+                    prefix_end > prefix_start + 1.0e-4 &&
+                    tracking_pos.getPartialTrajectoryByTime(prefix_start, prefix_end, prefix_pos);
+            const bool prefix_yaw_ok =
+                    prefix_pos_ok &&
+                    extractYawPrefixForStitching(tracking_yaw,
+                                                 prefix_start,
+                                                 prefix_duration,
+                                                 prefix_yaw,
+                                                 used_sampled_yaw_prefix);
+            if (prefix_pos_ok && prefix_yaw_ok) {
+                committed_pos = prefix_pos + perching_pos;
+                committed_yaw = prefix_yaw + perching_yaw;
+                stitched = true;
+
+                const StatePVAJ prefix_tail = prefix_pos.getState(prefix_pos.getTotalDuration());
+                const StatePVAJ suffix_head = perching_pos.getState(0.0);
+                ros_ptr_->info(" -- [TrackingPerching] TRACKING_PERCHING_STITCHED_COMMIT prefix_dt={:.3f}, suffix_dt={:.3f}, pos_jump={:.4f}, vel_jump={:.4f}, sampled_yaw_prefix={}",
+                               prefix_pos.getTotalDuration(),
+                               perching_pos.getTotalDuration(),
+                               (prefix_tail.col(0) - suffix_head.col(0)).norm(),
+                               (prefix_tail.col(1) - suffix_head.col(1)).norm(),
+                               used_sampled_yaw_prefix);
+            } else {
+                ros_ptr_->warn(" -- [TrackingPerching] TRACKING_PERCHING_CANDIDATE_REJECTED reason=prefix_extract_failed, pos_ok={}, yaw_ok={}, prefix_start={:.3f}, prefix_end={:.3f}, tracking_pos_dur={:.3f}, tracking_yaw_dur={:.3f}",
+                               prefix_pos_ok,
+                               prefix_yaw_ok,
+                               prefix_start,
+                               prefix_end,
+                               tracking_pos.getTotalDuration(),
+                               tracking_yaw.getTotalDuration());
+                return false;
+            }
+        }
+
+        committed_pos.start_WT = commit_wt;
+        committed_yaw.start_WT = commit_wt;
+
+        ExpTraj task_exp_traj;
+        task_exp_traj.setGoalConnectedFlag(true);
+        task_exp_traj.setWholeTrajKnownFreeFlag(true);
+        task_exp_traj.setTrajectory(commit_wt, committed_pos, committed_yaw);
+
+        cmd_traj_info_.setTrajectory(task_exp_traj);
+        last_exp_traj_info_ = task_exp_traj;
+        robot_on_backup_traj_ = false;
+        gi_.new_goal = false;
+
+        {
+            TimeConsuming t_viz("tracking_perching_task_viz", false);
+            ros_ptr_->vizExpTraj(committed_pos, traj_ns);
+            ros_ptr_->vizYawTraj(committed_pos, committed_yaw);
+            ros_ptr_->vizCommittedTraj(cmd_traj_info_.posTraj(), -1.0);
+            time_consuming_[VISUALIZATION] += t_viz.stop();
+        }
+
+        latest_replan.setExpTraj(committed_pos);
+        latest_replan.setExpYawTraj(committed_yaw);
+        latest_replan.setRetCode(GENERAL_SUCCESS_NO_BACKUP);
+        if (perching_runtime_manager_) {
+            perching_runtime_manager_->updateStatusAfterCommit();
+        }
+        ros_ptr_->info(" -- [TrackingPerching] TRACKING_PERCHING_COMMIT_SUCCESS stitched={}, total_duration={:.3f}, handover_delay={:.3f}",
+                       stitched,
+                       committed_pos.getTotalDuration(),
+                       handover_delay);
         return true;
     }
 
@@ -2720,8 +2943,7 @@ namespace general_planner {
         return SUCCESS;
     }
 
-    RET_CODE GeneralPlanner::optimizePerchingTask(const traj_opt::PerchingSurfaceState &surface,
-                                                const bool &from_rest) {
+    PerchingFrontend::Config GeneralPlanner::makePerchingFrontendConfig() const {
         PerchingFrontend::Config frontend_cfg;
         frontend_cfg.robot_l = cfg_.perching_robot_l;
         frontend_cfg.v_plus = cfg_.perching_v_plus;
@@ -2768,6 +2990,12 @@ namespace general_planner {
         frontend_cfg.use_astar = cfg_.perching_frontend_astar;
         frontend_cfg.use_dynamics_terminal_accel = cfg_.perching_use_dynamics_terminal_accel;
         frontend_cfg.rotate_surface_with_yaw_rate = cfg_.perching_rotate_surface_with_yaw_rate;
+        return frontend_cfg;
+    }
+
+    RET_CODE GeneralPlanner::optimizePerchingTask(const traj_opt::PerchingSurfaceState &surface,
+                                                const bool &from_rest) {
+        const PerchingFrontend::Config frontend_cfg = makePerchingFrontendConfig();
 
         traj_opt::PerchingProblem problem;
         TimeConsuming t_frontend("perching_frontend", false);
@@ -2949,6 +3177,168 @@ namespace general_planner {
         return SUCCESS;
     }
 
+    RET_CODE GeneralPlanner::tryCommitPerchingFromTracking(
+            const traj_opt::DynamicTargetStates &target_prediction,
+            const traj_opt::PerchingSurfaceState &surface,
+            const RET_CODE tracking_ret) {
+        if (!cfg_.tracking_perching_enable || !tracking_perching_manager_) {
+            return tracking_ret;
+        }
+        if (tracking_ret != SUCCESS && tracking_ret != NO_NEED) {
+            return tracking_ret;
+        }
+        if (cfg_.tracking_perching_require_external_request &&
+            !tracking_perching_manager_->perchingRequested()) {
+            return tracking_ret;
+        }
+
+        Trajectory tracking_pos;
+        Trajectory tracking_yaw;
+        double tracking_start_wt = 0.0;
+        double tracking_total_t = 0.0;
+        if (cmd_traj_info_.empty()) {
+            ros_ptr_->info(" -- [TrackingPerching] TRACKING_PERCHING_KEEP_TRACKING reason=no_committed_tracking");
+            return tracking_ret;
+        }
+        cmd_traj_info_.lock();
+        tracking_pos = cmd_traj_info_.posTraj();
+        tracking_yaw = cmd_traj_info_.yawTraj();
+        tracking_start_wt = cmd_traj_info_.getStartWallTime();
+        tracking_total_t = cmd_traj_info_.getTotalDuration();
+        cmd_traj_info_.unlock();
+        if (tracking_pos.empty()) {
+            ros_ptr_->info(" -- [TrackingPerching] TRACKING_PERCHING_KEEP_TRACKING reason=empty_committed_tracking");
+            return tracking_ret;
+        }
+
+        const double now = ros_ptr_->getSimTime();
+        const double tracking_local_t =
+                std::clamp(now - tracking_start_wt, 0.0, tracking_total_t);
+        const bool tracking_active =
+                currentTrackingTrajectorySafeAndActive(target_prediction, nullptr);
+        const auto readiness =
+                tracking_perching_manager_->evaluateReadiness(tracking_active,
+                                                              tracking_pos,
+                                                              tracking_yaw,
+                                                              tracking_local_t,
+                                                              surface,
+                                                              cfg_);
+        if (!readiness.ready) {
+            ros_ptr_->info(" -- [TrackingPerching] TRACKING_PERCHING_KEEP_TRACKING reason={}, ready_count={}, distance={:.3f}, relative_speed={:.3f}, lateral_speed={:.3f}, estimated_duration={:.3f}",
+                           readiness.reason,
+                           readiness.ready_count,
+                           readiness.distance,
+                           readiness.relative_speed,
+                           readiness.lateral_speed,
+                           readiness.estimated_duration);
+            return tracking_ret;
+        }
+
+        if (!tracking_to_perching_initializer_) {
+            ros_ptr_->warn(" -- [TrackingPerching] TRACKING_TO_PERCHING_INIT_FAILED reason=missing_initializer");
+            tracking_perching_manager_->onPerchingRejected();
+            return tracking_ret;
+        }
+
+        TrackingToPerchingInitialGuess init_guess;
+        if (!tracking_to_perching_initializer_->build(tracking_pos,
+                                                      tracking_yaw,
+                                                      tracking_local_t,
+                                                      surface,
+                                                      cfg_,
+                                                      init_guess)) {
+            tracking_perching_manager_->onPerchingRejected();
+            return tracking_ret;
+        }
+
+        tracking_perching_manager_->onCandidateTesting();
+
+        const PerchingFrontend::Config frontend_cfg = makePerchingFrontendConfig();
+        PerchingFrontend frontend(frontend_cfg, map_manager_, astar_ptr_);
+        traj_opt::PerchingProblem problem;
+        problem.use_tracking_warm_start = true;
+        problem.init_total_time = init_guess.total_time;
+        problem.init_nu = init_guess.nu_seed;
+        problem.init_tau_f = init_guess.tau_f_seed;
+        problem.warm_start_guide_path = init_guess.guide_path;
+        problem.warm_start_guide_t = init_guess.guide_t;
+        problem.warm_start_head_yaw = init_guess.head_yaw;
+
+        if (!frontend.buildProblem(init_guess.head_pvaj,
+                                   init_guess.rebased_surface,
+                                   problem)) {
+            ros_ptr_->warn(" -- [TrackingPerching] TRACKING_TO_PERCHING_INIT_FAILED reason=frontend_failed");
+            tracking_perching_manager_->onPerchingRejected();
+            return tracking_ret;
+        }
+        latest_replan.setGuidePath(problem.guide_path);
+        latest_replan.setExpCondition(VecDf(), problem.guide_path, problem.head_pvaj,
+                                      problem.nominal_tail_pvaj, PolytopeVec());
+
+        Trajectory perching_pos;
+        TimeConsuming t_opt("tracking_to_perching_opt", false);
+        const bool opt_ok = traj_manager_->perchingSnap()->optimize(problem, perching_pos);
+        const double opt_t = t_opt.stop();
+        time_consuming_[EXP_TRAJ_OPT] += opt_t;
+        if (!opt_ok || perching_pos.empty()) {
+            ros_ptr_->warn(" -- [TrackingPerching] TRACKING_PERCHING_CANDIDATE_REJECTED reason=optimization_failed");
+            tracking_perching_manager_->onPerchingRejected();
+            return tracking_ret;
+        }
+        ros_ptr_->info(" -- [TrackingPerching] TRACKING_PERCHING_CANDIDATE_OPT_SUCCESS duration={:.3f}, opt_time={:.4f}",
+                       perching_pos.getTotalDuration(),
+                       opt_t);
+
+        Trajectory perching_yaw;
+        if (!buildPerchingYawTrajectoryFromHead(perching_pos,
+                                                problem.surface,
+                                                init_guess.head_yaw,
+                                                perching_yaw)) {
+            ros_ptr_->warn(" -- [TrackingPerching] TRACKING_PERCHING_CANDIDATE_REJECTED reason=yaw_generation_failed");
+            tracking_perching_manager_->onPerchingRejected();
+            return tracking_ret;
+        }
+
+        const auto candidate_check =
+                perching_runtime_manager_
+                    ? perching_runtime_manager_->checkCandidate(perching_pos,
+                                                                &perching_yaw,
+                                                                problem,
+                                                                problem.surface)
+                    : PerchingRuntimeManager::CheckResult{};
+        const bool candidate_accepted =
+                perching_runtime_manager_ &&
+                perching_runtime_manager_->candidateAccepted(candidate_check);
+        if (!candidate_accepted) {
+            ros_ptr_->warn(" -- [TrackingPerching] TRACKING_PERCHING_CANDIDATE_REJECTED reason={}, valid={}, safe={}, terminal_sync={}, dynamics_feasible={}, terminal_pos_err={:.3f}, terminal_vel_err={:.3f}, max_thrust={:.3f}, max_omega={:.3f}",
+                           candidate_check.reason,
+                           candidate_check.valid,
+                           candidate_check.safe,
+                           candidate_check.terminal_sync,
+                           candidate_check.dynamics_feasible,
+                           candidate_check.terminal_position_error,
+                           candidate_check.terminal_velocity_error,
+                           candidate_check.max_thrust,
+                           candidate_check.max_omega);
+            tracking_perching_manager_->onPerchingRejected();
+            return tracking_ret;
+        }
+
+        if (!commitTrackingToPerchingTrajectory(tracking_pos,
+                                                tracking_yaw,
+                                                tracking_local_t,
+                                                init_guess.handover_delay,
+                                                perching_pos,
+                                                perching_yaw,
+                                                "tracking_to_perching")) {
+            tracking_perching_manager_->onPerchingRejected();
+            return tracking_ret;
+        }
+
+        tracking_perching_manager_->onPerchingCommitted();
+        return SUCCESS;
+    }
+
     RET_CODE GeneralPlanner::PlanTrackingFromRest(const traj_opt::DynamicTargetStates &target_prediction,
                                                 const bool &new_task) {
         TimeConsuming total_t("PlanTrackingFromRest", false);
@@ -2968,6 +3358,11 @@ namespace general_planner {
         if (cfg_.tracking_runtime_manager_enable && tracking_runtime_manager_) {
             tracking_runtime_manager_->reset();
         }
+        if (new_task &&
+            tracking_perching_manager_ &&
+            !tracking_perching_manager_->perchingRequested()) {
+            tracking_perching_manager_->reset();
+        }
 
         const RET_CODE ret = optimizeTrackingTask(target_prediction, true);
         time_consuming_[TOTAL_REPLAN] = total_t.stop();
@@ -2983,6 +3378,28 @@ namespace general_planner {
             latest_replan.setRetCode(GENERAL_RET_CODE::GENERAL_NO_ODOM);
             return FAILED;
         }
+        if (tracking_perching_manager_ &&
+            (tracking_perching_manager_->status() ==
+                 TrackingPerchingTransitionManager::Status::PERCHING_COMMITTED ||
+             tracking_perching_manager_->status() ==
+                 TrackingPerchingTransitionManager::Status::PERCHING_EXECUTING ||
+             tracking_perching_manager_->status() ==
+                 TrackingPerchingTransitionManager::Status::CONTACT_IMMINENT)) {
+            const bool contact_imminent =
+                    perching_runtime_manager_ &&
+                    perching_runtime_manager_->status() ==
+                        PerchingRuntimeManager::Status::CONTACT_IMMINENT;
+            if (!cfg_.perching_abort_to_tracking_enable || contact_imminent) {
+                latest_replan.setRetCode(GENERAL_SUCCESS_NO_BACKUP);
+                time_consuming_[TOTAL_REPLAN] = total_t.stop();
+                return SUCCESS;
+            }
+            ros_ptr_->warn(" -- [TrackingPerching] TRACKING_PERCHING_ABORT_TO_TRACKING reason=surface_unavailable_before_contact");
+            tracking_perching_manager_->onAbortToTracking();
+            if (perching_runtime_manager_) {
+                perching_runtime_manager_->reset();
+            }
+        }
         const Vec3f goal = target_prediction.empty() ? robot_state_.p : target_prediction.back().position;
         latest_replan.setGoal(goal, target_prediction.empty() ? NAN : target_prediction.back().yaw, robot_state_);
         gi_.goal_p = goal;
@@ -2995,6 +3412,52 @@ namespace general_planner {
         const RET_CODE ret = optimizeTrackingTask(target_prediction, false);
         time_consuming_[TOTAL_REPLAN] = total_t.stop();
         return ret;
+    }
+
+    RET_CODE GeneralPlanner::ReplanTrackingOnce(
+            const traj_opt::DynamicTargetStates &target_prediction,
+            const traj_opt::PerchingSurfaceState &surface,
+            const bool &new_task) {
+        TimeConsuming total_t("ReplanTrackingOnceTrackingPerching", false);
+        std::lock_guard<std::mutex> guard(replan_lock_);
+        latest_replan.reset();
+        if (!robot_state_.rcv) {
+            latest_replan.setRetCode(GENERAL_RET_CODE::GENERAL_NO_ODOM);
+            return FAILED;
+        }
+        latest_replan.setGoal(target_prediction.empty() ? surface.position : target_prediction.back().position,
+                              target_prediction.empty() ? surface.yaw : target_prediction.back().yaw,
+                              robot_state_);
+        gi_.goal_p = target_prediction.empty() ? surface.position : target_prediction.back().position;
+        gi_.goal_yaw = target_prediction.empty() ? surface.yaw : target_prediction.back().yaw;
+        gi_.new_goal = new_task;
+
+        if (tracking_perching_manager_ &&
+            (tracking_perching_manager_->status() ==
+                 TrackingPerchingTransitionManager::Status::PERCHING_COMMITTED ||
+             tracking_perching_manager_->status() ==
+                 TrackingPerchingTransitionManager::Status::PERCHING_EXECUTING ||
+             tracking_perching_manager_->status() ==
+                 TrackingPerchingTransitionManager::Status::CONTACT_IMMINENT)) {
+            const RET_CODE ret = optimizePerchingTask(surface, false);
+            time_consuming_[TOTAL_REPLAN] = total_t.stop();
+            return ret;
+        }
+
+        if (new_task && cfg_.tracking_runtime_manager_enable && tracking_runtime_manager_) {
+            tracking_runtime_manager_->reset();
+        }
+
+        const RET_CODE tracking_ret = optimizeTrackingTask(target_prediction, false);
+        const RET_CODE ret = tryCommitPerchingFromTracking(target_prediction, surface, tracking_ret);
+        time_consuming_[TOTAL_REPLAN] = total_t.stop();
+        return ret;
+    }
+
+    void GeneralPlanner::setTrackingPerchingRequest(const bool request) {
+        if (tracking_perching_manager_) {
+            tracking_perching_manager_->setPerchingRequest(request);
+        }
     }
 
     RET_CODE GeneralPlanner::PlanPerchingFromRest(const traj_opt::PerchingSurfaceState &surface,
@@ -3095,6 +3558,18 @@ namespace general_planner {
                                  (ros_ptr_->getSimTime() - cmd_traj_info_.getStartWallTime());
         cmd_traj_info_.unlock();
         return std::max(0.0, remaining);
+    }
+
+    bool GeneralPlanner::trackingPerchingPerchingActive() const {
+        return tracking_perching_manager_ &&
+               trackingPerchingPerchingStatus(tracking_perching_manager_->status());
+    }
+
+    void GeneralPlanner::markTrackingPerchingContact() {
+        if (tracking_perching_manager_ &&
+            trackingPerchingPerchingStatus(tracking_perching_manager_->status())) {
+            tracking_perching_manager_->onContact();
+        }
     }
 
 
