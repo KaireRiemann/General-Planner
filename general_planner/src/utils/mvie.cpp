@@ -30,6 +30,30 @@ namespace optimization_utils {
     using namespace math_utils;
     using namespace geometry_utils;
 
+    namespace {
+        struct MVIECostData {
+            int64_t M{0};
+            double smoothEps{1.0e-2};
+            double penaltyWt{1.0e3};
+            Eigen::MatrixX3d A;
+            int lbfgs_iterations{0};
+        };
+
+        int recordMVIEProgress(void *data,
+                               const Eigen::VectorXd &,
+                               const Eigen::VectorXd &,
+                               double,
+                               double,
+                               int k,
+                               int) {
+            auto *optData = static_cast<MVIECostData *>(data);
+            if (optData != nullptr) {
+                optData->lbfgs_iterations = k;
+            }
+            return 0;
+        }
+    }
+
     void MVIE::chol3d(const Eigen::Matrix3d &A, Eigen::Matrix3d &L) {
         L(0, 0) = sqrt(A(0, 0));
         L(0, 1) = 0.0;
@@ -62,15 +86,11 @@ namespace optimization_utils {
 
 
     double MVIE::costMVIE(void *data, const Eigen::VectorXd &x, Eigen::VectorXd &grad) {
-        const int64_t *pM = (int64_t *) data;
-        const double *pSmoothEps = (double *) (pM + 1);
-        const double *pPenaltyWt = pSmoothEps + 1;
-        const double *pA = pPenaltyWt + 1;
-
-        const int M = *pM;
-        const double smoothEps = *pSmoothEps;
-        const double penaltyWt = *pPenaltyWt;
-        Eigen::Map<const Eigen::MatrixX3d> A(pA, M, 3);
+        const auto *optData = static_cast<const MVIECostData *>(data);
+        const int M = static_cast<int>(optData->M);
+        const double smoothEps = optData->smoothEps;
+        const double penaltyWt = optData->penaltyWt;
+        const Eigen::MatrixX3d &A = optData->A;
         Eigen::Map<const Eigen::Vector3d> p(x.data());
         Eigen::Map<const Eigen::Vector3d> rtd(x.data() + 3);
         Eigen::Map<const Eigen::Vector3d> cde(x.data() + 6);
@@ -129,7 +149,12 @@ namespace optimization_utils {
         return cost;
     }
 
-    bool MVIE::maxVolInsEllipsoid(const Eigen::MatrixX4d &hPoly, Ellipsoid &ellipsoid) {
+    bool MVIE::maxVolInsEllipsoid(const Eigen::MatrixX4d &hPoly,
+                                  Ellipsoid &ellipsoid,
+                                  int *lbfgs_iterations) {
+        if (lbfgs_iterations != nullptr) {
+            *lbfgs_iterations = 0;
+        }
         Mat3f R = ellipsoid.R();
         Vec3f r = ellipsoid.r();
         Vec3f p = ellipsoid.d();
@@ -150,17 +175,10 @@ namespace optimization_utils {
         }
         const Eigen::Vector3d interior = xlp.head<3>();
 
-        // Prepare the data for MVIE optimization
-        uint8_t *optData = new uint8_t[sizeof(int64_t) + (2 + 3 * M) * sizeof(double)];
-        int64_t *pM = (int64_t *) optData;
-        double *pSmoothEps = (double *) (pM + 1);
-        double *pPenaltyWt = pSmoothEps + 1;
-        double *pA = pPenaltyWt + 1;
-
-        *pM = M;
-        Eigen::Map<Eigen::MatrixX3d> A(pA, M, 3);
-        A = Alp.leftCols<3>().array().colwise() /
-            (blp - Alp.leftCols<3>() * interior).array();
+        MVIECostData optData;
+        optData.M = M;
+        optData.A = Alp.leftCols<3>().array().colwise() /
+                    (blp - Alp.leftCols<3>() * interior).array();
 
         Eigen::VectorXd x(9);
         const Eigen::Matrix3d Q = R * (r.cwiseProduct(r)).asDiagonal() * R.transpose();
@@ -182,16 +200,19 @@ namespace optimization_utils {
         paramsMVIE.min_step = 1.0e-32;
         paramsMVIE.past = 3;
         paramsMVIE.delta = 1.0e-2;
-        *pSmoothEps = 1.0e-2;
-        *pPenaltyWt = 1.0e+3;
+        optData.smoothEps = 1.0e-2;
+        optData.penaltyWt = 1.0e+3;
 
         int ret = lbfgs::lbfgs_optimize(x,
                                         minCost,
                                         &costMVIE,
                                         nullptr,
-                                        nullptr,
-                                        optData,
+                                        &recordMVIEProgress,
+                                        &optData,
                                         paramsMVIE);
+        if (lbfgs_iterations != nullptr) {
+            *lbfgs_iterations = optData.lbfgs_iterations;
+        }
 
         if (ret < 0) {
             printf("FIRI WARNING: %s\n", lbfgs::lbfgs_strerror(ret));
@@ -222,7 +243,6 @@ namespace optimization_utils {
             r = S;
         }
         ellipsoid = Ellipsoid(R, r, p);
-        delete[] optData;
         return ret >= 0;
     }
 }

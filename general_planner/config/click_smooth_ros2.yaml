@@ -24,6 +24,8 @@ general_planner:
   corridor_line_max_length: 1.2
   safe_corridor_line_max_length: 5.0
   iris_iter_num: 2
+  ellipsoid_optimizer: hom
+  ellipsoid_optimizer_fallback: false
   obs_skip_num: 2
   replan_forward_dt: 0.1
   planning_horizon: 7.0
@@ -201,4 +203,3 @@ rog_map:
     #             the cell will be considered as unknown.
     # in all, 1.0 is more aggressive while 0.0 is more conservative.
     unk_thresh: 1.0
-

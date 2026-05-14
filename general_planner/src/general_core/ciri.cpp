@@ -31,6 +31,7 @@ namespace general_planner {
 
     RET_CODE CIRI::comvexDecomposition(const Eigen::MatrixX4d& bd, const Eigen::Matrix3Xd& pc, const Eigen::Vector3d& a,
                                        const Eigen::Vector3d& b) {
+        latest_mvie_lbfgs_iterations_ = 0;
         const Eigen::Vector4d ah(a(0), a(1), a(2), 1.0);
         const Eigen::Vector4d bh(b(0), b(1), b(2), 1.0);
 
@@ -216,9 +217,11 @@ namespace general_planner {
                 return FAILED;
             }
 
-            if (!MVIE::maxVolInsEllipsoid(hPoly, E)) {
+            int mvie_iterations = 0;
+            if (!EllipsoidOptimizer::maxVolInsEllipsoid(hPoly, E, ellipsoid_optimizer_config_, &mvie_iterations)) {
                 return FAILED;
             }
+            latest_mvie_lbfgs_iterations_ += mvie_iterations;
         }
 
         if (std::isnan(hPoly.sum())) {
@@ -248,9 +251,12 @@ namespace general_planner {
         optimized_poly = optimized_polytope_;
     }
 
-    void CIRI::setupParams(double robot_r, int iter_num) {
+    void CIRI::setupParams(double robot_r,
+                           int iter_num,
+                           const optimization_utils::EllipsoidOptimizerConfig &ellipsoid_optimizer_config) {
         robot_r_ = robot_r;
         iter_num_ = iter_num;
+        ellipsoid_optimizer_config_ = ellipsoid_optimizer_config;
         sphere_template_ = Ellipsoid(Mat3f::Identity(), robot_r_ * Vec3f(1, 1, 1), Vec3f(0, 0, 0));
         //        split_seed_max_ = split_seed_max;
         //        split_thresh_ = split_thresh;

@@ -232,13 +232,17 @@ namespace general_planner {
         if (traj_manager_->plain()) {
             traj_manager_->plain()->setLocalAstar(astar_ptr_);
         }
+        const auto ellipsoid_optimizer_config =
+                optimization_utils::EllipsoidOptimizer::makeConfig(cfg_.ellipsoid_optimizer,
+                                                                   cfg_.ellipsoid_optimizer_fallback);
         cg_ptr_ = std::make_shared<CorridorGenerator>(ros_ptr_, map_manager_, cfg_.corridor_bound_dis,
                                                       cfg_.corridor_line_max_length,
                                                       cfg_.resolution, rog_map_cfg.virtual_ground_height,
                                                       rog_map_cfg.virtual_ceil_height,
                                                       cfg_.robot_r,
                                                       cfg_.obs_skip_num,
-                                                      cfg_.iris_iter_num);
+                                                      cfg_.iris_iter_num,
+                                                      ellipsoid_optimizer_config);
         cg_ptr_->SetLineNeighborList(cfg_.seed_line_neighbour);
 
 

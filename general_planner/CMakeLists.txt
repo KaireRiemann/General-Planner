@@ -164,5 +164,6 @@ target_link_libraries(tracking_sim_monitor
 
 catkin_install_python(PROGRAMS
         scripts/click_state2state_benchmark.py
+        scripts/corridor_benchmark.py
         DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )

@@ -1,6 +1,7 @@
 <launch>
     <arg name="sim_config" default="click.yaml"/>
     <arg name="planner_config" default="click_plain_ros1.yaml"/>
+    <arg name="planner_config_path" default=""/>
     <arg name="rviz" default="true"/>
     <arg name="fpv_rviz" default="true"/>
     <arg name="rviz_config" default="$(find general_planner)/rviz/esdf_planner.rviz"/>
@@ -10,7 +11,8 @@
     </node>
 
     <node pkg="general_planner" name="fsm_node" type="fsm_node" output="screen">
-        <param name="config_name" value="$(arg planner_config)" type="string"/>
+        <param if="$(eval arg('planner_config_path') != '')" name="config_path" value="$(arg planner_config_path)" type="string"/>
+        <param unless="$(eval arg('planner_config_path') != '')" name="config_name" value="$(arg planner_config)" type="string"/>
     </node>
 
     <group if="$(arg rviz)">

@@ -161,9 +161,19 @@ namespace fsm {
         }
 
         std::string makeSwarmDebugInfo() const {
+            const double corridor_time = planner_ptr_->getLatestCorridorTime();
             std::ostringstream oss;
             oss << "drone_id=" << cfg_.swarm_drone_id
                 << ";des_clearance=" << cfg_.swarm_des_clearance
+                << ";ellipsoid_optimizer=" << planner_ptr_->getEllipsoidOptimizerName()
+                << ";corridor_time_ms=" << (corridor_time >= 0.0 ? corridor_time * 1000.0 : -1.0)
+                << ";mvie_lbfgs_iterations=" << planner_ptr_->getLatestMvieLbfgsIterations()
+                << ";exp_frontend_time_ms=" << planner_ptr_->getLatestExpFrontendTime() * 1000.0
+                << ";exp_opt_time_ms=" << planner_ptr_->getLatestExpOptimizationTime() * 1000.0
+                << ";backup_frontend_time_ms=" << planner_ptr_->getLatestBackupFrontendTime() * 1000.0
+                << ";backup_opt_time_ms=" << planner_ptr_->getLatestBackupOptimizationTime() * 1000.0
+                << ";total_replan_time_ms=" << planner_ptr_->getLatestTotalReplanTime() * 1000.0
+                << ";trajectory_optimization_success=1"
                 << ";optimization_time_ms=" << planner_ptr_->getLatestOptimizationTime() * 1000.0;
             return oss.str();
         }

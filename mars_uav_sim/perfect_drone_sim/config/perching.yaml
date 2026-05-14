@@ -3,7 +3,7 @@ pcd_name: "perching.pcd"
 mesh_resource: "package://perfect_drone_sim/meshes/yunque-M.dae"
 init_position:
   x: 0
-  y: -3
+  y: -2.0
   z: 1.5
 init_yaw: 0.0
 

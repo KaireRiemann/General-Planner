@@ -1,0 +1,74 @@
+<launch>
+    <arg name="demo" default="click"/>
+    <arg name="solvers" default="classic,hom,hom_no_normalization,hom_fallback"/>
+    <arg name="trials" default="10"/>
+    <arg name="seed" default="7"/>
+    <arg name="log_dir" default="$(find general_planner)/log/corridor_log"/>
+    <arg name="cases_path" default="__auto__"/>
+    <arg name="rviz" default="true"/>
+    <arg name="fpv_rviz" default="true"/>
+    <arg name="rviz_config" default="$(find perfect_drone_sim)/rviz/top_down.rviz"/>
+    <arg name="fpv_rviz_config" default="$(find perfect_drone_sim)/rviz/fpv.rviz"/>
+    <arg name="manual_goals" default="false"/>
+    <arg name="manual_goal_topic" default="/goal"/>
+    <arg name="manual_goal_timeout" default="0.0"/>
+    <arg name="x_min" default="-40.0"/>
+    <arg name="x_max" default="40.0"/>
+    <arg name="y_min" default="-40.0"/>
+    <arg name="y_max" default="40.0"/>
+    <arg name="goal_z" default="1.5"/>
+    <arg name="min_goal_distance" default="4.0"/>
+    <arg name="warmup_trials" default="0"/>
+    <arg name="warmup_radius" default="4.0"/>
+    <arg name="wide_min_goal_distance" default="15.0"/>
+    <arg name="min_recent_goal_distance" default="10.0"/>
+    <arg name="recent_goal_window" default="12"/>
+    <arg name="candidate_batch" default="32"/>
+    <arg name="goal_clearance" default="0.45"/>
+    <arg name="collision_clearance" default="0.25"/>
+    <arg name="plan_timeout" default="8.0"/>
+    <arg name="trial_timeout" default="60.0"/>
+    <arg name="startup_wait" default="2.0"/>
+    <arg name="goal_publish_time" default="1.0"/>
+    <arg name="goal_publish_rate" default="10.0"/>
+
+    <node pkg="general_planner" type="corridor_benchmark.py"
+          name="corridor_benchmark" output="screen" required="true"
+          args="--demo $(arg demo)
+                --solvers $(arg solvers)
+                --trials $(arg trials)
+                --seed $(arg seed)
+                --log-dir $(arg log_dir)
+                --cases-path $(arg cases_path)
+                --x-min $(arg x_min)
+                --x-max $(arg x_max)
+                --y-min $(arg y_min)
+                --y-max $(arg y_max)
+                --goal-z $(arg goal_z)
+                --min-goal-distance $(arg min_goal_distance)
+                --warmup-trials $(arg warmup_trials)
+                --warmup-radius $(arg warmup_radius)
+                --wide-min-goal-distance $(arg wide_min_goal_distance)
+                --min-recent-goal-distance $(arg min_recent_goal_distance)
+                --recent-goal-window $(arg recent_goal_window)
+                --candidate-batch $(arg candidate_batch)
+                --goal-clearance $(arg goal_clearance)
+                --collision-clearance $(arg collision_clearance)
+                --plan-timeout $(arg plan_timeout)
+                --trial-timeout $(arg trial_timeout)
+                --startup-wait $(arg startup_wait)
+                --goal-publish-time $(arg goal_publish_time)
+                --goal-publish-rate $(arg goal_publish_rate)
+                --manual-goals $(arg manual_goals)
+                --manual-goal-topic $(arg manual_goal_topic)
+                --manual-goal-timeout $(arg manual_goal_timeout)
+                --rviz false
+                --fpv-rviz false"/>
+
+    <group if="$(arg rviz)">
+        <node pkg="rviz" type="rviz" name="corridor_benchmark_top_down"
+              args="-d $(arg rviz_config)" output="log"/>
+        <node if="$(arg fpv_rviz)" pkg="rviz" type="rviz" name="corridor_benchmark_fpv"
+              args="-d $(arg fpv_rviz_config)" output="log"/>
+    </group>
+</launch>

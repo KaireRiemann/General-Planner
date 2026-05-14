@@ -31,8 +31,8 @@ namespace optimization_utils {
 
         // R is also assumed to be a rotation matrix
         static bool maxVolInsEllipsoid(const Eigen::MatrixX4d &hPoly,
-                                       Ellipsoid &ellipsoid);
+                                       Ellipsoid &ellipsoid,
+                                       int *lbfgs_iterations = nullptr);
 
     };
 }
-

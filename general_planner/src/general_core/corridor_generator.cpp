@@ -32,10 +32,11 @@ namespace general_planner {
                                          const double bound_dis,
                                          const double seed_line_max_dis, const double min_overlap_threshold,
                                          const double virtual_groud_height, const double virtual_ceil_height,
-                                         const double robot_r, const int box_search_skip_num, const int iris_iter_num)
+                                         const double robot_r, const int box_search_skip_num, const int iris_iter_num,
+                                         const optimization_utils::EllipsoidOptimizerConfig &ellipsoid_optimizer_config)
             : ros_ptr_(ros_ptr), map_manager_(map_manager) {
         ciri_ = std::make_shared<CIRI>(ros_ptr_);
-        ciri_->setupParams(robot_r, iris_iter_num);
+        ciri_->setupParams(robot_r, iris_iter_num, ellipsoid_optimizer_config);
         bound_dis_ = bound_dis;
         seed_line_max_length_ = seed_line_max_dis;
         min_overlap_threshold_ = min_overlap_threshold;
@@ -251,6 +252,7 @@ namespace general_planner {
         if (success == SUCCESS) {
             ciri_cnt++;
             ciri_t += dt;
+            ciri_mvie_lbfgs_iterations_ += ciri_->getLatestMvieLbfgsIterations();
             ciri_->getPolytope(polytope);
             polytope.SetSeedLine(Line{pt, pt});
             return true;
@@ -348,6 +350,7 @@ namespace general_planner {
         if (success == SUCCESS) {
             ciri_cnt++;
             ciri_t += dt;
+            ciri_mvie_lbfgs_iterations_ += ciri_->getLatestMvieLbfgsIterations();
             ciri_->getPolytope(polytope);
             polytope.SetSeedLine(line);
             return true;

@@ -54,7 +54,7 @@
 #include <utils/optimization/sdlp.h>
 #include <utils/geometry/geometry_utils.h>
 #include <utils/optimization/optimization_utils.h>
-#include <utils/optimization/mvie.h>
+#include <utils/optimization/ellipsoid_optimizer.h>
 #include <utils/header/type_utils.hpp>
 
 #include <ros_interface/ros_interface.hpp>
@@ -69,6 +69,8 @@ namespace general_planner {
         double robot_r_{0};
         int iter_num_{1};
         bool debug_en{false};
+        optimization_utils::EllipsoidOptimizerConfig ellipsoid_optimizer_config_{};
+        int latest_mvie_lbfgs_iterations_{0};
 
         Ellipsoid sphere_template_;
         Polytope optimized_polytope_;
@@ -133,7 +135,10 @@ namespace general_planner {
 
         typedef std::shared_ptr<CIRI> Ptr;
 
-        void setupParams(double robot_r, int iter_num);
+        void setupParams(double robot_r,
+                         int iter_num,
+                         const optimization_utils::EllipsoidOptimizerConfig &ellipsoid_optimizer_config =
+                                 optimization_utils::EllipsoidOptimizerConfig());
 
         RET_CODE comvexDecomposition(const Eigen::MatrixX4d &bd,
                                      const Eigen::Matrix3Xd &pc,
@@ -141,5 +146,9 @@ namespace general_planner {
                                      const Eigen::Vector3d &b);
 
         void getPolytope(Polytope &optimized_poly);
+
+        int getLatestMvieLbfgsIterations() const {
+            return latest_mvie_lbfgs_iterations_;
+        }
     };
 }

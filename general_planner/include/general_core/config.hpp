@@ -77,6 +77,8 @@ namespace general_planner {
         double over_wall_forward_ratio{0.9};
         bool unknown_goal_reveal_en{true};
         int iris_iter_num;
+        std::string ellipsoid_optimizer{"classic"};
+        bool ellipsoid_optimizer_fallback{false};
 
         int mpc_horizon{};
 
@@ -261,6 +263,8 @@ namespace general_planner {
             loader.LoadParam("general_planner/over_wall_forward_ratio", over_wall_forward_ratio, 0.9);
             loader.LoadParam("general_planner/unknown_goal_reveal_en", unknown_goal_reveal_en, true);
             loader.LoadParam("general_planner/iris_iter_num", iris_iter_num, 1);
+            loader.LoadParam("general_planner/ellipsoid_optimizer", ellipsoid_optimizer, std::string("classic"));
+            loader.LoadParam("general_planner/ellipsoid_optimizer_fallback", ellipsoid_optimizer_fallback, false);
             loader.LoadParam("general_planner/yaw_mode", yaw_mode, 1);
             loader.LoadParam("general_planner/mpc_horizon", mpc_horizon, 1);
             loader.LoadParam("general_planner/yaw_dot_max", yaw_dot_max, 3.14);

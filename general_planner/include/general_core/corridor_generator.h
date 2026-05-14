@@ -67,6 +67,7 @@ namespace general_planner {
 
         double ciri_t{0};
         int ciri_cnt{0};
+        int ciri_mvie_lbfgs_iterations_{0};
     public:
         vec_Vec3f getLatestCloud() {
             vec_Vec3f out = latest_pc;
@@ -83,7 +84,9 @@ namespace general_planner {
                           const double virtual_ceil_height,
                           const double robot_r,
                           const int box_search_skip_num,
-                          const int iris_iter_num);
+                          const int iris_iter_num,
+                          const optimization_utils::EllipsoidOptimizerConfig &ellipsoid_optimizer_config =
+                                  optimization_utils::EllipsoidOptimizerConfig());
 
         ~CorridorGenerator() = default;
 
@@ -110,10 +113,16 @@ namespace general_planner {
             if (ciri_cnt == 0) {
                 return -1;
             }
-            double aver_T = ciri_t / ciri_cnt;
+            double total_T = ciri_t;
             ciri_t = 0;
             ciri_cnt = 0;
-            return aver_T;
+            return total_T;
+        }
+
+        int getCiriMvieLbfgsIterations() {
+            const int iterations = ciri_mvie_lbfgs_iterations_;
+            ciri_mvie_lbfgs_iterations_ = 0;
+            return iterations;
         }
 
 

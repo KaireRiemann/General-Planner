@@ -171,6 +171,48 @@ namespace general_planner {
                    time_consuming_[LogTime::BACK_TRAJ_OPT];
         }
 
+        double getLatestExpFrontendTime() const {
+            return time_consuming_.size() > LogTime::EPX_TRAJ_FRONTEND
+                   ? time_consuming_[LogTime::EPX_TRAJ_FRONTEND]
+                   : 0.0;
+        }
+
+        double getLatestExpOptimizationTime() const {
+            return time_consuming_.size() > LogTime::EXP_TRAJ_OPT
+                   ? time_consuming_[LogTime::EXP_TRAJ_OPT]
+                   : 0.0;
+        }
+
+        double getLatestBackupFrontendTime() const {
+            return time_consuming_.size() > LogTime::BACK_TRAJ_FRONTEND
+                   ? time_consuming_[LogTime::BACK_TRAJ_FRONTEND]
+                   : 0.0;
+        }
+
+        double getLatestBackupOptimizationTime() const {
+            return time_consuming_.size() > LogTime::BACK_TRAJ_OPT
+                   ? time_consuming_[LogTime::BACK_TRAJ_OPT]
+                   : 0.0;
+        }
+
+        double getLatestTotalReplanTime() const {
+            return time_consuming_.size() > LogTime::TOTAL_REPLAN
+                   ? time_consuming_[LogTime::TOTAL_REPLAN]
+                   : 0.0;
+        }
+
+        double getLatestCorridorTime() const {
+            return cg_ptr_ ? cg_ptr_->getCiriComputationTime() : -1.0;
+        }
+
+        int getLatestMvieLbfgsIterations() const {
+            return cg_ptr_ ? cg_ptr_->getCiriMvieLbfgsIterations() : 0;
+        }
+
+        std::string getEllipsoidOptimizerName() const {
+            return cfg_.ellipsoid_optimizer;
+        }
+
         void setSwarmTrajectories(const traj_opt::SwarmTrajectories &trajectories);
 
         /* Tow type of replan strategy */
