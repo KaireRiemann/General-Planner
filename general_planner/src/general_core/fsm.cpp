@@ -103,6 +103,8 @@ namespace fsm {
                 return;
             }
             ret_code = planner_ptr_->ReplanPerchingOnce(surface, task_new_);
+        } else if (explorationMode()) {
+            ret_code = planner_ptr_->ReplanExplorationOnce(task_new_);
         }
         if (ret_code == FAILED) {
 //            cout << YELLOW << " -- [Fsm] ReplanOnce failed." << RESET << endl;
@@ -119,6 +121,12 @@ namespace fsm {
             } else if (machine_state_ != FOLLOW_TRAJ) {
                 ChangeState("ReplanTimerCallback", FOLLOW_TRAJ);
             }
+        } else if (ret_code == FINISH && explorationMode()) {
+            gi_.new_goal = false;
+            task_new_ = false;
+            finish_plan = true;
+            cout << GREEN << " -- [Fsm] Exploration finished." << RESET << endl;
+            ChangeState("ReplanTimerCallback", WAIT_GOAL);
         } else if (ret_code == SUCCESS || ret_code == FINISH) {
             gi_.new_goal = false;
             task_new_ = false;
@@ -207,6 +215,8 @@ namespace fsm {
                         return;
                     }
                     retcode = planner_ptr_->PlanPerchingFromRest(surface, task_new_);
+                } else if (explorationMode()) {
+                    retcode = planner_ptr_->PlanExplorationFromRest(task_new_);
                 }
                 if (state2stateMode() && !planner_ptr_->goalValid()) {
                     cout << YELLOW << " -- [Fsm] Goal is invalid, skip this goal." << RESET << endl;
@@ -219,6 +229,13 @@ namespace fsm {
                     publishPolyTraj();
                     ChangeState("MainFsmCallback",
                                 planned_tracking_static ? HOLD_TRACKING : FOLLOW_TRAJ);
+                } else if (retcode == FINISH && explorationMode()) {
+                    gi_.new_goal = false;
+                    task_new_ = false;
+                    plan_from_rest_ = false;
+                    finish_plan = true;
+                    cout << GREEN << " -- [Fsm] Exploration finished." << RESET << endl;
+                    ChangeState("MainFsmCallback", WAIT_GOAL);
                 } else if (retcode == SUCCESS || retcode == FINISH) {
                     gi_.new_goal = false;
                     task_new_ = false;
@@ -277,6 +294,10 @@ namespace fsm {
         return cfg_.task_mode == TaskMode::PERCHING;
     }
 
+    bool Fsm::explorationMode() const {
+        return cfg_.task_mode == TaskMode::EXPLORATION;
+    }
+
     bool Fsm::trackingExecutionState() const {
         return machine_state_ == FOLLOW_TRAJ ||
                machine_state_ == STATIC_TRACKING ||
@@ -312,6 +333,11 @@ namespace fsm {
             planner_ptr_->setTrackingPerchingRequest(false);
         }
         if (new_mode == cfg_.task_mode) {
+            if (new_mode == TaskMode::EXPLORATION) {
+                finish_plan = false;
+                task_new_ = true;
+                started_ = true;
+            }
             return;
         }
         cout << YELLOW << " -- [Fsm] Task mode switch: " << cfg_.task_mode_str
@@ -320,6 +346,9 @@ namespace fsm {
         cfg_.task_mode = new_mode;
         finish_plan = false;
         task_new_ = true;
+        if (new_mode == TaskMode::EXPLORATION) {
+            started_ = true;
+        }
         perching_contact_reached_ = false;
     }
 
@@ -352,12 +381,18 @@ namespace fsm {
         if (perchingMode()) {
             return !perching_contact_reached_ && task_new_ && perchingTaskReady();
         }
+        if (explorationMode()) {
+            return started_ && !finish_plan;
+        }
         return false;
     }
 
     bool Fsm::shouldGenerateAfterTrajFinish() {
         if (state2stateMode()) {
             return !closeToGoal(0.1);
+        }
+        if (explorationMode()) {
+            return started_ && !finish_plan;
         }
         if (perchingMode()) {
             return false;

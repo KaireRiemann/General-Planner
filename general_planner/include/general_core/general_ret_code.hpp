@@ -29,17 +29,21 @@
 
 namespace general_planner {
     enum GENERAL_RET_CODE {
+        GENERAL_EXPLORATION_FINISH = 4,
         GENERAL_SUCCESS_WITH_BACKUP = 3,
         GENERAL_SUCCESS_NO_BACKUP = 2,
         GENERAL_SUCCESS = 1,
         GENERAL_UNDEFINED = 0,
         GENERAL_NO_ODOM = -1,
         GENERAL_NO_START_POINT = -2,
+        GENERAL_MAP_NOT_READY = -3,
 
     };
 
     static std::string GENERAL_RET_CODE_STR(const int& ret) {
         switch (ret) {
+        case GENERAL_EXPLORATION_FINISH:
+            return "Exploration finished";
         case GENERAL_SUCCESS_WITH_BACKUP:
             return "Success, with backup trajectory also success";
         case GENERAL_SUCCESS_NO_BACKUP:
@@ -52,6 +56,8 @@ namespace general_planner {
             return "No odom, return at the start of the replan";
         case GENERAL_NO_START_POINT:
             return "Cannot find a start point in the local map";
+        case GENERAL_MAP_NOT_READY:
+            return "Map is not ready";
         }
         return "Unknown return code";
     };

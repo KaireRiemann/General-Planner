@@ -165,6 +165,8 @@ namespace fsm {
             const char *task_phase = "state_to_state";
             if (perchingMode()) {
                 task_phase = "perching";
+            } else if (explorationMode()) {
+                task_phase = "exploration";
             } else if (trackingPerchingPerchingActive()) {
                 task_phase = "tracking_perching_perching";
             } else if (trackingMode()) {
@@ -878,6 +880,9 @@ namespace fsm {
                 cout << YELLOW << " -- [Fsm] PERCHING TASK ENABLE, surface odom: "
                      << cfg_.perching_surface_odom_topic << RESET << endl;
                 cmd_cnt++;
+            } else if (explorationMode()) {
+                cout << YELLOW << " -- [Fsm] EXPLORATION TASK ENABLE." << RESET << endl;
+                cmd_cnt++;
             }
 
             if (cmd_cnt != 1) {
@@ -903,6 +908,13 @@ namespace fsm {
             write_time_ << endl;
             machine_state_ = INIT;
             system_start_time_ = ros_ptr_->getSimTime();
+            if (cfg_.auto_start) {
+                started_ = true;
+                if (explorationMode()) {
+                    task_new_ = true;
+                }
+                cout << YELLOW << " -- [Fsm] AUTO START ENABLE." << RESET << endl;
+            }
 
             pid_cmd_.kx[0] = 5.7;
             pid_cmd_.kx[1] = 5.7;

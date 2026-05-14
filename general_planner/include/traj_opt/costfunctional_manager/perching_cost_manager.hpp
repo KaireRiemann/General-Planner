@@ -221,8 +221,15 @@ private:
         }
 
         const Eigen::Vector3d rel_world = frame.origin - position;
-        const double rel_norm = rel_world.norm();
-        if (rel_norm < min_dist || rel_norm > max_dist)
+        const double distance_sq = rel_world.squaredNorm();
+        const auto min_gate =
+            cost_functional::smoothLogisticActivation(distance_sq - min_dist * min_dist,
+                                                       cfg_->smooth_eps);
+        const auto max_gate =
+            cost_functional::smoothLogisticActivation(max_dist * max_dist - distance_sq,
+                                                       cfg_->smooth_eps);
+        const double range_gate = min_gate.value * max_gate.value;
+        if (range_gate <= 0.0)
         {
             return 0.0;
         }
@@ -271,7 +278,8 @@ private:
         const double inv_z = 1.0 / rel_cam.z();
         const double u = fx * rel_cam.x() * inv_z;
         const double v = fy * rel_cam.y() * inv_z;
-        const double cost = weight * (u * u + v * v);
+        const double pixel_error = u * u + v * v;
+        const double cost = weight * range_gate * pixel_error;
 
         if (!accumulate_gradient)
         {
@@ -279,12 +287,20 @@ private:
         }
 
         Eigen::Vector3d grad_cam = Eigen::Vector3d::Zero();
-        grad_cam.x() = 2.0 * weight * u * fx * inv_z;
-        grad_cam.y() = 2.0 * weight * v * fy * inv_z;
-        grad_cam.z() = -2.0 * weight * (u * u + v * v) * inv_z;
+        grad_cam.x() = 2.0 * weight * range_gate * u * fx * inv_z;
+        grad_cam.y() = 2.0 * weight * range_gate * v * fy * inv_z;
+        grad_cam.z() = -2.0 * weight * range_gate * pixel_error * inv_z;
         const Eigen::Vector3d grad_rel_world = R_wb * R_cb.transpose() * grad_cam;
         grad_position -= grad_rel_world;
         grad_origin += grad_rel_world;
+
+        const double d_gate_d_dist_sq =
+            min_gate.derivative * max_gate.value -
+            min_gate.value * max_gate.derivative;
+        const Eigen::Vector3d grad_range_rel =
+            2.0 * weight * pixel_error * d_gate_d_dist_sq * rel_world;
+        grad_position -= grad_range_rel;
+        grad_origin += grad_range_rel;
 
         constexpr double kEps = 1.0e-4;
         for (int axis = 0; axis < 3; ++axis)

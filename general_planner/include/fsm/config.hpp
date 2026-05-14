@@ -42,7 +42,8 @@ namespace fsm {
     enum class TaskMode {
         STATE_TO_STATE = 0,
         TRACKING = 1,
-        PERCHING = 2
+        PERCHING = 2,
+        EXPLORATION = 3
     };
 
     inline std::string normalizeTaskMode(std::string mode) {
@@ -58,6 +59,9 @@ namespace fsm {
         if (mode == "perch" || mode == "perching") {
             return "perching";
         }
+        if (mode == "explore" || mode == "exploration") {
+            return "exploration";
+        }
         return "state2state";
     }
 
@@ -69,6 +73,9 @@ namespace fsm {
         if (normalized == "perching") {
             return TaskMode::PERCHING;
         }
+        if (normalized == "exploration") {
+            return TaskMode::EXPLORATION;
+        }
         return TaskMode::STATE_TO_STATE;
     }
 
@@ -78,6 +85,7 @@ namespace fsm {
 
         // Fsm Params
         bool click_goal_en{},visualization_en{};
+        bool auto_start{false};
         double replan_rate{}, resolution{};
         double click_height{};
 
@@ -126,6 +134,7 @@ namespace fsm {
             yaml_loader::YamlLoader loader(cfg_path);
             vector<double> tem_gain;
             loader.LoadParam("fsm/timer_en", timer_en, false);
+            loader.LoadParam("fsm/auto_start", auto_start, false);
             loader.LoadParam("fsm/click_goal_en", click_goal_en, false);
             loader.LoadParam("fsm/click_yaw_en", click_yaw_en, false);
             loader.LoadParam("fsm/replan_rate", replan_rate, 10.0);

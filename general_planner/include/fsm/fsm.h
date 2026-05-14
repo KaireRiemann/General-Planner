@@ -65,9 +65,9 @@ namespace fsm {
         bool started_{false}, plan_from_rest_{false};
 
         struct GoalInfo {
-            bool new_goal;
-            Vec3f goal_p;
-            double goal_yaw;
+            bool new_goal{false};
+            Vec3f goal_p{Vec3f::Zero()};
+            double goal_yaw{0.0};
         } gi_;
 
         Eigen::Vector3d auto_pilot_vel_w_;
@@ -181,6 +181,8 @@ namespace fsm {
         bool trackingMode() const;
 
         bool perchingMode() const;
+
+        bool explorationMode() const;
 
         void setTaskModeFromString(const std::string &mode);
 

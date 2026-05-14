@@ -86,6 +86,30 @@ namespace general_planner {
         // Yaw mode: 1 heading to velocity, 2 heading to goal
         int yaw_mode = YAW_TO_VEL;
 
+        bool exploration_enable{false};
+        bool exploration_print_log{true};
+        double exploration_frontier_search_radius{12.0};
+        double exploration_frontier_cluster_radius{0.8};
+        int exploration_min_frontier_cluster_size{5};
+        double exploration_viewpoint_min_distance{1.2};
+        double exploration_viewpoint_max_distance{4.0};
+        double exploration_viewpoint_height_offset{0.0};
+        double exploration_viewpoint_safe_distance{0.45};
+        int exploration_viewpoint_yaw_sample_num{16};
+        int exploration_viewpoint_radius_sample_num{3};
+        int exploration_max_candidate_num{128};
+        double exploration_weight_travel{1.0};
+        double exploration_weight_yaw{0.5};
+        double exploration_weight_curvature{0.8};
+        double exploration_weight_info_gain{-2.0};
+        double exploration_weight_unknown_risk{1.0};
+        double exploration_min_information_gain{3.0};
+        double exploration_goal_switch_min_score_improvement{0.25};
+        double exploration_goal_reached_distance{0.5};
+        bool exploration_unknown_as_occupied_for_motion{true};
+        bool exploration_require_line_free_to_frontier{false};
+        bool exploration_use_astar_cost{true};
+
         double tracking_distance{2.2};
         double tracking_distance_tolerance{0.8};
         double tracking_distance_lower_tolerance{0.45};
@@ -287,6 +311,51 @@ namespace general_planner {
             loader.LoadParam("general_planner/yaw_mode", yaw_mode, 1);
             loader.LoadParam("general_planner/mpc_horizon", mpc_horizon, 1);
             loader.LoadParam("general_planner/yaw_dot_max", yaw_dot_max, 3.14);
+            loader.LoadParam("general_planner/exploration_enable", exploration_enable, false);
+            loader.LoadParam("general_planner/exploration_frontier_search_radius",
+                             exploration_frontier_search_radius, 12.0);
+            loader.LoadParam("general_planner/exploration_frontier_cluster_radius",
+                             exploration_frontier_cluster_radius, 0.8);
+            loader.LoadParam("general_planner/exploration_min_frontier_cluster_size",
+                             exploration_min_frontier_cluster_size, 5);
+            loader.LoadParam("general_planner/exploration_viewpoint_min_distance",
+                             exploration_viewpoint_min_distance, 1.2);
+            loader.LoadParam("general_planner/exploration_viewpoint_max_distance",
+                             exploration_viewpoint_max_distance, 4.0);
+            loader.LoadParam("general_planner/exploration_viewpoint_height_offset",
+                             exploration_viewpoint_height_offset, 0.0);
+            loader.LoadParam("general_planner/exploration_viewpoint_safe_distance",
+                             exploration_viewpoint_safe_distance, 0.45);
+            loader.LoadParam("general_planner/exploration_viewpoint_yaw_sample_num",
+                             exploration_viewpoint_yaw_sample_num, 16);
+            loader.LoadParam("general_planner/exploration_viewpoint_radius_sample_num",
+                             exploration_viewpoint_radius_sample_num, 3);
+            loader.LoadParam("general_planner/exploration_max_candidate_num",
+                             exploration_max_candidate_num, 128);
+            loader.LoadParam("general_planner/exploration_weight_travel",
+                             exploration_weight_travel, 1.0);
+            loader.LoadParam("general_planner/exploration_weight_yaw",
+                             exploration_weight_yaw, 0.5);
+            loader.LoadParam("general_planner/exploration_weight_curvature",
+                             exploration_weight_curvature, 0.8);
+            loader.LoadParam("general_planner/exploration_weight_info_gain",
+                             exploration_weight_info_gain, -2.0);
+            loader.LoadParam("general_planner/exploration_weight_unknown_risk",
+                             exploration_weight_unknown_risk, 1.0);
+            loader.LoadParam("general_planner/exploration_min_information_gain",
+                             exploration_min_information_gain, 3.0);
+            loader.LoadParam("general_planner/exploration_goal_switch_min_score_improvement",
+                             exploration_goal_switch_min_score_improvement, 0.25);
+            loader.LoadParam("general_planner/exploration_goal_reached_distance",
+                             exploration_goal_reached_distance, 0.5);
+            loader.LoadParam("general_planner/exploration_unknown_as_occupied_for_motion",
+                             exploration_unknown_as_occupied_for_motion, true);
+            loader.LoadParam("general_planner/exploration_require_line_free_to_frontier",
+                             exploration_require_line_free_to_frontier, false);
+            loader.LoadParam("general_planner/exploration_use_astar_cost",
+                             exploration_use_astar_cost, true);
+            loader.LoadParam("general_planner/exploration_print_log",
+                             exploration_print_log, true);
             loader.LoadParam("general_planner/tracking/distance", tracking_distance, 2.2);
             loader.LoadParam("general_planner/tracking/distance_tolerance", tracking_distance_tolerance, 0.8);
             loader.LoadParam("general_planner/tracking/distance_lower_tolerance",

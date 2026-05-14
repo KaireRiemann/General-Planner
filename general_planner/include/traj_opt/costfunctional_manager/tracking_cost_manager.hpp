@@ -70,13 +70,13 @@ public:
 	        if (cfg_ == nullptr || problem_.target_prediction.empty())
 	        {
             return 0.0;
-        }
+            }
 
-        const auto target = interpolateTarget(t_global);
-        Eigen::Vector3d grad_target = Eigen::Vector3d::Zero();
-        double cost = 0.0;
+            const auto target = interpolateTarget(t_global);
+            Eigen::Vector3d grad_target = Eigen::Vector3d::Zero();
+            double cost = 0.0;
 
-        cost += addObservationDistanceCost(position,
+            cost += addObservationDistanceCost(position,
                                            target,
                                            grad_position,
                                            grad_target);

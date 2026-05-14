@@ -42,6 +42,8 @@
 #include "general_core/map_manager.hpp"
 #include "general_core/corridor_generator.h"
 #include "general_core/fov_checker.h"
+#include "general_core/exploration_frontend.hpp"
+#include "general_core/exploration_runtime_manager.hpp"
 #include "general_core/tracking_perching_frontend.hpp"
 #include "general_core/tracking_runtime_manager.hpp"
 #include "general_core/perching_runtime_manager.hpp"
@@ -78,7 +80,7 @@ namespace general_planner {
         super_utils::RobotState robot_state_;
 
         std::mutex drone_state_mutex_;
-        std::mutex replan_lock_;
+        mutable std::mutex replan_lock_;
         std::mutex swarm_traj_mutex_;
 
         Vec3f local_start_p_;
@@ -104,6 +106,8 @@ namespace general_planner {
         std::unique_ptr<PerchingRuntimeManager> perching_runtime_manager_;
         std::unique_ptr<TrackingPerchingTransitionManager> tracking_perching_manager_;
         std::unique_ptr<TrackingToPerchingInitializer> tracking_to_perching_initializer_;
+        std::unique_ptr<ExplorationFrontend> exploration_frontend_;
+        std::unique_ptr<ExplorationRuntimeManager> exploration_runtime_manager_;
 
         vector<double> time_consuming_;
 
@@ -251,6 +255,12 @@ namespace general_planner {
         RET_CODE ReplanPerchingOnce(const traj_opt::PerchingSurfaceState &surface,
                                     const bool &new_task);
 
+        RET_CODE PlanExplorationFromRest(const bool &new_task);
+
+        RET_CODE ReplanExplorationOnce(const bool &new_task);
+
+        bool getLatestExplorationGoal(ExplorationGoal &goal) const;
+
     private:
         RET_CODE generateExpTraj(ExpTraj &last_exp_traj_info,
                                  ExpTraj &out_exp_traj_info);
@@ -380,6 +390,8 @@ namespace general_planner {
                                       const bool &from_rest);
 
         PerchingFrontend::Config makePerchingFrontendConfig() const;
+
+        ExplorationFrontend::Config makeExplorationFrontendConfig() const;
 
         RET_CODE tryCommitPerchingFromTracking(
             const traj_opt::DynamicTargetStates &target_prediction,
