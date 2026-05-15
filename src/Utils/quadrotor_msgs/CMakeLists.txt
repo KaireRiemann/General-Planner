@@ -1,0 +1,102 @@
+cmake_minimum_required(VERSION 2.8.3)
+project(quadrotor_msgs)
+
+find_package(catkin REQUIRED COMPONENTS
+  #armadillo
+  roscpp
+  nav_msgs
+  geometry_msgs
+  message_generation
+  std_msgs
+)
+
+set(CMAKE_MODULE_PATH ${PROJECT_SOURCE_DIR}/cmake)
+
+include_directories(
+    ${catkin_INCLUDE_DIRS}
+    include
+    )
+
+
+add_message_files(
+  FILES
+  AuxCommand.msg
+  Corrections.msg
+  Gains.msg
+  OutputData.msg
+  PositionCommand.msg
+  PPROutputData.msg
+  Serial.msg
+  SO3Command.msg
+  StatusData.msg
+  TRPYCommand.msg
+  Odometry.msg
+  PolynomialTrajectory.msg
+  LQRTrajectory.msg
+  GoalSet.msg
+  Px4ctrlDebug.msg
+  TakeoffLand.msg
+  
+  InspectionPoint.msg
+  InspectionPointSet.msg
+  PlanState.msg
+  Px4State.msg
+  ArmCmd.msg
+  Pause.msg
+  Emergency.msg
+
+  MpcPositionCommand.msg
+  PolynomialTrajectory.msg
+  TrakingPerformance.msg
+  QuadrotorState.msg
+)
+
+generate_messages(
+    DEPENDENCIES
+    geometry_msgs
+    nav_msgs
+    std_msgs
+)
+
+catkin_package(
+  #INCLUDE_DIRS include
+  LIBRARIES encode_msgs decode_msgs
+  #CATKIN_DEPENDS geometry_msgs nav_msgs
+  #DEPENDS system_lib
+  CATKIN_DEPENDS message_runtime
+)
+
+# add_executable(test_exe src/test_exe.cpp)
+add_library(decode_msgs src/decode_msgs.cpp)
+add_library(encode_msgs src/encode_msgs.cpp)
+
+# add_dependencies(test_exe quadrotor_msgs_generate_messages_cpp)
+add_dependencies(encode_msgs quadrotor_msgs_generate_messages_cpp)
+add_dependencies(decode_msgs quadrotor_msgs_generate_messages_cpp)
+
+find_package(Eigen3 REQUIRED)
+include_directories(${EIGEN3_INCLUDE_DIR})
+
+
+# target_link_libraries(test_exe 
+#     decode_msgs 
+#     encode_msgs
+# )
+
+
+# install(TARGETS demo
+#   ARCHIVE DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
+#   LIBRARY DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
+#   RUNTIME DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
+# )
+
+
+
+# install(DIRECTORY launch/
+#   DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}/launch
+# )
+
+# install(DIRECTORY config/
+#   DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}/config
+# )
+

@@ -1,0 +1,51 @@
+<launch>
+    <arg name="sim_config" default="tracking_perching_tracking.yaml"/>
+    <arg name="planner_config" default="tracking_perching_tracking_ros1.yaml"/>
+    <arg name="rviz" default="true"/>
+    <arg name="marsim" default="true"/>
+    <arg name="monitor" default="true"/>
+    <arg name="target_planner" default="astar"/>
+    <arg name="target_loop_mode" default="pingpong"/>
+    <arg name="rviz_config" default="$(find general_planner)/rviz/esdf_planner.rviz"/>
+
+    <node if="$(arg marsim)" pkg="perfect_drone_sim" type="perfect_drone" name="perfect_drone" output="log">
+        <param name="config_name" value="$(arg sim_config)" type="string"/>
+    </node>
+
+    <node pkg="general_planner" name="tracking_target_source" type="task_target_source" output="screen">
+        <param name="config_name" value="$(arg planner_config)" type="string"/>
+        <param name="mode" value="tracking" type="string"/>
+        <param name="target_planner" value="$(arg target_planner)" type="string"/>
+        <param name="loop_mode" value="$(arg target_loop_mode)" type="string"/>
+        <param name="target_odom_topic" value="/tracking/target_odom" type="string"/>
+        <param name="target_path_topic" value="/tracking/target_path" type="string"/>
+        <param name="target_prediction_topic" value="/tracking/target_prediction" type="string"/>
+        <param name="target_speed" value="1.2" type="double"/>
+        <param name="prediction_horizon" value="4.0" type="double"/>
+        <param name="prediction_dt" value="0.25" type="double"/>
+        <param name="loop" value="true" type="bool"/>
+    </node>
+
+    <node pkg="general_planner" name="fsm_node" type="fsm_node" output="screen">
+        <param name="config_name" value="$(arg planner_config)" type="string"/>
+    </node>
+
+    <node if="$(arg monitor)" pkg="general_planner" name="tracking_sim_monitor"
+          type="tracking_sim_monitor" output="screen">
+        <param name="drone_odom_topic" value="/lidar_slam/odom" type="string"/>
+        <param name="target_odom_topic" value="/tracking/target_odom" type="string"/>
+        <param name="desired_distance" value="2.2" type="double"/>
+        <param name="height_offset" value="0.7" type="double"/>
+        <param name="warmup_time" value="3.0" type="double"/>
+        <param name="sample_rate" value="20.0" type="double"/>
+    </node>
+
+    <group if="$(arg rviz)">
+        <node pkg="rviz" type="rviz" name="tracking_demo_rviz"
+              args="-d $(arg rviz_config)" output="log"/>
+        <node pkg="rviz" type="rviz" name="top_down"
+              args="-d $(find perfect_drone_sim)/rviz/top_down.rviz" output="log"/>
+        <node pkg="rviz" type="rviz" name="fpv"
+              args="-d $(find perfect_drone_sim)/rviz/fpv.rviz" output="log"/>
+    </group>
+</launch>

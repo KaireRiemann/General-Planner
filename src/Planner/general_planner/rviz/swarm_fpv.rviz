@@ -1,0 +1,111 @@
+Panels:
+  - Class: rviz/Displays
+    Name: Displays
+  - Class: rviz/Views
+    Name: Views
+Visualization Manager:
+  Class: ""
+  Displays:
+    - Class: rviz/Grid
+      Enabled: false
+      Name: Grid
+      Cell Size: 1
+      Plane Cell Count: 30
+      Reference Frame: <Fixed Frame>
+      Value: false
+    - Class: rviz/Marker
+      Enabled: true
+      Marker Topic: /drone_0/perfect_drone/robot
+      Name: Drone0Mesh
+      Queue Size: 20
+      Value: true
+    - Class: rviz/Marker
+      Enabled: true
+      Marker Topic: /drone_1/perfect_drone/robot
+      Name: Drone1Mesh
+      Queue Size: 20
+      Value: true
+    - Alpha: 0.2
+      Class: rviz/PointCloud2
+      Color: 140; 140; 140
+      Color Transformer: FlatColor
+      Enabled: true
+      Name: GlobalMap
+      Queue Size: 5
+      Size (m): 0.08
+      Style: Boxes
+      Topic: /drone_0/global_pc
+      Use Fixed Frame: true
+      Value: true
+    - Class: rviz/PointCloud2
+      Color Transformer: FlatColor
+      Enabled: true
+      Name: Drone0LocalCloud
+      Queue Size: 2
+      Size (m): 0.04
+      Style: Points
+      Topic: /drone_0/cloud_registered
+      Use Fixed Frame: true
+      Value: true
+    - Class: rviz/PointCloud2
+      Color Transformer: FlatColor
+      Enabled: true
+      Name: Drone1LocalCloud
+      Queue Size: 2
+      Size (m): 0.04
+      Style: Points
+      Topic: /drone_1/cloud_registered
+      Use Fixed Frame: true
+      Value: true
+    - Class: rviz/MarkerArray
+      Enabled: true
+      Marker Topic: /drone_0/fsm_node/visualization/exp_traj
+      Name: Drone0ExpTraj
+      Queue Size: 10
+      Value: true
+    - Class: rviz/MarkerArray
+      Enabled: true
+      Marker Topic: /drone_1/fsm_node/visualization/exp_traj
+      Name: Drone1ExpTraj
+      Queue Size: 10
+      Value: true
+    - Class: rviz/Path
+      Color: 25; 120; 255
+      Enabled: true
+      Line Style: Lines
+      Line Width: 0.05
+      Name: Drone0Path
+      Topic: /drone_0/perfect_drone/path
+      Value: true
+    - Class: rviz/Path
+      Color: 255; 120; 25
+      Enabled: true
+      Line Style: Lines
+      Line Width: 0.05
+      Name: Drone1Path
+      Topic: /drone_1/perfect_drone/path
+      Value: true
+  Enabled: true
+  Global Options:
+    Background Color: 255; 255; 255
+    Fixed Frame: world
+    Frame Rate: 30
+  Name: root
+  Tools:
+    - Class: rviz/Interact
+    - Class: rviz/MoveCamera
+  Value: true
+  Views:
+    Current:
+      Class: rviz/ThirdPersonFollower
+      Distance: 8
+      Focal Shape Fixed Size: true
+      Focal Shape Size: 0.2
+      Name: FollowDrone0
+      Pitch: 0.55
+      Target Frame: drone_0/base_link
+      Yaw: 3.14
+    Saved: ~
+Window Geometry:
+  Height: 1050
+  Width: 1200

@@ -1,0 +1,25 @@
+<launch>
+    <arg name="sim_config" default="click.yaml"/>
+    <arg name="planner_config" default="click_esdf_ros1.yaml"/>
+    <arg name="planner_config_path" default=""/>
+    <arg name="rviz" default="true"/>
+    <arg name="fpv_rviz" default="true"/>
+    <arg name="rviz_config" default="$(find general_planner)/rviz/esdf_planner.rviz"/>
+
+    <node pkg="perfect_drone_sim" type="perfect_drone"
+          name="perfect_drone" output="log" clear_params="true">
+        <param name="config_name" value="$(arg sim_config)" type="string"/>
+    </node>
+
+    <node pkg="general_planner" name="fsm_node" type="fsm_node" output="screen" clear_params="true">
+        <param if="$(eval arg('planner_config_path') != '')" name="config_path" value="$(arg planner_config_path)" type="string"/>
+        <param unless="$(eval arg('planner_config_path') != '')" name="config_name" value="$(arg planner_config)" type="string"/>
+    </node>
+
+    <group if="$(arg rviz)">
+        <node pkg="rviz" type="rviz" name="top_down"
+              args="-d $(arg rviz_config)" output="log"/>
+        <node if="$(arg fpv_rviz)" pkg="rviz" type="rviz" name="fpv"
+              args="-d $(find perfect_drone_sim)/rviz/fpv.rviz" output="log"/>
+    </group>
+</launch>

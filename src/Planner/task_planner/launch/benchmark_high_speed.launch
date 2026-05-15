@@ -1,0 +1,35 @@
+<launch>
+    <arg name="sim_config" default="high_speed.yaml"/>
+    <arg name="planner_config" default="static_high_speed.yaml"/>
+    <arg name="manual_goal_topic" default="/planning/click_goal"/>
+    <arg name="rviz" default="true"/>
+    <arg name="fpv_rviz" default="true"/>
+    <arg name="top_down_rviz_config" default="$(find perfect_drone_sim)/rviz/benchmark.rviz"/>
+    <arg name="fpv_rviz_config" default="$(find perfect_drone_sim)/rviz/fpv.rviz"/>
+
+    <node pkg="perfect_drone_sim" type="perfect_drone"
+          name="perfect_drone" output="log" clear_params="true">
+        <!--     1. use absolute path -->
+        <!--         <param name="config_path" value="" type="string"></param> -->
+        <!--     2. use file name in general_planner/config/... -->
+        <param name="config_name" value="$(arg sim_config)" type="string"></param>
+    </node>
+
+    <node pkg="general_planner" name="fsm_node" type="fsm_node" output="screen" clear_params="true">
+        <!--     1. use absolute path -->
+        <!--         <param name="config_path" value="" type="string"></param> -->
+        <!--     2. use file name in general_planner/config/... -->
+        <param name="config_name" value="$(arg planner_config)" type="string"></param>
+    </node>
+
+    <!-- Manual high-speed benchmark: RViz goal clicks go straight to fsm_node. -->
+    <node if="$(arg rviz)" pkg="rviz" type="rviz" name="top_down"
+          args="-d $(arg top_down_rviz_config)" output="log">
+        <remap from="goal" to="$(arg manual_goal_topic)"/>
+    </node>
+
+    <node if="$(arg fpv_rviz)" pkg="rviz" type="rviz" name="fpv"
+          args="-d $(arg fpv_rviz_config)" output="log">
+        <remap from="goal" to="$(arg manual_goal_topic)"/>
+    </node>
+</launch>

@@ -1,0 +1,43 @@
+<launch>
+    <arg name="sim_config" default="dynamic_takeoff.yaml"/>
+    <arg name="planner_config" default="dynamic_takeoff_test_ros1.yaml"/>
+    <arg name="rviz" default="true"/>
+    <arg name="marsim" default="true"/>
+    <arg name="auto_perch" default="true"/>
+    <arg name="takeoff_contact_duration" default="4.0"/>
+    <arg name="perching_request_delay" default="8.5"/>
+
+    <arg name="surface_x" default="4.0"/>
+    <arg name="surface_y" default="2.0"/>
+    <arg name="surface_z" default="1.0"/>
+    <arg name="surface_vx" default="1.0"/>
+    <arg name="surface_vy" default="0.0"/>
+    <arg name="surface_vz" default="0.0"/>
+    <arg name="surface_roll" default="0.0"/>
+    <arg name="surface_pitch" default="-0.5"/>
+    <arg name="surface_yaw" default="0.0"/>
+    <arg name="surface_yaw_rate" default="0.0"/>
+
+    <include file="$(find task_planner)/launch/dynamic_takeoff_test.launch">
+        <arg name="sim_config" value="$(arg sim_config)"/>
+        <arg name="planner_config" value="$(arg planner_config)"/>
+        <arg name="rviz" value="$(arg rviz)"/>
+        <arg name="marsim" value="$(arg marsim)"/>
+        <arg name="takeoff_contact_duration" value="$(arg takeoff_contact_duration)"/>
+        <arg name="surface_x" value="$(arg surface_x)"/>
+        <arg name="surface_y" value="$(arg surface_y)"/>
+        <arg name="surface_z" value="$(arg surface_z)"/>
+        <arg name="surface_vx" value="$(arg surface_vx)"/>
+        <arg name="surface_vy" value="$(arg surface_vy)"/>
+        <arg name="surface_vz" value="$(arg surface_vz)"/>
+        <arg name="surface_roll" value="$(arg surface_roll)"/>
+        <arg name="surface_pitch" value="$(arg surface_pitch)"/>
+        <arg name="surface_yaw" value="$(arg surface_yaw)"/>
+        <arg name="surface_yaw_rate" value="$(arg surface_yaw_rate)"/>
+    </include>
+
+    <node if="$(arg auto_perch)" pkg="rostopic" type="rostopic"
+          name="dynamic_takeoff_request_perching_once" output="screen"
+          launch-prefix="bash -c 'sleep $(arg perching_request_delay); exec $0 $@'"
+          args="pub -1 /planning/task_mode std_msgs/String perching"/>
+</launch>

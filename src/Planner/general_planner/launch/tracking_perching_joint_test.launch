@@ -1,0 +1,105 @@
+<launch>
+    <arg name="sim_config" default="perching.yaml"/>
+    <arg name="planner_config" default="tracking_perching_joint_test_ros1.yaml"/>
+    <arg name="rviz" default="true"/>
+    <arg name="marsim" default="true"/>
+    <arg name="monitor" default="true"/>
+    <arg name="rviz_config" default="$(find general_planner)/rviz/esdf_planner.rviz"/>
+
+    <arg name="target_speed" default="1.2"/>
+    <arg name="target_start_x" default="3.0"/>
+    <arg name="target_start_y" default="0.0"/>
+    <arg name="target_start_z" default="1.0"/>
+    <arg name="target_goal_x" default="15.0"/>
+    <arg name="target_goal_y" default="0.0"/>
+    <arg name="target_goal_z" default="1.0"/>
+    <arg name="target_loop" default="false"/>
+    <arg name="target_loop_mode" default="teleport"/>
+
+    <arg name="surface_vx" default="1.2"/>
+    <arg name="surface_vy" default="0.0"/>
+    <arg name="surface_vz" default="0.0"/>
+    <arg name="surface_roll" default="0.0"/>
+    <arg name="surface_pitch" default="-0.6"/>
+    <arg name="surface_yaw" default="0.0"/>
+    <arg name="surface_roll_rate" default="0.0"/>
+    <arg name="surface_pitch_rate" default="0.0"/>
+    <arg name="surface_yaw_rate" default="0.0"/>
+    <arg name="platform_radius" default="0.35"/>
+    <arg name="normal_length" default="0.9"/>
+
+    <node if="$(arg marsim)" pkg="perfect_drone_sim" type="perfect_drone"
+          name="perfect_drone" output="log">
+        <param name="config_name" value="$(arg sim_config)" type="string"/>
+    </node>
+
+    <node pkg="general_planner" name="tracking_perching_joint_source"
+          type="task_target_source" output="screen">
+        <param name="config_name" value="$(arg planner_config)" type="string"/>
+        <param name="mode" value="tracking_perching" type="string"/>
+        <param name="rate" value="30.0" type="double"/>
+
+        <param name="target_odom_topic" value="/tracking/target_odom" type="string"/>
+        <param name="target_path_topic" value="/tracking/target_path" type="string"/>
+        <param name="target_prediction_topic" value="/tracking/target_prediction" type="string"/>
+        <param name="tracking_target_odom_topic" value="/tracking/target_odom" type="string"/>
+        <param name="tracking_target_path_topic" value="/tracking/target_path" type="string"/>
+        <param name="tracking_target_prediction_topic" value="/tracking/target_prediction" type="string"/>
+        <param name="tracking_prediction_horizon" value="4.0" type="double"/>
+        <param name="tracking_prediction_dt" value="0.25" type="double"/>
+
+        <param name="target_speed" value="$(arg target_speed)" type="double"/>
+        <param name="target_start_x" value="$(arg target_start_x)" type="double"/>
+        <param name="target_start_y" value="$(arg target_start_y)" type="double"/>
+        <param name="target_start_z" value="$(arg target_start_z)" type="double"/>
+        <param name="target_goal_x" value="$(arg target_goal_x)" type="double"/>
+        <param name="target_goal_y" value="$(arg target_goal_y)" type="double"/>
+        <param name="target_goal_z" value="$(arg target_goal_z)" type="double"/>
+        <param name="target_loop" value="$(arg target_loop)" type="bool"/>
+        <param name="target_loop_mode" value="$(arg target_loop_mode)" type="string"/>
+
+        <param name="surface_odom_topic" value="/perching/surface_odom" type="string"/>
+        <param name="surface_marker_topic" value="/perching/surface_markers" type="string"/>
+        <param name="surface_traj_topic" value="/planning_cmd/poly_traj" type="string"/>
+        <param name="surface_x" value="$(arg target_start_x)" type="double"/>
+        <param name="surface_y" value="$(arg target_start_y)" type="double"/>
+        <param name="surface_z" value="$(arg target_start_z)" type="double"/>
+        <param name="surface_vx" value="$(arg surface_vx)" type="double"/>
+        <param name="surface_vy" value="$(arg surface_vy)" type="double"/>
+        <param name="surface_vz" value="$(arg surface_vz)" type="double"/>
+        <param name="surface_roll" value="$(arg surface_roll)" type="double"/>
+        <param name="surface_pitch" value="$(arg surface_pitch)" type="double"/>
+        <param name="surface_yaw" value="$(arg surface_yaw)" type="double"/>
+        <param name="surface_roll_rate" value="$(arg surface_roll_rate)" type="double"/>
+        <param name="surface_pitch_rate" value="$(arg surface_pitch_rate)" type="double"/>
+        <param name="surface_yaw_rate" value="$(arg surface_yaw_rate)" type="double"/>
+        <param name="platform_radius" value="$(arg platform_radius)" type="double"/>
+        <param name="normal_length" value="$(arg normal_length)" type="double"/>
+        <param name="stop_surface_on_traj_arrival" value="true" type="bool"/>
+        <param name="stop_surface_require_perching_trajectory" value="true" type="bool"/>
+    </node>
+
+    <node pkg="general_planner" name="fsm_node" type="fsm_node"
+          output="screen" clear_params="true">
+        <param name="config_name" value="$(arg planner_config)" type="string"/>
+    </node>
+
+    <node if="$(arg monitor)" pkg="general_planner" name="tracking_sim_monitor"
+          type="tracking_sim_monitor" output="screen">
+        <param name="drone_odom_topic" value="/lidar_slam/odom" type="string"/>
+        <param name="target_odom_topic" value="/tracking/target_odom" type="string"/>
+        <param name="desired_distance" value="2.2" type="double"/>
+        <param name="height_offset" value="0.7" type="double"/>
+        <param name="warmup_time" value="3.0" type="double"/>
+        <param name="sample_rate" value="20.0" type="double"/>
+    </node>
+
+    <group if="$(arg rviz)">
+        <node pkg="rviz" type="rviz" name="tracking_perching_joint_rviz"
+              args="-d $(arg rviz_config)" output="log"/>
+        <node pkg="rviz" type="rviz" name="tracking_perching_joint_top_down"
+              args="-d $(find perfect_drone_sim)/rviz/top_down.rviz" output="log"/>
+        <node pkg="rviz" type="rviz" name="tracking_perching_joint_fpv"
+              args="-d $(find perfect_drone_sim)/rviz/fpv.rviz" output="log"/>
+    </group>
+</launch>

@@ -1,0 +1,26 @@
+<launch>
+    <arg name="planner_config" default="click_real_ros1.yaml"/>
+    <arg name="planner_config_path" default=""/>
+    <arg name="rviz" default="true"/>
+    <arg name="fpv_rviz" default="true"/>
+    <arg name="rviz_config" default="$(find perfect_drone_sim)/rviz/top_down.rviz"/>
+
+    <!--     click_demo_high_speed.launch -->
+
+    <node pkg="general_planner" name="fsm_node" type="fsm_node" output="screen" clear_params="true">
+<!--     1. use absolute path -->
+<!--         <param name="config_path" value="" type="string"></param> -->
+<!--     2. use file name in general_planner/config/... -->
+        <param if="$(eval arg('planner_config_path') != '')" name="config_path" value="$(arg planner_config_path)" type="string"/>
+        <param unless="$(eval arg('planner_config_path') != '')" name="config_name" value="$(arg planner_config)" type="string"></param>
+    </node>
+
+    <group if="$(arg rviz)">
+        <node pkg="rviz" type="rviz" name="top_down" args="-d $(arg rviz_config)" output="log"/>
+        <node if="$(arg fpv_rviz)" pkg="rviz" type="rviz" name="fpv"
+              args="-d $(find perfect_drone_sim)/rviz/fpv.rviz" output="log"/>
+    </group>
+
+
+
+</launch>

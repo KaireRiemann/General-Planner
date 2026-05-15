@@ -1,0 +1,22 @@
+task_planner:
+  # 0: wait for RViz click, 1: mavros rc, 2: auto start after delay.
+  start_trigger_type: 2
+  start_program_delay: 1.0
+  odom_timeout: 0.5
+  publish_dt: 0.05
+  switch_dis: 0.8
+  frame_id: "world"
+
+  odom_topic: "/lidar_slam/odom"
+  task_mode_topic: "/planning/task_mode"
+  perching_surface_odom_topic: "/perching/surface_odom"
+  path_pub_topic: "/task_planner/path"
+  marker_topic: "mkr"
+
+  tasks:
+    - name: "perching_surface"
+      mode: "perching"
+      position: [3.6, 0.4, 0.95]
+      velocity: [0.12, 0.0, 0.0]
+      rpy: [0.0, 0.0, 0.0]
+      hold_duration: -1.0

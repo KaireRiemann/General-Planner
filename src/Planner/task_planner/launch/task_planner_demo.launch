@@ -1,0 +1,30 @@
+<launch>
+    <arg name="sim_config" default="tracking_perching_tracking.yaml"/>
+    <arg name="planner_config" default="task_planner_ros1.yaml"/>
+    <arg name="task_config" default="task_planner.yaml"/>
+    <arg name="rviz" default="true"/>
+    <arg name="marsim" default="true"/>
+    <arg name="rviz_config" default="$(find general_planner)/rviz/esdf_planner.rviz"/>
+
+    <node if="$(arg marsim)" pkg="perfect_drone_sim" type="perfect_drone"
+          name="perfect_drone" output="log" clear_params="true">
+        <param name="config_name" value="$(arg sim_config)" type="string"/>
+    </node>
+
+    <node pkg="task_planner" type="task_planner" name="task_planner" output="screen">
+        <param name="config_name" value="$(arg task_config)" type="string"/>
+    </node>
+
+    <node pkg="general_planner" name="fsm_node" type="fsm_node" output="screen" clear_params="true">
+        <param name="config_name" value="$(arg planner_config)" type="string"/>
+    </node>
+
+    <group if="$(arg rviz)">
+        <node pkg="rviz" type="rviz" name="task_planner_rviz"
+              args="-d $(arg rviz_config)" output="log"/>
+        <node pkg="rviz" type="rviz" name="top_down"
+              args="-d $(find perfect_drone_sim)/rviz/top_down.rviz" output="log"/>
+        <node pkg="rviz" type="rviz" name="fpv"
+              args="-d $(find perfect_drone_sim)/rviz/fpv.rviz" output="log"/>
+    </group>
+</launch>

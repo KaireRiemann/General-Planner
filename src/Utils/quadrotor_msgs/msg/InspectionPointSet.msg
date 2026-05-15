@@ -1,0 +1,1 @@
+InspectionPoint Point_set

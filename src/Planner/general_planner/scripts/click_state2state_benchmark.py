@@ -1,0 +1,1623 @@
+#!/usr/bin/env python3
+
+import argparse
+import csv
+import json
+import math
+import os
+import random
+import signal
+import subprocess
+import sys
+import time
+from dataclasses import dataclass
+from datetime import datetime
+from pathlib import Path
+from threading import Lock
+
+import rosgraph
+import rospy
+import rospkg
+from geometry_msgs.msg import PoseStamped
+from nav_msgs.msg import Odometry
+from quadrotor_msgs.msg import PolynomialTrajectory
+from sensor_msgs.msg import PointCloud2
+from sensor_msgs import point_cloud2
+
+
+DEMO_LAUNCHES = {
+    "click": "click_demo.launch",
+    "smooth": "click_demo.launch",
+    "esdf": "click_esdf_demo.launch",
+    "plain": "click_plain_demo.launch",
+}
+
+DEMO_CONFIGS = {
+    "click": "click_smooth_ros1.yaml",
+    "smooth": "click_smooth_ros1.yaml",
+    "esdf": "click_esdf_ros1.yaml",
+    "plain": "click_plain_ros1.yaml",
+}
+
+CSV_FIELDS = [
+    "demo",
+    "ellipsoid_optimizer",
+    "trial",
+    "success",
+    "failure_reason",
+    "sampling_phase",
+    "start_x",
+    "start_y",
+    "start_z",
+    "goal_x",
+    "goal_y",
+    "goal_z",
+    "goal_distance_m",
+    "goal_clearance_m",
+    "first_plan_latency_ms",
+    "elapsed_s",
+    "flight_time_s",
+    "trajectory_count",
+    "replan_count",
+    "replan_deadline_ms",
+    "deadline_check_count",
+    "deadline_miss_count",
+    "deadline_miss_rate",
+    "avg_replan_cycle_time_ms",
+    "max_replan_cycle_time_ms",
+    "mean_replan_interval_ms",
+    "planning_frequency_hz",
+    "planned_collision_traj_count",
+    "planned_collision_sample_count",
+    "executed_collision_sample_count",
+    "collision",
+    "avg_speed_mps",
+    "total_length_m",
+    "mean_trajectory_duration_s",
+    "last_trajectory_duration_s",
+    "avg_optimization_time_ms",
+    "avg_trajectory_optimization_time_ms",
+    "avg_corridor_time_ms",
+    "avg_corridor_generation_time_ms",
+    "avg_exp_frontend_time_ms",
+    "avg_exp_opt_time_ms",
+    "avg_backup_frontend_time_ms",
+    "avg_backup_opt_time_ms",
+    "avg_total_replan_time_ms",
+]
+
+CORRIDOR_CSV_FIELDS = [
+    "demo",
+    "ellipsoid_optimizer",
+    "case",
+    "trajectory_optimization_success",
+    "failure_reason",
+    "start_x",
+    "start_y",
+    "start_z",
+    "goal_x",
+    "goal_y",
+    "goal_z",
+    "goal_distance_m",
+    "goal_clearance_m",
+    "first_plan_latency_ms",
+    "corridor_time_ms",
+    "mvie_lbfgs_iterations",
+    "trajectory_optimization_time_ms",
+]
+
+SUMMARY_FIELDS = [
+    "demo",
+    "ellipsoid_optimizer",
+    "trials",
+    "successes",
+    "failures",
+    "success_rate",
+    "collision_trials",
+    "collision_rate",
+    "emergency_stop_count",
+    "total_replans",
+    "replan_deadline_ms",
+    "total_deadline_miss_count",
+    "deadline_check_count",
+    "deadline_miss_rate",
+    "mean_replan_cycle_time_ms",
+    "max_replan_cycle_time_ms",
+    "mean_replan_interval_ms",
+    "mean_planning_frequency_hz",
+    "total_flight_time_s",
+    "mean_flight_time_s",
+    "mean_trajectory_duration_s",
+    "total_length_m",
+    "mean_corridor_generation_time_ms",
+    "mean_corridor_time_ms",
+    "mean_trajectory_optimization_time_ms",
+    "mean_exp_frontend_time_ms",
+    "mean_exp_opt_time_ms",
+    "mean_backup_frontend_time_ms",
+    "mean_backup_opt_time_ms",
+    "mean_total_replan_time_ms",
+    "mean_optimization_time_ms",
+    "mean_speed_mps",
+]
+
+CORRIDOR_SUMMARY_FIELDS = [
+    "demo",
+    "ellipsoid_optimizer",
+    "cases",
+    "trajectory_optimization_successes",
+    "trajectory_optimization_failures",
+    "mean_mvie_lbfgs_iterations",
+    "mean_corridor_time_ms",
+    "mean_trajectory_optimization_time_ms",
+]
+
+CASE_FIELDS = [
+    "case",
+    "goal_x",
+    "goal_y",
+    "goal_z",
+    "goal_clearance_m",
+]
+
+
+@dataclass
+class TrajectoryEvent:
+    msg: PolynomialTrajectory
+    wall_time: float
+    ros_time: float
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description="Benchmark for state-to-state click demos."
+    )
+    parser.add_argument(
+        "--demo",
+        default="all",
+        help="click/smooth, esdf, plain, all, or a comma-separated list.",
+    )
+    parser.add_argument("--trials", type=int, default=1000)
+    parser.add_argument("--seed", type=int, default=7)
+    parser.add_argument("--log-dir", default="")
+    parser.add_argument("--planner-config-path", default="")
+    parser.add_argument("--ellipsoid-optimizer-label", default="")
+    parser.add_argument("--metric-set", choices=("state", "corridor"), default="state")
+    parser.add_argument("--plan-only", type=str_to_bool, default=False)
+    parser.add_argument("--restart-per-trial", type=str_to_bool, default=False)
+    parser.add_argument("--sample-cases-only", type=str_to_bool, default=False)
+    parser.add_argument("--cases-path", default="")
+    parser.add_argument("--write-cases-path", default="")
+    parser.add_argument("--x-min", type=float, default=-20.0)
+    parser.add_argument("--x-max", type=float, default=20.0)
+    parser.add_argument("--y-min", type=float, default=-20.0)
+    parser.add_argument("--y-max", type=float, default=20.0)
+    parser.add_argument("--goal-z", type=float, default=1.5)
+    parser.add_argument("--min-goal-distance", type=float, default=2.0)
+    parser.add_argument("--warmup-trials", type=int, default=5)
+    parser.add_argument("--warmup-radius", type=float, default=4.0)
+    parser.add_argument("--wide-min-goal-distance", type=float, default=6.0)
+    parser.add_argument("--min-recent-goal-distance", type=float, default=6.0)
+    parser.add_argument("--recent-goal-window", type=int, default=12)
+    parser.add_argument("--candidate-batch", type=int, default=32)
+    parser.add_argument("--goal-clearance", type=float, default=0.45)
+    parser.add_argument("--collision-clearance", type=float, default=0.25)
+    parser.add_argument("--map-voxel", type=float, default=0.10)
+    parser.add_argument("--trajectory-sample-dt", type=float, default=0.05)
+    parser.add_argument("--odom-sample-dt", type=float, default=0.05)
+    parser.add_argument("--goal-tolerance", type=float, default=0.35)
+    parser.add_argument("--speed-tolerance", type=float, default=0.35)
+    parser.add_argument("--plan-timeout", type=float, default=8.0)
+    parser.add_argument("--trial-timeout", type=float, default=60.0)
+    parser.add_argument("--startup-wait", type=float, default=2.0)
+    parser.add_argument("--settle-time", type=float, default=0.5)
+    parser.add_argument("--goal-publish-time", type=float, default=1.0)
+    parser.add_argument("--goal-publish-rate", type=float, default=20.0)
+    parser.add_argument("--replan-rate-hz", type=float, default=0.0)
+    parser.add_argument("--sample-max-attempts", type=int, default=5000)
+    parser.add_argument("--manual-goals", type=str_to_bool, default=True)
+    parser.add_argument("--manual-goal-topic", default="/goal")
+    parser.add_argument(
+        "--manual-goal-timeout",
+        type=float,
+        default=0.0,
+        help="Seconds to wait for each manually clicked goal; <=0 waits forever.",
+    )
+    parser.add_argument("--rviz", type=str_to_bool, default=True)
+    parser.add_argument("--fpv-rviz", type=str_to_bool, default=True)
+    return parser.parse_args(rospy.myargv(argv=sys.argv)[1:])
+
+
+def str_to_bool(value):
+    if isinstance(value, bool):
+        return value
+    value = value.lower()
+    if value in ("1", "true", "yes", "on"):
+        return True
+    if value in ("0", "false", "no", "off"):
+        return False
+    raise argparse.ArgumentTypeError(f"Expected a boolean value, got '{value}'.")
+
+
+def expand_demos(demo_arg):
+    if demo_arg == "all":
+        return ["click", "esdf", "plain"]
+    demos = []
+    for item in demo_arg.split(","):
+        key = item.strip().lower()
+        if not key:
+            continue
+        if key not in DEMO_LAUNCHES:
+            raise ValueError(f"Unsupported demo '{key}'. Use click, esdf, plain, or all.")
+        key = "click" if key == "smooth" else key
+        if key not in demos:
+            demos.append(key)
+    return demos
+
+
+def ensure_ros_master():
+    master = rosgraph.Master("/click_state2state_benchmark")
+    try:
+        master.getPid()
+        return None
+    except Exception:
+        proc = subprocess.Popen(
+            ["roscore"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            preexec_fn=os.setsid,
+        )
+        deadline = time.time() + 15.0
+        while time.time() < deadline:
+            try:
+                master.getPid()
+                return proc
+            except Exception:
+                time.sleep(0.2)
+        stop_process_group(proc, "roscore")
+        raise RuntimeError("Timed out while starting roscore.")
+
+
+def stop_process_group(proc, name):
+    if proc is None or proc.poll() is not None:
+        return
+    try:
+        os.killpg(os.getpgid(proc.pid), signal.SIGINT)
+        proc.wait(timeout=10.0)
+        return
+    except Exception:
+        pass
+    try:
+        os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+        proc.wait(timeout=5.0)
+        return
+    except Exception:
+        pass
+    try:
+        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+    except Exception as exc:
+        rospy.logwarn("Failed to stop %s: %s", name, exc)
+
+
+def point_distance(a, b):
+    return math.sqrt(
+        (a[0] - b[0]) * (a[0] - b[0])
+        + (a[1] - b[1]) * (a[1] - b[1])
+        + (a[2] - b[2]) * (a[2] - b[2])
+    )
+
+
+def yaw_to_quat(yaw):
+    return 0.0, 0.0, math.sin(yaw * 0.5), math.cos(yaw * 0.5)
+
+
+def safe_float(value):
+    if value is None:
+        return ""
+    if isinstance(value, float):
+        if math.isnan(value) or math.isinf(value):
+            return ""
+        return f"{value:.6f}"
+    return value
+
+
+def parse_debug_info(debug_info):
+    items = {}
+    if not debug_info:
+        return items
+    for part in debug_info.split(";"):
+        if "=" not in part:
+            continue
+        key, value = part.split("=", 1)
+        key = key.strip()
+        if key:
+            items[key] = value.strip()
+    return items
+
+
+def debug_float(debug_info, key):
+    value = parse_debug_info(debug_info).get(key)
+    if value is None:
+        return None
+    try:
+        number = float(value)
+    except ValueError:
+        return None
+    return number if math.isfinite(number) else None
+
+
+def debug_int(debug_info, key):
+    value = parse_debug_info(debug_info).get(key)
+    if value is None:
+        return None
+    try:
+        return int(float(value))
+    except ValueError:
+        return None
+
+
+def debug_bool(debug_info, key):
+    value = parse_debug_info(debug_info).get(key)
+    if value is None:
+        return None
+    value = value.strip().lower()
+    if value in ("1", "true", "yes", "on"):
+        return True
+    if value in ("0", "false", "no", "off"):
+        return False
+    return None
+
+
+def valid_time_ms(value, allow_zero=True):
+    if not isinstance(value, (int, float)) or math.isnan(value):
+        return None
+    if value < 0.0:
+        return None
+    if value == 0.0 and not allow_zero:
+        return None
+    return value
+
+
+def sum_available_ms(*values):
+    total = 0.0
+    count = 0
+    for value in values:
+        value = valid_time_ms(value)
+        if value is None:
+            continue
+        total += value
+        count += 1
+    return total if count > 0 else None
+
+
+def infer_replan_rate_hz(args, demo, pkg_path, override_rate_hz=0.0):
+    if override_rate_hz > 0.0:
+        return override_rate_hz
+    config_path = Path(args.planner_config_path) if args.planner_config_path else (
+        pkg_path / "config" / DEMO_CONFIGS.get(demo, DEMO_CONFIGS["click"])
+    )
+    if not config_path.exists():
+        return None
+    in_fsm = False
+    try:
+        lines = config_path.read_text().splitlines()
+    except OSError:
+        return None
+    for line in lines:
+        without_comment = line.split("#", 1)[0].rstrip()
+        stripped = without_comment.strip()
+        if not stripped:
+            continue
+        if not without_comment.startswith((" ", "\t")) and stripped.endswith(":"):
+            in_fsm = stripped[:-1] == "fsm"
+            continue
+        if in_fsm and stripped.startswith("replan_rate:"):
+            try:
+                value = float(stripped.split(":", 1)[1].strip())
+            except ValueError:
+                return None
+            return value if value > 0.0 else None
+    return None
+
+
+def count_emergency_stops(run_dir, demo):
+    count = 0
+    for log_path in run_dir.glob(f"{demo}*_roslaunch.log"):
+        try:
+            text = log_path.read_text(errors="ignore")
+        except OSError:
+            continue
+        count += text.count("to [EMER_STOP]")
+        count += text.count("to EMER_STOP")
+    return count
+
+
+def load_cases(path):
+    if not path:
+        return []
+    cases = []
+    with open(path, newline="") as f:
+        for row in csv.DictReader(f):
+            cases.append({
+                "case": int(float(row.get("case", len(cases) + 1))),
+                "start": (
+                    float(row["start_x"]),
+                    float(row["start_y"]),
+                    float(row["start_z"]),
+                ) if all(row.get(key) not in (None, "") for key in ("start_x", "start_y", "start_z")) else None,
+                "goal": (
+                    float(row["goal_x"]),
+                    float(row["goal_y"]),
+                    float(row["goal_z"]),
+                ),
+                "goal_clearance_m": (
+                    float(row["goal_clearance_m"])
+                    if row.get("goal_clearance_m") not in (None, "")
+                    else None
+                ),
+            })
+    return cases
+
+
+def write_cases(path, cases):
+    if not path:
+        return
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=CASE_FIELDS)
+        writer.writeheader()
+        for case in cases:
+            goal = case["goal"]
+            writer.writerow({
+                "case": case["case"],
+                "goal_x": safe_float(goal[0]),
+                "goal_y": safe_float(goal[1]),
+                "goal_z": safe_float(goal[2]),
+                "goal_clearance_m": safe_float(case.get("goal_clearance_m")),
+            })
+
+
+class OccupancyIndex:
+    def __init__(self, cloud_msg, voxel_size):
+        self.voxel_size = max(0.03, voxel_size)
+        self.occupied = set()
+        self.bounds = [float("inf"), float("inf"), float("inf"),
+                       -float("inf"), -float("inf"), -float("inf")]
+        self.point_count = 0
+        for x, y, z in point_cloud2.read_points(
+            cloud_msg, field_names=("x", "y", "z"), skip_nans=True
+        ):
+            x, y, z = float(x), float(y), float(z)
+            self.point_count += 1
+            self.bounds[0] = min(self.bounds[0], x)
+            self.bounds[1] = min(self.bounds[1], y)
+            self.bounds[2] = min(self.bounds[2], z)
+            self.bounds[3] = max(self.bounds[3], x)
+            self.bounds[4] = max(self.bounds[4], y)
+            self.bounds[5] = max(self.bounds[5], z)
+            self.occupied.add(self.key((x, y, z)))
+        if not self.occupied:
+            raise RuntimeError("The global point cloud is empty; cannot sample safe goals.")
+        self._offset_cache = {}
+
+    def key(self, p):
+        inv = 1.0 / self.voxel_size
+        return (
+            int(math.floor(p[0] * inv)),
+            int(math.floor(p[1] * inv)),
+            int(math.floor(p[2] * inv)),
+        )
+
+    def offsets(self, clearance):
+        radius = int(math.ceil((clearance + math.sqrt(3.0) * self.voxel_size) / self.voxel_size))
+        if radius in self._offset_cache:
+            return self._offset_cache[radius]
+        offsets = []
+        for dx in range(-radius, radius + 1):
+            for dy in range(-radius, radius + 1):
+                for dz in range(-radius, radius + 1):
+                    offsets.append((dx, dy, dz))
+        self._offset_cache[radius] = offsets
+        return offsets
+
+    def clearance(self, p, max_distance):
+        key = self.key(p)
+        max_sq = max_distance * max_distance
+        best_sq = max_sq
+        found = False
+        for dx, dy, dz in self.offsets(max_distance):
+            nk = (key[0] + dx, key[1] + dy, key[2] + dz)
+            if nk not in self.occupied:
+                continue
+            cx = (nk[0] + 0.5) * self.voxel_size
+            cy = (nk[1] + 0.5) * self.voxel_size
+            cz = (nk[2] + 0.5) * self.voxel_size
+            dsq = (p[0] - cx) ** 2 + (p[1] - cy) ** 2 + (p[2] - cz) ** 2
+            if dsq < best_sq:
+                best_sq = dsq
+                found = True
+        return math.sqrt(best_sq) if found else max_distance
+
+    def is_free(self, p, clearance):
+        return self.clearance(p, clearance) >= clearance
+
+
+class BenchmarkNode:
+    def __init__(self, args):
+        self.args = args
+        self.lock = Lock()
+        self.latest_odom = None
+        self.latest_cloud = None
+        self.odom_seq = 0
+        self.cloud_seq = 0
+        self.traj_events = []
+        self.manual_goal = None
+        self.manual_goal_seq = 0
+        self.goal_pub = None if args.manual_goals else rospy.Publisher("/goal", PoseStamped, queue_size=1)
+        self.odom_sub = rospy.Subscriber("/lidar_slam/odom", Odometry, self.odom_cb, queue_size=50)
+        self.cloud_sub = rospy.Subscriber("/global_pc", PointCloud2, self.cloud_cb, queue_size=1)
+        self.traj_sub = rospy.Subscriber(
+            "/planning_cmd/poly_traj", PolynomialTrajectory, self.traj_cb, queue_size=100
+        )
+        if args.manual_goals:
+            self.manual_goal_sub = rospy.Subscriber(
+                args.manual_goal_topic, PoseStamped, self.manual_goal_cb, queue_size=10
+            )
+
+    def odom_cb(self, msg):
+        with self.lock:
+            self.latest_odom = msg
+            self.odom_seq += 1
+
+    def cloud_cb(self, msg):
+        with self.lock:
+            self.latest_cloud = msg
+            self.cloud_seq += 1
+
+    def traj_cb(self, msg):
+        if (msg.type & PolynomialTrajectory.POSITION_TRAJ) == 0:
+            return
+        if msg.piece_num_pos <= 0 or len(msg.time_pos) == 0:
+            return
+        event = TrajectoryEvent(msg=msg, wall_time=time.monotonic(), ros_time=rospy.Time.now().to_sec())
+        with self.lock:
+            self.traj_events.append(event)
+
+    def manual_goal_cb(self, msg):
+        goal = (
+            msg.pose.position.x,
+            msg.pose.position.y,
+            self.args.goal_z,
+        )
+        with self.lock:
+            self.manual_goal = goal
+            self.manual_goal_seq += 1
+
+    def reset_trial_events(self):
+        with self.lock:
+            self.traj_events = []
+
+    def get_odom_state(self):
+        with self.lock:
+            msg = self.latest_odom
+        if msg is None:
+            return None
+        p = (
+            msg.pose.pose.position.x,
+            msg.pose.pose.position.y,
+            msg.pose.pose.position.z,
+        )
+        v = (
+            msg.twist.twist.linear.x,
+            msg.twist.twist.linear.y,
+            msg.twist.twist.linear.z,
+        )
+        return p, math.sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2])
+
+    def copy_traj_events(self):
+        with self.lock:
+            return list(self.traj_events)
+
+    def wait_for_ready(self, previous_cloud_seq, previous_odom_seq):
+        deadline = time.monotonic() + 30.0
+        while not rospy.is_shutdown() and time.monotonic() < deadline:
+            with self.lock:
+                odom_ready = self.latest_odom is not None and self.odom_seq > previous_odom_seq
+                cloud_ready = self.latest_cloud is not None and self.cloud_seq > previous_cloud_seq
+                goal_ready = self.args.manual_goals or (
+                    self.goal_pub is not None and self.goal_pub.get_num_connections() > 0
+                )
+            if odom_ready and cloud_ready and goal_ready:
+                return True
+            time.sleep(0.1)
+        return False
+
+    def current_cloud_seq(self):
+        with self.lock:
+            return self.cloud_seq
+
+    def current_odom_seq(self):
+        with self.lock:
+            return self.odom_seq
+
+    def current_manual_goal_seq(self):
+        with self.lock:
+            return self.manual_goal_seq
+
+    def latest_cloud_msg(self):
+        with self.lock:
+            return self.latest_cloud
+
+    def wait_for_manual_goal(self, previous_goal_seq):
+        deadline = (
+            None if self.args.manual_goal_timeout <= 0.0
+            else time.monotonic() + self.args.manual_goal_timeout
+        )
+        while not rospy.is_shutdown():
+            with self.lock:
+                if self.manual_goal_seq > previous_goal_seq and self.manual_goal is not None:
+                    return self.manual_goal
+            if deadline is not None and time.monotonic() >= deadline:
+                return None
+            time.sleep(0.05)
+
+    def publish_goal(self, goal, start):
+        if self.goal_pub is None:
+            return
+        msg = PoseStamped()
+        msg.header.frame_id = "world"
+        msg.pose.position.x = goal[0]
+        msg.pose.position.y = goal[1]
+        msg.pose.position.z = goal[2]
+        yaw = math.atan2(goal[1] - start[1], goal[0] - start[0])
+        qx, qy, qz, qw = yaw_to_quat(yaw)
+        msg.pose.orientation.x = qx
+        msg.pose.orientation.y = qy
+        msg.pose.orientation.z = qz
+        msg.pose.orientation.w = qw
+
+        count = max(1, int(self.args.goal_publish_time * self.args.goal_publish_rate))
+        rate = rospy.Rate(self.args.goal_publish_rate)
+        for _ in range(count):
+            if rospy.is_shutdown():
+                return
+            msg.header.stamp = rospy.Time.now()
+            self.goal_pub.publish(msg)
+            rate.sleep()
+
+
+def eval_poly(coeffs, t):
+    value = 0.0
+    for c in coeffs:
+        value = value * t + c
+    return value
+
+
+def eval_poly_derivative(coeffs, t):
+    degree = len(coeffs) - 1
+    value = 0.0
+    for i, c in enumerate(coeffs[:-1]):
+        value = value * t + c * (degree - i)
+    return value
+
+
+def eval_position(piece_coeffs, t):
+    return (
+        eval_poly(piece_coeffs[0], t),
+        eval_poly(piece_coeffs[1], t),
+        eval_poly(piece_coeffs[2], t),
+    )
+
+
+def eval_velocity(piece_coeffs, t):
+    return (
+        eval_poly_derivative(piece_coeffs[0], t),
+        eval_poly_derivative(piece_coeffs[1], t),
+        eval_poly_derivative(piece_coeffs[2], t),
+    )
+
+
+def trajectory_pieces(msg):
+    order = int(msg.order_pos)
+    coeff_num = order + 1
+    if msg.piece_num_pos <= 0 or coeff_num <= 1:
+        return []
+    if len(msg.time_pos) < msg.piece_num_pos:
+        return []
+    if len(msg.coef_pos_x) < msg.piece_num_pos * coeff_num:
+        return []
+    pieces = []
+    for i in range(msg.piece_num_pos):
+        offset = i * coeff_num
+        duration = float(msg.time_pos[i])
+        if duration <= 1.0e-6:
+            continue
+        pieces.append((
+            duration,
+            (
+                [float(v) for v in msg.coef_pos_x[offset:offset + coeff_num]],
+                [float(v) for v in msg.coef_pos_y[offset:offset + coeff_num]],
+                [float(v) for v in msg.coef_pos_z[offset:offset + coeff_num]],
+            ),
+        ))
+    return pieces
+
+
+def compute_trajectory_metrics(msg, occupancy, sample_dt, collision_clearance):
+    pieces = trajectory_pieces(msg)
+    if not pieces:
+        return None
+    debug_items = parse_debug_info(getattr(msg, "debug_info", ""))
+    length = 0.0
+    duration = sum(piece[0] for piece in pieces)
+    max_speed = 0.0
+    collision_samples = 0
+    sample_count = 0
+    last_pos = None
+    start_pos = None
+    end_pos = None
+
+    for piece_duration, coeffs in pieces:
+        steps = max(1, int(math.ceil(piece_duration / sample_dt)))
+        for j in range(steps + 1):
+            if last_pos is not None and j == 0:
+                continue
+            t = min(piece_duration, j * piece_duration / steps)
+            pos = eval_position(coeffs, t)
+            vel = eval_velocity(coeffs, t)
+            speed = math.sqrt(vel[0] ** 2 + vel[1] ** 2 + vel[2] ** 2)
+            max_speed = max(max_speed, speed)
+            if start_pos is None:
+                start_pos = pos
+            if last_pos is not None:
+                length += point_distance(last_pos, pos)
+            if occupancy is not None and not occupancy.is_free(pos, collision_clearance):
+                collision_samples += 1
+            sample_count += 1
+            last_pos = pos
+            end_pos = pos
+
+    avg_speed = length / duration if duration > 1.0e-6 else 0.0
+    debug_info = getattr(msg, "debug_info", "")
+    exp_frontend_time_ms = debug_float(debug_info, "exp_frontend_time_ms")
+    exp_opt_time_ms = debug_float(debug_info, "exp_opt_time_ms")
+    backup_frontend_time_ms = debug_float(debug_info, "backup_frontend_time_ms")
+    backup_opt_time_ms = debug_float(debug_info, "backup_opt_time_ms")
+    total_replan_time_ms = debug_float(debug_info, "total_replan_time_ms")
+    optimization_time_ms = debug_float(debug_info, "optimization_time_ms")
+    if optimization_time_ms is None:
+        optimization_time_ms = sum_available_ms(exp_opt_time_ms, backup_opt_time_ms)
+    replan_cycle_time_ms = valid_time_ms(total_replan_time_ms, allow_zero=False)
+    if replan_cycle_time_ms is None:
+        replan_cycle_time_ms = sum_available_ms(
+            exp_frontend_time_ms,
+            exp_opt_time_ms,
+            backup_frontend_time_ms,
+            backup_opt_time_ms,
+        )
+    return {
+        "trajectory_id": int(msg.trajectory_id),
+        "piece_num": int(msg.piece_num_pos),
+        "duration_s": duration,
+        "length_m": length,
+        "avg_speed_mps": avg_speed,
+        "max_speed_mps": max_speed,
+        "ellipsoid_optimizer": debug_items.get("ellipsoid_optimizer", ""),
+        "optimization_time_ms": optimization_time_ms,
+        "trajectory_optimization_time_ms": optimization_time_ms,
+        "corridor_time_ms": debug_float(debug_info, "corridor_time_ms"),
+        "corridor_generation_time_ms": debug_float(debug_info, "corridor_time_ms"),
+        "exp_frontend_time_ms": exp_frontend_time_ms,
+        "exp_opt_time_ms": exp_opt_time_ms,
+        "backup_frontend_time_ms": backup_frontend_time_ms,
+        "backup_opt_time_ms": backup_opt_time_ms,
+        "total_replan_time_ms": total_replan_time_ms,
+        "replan_cycle_time_ms": replan_cycle_time_ms,
+        "collision_samples": collision_samples,
+        "sample_count": sample_count,
+        "start": start_pos,
+        "end": end_pos,
+    }
+
+
+def recent_goal_distance(goal, goal_history, window):
+    if not goal_history:
+        return float("inf")
+    recent = goal_history[-window:] if window > 0 else goal_history
+    return min(point_distance(goal, item) for item in recent)
+
+
+def sample_bounds(args, start, warmup):
+    if warmup and args.warmup_radius > 0.0:
+        return (
+            max(args.x_min, start[0] - args.warmup_radius),
+            min(args.x_max, start[0] + args.warmup_radius),
+            max(args.y_min, start[1] - args.warmup_radius),
+            min(args.y_max, start[1] + args.warmup_radius),
+        )
+    return args.x_min, args.x_max, args.y_min, args.y_max
+
+
+def sample_safe_goal(args, rng, occupancy, start, trial_index, goal_history):
+    warmup = trial_index <= max(0, args.warmup_trials)
+    phase = "warmup" if warmup else "wide"
+    required_start_distance = args.min_goal_distance if warmup else max(
+        args.min_goal_distance, args.wide_min_goal_distance
+    )
+    required_recent_distance = 0.0 if warmup else args.min_recent_goal_distance
+    x_min, x_max, y_min, y_max = sample_bounds(args, start, warmup)
+    candidates = []
+    attempts = 0
+
+    for attempt in range(1, args.sample_max_attempts + 1):
+        attempts = attempt
+        goal = (
+            rng.uniform(x_min, x_max),
+            rng.uniform(y_min, y_max),
+            args.goal_z,
+        )
+        start_distance = point_distance(goal, start)
+        if start_distance < required_start_distance:
+            continue
+        nearest_recent = recent_goal_distance(goal, goal_history, args.recent_goal_window)
+        if nearest_recent < required_recent_distance:
+            continue
+        clearance = occupancy.clearance(goal, args.goal_clearance)
+        if clearance < args.goal_clearance:
+            continue
+        if warmup:
+            return goal, attempt, clearance, phase, required_start_distance, nearest_recent
+
+        spread_score = min(nearest_recent, start_distance) + 0.15 * start_distance
+        candidates.append((spread_score, goal, clearance, nearest_recent))
+        if len(candidates) >= max(1, args.candidate_batch):
+            break
+
+    if candidates:
+        _, goal, clearance, nearest_recent = max(candidates, key=lambda item: item[0])
+        return goal, attempts, clearance, phase, required_start_distance, nearest_recent
+
+    raise RuntimeError(
+        "Failed to sample a collision-free goal. Consider widening bounds or reducing clearance."
+    )
+
+
+def start_demo(demo, log_dir, rviz, fpv_rviz, planner_config_path="", log_suffix=""):
+    launch_name = DEMO_LAUNCHES[demo]
+    log_file = open(log_dir / f"{demo}{log_suffix}_roslaunch.log", "w", buffering=1)
+    cmd = [
+        "roslaunch",
+        "task_planner",
+        launch_name,
+        f"rviz:={str(rviz).lower()}",
+        f"fpv_rviz:={str(fpv_rviz).lower()}",
+    ]
+    if planner_config_path:
+        cmd.append(f"planner_config_path:={planner_config_path}")
+    proc = subprocess.Popen(
+        cmd,
+        stdout=log_file,
+        stderr=subprocess.STDOUT,
+        preexec_fn=os.setsid,
+    )
+    return proc, log_file
+
+
+def write_manifest(path, data):
+    with open(path, "w") as f:
+        json.dump(data, f, indent=2, sort_keys=True)
+
+
+def write_summary(run_dir, summaries, fields=SUMMARY_FIELDS):
+    csv_path = run_dir / "summary.csv"
+    json_path = run_dir / "summary.json"
+    with open(csv_path, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=fields)
+        writer.writeheader()
+        for item in summaries:
+            writer.writerow({k: safe_float(item.get(k)) for k in fields})
+    with open(json_path, "w") as f:
+        json.dump(summaries, f, indent=2, sort_keys=True)
+
+
+def mean(values):
+    values = [v for v in values if isinstance(v, (int, float)) and not math.isnan(v)]
+    return sum(values) / len(values) if values else None
+
+
+def summarize_demo(demo, rows, run_dir=None):
+    successes = [r for r in rows if r["success"]]
+    total_length = sum(r["total_length_m"] for r in successes)
+    total_duration = sum(r["planned_total_traj_duration_s"] for r in successes)
+    opt_total = sum(r.get("_optimization_time_total_ms", 0.0) for r in successes)
+    opt_count = sum(r.get("_optimization_time_sample_count", 0) for r in successes)
+    deadline_check_count = sum(r.get("deadline_check_count", 0) for r in rows)
+    deadline_miss_count = sum(r.get("deadline_miss_count", 0) for r in rows)
+    emergency_stop_count = count_emergency_stops(run_dir, demo) if run_dir is not None else 0
+    solver = ""
+    for row in rows:
+        if row.get("ellipsoid_optimizer"):
+            solver = row["ellipsoid_optimizer"]
+            break
+    trial_count = len(rows)
+    collision_trials = sum(1 for r in rows if r["collision"])
+    return {
+        "demo": demo,
+        "ellipsoid_optimizer": solver,
+        "trials": trial_count,
+        "successes": len(successes),
+        "failures": trial_count - len(successes),
+        "success_rate": len(successes) / trial_count if trial_count > 0 else None,
+        "collision_trials": collision_trials,
+        "collision_rate": collision_trials / trial_count if trial_count > 0 else None,
+        "emergency_stop_count": emergency_stop_count,
+        "total_replans": sum(r["replan_count"] for r in rows),
+        "replan_deadline_ms": mean([r.get("replan_deadline_ms") for r in rows]),
+        "total_deadline_miss_count": deadline_miss_count,
+        "deadline_check_count": deadline_check_count,
+        "deadline_miss_rate": (
+            deadline_miss_count / deadline_check_count
+            if deadline_check_count > 0 else None
+        ),
+        "mean_replan_cycle_time_ms": mean([r.get("avg_replan_cycle_time_ms") for r in successes]),
+        "max_replan_cycle_time_ms": max(
+            [r.get("max_replan_cycle_time_ms") for r in rows
+             if isinstance(r.get("max_replan_cycle_time_ms"), (int, float))
+             and not math.isnan(r.get("max_replan_cycle_time_ms"))],
+            default=None,
+        ),
+        "mean_replan_interval_ms": mean([r.get("mean_replan_interval_ms") for r in successes]),
+        "mean_planning_frequency_hz": mean([r.get("planning_frequency_hz") for r in successes]),
+        "total_flight_time_s": sum(
+            r.get("flight_time_s", 0.0) for r in successes
+            if isinstance(r.get("flight_time_s"), (int, float))
+        ),
+        "mean_flight_time_s": mean([r.get("flight_time_s") for r in successes]),
+        "mean_trajectory_duration_s": mean([r.get("mean_trajectory_duration_s") for r in successes]),
+        "total_length_m": total_length,
+        "mean_corridor_generation_time_ms": mean(
+            [r["avg_corridor_generation_time_ms"] for r in successes]
+        ),
+        "mean_corridor_time_ms": mean([r["avg_corridor_time_ms"] for r in successes]),
+        "mean_trajectory_optimization_time_ms": mean(
+            [r["avg_trajectory_optimization_time_ms"] for r in successes]
+        ),
+        "mean_exp_frontend_time_ms": mean([r["avg_exp_frontend_time_ms"] for r in successes]),
+        "mean_exp_opt_time_ms": mean([r["avg_exp_opt_time_ms"] for r in successes]),
+        "mean_backup_frontend_time_ms": mean([r["avg_backup_frontend_time_ms"] for r in successes]),
+        "mean_backup_opt_time_ms": mean([r["avg_backup_opt_time_ms"] for r in successes]),
+        "mean_total_replan_time_ms": mean([r["avg_total_replan_time_ms"] for r in successes]),
+        "mean_optimization_time_ms": (
+            opt_total / opt_count
+            if opt_count > 0
+            else mean([r["avg_optimization_time_ms"] for r in successes])
+        ),
+        "mean_speed_mps": (
+            total_length / total_duration
+            if total_duration > 1.0e-6
+            else mean([r["avg_speed_mps"] for r in successes])
+        ),
+    }
+
+
+def summarize_corridor_demo(demo, rows):
+    solver = ""
+    for row in rows:
+        if row.get("ellipsoid_optimizer"):
+            solver = row["ellipsoid_optimizer"]
+            break
+    successes = [r for r in rows if r.get("trajectory_optimization_success")]
+    return {
+        "demo": demo,
+        "ellipsoid_optimizer": solver,
+        "cases": len(rows),
+        "trajectory_optimization_successes": len(successes),
+        "trajectory_optimization_failures": len(rows) - len(successes),
+        "mean_mvie_lbfgs_iterations": mean([r.get("mvie_lbfgs_iterations") for r in successes]),
+        "mean_corridor_time_ms": mean([r.get("corridor_time_ms") for r in successes]),
+        "mean_trajectory_optimization_time_ms": mean(
+            [r.get("trajectory_optimization_time_ms") for r in successes]
+        ),
+    }
+
+
+def write_row(writer, csv_file, row, fields=CSV_FIELDS):
+    writer.writerow({key: safe_float(row.get(key)) for key in fields})
+    csv_file.flush()
+
+
+def fill_corridor_metrics(row, event, args):
+    row["trajectory_optimization_success"] = False
+    row["corridor_time_ms"] = None
+    row["mvie_lbfgs_iterations"] = None
+    row["trajectory_optimization_time_ms"] = None
+
+    if event is None:
+        return row
+
+    debug_info = getattr(event.msg, "debug_info", "")
+    debug_items = parse_debug_info(debug_info)
+    if debug_items.get("ellipsoid_optimizer"):
+        row["ellipsoid_optimizer"] = debug_items["ellipsoid_optimizer"]
+
+    corridor_time = debug_float(debug_info, "corridor_time_ms")
+    row["corridor_time_ms"] = corridor_time if corridor_time is not None and corridor_time >= 0.0 else None
+    mvie_iterations = debug_int(debug_info, "mvie_lbfgs_iterations")
+    row["mvie_lbfgs_iterations"] = (
+        mvie_iterations
+        if mvie_iterations is not None and (mvie_iterations > 0 or row["corridor_time_ms"] is not None)
+        else None
+    )
+    opt_time = debug_float(debug_info, "exp_opt_time_ms")
+    if opt_time is None:
+        opt_time = debug_float(debug_info, "optimization_time_ms")
+    row["trajectory_optimization_time_ms"] = opt_time
+
+    opt_success = debug_bool(debug_info, "trajectory_optimization_success")
+    row["trajectory_optimization_success"] = True if opt_success is None else opt_success
+    return row
+
+
+def run_trial(node, args, rng, occupancy, demo, trial_index, goal_history, case=None):
+    state = node.get_odom_state()
+    if state is None:
+        raise RuntimeError("No odometry available.")
+    start_pos, _ = state
+    if case is not None:
+        goal = case["goal"]
+        attempts = 1
+        clearance = (
+            case.get("goal_clearance_m")
+            if case.get("goal_clearance_m") is not None
+            else occupancy.clearance(goal, args.goal_clearance)
+        )
+        phase = "case"
+        required_distance = 0.0
+        nearest_recent = recent_goal_distance(goal, goal_history, args.recent_goal_window)
+    elif args.manual_goals:
+        previous_goal_seq = node.current_manual_goal_seq()
+        rospy.loginfo(
+            "[%s trial %d/%d] Waiting for manual goal on %s. Use RViz 2D Nav Goal.",
+            demo,
+            trial_index,
+            args.trials,
+            args.manual_goal_topic,
+        )
+        goal = node.wait_for_manual_goal(previous_goal_seq)
+        if goal is None:
+            raise RuntimeError("Timed out waiting for manually selected goal.")
+        attempts = 1
+        clearance = occupancy.clearance(goal, args.goal_clearance)
+        phase = "manual"
+        required_distance = 0.0
+        nearest_recent = recent_goal_distance(goal, goal_history, args.recent_goal_window)
+    else:
+        goal, attempts, clearance, phase, required_distance, nearest_recent = sample_safe_goal(
+            args, rng, occupancy, start_pos, trial_index, goal_history
+        )
+
+    node.reset_trial_events()
+    start_wall = time.monotonic()
+    if not args.manual_goals:
+        node.publish_goal(goal, start_pos)
+
+    first_event = None
+    deadline = time.monotonic() + args.plan_timeout
+    seen_ids = set()
+    while not rospy.is_shutdown() and time.monotonic() < deadline:
+        events = [e for e in node.copy_traj_events() if e.wall_time >= start_wall]
+        for event in events:
+            traj_id = int(event.msg.trajectory_id)
+            if traj_id in seen_ids:
+                continue
+            seen_ids.add(traj_id)
+            first_event = event
+            break
+        if first_event is not None:
+            break
+        time.sleep(0.02)
+
+    row = {
+        "demo": demo,
+        "ellipsoid_optimizer": args.ellipsoid_optimizer_label,
+        "case": case["case"] if case is not None else trial_index,
+        "trial": trial_index,
+        "success": False,
+        "failure_reason": "",
+        "goal_x": goal[0],
+        "goal_y": goal[1],
+        "goal_z": goal[2],
+        "start_x": start_pos[0],
+        "start_y": start_pos[1],
+        "start_z": start_pos[2],
+        "goal_distance_m": point_distance(goal, start_pos),
+        "sampling_phase": phase,
+        "required_goal_distance_m": required_distance,
+        "nearest_recent_goal_distance_m": nearest_recent if math.isfinite(nearest_recent) else None,
+        "sample_attempts": attempts,
+        "goal_clearance_m": clearance,
+        "first_plan_latency_ms": None,
+        "elapsed_s": None,
+        "flight_time_s": None,
+        "trajectory_count": 0,
+        "replan_count": 0,
+        "replan_deadline_ms": (
+            1000.0 / args.replan_rate_hz if args.replan_rate_hz > 0.0 else None
+        ),
+        "deadline_check_count": 0,
+        "deadline_miss_count": 0,
+        "deadline_miss_rate": None,
+        "avg_replan_cycle_time_ms": None,
+        "max_replan_cycle_time_ms": None,
+        "mean_replan_interval_ms": None,
+        "planning_frequency_hz": None,
+        "avg_speed_mps": None,
+        "total_length_m": 0.0,
+        "mean_trajectory_duration_s": None,
+        "last_trajectory_duration_s": None,
+        "avg_optimization_time_ms": None,
+        "avg_trajectory_optimization_time_ms": None,
+        "avg_corridor_time_ms": None,
+        "avg_corridor_generation_time_ms": None,
+        "avg_exp_frontend_time_ms": None,
+        "avg_exp_opt_time_ms": None,
+        "avg_backup_frontend_time_ms": None,
+        "avg_backup_opt_time_ms": None,
+        "avg_total_replan_time_ms": None,
+        "corridor_time_ms": None,
+        "mvie_lbfgs_iterations": None,
+        "trajectory_optimization_time_ms": None,
+        "trajectory_optimization_success": False,
+        "_optimization_time_total_ms": 0.0,
+        "_optimization_time_sample_count": 0,
+        "planned_total_traj_duration_s": 0.0,
+        "planned_total_traj_length_m": 0.0,
+        "planned_total_traj_avg_speed_mps": None,
+        "planned_total_traj_max_speed_mps": None,
+        "first_traj_id": None,
+        "last_traj_id": None,
+        "first_traj_duration_s": None,
+        "first_traj_length_m": None,
+        "first_traj_avg_speed_mps": None,
+        "first_traj_max_speed_mps": None,
+        "last_traj_duration_s": None,
+        "last_traj_length_m": None,
+        "last_traj_avg_speed_mps": None,
+        "last_traj_max_speed_mps": None,
+        "executed_length_m": 0.0,
+        "executed_avg_speed_mps": None,
+        "planned_collision_traj_count": 0,
+        "planned_collision_sample_count": 0,
+        "executed_collision_sample_count": 0,
+        "collision": False,
+    }
+
+    if first_event is None:
+        row["failure_reason"] = "ros_shutdown" if rospy.is_shutdown() else "plan_timeout"
+        row["elapsed_s"] = time.monotonic() - start_wall
+        row["flight_time_s"] = row["elapsed_s"]
+        if args.metric_set == "corridor" or args.plan_only:
+            fill_corridor_metrics(row, None, args)
+        return row
+
+    row["first_plan_latency_ms"] = (first_event.wall_time - start_wall) * 1000.0
+    if args.metric_set == "corridor" or args.plan_only:
+        row["elapsed_s"] = time.monotonic() - start_wall
+        row["flight_time_s"] = row["elapsed_s"]
+        fill_corridor_metrics(row, first_event, args)
+        row["success"] = row["trajectory_optimization_success"]
+        if not row["trajectory_optimization_success"] and not row["failure_reason"]:
+            row["failure_reason"] = "trajectory_optimization_failed"
+        return row
+
+    finish_deadline = time.monotonic() + args.trial_timeout
+    last_exec_pos = start_pos
+    last_odom_sample = 0.0
+    reached_time = None
+    finish_reason = "trial_timeout"
+
+    while not rospy.is_shutdown() and time.monotonic() < finish_deadline:
+        now = time.monotonic()
+        state = node.get_odom_state()
+        if state is not None and now - last_odom_sample >= args.odom_sample_dt:
+            pos, speed = state
+            row["executed_length_m"] += point_distance(last_exec_pos, pos)
+            if not occupancy.is_free(pos, args.collision_clearance):
+                row["executed_collision_sample_count"] += 1
+            last_exec_pos = pos
+            last_odom_sample = now
+            if point_distance(pos, goal) <= args.goal_tolerance and speed <= args.speed_tolerance:
+                if reached_time is None:
+                    reached_time = now
+                elif now - reached_time >= args.settle_time:
+                    finish_reason = ""
+                    break
+            else:
+                reached_time = None
+        time.sleep(0.02)
+
+    elapsed = time.monotonic() - start_wall
+    row["elapsed_s"] = elapsed
+    row["flight_time_s"] = elapsed
+    row["executed_avg_speed_mps"] = row["executed_length_m"] / elapsed if elapsed > 1.0e-6 else 0.0
+    if rospy.is_shutdown() and finish_reason == "trial_timeout":
+        finish_reason = "ros_shutdown"
+
+    unique_events = []
+    seen_ids = set()
+    for event in node.copy_traj_events():
+        if event.wall_time < start_wall:
+            continue
+        traj_id = int(event.msg.trajectory_id)
+        if traj_id in seen_ids:
+            continue
+        seen_ids.add(traj_id)
+        unique_events.append(event)
+
+    metrics = []
+    for event in unique_events:
+        item = compute_trajectory_metrics(
+            event.msg, occupancy, args.trajectory_sample_dt, args.collision_clearance
+        )
+        if item is not None:
+            metrics.append(item)
+
+    if metrics:
+        first = metrics[0]
+        last = metrics[-1]
+        total_duration = sum(item["duration_s"] for item in metrics)
+        total_length = sum(item["length_m"] for item in metrics)
+        optimization_times = [
+            item["optimization_time_ms"]
+            for item in metrics
+            if isinstance(item["optimization_time_ms"], (int, float))
+            and not math.isnan(item["optimization_time_ms"])
+        ]
+        trajectory_optimization_times = [
+            item["trajectory_optimization_time_ms"]
+            for item in metrics
+            if isinstance(item["trajectory_optimization_time_ms"], (int, float))
+            and not math.isnan(item["trajectory_optimization_time_ms"])
+        ]
+        def metric_times(key, keep_negative=False):
+            values = []
+            for item in metrics:
+                value = item.get(key)
+                if not isinstance(value, (int, float)) or math.isnan(value):
+                    continue
+                if not keep_negative and value < 0.0:
+                    continue
+                values.append(value)
+            return values
+
+        for item in metrics:
+            if item.get("ellipsoid_optimizer"):
+                row["ellipsoid_optimizer"] = item["ellipsoid_optimizer"]
+                break
+        row["trajectory_count"] = len(metrics)
+        row["replan_count"] = max(0, len(metrics) - 1)
+        event_intervals_ms = [
+            (unique_events[i].wall_time - unique_events[i - 1].wall_time) * 1000.0
+            for i in range(1, min(len(unique_events), len(metrics)))
+            if unique_events[i].wall_time > unique_events[i - 1].wall_time
+        ]
+        replan_cycle_times = metric_times("replan_cycle_time_ms")
+        deadline_ms = row["replan_deadline_ms"]
+        row["deadline_check_count"] = len(replan_cycle_times)
+        if deadline_ms is not None and deadline_ms > 0.0:
+            row["deadline_miss_count"] = sum(
+                1 for value in replan_cycle_times if value > deadline_ms
+            )
+            row["deadline_miss_rate"] = (
+                row["deadline_miss_count"] / row["deadline_check_count"]
+                if row["deadline_check_count"] > 0 else None
+            )
+        row["avg_replan_cycle_time_ms"] = mean(replan_cycle_times)
+        row["max_replan_cycle_time_ms"] = max(replan_cycle_times) if replan_cycle_times else None
+        row["mean_replan_interval_ms"] = mean(event_intervals_ms)
+        if row["mean_replan_interval_ms"] and row["mean_replan_interval_ms"] > 1.0e-6:
+            row["planning_frequency_hz"] = 1000.0 / row["mean_replan_interval_ms"]
+        elif elapsed > 1.0e-6:
+            row["planning_frequency_hz"] = len(metrics) / elapsed
+        row["total_length_m"] = total_length
+        row["avg_speed_mps"] = total_length / total_duration if total_duration > 1.0e-6 else 0.0
+        row["_optimization_time_total_ms"] = sum(optimization_times)
+        row["_optimization_time_sample_count"] = len(optimization_times)
+        row["avg_optimization_time_ms"] = mean(optimization_times)
+        row["avg_trajectory_optimization_time_ms"] = mean(trajectory_optimization_times)
+        row["avg_corridor_time_ms"] = mean(metric_times("corridor_time_ms"))
+        row["avg_corridor_generation_time_ms"] = mean(metric_times("corridor_generation_time_ms"))
+        row["avg_exp_frontend_time_ms"] = mean(metric_times("exp_frontend_time_ms"))
+        row["avg_exp_opt_time_ms"] = mean(metric_times("exp_opt_time_ms"))
+        row["avg_backup_frontend_time_ms"] = mean(metric_times("backup_frontend_time_ms"))
+        row["avg_backup_opt_time_ms"] = mean(metric_times("backup_opt_time_ms"))
+        row["avg_total_replan_time_ms"] = mean(metric_times("total_replan_time_ms"))
+        row["planned_total_traj_duration_s"] = total_duration
+        row["mean_trajectory_duration_s"] = mean([item["duration_s"] for item in metrics])
+        row["last_trajectory_duration_s"] = last["duration_s"]
+        row["planned_total_traj_length_m"] = total_length
+        row["planned_total_traj_avg_speed_mps"] = row["avg_speed_mps"]
+        row["planned_total_traj_max_speed_mps"] = max(item["max_speed_mps"] for item in metrics)
+        row["first_traj_id"] = first["trajectory_id"]
+        row["last_traj_id"] = last["trajectory_id"]
+        row["first_traj_duration_s"] = first["duration_s"]
+        row["first_traj_length_m"] = first["length_m"]
+        row["first_traj_avg_speed_mps"] = first["avg_speed_mps"]
+        row["first_traj_max_speed_mps"] = first["max_speed_mps"]
+        row["last_traj_duration_s"] = last["duration_s"]
+        row["last_traj_length_m"] = last["length_m"]
+        row["last_traj_avg_speed_mps"] = last["avg_speed_mps"]
+        row["last_traj_max_speed_mps"] = last["max_speed_mps"]
+        row["planned_collision_traj_count"] = sum(1 for item in metrics if item["collision_samples"] > 0)
+        row["planned_collision_sample_count"] = sum(item["collision_samples"] for item in metrics)
+
+    row["collision"] = (
+        row["planned_collision_traj_count"] > 0
+        or row["planned_collision_sample_count"] > 0
+        or row["executed_collision_sample_count"] > 0
+    )
+    row["success"] = finish_reason == "" and not row["collision"]
+    row["failure_reason"] = finish_reason if not row["success"] else ""
+    if row["collision"] and not row["failure_reason"]:
+        row["failure_reason"] = "collision"
+    return row
+
+
+def prepare_demo(node, args, demo, run_dir, log_suffix=""):
+    previous_cloud_seq = node.current_cloud_seq()
+    previous_odom_seq = node.current_odom_seq()
+    proc, launch_log = start_demo(
+        demo,
+        run_dir,
+        args.rviz,
+        args.fpv_rviz,
+        args.planner_config_path,
+        log_suffix=log_suffix,
+    )
+    if not node.wait_for_ready(previous_cloud_seq, previous_odom_seq):
+        stop_process_group(proc, f"roslaunch {demo}")
+        launch_log.close()
+        raise RuntimeError(f"Demo '{demo}' did not become ready.")
+    occupancy = OccupancyIndex(node.latest_cloud_msg(), args.map_voxel)
+    rospy.loginfo(
+        "Global map for %s: %d points, %d occupied voxels, bounds=%s",
+        demo,
+        occupancy.point_count,
+        len(occupancy.occupied),
+        [round(v, 3) for v in occupancy.bounds],
+    )
+    if args.startup_wait > 0.0:
+        rospy.loginfo("Waiting %.2f s for planner local map warmup.", args.startup_wait)
+        rospy.sleep(args.startup_wait)
+    return proc, launch_log, occupancy
+
+
+def sample_cases(node, args, rng, demo, run_dir):
+    rospy.loginfo("Sampling %d fixed goal cases for '%s'.", args.trials, demo)
+    proc = None
+    launch_log = None
+    try:
+        proc, launch_log, occupancy = prepare_demo(node, args, demo, run_dir, log_suffix="_case_sampling")
+        goal_history = []
+        cases = []
+        state = node.get_odom_state()
+        if state is None:
+            raise RuntimeError("No odometry available for case sampling.")
+        initial_start, _ = state
+        for trial in range(1, args.trials + 1):
+            start_pos = goal_history[-1] if goal_history else initial_start
+            goal, _, clearance, _, _, _ = sample_safe_goal(
+                args, rng, occupancy, start_pos, trial, goal_history
+            )
+            goal_history.append(goal)
+            cases.append({
+                "case": trial,
+                "goal": goal,
+                "goal_clearance_m": clearance,
+            })
+        write_cases(args.write_cases_path, cases)
+        rospy.loginfo("Wrote fixed goal cases to %s", args.write_cases_path)
+        return []
+    finally:
+        stop_process_group(proc, f"roslaunch {demo}")
+        if launch_log is not None:
+            launch_log.close()
+        time.sleep(1.0)
+
+
+def run_demo_once_launched(node, args, rng, occupancy, demo, csv_file, writer,
+                           goal_history, trial, case=None):
+    row = run_trial(node, args, rng, occupancy, demo, trial, goal_history, case=case)
+    goal_history.append((row["goal_x"], row["goal_y"], row["goal_z"]))
+    fields = CORRIDOR_CSV_FIELDS if args.metric_set == "corridor" else CSV_FIELDS
+    write_row(writer, csv_file, row, fields=fields)
+    if args.metric_set == "corridor":
+        rospy.loginfo(
+            "[%s case %d/%d] solver=%s opt_success=%s corridor=%.3f ms mvie_iter=%s traj_opt=%.3f ms",
+            demo,
+            row["case"],
+            args.trials,
+            row["ellipsoid_optimizer"],
+            row["trajectory_optimization_success"],
+            row["corridor_time_ms"] or 0.0,
+            row["mvie_lbfgs_iterations"],
+            row["trajectory_optimization_time_ms"] or 0.0,
+        )
+    else:
+        rospy.loginfo(
+            "[%s %d/%d] success=%s phase=%s replans=%s cycle=%.3f ms corridor=%.3f ms traj_opt=%.3f ms freq=%.2f Hz misses=%s/%s flight=%.3f s collision=%s",
+            demo,
+            trial,
+            args.trials,
+            row["success"],
+            row["sampling_phase"],
+            row["replan_count"],
+            row["avg_replan_cycle_time_ms"] or 0.0,
+            row["avg_corridor_generation_time_ms"] or 0.0,
+            row["avg_trajectory_optimization_time_ms"] or 0.0,
+            row["planning_frequency_hz"] or 0.0,
+            row["deadline_miss_count"],
+            row["deadline_check_count"],
+            row["flight_time_s"] or 0.0,
+            row["collision"],
+        )
+    return row
+
+
+def run_demo(node, args, rng, demo, run_dir):
+    rospy.loginfo("Starting benchmark demo '%s'.", demo)
+    if args.sample_cases_only:
+        return sample_cases(node, args, rng, demo, run_dir)
+
+    rows = []
+    cases = load_cases(args.cases_path)
+    if cases:
+        args.trials = min(args.trials, len(cases))
+    csv_path = run_dir / f"{demo}.csv"
+    fields = CORRIDOR_CSV_FIELDS if args.metric_set == "corridor" else CSV_FIELDS
+    goal_history = []
+
+    with open(csv_path, "w", newline="") as csv_file:
+        writer = csv.DictWriter(csv_file, fieldnames=fields)
+        writer.writeheader()
+
+        if args.restart_per_trial:
+            for trial in range(1, args.trials + 1):
+                if rospy.is_shutdown():
+                    break
+                proc = None
+                launch_log = None
+                case = cases[trial - 1] if cases else None
+                try:
+                    proc, launch_log, occupancy = prepare_demo(
+                        node, args, demo, run_dir,
+                        log_suffix=f"_case_{trial:03d}",
+                    )
+                    row = run_demo_once_launched(
+                        node, args, rng, occupancy, demo, csv_file, writer,
+                        goal_history, trial, case=case
+                    )
+                    rows.append(row)
+                finally:
+                    stop_process_group(proc, f"roslaunch {demo}")
+                    if launch_log is not None:
+                        launch_log.close()
+                    time.sleep(1.0)
+            return rows
+
+        proc = None
+        launch_log = None
+        try:
+            proc, launch_log, occupancy = prepare_demo(node, args, demo, run_dir)
+            for trial in range(1, args.trials + 1):
+                if rospy.is_shutdown():
+                    break
+                case = cases[trial - 1] if cases else None
+                row = run_demo_once_launched(
+                    node, args, rng, occupancy, demo, csv_file, writer,
+                    goal_history, trial, case=case
+                )
+                rows.append(row)
+        finally:
+            stop_process_group(proc, f"roslaunch {demo}")
+            if launch_log is not None:
+                launch_log.close()
+            time.sleep(1.0)
+    return rows
+
+
+def main():
+    args = parse_args()
+    demos = expand_demos(args.demo)
+    random_seed = args.seed
+    rng = random.Random(random_seed)
+
+    roscore_proc = ensure_ros_master()
+    rospy.init_node("click_state2state_benchmark", anonymous=False)
+
+    pkg_path = Path(rospkg.RosPack().get_path("general_planner"))
+    requested_replan_rate_hz = args.replan_rate_hz
+    base_log_dir = Path(args.log_dir) if args.log_dir else pkg_path / "log"
+    stamp = datetime.now().astimezone().strftime("%Y%m%d_%H%M%S")
+    run_dir = base_log_dir / f"click_state2state_benchmark_{stamp}"
+    run_dir.mkdir(parents=True, exist_ok=True)
+
+    manifest = {
+        "stamp": stamp,
+        "demos": demos,
+        "trials_per_demo": args.trials,
+        "seed": random_seed,
+        "sampling_bounds": {
+            "x": [args.x_min, args.x_max],
+            "y": [args.y_min, args.y_max],
+            "z": args.goal_z,
+        },
+        "sampling_strategy": {
+            "warmup_trials": args.warmup_trials,
+            "warmup_radius": args.warmup_radius,
+            "wide_min_goal_distance": args.wide_min_goal_distance,
+            "min_recent_goal_distance": args.min_recent_goal_distance,
+            "recent_goal_window": args.recent_goal_window,
+            "candidate_batch": args.candidate_batch,
+        },
+        "goal_clearance": args.goal_clearance,
+        "collision_clearance": args.collision_clearance,
+        "trajectory_sample_dt": args.trajectory_sample_dt,
+        "requested_replan_rate_hz": requested_replan_rate_hz,
+        "manual_goals": args.manual_goals,
+        "manual_goal_topic": args.manual_goal_topic,
+        "manual_goal_timeout": args.manual_goal_timeout,
+        "rviz": args.rviz,
+        "fpv_rviz": args.fpv_rviz,
+        "planner_config_path": args.planner_config_path,
+        "ellipsoid_optimizer_label": args.ellipsoid_optimizer_label,
+        "metric_set": args.metric_set,
+        "plan_only": args.plan_only,
+        "restart_per_trial": args.restart_per_trial,
+        "sample_cases_only": args.sample_cases_only,
+        "cases_path": args.cases_path,
+        "write_cases_path": args.write_cases_path,
+        "log_dir": str(run_dir),
+    }
+    write_manifest(run_dir / "manifest.json", manifest)
+    rospy.loginfo("Benchmark logs will be written to %s", run_dir)
+
+    node = BenchmarkNode(args)
+    summaries = []
+    try:
+        for demo in demos:
+            args.replan_rate_hz = infer_replan_rate_hz(
+                args, demo, pkg_path, override_rate_hz=requested_replan_rate_hz
+            ) or 0.0
+            manifest["active_demo"] = demo
+            manifest["active_replan_rate_hz"] = args.replan_rate_hz
+            manifest["active_replan_deadline_ms"] = (
+                1000.0 / args.replan_rate_hz if args.replan_rate_hz > 0.0 else None
+            )
+            write_manifest(run_dir / "manifest.json", manifest)
+            rows = run_demo(node, args, rng, demo, run_dir)
+            if args.sample_cases_only:
+                continue
+            summary_fields = CORRIDOR_SUMMARY_FIELDS if args.metric_set == "corridor" else SUMMARY_FIELDS
+            summary = (
+                summarize_corridor_demo(demo, rows)
+                if args.metric_set == "corridor"
+                else summarize_demo(demo, rows, run_dir=run_dir)
+            )
+            summaries.append(summary)
+            write_summary(run_dir, summaries, fields=summary_fields)
+    finally:
+        if roscore_proc is not None:
+            stop_process_group(roscore_proc, "roscore")
+
+    summary_fields = CORRIDOR_SUMMARY_FIELDS if args.metric_set == "corridor" else SUMMARY_FIELDS
+    write_summary(run_dir, summaries, fields=summary_fields)
+    rospy.loginfo("Benchmark finished. Logs: %s", run_dir)
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except KeyboardInterrupt:
+        pass
