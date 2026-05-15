@@ -2,4 +2,5 @@
 /devel
 
 **/.vscode
-src/Localization/FAST_LIO/PCD*.dae
+src/Localization/FAST_LIO/PCD
+*.dae
