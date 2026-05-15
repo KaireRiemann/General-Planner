@@ -24,6 +24,7 @@
 #include <fsm/fsm.h>
 #include <algorithm>
 #include <cmath>
+#include <iomanip>
 #include <memory>
 
 using namespace super_utils;
@@ -103,6 +104,12 @@ namespace fsm {
                 return;
             }
             ret_code = planner_ptr_->ReplanPerchingOnce(surface, task_new_);
+        } else if (dynamicTakeoffMode()) {
+            traj_opt::PerchingSurfaceState surface;
+            if (!getPerchingSurface(surface)) {
+                return;
+            }
+            ret_code = planner_ptr_->ReplanDynamicTakeoffOnce(surface, task_new_);
         } else if (explorationMode()) {
             ret_code = planner_ptr_->ReplanExplorationOnce(task_new_);
         }
@@ -215,6 +222,12 @@ namespace fsm {
                         return;
                     }
                     retcode = planner_ptr_->PlanPerchingFromRest(surface, task_new_);
+                } else if (dynamicTakeoffMode()) {
+                    traj_opt::PerchingSurfaceState surface;
+                    if (!getPerchingSurface(surface)) {
+                        return;
+                    }
+                    retcode = planner_ptr_->PlanDynamicTakeoffFromRest(surface, task_new_);
                 } else if (explorationMode()) {
                     retcode = planner_ptr_->PlanExplorationFromRest(task_new_);
                 }
@@ -294,6 +307,10 @@ namespace fsm {
         return cfg_.task_mode == TaskMode::PERCHING;
     }
 
+    bool Fsm::dynamicTakeoffMode() const {
+        return cfg_.task_mode == TaskMode::DYNAMIC_TAKEOFF;
+    }
+
     bool Fsm::explorationMode() const {
         return cfg_.task_mode == TaskMode::EXPLORATION;
     }
@@ -346,6 +363,10 @@ namespace fsm {
         cfg_.task_mode = new_mode;
         finish_plan = false;
         task_new_ = true;
+        if (new_mode == TaskMode::DYNAMIC_TAKEOFF) {
+            perching_surface_first_rcv_time_ = -1.0;
+            last_dynamic_takeoff_wait_log_time_ = -1.0;
+        }
         if (new_mode == TaskMode::EXPLORATION) {
             started_ = true;
         }
@@ -368,6 +389,34 @@ namespace fsm {
         return (ros_ptr_->getSimTime() - perching_surface_rcv_time_) <= cfg_.task_timeout;
     }
 
+    bool Fsm::dynamicTakeoffTaskReady() {
+        std::lock_guard<std::mutex> lock(task_mutex_);
+        if (perching_surface_rcv_time_ < 0.0 ||
+            (ros_ptr_->getSimTime() - perching_surface_rcv_time_) > cfg_.task_timeout) {
+            return false;
+        }
+        const double start_delay = std::max(0.0, cfg_.dynamic_takeoff_start_delay);
+        if (start_delay <= 1.0e-6) {
+            return true;
+        }
+        if (perching_surface_first_rcv_time_ < 0.0) {
+            return false;
+        }
+        const double elapsed = ros_ptr_->getSimTime() - perching_surface_first_rcv_time_;
+        if (elapsed + 1.0e-6 < start_delay) {
+            const double now = ros_ptr_->getSimTime();
+            if (last_dynamic_takeoff_wait_log_time_ < 0.0 ||
+                now - last_dynamic_takeoff_wait_log_time_ > 1.0) {
+                last_dynamic_takeoff_wait_log_time_ = now;
+                cout << YELLOW << " -- [Fsm] Dynamic takeoff waits on-platform contact motion: "
+                     << std::fixed << std::setprecision(2) << elapsed << " / "
+                     << start_delay << " s" << RESET << endl;
+            }
+            return false;
+        }
+        return true;
+    }
+
     bool Fsm::activeTaskReady() {
         if (state2stateMode()) {
             return gi_.new_goal;
@@ -380,6 +429,9 @@ namespace fsm {
         }
         if (perchingMode()) {
             return !perching_contact_reached_ && task_new_ && perchingTaskReady();
+        }
+        if (dynamicTakeoffMode()) {
+            return task_new_ && dynamicTakeoffTaskReady();
         }
         if (explorationMode()) {
             return started_ && !finish_plan;
@@ -395,6 +447,9 @@ namespace fsm {
             return started_ && !finish_plan;
         }
         if (perchingMode()) {
+            return false;
+        }
+        if (dynamicTakeoffMode()) {
             return false;
         }
         if (trackingMode() && trackingPerchingPerchingActive()) {
@@ -628,6 +683,9 @@ namespace fsm {
             }
             perching_surface_ = surface;
             perching_surface_rcv_time_ = now;
+            if (perching_surface_first_rcv_time_ < 0.0) {
+                perching_surface_first_rcv_time_ = now;
+            }
             task_new_ = task_new_ || changed;
         }
         gi_.goal_p = surface.position;

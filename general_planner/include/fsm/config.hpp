@@ -43,7 +43,8 @@ namespace fsm {
         STATE_TO_STATE = 0,
         TRACKING = 1,
         PERCHING = 2,
-        EXPLORATION = 3
+        EXPLORATION = 3,
+        DYNAMIC_TAKEOFF = 4
     };
 
     inline std::string normalizeTaskMode(std::string mode) {
@@ -59,6 +60,10 @@ namespace fsm {
         if (mode == "perch" || mode == "perching") {
             return "perching";
         }
+        if (mode == "takeoff" || mode == "dynamic_takeoff" ||
+            mode == "dynamic-takeoff" || mode == "unperching") {
+            return "dynamic_takeoff";
+        }
         if (mode == "explore" || mode == "exploration") {
             return "exploration";
         }
@@ -72,6 +77,9 @@ namespace fsm {
         }
         if (normalized == "perching") {
             return TaskMode::PERCHING;
+        }
+        if (normalized == "dynamic_takeoff") {
+            return TaskMode::DYNAMIC_TAKEOFF;
         }
         if (normalized == "exploration") {
             return TaskMode::EXPLORATION;
@@ -99,6 +107,7 @@ namespace fsm {
         string tracking_target_prediction_topic{"/tracking/target_prediction"};
         bool tracking_use_target_prediction_path{true};
         string perching_surface_odom_topic{"/perching/surface_odom"};
+        double dynamic_takeoff_start_delay{0.0};
         bool tracking_perching_enable{false};
         double tracking_prediction_horizon{4.0};
         double tracking_prediction_dt{0.25};
@@ -154,6 +163,7 @@ namespace fsm {
             loader.LoadParam("fsm/tracking_use_target_prediction_path", tracking_use_target_prediction_path, true);
             loader.LoadParam("fsm/perching_surface_odom_topic", perching_surface_odom_topic,
                              string("/perching/surface_odom"));
+            loader.LoadParam("fsm/dynamic_takeoff_start_delay", dynamic_takeoff_start_delay, 0.0);
             loader.LoadParam("general_planner/tracking_perching/enable", tracking_perching_enable, false);
             loader.LoadParam("fsm/tracking_prediction_horizon", tracking_prediction_horizon, 4.0);
             loader.LoadParam("fsm/tracking_prediction_dt", tracking_prediction_dt, 0.25);

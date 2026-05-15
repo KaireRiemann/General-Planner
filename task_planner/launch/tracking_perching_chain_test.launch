@@ -33,7 +33,7 @@
     <arg name="tracking_target_normal_offset" default="0.0"/>
 
     <node if="$(arg marsim)" pkg="perfect_drone_sim" type="perfect_drone"
-          name="perfect_drone" output="log">
+          name="perfect_drone" output="log" clear_params="true">
         <param name="config_name" value="$(arg sim_config)" type="string"/>
     </node>
 

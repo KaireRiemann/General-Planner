@@ -149,6 +149,9 @@ public:
         double max_duration{4.0};
         double reference_speed{2.0};
         double max_speed{5.0};
+        double max_acc{4.0};
+        double max_jerk{20.0};
+        double max_omega{4.0};
         double relative_z_min{0.1};
         double relative_z_max{3.0};
         double weight_relative_height{1.0};

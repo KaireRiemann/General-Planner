@@ -1,15 +1,14 @@
 <launch>
     <arg name="sim_config" default="perching.yaml"/>
-    <arg name="planner_config" default="tracking_perching_perching_ros1.yaml"/>
+    <arg name="planner_config" default="perching.yaml"/>
     <arg name="rviz" default="true"/>
     <arg name="marsim" default="true"/>
-    <arg name="rviz_config" default="$(find general_planner)/rviz/esdf_planner.rviz"/>
 
     <!-- Platform pose/velocity are in world frame. Angles are radians. -->
     <arg name="surface_x" default="3.0"/>
     <arg name="surface_y" default="-3.0"/>
-    <arg name="surface_z" default="0.50"/>
-    <arg name="surface_vx" default="1.5"/>
+    <arg name="surface_z" default="1.0"/>
+    <arg name="surface_vx" default="1.0"/>
     <arg name="surface_vy" default="0.0"/>
     <arg name="surface_vz" default="0.0"/>
     <arg name="surface_roll" default="0.0"/>
@@ -32,7 +31,8 @@
     <arg name="surface_stop_margin" default="0.05"/>
     <arg name="surface_traj_topic" default="/planning_cmd/poly_traj"/>
 
-    <node if="$(arg marsim)" pkg="perfect_drone_sim" type="perfect_drone" name="perfect_drone" output="log">
+    <node if="$(arg marsim)" pkg="perfect_drone_sim" type="perfect_drone"
+          name="perfect_drone" output="log" clear_params="true">
         <param name="config_name" value="$(arg sim_config)" type="string"/>
     </node>
 

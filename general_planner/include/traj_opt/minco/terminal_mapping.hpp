@@ -6,6 +6,8 @@
 #include <algorithm>
 #include <cmath>
 
+#include "traj_opt/perching_surface_state.hpp"
+
 namespace minco
 {
 
@@ -25,14 +27,14 @@ namespace minco
  * gradients.
  */
 template <int DIM, int S>
-class TerminalMappingBase
+class BoundaryStateMappingBase
 {
 public:
   EIGEN_MAKE_ALIGNED_OPERATOR_NEW
 
   using BoundaryState = Eigen::Matrix<double, DIM, S>;
 
-  virtual ~TerminalMappingBase() = default;
+  virtual ~BoundaryStateMappingBase() = default;
 
   virtual bool enabled() const = 0;
 
@@ -97,11 +99,13 @@ public:
    * the caller. MINCO writes its own [tau, xi] entries; task-specific terminal
    * variables, if present, should be written by the mapping implementation.
    */
-  virtual void backwardTerminalGradient(const BoundaryState &grad_head_state,
-                                        const BoundaryState &grad_tail_state,
-                                        const Eigen::VectorXd &cache_T,
-                                        const Eigen::Ref<const Eigen::VectorXd> &extra_vars,
-                                        Eigen::Ref<Eigen::VectorXd> grad_out) const = 0;
+  virtual void backwardTerminalGradient(const BoundaryState &,
+                                        const BoundaryState &,
+                                        const Eigen::VectorXd &,
+                                        const Eigen::Ref<const Eigen::VectorXd> &,
+                                        Eigen::Ref<Eigen::VectorXd>) const
+  {
+  }
 
   /**
    * @brief Add physical-time chain-rule terms before TimeMap::backward.
@@ -112,18 +116,63 @@ public:
    * to grad_by_times here. MINCOOptimizer then maps that physical dJ/dT to
    * the unconstrained tau gradient through the active TimeMap.
    */
-  virtual void backwardTerminalTimeGradient(const BoundaryState &grad_head_state,
+  virtual void backwardTerminalTimeGradient(const BoundaryState &,
+                                            const BoundaryState &,
+                                            const Eigen::VectorXd &,
+                                            const Eigen::Ref<const Eigen::VectorXd> &,
+                                            Eigen::Ref<Eigen::VectorXd>) const
+  {
+  }
+
+  /**
+   * @brief General boundary-state gradient hook.
+   *
+   * New dynamic-head tasks such as takeoff should override this method. The
+   * default forwards to the historical terminal hook so existing perching code
+   * keeps the same behavior.
+   */
+  virtual void backwardBoundaryGradient(const BoundaryState &grad_head_state,
+                                        const BoundaryState &grad_tail_state,
+                                        const Eigen::VectorXd &cache_T,
+                                        const Eigen::Ref<const Eigen::VectorXd> &extra_vars,
+                                        Eigen::Ref<Eigen::VectorXd> grad_out) const
+  {
+    backwardTerminalGradient(grad_head_state,
+                             grad_tail_state,
+                             cache_T,
+                             extra_vars,
+                             grad_out);
+  }
+
+  /**
+   * @brief General boundary-state time-gradient hook.
+   *
+   * First-version dynamic takeoff fixes the release time at zero, so head
+   * mapping does not contribute to segment-time gradients. Tail mappings keep
+   * forwarding through the old terminal hook.
+   */
+  virtual void backwardBoundaryTimeGradient(const BoundaryState &grad_head_state,
                                             const BoundaryState &grad_tail_state,
                                             const Eigen::VectorXd &cache_T,
                                             const Eigen::Ref<const Eigen::VectorXd> &extra_vars,
-                                            Eigen::Ref<Eigen::VectorXd> grad_by_times) const = 0;
+                                            Eigen::Ref<Eigen::VectorXd> grad_by_times) const
+  {
+    backwardTerminalTimeGradient(grad_head_state,
+                                 grad_tail_state,
+                                 cache_T,
+                                 extra_vars,
+                                 grad_by_times);
+  }
 };
 
 template <int DIM, int S>
-class FixedTerminalMapping final : public TerminalMappingBase<DIM, S>
+using TerminalMappingBase = BoundaryStateMappingBase<DIM, S>;
+
+template <int DIM, int S>
+class FixedTerminalMapping final : public BoundaryStateMappingBase<DIM, S>
 {
 public:
-  using BoundaryState = typename TerminalMappingBase<DIM, S>::BoundaryState;
+  using BoundaryState = typename BoundaryStateMappingBase<DIM, S>::BoundaryState;
 
   bool enabled() const override
   {
@@ -193,6 +242,23 @@ struct PerchingSemanticConfig
   double terminal_relax_time{0.35};
   double weight_nu{1.0e-2};
   double weight_tau_f{1.0e-3};
+};
+
+struct TakeoffBoundaryConfig
+{
+  EIGEN_MAKE_ALIGNED_OPERATOR_NEW
+
+  traj_opt::PerchingSurfaceState surface;
+  double robot_l{0.28};
+  double thrust_nominal{9.81};
+  double thrust_range{2.0};
+  double gravity{9.81};
+  bool use_tangent_release_velocity{false};
+  double weight_eta{1.0};
+  double weight_tau_f{1.0e-3};
+  double tau_f_seed{0.0};
+  Eigen::Vector2d eta_seed{Eigen::Vector2d::Zero()};
+  bool rotate_surface_with_yaw_rate{true};
 };
 
 template <int DIM, int S>
@@ -529,6 +595,223 @@ private:
 private:
   bool configured_{false};
   PerchingSemanticConfig semantic_config_{};
+};
+
+template <int DIM, int S>
+class TakeoffHeadBoundaryMapping final : public BoundaryStateMappingBase<DIM, S>
+{
+public:
+  static_assert(DIM == 3, "TakeoffHeadBoundaryMapping currently assumes 3D position trajectories.");
+  static_assert(S == 4, "TakeoffHeadBoundaryMapping is intended for T4 MINCO.");
+
+  using BoundaryState = typename BoundaryStateMappingBase<DIM, S>::BoundaryState;
+  using TakeoffBoundaryConfig = minco::TakeoffBoundaryConfig;
+
+  EIGEN_MAKE_ALIGNED_OPERATOR_NEW
+
+  TakeoffHeadBoundaryMapping() = default;
+
+  void configure(const TakeoffBoundaryConfig &config)
+  {
+    config_ = config;
+    config_.surface.surface_z = normalizedOr(config_.surface.surface_z, Eigen::Vector3d::UnitZ());
+    config_.surface.surface_x = normalizedOr(config_.surface.surface_x, Eigen::Vector3d::UnitX());
+    config_.surface.surface_y =
+        normalizedOr(config_.surface.surface_z.cross(config_.surface.surface_x),
+                     Eigen::Vector3d::UnitY());
+    config_.surface.surface_x =
+        normalizedOr(config_.surface.surface_y.cross(config_.surface.surface_z),
+                     Eigen::Vector3d::UnitX());
+    config_.robot_l = std::max(0.0, config_.robot_l);
+    config_.thrust_nominal = std::max(0.0, config_.thrust_nominal);
+    config_.thrust_range = std::max(0.0, config_.thrust_range);
+    config_.gravity = std::abs(config_.gravity);
+    config_.weight_eta = std::max(0.0, config_.weight_eta);
+    config_.weight_tau_f = std::max(0.0, config_.weight_tau_f);
+    if (!std::isfinite(config_.tau_f_seed))
+    {
+      config_.tau_f_seed = 0.0;
+    }
+    configured_ = true;
+  }
+
+  bool enabled() const override
+  {
+    return configured_;
+  }
+
+  int extraVariableDim() const override
+  {
+    return config_.use_tangent_release_velocity ? 3 : 1;
+  }
+
+  const TakeoffBoundaryConfig &config() const
+  {
+    return config_;
+  }
+
+  void setInitialExtraVariables(Eigen::Ref<Eigen::VectorXd> extra_vars) const override
+  {
+    extra_vars.setZero();
+    if (extra_vars.size() != extraVariableDim())
+    {
+      return;
+    }
+    const double tau_seed = std::clamp(config_.tau_f_seed, -1.3, 1.3);
+    if (config_.use_tangent_release_velocity)
+    {
+      extra_vars(0) = config_.eta_seed.x();
+      extra_vars(1) = config_.eta_seed.y();
+      extra_vars(2) = tau_seed;
+    }
+    else
+    {
+      extra_vars(0) = tau_seed;
+    }
+  }
+
+  void mapBoundaryStates(const BoundaryState &nominal_head_state,
+                         const BoundaryState &nominal_tail_state,
+                         const Eigen::VectorXd &,
+                         const Eigen::Ref<const Eigen::VectorXd> &extra_vars,
+                         BoundaryState &mapped_head_state,
+                         BoundaryState &mapped_tail_state) const override
+  {
+    mapped_head_state = nominal_head_state;
+    mapped_tail_state = nominal_tail_state;
+    if (!configured_)
+    {
+      return;
+    }
+
+    const auto frame = surfaceFrame();
+    const double tau_f = tauF(extra_vars);
+    const double tau =
+        config_.thrust_nominal + config_.thrust_range * std::sin(tau_f);
+
+    mapped_head_state.col(0) =
+        config_.surface.position + config_.robot_l * frame.z;
+    mapped_head_state.col(1) = config_.surface.velocity;
+    if (config_.use_tangent_release_velocity && extra_vars.size() >= 3)
+    {
+      mapped_head_state.col(1) += extra_vars(0) * frame.x + extra_vars(1) * frame.y;
+    }
+    mapped_head_state.col(2) = tau * frame.z + gravityVector();
+    mapped_head_state.col(3).setZero();
+  }
+
+  double addExtraVariableCost(const Eigen::Ref<const Eigen::VectorXd> &extra_vars,
+                              Eigen::Ref<Eigen::VectorXd> grad_extra) const override
+  {
+    grad_extra.setZero();
+    if (!configured_ || extra_vars.size() != extraVariableDim())
+    {
+      return 0.0;
+    }
+
+    double cost = 0.0;
+    if (config_.use_tangent_release_velocity)
+    {
+      const double eta_x = extra_vars(0);
+      const double eta_y = extra_vars(1);
+      cost += config_.weight_eta * (eta_x * eta_x + eta_y * eta_y);
+      grad_extra(0) = 2.0 * config_.weight_eta * eta_x;
+      grad_extra(1) = 2.0 * config_.weight_eta * eta_y;
+    }
+
+    const int tau_idx = tauIndex();
+    const double tau_f = extra_vars(tau_idx);
+    cost += config_.weight_tau_f * tau_f * tau_f;
+    grad_extra(tau_idx) = 2.0 * config_.weight_tau_f * tau_f;
+    return cost;
+  }
+
+  void backwardBoundaryGradient(const BoundaryState &grad_head_state,
+                                const BoundaryState &,
+                                const Eigen::VectorXd &,
+                                const Eigen::Ref<const Eigen::VectorXd> &extra_vars,
+                                Eigen::Ref<Eigen::VectorXd> grad_out) const override
+  {
+    if (!configured_ || extra_vars.size() != extraVariableDim() ||
+        grad_out.size() < extraVariableDim())
+    {
+      return;
+    }
+
+    const Eigen::Index offset = grad_out.size() - extraVariableDim();
+    const auto frame = surfaceFrame();
+    if (config_.use_tangent_release_velocity)
+    {
+      grad_out(offset) += frame.x.dot(grad_head_state.col(1));
+      grad_out(offset + 1) += frame.y.dot(grad_head_state.col(1));
+    }
+
+    const int tau_idx = tauIndex();
+    const double tau_f = extra_vars(tau_idx);
+    grad_out(offset + tau_idx) +=
+        config_.thrust_range * std::cos(tau_f) *
+        frame.z.dot(grad_head_state.col(2));
+  }
+
+  void backwardBoundaryTimeGradient(const BoundaryState &,
+                                    const BoundaryState &,
+                                    const Eigen::VectorXd &,
+                                    const Eigen::Ref<const Eigen::VectorXd> &,
+                                    Eigen::Ref<Eigen::VectorXd>) const override
+  {
+    // First standalone takeoff fixes release time at t=0. If release_delay is
+    // later optimized, add d(head_state)/d(release_delay) chain terms here.
+  }
+
+private:
+  struct SurfaceFrame
+  {
+    EIGEN_MAKE_ALIGNED_OPERATOR_NEW
+
+    Eigen::Vector3d x{Eigen::Vector3d::UnitX()};
+    Eigen::Vector3d y{Eigen::Vector3d::UnitY()};
+    Eigen::Vector3d z{Eigen::Vector3d::UnitZ()};
+  };
+
+  static Eigen::Vector3d normalizedOr(const Eigen::Vector3d &v,
+                                      const Eigen::Vector3d &fallback)
+  {
+    if (!v.allFinite() || v.norm() < 1.0e-6)
+    {
+      return fallback;
+    }
+    return v.normalized();
+  }
+
+  Eigen::Vector3d gravityVector() const
+  {
+    return Eigen::Vector3d(0.0, 0.0, -std::abs(config_.gravity));
+  }
+
+  SurfaceFrame surfaceFrame() const
+  {
+    SurfaceFrame frame;
+    frame.z = normalizedOr(config_.surface.surface_z, Eigen::Vector3d::UnitZ());
+    frame.x = normalizedOr(config_.surface.surface_x, Eigen::Vector3d::UnitX());
+    frame.y = normalizedOr(frame.z.cross(frame.x), Eigen::Vector3d::UnitY());
+    frame.x = normalizedOr(frame.y.cross(frame.z), Eigen::Vector3d::UnitX());
+    return frame;
+  }
+
+  int tauIndex() const
+  {
+    return config_.use_tangent_release_velocity ? 2 : 0;
+  }
+
+  double tauF(const Eigen::Ref<const Eigen::VectorXd> &extra_vars) const
+  {
+    const int idx = tauIndex();
+    return extra_vars.size() > idx ? extra_vars(idx) : 0.0;
+  }
+
+private:
+  bool configured_{false};
+  TakeoffBoundaryConfig config_{};
 };
 
 } // namespace minco

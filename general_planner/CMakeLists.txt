@@ -68,6 +68,7 @@ set(THIRD_PARTY
 file(GLOB_RECURSE srcs CONFIGURE_DEPENDS src/*.cpp include/*.h include/*.hpp)
 list(FILTER srcs EXCLUDE REGEX ".*/src/traj_opt/exp_traj_optimizer_s4\\.cpp$")
 list(FILTER srcs EXCLUDE REGEX ".*/src/traj_opt/backup_traj_optimizer_s4\\.cpp$")
+list(FILTER srcs EXCLUDE REGEX ".*/src/utils/minco\\.cpp$")
 list(APPEND srcs ${CMAKE_CURRENT_SOURCE_DIR}/src/general_core/tracking_runtime_manager.cpp)
 list(APPEND srcs ${CMAKE_CURRENT_SOURCE_DIR}/src/general_core/perching_runtime_manager.cpp)
 list(REMOVE_DUPLICATES srcs)

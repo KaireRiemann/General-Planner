@@ -875,10 +875,22 @@ namespace fsm {
                 }
                 cmd_cnt++;
             } else if (perchingMode()) {
+                task_mode_sub_ = nh_.subscribe(cfg_.task_mode_topic, 10,
+                                               &FsmRos1::taskModeCallback, this);
                 perching_surface_sub_ = nh_.subscribe(cfg_.perching_surface_odom_topic, 10,
                                                       &FsmRos1::perchingSurfaceCallback, this);
                 cout << YELLOW << " -- [Fsm] PERCHING TASK ENABLE, surface odom: "
-                     << cfg_.perching_surface_odom_topic << RESET << endl;
+                     << cfg_.perching_surface_odom_topic
+                     << ", mode switch topic: " << cfg_.task_mode_topic << RESET << endl;
+                cmd_cnt++;
+            } else if (dynamicTakeoffMode()) {
+                task_mode_sub_ = nh_.subscribe(cfg_.task_mode_topic, 10,
+                                               &FsmRos1::taskModeCallback, this);
+                perching_surface_sub_ = nh_.subscribe(cfg_.perching_surface_odom_topic, 10,
+                                                      &FsmRos1::perchingSurfaceCallback, this);
+                cout << YELLOW << " -- [Fsm] DYNAMIC TAKEOFF TASK ENABLE, surface odom: "
+                     << cfg_.perching_surface_odom_topic
+                     << ", mode switch topic: " << cfg_.task_mode_topic << RESET << endl;
                 cmd_cnt++;
             } else if (explorationMode()) {
                 cout << YELLOW << " -- [Fsm] EXPLORATION TASK ENABLE." << RESET << endl;

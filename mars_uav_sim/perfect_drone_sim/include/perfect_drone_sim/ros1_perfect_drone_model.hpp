@@ -17,6 +17,7 @@
 #include "perfect_drone_sim/config.hpp"
 
 #include <algorithm>
+#include <cmath>
 
 typedef Eigen::Matrix<double, 3, 1> Vec3;
 typedef Eigen::Matrix<double, 3, 3> Mat33;
@@ -44,6 +45,8 @@ namespace perfect_drone {
                 cout << " -- [Fsm-Test] Load config by file name: " << cfg_name << endl;
             }
             cfg_ = Config(cfg_path);
+            applyInitialPoseOverrides();
+            nh_.param("use_command_attitude", use_command_attitude_, false);
             render_ptr_ = std::make_shared<marsim::MarsimRender>(cfg_path);
             cmd_sub_ = nh_.subscribe(cfg_.cmd_topic, 100, &PerfectDrone::cmdCallback, this);
             odom_pub_ = nh_.advertise<nav_msgs::Odometry>(cfg_.odom_topic, 100);
@@ -58,7 +61,7 @@ namespace perfect_drone {
             velocity_.setZero();
             yaw_ = cfg_.init_yaw;
             mesh_resource_ = cfg_.mesh_resource;
-            q_ = Eigen::AngleAxisd(yaw_, Vec3::UnitZ());
+            q_ = quatFromRpy(cfg_.init_roll, cfg_.init_pitch, cfg_.init_yaw);
             odom_.header.frame_id = "world";
             odom_.child_frame_id = cfg_.robot_frame_id;
             odom_pub_timer_ = nh_.createTimer(ros::Duration(0.01), &PerfectDrone::publishOdom, this);
@@ -134,6 +137,58 @@ namespace perfect_drone {
         Eigen::Quaterniond q_;
         nav_msgs::Odometry odom_;
         std::string mesh_resource_;
+        bool use_command_attitude_{false};
+
+        static Eigen::Quaterniond quatFromRpy(const double roll,
+                                              const double pitch,
+                                              const double yaw) {
+            Eigen::Quaterniond q =
+                Eigen::AngleAxisd(yaw, Vec3::UnitZ()) *
+                Eigen::AngleAxisd(pitch, Vec3::UnitY()) *
+                Eigen::AngleAxisd(roll, Vec3::UnitX());
+            q.normalize();
+            return q;
+        }
+
+        void applyInitialPoseOverrides() {
+            nh_.param("init_roll", cfg_.init_roll, cfg_.init_roll);
+            nh_.param("init_pitch", cfg_.init_pitch, cfg_.init_pitch);
+            nh_.param("init_yaw", cfg_.init_yaw, cfg_.init_yaw);
+
+            bool init_from_surface = false;
+            nh_.param("init_from_surface", init_from_surface, false);
+            if (!init_from_surface) {
+                return;
+            }
+
+            double surface_x = cfg_.init_pos.x();
+            double surface_y = cfg_.init_pos.y();
+            double surface_z = cfg_.init_pos.z();
+            double surface_roll = cfg_.init_roll;
+            double surface_pitch = cfg_.init_pitch;
+            double surface_yaw = cfg_.init_yaw;
+            double robot_l = 0.28;
+
+            nh_.param("surface_x", surface_x, surface_x);
+            nh_.param("surface_y", surface_y, surface_y);
+            nh_.param("surface_z", surface_z, surface_z);
+            nh_.param("surface_roll", surface_roll, surface_roll);
+            nh_.param("surface_pitch", surface_pitch, surface_pitch);
+            nh_.param("surface_yaw", surface_yaw, surface_yaw);
+            nh_.param("robot_l", robot_l, robot_l);
+            nh_.param("takeoff_contact_robot_l", robot_l, robot_l);
+
+            const Eigen::Quaterniond surface_q = quatFromRpy(surface_roll, surface_pitch, surface_yaw);
+            const Vec3 surface_p(surface_x, surface_y, surface_z);
+            cfg_.init_pos = surface_p + std::max(0.0, robot_l) * surface_q.toRotationMatrix().col(2);
+            cfg_.init_roll = surface_roll;
+            cfg_.init_pitch = surface_pitch;
+            cfg_.init_yaw = surface_yaw;
+
+            ROS_INFO("PerfectDrone initial pose follows surface contact: p=(%.3f, %.3f, %.3f), rpy=(%.3f, %.3f, %.3f), robot_l=%.3f",
+                     cfg_.init_pos.x(), cfg_.init_pos.y(), cfg_.init_pos.z(),
+                     cfg_.init_roll, cfg_.init_pitch, cfg_.init_yaw, robot_l);
+        }
 
         void cmdCallback(const quadrotor_msgs::PositionCommandConstPtr &msg) {
             Vec3 pos(msg->position.x, msg->position.y, msg->position.z);
@@ -141,6 +196,13 @@ namespace perfect_drone {
             Vec3 acc(msg->acceleration.x, msg->acceleration.y, msg->acceleration.z);
             double yaw = msg->yaw;
             updateFlatness(pos, vel, acc, yaw);
+            if (use_command_attitude_ &&
+                std::isfinite(msg->attitude.x) &&
+                std::isfinite(msg->attitude.y) &&
+                std::isfinite(msg->attitude.z)) {
+                q_ = quatFromRpy(msg->attitude.x, msg->attitude.y, msg->attitude.z);
+                yaw_ = msg->attitude.z;
+            }
         }
 
 

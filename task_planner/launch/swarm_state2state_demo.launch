@@ -6,7 +6,8 @@
     <arg name="drone1_planner_config" default="swarm_state2state_drone1_ros1.yaml"/>
 
     <group ns="drone_0">
-        <node pkg="perfect_drone_sim" type="perfect_drone" name="perfect_drone" output="log">
+        <node pkg="perfect_drone_sim" type="perfect_drone"
+              name="perfect_drone" output="log" clear_params="true">
             <param name="config_name" value="$(arg drone0_sim_config)" type="string"/>
         </node>
 
@@ -16,7 +17,8 @@
     </group>
 
     <group ns="drone_1">
-        <node pkg="perfect_drone_sim" type="perfect_drone" name="perfect_drone" output="log">
+        <node pkg="perfect_drone_sim" type="perfect_drone"
+              name="perfect_drone" output="log" clear_params="true">
             <param name="config_name" value="$(arg drone1_sim_config)" type="string"/>
         </node>
 

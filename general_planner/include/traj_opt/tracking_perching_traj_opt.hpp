@@ -12,6 +12,7 @@
 #include "general_core/map_manager.hpp"
 #include "traj_opt/config.hpp"
 #include "traj_opt/minco/terminal_mapping.hpp"
+#include "traj_opt/perching_surface_state.hpp"
 #include "utils/header/type_utils.hpp"
 
 namespace ros_interface
@@ -103,21 +104,6 @@ struct TrackingProblem
   bool use_corridor{false};
 };
 
-struct PerchingSurfaceState
-{
-  EIGEN_MAKE_ALIGNED_OPERATOR_NEW
-
-  double t{0.0};
-  super_utils::Vec3f position{super_utils::Vec3f::Zero()};
-  super_utils::Vec3f velocity{super_utils::Vec3f::Zero()};
-  super_utils::Vec3f acceleration{super_utils::Vec3f::Zero()};
-  super_utils::Vec3f surface_x{super_utils::Vec3f::UnitX()};
-  super_utils::Vec3f surface_y{super_utils::Vec3f::UnitY()};
-  super_utils::Vec3f surface_z{super_utils::Vec3f::UnitZ()};
-  double yaw{0.0};
-  double yaw_rate{0.0};
-};
-
 struct PerchingInitialGuess
 {
   EIGEN_MAKE_ALIGNED_OPERATOR_NEW
@@ -179,6 +165,43 @@ struct PerchingProblem
   double duration_seed_weight{0.0};
 };
 
+struct DynamicTakeoffProblem
+{
+  EIGEN_MAKE_ALIGNED_OPERATOR_NEW
+
+  super_utils::StatePVAJ nominal_head_pvaj{super_utils::StatePVAJ::Zero()};
+  super_utils::StatePVAJ tail_pvaj{super_utils::StatePVAJ::Zero()};
+
+  PerchingSurfaceState surface;
+  minco::TakeoffBoundaryConfig boundary;
+  bool use_head_mapping{true};
+
+  super_utils::vec_E<super_utils::Vec3f> guide_path;
+  std::vector<double> guide_t;
+
+  double release_contact_time{0.20};
+  double platform_clearance_after_release{0.05};
+  double escape_distance{1.0};
+  double escape_height{0.8};
+  double safe_distance{0.35};
+
+  double platform_radius{0.35};
+  double robot_radius{0.25};
+  double robot_l{0.28};
+  double platform_clearance{0.05};
+  double platform_collision_activation_distance{1.0};
+
+  int piece_num{3};
+  double min_duration{0.6};
+  double max_duration{3.0};
+  double reference_speed{1.5};
+
+  double weight_platform_collision{1.0};
+  double weight_relative_height{0.0};
+  double relative_z_min{-0.2};
+  double relative_z_max{3.0};
+};
+
 class TrackingJerkTrajOpt
 {
 public:
@@ -231,6 +254,25 @@ public:
   void setSafeDistance(double safe_distance);
 
   bool optimize(const PerchingProblem &problem,
+                geometry_utils::Trajectory &out_traj);
+
+private:
+  struct Impl;
+  std::shared_ptr<Impl> impl_;
+};
+
+class DynamicTakeoffSnapTrajOpt
+{
+public:
+  using Ptr = std::shared_ptr<DynamicTakeoffSnapTrajOpt>;
+
+  DynamicTakeoffSnapTrajOpt(const traj_opt::Config &cfg,
+                            const std::shared_ptr<ros_interface::RosInterface> &ros_ptr);
+
+  void setMapManager(const general_planner::MapManager::Ptr &map_manager);
+  void setSafeDistance(double safe_distance);
+
+  bool optimize(const DynamicTakeoffProblem &problem,
                 geometry_utils::Trajectory &out_traj);
 
 private:

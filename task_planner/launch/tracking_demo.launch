@@ -7,7 +7,8 @@
     <arg name="monitor" default="true"/>
     <arg name="rviz_config" default="$(find general_planner)/rviz/esdf_planner.rviz"/>
 
-    <node if="$(arg marsim)" pkg="perfect_drone_sim" type="perfect_drone" name="perfect_drone" output="log">
+    <node if="$(arg marsim)" pkg="perfect_drone_sim" type="perfect_drone"
+          name="perfect_drone" output="log" clear_params="true">
         <param name="config_name" value="$(arg sim_config)" type="string"/>
     </node>
 

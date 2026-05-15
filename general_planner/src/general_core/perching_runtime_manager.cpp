@@ -71,6 +71,7 @@ void PerchingRuntimeManager::reset()
     status_ = Status::IDLE;
     has_committed_perching_ = false;
     consecutive_reject_ = 0;
+    last_rejected_candidate_ = RejectedCandidateSignature{};
 }
 
 PerchingRuntimeManager::SurfaceFrame
@@ -474,6 +475,64 @@ PerchingRuntimeManager::checkCandidate(const geometry_utils::Trajectory &pos_tra
     return out;
 }
 
+void PerchingRuntimeManager::rememberRejectedCandidate(
+        const traj_opt::PerchingProblem &problem,
+        const std::string &reason,
+        const double stamp)
+{
+    last_rejected_candidate_.valid = true;
+    last_rejected_candidate_.head_position = problem.head_pvaj.col(0);
+    last_rejected_candidate_.head_velocity = problem.head_pvaj.col(1);
+    last_rejected_candidate_.surface_position = problem.surface.position;
+    last_rejected_candidate_.surface_velocity = problem.surface.velocity;
+    last_rejected_candidate_.surface_normal = normalizedOr(problem.surface.surface_z,
+                                                           Eigen::Vector3d::UnitZ());
+    last_rejected_candidate_.duration_seed = problem.initial_guess.total_time;
+    last_rejected_candidate_.piece_num = problem.piece_num;
+    last_rejected_candidate_.stamp = stamp;
+    last_rejected_candidate_.reason = reason;
+}
+
+bool PerchingRuntimeManager::shouldSkipRejectedCandidate(
+        const traj_opt::PerchingProblem &problem,
+        const double stamp,
+        std::string *reason) const
+{
+    if (!last_rejected_candidate_.valid) {
+        return false;
+    }
+
+    const double age = stamp - last_rejected_candidate_.stamp;
+    if (!std::isfinite(age) || age < -1.0e-3 || age > 0.5) {
+        return false;
+    }
+
+    const Eigen::Vector3d surface_normal =
+            normalizedOr(problem.surface.surface_z, Eigen::Vector3d::UnitZ());
+    const bool same =
+            problem.piece_num == last_rejected_candidate_.piece_num &&
+            std::abs(problem.initial_guess.total_time -
+                     last_rejected_candidate_.duration_seed) <= 0.08 &&
+            (problem.head_pvaj.col(0) -
+             last_rejected_candidate_.head_position).norm() <= 0.08 &&
+            (problem.head_pvaj.col(1) -
+             last_rejected_candidate_.head_velocity).norm() <= 0.20 &&
+            (problem.surface.position -
+             last_rejected_candidate_.surface_position).norm() <= 0.25 &&
+            (problem.surface.velocity -
+             last_rejected_candidate_.surface_velocity).norm() <= 0.10 &&
+            surface_normal.dot(last_rejected_candidate_.surface_normal) >=
+                    std::cos(0.08);
+    if (!same) {
+        return false;
+    }
+
+    if (reason != nullptr) {
+        *reason = last_rejected_candidate_.reason;
+    }
+    return true;
+}
+
 PerchingRuntimeManager::DecisionType
 PerchingRuntimeManager::decideCommit(const CheckResult &candidate_check,
                                      const CheckResult *current_perching_check)
@@ -517,6 +576,7 @@ void PerchingRuntimeManager::updateStatusAfterCommit()
 {
     has_committed_perching_ = true;
     consecutive_reject_ = 0;
+    last_rejected_candidate_ = RejectedCandidateSignature{};
     if (status_ != Status::CONTACT_IMMINENT) {
         status_ = Status::EXECUTING;
     }

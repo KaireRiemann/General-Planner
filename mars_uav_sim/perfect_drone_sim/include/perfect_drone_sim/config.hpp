@@ -27,7 +27,9 @@ namespace perfect_drone {
         std::string global_pc_topic{"/global_pc"};
         std::string robot_frame_id{"perfect_drone"};
         Eigen::Vector3d init_pos;
-        double init_yaw;
+        double init_roll{0.0};
+        double init_pitch{0.0};
+        double init_yaw{0.0};
         double sensing_rate;
 
         Config() = default;
@@ -45,6 +47,8 @@ namespace perfect_drone {
             loader.LoadParam("init_position/x", init_pos.x(), 0.0);
             loader.LoadParam("init_position/y", init_pos.y(), 0.0);
             loader.LoadParam("init_position/z", init_pos.z(), 1.5);
+            loader.LoadParam("init_roll", init_roll, 0.0);
+            loader.LoadParam("init_pitch", init_pitch, 0.0);
             loader.LoadParam("init_yaw", init_yaw, 0.0);
             loader.LoadParam("sensing_rate", sensing_rate, 10.0);
         }

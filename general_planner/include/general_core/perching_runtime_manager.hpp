@@ -62,6 +62,12 @@ public:
                               const CheckResult *current_perching_check);
 
     bool candidateAccepted(const CheckResult &candidate_check) const;
+    void rememberRejectedCandidate(const traj_opt::PerchingProblem &problem,
+                                   const std::string &reason,
+                                   double stamp);
+    bool shouldSkipRejectedCandidate(const traj_opt::PerchingProblem &problem,
+                                     double stamp,
+                                     std::string *reason = nullptr) const;
 
     void updateStatusAfterCommit();
     void updateStatusAfterContact();
@@ -109,12 +115,25 @@ private:
                                                  const traj_opt::PerchingSurfaceState &surface,
                                                  double T) const;
 
-private:
+    struct RejectedCandidateSignature {
+        bool valid{false};
+        Eigen::Vector3d head_position{Eigen::Vector3d::Zero()};
+        Eigen::Vector3d head_velocity{Eigen::Vector3d::Zero()};
+        Eigen::Vector3d surface_position{Eigen::Vector3d::Zero()};
+        Eigen::Vector3d surface_velocity{Eigen::Vector3d::Zero()};
+        Eigen::Vector3d surface_normal{Eigen::Vector3d::UnitZ()};
+        double duration_seed{0.0};
+        int piece_num{0};
+        double stamp{0.0};
+        std::string reason;
+    };
+
     const Config &cfg_;
     MapManager::Ptr map_manager_;
     Status status_{Status::IDLE};
     bool has_committed_perching_{false};
     int consecutive_reject_{0};
+    RejectedCandidateSignature last_rejected_candidate_;
 };
 
 } // namespace general_planner

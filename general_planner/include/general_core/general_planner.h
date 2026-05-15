@@ -47,6 +47,8 @@
 #include "general_core/tracking_perching_frontend.hpp"
 #include "general_core/tracking_runtime_manager.hpp"
 #include "general_core/perching_runtime_manager.hpp"
+#include "general_core/takeoff_frontend.hpp"
+#include "general_core/takeoff_runtime_manager.hpp"
 #include "general_core/tracking_perching_transition_manager.hpp"
 #include "general_core/tracking_to_perching_initializer.hpp"
 
@@ -104,6 +106,11 @@ namespace general_planner {
         ExpTraj last_exp_traj_info_;
         std::unique_ptr<TrackingRuntimeManager> tracking_runtime_manager_;
         std::unique_ptr<PerchingRuntimeManager> perching_runtime_manager_;
+        std::unique_ptr<TakeoffFrontend> takeoff_frontend_;
+        std::unique_ptr<TakeoffRuntimeManager> takeoff_runtime_manager_;
+        std::unique_ptr<traj_opt::DynamicTakeoffSnapTrajOpt> takeoff_optimizer_;
+        traj_opt::DynamicTakeoffProblem active_takeoff_problem_;
+        bool active_takeoff_problem_valid_{false};
         std::unique_ptr<TrackingPerchingTransitionManager> tracking_perching_manager_;
         std::unique_ptr<TrackingToPerchingInitializer> tracking_to_perching_initializer_;
         std::unique_ptr<ExplorationFrontend> exploration_frontend_;
@@ -255,6 +262,12 @@ namespace general_planner {
         RET_CODE ReplanPerchingOnce(const traj_opt::PerchingSurfaceState &surface,
                                     const bool &new_task);
 
+        RET_CODE PlanDynamicTakeoffFromRest(const traj_opt::PerchingSurfaceState &surface,
+                                            const bool &new_task);
+
+        RET_CODE ReplanDynamicTakeoffOnce(const traj_opt::PerchingSurfaceState &surface,
+                                          const bool &new_task);
+
         RET_CODE PlanExplorationFromRest(const bool &new_task);
 
         RET_CODE ReplanExplorationOnce(const bool &new_task);
@@ -335,6 +348,9 @@ namespace general_planner {
                                       const Trajectory &yaw_traj,
                                       const std::string &traj_ns);
 
+        bool commitTakeoffTrajectory(const Trajectory &pos_traj,
+                                     const std::string &traj_ns);
+
         bool commitTrackingToPerchingTrajectory(const Trajectory &tracking_pos,
                                                 const Trajectory &tracking_yaw,
                                                 double current_tracking_local_t,
@@ -389,7 +405,12 @@ namespace general_planner {
         RET_CODE optimizePerchingTask(const traj_opt::PerchingSurfaceState &surface,
                                       const bool &from_rest);
 
+        RET_CODE optimizeDynamicTakeoffTask(const traj_opt::PerchingSurfaceState &surface,
+                                            const bool &from_rest);
+
         PerchingFrontend::Config makePerchingFrontendConfig() const;
+
+        TakeoffFrontend::Config makeTakeoffFrontendConfig() const;
 
         ExplorationFrontend::Config makeExplorationFrontendConfig() const;
 

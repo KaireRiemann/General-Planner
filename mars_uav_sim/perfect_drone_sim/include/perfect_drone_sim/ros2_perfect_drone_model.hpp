@@ -114,7 +114,7 @@ namespace perfect_drone {
             velocity_.setZero();
             yaw_ = cfg_.init_yaw;
             mesh_resource_ = cfg_.mesh_resource;
-            q_ = Eigen::AngleAxisd(yaw_, Vec3::UnitZ());
+            q_ = quatFromRpy(cfg_.init_roll, cfg_.init_pitch, cfg_.init_yaw);
             odom_.header.frame_id = "world";
             path_.poses.clear();
             path_.header.frame_id = "world";
@@ -166,6 +166,17 @@ namespace perfect_drone {
         ~PerfectDrone() {}
 
     private:
+        static Eigen::Quaterniond quatFromRpy(const double roll,
+                                              const double pitch,
+                                              const double yaw) {
+            Eigen::Quaterniond q =
+                Eigen::AngleAxisd(yaw, Vec3::UnitZ()) *
+                Eigen::AngleAxisd(pitch, Vec3::UnitY()) *
+                Eigen::AngleAxisd(roll, Vec3::UnitX());
+            q.normalize();
+            return q;
+        }
+
         void cmdCallback(const mars_quadrotor_msgs::msg::PositionCommand::SharedPtr msg) {
             Vec3 pos(msg->position.x, msg->position.y, msg->position.z);
             Vec3 vel(msg->velocity.x, msg->velocity.y, msg->velocity.z);

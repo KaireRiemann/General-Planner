@@ -91,6 +91,97 @@ double estimateMovingTargetInterceptTime(const Vec3f &head_p,
     return std::clamp(best_t, lower, upper);
 }
 
+double estimateTrapezoidalDuration(const double length,
+                                   double start_speed,
+                                   double end_speed,
+                                   double max_vel,
+                                   double max_acc)
+{
+    if (!std::isfinite(length) || length < 1.0e-6)
+    {
+        return 0.0;
+    }
+
+    max_vel = std::max(0.5, max_vel);
+    max_acc = std::max(0.5, max_acc);
+    start_speed = std::clamp(start_speed, 0.0, max_vel);
+    end_speed = std::clamp(end_speed, 0.0, max_vel);
+
+    const double acc_len =
+        std::max(0.0, (max_vel * max_vel - start_speed * start_speed) /
+                          (2.0 * max_acc));
+    const double dec_len =
+        std::max(0.0, (max_vel * max_vel - end_speed * end_speed) /
+                          (2.0 * max_acc));
+    if (length > acc_len + dec_len)
+    {
+        return (max_vel - start_speed) / max_acc +
+               (max_vel - end_speed) / max_acc +
+               (length - acc_len - dec_len) / max_vel;
+    }
+
+    const double peak_sq =
+        std::max(0.0,
+                 0.5 * (start_speed * start_speed + end_speed * end_speed) +
+                     max_acc * length);
+    const double peak = std::sqrt(peak_sq);
+    return std::max(0.0, (peak - start_speed) / max_acc) +
+           std::max(0.0, (peak - end_speed) / max_acc);
+}
+
+double vectorAngle(const Vec3f &lhs, const Vec3f &rhs)
+{
+    if (!lhs.allFinite() || !rhs.allFinite() ||
+        lhs.norm() < 1.0e-6 || rhs.norm() < 1.0e-6)
+    {
+        return 0.0;
+    }
+    const double c = std::clamp(lhs.normalized().dot(rhs.normalized()),
+                                -1.0,
+                                1.0);
+    return std::acos(c);
+}
+
+double estimatePerchingDynamicDuration(
+    const StatePVAJ &head_pvaj,
+    const Vec3f &pre_contact,
+    const Vec3f &contact,
+    const Vec3f &tail_velocity,
+    const Vec3f &tail_acceleration,
+    const PerchingFrontend::Config &cfg)
+{
+    const Vec3f head_p = head_pvaj.col(0);
+    const Vec3f head_v = head_pvaj.col(1);
+    const Vec3f head_a = head_pvaj.col(2);
+    const double path_length =
+        (pre_contact - head_p).norm() + (contact - pre_contact).norm();
+    const double translational =
+        estimateTrapezoidalDuration(path_length,
+                                    head_v.norm(),
+                                    tail_velocity.norm(),
+                                    cfg.max_speed,
+                                    cfg.max_acc);
+
+    const Vec3f gravity_up(0.0, 0.0, std::abs(cfg.gravity));
+    const Vec3f head_thrust = head_a + gravity_up;
+    const Vec3f tail_thrust = tail_acceleration + gravity_up;
+    const double attitude =
+        cfg.max_omega > 0.0
+            ? 1.15 * vectorAngle(head_thrust, tail_thrust) /
+                  std::max(0.5, cfg.max_omega)
+            : 0.0;
+    const double jerk =
+        cfg.max_jerk > 0.0
+            ? 1.10 * (tail_acceleration - head_a).norm() /
+                  std::max(1.0, cfg.max_jerk)
+            : 0.0;
+
+    return std::max({std::max(0.05, cfg.min_duration),
+                     translational,
+                     attitude,
+                     jerk});
+}
+
 
 double angleDiff(const double lhs, const double rhs)
 {
@@ -1785,6 +1876,7 @@ bool PerchingFrontend::buildProblem(const StatePVAJ &head_pvaj,
     const Vec3f contact_seed = surface.position + cfg_.robot_l * z_s;
     const double surface_speed = surface.velocity.norm();
     const double max_speed = std::max(0.5, cfg_.max_speed);
+    const Vec3f gravity_vector(0.0, 0.0, -std::abs(cfg_.gravity));
     const double v_ref =
         std::clamp(std::max({std::max(0.5, cfg_.reference_speed),
                              surface_speed + std::max(0.0, cfg_.v_plus) + 0.5,
@@ -1792,26 +1884,67 @@ bool PerchingFrontend::buildProblem(const StatePVAJ &head_pvaj,
                    0.5,
                    std::max(0.5, 0.95 * max_speed));
     const double max_duration = std::max(cfg_.min_duration, cfg_.max_duration);
-    double T0 = estimateMovingTargetInterceptTime(head_pvaj.col(0),
-                                                  head_pvaj.col(1),
-                                                  contact_seed,
-                                                  surface.velocity,
-                                                  v_ref,
-                                                  std::max(0.05, cfg_.min_duration),
-                                                  max_duration);
-    if (use_tracking_warm_start) {
-        T0 = std::clamp(warm_start_total_time,
+    const double intercept_T =
+        estimateMovingTargetInterceptTime(head_pvaj.col(0),
+                                          head_pvaj.col(1),
+                                          contact_seed,
+                                          surface.velocity,
+                                          v_ref,
+                                          std::max(0.05, cfg_.min_duration),
+                                          max_duration);
+    const double seed_T =
+        use_tracking_warm_start ? warm_start_total_time : intercept_T;
+    double T0 =
+        std::clamp(seed_T,
+                   std::max(0.05, cfg_.min_duration),
+                   max_duration);
+    double dynamic_T = T0;
+    for (int iter = 0; iter < 3; ++iter)
+    {
+        Vec3f x_iter = x_s;
+        Vec3f y_iter = y_s;
+        Vec3f z_iter = z_s;
+        surfaceFrameAt(T0, x_iter, y_iter, z_iter);
+        (void)x_iter;
+        (void)y_iter;
+        const Vec3f surface_p_iter =
+            surface.position + surface.velocity * T0 +
+            0.5 * surface.acceleration * T0 * T0;
+        const Vec3f surface_v_iter = surface.velocity + surface.acceleration * T0;
+        const Vec3f contact_iter = surface_p_iter + cfg_.robot_l * z_iter;
+        const Vec3f pre_contact_iter =
+            contact_iter + cfg_.pre_contact_distance * z_iter;
+        const Vec3f tail_v_iter = surface_v_iter - cfg_.v_plus * z_iter;
+        const Vec3f tail_a_iter =
+            cfg_.thrust_nominal * z_iter + gravity_vector;
+        dynamic_T =
+            estimatePerchingDynamicDuration(head_pvaj,
+                                            pre_contact_iter,
+                                            contact_iter,
+                                            tail_v_iter,
+                                            tail_a_iter,
+                                            cfg_);
+        const double required_T = std::max(seed_T, dynamic_T);
+        if (std::abs(required_T - T0) < 0.03)
+        {
+            T0 = required_T;
+            break;
+        }
+        T0 = std::clamp(required_T,
                         std::max(0.05, cfg_.min_duration),
                         max_duration);
     }
-    
+
     if (!cfg_.allow_long_standalone &&
         T0 > max_duration - std::max(0.0, cfg_.duration_margin))
     {
         std::cout << " -- [PerchingFrontend] PERCHING_NOT_READY reason=required_duration_exceeds_bound T0="
-                  << T0 << ", max=" << max_duration << std::endl;
+                  << T0 << ", intercept_T=" << intercept_T
+                  << ", dynamic_T=" << dynamic_T
+                  << ", max=" << max_duration << std::endl;
         return false;
     }
+    T0 = std::clamp(T0, std::max(0.05, cfg_.min_duration), max_duration);
 
     Vec3f x_s_T = x_s;
     Vec3f y_s_T = y_s;
@@ -1826,7 +1959,6 @@ bool PerchingFrontend::buildProblem(const StatePVAJ &head_pvaj,
 
     const Vec3f contact = surface_p_T + cfg_.robot_l * z_s_T;
     const Vec3f pre_contact = contact + cfg_.pre_contact_distance * z_s_T;
-    const Vec3f gravity_vector(0.0, 0.0, -std::abs(cfg_.gravity));
 
     problem = traj_opt::PerchingProblem{};
     problem.head_pvaj = head_pvaj;
@@ -1850,13 +1982,34 @@ bool PerchingFrontend::buildProblem(const StatePVAJ &head_pvaj,
     problem.visual_activation_distance = cfg_.visual_activation_distance;
     problem.visual_fx = cfg_.visual_fx;
     problem.visual_fy = cfg_.visual_fy;
+    const double max_total_duration_cfg =
+        cfg_.max_total_duration > 0.0 ? cfg_.max_total_duration : max_duration;
+    const double guide_length_seed =
+        (pre_contact - head_pvaj.col(0)).norm() +
+        (contact - pre_contact).norm();
+    const int time_piece_num =
+        static_cast<int>(std::ceil(T0 / std::max(0.2, cfg_.max_piece_duration)));
+    const int distance_piece_num =
+        static_cast<int>(std::ceil(guide_length_seed /
+                                   std::max(0.6, 0.45 * max_speed)));
+    const int max_piece_by_duration =
+        max_total_duration_cfg > 0.0 && cfg_.min_piece_duration > 0.0
+            ? std::max(1,
+                       static_cast<int>(std::floor(max_total_duration_cfg /
+                                                   cfg_.min_piece_duration)))
+            : std::max(1, cfg_.max_piece_num);
+    const int piece_upper =
+        std::max(std::max(1, cfg_.min_piece_num),
+                 std::min(std::max(1, cfg_.max_piece_num),
+                          max_piece_by_duration));
     const int adaptive_piece_num =
-        std::clamp(static_cast<int>(std::ceil(T0 / std::max(0.2, cfg_.max_piece_duration))),
+        std::clamp(std::max(time_piece_num, distance_piece_num),
                    std::max(1, cfg_.min_piece_num),
-                   std::max(std::max(1, cfg_.min_piece_num), cfg_.max_piece_num));
-    problem.piece_num = std::max({cfg_.piece_num, 2, adaptive_piece_num});
+                   piece_upper);
+    problem.piece_num =
+        std::min(piece_upper, std::max({cfg_.piece_num, 2, adaptive_piece_num}));
     problem.min_piece_duration = cfg_.min_piece_duration;
-    problem.max_total_duration = cfg_.max_total_duration > 0.0 ? cfg_.max_total_duration : max_duration;
+    problem.max_total_duration = max_total_duration_cfg;
     problem.min_total_duration = std::max(cfg_.min_total_duration, cfg_.min_duration);
     problem.time_lower_bound_weight = cfg_.time_lower_bound_weight;
     problem.time_upper_bound_weight = cfg_.time_upper_bound_weight;
@@ -1994,7 +2147,9 @@ bool PerchingFrontend::buildProblem(const StatePVAJ &head_pvaj,
     problem.initial_guess.tau_f = problem.terminal.tau_f_seed;
 
     std::cout << " -- [PerchingFrontend] PERCHING_BUILD_PROBLEM_SUCCESS T0="
-              << T0 << ", piece_num=" << problem.piece_num
+              << T0 << ", intercept_T=" << intercept_T
+              << ", dynamic_T=" << dynamic_T
+              << ", piece_num=" << problem.piece_num
               << ", guide_size=" << problem.guide_path.size()
               << ", tracking_warm_start=" << use_tracking_warm_start
               << ", nu_seed=[" << problem.initial_guess.nu.x()

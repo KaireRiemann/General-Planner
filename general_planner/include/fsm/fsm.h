@@ -76,6 +76,8 @@ namespace fsm {
         traj_opt::PerchingSurfaceState perching_surface_;
         double tracking_target_rcv_time_{-1.0};
         double perching_surface_rcv_time_{-1.0};
+        double perching_surface_first_rcv_time_{-1.0};
+        double last_dynamic_takeoff_wait_log_time_{-1.0};
         bool task_new_{false};
         bool perching_contact_reached_{false};
         Vec3f perching_contact_surface_position_{Vec3f::Zero()};
@@ -182,6 +184,8 @@ namespace fsm {
 
         bool perchingMode() const;
 
+        bool dynamicTakeoffMode() const;
+
         bool explorationMode() const;
 
         void setTaskModeFromString(const std::string &mode);
@@ -189,6 +193,8 @@ namespace fsm {
         bool trackingTaskReady();
 
         bool perchingTaskReady();
+
+        bool dynamicTakeoffTaskReady();
 
         bool activeTaskReady();
 

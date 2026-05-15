@@ -225,6 +225,24 @@ namespace general_planner {
         double perching_tau_f_seed_limit{1.30};
         bool perching_reset_surface_time{true};
 
+        double takeoff_robot_l{0.28};
+        double takeoff_robot_radius{0.25};
+        double takeoff_platform_radius{0.35};
+        double takeoff_platform_clearance{0.05};
+        double takeoff_release_contact_time{0.20};
+        double takeoff_escape_distance{1.0};
+        double takeoff_escape_height{0.8};
+        double takeoff_reference_speed{1.5};
+        double takeoff_min_duration{0.6};
+        double takeoff_max_duration{3.0};
+        double takeoff_safe_distance{0.35};
+        int takeoff_piece_num{3};
+        bool takeoff_frontend_astar{true};
+        bool takeoff_use_tangent_release_velocity{false};
+        double takeoff_weight_eta{1.0};
+        double takeoff_weight_tau_f{1.0e-3};
+        double takeoff_platform_clearance_after_release{0.08};
+
         bool tracking_perching_enable{true};
         bool tracking_perching_auto_trigger_enable{false};
         bool tracking_perching_require_external_request{true};
@@ -530,6 +548,40 @@ namespace general_planner {
                              perching_tau_f_seed_limit, 1.30);
             loader.LoadParam("general_planner/perching/reset_surface_time",
                              perching_reset_surface_time, true);
+            loader.LoadParam("general_planner/takeoff/robot_l",
+                             takeoff_robot_l, 0.28);
+            loader.LoadParam("general_planner/takeoff/robot_radius",
+                             takeoff_robot_radius, 0.25);
+            loader.LoadParam("general_planner/takeoff/platform_radius",
+                             takeoff_platform_radius, 0.35);
+            loader.LoadParam("general_planner/takeoff/platform_clearance",
+                             takeoff_platform_clearance, 0.05);
+            loader.LoadParam("general_planner/takeoff/release_contact_time",
+                             takeoff_release_contact_time, 0.20);
+            loader.LoadParam("general_planner/takeoff/escape_distance",
+                             takeoff_escape_distance, 1.0);
+            loader.LoadParam("general_planner/takeoff/escape_height",
+                             takeoff_escape_height, 0.8);
+            loader.LoadParam("general_planner/takeoff/reference_speed",
+                             takeoff_reference_speed, 1.5);
+            loader.LoadParam("general_planner/takeoff/min_duration",
+                             takeoff_min_duration, 0.6);
+            loader.LoadParam("general_planner/takeoff/max_duration",
+                             takeoff_max_duration, 3.0);
+            loader.LoadParam("general_planner/takeoff/safe_distance",
+                             takeoff_safe_distance, 0.35);
+            loader.LoadParam("general_planner/takeoff/piece_num",
+                             takeoff_piece_num, 3);
+            loader.LoadParam("general_planner/takeoff/frontend_astar",
+                             takeoff_frontend_astar, true);
+            loader.LoadParam("general_planner/takeoff/use_tangent_release_velocity",
+                             takeoff_use_tangent_release_velocity, false);
+            loader.LoadParam("general_planner/takeoff/weight_eta",
+                             takeoff_weight_eta, 1.0);
+            loader.LoadParam("general_planner/takeoff/weight_tau_f",
+                             takeoff_weight_tau_f, 1.0e-3);
+            loader.LoadParam("general_planner/takeoff/platform_clearance_after_release",
+                             takeoff_platform_clearance_after_release, 0.08);
             loader.LoadParam("general_planner/tracking_perching/enable",
                              tracking_perching_enable, true);
             loader.LoadParam("general_planner/tracking_perching/auto_trigger_enable",

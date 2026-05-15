@@ -17,7 +17,8 @@
     </include>
 
     <group ns="drone_1">
-        <node pkg="perfect_drone_sim" type="perfect_drone" name="perfect_drone" output="log">
+        <node pkg="perfect_drone_sim" type="perfect_drone"
+              name="perfect_drone" output="log" clear_params="true">
             <param name="config_name" value="$(arg tracker_sim_config)" type="string"/>
         </node>
 

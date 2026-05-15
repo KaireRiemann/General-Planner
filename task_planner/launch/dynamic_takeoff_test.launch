@@ -1,0 +1,67 @@
+<launch>
+    <arg name="sim_config" default="dynamic_takeoff.yaml"/>
+    <arg name="planner_config" default="dynamic_takeoff_test_ros1.yaml"/>
+    <arg name="rviz" default="true"/>
+    <arg name="marsim" default="true"/>
+    <arg name="takeoff_contact_duration" default="4.0"/>
+
+    <arg name="surface_x" default="4.0"/>
+    <arg name="surface_y" default="2.0"/>
+    <arg name="surface_z" default="1.0"/>
+    <arg name="surface_vx" default="1.0"/>
+    <arg name="surface_vy" default="0.0"/>
+    <arg name="surface_vz" default="0.0"/>
+    <arg name="surface_roll" default="0.0"/>
+    <arg name="surface_pitch" default="0.0"/>
+    <arg name="surface_yaw" default="0.0"/>
+    <arg name="surface_yaw_rate" default="0.0"/>
+
+    <node if="$(arg marsim)" pkg="perfect_drone_sim" type="perfect_drone"
+          name="perfect_drone" output="log" clear_params="true">
+        <param name="config_name" value="$(arg sim_config)" type="string"/>
+        <param name="init_from_surface" value="true" type="bool"/>
+        <param name="surface_x" value="$(arg surface_x)" type="double"/>
+        <param name="surface_y" value="$(arg surface_y)" type="double"/>
+        <param name="surface_z" value="$(arg surface_z)" type="double"/>
+        <param name="surface_roll" value="$(arg surface_roll)" type="double"/>
+        <param name="surface_pitch" value="$(arg surface_pitch)" type="double"/>
+        <param name="surface_yaw" value="$(arg surface_yaw)" type="double"/>
+        <param name="takeoff_contact_robot_l" value="0.28" type="double"/>
+        <param name="use_command_attitude" value="true" type="bool"/>
+    </node>
+
+    <node pkg="general_planner" name="takeoff_surface_source" type="task_target_source" output="screen">
+        <param name="config_name" value="$(arg planner_config)" type="string"/>
+        <param name="mode" value="perching" type="string"/>
+        <param name="surface_odom_topic" value="/perching/surface_odom" type="string"/>
+        <param name="surface_marker_topic" value="/perching/surface_markers" type="string"/>
+        <param name="surface_x" value="$(arg surface_x)" type="double"/>
+        <param name="surface_y" value="$(arg surface_y)" type="double"/>
+        <param name="surface_z" value="$(arg surface_z)" type="double"/>
+        <param name="surface_vx" value="$(arg surface_vx)" type="double"/>
+        <param name="surface_vy" value="$(arg surface_vy)" type="double"/>
+        <param name="surface_vz" value="$(arg surface_vz)" type="double"/>
+        <param name="surface_roll" value="$(arg surface_roll)" type="double"/>
+        <param name="surface_pitch" value="$(arg surface_pitch)" type="double"/>
+        <param name="surface_yaw" value="$(arg surface_yaw)" type="double"/>
+        <param name="surface_yaw_rate" value="$(arg surface_yaw_rate)" type="double"/>
+        <param name="platform_radius" value="0.35" type="double"/>
+        <param name="normal_length" value="0.9" type="double"/>
+        <param name="publish_takeoff_contact_cmd" value="true" type="bool"/>
+        <param name="takeoff_contact_cmd_topic" value="/planning/pos_cmd" type="string"/>
+        <param name="takeoff_contact_robot_l" value="0.28" type="double"/>
+        <param name="takeoff_contact_cmd_duration" value="$(arg takeoff_contact_duration)" type="double"/>
+        <param name="stop_surface_on_traj_arrival" value="true" type="bool"/>
+        <param name="stop_surface_require_perching_trajectory" value="true" type="bool"/>
+        <param name="surface_stop_margin" value="0.05" type="double"/>
+    </node>
+
+    <node pkg="general_planner" name="fsm_node" type="fsm_node" output="screen" clear_params="true">
+        <param name="config_name" value="$(arg planner_config)" type="string"/>
+    </node>
+
+    <group if="$(arg rviz)">
+        <node pkg="rviz" type="rviz" name="dynamic_takeoff"
+              args="-d $(find perfect_drone_sim)/rviz/perching.rviz" output="log"/>
+    </group>
+</launch>

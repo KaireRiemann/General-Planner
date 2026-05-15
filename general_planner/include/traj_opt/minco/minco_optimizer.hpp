@@ -425,7 +425,7 @@ public:
     if (terminal_mapping != nullptr && terminal_mapping->enabled())
     {
       const auto extra_vars = x.segment(core_dim, extra_dim);
-      terminal_mapping->backwardTerminalTimeGradient(workspace_->grad_by_head_state,
+      terminal_mapping->backwardBoundaryTimeGradient(workspace_->grad_by_head_state,
                                                      workspace_->grad_by_tail_state,
                                                      workspace_->cache_T,
                                                      extra_vars,
@@ -437,7 +437,7 @@ public:
     if (terminal_mapping != nullptr && terminal_mapping->enabled())
     {
       const auto extra_vars = x.segment(core_dim, extra_dim);
-      terminal_mapping->backwardTerminalGradient(workspace_->grad_by_head_state,
+      terminal_mapping->backwardBoundaryGradient(workspace_->grad_by_head_state,
                                                  workspace_->grad_by_tail_state,
                                                  workspace_->cache_T,
                                                  extra_vars,

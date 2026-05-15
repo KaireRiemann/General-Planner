@@ -10,6 +10,7 @@
 #include <geometry_msgs/Point.h>
 #include <nav_msgs/Odometry.h>
 #include <nav_msgs/Path.h>
+#include <quadrotor_msgs/PositionCommand.h>
 #include <quadrotor_msgs/PolynomialTrajectory.h>
 #include <ros/ros.h>
 #include <std_msgs/ColorRGBA.h>
@@ -314,6 +315,44 @@ struct PerchingSurfaceSample
     double yaw{0.0};
 };
 
+quadrotor_msgs::PositionCommand makeTakeoffContactCommand(const PerchingSurfaceSample &sample,
+                                                          const Eigen::Quaterniond &q,
+                                                          const double robot_l,
+                                                          const std::string &frame_id)
+{
+    const Eigen::Matrix3d R = q.toRotationMatrix();
+    const Vec3f offset = std::max(0.0, robot_l) * R.col(2);
+    const Vec3f position = sample.position + offset;
+    const Vec3f velocity = sample.velocity + sample.omega.cross(offset);
+    const Vec3f acceleration = 9.80 * R.col(2) - Vec3f(0.0, 0.0, 9.80);
+
+    quadrotor_msgs::PositionCommand cmd;
+    cmd.header.frame_id = frame_id;
+    cmd.header.stamp = ros::Time::now();
+    cmd.trajectory_flag = 1;
+    cmd.position.x = position.x();
+    cmd.position.y = position.y();
+    cmd.position.z = position.z();
+    cmd.velocity.x = velocity.x();
+    cmd.velocity.y = velocity.y();
+    cmd.velocity.z = velocity.z();
+    cmd.acceleration.x = acceleration.x();
+    cmd.acceleration.y = acceleration.y();
+    cmd.acceleration.z = acceleration.z();
+    cmd.jerk.x = 0.0;
+    cmd.jerk.y = 0.0;
+    cmd.jerk.z = 0.0;
+    cmd.angular_velocity.x = sample.omega.x();
+    cmd.angular_velocity.y = sample.omega.y();
+    cmd.angular_velocity.z = sample.omega.z();
+    cmd.attitude.x = sample.roll;
+    cmd.attitude.y = sample.pitch;
+    cmd.attitude.z = sample.yaw;
+    cmd.yaw = sample.yaw;
+    cmd.yaw_dot = sample.omega.z();
+    return cmd;
+}
+
 visualization_msgs::Marker makeArrowMarker(const std::string &frame_id,
                                            const ros::Time &stamp,
                                            const std::string &ns,
@@ -527,6 +566,10 @@ int main(int argc, char **argv)
     double tracking_prediction_horizon = 4.0;
     double tracking_prediction_dt = 0.25;
     double tracking_target_normal_offset = 0.0;
+    bool publish_takeoff_contact_cmd = false;
+    std::string takeoff_contact_cmd_topic{"/planning/pos_cmd"};
+    double takeoff_contact_robot_l = 0.28;
+    double takeoff_contact_cmd_duration = 0.0;
     std::string surface_traj_topic;
     bool stop_surface_on_traj_arrival = false;
     bool stop_surface_require_perching_trajectory = false;
@@ -573,6 +616,10 @@ int main(int argc, char **argv)
     nh.param<double>("tracking_prediction_horizon", tracking_prediction_horizon, tracking_prediction_horizon);
     nh.param<double>("tracking_prediction_dt", tracking_prediction_dt, tracking_prediction_dt);
     nh.param<double>("tracking_target_normal_offset", tracking_target_normal_offset, tracking_target_normal_offset);
+    nh.param<bool>("publish_takeoff_contact_cmd", publish_takeoff_contact_cmd, publish_takeoff_contact_cmd);
+    nh.param<std::string>("takeoff_contact_cmd_topic", takeoff_contact_cmd_topic, takeoff_contact_cmd_topic);
+    nh.param<double>("takeoff_contact_robot_l", takeoff_contact_robot_l, takeoff_contact_robot_l);
+    nh.param<double>("takeoff_contact_cmd_duration", takeoff_contact_cmd_duration, takeoff_contact_cmd_duration);
     nh.param<bool>("stop_surface_on_traj_arrival",
                    stop_surface_on_traj_arrival,
                    stop_surface_on_traj_arrival);
@@ -586,11 +633,17 @@ int main(int argc, char **argv)
     ros::Publisher tracking_odom_pub;
     ros::Publisher tracking_path_pub;
     ros::Publisher tracking_prediction_pub;
+    ros::Publisher takeoff_contact_cmd_pub;
     if (publish_tracking_target)
     {
         tracking_odom_pub = nh.advertise<nav_msgs::Odometry>(tracking_target_odom_topic, 10);
         tracking_path_pub = nh.advertise<nav_msgs::Path>(tracking_target_path_topic, 10);
         tracking_prediction_pub = nh.advertise<nav_msgs::Path>(tracking_target_prediction_topic, 10);
+    }
+    if (publish_takeoff_contact_cmd)
+    {
+        takeoff_contact_cmd_pub =
+            nh.advertise<quadrotor_msgs::PositionCommand>(takeoff_contact_cmd_topic, 10);
     }
     const ros::Time start_time = ros::Time::now();
     bool stop_scheduled = false;
@@ -808,6 +861,14 @@ int main(int argc, char **argv)
             tracking_path_pub.publish(joint_path_msg);
         }
     }
+    if (publish_takeoff_contact_cmd)
+    {
+        ROS_INFO("Perching surface source publishes takeoff contact commands on %s for %.2f s with robot_l=%.2f.",
+                 takeoff_contact_cmd_topic.c_str(),
+                 std::max(0.0, takeoff_contact_cmd_duration),
+                 takeoff_contact_robot_l);
+    }
+    bool takeoff_contact_cmd_stop_logged = false;
     while (ros::ok())
     {
         const ros::Time now = ros::Time::now();
@@ -850,6 +911,26 @@ int main(int argc, char **argv)
                                                std::max(0.05, platform_radius),
                                                std::max(0.1, normal_length),
                                                "world"));
+        if (publish_takeoff_contact_cmd)
+        {
+            const bool command_active =
+                takeoff_contact_cmd_duration <= 0.0 ||
+                t <= std::max(0.0, takeoff_contact_cmd_duration);
+            if (command_active)
+            {
+                takeoff_contact_cmd_pub.publish(makeTakeoffContactCommand(
+                    sample,
+                    q,
+                    takeoff_contact_robot_l,
+                    "world"));
+            }
+            else if (!takeoff_contact_cmd_stop_logged)
+            {
+                takeoff_contact_cmd_stop_logged = true;
+                ROS_INFO("Takeoff contact command phase finished after %.2f s.",
+                         takeoff_contact_cmd_duration);
+            }
+        }
         if (publish_tracking_target)
         {
             Vec3f target_p;
