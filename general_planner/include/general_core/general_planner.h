@@ -121,6 +121,8 @@ namespace general_planner {
         int tracking_consecutive_keep_old_{0};
         int tracking_consecutive_reject_{0};
         double last_tracking_commit_wt_{-1.0};
+        traj_opt::DynamicTargetStates last_tracking_frontend_prediction_;
+        vec_E<Vec3f> last_tracking_frontend_viewpoints_;
 
         struct TrackingTrajectoryActivity {
             bool valid{false};
@@ -171,6 +173,10 @@ namespace general_planner {
         double getCommittedTrajectoryRemainingDuration();
 
         bool trackingPerchingPerchingActive() const;
+
+        bool trackingPerchingContactReached() const;
+
+        TrackingPerchingTransitionManager::Status trackingPerchingStatus() const;
 
         void markTrackingPerchingContact();
 
@@ -256,6 +262,11 @@ namespace general_planner {
 
         void setTrackingPerchingRequest(bool request);
 
+        RET_CODE TryCommitPerchingFromTracking(
+            const traj_opt::DynamicTargetStates &target_prediction,
+            const traj_opt::PerchingSurfaceState &surface,
+            RET_CODE tracking_ret);
+
         RET_CODE PlanPerchingFromRest(const traj_opt::PerchingSurfaceState &surface,
                                       const bool &new_task);
 
@@ -318,6 +329,11 @@ namespace general_planner {
 
         void refreshTrackingGuideTiming(traj_opt::TrackingProblem &problem) const;
         void refreshTrackingGuideEndpoint(traj_opt::TrackingProblem &problem) const;
+        bool findTrackingViewpointReference(
+            const traj_opt::DynamicTargetStates &target_prediction,
+            Vec3f &reference_viewpoint,
+            traj_opt::DynamicTargetState &reference_target) const;
+        void rememberTrackingViewpointReference(const traj_opt::TrackingProblem &problem);
 
         StatePVAJ makeTaskHeadState(const bool &from_rest);
 
@@ -389,6 +405,14 @@ namespace general_planner {
             const std::string &reason);
 
         bool trackingCandidateSafeForCommit(const Trajectory &candidate_pos_traj) const;
+
+        bool trackingTrajectorySatisfiesFov(const Trajectory &pos_traj,
+                                            const Trajectory &yaw_traj,
+                                            const traj_opt::DynamicTargetStates &target_prediction,
+                                            double start_t,
+                                            double horizon,
+                                            double dt,
+                                            std::string *reason = nullptr) const;
 
         void resetTrackingCommitCounters();
 

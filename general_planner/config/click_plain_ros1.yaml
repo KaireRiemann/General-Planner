@@ -146,8 +146,8 @@ astar:
 
 rog_map:
   resolution: 0.1
-  inflation_resolution: 0.2
-  inflation_step: 2
+  inflation_resolution: 0.1
+  inflation_step: 1
   unk_inflation_en: false
   unk_inflation_step: 1
   map_size: [ 50,50,6 ]
@@ -185,10 +185,10 @@ rog_map:
   point_filt_num: 1
 
   raycasting:
-    enable: false
+    enable: true
     batch_update_size: 1
-    local_update_box: [ 100,100,5 ]
-    ray_range: [0.5,100]
+    local_update_box: [ 15,15,4 ]
+    ray_range: [0.5,15]
     p_min: 0.12
     p_miss: 0.49
     p_free: 0.499

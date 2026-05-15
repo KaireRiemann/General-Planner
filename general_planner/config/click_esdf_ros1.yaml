@@ -11,7 +11,7 @@ fsm:
 general_planner:
   backup_traj_en: false
   esdf_traj_en: true
-  esdf_safe_distance: 0.5
+  esdf_safe_distance: 0.3
   detailed_log_en: false
   visualization_en: true
   use_fov_cut: false
@@ -133,8 +133,8 @@ astar:
 
 rog_map:
   resolution: 0.1
-  inflation_resolution: 0.2
-  inflation_step: 2
+  inflation_resolution: 0.1
+  inflation_step: 1
   unk_inflation_en: false
   unk_inflation_step: 1
   map_size: [ 50,50,6 ]
@@ -157,7 +157,7 @@ rog_map:
     enable: true
     resolution: 0.2
     # The range of esdf around the odom [m].
-    local_update_box: [ 16,16,4 ]
+    local_update_box: [ 15,15,4 ]
 
   # If [enable = true], the ROG-Map will actively take ros topic as input.
   #  else user should call function [updateMap] to update the map.
@@ -192,11 +192,11 @@ rog_map:
   raycasting:
     # if disable, the map will only maintain occupied information, and all other grid
     # will be considered as unknown.
-    enable: false
+    enable: true
     batch_update_size: 1
-    local_update_box: [ 100,100,5 ]
+    local_update_box: [ 15,15,4 ]
     # The range of raycasting [m].
-    ray_range: [0.5, 100 ]
+    ray_range: [0.5, 15 ]
 
     p_min: 0.12
     p_miss: 0.49

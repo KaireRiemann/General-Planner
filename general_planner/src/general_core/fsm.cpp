@@ -56,7 +56,7 @@ namespace fsm {
             return;
         }
 
-        if (trackingMode()) {
+        if (trackingMode() || trackingPerchingMode() || fullCycleMode()) {
             if (!trackingExecutionState()) {
                 return;
             }
@@ -77,41 +77,34 @@ namespace fsm {
 
         RET_CODE ret_code = FAILED;
         bool replan_tracking_static = false;
-        if (state2stateMode()) {
-            planner_ptr_->getMapManager()->getNearestInfCellNot(GridType::OCCUPIED, gi_.goal_p, gi_.goal_p, 3.0);
-            ret_code = planner_ptr_->ReplanOnce(gi_.goal_p, gi_.goal_yaw, gi_.new_goal);
-        } else if (trackingMode()) {
-            traj_opt::DynamicTargetStates prediction;
-            if (!getTrackingTargetPrediction(prediction)) {
-                return;
-            }
-            replan_tracking_static = trackingPredictionStatic(prediction);
-            if (shouldSkipStaticTrackingReplan(prediction)) {
-                if (machine_state_ != HOLD_TRACKING) {
-                    ChangeState("StaticTrackingHold", HOLD_TRACKING);
-                }
-                return;
-            }
-            traj_opt::PerchingSurfaceState surface;
-            if (cfg_.tracking_perching_enable && getPerchingSurface(surface)) {
-                ret_code = planner_ptr_->ReplanTrackingOnce(prediction, surface, task_new_);
-            } else {
-                ret_code = planner_ptr_->ReplanTrackingOnce(prediction, task_new_);
-            }
-        } else if (perchingMode()) {
-            traj_opt::PerchingSurfaceState surface;
-            if (!getPerchingSurface(surface)) {
-                return;
-            }
-            ret_code = planner_ptr_->ReplanPerchingOnce(surface, task_new_);
-        } else if (dynamicTakeoffMode()) {
-            traj_opt::PerchingSurfaceState surface;
-            if (!getPerchingSurface(surface)) {
-                return;
-            }
-            ret_code = planner_ptr_->ReplanDynamicTakeoffOnce(surface, task_new_);
-        } else if (explorationMode()) {
+        if (explorationMode()) {
             ret_code = planner_ptr_->ReplanExplorationOnce(task_new_);
+        } else {
+            if (!active_task_) {
+                resetActiveTask();
+            }
+            if (!active_task_) {
+                return;
+            }
+            if (state2stateMode()) {
+                planner_ptr_->getMapManager()->getNearestInfCellNot(GridType::OCCUPIED, gi_.goal_p, gi_.goal_p, 3.0);
+            }
+            if (trackingMode() && !trackingPerchingPerchingActive()) {
+                traj_opt::DynamicTargetStates prediction;
+                if (!getTrackingTargetPrediction(prediction)) {
+                    return;
+                }
+                replan_tracking_static = trackingPredictionStatic(prediction);
+                if (shouldSkipStaticTrackingReplan(prediction)) {
+                    if (machine_state_ != HOLD_TRACKING) {
+                        ChangeState("StaticTrackingHold", HOLD_TRACKING);
+                    }
+                    return;
+                }
+            }
+            const auto result = active_task_->tick(buildTaskContext());
+            logTaskTickResult(result);
+            ret_code = result.legacy_ret;
         }
         if (ret_code == FAILED) {
 //            cout << YELLOW << " -- [Fsm] ReplanOnce failed." << RESET << endl;
@@ -121,9 +114,9 @@ namespace fsm {
             ChangeState("ReplanTimerCallback", EMER_STOP);
         } else if (ret_code == NEW_TRAJ) {
             ChangeState("ReplanTimerCallback", GENERATE_TRAJ);
-        } else if (ret_code == NO_NEED && trackingMode()) {
+        } else if (ret_code == NO_NEED && (trackingMode() || trackingPerchingMode() || fullCycleMode())) {
             publishPolyTraj();
-            if (replan_tracking_static) {
+            if (trackingMode() && replan_tracking_static) {
                 ChangeState("ReplanTimerCallback", HOLD_TRACKING);
             } else if (machine_state_ != FOLLOW_TRAJ) {
                 ChangeState("ReplanTimerCallback", FOLLOW_TRAJ);
@@ -134,11 +127,17 @@ namespace fsm {
             finish_plan = true;
             cout << GREEN << " -- [Fsm] Exploration finished." << RESET << endl;
             ChangeState("ReplanTimerCallback", WAIT_GOAL);
+        } else if (ret_code == FINISH && (trackingPerchingMode() || fullCycleMode())) {
+            gi_.new_goal = false;
+            task_new_ = false;
+            finish_plan = true;
+            cout << GREEN << " -- [Fsm] Composite task finished." << RESET << endl;
+            ChangeState("ReplanTimerCallback", WAIT_GOAL);
         } else if (ret_code == SUCCESS || ret_code == FINISH) {
             gi_.new_goal = false;
             task_new_ = false;
             publishPolyTraj();
-            if (trackingMode()) {
+            if (trackingMode() || trackingPerchingMode() || fullCycleMode()) {
                 if (replan_tracking_static) {
                     ChangeState("ReplanTimerCallback", STATIC_TRACKING);
                 } else if (machine_state_ != FOLLOW_TRAJ) {
@@ -193,6 +192,9 @@ namespace fsm {
                 if (!activeTaskReady()) {
                     return;
                 } else {
+                    if (active_task_) {
+                        active_task_->reset();
+                    }
                     ChangeState("MainFsmCallback", GENERATE_TRAJ);
                 }
                 resetVisualizedPath();
@@ -207,29 +209,25 @@ namespace fsm {
                 }
                 int retcode = FAILED;
                 bool planned_tracking_static = false;
-                if (state2stateMode()) {
-                    retcode = planner_ptr_->PlanFromRest(gi_.goal_p, gi_.goal_yaw, gi_.new_goal);
-                } else if (trackingMode()) {
-                    traj_opt::DynamicTargetStates prediction;
-                    if (!getTrackingTargetPrediction(prediction)) {
-                        return;
-                    }
-                    planned_tracking_static = trackingPredictionStatic(prediction);
-                    retcode = planner_ptr_->PlanTrackingFromRest(prediction, task_new_);
-                } else if (perchingMode()) {
-                    traj_opt::PerchingSurfaceState surface;
-                    if (!getPerchingSurface(surface)) {
-                        return;
-                    }
-                    retcode = planner_ptr_->PlanPerchingFromRest(surface, task_new_);
-                } else if (dynamicTakeoffMode()) {
-                    traj_opt::PerchingSurfaceState surface;
-                    if (!getPerchingSurface(surface)) {
-                        return;
-                    }
-                    retcode = planner_ptr_->PlanDynamicTakeoffFromRest(surface, task_new_);
-                } else if (explorationMode()) {
+                if (explorationMode()) {
                     retcode = planner_ptr_->PlanExplorationFromRest(task_new_);
+                } else {
+                    if (!active_task_) {
+                        resetActiveTask();
+                    }
+                    if (!active_task_) {
+                        return;
+                    }
+                    const auto ctx = buildTaskContext();
+                    if (trackingMode() && ctx.target_prediction.has_value()) {
+                        planned_tracking_static = trackingPredictionStatic(*ctx.target_prediction);
+                    }
+                    const auto result = active_task_->tick(ctx);
+                    logTaskTickResult(result);
+                    retcode = result.legacy_ret;
+                    if (result.status == general_planner::TaskStatus::NOT_READY) {
+                        return;
+                    }
                 }
                 if (state2stateMode() && !planner_ptr_->goalValid()) {
                     cout << YELLOW << " -- [Fsm] Goal is invalid, skip this goal." << RESET << endl;
@@ -248,6 +246,13 @@ namespace fsm {
                     plan_from_rest_ = false;
                     finish_plan = true;
                     cout << GREEN << " -- [Fsm] Exploration finished." << RESET << endl;
+                    ChangeState("MainFsmCallback", WAIT_GOAL);
+                } else if (retcode == FINISH && (trackingPerchingMode() || fullCycleMode())) {
+                    gi_.new_goal = false;
+                    task_new_ = false;
+                    plan_from_rest_ = false;
+                    finish_plan = true;
+                    cout << GREEN << " -- [Fsm] Composite task finished." << RESET << endl;
                     ChangeState("MainFsmCallback", WAIT_GOAL);
                 } else if (retcode == SUCCESS || retcode == FINISH) {
                     gi_.new_goal = false;
@@ -311,8 +316,78 @@ namespace fsm {
         return cfg_.task_mode == TaskMode::DYNAMIC_TAKEOFF;
     }
 
+    bool Fsm::trackingPerchingMode() const {
+        return cfg_.task_mode == TaskMode::TRACKING_PERCHING;
+    }
+
+    bool Fsm::fullCycleMode() const {
+        return cfg_.task_mode == TaskMode::FULL_CYCLE;
+    }
+
     bool Fsm::explorationMode() const {
         return cfg_.task_mode == TaskMode::EXPLORATION;
+    }
+
+    void Fsm::resetActiveTask() {
+        if (!planner_ptr_) {
+            active_task_.reset();
+            return;
+        }
+        active_task_ =
+            general_planner::TaskFactory::create(cfg_.task_mode_str,
+                                                 planner_ptr_,
+                                                 cfg_.tracking_perching_enable);
+        if (active_task_) {
+            active_task_->reset();
+        }
+    }
+
+    general_planner::TaskContext Fsm::buildTaskContext() {
+        general_planner::TaskContext ctx;
+        ctx.now = ros_ptr_ ? ros_ptr_->getSimTime() : 0.0;
+        ctx.robot = robot_state_;
+        ctx.map_manager = planner_ptr_ ? planner_ptr_->getMapManager() : nullptr;
+        ctx.ros_ptr = ros_ptr_;
+        ctx.new_task = task_new_;
+        ctx.emergency = machine_state_ == EMER_STOP;
+        if (gi_.new_goal || state2stateMode()) {
+            ctx.state_goal_p = gi_.goal_p;
+            ctx.state_goal_yaw = gi_.goal_yaw;
+            ctx.state_goal_new = gi_.new_goal;
+        }
+
+        traj_opt::DynamicTargetStates prediction;
+        if (getTrackingTargetPrediction(prediction)) {
+            ctx.target_prediction = prediction;
+        }
+        traj_opt::PerchingSurfaceState surface;
+        if (getPerchingSurface(surface)) {
+            ctx.surface = surface;
+        }
+        return ctx;
+    }
+
+    void Fsm::logTaskTickResult(const general_planner::TaskTickResult &result) const {
+        static double last_log_time = -1.0;
+        static std::string last_signature;
+        const double now = ros_ptr_ ? ros_ptr_->getSimTime() : 0.0;
+        const std::string task_name = active_task_ ? active_task_->name() : "none";
+        const std::string signature =
+            task_name + "|" +
+            general_planner::taskStatusName(result.status) + "|" +
+            general_planner::legacyRetCodeName(result.legacy_ret) + "|" +
+            result.reason;
+        if (signature == last_signature &&
+            last_log_time >= 0.0 &&
+            now - last_log_time < 1.0) {
+            return;
+        }
+        last_log_time = now;
+        last_signature = signature;
+        cout << " -- [Task] TASK_TICK task=" << task_name
+             << ", status=" << general_planner::taskStatusName(result.status)
+             << ", legacy_ret=" << general_planner::legacyRetCodeName(result.legacy_ret)
+             << ", reason=" << result.reason << endl;
     }
 
     bool Fsm::trackingExecutionState() const {
@@ -322,8 +397,11 @@ namespace fsm {
     }
 
     bool Fsm::trackingPerchingPerchingActive() const {
-        return cfg_.tracking_perching_enable &&
-               cfg_.task_mode == TaskMode::TRACKING &&
+        const bool composite_mode =
+                cfg_.task_mode == TaskMode::TRACKING_PERCHING ||
+                cfg_.task_mode == TaskMode::FULL_CYCLE;
+        return (cfg_.tracking_perching_enable || composite_mode) &&
+               (cfg_.task_mode == TaskMode::TRACKING || composite_mode) &&
                planner_ptr_ &&
                planner_ptr_->trackingPerchingPerchingActive();
     }
@@ -331,10 +409,39 @@ namespace fsm {
     void Fsm::setTaskModeFromString(const std::string &mode) {
         const std::string normalized = normalizeTaskMode(mode);
         const TaskMode new_mode = taskModeFromString(normalized);
+        const bool composite_tracking_perching_mode =
+                cfg_.task_mode == TaskMode::TRACKING_PERCHING ||
+                cfg_.task_mode == TaskMode::FULL_CYCLE;
+        if (composite_tracking_perching_mode &&
+            new_mode == TaskMode::PERCHING) {
+            cout << YELLOW << " -- [Fsm] Tracking-perching request received." << RESET << endl;
+            if (planner_ptr_) {
+                planner_ptr_->setTrackingPerchingRequest(true);
+            }
+            finish_plan = false;
+            task_new_ = true;
+            started_ = true;
+            return;
+        }
+        if (composite_tracking_perching_mode &&
+            new_mode == TaskMode::TRACKING &&
+            !trackingPerchingPerchingActive()) {
+            cout << YELLOW << " -- [Fsm] Tracking-perching request cleared." << RESET << endl;
+            if (planner_ptr_) {
+                planner_ptr_->setTrackingPerchingRequest(false);
+            }
+            finish_plan = false;
+            task_new_ = true;
+            started_ = true;
+            return;
+        }
         if (cfg_.tracking_perching_enable &&
             cfg_.task_mode == TaskMode::TRACKING &&
             new_mode == TaskMode::PERCHING) {
             cout << YELLOW << " -- [Fsm] Tracking-perching request received." << RESET << endl;
+            cfg_.task_mode_str = "tracking_perching";
+            cfg_.task_mode = TaskMode::TRACKING_PERCHING;
+            resetActiveTask();
             if (planner_ptr_) {
                 planner_ptr_->setTrackingPerchingRequest(true);
             }
@@ -355,19 +462,25 @@ namespace fsm {
                 task_new_ = true;
                 started_ = true;
             }
+            if (active_task_) {
+                active_task_->reset();
+            }
             return;
         }
         cout << YELLOW << " -- [Fsm] Task mode switch: " << cfg_.task_mode_str
              << " -> " << normalized << RESET << endl;
         cfg_.task_mode_str = normalized;
         cfg_.task_mode = new_mode;
+        resetActiveTask();
         finish_plan = false;
         task_new_ = true;
         if (new_mode == TaskMode::DYNAMIC_TAKEOFF) {
             perching_surface_first_rcv_time_ = -1.0;
             last_dynamic_takeoff_wait_log_time_ = -1.0;
         }
-        if (new_mode == TaskMode::EXPLORATION) {
+        if (new_mode == TaskMode::EXPLORATION ||
+            new_mode == TaskMode::TRACKING_PERCHING ||
+            new_mode == TaskMode::FULL_CYCLE) {
             started_ = true;
         }
         perching_contact_reached_ = false;
@@ -433,6 +546,19 @@ namespace fsm {
         if (dynamicTakeoffMode()) {
             return task_new_ && dynamicTakeoffTaskReady();
         }
+        if (trackingPerchingMode()) {
+            return !perching_contact_reached_ &&
+                   planner_ptr_ &&
+                   !planner_ptr_->trackingPerchingContactReached() &&
+                   trackingTaskReady();
+        }
+        if (fullCycleMode()) {
+            return started_ &&
+                   !perching_contact_reached_ &&
+                   planner_ptr_ &&
+                   !planner_ptr_->trackingPerchingContactReached() &&
+                   dynamicTakeoffTaskReady();
+        }
         if (explorationMode()) {
             return started_ && !finish_plan;
         }
@@ -452,7 +578,13 @@ namespace fsm {
         if (dynamicTakeoffMode()) {
             return false;
         }
+        if (fullCycleMode()) {
+            return started_ && !finish_plan;
+        }
         if (trackingMode() && trackingPerchingPerchingActive()) {
+            return false;
+        }
+        if (trackingPerchingMode() && trackingPerchingPerchingActive()) {
             return false;
         }
         return activeTaskReady();

@@ -8,16 +8,16 @@
     <arg name="manual_goal_topic" default="/goal"/>
     <arg name="manual_goal_timeout" default="0.0"/>
     <arg name="log_dir" default="$(find general_planner)/log"/>
-    <arg name="x_min" default="-40.0"/>
-    <arg name="x_max" default="40.0"/>
-    <arg name="y_min" default="-40.0"/>
-    <arg name="y_max" default="40.0"/>
+    <arg name="x_min" default="-20.0"/>
+    <arg name="x_max" default="20.0"/>
+    <arg name="y_min" default="-8.0"/>
+    <arg name="y_max" default="8.0"/>
     <arg name="goal_z" default="1.5"/>
     <arg name="min_goal_distance" default="4.0"/>
     <arg name="warmup_trials" default="5"/>
     <arg name="warmup_radius" default="4.0"/>
-    <arg name="wide_min_goal_distance" default="15.0"/>
-    <arg name="min_recent_goal_distance" default="10.0"/>
+    <arg name="wide_min_goal_distance" default="10.0"/>
+    <arg name="min_recent_goal_distance" default="8.0"/>
     <arg name="recent_goal_window" default="12"/>
     <arg name="candidate_batch" default="32"/>
     <arg name="goal_clearance" default="0.45"/>

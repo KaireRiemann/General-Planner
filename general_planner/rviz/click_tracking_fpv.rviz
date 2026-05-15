@@ -4,9 +4,7 @@ Panels:
     Name: Displays
     Property Tree Widget:
       Expanded:
-        - /Robots1
         - /Robots1/TrackerExecutedPath1
-        - /TrackerMap1
         - /TrackerMap1/InflatedOcc1
         - /TrackerPlanner1
       Splitter Ratio: 0.5
@@ -268,7 +266,7 @@ Visualization Manager:
         - Alpha: 0.20000000298023224
           Autocompute Intensity Bounds: true
           Autocompute Value Bounds:
-            Max Value: 1.899999976158142
+            Max Value: 3.9000000953674316
             Min Value: 0.30000001192092896
             Value: true
           Axis: Z
@@ -388,16 +386,13 @@ Visualization Manager:
           Queue Size: 100
           Value: true
         - Class: rviz/MarkerArray
-          Enabled: true
+          Enabled: false
           Marker Topic: /drone_1/fsm_node/visualization/exp_sfc
           Name: ExpSfc
           Namespaces:
-            exp_sfc edge: true
-            exp_sfc line: true
-            exp_sfc mesh: true
-            exp_sfc pt: true
+            {}
           Queue Size: 100
-          Value: true
+          Value: false
         - Class: rviz/MarkerArray
           Enabled: true
           Marker Topic: /drone_1/fsm_node/visualization/backup_sfc
@@ -441,13 +436,14 @@ Visualization Manager:
           Queue Size: 100
           Value: false
         - Class: rviz/MarkerArray
-          Enabled: false
+          Enabled: true
           Marker Topic: /drone_1/fsm_node/visualization/tracking_fov
           Name: TrackerFov
           Namespaces:
-            {}
+            tracking_fov_edges: true
+            tracking_fov_nodes: true
           Queue Size: 100
-          Value: false
+          Value: true
         - Class: rviz/MarkerArray
           Enabled: true
           Marker Topic: /drone_1/fsm_node/visualization/astar_debug

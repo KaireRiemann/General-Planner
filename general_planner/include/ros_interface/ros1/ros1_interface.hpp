@@ -274,7 +274,6 @@ namespace ros_interface {
                 return;
             }
 
-            Ros1Adapter::deleteAllMarkerArray(fov_pub_);
             visualization_msgs::MarkerArray mkr_arr;
             Ros1Adapter::addTrackingFovToMarkerArray(mkr_arr,
                                                      pos_traj,

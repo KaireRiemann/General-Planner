@@ -44,7 +44,9 @@ namespace fsm {
         TRACKING = 1,
         PERCHING = 2,
         EXPLORATION = 3,
-        DYNAMIC_TAKEOFF = 4
+        DYNAMIC_TAKEOFF = 4,
+        TRACKING_PERCHING = 5,
+        FULL_CYCLE = 6
     };
 
     inline std::string normalizeTaskMode(std::string mode) {
@@ -64,6 +66,14 @@ namespace fsm {
             mode == "dynamic-takeoff" || mode == "unperching") {
             return "dynamic_takeoff";
         }
+        if (mode == "tracking_perching" || mode == "tracking-perching" ||
+            mode == "track_perch" || mode == "track-perch") {
+            return "tracking_perching";
+        }
+        if (mode == "full_cycle" || mode == "takeoff_tracking_perching" ||
+            mode == "takeoff-tracking-perching") {
+            return "full_cycle";
+        }
         if (mode == "explore" || mode == "exploration") {
             return "exploration";
         }
@@ -80,6 +90,12 @@ namespace fsm {
         }
         if (normalized == "dynamic_takeoff") {
             return TaskMode::DYNAMIC_TAKEOFF;
+        }
+        if (normalized == "tracking_perching") {
+            return TaskMode::TRACKING_PERCHING;
+        }
+        if (normalized == "full_cycle") {
+            return TaskMode::FULL_CYCLE;
         }
         if (normalized == "exploration") {
             return TaskMode::EXPLORATION;

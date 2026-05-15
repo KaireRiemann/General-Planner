@@ -580,59 +580,81 @@ namespace ros_interface {
             const double half_h = std::max(1.0, horizontal_fov_deg) * 0.5 * deg2rad;
             const double half_v = std::max(1.0, vertical_fov_deg) * 0.5 * deg2rad;
             const double fov_range = std::max(0.2, range);
-            const double y = fov_range * std::tan(half_h);
-            const double z = fov_range * std::tan(half_v);
-            const std::array<Vec3f, 4> camera_corners = {
-                Vec3f(fov_range, y, z),
-                Vec3f(fov_range, -y, z),
-                Vec3f(fov_range, -y, -z),
-                Vec3f(fov_range, y, -z)
+            const double half_width = fov_range * std::tan(half_h);
+            const double half_height = fov_range * std::tan(half_v);
+            const std::array<Vec3f, 5> fov_nodes_local = {
+                Vec3f(0.0, 0.0, 0.0),
+                Vec3f(fov_range, half_width, half_height),
+                Vec3f(fov_range, -half_width, half_height),
+                Vec3f(fov_range, -half_width, -half_height),
+                Vec3f(fov_range, half_width, -half_height)
             };
 
-            visualization_msgs::Marker line_list;
-            line_list.header.frame_id = DEFAULT_FRAME_ID;
-            line_list.header.stamp = ros::Time::now();
-            line_list.ns = ns;
-            line_list.id = 0;
-            line_list.action = visualization_msgs::Marker::ADD;
-            line_list.pose.orientation.w = 1.0;
-            line_list.type = visualization_msgs::Marker::LINE_LIST;
-            line_list.scale.x = 0.035;
-            line_list.color = Color(Color::Teal(), 0.85);
+            visualization_msgs::Marker clear_previous_msg;
+            clear_previous_msg.header.frame_id = DEFAULT_FRAME_ID;
+            clear_previous_msg.header.stamp = ros::Time::now();
+            clear_previous_msg.action = visualization_msgs::Marker::DELETEALL;
+            mkr_arr.markers.push_back(clear_previous_msg);
 
-            auto addPoint = [&line_list](const Vec3f &p) {
+            visualization_msgs::Marker node_marker;
+            node_marker.header.frame_id = DEFAULT_FRAME_ID;
+            node_marker.header.stamp = ros::Time::now();
+            node_marker.ns = ns + "_nodes";
+            node_marker.id = 0;
+            node_marker.action = visualization_msgs::Marker::ADD;
+            node_marker.pose.orientation.w = 1.0;
+            node_marker.type = visualization_msgs::Marker::SPHERE_LIST;
+            node_marker.scale.x = 0.05;
+            node_marker.scale.y = 0.05;
+            node_marker.scale.z = 0.05;
+            node_marker.color = Color(Color::Teal(), 0.95);
+
+            visualization_msgs::Marker edge_marker;
+            edge_marker.header.frame_id = DEFAULT_FRAME_ID;
+            edge_marker.header.stamp = node_marker.header.stamp;
+            edge_marker.ns = ns + "_edges";
+            edge_marker.id = 0;
+            edge_marker.action = visualization_msgs::Marker::ADD;
+            edge_marker.pose.orientation.w = 1.0;
+            edge_marker.type = visualization_msgs::Marker::LINE_LIST;
+            edge_marker.scale.x = 0.20;
+            edge_marker.color = Color(Color::Red(), 0.9);
+
+            auto addPointToMarker = [](visualization_msgs::Marker &marker, const Vec3f &p) {
                 geometry_msgs::Point point;
                 point.x = p.x();
                 point.y = p.y();
                 point.z = p.z();
-                line_list.points.push_back(point);
+                marker.points.push_back(point);
             };
-            auto addLine = [&addPoint](const Vec3f &a, const Vec3f &b) {
-                addPoint(a);
-                addPoint(b);
+            auto addLine = [&addPointToMarker, &edge_marker](const Vec3f &a, const Vec3f &b) {
+                addPointToMarker(edge_marker, a);
+                addPointToMarker(edge_marker, b);
             };
 
-            const int sample_num = std::max(2, std::min(12, static_cast<int>(std::ceil(t_sum / 0.35)) + 1));
-            for (int i = 0; i < sample_num; ++i) {
-                const double eval_t = t_sum * static_cast<double>(i) / static_cast<double>(sample_num - 1);
-                const Vec3f origin = pos_traj.getPos(eval_t);
-                const double yaw = yaw_traj.getPos(eval_t)[0];
-                Eigen::Matrix3d R = Eigen::Matrix3d::Identity();
-                R.block<2, 2>(0, 0) << std::cos(yaw), -std::sin(yaw),
-                                        std::sin(yaw), std::cos(yaw);
+            const Vec3f origin = pos_traj.getPos(0.0);
+            const double yaw = yaw_traj.getPos(0.0)[0];
+            Eigen::Matrix3d R = Eigen::Matrix3d::Identity();
+            R.block<2, 2>(0, 0) << std::cos(yaw), -std::sin(yaw),
+                                    std::sin(yaw), std::cos(yaw);
 
-                std::array<Vec3f, 4> corners;
-                for (int c = 0; c < 4; ++c) {
-                    corners[c] = origin + R * camera_corners[c];
-                    addLine(origin, corners[c]);
-                }
-                for (int c = 0; c < 4; ++c) {
-                    addLine(corners[c], corners[(c + 1) % 4]);
-                }
-                addLine(origin, origin + R * Vec3f(fov_range, 0.0, 0.0));
+            std::array<Vec3f, 5> fov_nodes_world;
+            for (std::size_t i = 0; i < fov_nodes_local.size(); ++i) {
+                fov_nodes_world[i] = origin + R * fov_nodes_local[i];
+                addPointToMarker(node_marker, fov_nodes_world[i]);
             }
 
-            mkr_arr.markers.push_back(line_list);
+            addLine(fov_nodes_world[0], fov_nodes_world[1]);
+            addLine(fov_nodes_world[0], fov_nodes_world[2]);
+            addLine(fov_nodes_world[0], fov_nodes_world[3]);
+            addLine(fov_nodes_world[0], fov_nodes_world[4]);
+            addLine(fov_nodes_world[1], fov_nodes_world[2]);
+            addLine(fov_nodes_world[2], fov_nodes_world[3]);
+            addLine(fov_nodes_world[3], fov_nodes_world[4]);
+            addLine(fov_nodes_world[4], fov_nodes_world[1]);
+
+            mkr_arr.markers.push_back(node_marker);
+            mkr_arr.markers.push_back(edge_marker);
         }
 
         static void addBoundingBoxToMarkerArray(visualization_msgs::MarkerArray &mkrarr,

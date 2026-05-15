@@ -1,5 +1,5 @@
 fsm:
-  task_mode: "tracking"
+  task_mode: "tracking_perching"
   click_goal_en: false
   click_goal_topic: "/goal"
   click_height: 1.5
@@ -114,8 +114,10 @@ general_planner:
     weight_oe: 1.0
     weight_relative_velocity: 1.0
     weight_tangent_velocity: 5.0
-    weight_viewpoint_attractor: 50.0
+    weight_viewpoint_attractor: 25.0
     weight_visible_region: 3.0
+    weight_fov: 80.0
+    weight_target_forward: 60.0
     static_distance_tolerance_scale: 0.35
     static_height_tolerance_scale: 0.5
     static_tangent_weight_scale: 3.0
@@ -123,6 +125,8 @@ general_planner:
     fov_horizontal_deg: 90.0
     fov_vertical_deg: 60.0
     fov_range: 4.0
+    target_front_margin: 0.05
+    fov_commit_check_enable: true
     unknown_as_occupied: false
     use_visible_region: true
     # Keep A* enabled so blocked tracking guide segments fail instead of appending unsafe goals.

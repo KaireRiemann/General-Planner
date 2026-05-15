@@ -16,7 +16,7 @@ public:
 
     struct Config
     {
-        double robot_l{0.28};
+        double robot_l{0.10};
         double robot_radius{0.25};
         double platform_radius{0.35};
         double platform_clearance{0.05};

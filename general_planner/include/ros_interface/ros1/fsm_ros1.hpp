@@ -165,6 +165,16 @@ namespace fsm {
             const char *task_phase = "state_to_state";
             if (perchingMode()) {
                 task_phase = "perching";
+            } else if (dynamicTakeoffMode()) {
+                task_phase = "dynamic_takeoff";
+            } else if (trackingPerchingMode()) {
+                task_phase = trackingPerchingPerchingActive()
+                                 ? "tracking_perching_perching"
+                                 : "tracking_perching_tracking";
+            } else if (fullCycleMode()) {
+                task_phase = trackingPerchingPerchingActive()
+                                 ? "full_cycle_perching"
+                                 : "full_cycle";
             } else if (explorationMode()) {
                 task_phase = "exploration";
             } else if (trackingPerchingPerchingActive()) {
@@ -779,6 +789,7 @@ namespace fsm {
             // 初始化Planner
             ros_ptr_ = std::make_shared<ros_interface::Ros1Interface>(nh_);
             planner_ptr_ = std::make_shared<GeneralPlanner>(cfg_path, ros_ptr_, map_ptr_);
+            resetActiveTask();
             cmd_pub = nh_.advertise<quadrotor_msgs::PositionCommand>(cfg_.cmd_topic, 10);
             mpc_cmd_pub_ = nh_.advertise<quadrotor_msgs::PolynomialTrajectory>(cfg_.mpc_cmd_topic, 10);
             path_pub_ = nh_.advertise<nav_msgs::Path>("fsm/path", 100);
@@ -873,6 +884,38 @@ namespace fsm {
                     cout << YELLOW << " -- [Fsm] TRACKING PREDICTION PATH: "
                          << cfg_.tracking_target_prediction_topic << RESET << endl;
                 }
+                cmd_cnt++;
+            } else if (trackingPerchingMode()) {
+                task_mode_sub_ = nh_.subscribe(cfg_.task_mode_topic, 10,
+                                               &FsmRos1::taskModeCallback, this);
+                tracking_target_sub_ = nh_.subscribe(cfg_.tracking_target_odom_topic, 10,
+                                                     &FsmRos1::trackingTargetCallback, this);
+                if (cfg_.tracking_use_target_prediction_path && !cfg_.tracking_target_prediction_topic.empty()) {
+                    tracking_prediction_sub_ =
+                        nh_.subscribe(cfg_.tracking_target_prediction_topic, 10,
+                                      &FsmRos1::trackingPredictionPathCallback, this);
+                }
+                perching_surface_sub_ = nh_.subscribe(cfg_.perching_surface_odom_topic, 10,
+                                                      &FsmRos1::perchingSurfaceCallback, this);
+                cout << YELLOW << " -- [Fsm] TRACKING_PERCHING TASK ENABLE, target odom: "
+                     << cfg_.tracking_target_odom_topic << ", surface odom: "
+                     << cfg_.perching_surface_odom_topic << RESET << endl;
+                cmd_cnt++;
+            } else if (fullCycleMode()) {
+                task_mode_sub_ = nh_.subscribe(cfg_.task_mode_topic, 10,
+                                               &FsmRos1::taskModeCallback, this);
+                tracking_target_sub_ = nh_.subscribe(cfg_.tracking_target_odom_topic, 10,
+                                                     &FsmRos1::trackingTargetCallback, this);
+                if (cfg_.tracking_use_target_prediction_path && !cfg_.tracking_target_prediction_topic.empty()) {
+                    tracking_prediction_sub_ =
+                        nh_.subscribe(cfg_.tracking_target_prediction_topic, 10,
+                                      &FsmRos1::trackingPredictionPathCallback, this);
+                }
+                perching_surface_sub_ = nh_.subscribe(cfg_.perching_surface_odom_topic, 10,
+                                                      &FsmRos1::perchingSurfaceCallback, this);
+                cout << YELLOW << " -- [Fsm] FULL_CYCLE TASK ENABLE, target odom: "
+                     << cfg_.tracking_target_odom_topic << ", surface odom: "
+                     << cfg_.perching_surface_odom_topic << RESET << endl;
                 cmd_cnt++;
             } else if (perchingMode()) {
                 task_mode_sub_ = nh_.subscribe(cfg_.task_mode_topic, 10,

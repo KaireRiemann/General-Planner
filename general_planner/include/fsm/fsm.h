@@ -32,6 +32,9 @@
 #include <cereal/archives/binary_file_handler.hpp>
 #include <fsm/config.hpp>
 #include <general_core/general_planner.h>
+#include <general_core/task/task_context.hpp>
+#include <general_core/task/task_factory.hpp>
+#include <general_core/task/task_primitive.hpp>
 
 
 #ifndef LOG_FILE_DIR
@@ -54,6 +57,7 @@ namespace fsm {
         // map, checker, planner
         general_planner::GeneralPlanner::Ptr planner_ptr_;
         ros_interface::RosInterface::Ptr ros_ptr_;
+        std::unique_ptr<general_planner::TaskPrimitive> active_task_;
 
         std::ofstream write_time_;
         vector<double> log_module_time;
@@ -186,9 +190,19 @@ namespace fsm {
 
         bool dynamicTakeoffMode() const;
 
+        bool trackingPerchingMode() const;
+
+        bool fullCycleMode() const;
+
         bool explorationMode() const;
 
         void setTaskModeFromString(const std::string &mode);
+
+        void resetActiveTask();
+
+        general_planner::TaskContext buildTaskContext();
+
+        void logTaskTickResult(const general_planner::TaskTickResult &result) const;
 
         bool trackingTaskReady();
 

@@ -33,6 +33,25 @@ struct TrackingVelocityConfig
     double weight_tangent{0.0};
 };
 
+struct TrackingCameraFovConfig
+{
+    double weight{0.0};
+    double horizontal_fov{1.5707963267948966};
+    double vertical_fov{1.0471975511965976};
+    double range{4.0};
+    double angle_clearance{0.0};
+    double min_forward{0.05};
+    double smooth_eps{0.01};
+};
+
+struct TrackingTargetForwardConfig
+{
+    double weight{0.0};
+    double margin{0.15};
+    double speed_threshold{0.25};
+    double smooth_eps{0.01};
+};
+
 struct TrackingPointAttractorConfig
 {
     double weight{0.0};
@@ -131,6 +150,132 @@ inline double accumulateTrackingObservationAnglePenalty(const Eigen::Vector3d &p
         *grad_target_position -= local_grad;
     }
     return config.weight * err * err;
+}
+
+inline double accumulateTrackingCameraFovPenalty(const Eigen::Vector3d &position,
+                                                 const double yaw,
+                                                 const Eigen::Vector3d &target_position,
+                                                 const TrackingCameraFovConfig &config,
+                                                 Eigen::Vector3d &grad_position,
+                                                 double &grad_yaw,
+                                                 Eigen::Vector3d *grad_target_position = nullptr)
+{
+    if (config.weight <= 0.0)
+    {
+        return 0.0;
+    }
+
+    constexpr double kPi = 3.14159265358979323846;
+    const double clearance = std::max(0.0, config.angle_clearance);
+    const double half_h = std::clamp(0.5 * config.horizontal_fov - clearance,
+                                     kPi / 180.0,
+                                     0.5 * kPi - 1.0e-3);
+    const double half_v = std::clamp(0.5 * config.vertical_fov - clearance,
+                                     kPi / 180.0,
+                                     0.5 * kPi - 1.0e-3);
+    const double tan_h = std::tan(half_h);
+    const double tan_v = std::tan(half_v);
+    const double smooth_eps = std::max(1.0e-6, config.smooth_eps);
+
+    const Eigen::Vector3d rel = target_position - position;
+    const double c = std::cos(yaw);
+    const double s = std::sin(yaw);
+    const Eigen::Vector3d q(c * rel.x() + s * rel.y(),
+                            -s * rel.x() + c * rel.y(),
+                            rel.z());
+
+    double cost = 0.0;
+    Eigen::Vector3d grad_q = Eigen::Vector3d::Zero();
+    auto addViolation = [&](const double violation,
+                            const Eigen::Vector3d &grad_violation) {
+        double f = 0.0;
+        double df = 0.0;
+        if (!smoothedL1(violation, smooth_eps, f, df))
+        {
+            return;
+        }
+        cost += config.weight * f;
+        grad_q += config.weight * df * grad_violation;
+    };
+
+    const double min_forward = std::max(1.0e-3, config.min_forward);
+    addViolation(min_forward - q.x(), Eigen::Vector3d(-1.0, 0.0, 0.0));
+
+    constexpr double kAbsEps = 1.0e-4;
+    const double abs_y = std::sqrt(q.y() * q.y() + kAbsEps * kAbsEps);
+    addViolation(abs_y - tan_h * q.x(),
+                 Eigen::Vector3d(-tan_h, q.y() / abs_y, 0.0));
+
+    const double abs_z = std::sqrt(q.z() * q.z() + kAbsEps * kAbsEps);
+    addViolation(abs_z - tan_v * q.x(),
+                 Eigen::Vector3d(-tan_v, 0.0, q.z() / abs_z));
+
+    if (config.range > 0.0)
+    {
+        const double dist = q.norm();
+        if (dist > 1.0e-6)
+        {
+            addViolation(dist - config.range, q / dist);
+        }
+    }
+
+    if (grad_q.squaredNorm() <= 0.0)
+    {
+        return cost;
+    }
+
+    const Eigen::Vector3d grad_rel(c * grad_q.x() - s * grad_q.y(),
+                                   s * grad_q.x() + c * grad_q.y(),
+                                   grad_q.z());
+    grad_position -= grad_rel;
+    if (grad_target_position != nullptr)
+    {
+        *grad_target_position += grad_rel;
+    }
+
+    grad_yaw += grad_q.x() * q.y() - grad_q.y() * q.x();
+    return cost;
+}
+
+inline double accumulateTrackingTargetForwardPenalty(const Eigen::Vector3d &position,
+                                                     const Eigen::Vector3d &target_position,
+                                                     const Eigen::Vector3d &target_velocity,
+                                                     const TrackingTargetForwardConfig &config,
+                                                     Eigen::Vector3d &grad_position,
+                                                     Eigen::Vector3d *grad_target_position = nullptr)
+{
+    if (config.weight <= 0.0)
+    {
+        return 0.0;
+    }
+
+    const Eigen::Vector2d target_vel_xy = target_velocity.head<2>();
+    const double speed = target_vel_xy.norm();
+    if (speed < std::max(0.0, config.speed_threshold))
+    {
+        return 0.0;
+    }
+
+    const Eigen::Vector2d target_dir = target_vel_xy / speed;
+    const Eigen::Vector2d rel_xy = (position - target_position).head<2>();
+    const double ahead = rel_xy.dot(target_dir);
+    const double violation = ahead - std::max(0.0, config.margin);
+
+    double f = 0.0;
+    double df = 0.0;
+    if (!smoothedL1(violation, std::max(1.0e-6, config.smooth_eps), f, df))
+    {
+        return 0.0;
+    }
+
+    Eigen::Vector3d local_grad = Eigen::Vector3d::Zero();
+    local_grad.head<2>() = config.weight * df * target_dir;
+    grad_position += local_grad;
+    if (grad_target_position != nullptr)
+    {
+        *grad_target_position -= local_grad;
+    }
+    return config.weight * f;
 }
 
 inline double accumulateTrackingVelocityPenalty(const Eigen::Vector3d &position,
