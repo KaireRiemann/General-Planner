@@ -7,6 +7,11 @@
 namespace general_planner {
 namespace {
 
+double effectiveTrackingHardSafeDistance(const Config &cfg)
+{
+    return std::max(cfg.tracking_hard_safe_distance, cfg.robot_r + 0.02);
+}
+
 traj_opt::DynamicTargetState interpolateTargetPrediction(
         const traj_opt::DynamicTargetStates &prediction,
         const double t)
@@ -68,14 +73,22 @@ super_utils::Vec3f TrackingRuntimeManager::targetDirection(
     }
 
     super_utils::Vec3f dir = prediction.front().velocity;
-    dir.z() = 0.0;
-    if (dir.norm() > cfg_.tracking_no_motion_target_speed_threshold) {
+    if (!cfg_.tracking_motion_3d_enable) {
+        dir.z() = 0.0;
+    }
+    const double speed_threshold =
+            cfg_.tracking_motion_3d_enable
+                ? std::max(0.0, cfg_.tracking_vertical_motion_threshold)
+                : std::max(0.0, cfg_.tracking_no_motion_target_speed_threshold);
+    if (dir.norm() > speed_threshold) {
         return dir.normalized();
     }
 
     if (prediction.size() >= 2) {
         dir = prediction.back().position - prediction.front().position;
-        dir.z() = 0.0;
+        if (!cfg_.tracking_motion_3d_enable) {
+            dir.z() = 0.0;
+        }
         if (dir.norm() > 1.0e-4) {
             return dir.normalized();
         }
@@ -182,9 +195,9 @@ bool TrackingRuntimeManager::trajectorySafe(const geometry_utils::Trajectory &tr
                 double dist = 0.0;
                 super_utils::Vec3f grad = super_utils::Vec3f::Zero();
                 if (map_manager_->evaluateESDF(pos, dist, grad) &&
-                    dist < cfg_.tracking_safe_distance) {
+                    dist < effectiveTrackingHardSafeDistance(cfg_)) {
                     if (reason) {
-                        *reason = "inside tracking safe distance";
+                        *reason = "inside tracking hard safe distance";
                     }
                     return false;
                 }
@@ -202,6 +215,76 @@ bool TrackingRuntimeManager::trajectorySafe(const geometry_utils::Trajectory &tr
     }
 
     return true;
+}
+
+TrackingRuntimeManager::MotionMetrics TrackingRuntimeManager::computeMotionMetrics(
+        const geometry_utils::Trajectory &candidate,
+        const traj_opt::DynamicTargetStates &target_prediction,
+        const double candidate_eval_start_t,
+        const double target_eval_start_t,
+        const double horizon) const
+{
+    MotionMetrics metrics;
+    if (candidate.empty() || target_prediction.empty()) {
+        return metrics;
+    }
+
+    const double total_dur = candidate.getTotalDuration();
+    const double start_t = std::clamp(candidate_eval_start_t, 0.0, total_dur);
+    const double eval_horizon =
+            std::min({std::max(0.0, horizon),
+                      std::max(0.0, total_dur - start_t),
+                      std::max(0.0, target_prediction.back().t - std::max(0.0, target_eval_start_t))});
+    const double end_t = std::clamp(start_t + eval_horizon, 0.0, total_dur);
+    const super_utils::Vec3f p0 = candidate.getPos(start_t);
+    const super_utils::Vec3f p1 = candidate.getPos(end_t);
+    const super_utils::Vec3f v0 = candidate.getVel(start_t);
+    if (p0.allFinite() && p1.allFinite()) {
+        const super_utils::Vec3f dp = p1 - p0;
+        metrics.displacement_xy = dp.head<2>().norm();
+        metrics.displacement_z = std::abs(dp.z());
+        metrics.displacement_3d = dp.norm();
+    }
+    if (v0.allFinite()) {
+        metrics.speed_xy = v0.head<2>().norm();
+        metrics.speed_z = std::abs(v0.z());
+        metrics.speed_3d = v0.norm();
+    }
+
+    const auto target0 = interpolateTargetPrediction(target_prediction,
+                                                     std::max(0.0, target_eval_start_t));
+    metrics.target_speed_xy = target0.velocity.head<2>().norm();
+    metrics.target_speed_z = std::abs(target0.velocity.z());
+    metrics.target_speed_3d = target0.velocity.norm();
+
+    double target_span_3d = 0.0;
+    double target_span_z = 0.0;
+    if (target_prediction.size() >= 2) {
+        const double target_end_t =
+                std::min(target_prediction.back().t,
+                         std::max(0.0, target_eval_start_t) + eval_horizon);
+        const auto target1 = interpolateTargetPrediction(target_prediction, target_end_t);
+        const super_utils::Vec3f target_dp = target1.position - target0.position;
+        target_span_3d = target_dp.norm();
+        target_span_z = std::abs(target_dp.z());
+    }
+    metrics.target_vertical_moving =
+            metrics.target_speed_z > cfg_.tracking_vertical_motion_threshold ||
+            target_span_z > cfg_.tracking_no_motion_min_displacement_z;
+    metrics.target_moving =
+            metrics.target_speed_xy > cfg_.tracking_no_motion_target_speed_threshold ||
+            metrics.target_vertical_moving ||
+            target_span_3d > std::max(cfg_.tracking_no_motion_min_displacement,
+                                      cfg_.tracking_no_motion_min_displacement_z);
+
+    const super_utils::Vec3f target_dir = targetDirection(target_prediction);
+    super_utils::Vec3f dp = super_utils::Vec3f::Zero();
+    if (p1.allFinite() && p0.allFinite()) {
+        dp = p1 - p0;
+    }
+    metrics.progress_xy = dp.head<2>().dot(target_dir.head<2>());
+    metrics.progress_3d = dp.dot(target_dir);
+    return metrics;
 }
 
 TrackingRuntimeManager::Activity TrackingRuntimeManager::evaluateActivity(
@@ -232,9 +315,6 @@ TrackingRuntimeManager::Activity TrackingRuntimeManager::evaluateActivity(
     const double sample_dt = std::max(0.03, dt);
 
     const auto target0 = interpolateTargetPrediction(target_prediction, 0.0);
-    out.target_moving =
-            target0.velocity.head<2>().norm() >
-            cfg_.tracking_no_motion_target_speed_threshold;
     const super_utils::Vec3f target_dir = targetDirection(target_prediction);
 
     super_utils::Vec3f last_p = traj.getPos(start_t);
@@ -242,7 +322,17 @@ TrackingRuntimeManager::Activity TrackingRuntimeManager::evaluateActivity(
         out.reason = "non-finite initial point";
         return out;
     }
-    out.speed0 = traj.getVel(start_t).head<2>().norm();
+    const MotionMetrics initial_metrics =
+            computeMotionMetrics(traj, target_prediction, start_t, 0.0, eval_horizon);
+    out.target_moving = initial_metrics.target_moving;
+    out.target_vertical_moving = initial_metrics.target_vertical_moving;
+    out.speed_xy = initial_metrics.speed_xy;
+    out.speed_z = initial_metrics.speed_z;
+    out.speed_3d = initial_metrics.speed_3d;
+    out.speed0 = out.speed_xy;
+    out.target_speed_xy = initial_metrics.target_speed_xy;
+    out.target_speed_z = initial_metrics.target_speed_z;
+    out.target_speed_3d = initial_metrics.target_speed_3d;
 
     out.safe = true;
     double total_error = 0.0;
@@ -295,11 +385,17 @@ TrackingRuntimeManager::Activity TrackingRuntimeManager::evaluateActivity(
 
         if (s > 1.0e-6) {
             const super_utils::Vec3f dp = p - last_p;
-            out.displacement += dp.head<2>().norm();
-            out.progress += dp.head<2>().dot(target_dir.head<2>());
+            out.displacement_xy += dp.head<2>().norm();
+            out.displacement_z += std::abs(dp.z());
+            out.displacement_3d += dp.norm();
+            out.progress_xy += dp.head<2>().dot(target_dir.head<2>());
+            out.progress_3d += dp.dot(target_dir);
         }
         last_p = p;
     }
+
+    out.displacement = out.displacement_xy;
+    out.progress = out.progress_xy;
 
     out.avg_tracking_error =
             sample_count > 0 ? total_error / static_cast<double>(sample_count) : 0.0;
@@ -311,21 +407,37 @@ TrackingRuntimeManager::Activity TrackingRuntimeManager::evaluateActivity(
     }
 
     if (out.target_moving) {
-        if (out.speed0 < cfg_.tracking_keep_old_min_speed) {
+        const bool use_3d_motion =
+                cfg_.tracking_motion_3d_enable || out.target_vertical_moving;
+        const double active_speed =
+                use_3d_motion ? out.speed_3d : out.speed_xy;
+        const double active_displacement =
+                use_3d_motion ? out.displacement_3d : out.displacement_xy;
+        const double active_progress =
+                use_3d_motion ? out.progress_3d : out.progress_xy;
+        const double target_speed =
+                use_3d_motion ? out.target_speed_3d : out.target_speed_xy;
+        const double progress_ratio =
+                use_3d_motion ? cfg_.tracking_keep_old_min_progress_3d_ratio
+                              : cfg_.tracking_keep_old_min_progress_ratio;
+
+        if (active_speed < cfg_.tracking_keep_old_min_speed) {
             out.reason = "speed too small";
             return out;
         }
 
-        if (out.displacement < cfg_.tracking_keep_old_min_displacement) {
+        if (active_displacement < cfg_.tracking_keep_old_min_displacement &&
+            (!out.target_vertical_moving ||
+             out.displacement_z < cfg_.tracking_no_motion_min_displacement_z)) {
             out.reason = "displacement too small";
             return out;
         }
 
         out.expected_progress =
-                target0.velocity.head<2>().norm() *
+                target_speed *
                 eval_horizon *
-                cfg_.tracking_keep_old_min_progress_ratio;
-        if (out.progress < out.expected_progress) {
+                progress_ratio;
+        if (active_progress < out.expected_progress) {
             out.reason = "insufficient target-direction progress";
             return out;
         }
@@ -347,6 +459,8 @@ TrackingRuntimeManager::Activity TrackingRuntimeManager::evaluateActivity(
 bool TrackingRuntimeManager::candidateCommandable(
         const geometry_utils::Trajectory &candidate,
         const traj_opt::DynamicTargetStates &target_prediction,
+        const double candidate_eval_start_t,
+        const double target_eval_start_t,
         std::string *reason) const
 {
     if (!cfg_.tracking_no_motion_guard_enable) {
@@ -359,17 +473,12 @@ bool TrackingRuntimeManager::candidateCommandable(
         return false;
     }
 
-    const auto target0 = target_prediction.front();
-    const bool target_moving =
-            target0.velocity.head<2>().norm() >
-            cfg_.tracking_no_motion_target_speed_threshold;
-    if (!target_moving) {
-        return true;
-    }
-
     const double h =
             std::min(cfg_.tracking_no_motion_check_horizon,
-                     candidate.getTotalDuration());
+                     std::max(0.0, candidate.getTotalDuration() -
+                                    std::clamp(candidate_eval_start_t,
+                                               0.0,
+                                               candidate.getTotalDuration())));
     if (h < 1.0e-3) {
         if (reason) {
             *reason = "candidate duration too short";
@@ -377,9 +486,11 @@ bool TrackingRuntimeManager::candidateCommandable(
         return false;
     }
 
-    const super_utils::Vec3f p0 = candidate.getPos(0.0);
-    const super_utils::Vec3f p1 = candidate.getPos(h);
-    const super_utils::Vec3f v0 = candidate.getVel(0.0);
+    const double start_t =
+            std::clamp(candidate_eval_start_t, 0.0, candidate.getTotalDuration());
+    const super_utils::Vec3f p0 = candidate.getPos(start_t);
+    const super_utils::Vec3f p1 = candidate.getPos(start_t + h);
+    const super_utils::Vec3f v0 = candidate.getVel(start_t);
     if (!p0.allFinite() || !p1.allFinite() || !v0.allFinite()) {
         if (reason) {
             *reason = "candidate contains non-finite state";
@@ -387,10 +498,26 @@ bool TrackingRuntimeManager::candidateCommandable(
         return false;
     }
 
-    const double disp = (p1 - p0).head<2>().norm();
-    const double speed = v0.head<2>().norm();
-    if (disp < cfg_.tracking_no_motion_min_displacement &&
-        speed < cfg_.tracking_keep_old_min_speed) {
+    const MotionMetrics metrics =
+            computeMotionMetrics(candidate,
+                                 target_prediction,
+                                 start_t,
+                                 target_eval_start_t,
+                                 h);
+    if (!metrics.target_moving) {
+        return true;
+    }
+
+    const bool use_3d_motion =
+            cfg_.tracking_motion_3d_enable || metrics.target_vertical_moving;
+    const bool commandable =
+            use_3d_motion
+                ? (metrics.displacement_3d >= cfg_.tracking_no_motion_min_displacement ||
+                   metrics.displacement_z >= cfg_.tracking_no_motion_min_displacement_z ||
+                   metrics.speed_3d >= cfg_.tracking_keep_old_min_speed)
+                : (metrics.displacement_xy >= cfg_.tracking_no_motion_min_displacement ||
+                   metrics.speed_xy >= cfg_.tracking_keep_old_min_speed);
+    if (!commandable) {
         if (reason) {
             *reason = "candidate no-motion";
         }
@@ -406,12 +533,18 @@ TrackingRuntimeManager::Decision TrackingRuntimeManager::decide(
         const geometry_utils::Trajectory &candidate,
         const traj_opt::DynamicTargetStates &target_prediction,
         const bool candidate_safe,
-        const bool anti_rollback_pass)
+        const bool anti_rollback_pass,
+        const double candidate_eval_start_t,
+        const double target_eval_start_t)
 {
     Decision decision;
     decision.candidate_safe = candidate_safe;
     decision.candidate_commandable =
-            candidateCommandable(candidate, target_prediction, &decision.reason);
+            candidateCommandable(candidate,
+                                 target_prediction,
+                                 candidate_eval_start_t,
+                                 target_eval_start_t,
+                                 &decision.reason);
 
     if (old_committed == nullptr) {
         if (candidate_safe && decision.candidate_commandable) {

@@ -93,6 +93,12 @@ struct TrackingProblem
   double visibility_safe_distance{0.25};
   double visibility_cone_ratio{0.12};
   double visibility_angle_clearance{0.08726646259971647};
+  bool adaptive_occlusion_enable{true};
+  double adaptive_occlusion_activation_distance{0.25};
+  double adaptive_occlusion_max_weight_scale{12.0};
+  double adaptive_occlusion_od_far_weight_scale{4.0};
+  double adaptive_occlusion_distance_upper_scale{0.65};
+  double adaptive_occlusion_min_horizontal_upper{0.85};
   double fov_horizontal{1.5707963267948966};
   double fov_vertical{1.0471975511965976};
   double fov_range{4.0};
@@ -101,6 +107,7 @@ struct TrackingProblem
   double target_front_margin{0.15};
   double target_motion_speed_threshold{0.25};
   double joint_sample_dt{0.05};
+  bool dense_joint_sample_enable{true};
   int visibility_samples{5};
   bool use_esdf_visibility{true};
   bool use_visible_region{true};

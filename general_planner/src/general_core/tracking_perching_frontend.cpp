@@ -694,6 +694,7 @@ bool TrackingFrontend::collectVisibleViewpointCandidates(
         }
         if (reference_viewpoint != nullptr &&
             reference_target != nullptr &&
+            !(allow_large_bearing_change && cfg_.reacquire_relax_yaw_rate) &&
             !isViewpointYawRateFeasible(*reference_viewpoint,
                                         *reference_target,
                                         candidate,
@@ -1212,6 +1213,7 @@ bool TrackingFrontend::searchVisibleViewpointOnGrid(
                                          cfg_.candidate_angle_step) &&
                (reference_viewpoint == nullptr ||
                 reference_target == nullptr ||
+                (allow_large_bearing_change && cfg_.reacquire_relax_yaw_rate) ||
                 isViewpointYawRateFeasible(*reference_viewpoint,
                                            *reference_target,
                                            candidate,
@@ -1245,6 +1247,7 @@ bool TrackingFrontend::searchVisibleViewpointOnGrid(
                                          cfg_.candidate_angle_step) &&
                (reference_viewpoint == nullptr ||
                 reference_target == nullptr ||
+                (allow_large_bearing_change && cfg_.reacquire_relax_yaw_rate) ||
                 isViewpointYawRateFeasible(*reference_viewpoint,
                                            *reference_target,
                                            candidate,
@@ -1311,13 +1314,35 @@ bool TrackingFrontend::searchVisibleViewpointOnGrid(
     records[start_key] = SearchRecord{rog_map::Vec3i::Zero(), start, 0.0, false, false};
     open_set.push(QueueNode{start_id, 0.0, heuristic(start)});
 
-    const std::array<rog_map::Vec3i, 6> neighbors{
-        rog_map::Vec3i(1, 0, 0),
-        rog_map::Vec3i(-1, 0, 0),
-        rog_map::Vec3i(0, 1, 0),
-        rog_map::Vec3i(0, -1, 0),
-        rog_map::Vec3i(0, 0, 1),
-        rog_map::Vec3i(0, 0, -1)};
+    std::vector<rog_map::Vec3i> neighbors;
+    if (cfg_.grid_neighbor_mode >= 26)
+    {
+        neighbors.reserve(26);
+        for (int dx = -1; dx <= 1; ++dx)
+        {
+            for (int dy = -1; dy <= 1; ++dy)
+            {
+                for (int dz = -1; dz <= 1; ++dz)
+                {
+                    if (dx == 0 && dy == 0 && dz == 0)
+                    {
+                        continue;
+                    }
+                    neighbors.emplace_back(dx, dy, dz);
+                }
+            }
+        }
+    }
+    else
+    {
+        neighbors = {
+            rog_map::Vec3i(1, 0, 0),
+            rog_map::Vec3i(-1, 0, 0),
+            rog_map::Vec3i(0, 1, 0),
+            rog_map::Vec3i(0, -1, 0),
+            rog_map::Vec3i(0, 0, 1),
+            rog_map::Vec3i(0, 0, -1)};
+    }
     const double horizon =
         std::max({cfg_.searching_horizon,
                   (start - target.position).norm() + search_radius,
@@ -1564,6 +1589,168 @@ bool TrackingFrontend::chooseRelaxedFallbackViewpoint(
     return false;
 }
 
+bool TrackingFrontend::chooseObstacleRecoveryViewpoint(
+    const Vec3f &start,
+    const traj_opt::DynamicTargetState &target,
+    Vec3f &viewpoint,
+    vec_E<Vec3f> &path_to_viewpoint,
+    const Vec3f *reference_viewpoint,
+    const traj_opt::DynamicTargetState *reference_target,
+    const bool allow_large_bearing_change) const
+{
+    path_to_viewpoint.clear();
+    if (!cfg_.obstacle_recovery_enable ||
+        !start.allFinite() ||
+        !target.position.allFinite())
+    {
+        return false;
+    }
+
+    bool line_blocked = false;
+    if (map_manager_ != nullptr && map_manager_->ready())
+    {
+        line_blocked =
+            !map_manager_->isLineFree(start,
+                                      target.position,
+                                      false,
+                                      cfg_.unknown_as_occupied);
+    }
+
+    Vec3f base_dir = start - target.position;
+    base_dir.z() = 0.0;
+    if (base_dir.norm() < 1.0e-4)
+    {
+        base_dir = -target.velocity;
+        base_dir.z() = 0.0;
+    }
+    base_dir = normalizedOr(base_dir, Vec3f::UnitX());
+    const Vec3f lateral(-base_dir.y(), base_dir.x(), 0.0);
+    const double desired_z = target.position.z() + cfg_.height_offset;
+    const double desired_dist = std::max(0.3, cfg_.tracking_distance);
+    const double res =
+        map_manager_ != nullptr && map_manager_->ready()
+            ? std::max(0.05, map_manager_->getInfResolution())
+            : 0.20;
+
+    std::vector<ViewpointCandidate> candidates;
+    auto tryCandidate = [&](const Vec3f &raw_candidate, const double bias) {
+        Vec3f candidate = raw_candidate;
+        if (!repairViewpointEndpoint(raw_candidate, target.position, candidate))
+        {
+            return;
+        }
+        if (reference_viewpoint != nullptr &&
+            reference_target != nullptr &&
+            !(allow_large_bearing_change && cfg_.reacquire_relax_yaw_rate) &&
+            !isViewpointYawRateFeasible(*reference_viewpoint,
+                                        *reference_target,
+                                        candidate,
+                                        target))
+        {
+            return;
+        }
+        if (!bearingChangeWithinLimit(reference_viewpoint != nullptr &&
+                                          reference_viewpoint->allFinite()
+                                      ? *reference_viewpoint
+                                      : start,
+                                      target.position,
+                                      candidate,
+                                      allow_large_bearing_change,
+                                      cfg_.candidate_angle_step))
+        {
+            return;
+        }
+        if (!isViewpointVisible(candidate, target.position))
+        {
+            return;
+        }
+        const double h_err =
+            std::abs((candidate - target.position).head<2>().norm() - desired_dist);
+        const double z_err = std::abs(candidate.z() - desired_z);
+        const double score =
+            (candidate - start).squaredNorm() +
+            0.5 * h_err * h_err +
+            0.5 * z_err * z_err +
+            (line_blocked ? 0.0 : 0.2) +
+            bias;
+        candidates.push_back(ViewpointCandidate{candidate, score});
+    };
+
+    const Vec3f nominal = target.position + desired_dist * base_dir +
+                          Vec3f(0.0, 0.0, cfg_.height_offset);
+    if (cfg_.over_wall_enable)
+    {
+        const double max_climb = std::max(0.0, cfg_.over_wall_max_climb);
+        const int climb_steps =
+            std::max(1, static_cast<int>(std::ceil(max_climb / std::max(0.20, 2.0 * res))));
+        for (int i = 1; i <= climb_steps; ++i)
+        {
+            const double climb = max_climb *
+                                 static_cast<double>(i) /
+                                 static_cast<double>(climb_steps);
+            Vec3f candidate = nominal;
+            candidate.z() = desired_z + climb;
+            tryCandidate(candidate, 0.08 * climb);
+        }
+    }
+
+    if (cfg_.side_pass_enable)
+    {
+        const double width = std::max(0.1, cfg_.side_pass_width);
+        const std::array<double, 3> width_scales{0.5, 1.0, 1.5};
+        for (const double scale : width_scales)
+        {
+            for (const double side : {-1.0, 1.0})
+            {
+                Vec3f candidate = nominal + side * scale * width * lateral;
+                candidate.z() = desired_z;
+                tryCandidate(candidate, 0.04 * scale * width);
+
+                if (cfg_.over_wall_enable)
+                {
+                    candidate.z() =
+                        desired_z + 0.5 * std::max(0.0, cfg_.over_wall_max_climb);
+                    tryCandidate(candidate, 0.08 * scale * width);
+                }
+            }
+        }
+    }
+
+    std::sort(candidates.begin(),
+              candidates.end(),
+              [](const ViewpointCandidate &lhs, const ViewpointCandidate &rhs) {
+                  return lhs.score < rhs.score;
+              });
+
+    const std::size_t max_trials = std::min<std::size_t>(candidates.size(), 24);
+    for (std::size_t i = 0; i < max_trials; ++i)
+    {
+        vec_E<Vec3f> trial_path;
+        if (appendPathSegment(start, candidates[i].point, trial_path, false))
+        {
+            viewpoint = candidates[i].point;
+            path_to_viewpoint = std::move(trial_path);
+            logTrackingFrontendDebug(cfg_.print_log,
+                                     "Obstacle recovery viewpoint success: start=" +
+                                         pointToString(start) + ", target=" +
+                                         pointToString(target.position) +
+                                         ", viewpoint=" + pointToString(viewpoint) +
+                                         ", line_blocked=" +
+                                         (line_blocked ? "true" : "false"));
+            return true;
+        }
+    }
+
+    logTrackingFrontendDebug(cfg_.print_log,
+                             "Obstacle recovery viewpoint failed: start=" +
+                                 pointToString(start) + ", target=" +
+                                 pointToString(target.position) +
+                                 ", candidates=" + std::to_string(candidates.size()) +
+                                 ", line_blocked=" +
+                                 (line_blocked ? "true" : "false"));
+    return false;
+}
+
 bool TrackingFrontend::centerViewpointInVisibleRegion(
     const Vec3f &start,
     const traj_opt::DynamicTargetState &target,
@@ -1597,6 +1784,7 @@ bool TrackingFrontend::centerViewpointInVisibleRegion(
                                   cfg_.candidate_angle_step) ||
         (reference_viewpoint != nullptr &&
          reference_target != nullptr &&
+         !(allow_large_bearing_change && cfg_.reacquire_relax_yaw_rate) &&
          !isViewpointYawRateFeasible(*reference_viewpoint,
                                      *reference_target,
                                      centered,
@@ -1641,10 +1829,11 @@ bool TrackingFrontend::choosePropagatedViewpoint(const Vec3f &reference_viewpoin
     if (findOcclusionAwareSeed(reference_viewpoint, reference_target.position, target.position, seed))
     {
         if (extendToTrackingViewpoint(seed, target.position, reference_viewpoint, viewpoint) &&
-            isViewpointYawRateFeasible(reference_viewpoint,
-                                       reference_target,
-                                       viewpoint,
-                                       target))
+            ((allow_large_fallback && cfg_.reacquire_relax_yaw_rate) ||
+             isViewpointYawRateFeasible(reference_viewpoint,
+                                        reference_target,
+                                        viewpoint,
+                                        target)))
         {
             if (appendPathSegment(connect_start, viewpoint, path_to_viewpoint, true))
             {
@@ -1692,6 +1881,17 @@ bool TrackingFrontend::choosePropagatedViewpoint(const Vec3f &reference_viewpoin
                                  ", target=" + pointToString(target.position) +
                                  ", start_target_dist=" +
                                  std::to_string((connect_start - target.position).norm()));
+
+    if (chooseObstacleRecoveryViewpoint(connect_start,
+                                        target,
+                                        viewpoint,
+                                        path_to_viewpoint,
+                                        &reference_viewpoint,
+                                        &reference_target,
+                                        true))
+    {
+        return true;
+    }
 
     if (!chooseVisibleViewpoint(connect_start,
                                 target,

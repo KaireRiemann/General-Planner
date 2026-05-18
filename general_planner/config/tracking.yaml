@@ -63,9 +63,21 @@ general_planner:
     height_offset: 0.7
     height_tolerance: 0.6
     safe_distance: 0.35
+    hard_safe_distance: 0.22
+    narrow_passage_enable: true
+    narrow_passage_clearance_threshold: 0.38
+    narrow_passage_soft_safe_distance_scale: 0.65
     visibility_safe_distance: 0.25
     visibility_cone_ratio: 0.12
     visibility_angle_clearance: 0.0872664626
+    adaptive_occlusion_enable: true
+    adaptive_occlusion_activation_distance: 0.25
+    adaptive_occlusion_max_weight_scale: 12.0
+    adaptive_occlusion_recovery_oe_scale: 8.0
+    adaptive_occlusion_od_far_weight_scale: 4.0
+    adaptive_occlusion_distance_upper_scale: 0.65
+    adaptive_occlusion_min_horizontal_upper: 0.85
+    adaptive_occlusion_postcheck_enable: true
     reacquire_distance: 6.0
     min_commit_duration: 0.8
     low_speed_velocity_threshold: 0.25
@@ -76,6 +88,32 @@ general_planner:
     anti_rollback_margin: 0.35
     keep_old_horizon: 1.0
     keep_old_safety_dt: 0.10
+    keep_old_min_remaining: 0.45
+    keep_old_min_speed: 0.15
+    keep_old_min_displacement: 0.04
+    keep_old_min_progress_ratio: 0.10
+    keep_old_min_progress_3d_ratio: 0.08
+    keep_old_max_tracking_error_scale: 1.25
+    max_consecutive_keep_old: 2
+    no_motion_guard_enable: true
+    no_motion_check_horizon: 0.35
+    no_motion_min_displacement: 0.04
+    no_motion_min_displacement_z: 0.04
+    no_motion_target_speed_threshold: 0.25
+    motion_3d_enable: true
+    vertical_motion_threshold: 0.12
+    detour_grace_enable: true
+    detour_grace_horizon: 1.2
+    detour_max_tracking_error_scale: 2.5
+    anti_rollback_eval_after_prefix: true
+    recovery_enable: true
+    recovery_horizon: 1.5
+    recovery_distance_tolerance_scale: 1.8
+    recovery_height_tolerance_scale: 1.8
+    recovery_time_scale: 1.4
+    recovery_reduce_visible_region_weight: 0.3
+    recovery_reduce_target_forward_weight: 0.5
+    retry_without_corridor_enable: true
     candidate_angle_step: 0.3926990817
     candidate_radius_num: 3
     visibility_samples: 5
@@ -107,6 +145,8 @@ general_planner:
     fov_commit_check_enable: true
     fov_check_strict: true
     fov_check_dt: 0.03
+    fov_range_grace_enable: true
+    fov_range_grace: 0.9
     fov_range_margin: 0.05
     fov_front_margin: 0.05
     fov_check_first_commit: true
@@ -115,7 +155,15 @@ general_planner:
     frontend_yaw_rate_feasibility_enable: true
     frontend_fov_range_margin: 0.05
     frontend_yaw_rate_margin: 0.10
+    frontend_obstacle_recovery_enable: true
+    frontend_grid_neighbor_mode: 26
+    frontend_over_wall_enable: true
+    frontend_over_wall_max_climb: 2.0
+    frontend_side_pass_enable: true
+    frontend_side_pass_width: 1.5
+    frontend_reacquire_relax_yaw_rate: true
     joint_sample_dt: 0.05
+    dense_joint_sample_enable: true
     unknown_as_occupied: false
     use_visible_region: true
     frontend_astar: true

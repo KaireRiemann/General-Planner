@@ -26,11 +26,12 @@ public:
 	        cfg_ = &cfg;
 	        map_manager_ = map_manager;
 	        problem_ = std::move(problem);
+            rebuildJointSampleTimes();
 	    }
 
 	    const std::vector<double> &discreteSampleTimes() const
 	    {
-	        return problem_.target_sample_times;
+	        return joint_sample_times_;
 	    }
 
     double evaluateIntegral(int,
@@ -207,6 +208,42 @@ public:
     }
 
 	private:
+        void rebuildJointSampleTimes()
+        {
+            joint_sample_times_.clear();
+            joint_sample_times_.insert(joint_sample_times_.end(),
+                                       problem_.target_sample_times.begin(),
+                                       problem_.target_sample_times.end());
+            if (problem_.dense_joint_sample_enable &&
+                problem_.joint_sample_dt > 0.0 &&
+                !problem_.target_prediction.empty())
+            {
+                const double end_t = std::max(0.0, problem_.target_prediction.back().t);
+                const double dt = std::max(0.01, problem_.joint_sample_dt);
+                for (double t = 0.0; t <= end_t + 1.0e-6; t += dt)
+                {
+                    joint_sample_times_.push_back(std::min(t, end_t));
+                }
+                joint_sample_times_.push_back(0.0);
+                joint_sample_times_.push_back(end_t);
+            }
+            std::sort(joint_sample_times_.begin(), joint_sample_times_.end());
+            std::vector<double> unique_times;
+            unique_times.reserve(joint_sample_times_.size());
+            for (const double t : joint_sample_times_)
+            {
+                if (!std::isfinite(t))
+                {
+                    continue;
+                }
+                if (unique_times.empty() || std::abs(t - unique_times.back()) > 1.0e-4)
+                {
+                    unique_times.push_back(t);
+                }
+            }
+            joint_sample_times_ = std::move(unique_times);
+        }
+
 	    double addObstacleAvoidanceCost(const Eigen::Vector3d &position,
 	                                    Eigen::Vector3d &grad_position) const
 	    {
@@ -304,6 +341,31 @@ public:
         config.weight_far = problem_.weight_od_far;
         config.weight_vertical = problem_.weight_od_vertical;
         config.smooth_eps = cfg_->smooth_eps;
+
+        if (problem_.adaptive_occlusion_enable)
+        {
+            const auto occlusion = evaluateOcclusionStatus(position, target.position);
+            if (occlusion.evaluated && occlusion.activation > 1.0e-6)
+            {
+                const double scaled_upper =
+                    std::max(problem_.adaptive_occlusion_min_horizontal_upper,
+                             problem_.tracking_distance *
+                                 std::clamp(problem_.adaptive_occlusion_distance_upper_scale,
+                                            0.1,
+                                            1.0));
+                const double elastic_upper =
+                    std::max(config.horizontal_lower + 0.05,
+                             std::min(config.horizontal_upper, scaled_upper));
+                config.horizontal_upper +=
+                    occlusion.activation * (elastic_upper - config.horizontal_upper);
+                config.weight_far *=
+                    1.0 + occlusion.activation *
+                              (std::max(1.0,
+                                        problem_.adaptive_occlusion_od_far_weight_scale) -
+                               1.0);
+            }
+        }
+
         return cost_functional::accumulateTrackingObservationDistancePenalty(position,
                                                                              target.position,
                                                                              config,
@@ -360,7 +422,7 @@ public:
                                  Eigen::Vector3d &grad_position,
                                  Eigen::Vector3d &grad_target) const
     {
-        const double weight = problem_.weight_oe > 0.0 ? problem_.weight_oe : problem_.weight_visibility;
+        double weight = problem_.weight_oe > 0.0 ? problem_.weight_oe : problem_.weight_visibility;
         if (!problem_.use_esdf_visibility ||
             weight <= 0.0 ||
             problem_.visibility_samples <= 0 ||
@@ -368,6 +430,19 @@ public:
             !map_manager_->hasESDF())
         {
             return 0.0;
+        }
+
+        if (problem_.adaptive_occlusion_enable)
+        {
+            const auto occlusion = evaluateOcclusionStatus(position, target.position);
+            if (occlusion.evaluated && occlusion.activation > 1.0e-6)
+            {
+                weight *=
+                    1.0 + occlusion.activation *
+                              (std::max(1.0,
+                                        problem_.adaptive_occlusion_max_weight_scale) -
+                               1.0);
+            }
         }
 
         Eigen::Vector3d local_grad_position = Eigen::Vector3d::Zero();
@@ -386,6 +461,24 @@ public:
         grad_position += local_grad_position;
         grad_target += local_grad_target;
         return cost;
+    }
+
+    cost_functional::TrackingLineOfSightOcclusionStatus evaluateOcclusionStatus(
+        const Eigen::Vector3d &position,
+        const Eigen::Vector3d &target_position) const
+    {
+        if (map_manager_ == nullptr || !map_manager_->hasESDF())
+        {
+            return {};
+        }
+        return cost_functional::evaluateBallLineOfSightOcclusionStatus(
+            map_manager_.get(),
+            position,
+            target_position,
+            problem_.visibility_safe_distance,
+            problem_.visibility_cone_ratio,
+            problem_.adaptive_occlusion_activation_distance,
+            problem_.visibility_samples);
     }
 
     double addTargetForwardCost(const Eigen::Vector3d &position,
@@ -661,9 +754,10 @@ public:
 	    }
 
 	private:
-	    const traj_opt::Config *cfg_{nullptr};
-	    general_planner::MapManager::Ptr map_manager_;
-	    traj_opt::TrackingProblem problem_;
-	};
+    const traj_opt::Config *cfg_{nullptr};
+    general_planner::MapManager::Ptr map_manager_;
+    traj_opt::TrackingProblem problem_;
+    std::vector<double> joint_sample_times_;
+};
 
 } // namespace cost_functional_manager

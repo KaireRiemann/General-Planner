@@ -56,6 +56,13 @@ public:
         double fov_front_margin{0.05};
         double max_yaw_rate{3.14};
         double yaw_rate_margin{0.10};
+        bool obstacle_recovery_enable{true};
+        int grid_neighbor_mode{26};
+        bool over_wall_enable{true};
+        double over_wall_max_climb{2.0};
+        bool side_pass_enable{true};
+        double side_pass_width{1.5};
+        bool reacquire_relax_yaw_rate{true};
         bool unknown_as_occupied{true};
         bool use_astar{true};
         bool use_visible_region{true};
@@ -146,6 +153,13 @@ private:
                                         const super_utils::Vec3f *reference_viewpoint = nullptr,
                                         const traj_opt::DynamicTargetState *reference_target = nullptr,
                                         bool allow_large_bearing_change = true) const;
+    bool chooseObstacleRecoveryViewpoint(const super_utils::Vec3f &start,
+                                         const traj_opt::DynamicTargetState &target,
+                                         super_utils::Vec3f &viewpoint,
+                                         super_utils::vec_E<super_utils::Vec3f> &path_to_viewpoint,
+                                         const super_utils::Vec3f *reference_viewpoint = nullptr,
+                                         const traj_opt::DynamicTargetState *reference_target = nullptr,
+                                         bool allow_large_bearing_change = true) const;
     bool centerViewpointInVisibleRegion(const super_utils::Vec3f &start,
                                         const traj_opt::DynamicTargetState &target,
                                         super_utils::Vec3f &viewpoint,

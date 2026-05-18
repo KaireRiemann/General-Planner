@@ -1738,7 +1738,9 @@ private:
         gdT_pos(i) += gt_integral * alpha * common_weight;
       }
 
-      if (problem_.weight_fov > 0.0 && problem_.joint_sample_dt > 0.0)
+      if (!problem_.dense_joint_sample_enable &&
+          problem_.weight_fov > 0.0 &&
+          problem_.joint_sample_dt > 0.0)
       {
         const double fov_sample_dt = std::max(0.01, problem_.joint_sample_dt);
         const int fov_samples =
