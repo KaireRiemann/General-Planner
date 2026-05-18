@@ -188,6 +188,16 @@ double angleDiff(const double lhs, const double rhs)
     return std::atan2(std::sin(lhs - rhs), std::cos(lhs - rhs));
 }
 
+double cameraYawToTarget(const Vec3f &viewpoint, const Vec3f &target)
+{
+    const Vec3f rel = target - viewpoint;
+    if (!rel.allFinite() || rel.head<2>().norm() < 1.0e-6)
+    {
+        return 0.0;
+    }
+    return std::atan2(rel.y(), rel.x());
+}
+
 void appendUnique(const Vec3f &p, vec_E<Vec3f> &path)
 {
     if (path.empty() || (path.back() - p).norm() > 1.0e-4)
@@ -387,6 +397,134 @@ bool TrackingFrontend::isViewpointSafe(const Vec3f &viewpoint) const
     return true;
 }
 
+bool TrackingFrontend::isViewpointFovFeasible(const Vec3f &viewpoint,
+                                              const Vec3f &target,
+                                              std::string *reason) const
+{
+    if (!cfg_.fov_feasibility_enable)
+    {
+        return true;
+    }
+    if (!viewpoint.allFinite() || !target.allFinite())
+    {
+        if (reason != nullptr)
+        {
+            *reason = "non-finite viewpoint or target";
+        }
+        return false;
+    }
+
+    constexpr double kPi = 3.14159265358979323846;
+    constexpr double kDegToRad = kPi / 180.0;
+    const double half_h = std::clamp(0.5 * std::max(1.0, cfg_.fov_horizontal_deg) * kDegToRad,
+                                     kPi / 180.0,
+                                     0.5 * kPi - 1.0e-3);
+    const double half_v = std::clamp(0.5 * std::max(1.0, cfg_.fov_vertical_deg) * kDegToRad,
+                                     kPi / 180.0,
+                                     0.5 * kPi - 1.0e-3);
+    const double configured_range =
+        cfg_.fov_range > 0.0
+            ? cfg_.fov_range
+            : cfg_.tracking_distance + std::max(cfg_.distance_lower_tolerance,
+                                                cfg_.distance_upper_tolerance);
+    const double effective_range =
+        std::max(0.05, configured_range - std::max(0.0, cfg_.fov_range_margin));
+    const double min_forward = std::max(1.0e-3, cfg_.fov_front_margin);
+
+    const double yaw = cameraYawToTarget(viewpoint, target);
+    const Vec3f rel = target - viewpoint;
+    const double c = std::cos(yaw);
+    const double s = std::sin(yaw);
+    const Vec3f q(c * rel.x() + s * rel.y(),
+                  -s * rel.x() + c * rel.y(),
+                  rel.z());
+    const double dist = q.norm();
+    const double h_angle = q.x() > 1.0e-6 ? std::atan2(std::abs(q.y()), q.x()) : kPi;
+    const double v_angle = q.x() > 1.0e-6 ? std::atan2(std::abs(q.z()), q.x()) : kPi;
+
+    if (q.x() < min_forward)
+    {
+        if (reason != nullptr)
+        {
+            *reason = "target behind or too close to camera forward axis";
+        }
+        return false;
+    }
+    if (h_angle > half_h)
+    {
+        if (reason != nullptr)
+        {
+            *reason = "outside horizontal FOV";
+        }
+        return false;
+    }
+    if (v_angle > half_v)
+    {
+        if (reason != nullptr)
+        {
+            *reason = "outside vertical FOV";
+        }
+        return false;
+    }
+    if (dist > effective_range)
+    {
+        if (reason != nullptr)
+        {
+            *reason = "outside FOV range";
+        }
+        return false;
+    }
+    return true;
+}
+
+bool TrackingFrontend::isViewpointYawRateFeasible(
+    const Vec3f &reference_viewpoint,
+    const traj_opt::DynamicTargetState &reference_target,
+    const Vec3f &candidate,
+    const traj_opt::DynamicTargetState &target,
+    std::string *reason) const
+{
+    if (!cfg_.yaw_rate_feasibility_enable)
+    {
+        return true;
+    }
+    if (!reference_viewpoint.allFinite() ||
+        !reference_target.position.allFinite() ||
+        !candidate.allFinite() ||
+        !target.position.allFinite())
+    {
+        return true;
+    }
+
+    const double dt = target.t - reference_target.t;
+    if (!std::isfinite(dt) || dt <= 1.0e-3)
+    {
+        return true;
+    }
+    const double max_yaw_rate =
+        std::max(0.0, cfg_.max_yaw_rate - std::max(0.0, cfg_.yaw_rate_margin));
+    if (max_yaw_rate <= 1.0e-6)
+    {
+        return true;
+    }
+
+    const double reference_yaw =
+        cameraYawToTarget(reference_viewpoint, reference_target.position);
+    const double candidate_yaw =
+        cameraYawToTarget(candidate, target.position);
+    const double required_yaw_rate =
+        std::abs(angleDiff(candidate_yaw, reference_yaw)) / dt;
+    if (required_yaw_rate > max_yaw_rate)
+    {
+        if (reason != nullptr)
+        {
+            *reason = "camera yaw-rate infeasible";
+        }
+        return false;
+    }
+    return true;
+}
+
 bool TrackingFrontend::isGuideStartUsable(const Vec3f &point) const
 {
     if (!point.allFinite())
@@ -427,6 +565,10 @@ bool TrackingFrontend::isViewpointVisible(const Vec3f &viewpoint,
                                           const Vec3f &target) const
 {
     if (!isViewpointSafe(viewpoint))
+    {
+        return false;
+    }
+    if (!isViewpointFovFeasible(viewpoint, target))
     {
         return false;
     }
@@ -504,6 +646,7 @@ bool TrackingFrontend::collectVisibleViewpointCandidates(
     const traj_opt::DynamicTargetState &target,
     std::vector<ViewpointCandidate> &candidates,
     const Vec3f *reference_viewpoint,
+    const traj_opt::DynamicTargetState *reference_target,
     const bool allow_large_bearing_change) const
 {
     candidates.clear();
@@ -546,6 +689,15 @@ bool TrackingFrontend::collectVisibleViewpointCandidates(
                                       candidate,
                                       allow_large_bearing_change,
                                       cfg_.candidate_angle_step))
+        {
+            return;
+        }
+        if (reference_viewpoint != nullptr &&
+            reference_target != nullptr &&
+            !isViewpointYawRateFeasible(*reference_viewpoint,
+                                        *reference_target,
+                                        candidate,
+                                        target))
         {
             return;
         }
@@ -636,6 +788,7 @@ bool TrackingFrontend::chooseVisibleViewpoint(const Vec3f &seed,
                                               const traj_opt::DynamicTargetState &target,
                                               Vec3f &viewpoint,
                                               const Vec3f *reference_viewpoint,
+                                              const traj_opt::DynamicTargetState *reference_target,
                                               const bool allow_large_bearing_change) const
 {
     std::vector<ViewpointCandidate> candidates;
@@ -643,6 +796,7 @@ bool TrackingFrontend::chooseVisibleViewpoint(const Vec3f &seed,
                                            target,
                                            candidates,
                                            reference_viewpoint,
+                                           reference_target,
                                            allow_large_bearing_change))
     {
         return false;
@@ -657,6 +811,7 @@ bool TrackingFrontend::chooseConnectedVisibleViewpoint(
     vec_E<Vec3f> &path,
     Vec3f &viewpoint,
     const Vec3f *reference_viewpoint,
+    const traj_opt::DynamicTargetState *reference_target,
     const bool allow_large_bearing_change) const
 {
     std::vector<ViewpointCandidate> candidates;
@@ -664,6 +819,7 @@ bool TrackingFrontend::chooseConnectedVisibleViewpoint(
                                            target,
                                            candidates,
                                            reference_viewpoint,
+                                           reference_target,
                                            allow_large_bearing_change))
     {
         return false;
@@ -924,6 +1080,7 @@ bool TrackingFrontend::searchVisibleViewpointOnGrid(
     Vec3f &viewpoint,
     vec_E<Vec3f> &path_to_viewpoint,
     const Vec3f *reference_viewpoint,
+    const traj_opt::DynamicTargetState *reference_target,
     const bool allow_large_bearing_change) const
 {
     path_to_viewpoint.clear();
@@ -938,6 +1095,7 @@ bool TrackingFrontend::searchVisibleViewpointOnGrid(
                                     target,
                                     viewpoint,
                                     reference_viewpoint,
+                                    reference_target,
                                     allow_large_bearing_change))
         {
             return false;
@@ -1052,6 +1210,12 @@ bool TrackingFrontend::searchVisibleViewpointOnGrid(
                                          candidate,
                                          allow_large_bearing_change,
                                          cfg_.candidate_angle_step) &&
+               (reference_viewpoint == nullptr ||
+                reference_target == nullptr ||
+                isViewpointYawRateFeasible(*reference_viewpoint,
+                                           *reference_target,
+                                           candidate,
+                                           target)) &&
                isViewpointVisible(candidate, target.position);
     };
 
@@ -1078,7 +1242,13 @@ bool TrackingFrontend::searchVisibleViewpointOnGrid(
                                          target.position,
                                          candidate,
                                          allow_large_bearing_change,
-                                         cfg_.candidate_angle_step);
+                                         cfg_.candidate_angle_step) &&
+               (reference_viewpoint == nullptr ||
+                reference_target == nullptr ||
+                isViewpointYawRateFeasible(*reference_viewpoint,
+                                           *reference_target,
+                                           candidate,
+                                           target));
     };
 
     struct QueueNode
@@ -1297,6 +1467,7 @@ bool TrackingFrontend::chooseRelaxedFallbackViewpoint(
     Vec3f &viewpoint,
     vec_E<Vec3f> &path_to_viewpoint,
     const Vec3f *reference_viewpoint,
+    const traj_opt::DynamicTargetState *reference_target,
     const bool allow_large_bearing_change) const
 {
     if (!cfg_.fallback_relax_enable)
@@ -1342,6 +1513,7 @@ bool TrackingFrontend::chooseRelaxedFallbackViewpoint(
                                                       viewpoint,
                                                       path_to_viewpoint,
                                                       reference_viewpoint,
+                                                      reference_target,
                                                       allow_large_bearing_change))
     {
         logTrackingFrontendDebug(cfg_.print_log,
@@ -1357,6 +1529,7 @@ bool TrackingFrontend::chooseRelaxedFallbackViewpoint(
                                                         path_to_viewpoint,
                                                         viewpoint,
                                                         reference_viewpoint,
+                                                        reference_target,
                                                         allow_large_bearing_change))
     {
         logTrackingFrontendDebug(cfg_.print_log,
@@ -1370,6 +1543,7 @@ bool TrackingFrontend::chooseRelaxedFallbackViewpoint(
                                                target,
                                                viewpoint,
                                                reference_viewpoint,
+                                               reference_target,
                                                allow_large_bearing_change))
     {
         path_to_viewpoint.clear();
@@ -1397,6 +1571,7 @@ bool TrackingFrontend::centerViewpointInVisibleRegion(
     vec_E<Vec3f> &path_to_viewpoint,
     traj_opt::TrackingVisibleRegion &region,
     const Vec3f *reference_viewpoint,
+    const traj_opt::DynamicTargetState *reference_target,
     const bool allow_large_bearing_change) const
 {
     if (!computeVisibleRegion(target, viewpoint, region))
@@ -1420,6 +1595,12 @@ bool TrackingFrontend::centerViewpointInVisibleRegion(
                                   centered,
                                   allow_large_bearing_change,
                                   cfg_.candidate_angle_step) ||
+        (reference_viewpoint != nullptr &&
+         reference_target != nullptr &&
+         !isViewpointYawRateFeasible(*reference_viewpoint,
+                                     *reference_target,
+                                     centered,
+                                     target)) ||
         !isViewpointVisible(centered, target.position))
     {
         return true;
@@ -1459,7 +1640,11 @@ bool TrackingFrontend::choosePropagatedViewpoint(const Vec3f &reference_viewpoin
     bool allow_large_fallback = reacquire_mode;
     if (findOcclusionAwareSeed(reference_viewpoint, reference_target.position, target.position, seed))
     {
-        if (extendToTrackingViewpoint(seed, target.position, reference_viewpoint, viewpoint))
+        if (extendToTrackingViewpoint(seed, target.position, reference_viewpoint, viewpoint) &&
+            isViewpointYawRateFeasible(reference_viewpoint,
+                                       reference_target,
+                                       viewpoint,
+                                       target))
         {
             if (appendPathSegment(connect_start, viewpoint, path_to_viewpoint, true))
             {
@@ -1497,6 +1682,7 @@ bool TrackingFrontend::choosePropagatedViewpoint(const Vec3f &reference_viewpoin
                                      viewpoint,
                                      path_to_viewpoint,
                                      &reference_viewpoint,
+                                     &reference_target,
                                      allow_large_fallback))
     {
         return true;
@@ -1511,6 +1697,7 @@ bool TrackingFrontend::choosePropagatedViewpoint(const Vec3f &reference_viewpoin
                                 target,
                                 viewpoint,
                                 &reference_viewpoint,
+                                &reference_target,
                                 allow_large_fallback))
     {
         logTrackingFrontendDebug(cfg_.print_log,
@@ -1521,6 +1708,7 @@ bool TrackingFrontend::choosePropagatedViewpoint(const Vec3f &reference_viewpoin
                                              viewpoint,
                                              path_to_viewpoint,
                                              &reference_viewpoint,
+                                             &reference_target,
                                              true);
     }
     path_to_viewpoint.clear();
@@ -1542,6 +1730,7 @@ bool TrackingFrontend::choosePropagatedViewpoint(const Vec3f &reference_viewpoin
                                          viewpoint,
                                          path_to_viewpoint,
                                          &reference_viewpoint,
+                                         &reference_target,
                                          true);
 }
 
@@ -1930,6 +2119,7 @@ bool TrackingFrontend::buildProblem(const StatePVAJ &head_pvaj,
                                                 path_to_viewpoint,
                                                 region,
                                                 &propagation_viewpoint,
+                                                &propagation_target,
                                                 local_reacquire))
             {
                 region.t = target.t;

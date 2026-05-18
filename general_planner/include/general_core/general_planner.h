@@ -406,12 +406,20 @@ namespace general_planner {
 
         bool trackingCandidateSafeForCommit(const Trajectory &candidate_pos_traj) const;
 
+        bool trackingSnapshotSatisfiesFovForKeepOld(
+            const Trajectory &pos_traj,
+            const Trajectory &yaw_traj,
+            double local_start_t,
+            const traj_opt::DynamicTargetStates &target_prediction,
+            std::string *reason = nullptr) const;
+
         bool trackingTrajectorySatisfiesFov(const Trajectory &pos_traj,
                                             const Trajectory &yaw_traj,
                                             const traj_opt::DynamicTargetStates &target_prediction,
                                             double start_t,
                                             double horizon,
                                             double dt,
+                                            double target_start_t,
                                             std::string *reason = nullptr) const;
 
         void resetTrackingCommitCounters();

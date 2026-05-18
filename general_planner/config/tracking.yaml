@@ -105,6 +105,17 @@ general_planner:
     fov_range: 4.0
     target_front_margin: 0.05
     fov_commit_check_enable: true
+    fov_check_strict: true
+    fov_check_dt: 0.03
+    fov_range_margin: 0.05
+    fov_front_margin: 0.05
+    fov_check_first_commit: true
+    keep_old_requires_fov: true
+    frontend_fov_feasibility_enable: true
+    frontend_yaw_rate_feasibility_enable: true
+    frontend_fov_range_margin: 0.05
+    frontend_yaw_rate_margin: 0.10
+    joint_sample_dt: 0.05
     unknown_as_occupied: false
     use_visible_region: true
     frontend_astar: true
@@ -227,7 +238,7 @@ rog_map:
   raycasting:
     enable: false
     batch_update_size: 1
-    local_update_box: [100, 100, 5]
+    local_update_box: [16, 16, 5]
     ray_range: [0.5, 100]
     p_min: 0.12
     p_miss: 0.49

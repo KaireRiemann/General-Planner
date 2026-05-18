@@ -96,8 +96,11 @@ struct TrackingProblem
   double fov_horizontal{1.5707963267948966};
   double fov_vertical{1.0471975511965976};
   double fov_range{4.0};
+  double fov_range_margin{0.05};
+  double fov_front_margin{0.05};
   double target_front_margin{0.15};
   double target_motion_speed_threshold{0.25};
+  double joint_sample_dt{0.05};
   int visibility_samples{5};
   bool use_esdf_visibility{true};
   bool use_visible_region{true};

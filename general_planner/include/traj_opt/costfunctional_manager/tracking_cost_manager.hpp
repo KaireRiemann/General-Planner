@@ -118,6 +118,27 @@ public:
 	        return cost;
 	    }
 
+    double evaluateCameraFovSample(double t_global,
+                                   const Eigen::Vector3d &position,
+                                   double yaw,
+                                   Eigen::Vector3d &grad_position,
+                                   double &grad_yaw) const
+    {
+        if (cfg_ == nullptr || problem_.target_prediction.empty())
+        {
+            return 0.0;
+        }
+
+        const auto target = interpolateTarget(t_global);
+        Eigen::Vector3d grad_target = Eigen::Vector3d::Zero();
+        return addCameraFovCost(position,
+                                yaw,
+                                target,
+                                grad_position,
+                                grad_target,
+                                grad_yaw);
+    }
+
     template <typename SampleBuffer>
     double evaluateSample(const SampleBuffer &samples,
                           Eigen::Matrix<double, 3, Eigen::Dynamic> &grad_p,
@@ -319,9 +340,11 @@ public:
         config.weight = problem_.weight_fov;
         config.horizontal_fov = problem_.fov_horizontal;
         config.vertical_fov = problem_.fov_vertical;
-        config.range = problem_.fov_range;
+        config.range = problem_.fov_range > 0.0
+                           ? std::max(0.05, problem_.fov_range - std::max(0.0, problem_.fov_range_margin))
+                           : problem_.fov_range;
         config.angle_clearance = problem_.visibility_angle_clearance;
-        config.min_forward = 0.05;
+        config.min_forward = problem_.fov_front_margin;
         config.smooth_eps = cfg_->smooth_eps;
         return cost_functional::accumulateTrackingCameraFovPenalty(position,
                                                                    yaw,

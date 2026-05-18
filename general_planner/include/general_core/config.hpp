@@ -177,6 +177,17 @@ namespace general_planner {
         double tracking_fov_range{4.0};
         double tracking_target_front_margin{0.15};
         bool tracking_fov_commit_check_enable{true};
+        bool tracking_fov_check_strict{true};
+        double tracking_fov_check_dt{0.03};
+        double tracking_fov_range_margin{0.05};
+        double tracking_fov_front_margin{0.05};
+        bool tracking_fov_check_first_commit{true};
+        bool tracking_keep_old_requires_fov{true};
+        bool tracking_frontend_fov_feasibility_enable{true};
+        bool tracking_frontend_yaw_rate_feasibility_enable{true};
+        double tracking_frontend_fov_range_margin{0.05};
+        double tracking_frontend_yaw_rate_margin{0.10};
+        double tracking_joint_sample_dt{0.05};
         bool tracking_unknown_as_occupied{false};
         bool tracking_frontend_astar{true};
         bool tracking_use_visible_region{true};
@@ -481,6 +492,28 @@ namespace general_planner {
             loader.LoadParam("general_planner/tracking/target_front_margin", tracking_target_front_margin, 0.15);
             loader.LoadParam("general_planner/tracking/fov_commit_check_enable",
                              tracking_fov_commit_check_enable, true);
+            loader.LoadParam("general_planner/tracking/fov_check_strict",
+                             tracking_fov_check_strict, true);
+            loader.LoadParam("general_planner/tracking/fov_check_dt",
+                             tracking_fov_check_dt, 0.03);
+            loader.LoadParam("general_planner/tracking/fov_range_margin",
+                             tracking_fov_range_margin, 0.05);
+            loader.LoadParam("general_planner/tracking/fov_front_margin",
+                             tracking_fov_front_margin, 0.05);
+            loader.LoadParam("general_planner/tracking/fov_check_first_commit",
+                             tracking_fov_check_first_commit, true);
+            loader.LoadParam("general_planner/tracking/keep_old_requires_fov",
+                             tracking_keep_old_requires_fov, true);
+            loader.LoadParam("general_planner/tracking/frontend_fov_feasibility_enable",
+                             tracking_frontend_fov_feasibility_enable, true);
+            loader.LoadParam("general_planner/tracking/frontend_yaw_rate_feasibility_enable",
+                             tracking_frontend_yaw_rate_feasibility_enable, true);
+            loader.LoadParam("general_planner/tracking/frontend_fov_range_margin",
+                             tracking_frontend_fov_range_margin, 0.05);
+            loader.LoadParam("general_planner/tracking/frontend_yaw_rate_margin",
+                             tracking_frontend_yaw_rate_margin, 0.10);
+            loader.LoadParam("general_planner/tracking/joint_sample_dt",
+                             tracking_joint_sample_dt, 0.05);
             loader.LoadParam("general_planner/tracking/unknown_as_occupied", tracking_unknown_as_occupied, false);
             loader.LoadParam("general_planner/tracking/frontend_astar", tracking_frontend_astar, true);
             loader.LoadParam("general_planner/tracking/use_visible_region", tracking_use_visible_region, true);
