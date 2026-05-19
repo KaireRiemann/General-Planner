@@ -43,7 +43,6 @@ namespace fsm {
         STATE_TO_STATE = 0,
         TRACKING = 1,
         PERCHING = 2,
-        EXPLORATION = 3,
         DYNAMIC_TAKEOFF = 4,
         TRACKING_PERCHING = 5,
         FULL_CYCLE = 6,
@@ -79,9 +78,6 @@ namespace fsm {
             mode == "takeoff-tracking-perching") {
             return "full_cycle";
         }
-        if (mode == "explore" || mode == "exploration") {
-            return "exploration";
-        }
         return "state2state";
     }
 
@@ -101,9 +97,6 @@ namespace fsm {
         }
         if (normalized == "full_cycle") {
             return TaskMode::FULL_CYCLE;
-        }
-        if (normalized == "exploration") {
-            return TaskMode::EXPLORATION;
         }
         if (normalized == "se3_aggressive") {
             return TaskMode::SE3_AGGRESSIVE;
@@ -126,7 +119,6 @@ namespace fsm {
         string task_mode_str{"state2state"};
         TaskMode task_mode{TaskMode::STATE_TO_STATE};
         bool task_planner_en{false};
-        bool exploration_enable{false};
         string task_mode_topic{"/planning/task_mode"};
         string tracking_target_odom_topic{"/tracking/target_odom"};
         string tracking_target_prediction_topic{"/tracking/target_prediction"};
@@ -180,7 +172,6 @@ namespace fsm {
             task_mode_str = normalizeTaskMode(task_mode_str);
             task_mode = taskModeFromString(task_mode_str);
             loader.LoadParam("fsm/task_planner_en", task_planner_en, false);
-            loader.LoadParam("general_planner/exploration_enable", exploration_enable, false);
             loader.LoadParam("fsm/task_mode_topic", task_mode_topic, string("/planning/task_mode"));
             loader.LoadParam("fsm/tracking_target_odom_topic", tracking_target_odom_topic,
                              string("/tracking/target_odom"));

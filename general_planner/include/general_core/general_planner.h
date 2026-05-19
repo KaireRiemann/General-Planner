@@ -42,7 +42,6 @@
 #include "map_manager/map_manager.hpp"
 #include "general_core/corridor_generator.h"
 #include "general_core/fov_checker.h"
-#include "general_core/exploration_manager.hpp"
 #include "general_core/tracking_perching_frontend.hpp"
 #include "general_core/tracking_runtime_manager.hpp"
 #include "general_core/perching_runtime_manager.hpp"
@@ -113,8 +112,6 @@ namespace general_planner {
         bool active_takeoff_problem_valid_{false};
         std::unique_ptr<TrackingPerchingTransitionManager> tracking_perching_manager_;
         std::unique_ptr<TrackingToPerchingInitializer> tracking_to_perching_initializer_;
-        std::unique_ptr<ExplorationManager> exploration_manager_;
-        ExplorationGoal latest_exploration_goal_;
         std::unique_ptr<SE3AggressiveManager> se3_aggressive_manager_;
 
         vector<double> time_consuming_;
@@ -297,11 +294,21 @@ namespace general_planner {
         RET_CODE ReplanDynamicTakeoffOnce(const traj_opt::PerchingSurfaceState &surface,
                                           const bool &new_task);
 
-        RET_CODE PlanExplorationFromRest(const bool &new_task);
+        bool globalExplorationMapReady() const {
+            return map_manager_ != nullptr && map_manager_->globalExplorationMapReady();
+        }
 
-        RET_CODE ReplanExplorationOnce(const bool &new_task);
+        int globalFrontierCount() const {
+            return map_manager_ != nullptr ? map_manager_->globalFrontierCount() : 0;
+        }
 
-        bool getLatestExplorationGoal(ExplorationGoal &goal) const;
+        double globalExploredVolume() const {
+            return map_manager_ != nullptr ? map_manager_->globalExploredVolume() : 0.0;
+        }
+
+        int globalPointCloudSize() const {
+            return map_manager_ != nullptr ? map_manager_->globalPointCloudSize() : 0;
+        }
 
         RET_CODE PlanSE3AggressiveFromRest(const Vec3f &goal_p,
                                            double goal_yaw,
@@ -496,8 +503,6 @@ namespace general_planner {
 
         TakeoffFrontend::Config makeTakeoffFrontendConfig() const;
 
-        ExplorationConfig makeExplorationConfig() const;
-
         GlobalExplorationMapConfig makeGlobalExplorationMapConfig() const;
 
         GlobalPointCloudMapConfig makeGlobalPointCloudMapConfig() const;
@@ -538,7 +543,8 @@ namespace general_planner {
         }
 
         void updateROGMap(const rog_map::PointCloud &cloud, const super_utils::Pose &pose) {
-            map_manager_->updateMap(cloud, pose);
+            const double stamp = ros_ptr_ ? ros_ptr_->getSimTime() : 0.0;
+            map_manager_->updateMapWithGlobal(cloud, pose, CloudFrame::WORLD, stamp);
         }
 
         void updateROGMapWithGlobal(const rog_map::PointCloud &cloud,
