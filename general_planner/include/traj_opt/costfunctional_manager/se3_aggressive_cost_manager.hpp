@@ -5,7 +5,7 @@
 #include <limits>
 #include <utility>
 
-#include "general_core/map_manager.hpp"
+#include "map_manager/map_manager.hpp"
 #include "traj_opt/costfunctional/penalty_utils.hpp"
 #include "traj_opt/costfunctional/spatialcosts/se3_shape_corridor_penalty.hpp"
 #include "traj_opt/flatness/se3_flatness_map.hpp"

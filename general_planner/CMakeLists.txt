@@ -32,6 +32,7 @@ find_package(catkin REQUIRED COMPONENTS
         visualization_msgs
         message_filters
         rog_map
+        map_manager
         yaml-cpp
         tf
 )
@@ -42,7 +43,7 @@ find_package(PCL REQUIRED)
 catkin_package(
         INCLUDE_DIRS
         LIBRARIES general_planner_core
-        CATKIN_DEPENDS roscpp rospy std_msgs
+        CATKIN_DEPENDS roscpp rospy std_msgs rog_map map_manager
         #  DEPENDS system_lib
 )
 

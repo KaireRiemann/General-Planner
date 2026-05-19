@@ -51,6 +51,7 @@ general_planner:
 
   exploration_enable: true
   exploration_frontier_search_radius: 10.0
+  exploration_use_global_frontiers: false
   exploration_frontier_cluster_radius: 0.8
   exploration_min_frontier_cluster_size: 5
   exploration_viewpoint_min_distance: 1.2
@@ -68,10 +69,85 @@ general_planner:
   exploration_min_information_gain: 3.0
   exploration_goal_switch_min_score_improvement: 0.25
   exploration_goal_reached_distance: 0.5
+  exploration_min_goal_distance: 1.2
   exploration_unknown_as_occupied_for_motion: true
   exploration_require_line_free_to_frontier: false
   exploration_use_astar_cost: true
   exploration_print_log: true
+
+  global_exploration_map:
+    enable: true
+    resolution: 0.20
+    raycast_step: 0.10
+    max_range: 8.0
+    min_range: 0.20
+    bbox_min: [-50.0, -50.0, -2.0]
+    bbox_max: [50.0, 50.0, 10.0]
+    occupied_hit_threshold: 2
+    free_miss_threshold: 1
+    update_min_interval: 0.2
+    cloud_downsample_step: 1
+    max_points_per_update: 8000
+
+  global_pointcloud_map:
+    enable: true
+    voxel_size: 0.10
+    save_path: "/tmp/explored_global_map.pcd"
+
+  global_region_grid:
+    enable: true
+    region_size_xy: 4.0
+    region_size_z: 2.0
+    min_frontier_count: 10
+    explored_ratio_threshold: 0.85
+
+  coverage_guide:
+    enable: true
+    max_active_regions: 30
+    weight_distance: 1.0
+    weight_height: 1.5
+    weight_gain: 2.0
+    weight_revisit: 0.5
+    weight_switch_region: 0.5
+    max_route_length: 10
+
+  exploration_frontend:
+    frontier_search_radius: 10.0
+    use_global_frontiers: false
+    frontier_cluster_radius: 0.6
+    min_frontier_cluster_size: 5
+    max_frontiers_per_cluster: 500
+    max_cluster_extent: 4.0
+    frontier_downsample_step: 2
+    viewpoint_min_distance: 1.5
+    viewpoint_max_distance: 3.5
+    viewpoint_radius_num: 3
+    viewpoint_yaw_num: 16
+    sensor_range: 6.0
+    sensor_horizontal_fov_deg: 90.0
+    sensor_vertical_fov_deg: 60.0
+    visibility_sample_max_points: 300
+    line_of_sight_sample_step: 0.15
+    use_fov_gain: true
+    info_gain_cap: 300.0
+    min_information_gain: 20.0
+    max_candidate_num: 128
+    max_astar_candidate_num: 8
+    astar_timeout: 0.08
+    astar_search_horizon: 20.0
+    weight_gain: 2.0
+    weight_travel: 1.0
+    weight_yaw: 0.3
+    weight_curvature: 0.8
+    weight_switch: 0.5
+    weight_reachability: 1.0
+    switch_score_margin: 0.5
+    switch_gain_margin: 0.15
+    min_switch_distance: 1.0
+    min_goal_distance: 1.2
+    keep_goal_min_remaining_time: 0.4
+    failed_candidate_blacklist_time: 3.0
+    failed_candidate_blacklist_radius: 0.8
 
 traj_opt:
   switch:

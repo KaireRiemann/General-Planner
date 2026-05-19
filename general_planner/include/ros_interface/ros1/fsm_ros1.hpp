@@ -33,9 +33,12 @@
 #include "geometry_msgs/PoseStamped.h"
 #include "nav_msgs/Path.h"
 #include "nav_msgs/Odometry.h"
+#include "sensor_msgs/PointCloud2.h"
 #include "quadrotor_msgs/PositionCommand.h"
 #include "quadrotor_msgs/PolynomialTrajectory.h"
 #include "std_msgs/String.h"
+
+#include <pcl_conversions/pcl_conversions.h>
 
 #include <algorithm>
 #include <array>
@@ -44,6 +47,7 @@
 #include <functional>
 #include <limits>
 #include <map>
+#include <mutex>
 #include <queue>
 #include <sstream>
 #include <utility>
@@ -59,6 +63,8 @@ namespace fsm {
         ros::Subscriber perching_surface_sub_;
         ros::Subscriber swarm_broadcast_traj_sub_;
         ros::Subscriber swarm_state_sub_;
+        ros::Subscriber global_map_cloud_sub_;
+        ros::Subscriber global_map_odom_sub_;
         ros::Publisher cmd_pub, mpc_cmd_pub_, path_pub_;
         ros::Publisher swarm_traj_pub_, swarm_state_pub_;
         ros::Timer execution_timer_, replan_timer_, cmd_timer_;
@@ -71,6 +77,13 @@ namespace fsm {
         std::map<int, nav_msgs::Odometry> swarm_state_buffer_;
         unsigned int traj_seq_{0};
         ros::Time last_tracking_prediction_path_time_;
+        std::mutex global_map_obs_mutex_;
+        super_utils::Pose latest_global_map_pose_{
+            super_utils::Vec3f::Zero(), super_utils::Quatf::Identity()};
+        bool latest_global_map_pose_rcv_{false};
+        bool global_map_feed_enabled_{false};
+        double latest_global_map_odom_time_{-1.0};
+        double global_map_odom_timeout_{0.2};
 
         vector<quadrotor_msgs::PositionCommand> cmd_logs_;
 
@@ -783,6 +796,65 @@ namespace fsm {
             setTaskModeFromString(msg->data);
         }
 
+        void globalMapOdomCallback(const nav_msgs::OdometryConstPtr &msg) {
+            Eigen::Quaterniond q(msg->pose.pose.orientation.w,
+                                 msg->pose.pose.orientation.x,
+                                 msg->pose.pose.orientation.y,
+                                 msg->pose.pose.orientation.z);
+            if (q.norm() < 1.0e-6) {
+                q.setIdentity();
+            } else {
+                q.normalize();
+            }
+            const Vec3f p(msg->pose.pose.position.x,
+                          msg->pose.pose.position.y,
+                          msg->pose.pose.position.z);
+            std::lock_guard<std::mutex> lock(global_map_obs_mutex_);
+            latest_global_map_pose_ = std::make_pair(p, q);
+            latest_global_map_pose_rcv_ = true;
+            latest_global_map_odom_time_ = ros::Time::now().toSec();
+        }
+
+        void globalMapCloudCallback(const sensor_msgs::PointCloud2ConstPtr &msg) {
+            if (planner_ptr_ == nullptr || !cfg_.exploration_enable) {
+                return;
+            }
+            super_utils::Pose pose;
+            {
+                std::lock_guard<std::mutex> lock(global_map_obs_mutex_);
+                if (!latest_global_map_pose_rcv_) {
+                    return;
+                }
+                const double now = ros::Time::now().toSec();
+                if (now - latest_global_map_odom_time_ > global_map_odom_timeout_) {
+                    return;
+                }
+                pose = latest_global_map_pose_;
+            }
+
+            rog_map::PointCloud cloud;
+            pcl::fromROSMsg(*msg, cloud);
+            planner_ptr_->updateGlobalMapOnly(cloud, pose, general_planner::CloudFrame::WORLD);
+        }
+
+        void enableGlobalMapFeedIfNeeded() {
+            if (global_map_feed_enabled_ || !cfg_.exploration_enable || map_ptr_ == nullptr) {
+                return;
+            }
+            const auto map_cfg = map_ptr_->getMapConfig();
+            if (map_cfg.odom_topic.empty() || map_cfg.cloud_topic.empty()) {
+                return;
+            }
+            global_map_odom_timeout_ = std::max(0.05, map_cfg.odom_timeout);
+            global_map_odom_sub_ = nh_.subscribe(map_cfg.odom_topic, 20,
+                                                  &FsmRos1::globalMapOdomCallback, this);
+            global_map_cloud_sub_ = nh_.subscribe(map_cfg.cloud_topic, 5,
+                                                   &FsmRos1::globalMapCloudCallback, this);
+            global_map_feed_enabled_ = true;
+            cout << YELLOW << " -- [Fsm] GLOBAL MAP FEED: cloud "
+                 << map_cfg.cloud_topic << ", odom " << map_cfg.odom_topic << RESET << endl;
+        }
+
         void init(const ros::NodeHandle &nh, const std::string &cfg_path) {
             // 初始化参数读取
             nh_ = nh;
@@ -791,6 +863,7 @@ namespace fsm {
             // 初始化Planner
             ros_ptr_ = std::make_shared<ros_interface::Ros1Interface>(nh_);
             planner_ptr_ = std::make_shared<GeneralPlanner>(cfg_path, ros_ptr_, map_ptr_);
+            enableGlobalMapFeedIfNeeded();
             resetActiveTask();
             cmd_pub = nh_.advertise<quadrotor_msgs::PositionCommand>(cfg_.cmd_topic, 10);
             mpc_cmd_pub_ = nh_.advertise<quadrotor_msgs::PolynomialTrajectory>(cfg_.mpc_cmd_topic, 10);

@@ -3,7 +3,7 @@
 #include <optional>
 
 #include "data_structure/cmd_traj.h"
-#include "general_core/map_manager.hpp"
+#include "map_manager/map_manager.hpp"
 #include "rog_map/rog_map.h"
 #include "ros_interface/ros_interface.hpp"
 #include "traj_opt/perching_surface_state.hpp"

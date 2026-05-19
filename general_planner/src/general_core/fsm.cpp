@@ -567,7 +567,7 @@ namespace fsm {
                    dynamicTakeoffTaskReady();
         }
         if (explorationMode()) {
-            return started_ && !finish_plan;
+            return cfg_.exploration_enable && started_ && !finish_plan;
         }
         return false;
     }
@@ -580,7 +580,7 @@ namespace fsm {
             return !closeToGoal(0.1);
         }
         if (explorationMode()) {
-            return started_ && !finish_plan;
+            return cfg_.exploration_enable && started_ && !finish_plan;
         }
         if (perchingMode()) {
             return false;

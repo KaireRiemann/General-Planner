@@ -2,9 +2,16 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <limits>
 #include <memory>
+#include <mutex>
+#include <string>
+#include <vector>
 
+#include <map_manager/global_exploration_map.hpp>
+#include <map_manager/global_pointcloud_map.hpp>
+#include <map_manager/global_region_grid.hpp>
 #include <rog_map/rog_map.h>
 #include <rog_map_ros/rog_map_ros1.hpp>
 #include <rog_map_ros/rog_map_ros2.hpp>
@@ -52,6 +59,208 @@ public:
     void updateMap(const rog_map::PointCloud &cloud, const super_utils::Pose &pose) const
     {
         map_->updateMap(cloud, pose);
+    }
+
+    void enableGlobalExplorationMap(const GlobalExplorationMapConfig &cfg)
+    {
+        if (cfg.enable) {
+            global_exploration_map_ = std::make_unique<GlobalExplorationMap>(cfg);
+            global_update_min_interval_ = std::max(0.0, cfg.update_min_interval);
+            global_update_cloud_downsample_step_ = std::max(1, cfg.cloud_downsample_step);
+            global_update_max_points_per_update_ = std::max(0, cfg.max_points_per_update);
+        } else {
+            global_exploration_map_.reset();
+            global_update_min_interval_ = 0.0;
+            global_update_cloud_downsample_step_ = 1;
+            global_update_max_points_per_update_ = 0;
+        }
+    }
+
+    void enableGlobalPointCloudMap(const GlobalPointCloudMapConfig &cfg)
+    {
+        if (cfg.enable) {
+            global_pointcloud_map_ = std::make_unique<GlobalPointCloudMap>(cfg);
+        } else {
+            global_pointcloud_map_.reset();
+        }
+    }
+
+    void enableGlobalRegionGrid(const GlobalRegionGridConfig &cfg)
+    {
+        if (cfg.enable) {
+            global_region_grid_ = std::make_unique<GlobalRegionGrid>(cfg);
+        } else {
+            global_region_grid_.reset();
+        }
+    }
+
+    void updateMapWithGlobal(const rog_map::PointCloud &cloud,
+                             const super_utils::Pose &pose,
+                             const CloudFrame frame,
+                             const double stamp)
+    {
+        if (map_ != nullptr) {
+            map_->updateMap(cloud, pose);
+        }
+        updateGlobalMapsOnly(cloud, pose, frame, stamp);
+    }
+
+    void updateGlobalMapsOnly(const rog_map::PointCloud &cloud,
+                              const super_utils::Pose &pose,
+                              const CloudFrame frame,
+                              const double stamp)
+    {
+        if (global_exploration_map_ == nullptr && global_pointcloud_map_ == nullptr) {
+            return;
+        }
+        if (cloud.empty()) {
+            return;
+        }
+
+        {
+            std::lock_guard<std::mutex> lock(global_update_mutex_);
+            if (global_update_min_interval_ > 0.0 &&
+                stamp > 0.0 &&
+                last_global_update_stamp_ > 0.0 &&
+                stamp - last_global_update_stamp_ < global_update_min_interval_) {
+                return;
+            }
+            if (stamp > 0.0) {
+                last_global_update_stamp_ = stamp;
+            }
+        }
+
+        const rog_map::PointCloud *update_cloud = &cloud;
+        rog_map::PointCloud filtered_cloud;
+        int step = global_update_cloud_downsample_step_;
+        if (global_update_max_points_per_update_ > 0 &&
+            static_cast<int>(cloud.size()) > global_update_max_points_per_update_) {
+            step = std::max(step,
+                            static_cast<int>(std::ceil(
+                                    static_cast<double>(cloud.size()) /
+                                    static_cast<double>(global_update_max_points_per_update_))));
+        }
+        if (step > 1) {
+            filtered_cloud.points.reserve((cloud.size() + static_cast<std::size_t>(step) - 1U) /
+                                          static_cast<std::size_t>(step));
+            for (std::size_t i = 0; i < cloud.size(); i += static_cast<std::size_t>(step)) {
+                filtered_cloud.points.emplace_back(cloud.points[i]);
+            }
+            filtered_cloud.width = static_cast<uint32_t>(filtered_cloud.points.size());
+            filtered_cloud.height = 1;
+            filtered_cloud.is_dense = cloud.is_dense;
+            update_cloud = &filtered_cloud;
+        }
+
+        if (global_exploration_map_ != nullptr) {
+            global_exploration_map_->updateObservation(*update_cloud, pose, frame, stamp);
+        }
+        if (global_pointcloud_map_ != nullptr) {
+            global_pointcloud_map_->insertCloud(*update_cloud, pose, frame);
+        }
+    }
+
+    bool globalExplorationMapReady() const
+    {
+        return global_exploration_map_ != nullptr &&
+               global_exploration_map_->observedVoxelCount() > 0;
+    }
+
+    GlobalVoxelState getGlobalVoxelState(const rog_map::Vec3f &p) const
+    {
+        if (global_exploration_map_ == nullptr) {
+            return GlobalVoxelState::UNKNOWN;
+        }
+        return global_exploration_map_->getVoxelState(p);
+    }
+
+    bool isGloballyObserved(const rog_map::Vec3f &p) const
+    {
+        return global_exploration_map_ != nullptr &&
+               global_exploration_map_->isObserved(p);
+    }
+
+    bool isGloballyUnknown(const rog_map::Vec3f &p) const
+    {
+        return global_exploration_map_ == nullptr ||
+               global_exploration_map_->isUnknown(p);
+    }
+
+    bool isGlobalFrontier(const rog_map::Vec3f &p) const
+    {
+        return global_exploration_map_ != nullptr &&
+               global_exploration_map_->isFrontier(p);
+    }
+
+    void getGlobalFrontierPoints(rog_map::vec_E<rog_map::Vec3f> &points) const
+    {
+        points.clear();
+        if (global_exploration_map_ == nullptr) {
+            return;
+        }
+        std::vector<Eigen::Vector3d> tmp;
+        global_exploration_map_->getFrontierPoints(tmp);
+        points.reserve(tmp.size());
+        for (const auto &p : tmp) {
+            points.emplace_back(p.x(), p.y(), p.z());
+        }
+    }
+
+    void getGlobalFrontierClusters(const double cluster_radius,
+                                   const int min_cluster_size,
+                                   std::vector<FrontierCluster> &clusters) const
+    {
+        clusters.clear();
+        if (global_exploration_map_ == nullptr) {
+            return;
+        }
+        global_exploration_map_->getFrontierClusters(cluster_radius, min_cluster_size, clusters);
+        if (global_region_grid_ != nullptr) {
+            for (auto &cluster : clusters) {
+                cluster.region_id = global_region_grid_->positionToRegionId(cluster.center);
+            }
+        }
+    }
+
+    void updateGlobalRegions(const std::vector<FrontierCluster> &clusters)
+    {
+        if (global_region_grid_ != nullptr && global_exploration_map_ != nullptr) {
+            global_region_grid_->updateFromGlobalMap(*global_exploration_map_, clusters);
+        }
+    }
+
+    void getActiveGlobalRegions(std::vector<ExplorationRegion> &regions) const
+    {
+        regions.clear();
+        if (global_region_grid_ != nullptr) {
+            global_region_grid_->getActiveRegions(regions);
+        }
+    }
+
+    int positionToGlobalRegionId(const rog_map::Vec3f &p) const
+    {
+        return global_region_grid_ != nullptr ? global_region_grid_->positionToRegionId(p) : -1;
+    }
+
+    bool saveGlobalPointCloudPCD(const std::string &path) const
+    {
+        return global_pointcloud_map_ != nullptr &&
+               global_pointcloud_map_->savePCD(path);
+    }
+
+    int globalPointCloudSize() const
+    {
+        return global_pointcloud_map_ != nullptr ? global_pointcloud_map_->pointCount() : 0;
+    }
+
+    double globalExploredVolume() const
+    {
+        return global_exploration_map_ != nullptr ? global_exploration_map_->exploredVolume() : 0.0;
+    }
+
+    int globalFrontierCount() const
+    {
+        return global_exploration_map_ != nullptr ? global_exploration_map_->frontierCount() : 0;
     }
 
     rog_map::RobotState getRobotState() const
@@ -263,5 +472,13 @@ public:
 
 private:
     rog_map::ROGMapROS::Ptr map_;
+    std::unique_ptr<GlobalExplorationMap> global_exploration_map_;
+    std::unique_ptr<GlobalPointCloudMap> global_pointcloud_map_;
+    std::unique_ptr<GlobalRegionGrid> global_region_grid_;
+    std::mutex global_update_mutex_;
+    double last_global_update_stamp_{-1.0};
+    double global_update_min_interval_{0.0};
+    int global_update_cloud_downsample_step_{1};
+    int global_update_max_points_per_update_{0};
 };
 } // namespace general_planner

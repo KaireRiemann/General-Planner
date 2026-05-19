@@ -120,7 +120,7 @@ namespace fsm {
         ~Fsm();
 
         void updateROGMap(const rog_map::PointCloud &cloud, const super_utils::Pose &pose) {
-            planner_ptr_->updateROGMap(cloud, pose);
+            planner_ptr_->updateROGMapWithGlobal(cloud, pose, general_planner::CloudFrame::WORLD);
         }
 
         void callPlanOnce(const Vec3f &goal) {

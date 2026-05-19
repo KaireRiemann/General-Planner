@@ -499,9 +499,11 @@ namespace general_planner {
                 std::make_unique<traj_opt::DynamicTakeoffSnapTrajOpt>(cfg_.esdf_traj_cfg, ros_ptr_);
         takeoff_optimizer_->setMapManager(map_manager_);
         takeoff_optimizer_->setSafeDistance(cfg_.esdf_safe_distance);
-        exploration_frontend_ = std::make_unique<ExplorationFrontend>(
-                makeExplorationFrontendConfig(), map_manager_, astar_ptr_);
-        exploration_runtime_manager_ = std::make_unique<ExplorationRuntimeManager>(cfg_);
+        map_manager_->enableGlobalExplorationMap(makeGlobalExplorationMapConfig());
+        map_manager_->enableGlobalPointCloudMap(makeGlobalPointCloudMapConfig());
+        map_manager_->enableGlobalRegionGrid(makeGlobalRegionGridConfig());
+        exploration_manager_ = std::make_unique<ExplorationManager>(
+                makeExplorationConfig(), map_manager_, astar_ptr_, ros_ptr_);
         const auto ellipsoid_optimizer_config =
                 optimization_utils::EllipsoidOptimizer::makeConfig(cfg_.ellipsoid_optimizer,
                                                                    cfg_.ellipsoid_optimizer_fallback);
@@ -987,6 +989,9 @@ namespace general_planner {
     RET_CODE GeneralPlanner::PlanExplorationFromRest(const bool &new_task) {
         TimeConsuming total_t("PlanExplorationFromRest", false);
         ExplorationGoal goal;
+        StatePVAJ head_state = StatePVAJ::Zero();
+        double current_yaw = 0.0;
+        double remaining = 0.0;
         {
             std::lock_guard<std::mutex> guard(replan_lock_);
             latest_replan.reset();
@@ -1000,61 +1005,52 @@ namespace general_planner {
                 ros_ptr_->warn(" -- [Exploration] PlanFromRest failed: map is not ready.");
                 return FAILED;
             }
-            if (exploration_frontend_ == nullptr) {
+            if (exploration_manager_ == nullptr) {
                 latest_replan.setRetCode(GENERAL_RET_CODE::GENERAL_UNDEFINED);
-                ros_ptr_->warn(" -- [Exploration] PlanFromRest failed: frontend is not initialized.");
-                return FAILED;
-            }
-            if (exploration_runtime_manager_ == nullptr) {
-                latest_replan.setRetCode(GENERAL_RET_CODE::GENERAL_UNDEFINED);
-                ros_ptr_->warn(" -- [Exploration] PlanFromRest failed: runtime manager is not initialized.");
+                ros_ptr_->warn(" -- [Exploration] PlanFromRest failed: manager is not initialized.");
                 return FAILED;
             }
             if (new_task) {
-                exploration_frontend_->reset();
-                exploration_runtime_manager_->reset();
+                exploration_manager_->reset();
+                latest_exploration_goal_ = ExplorationGoal{};
             }
-            exploration_runtime_manager_->onSelectingGoal();
+            head_state = makeTaskHeadState(true);
+            current_yaw = robot_state_.yaw;
+            remaining = getCommittedTrajectoryRemainingDuration();
+        }
 
-            const StatePVAJ head_state = makeTaskHeadState(true);
-            if (!exploration_frontend_->planNextGoal(head_state, robot_state_.yaw, goal)) {
-                latest_replan.setGoal(robot_state_.p, robot_state_.yaw, robot_state_);
-                if (exploration_frontend_->isExplorationFinished()) {
-                    exploration_runtime_manager_->onFinished(goal);
+        if (!exploration_manager_->planNextGoal(head_state, current_yaw, remaining, goal)) {
+            std::lock_guard<std::mutex> guard(replan_lock_);
+            latest_replan.setGoal(robot_state_.p, robot_state_.yaw, robot_state_);
+            if (exploration_manager_->isExplorationFinished()) {
                     latest_replan.setRetCode(GENERAL_RET_CODE::GENERAL_EXPLORATION_FINISH);
                     ros_ptr_->info(" -- [Exploration] Exploration finished: {}.", goal.reason);
                     time_consuming_[TOTAL_REPLAN] = total_t.stop();
                     return FINISH;
-                }
-                exploration_runtime_manager_->onTemporaryFailure(goal);
-                latest_replan.setRetCode(GENERAL_RET_CODE::GENERAL_UNDEFINED);
-                ros_ptr_->warn(" -- [Exploration] Failed to select goal: {}.", goal.reason);
-                time_consuming_[TOTAL_REPLAN] = total_t.stop();
-                return FAILED;
             }
-            exploration_runtime_manager_->onGoalSelected(goal);
+            latest_replan.setRetCode(GENERAL_RET_CODE::GENERAL_UNDEFINED);
+            ros_ptr_->warn(" -- [Exploration] Failed to select goal: {}.", goal.reason);
+            time_consuming_[TOTAL_REPLAN] = total_t.stop();
+            return FAILED;
+        }
+
+        {
+            std::lock_guard<std::mutex> guard(replan_lock_);
+            latest_exploration_goal_ = goal;
         }
 
         const RET_CODE ret = PlanFromRest(goal.position, goal.yaw, true);
-        {
-            std::lock_guard<std::mutex> guard(replan_lock_);
-            if (exploration_runtime_manager_ != nullptr) {
-                if (ret == SUCCESS || ret == FINISH || ret == NO_NEED) {
-                    exploration_runtime_manager_->onCommitted(goal);
-                } else {
-                    exploration_runtime_manager_->onTemporaryFailure(goal);
-                }
-            }
-        }
         time_consuming_[TOTAL_REPLAN] = total_t.stop();
         return ret;
     }
 
     RET_CODE GeneralPlanner::ReplanExplorationOnce(const bool &new_task) {
         TimeConsuming total_t("ReplanExplorationOnce", false);
-        ExplorationGoal selected_goal;
-        bool goal_switched = new_task;
-        bool selected_goal_ready = false;
+        ExplorationGoal goal;
+        ExplorationGoal previous_goal;
+        StatePVAJ head_state = StatePVAJ::Zero();
+        double current_yaw = 0.0;
+        double remaining = 0.0;
         {
             std::lock_guard<std::mutex> guard(replan_lock_);
             latest_replan.reset();
@@ -1068,93 +1064,56 @@ namespace general_planner {
                 ros_ptr_->warn(" -- [Exploration] Replan failed: map is not ready.");
                 return FAILED;
             }
-            if (exploration_frontend_ == nullptr) {
+            if (exploration_manager_ == nullptr) {
                 latest_replan.setRetCode(GENERAL_RET_CODE::GENERAL_UNDEFINED);
-                ros_ptr_->warn(" -- [Exploration] Replan failed: frontend is not initialized.");
-                return FAILED;
-            }
-            if (exploration_runtime_manager_ == nullptr) {
-                latest_replan.setRetCode(GENERAL_RET_CODE::GENERAL_UNDEFINED);
-                ros_ptr_->warn(" -- [Exploration] Replan failed: runtime manager is not initialized.");
+                ros_ptr_->warn(" -- [Exploration] Replan failed: manager is not initialized.");
                 return FAILED;
             }
             if (new_task) {
-                exploration_frontend_->reset();
-                exploration_runtime_manager_->reset();
+                exploration_manager_->reset();
+                latest_exploration_goal_ = ExplorationGoal{};
             }
-            exploration_runtime_manager_->onSelectingGoal();
-
-            const double remaining = getCommittedTrajectoryRemainingDuration();
-            ExplorationGoal candidate;
-            const StatePVAJ head_state = makeTaskHeadState(false);
-            if (!exploration_frontend_->planNextGoal(head_state, robot_state_.yaw, candidate)) {
-                latest_replan.setGoal(robot_state_.p, robot_state_.yaw, robot_state_);
-                if (exploration_frontend_->isExplorationFinished()) {
-                    exploration_runtime_manager_->onFinished(candidate);
-                    latest_replan.setRetCode(GENERAL_RET_CODE::GENERAL_EXPLORATION_FINISH);
-                    ros_ptr_->info(" -- [Exploration] Exploration finished: {}.", candidate.reason);
-                    time_consuming_[TOTAL_REPLAN] = total_t.stop();
-                    return FINISH;
-                }
-                if (exploration_runtime_manager_->shouldReuseLatestGoal(robot_state_.p, remaining, new_task) &&
-                    exploration_runtime_manager_->getLatestGoal(selected_goal)) {
-                    goal_switched = false;
-                    selected_goal_ready = true;
-                    exploration_runtime_manager_->onKeepCurrentGoal();
-                    if (cfg_.exploration_print_log) {
-                        ros_ptr_->info(" -- [Exploration] Reuse current goal after temporary frontend failure: reason={}, remaining={:.3f}.",
-                                       candidate.reason,
-                                       remaining);
-                    }
-                } else {
-                    exploration_runtime_manager_->onTemporaryFailure(candidate);
-                    latest_replan.setRetCode(GENERAL_RET_CODE::GENERAL_UNDEFINED);
-                    ros_ptr_->warn(" -- [Exploration] Failed to select replan goal: {}.", candidate.reason);
-                    time_consuming_[TOTAL_REPLAN] = total_t.stop();
-                    return FAILED;
-                }
-            } else {
-                if (exploration_runtime_manager_->shouldKeepCurrentGoal(candidate, robot_state_.p, remaining, new_task) &&
-                    exploration_runtime_manager_->getLatestGoal(selected_goal)) {
-                    goal_switched = false;
-                    exploration_runtime_manager_->onKeepCurrentGoal();
-                    if (cfg_.exploration_print_log) {
-                        ros_ptr_->info(" -- [Exploration] Keep current goal: remaining={:.3f}, current_score={:.3f}, candidate_score={:.3f}.",
-                                       remaining,
-                                       selected_goal.score,
-                                       candidate.score);
-                    }
-                } else {
-                    selected_goal = candidate;
-                    goal_switched = true;
-                    exploration_runtime_manager_->onGoalSelected(candidate);
-                }
-                selected_goal_ready = true;
-            }
+            previous_goal = latest_exploration_goal_;
+            head_state = makeTaskHeadState(false);
+            current_yaw = robot_state_.yaw;
+            remaining = getCommittedTrajectoryRemainingDuration();
         }
 
-        if (!selected_goal_ready) {
+        if (!exploration_manager_->planNextGoal(head_state, current_yaw, remaining, goal)) {
+            std::lock_guard<std::mutex> guard(replan_lock_);
+            latest_replan.setGoal(robot_state_.p, robot_state_.yaw, robot_state_);
+            if (exploration_manager_->isExplorationFinished()) {
+                latest_replan.setRetCode(GENERAL_RET_CODE::GENERAL_EXPLORATION_FINISH);
+                ros_ptr_->info(" -- [Exploration] Exploration finished: {}.", goal.reason);
+                time_consuming_[TOTAL_REPLAN] = total_t.stop();
+                return FINISH;
+            }
+            latest_replan.setRetCode(GENERAL_RET_CODE::GENERAL_UNDEFINED);
+            ros_ptr_->warn(" -- [Exploration] Failed to select replan goal: {}.", goal.reason);
+            time_consuming_[TOTAL_REPLAN] = total_t.stop();
             return FAILED;
         }
-        const RET_CODE ret = ReplanOnce(selected_goal.position, selected_goal.yaw, goal_switched);
+
+        const bool goal_switched =
+                !previous_goal.valid ||
+                (goal.position - previous_goal.position).norm() >
+                std::max(0.0, cfg_.exploration_goal_reached_distance) ||
+                std::abs(std::atan2(std::sin(goal.yaw - previous_goal.yaw),
+                                    std::cos(goal.yaw - previous_goal.yaw))) > 0.2;
         {
             std::lock_guard<std::mutex> guard(replan_lock_);
-            if (exploration_runtime_manager_ != nullptr) {
-                if (ret == SUCCESS || ret == FINISH || ret == NO_NEED) {
-                    exploration_runtime_manager_->onCommitted(selected_goal);
-                } else {
-                    exploration_runtime_manager_->onTemporaryFailure(selected_goal);
-                }
-            }
+            latest_exploration_goal_ = goal;
         }
+
+        const RET_CODE ret = ReplanOnce(goal.position, goal.yaw, goal_switched);
         time_consuming_[TOTAL_REPLAN] = total_t.stop();
         return ret;
     }
 
     bool GeneralPlanner::getLatestExplorationGoal(ExplorationGoal &goal) const {
         std::lock_guard<std::mutex> guard(replan_lock_);
-        return exploration_runtime_manager_ != nullptr &&
-               exploration_runtime_manager_->getLatestGoal(goal);
+        goal = latest_exploration_goal_;
+        return latest_exploration_goal_.valid;
     }
 
     StatePVAJ GeneralPlanner::makeTaskHeadState(const bool &from_rest) {
@@ -4641,33 +4600,106 @@ namespace general_planner {
         return frontend_cfg;
     }
 
-    ExplorationFrontend::Config GeneralPlanner::makeExplorationFrontendConfig() const {
-        ExplorationFrontend::Config frontend_cfg;
-        frontend_cfg.enable = cfg_.exploration_enable;
-        frontend_cfg.print_log = cfg_.exploration_print_log;
-        frontend_cfg.map_resolution = std::max(0.2, cfg_.resolution);
-        frontend_cfg.frontier_search_radius = cfg_.exploration_frontier_search_radius;
-        frontend_cfg.frontier_cluster_radius = cfg_.exploration_frontier_cluster_radius;
-        frontend_cfg.min_frontier_cluster_size = cfg_.exploration_min_frontier_cluster_size;
-        frontend_cfg.viewpoint_min_distance = cfg_.exploration_viewpoint_min_distance;
-        frontend_cfg.viewpoint_max_distance = cfg_.exploration_viewpoint_max_distance;
-        frontend_cfg.viewpoint_height_offset = cfg_.exploration_viewpoint_height_offset;
-        frontend_cfg.viewpoint_safe_distance = cfg_.exploration_viewpoint_safe_distance;
-        frontend_cfg.viewpoint_yaw_sample_num = cfg_.exploration_viewpoint_yaw_sample_num;
-        frontend_cfg.viewpoint_radius_sample_num = cfg_.exploration_viewpoint_radius_sample_num;
-        frontend_cfg.max_candidate_num = cfg_.exploration_max_candidate_num;
-        frontend_cfg.weight_travel = cfg_.exploration_weight_travel;
-        frontend_cfg.weight_yaw = cfg_.exploration_weight_yaw;
-        frontend_cfg.weight_curvature = cfg_.exploration_weight_curvature;
-        frontend_cfg.weight_info_gain = cfg_.exploration_weight_info_gain;
-        frontend_cfg.weight_unknown_risk = cfg_.exploration_weight_unknown_risk;
-        frontend_cfg.min_information_gain = cfg_.exploration_min_information_gain;
-        frontend_cfg.goal_switch_min_score_improvement = cfg_.exploration_goal_switch_min_score_improvement;
-        frontend_cfg.goal_reached_distance = cfg_.exploration_goal_reached_distance;
-        frontend_cfg.unknown_as_occupied_for_motion = cfg_.exploration_unknown_as_occupied_for_motion;
-        frontend_cfg.require_line_free_to_frontier = cfg_.exploration_require_line_free_to_frontier;
-        frontend_cfg.use_astar_cost = cfg_.exploration_use_astar_cost;
-        return frontend_cfg;
+    ExplorationConfig GeneralPlanner::makeExplorationConfig() const {
+        ExplorationConfig exploration_cfg;
+        exploration_cfg.enable = cfg_.exploration_enable;
+        exploration_cfg.print_log = cfg_.exploration_print_log;
+        exploration_cfg.frontier_search_radius = cfg_.exploration_frontier_search_radius;
+        exploration_cfg.use_global_frontiers = cfg_.exploration_use_global_frontiers;
+        exploration_cfg.frontier_cluster_radius = cfg_.exploration_frontier_cluster_radius;
+        exploration_cfg.min_frontier_cluster_size = cfg_.exploration_min_frontier_cluster_size;
+        exploration_cfg.max_frontiers_per_cluster = cfg_.exploration_max_frontiers_per_cluster;
+        exploration_cfg.max_cluster_extent = cfg_.exploration_max_cluster_extent;
+        exploration_cfg.frontier_downsample_step = cfg_.exploration_frontier_downsample_step;
+        exploration_cfg.viewpoint_min_distance = cfg_.exploration_viewpoint_min_distance;
+        exploration_cfg.viewpoint_max_distance = cfg_.exploration_viewpoint_max_distance;
+        exploration_cfg.viewpoint_radius_num = cfg_.exploration_viewpoint_radius_sample_num;
+        exploration_cfg.viewpoint_yaw_num = cfg_.exploration_viewpoint_yaw_sample_num;
+        exploration_cfg.viewpoint_height_offset = cfg_.exploration_viewpoint_height_offset;
+        exploration_cfg.viewpoint_safe_distance = cfg_.exploration_viewpoint_safe_distance;
+        exploration_cfg.max_candidate_num = cfg_.exploration_max_candidate_num;
+        exploration_cfg.use_fov_gain = cfg_.exploration_use_fov_gain;
+        exploration_cfg.sensor_range = cfg_.exploration_sensor_range;
+        exploration_cfg.sensor_horizontal_fov_deg = cfg_.exploration_sensor_horizontal_fov_deg;
+        exploration_cfg.sensor_vertical_fov_deg = cfg_.exploration_sensor_vertical_fov_deg;
+        exploration_cfg.visibility_sample_max_points = cfg_.exploration_visibility_sample_max_points;
+        exploration_cfg.line_of_sight_sample_step = cfg_.exploration_line_of_sight_sample_step;
+        exploration_cfg.require_line_free_to_frontier = cfg_.exploration_require_line_free_to_frontier;
+        exploration_cfg.info_gain_cap = cfg_.exploration_info_gain_cap;
+        exploration_cfg.min_information_gain = cfg_.exploration_min_information_gain;
+        exploration_cfg.travel_cost_norm = cfg_.exploration_travel_cost_norm;
+        exploration_cfg.weight_gain = cfg_.exploration_weight_gain;
+        exploration_cfg.weight_travel = cfg_.exploration_weight_travel;
+        exploration_cfg.weight_yaw = cfg_.exploration_weight_yaw;
+        exploration_cfg.weight_curvature = cfg_.exploration_weight_curvature;
+        exploration_cfg.weight_switch = cfg_.exploration_weight_switch;
+        exploration_cfg.weight_reachability = cfg_.exploration_weight_reachability;
+        exploration_cfg.use_astar_cost = cfg_.exploration_use_astar_cost;
+        exploration_cfg.max_astar_candidate_num = cfg_.exploration_max_astar_candidate_num;
+        exploration_cfg.astar_timeout = cfg_.exploration_astar_timeout;
+        exploration_cfg.astar_search_horizon = cfg_.exploration_astar_search_horizon;
+        exploration_cfg.min_switch_distance = cfg_.exploration_min_switch_distance;
+        exploration_cfg.switch_score_margin = cfg_.exploration_switch_score_margin;
+        exploration_cfg.switch_gain_margin = cfg_.exploration_switch_gain_margin;
+        exploration_cfg.keep_goal_min_remaining_time = cfg_.exploration_keep_goal_min_remaining_time;
+        exploration_cfg.goal_reached_distance = cfg_.exploration_goal_reached_distance;
+        exploration_cfg.min_goal_distance = cfg_.exploration_min_goal_distance;
+        exploration_cfg.failed_candidate_blacklist_time =
+                cfg_.exploration_failed_candidate_blacklist_time;
+        exploration_cfg.failed_candidate_blacklist_radius =
+                cfg_.exploration_failed_candidate_blacklist_radius;
+        exploration_cfg.coverage_guide_enable = cfg_.coverage_guide_enable;
+        exploration_cfg.coverage_max_active_regions = cfg_.coverage_guide_max_active_regions;
+        exploration_cfg.coverage_weight_distance = cfg_.coverage_guide_weight_distance;
+        exploration_cfg.coverage_weight_height = cfg_.coverage_guide_weight_height;
+        exploration_cfg.coverage_weight_gain = cfg_.coverage_guide_weight_gain;
+        exploration_cfg.coverage_weight_revisit = cfg_.coverage_guide_weight_revisit;
+        exploration_cfg.coverage_weight_switch_region = cfg_.coverage_guide_weight_switch_region;
+        exploration_cfg.coverage_max_route_length = cfg_.coverage_guide_max_route_length;
+        return exploration_cfg;
+    }
+
+    GlobalExplorationMapConfig GeneralPlanner::makeGlobalExplorationMapConfig() const {
+        GlobalExplorationMapConfig map_cfg;
+        map_cfg.enable = cfg_.exploration_enable && cfg_.global_exploration_map_enable;
+        map_cfg.resolution = cfg_.global_exploration_map_resolution;
+        map_cfg.raycast_step = cfg_.global_exploration_map_raycast_step;
+        map_cfg.max_range = cfg_.global_exploration_map_max_range;
+        map_cfg.min_range = cfg_.global_exploration_map_min_range;
+        if (cfg_.global_exploration_map_bbox_min.size() == 3) {
+            map_cfg.bbox_min = Eigen::Vector3d(cfg_.global_exploration_map_bbox_min[0],
+                                               cfg_.global_exploration_map_bbox_min[1],
+                                               cfg_.global_exploration_map_bbox_min[2]);
+        }
+        if (cfg_.global_exploration_map_bbox_max.size() == 3) {
+            map_cfg.bbox_max = Eigen::Vector3d(cfg_.global_exploration_map_bbox_max[0],
+                                               cfg_.global_exploration_map_bbox_max[1],
+                                               cfg_.global_exploration_map_bbox_max[2]);
+        }
+        map_cfg.occupied_hit_threshold = cfg_.global_exploration_map_occupied_hit_threshold;
+        map_cfg.free_miss_threshold = cfg_.global_exploration_map_free_miss_threshold;
+        map_cfg.update_min_interval = cfg_.global_exploration_map_update_min_interval;
+        map_cfg.cloud_downsample_step = cfg_.global_exploration_map_cloud_downsample_step;
+        map_cfg.max_points_per_update = cfg_.global_exploration_map_max_points_per_update;
+        return map_cfg;
+    }
+
+    GlobalPointCloudMapConfig GeneralPlanner::makeGlobalPointCloudMapConfig() const {
+        GlobalPointCloudMapConfig map_cfg;
+        map_cfg.enable = cfg_.exploration_enable && cfg_.global_pointcloud_map_enable;
+        map_cfg.voxel_size = cfg_.global_pointcloud_map_voxel_size;
+        map_cfg.save_path = cfg_.global_pointcloud_map_save_path;
+        return map_cfg;
+    }
+
+    GlobalRegionGridConfig GeneralPlanner::makeGlobalRegionGridConfig() const {
+        GlobalRegionGridConfig grid_cfg;
+        grid_cfg.enable = cfg_.exploration_enable && cfg_.global_region_grid_enable;
+        grid_cfg.region_size_xy = cfg_.global_region_grid_region_size_xy;
+        grid_cfg.region_size_z = cfg_.global_region_grid_region_size_z;
+        grid_cfg.min_frontier_count = cfg_.global_region_grid_min_frontier_count;
+        grid_cfg.explored_ratio_threshold = cfg_.global_region_grid_explored_ratio_threshold;
+        return grid_cfg;
     }
 
     RET_CODE GeneralPlanner::optimizePerchingTask(const traj_opt::PerchingSurfaceState &surface,
