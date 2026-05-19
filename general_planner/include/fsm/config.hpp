@@ -46,7 +46,8 @@ namespace fsm {
         EXPLORATION = 3,
         DYNAMIC_TAKEOFF = 4,
         TRACKING_PERCHING = 5,
-        FULL_CYCLE = 6
+        FULL_CYCLE = 6,
+        SE3_AGGRESSIVE = 7
     };
 
     inline std::string normalizeTaskMode(std::string mode) {
@@ -65,6 +66,10 @@ namespace fsm {
         if (mode == "takeoff" || mode == "dynamic_takeoff" ||
             mode == "dynamic-takeoff" || mode == "unperching") {
             return "dynamic_takeoff";
+        }
+        if (mode == "se3" || mode == "se3_aggressive" ||
+            mode == "aggressive" || mode == "racing") {
+            return "se3_aggressive";
         }
         if (mode == "tracking_perching" || mode == "tracking-perching" ||
             mode == "track_perch" || mode == "track-perch") {
@@ -99,6 +104,9 @@ namespace fsm {
         }
         if (normalized == "exploration") {
             return TaskMode::EXPLORATION;
+        }
+        if (normalized == "se3_aggressive") {
+            return TaskMode::SE3_AGGRESSIVE;
         }
         return TaskMode::STATE_TO_STATE;
     }

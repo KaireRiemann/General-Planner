@@ -141,6 +141,17 @@ target_link_libraries(task_target_source
         general_planner_core        ${THIRD_PARTY}
 )
 
+add_executable(se3_waypoint_demo
+        Apps/se3_waypoint_demo.cpp
+)
+add_dependencies(se3_waypoint_demo
+        ${${PROJECT_NAME}_EXPORTED_TARGETS}
+        ${catkin_EXPORTED_TARGETS}
+)
+target_link_libraries(se3_waypoint_demo
+        general_planner_core        ${THIRD_PARTY}
+)
+
 add_executable(tracking_target_relay
         Apps/tracking_target_relay.cpp
 )

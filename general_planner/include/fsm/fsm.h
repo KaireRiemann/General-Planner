@@ -190,6 +190,8 @@ namespace fsm {
 
         bool dynamicTakeoffMode() const;
 
+        bool se3AggressiveMode() const;
+
         bool trackingPerchingMode() const;
 
         bool fullCycleMode() const;

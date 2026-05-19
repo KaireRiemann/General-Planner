@@ -8,6 +8,7 @@
 #include "general_core/task/composites/tracking_perching_task.hpp"
 #include "general_core/task/skills/dynamic_takeoff_skill.hpp"
 #include "general_core/task/skills/perching_skill.hpp"
+#include "general_core/task/skills/se3_aggressive_skill.hpp"
 #include "general_core/task/skills/state_to_state_skill.hpp"
 #include "general_core/task/skills/tracking_skill.hpp"
 
@@ -30,6 +31,10 @@ std::string TaskFactory::normalizeMode(std::string mode) {
     if (mode == "takeoff" || mode == "dynamic_takeoff" ||
         mode == "dynamic-takeoff" || mode == "unperching") {
         return "dynamic_takeoff";
+    }
+    if (mode == "se3" || mode == "se3_aggressive" ||
+        mode == "aggressive" || mode == "racing") {
+        return "se3_aggressive";
     }
     if (mode == "tracking_perching" || mode == "tracking-perching" ||
         mode == "track_perch" || mode == "track-perch") {
@@ -54,6 +59,8 @@ std::unique_ptr<TaskPrimitive> TaskFactory::create(const std::string &mode_strin
         task = std::make_unique<PerchingSkill>(planner);
     } else if (mode == "dynamic_takeoff") {
         task = std::make_unique<DynamicTakeoffSkill>(planner);
+    } else if (mode == "se3_aggressive") {
+        task = std::make_unique<SE3AggressiveSkill>(planner);
     } else if (mode == "tracking_perching") {
         task = std::make_unique<TrackingPerchingTask>(planner);
     } else if (mode == "full_cycle") {

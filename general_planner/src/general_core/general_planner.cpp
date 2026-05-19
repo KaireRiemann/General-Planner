@@ -514,6 +514,8 @@ namespace general_planner {
                                                       cfg_.iris_iter_num,
                                                       ellipsoid_optimizer_config);
         cg_ptr_->SetLineNeighborList(cfg_.seed_line_neighbour);
+        se3_aggressive_manager_ =
+                std::make_unique<SE3AggressiveManager>(cfg_, ros_ptr_, map_manager_, astar_ptr_, cg_ptr_);
 
 
         time_consuming_.resize(8);
@@ -934,6 +936,54 @@ namespace general_planner {
         return FAILED;
     }
 
+    RET_CODE GeneralPlanner::PlanSE3AggressiveFromRest(const Vec3f &goal_p,
+                                                       double goal_yaw,
+                                                       bool new_task) {
+        (void)new_task;
+        std::lock_guard<std::mutex> guard(replan_lock_);
+        latest_replan.reset();
+        if (!robot_state_.rcv) {
+            latest_replan.setGoal(goal_p, goal_yaw, robot_state_);
+            latest_replan.setRetCode(GENERAL_RET_CODE::GENERAL_NO_ODOM);
+            ros_ptr_->warn(" -- [SE3Aggressive] PlanFromRest failed: no odom.");
+            return FAILED;
+        }
+        gi_.goal_valid = true;
+        gi_.goal_p = goal_p;
+        gi_.goal_yaw = goal_yaw;
+        gi_.new_goal = true;
+        latest_replan.setGoal(goal_p, goal_yaw, robot_state_);
+        ros_ptr_->vizGoalPath(vec_Vec3f{goal_p, robot_state_.p});
+        const RET_CODE ret = optimizeSE3AggressiveTask(goal_p, goal_yaw, true);
+        latest_replan.setRetCode((ret == SUCCESS || ret == FINISH) ? GENERAL_RET_CODE::GENERAL_SUCCESS_NO_BACKUP
+                                                                   : GENERAL_RET_CODE::GENERAL_UNDEFINED);
+        return ret;
+    }
+
+    RET_CODE GeneralPlanner::ReplanSE3AggressiveOnce(const Vec3f &goal_p,
+                                                     double goal_yaw,
+                                                     bool new_task) {
+        (void)new_task;
+        std::lock_guard<std::mutex> guard(replan_lock_);
+        latest_replan.reset();
+        if (!robot_state_.rcv) {
+            latest_replan.setGoal(goal_p, goal_yaw, robot_state_);
+            latest_replan.setRetCode(GENERAL_RET_CODE::GENERAL_NO_ODOM);
+            ros_ptr_->warn(" -- [SE3Aggressive] Replan failed: no odom.");
+            return FAILED;
+        }
+        gi_.goal_valid = true;
+        gi_.goal_p = goal_p;
+        gi_.goal_yaw = goal_yaw;
+        gi_.new_goal = true;
+        latest_replan.setGoal(goal_p, goal_yaw, robot_state_);
+        ros_ptr_->vizGoalPath(vec_Vec3f{goal_p, robot_state_.p});
+        const RET_CODE ret = optimizeSE3AggressiveTask(goal_p, goal_yaw, false);
+        latest_replan.setRetCode((ret == SUCCESS || ret == FINISH) ? GENERAL_RET_CODE::GENERAL_SUCCESS_NO_BACKUP
+                                                                   : GENERAL_RET_CODE::GENERAL_UNDEFINED);
+        return ret;
+    }
+
     RET_CODE GeneralPlanner::PlanExplorationFromRest(const bool &new_task) {
         TimeConsuming total_t("PlanExplorationFromRest", false);
         ExplorationGoal goal;
@@ -1202,6 +1252,65 @@ namespace general_planner {
             takeoff_runtime_manager_->updateStatusAfterCommit();
         }
         return committed;
+    }
+
+    bool GeneralPlanner::commitSE3AggressiveTrajectory(const Trajectory &pos_traj,
+                                                       const std::string &traj_ns) {
+        static bool warning_printed = false;
+        if (!warning_printed) {
+            ros_ptr_->warn("SE3 aggressive trajectory requires flatness-aware controller for reliable execution.");
+            warning_printed = true;
+        }
+        const bool fix_terminal_yaw = cfg_.se3_use_yaw && std::isfinite(gi_.goal_yaw);
+        return commitTaskTrajectory(pos_traj, gi_.goal_yaw, fix_terminal_yaw, traj_ns);
+    }
+
+    RET_CODE GeneralPlanner::optimizeSE3AggressiveTask(const Vec3f &goal_p,
+                                                       double goal_yaw,
+                                                       const bool &from_rest) {
+        if (!se3_aggressive_manager_) {
+            ros_ptr_->warn(" -- [SE3Aggressive] Manager is not initialized.");
+            return FAILED;
+        }
+
+        StatePVAJ head_state = makeTaskHeadState(from_rest);
+        if (from_rest && map_manager_) {
+            Vec3f shifted_start = head_state.col(0);
+            if (map_manager_->getNearestCellNot(GridType::OCCUPIED,
+                                                head_state.col(0),
+                                                shifted_start,
+                                                3.0)) {
+                head_state.col(0) = shifted_start;
+            }
+        }
+
+        StatePVAJ tail_state = StatePVAJ::Zero();
+        tail_state.col(0) = goal_p;
+        if (cfg_.goal_vel_en && !from_rest) {
+            tail_state.col(1).setZero();
+        }
+
+        const double finish_thresh = std::max(0.08, 2.0 * cfg_.resolution);
+        if ((goal_p - robot_state_.p).norm() < finish_thresh) {
+            return FINISH;
+        }
+
+        gi_.goal_p = goal_p;
+        gi_.goal_yaw = goal_yaw;
+        gi_.new_goal = false;
+
+        Trajectory pos_traj;
+        std::string reason;
+        if (!se3_aggressive_manager_->plan(head_state, tail_state, pos_traj, &reason, goal_yaw, 0.0)) {
+            ros_ptr_->warn(" -- [SE3Aggressive] Plan failed: {}.", reason);
+            return FAILED;
+        }
+
+        if (!commitSE3AggressiveTrajectory(pos_traj, "se3_aggressive")) {
+            ros_ptr_->warn(" -- [SE3Aggressive] Commit failed.");
+            return FAILED;
+        }
+        return SUCCESS;
     }
 
     bool GeneralPlanner::buildTrackingTargetYawTrajectory(const Trajectory &pos_traj,

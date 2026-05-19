@@ -86,7 +86,7 @@ namespace fsm {
             if (!active_task_) {
                 return;
             }
-            if (state2stateMode()) {
+            if (state2stateMode() || se3AggressiveMode()) {
                 planner_ptr_->getMapManager()->getNearestInfCellNot(GridType::OCCUPIED, gi_.goal_p, gi_.goal_p, 3.0);
             }
             if (trackingMode() && !trackingPerchingPerchingActive()) {
@@ -201,7 +201,7 @@ namespace fsm {
                 break;
             }
             case GENERATE_TRAJ: {
-                if (state2stateMode() && closeToGoal(0.1)) {
+                if ((state2stateMode() || se3AggressiveMode()) && closeToGoal(0.1)) {
                     ChangeState("MainFsmCallback", WAIT_GOAL);
                     gi_.new_goal = false;
                     finish_plan = true;
@@ -229,7 +229,7 @@ namespace fsm {
                         return;
                     }
                 }
-                if (state2stateMode() && !planner_ptr_->goalValid()) {
+                if ((state2stateMode() || se3AggressiveMode()) && !planner_ptr_->goalValid()) {
                     cout << YELLOW << " -- [Fsm] Goal is invalid, skip this goal." << RESET << endl;
                     ChangeState("MainFsmCallback", WAIT_GOAL);
                     return;
@@ -316,6 +316,10 @@ namespace fsm {
         return cfg_.task_mode == TaskMode::DYNAMIC_TAKEOFF;
     }
 
+    bool Fsm::se3AggressiveMode() const {
+        return cfg_.task_mode == TaskMode::SE3_AGGRESSIVE;
+    }
+
     bool Fsm::trackingPerchingMode() const {
         return cfg_.task_mode == TaskMode::TRACKING_PERCHING;
     }
@@ -350,7 +354,7 @@ namespace fsm {
         ctx.ros_ptr = ros_ptr_;
         ctx.new_task = task_new_;
         ctx.emergency = machine_state_ == EMER_STOP;
-        if (gi_.new_goal || state2stateMode()) {
+        if (gi_.new_goal || state2stateMode() || se3AggressiveMode()) {
             ctx.state_goal_p = gi_.goal_p;
             ctx.state_goal_yaw = gi_.goal_yaw;
             ctx.state_goal_new = gi_.new_goal;
@@ -534,6 +538,9 @@ namespace fsm {
         if (state2stateMode()) {
             return gi_.new_goal;
         }
+        if (se3AggressiveMode()) {
+            return gi_.new_goal;
+        }
         if (trackingMode()) {
             if (trackingPerchingPerchingActive()) {
                 return false;
@@ -567,6 +574,9 @@ namespace fsm {
 
     bool Fsm::shouldGenerateAfterTrajFinish() {
         if (state2stateMode()) {
+            return !closeToGoal(0.1);
+        }
+        if (se3AggressiveMode()) {
             return !closeToGoal(0.1);
         }
         if (explorationMode()) {

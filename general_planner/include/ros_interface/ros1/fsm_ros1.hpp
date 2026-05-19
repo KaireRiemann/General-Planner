@@ -177,6 +177,8 @@ namespace fsm {
                                  : "full_cycle";
             } else if (explorationMode()) {
                 task_phase = "exploration";
+            } else if (se3AggressiveMode()) {
+                task_phase = "se3_aggressive";
             } else if (trackingPerchingPerchingActive()) {
                 task_phase = "tracking_perching_perching";
             } else if (trackingMode()) {
@@ -857,7 +859,7 @@ namespace fsm {
                          << cfg_.tracking_target_prediction_topic << RESET << endl;
                 }
                 cmd_cnt++;
-            } else if (state2stateMode() && cfg_.click_goal_en) {
+            } else if ((state2stateMode() || se3AggressiveMode()) && cfg_.click_goal_en) {
                 goal_sub_ = nh_.subscribe(cfg_.click_goal_topic, 1, &FsmRos1::goalCallback, this);
                 cout << YELLOW << " -- [Fsm] CLICKGOAL ENABLE." << RESET << endl;
                 cmd_cnt++;
