@@ -502,6 +502,8 @@ namespace general_planner {
         map_manager_->enableGlobalExplorationMap(makeGlobalExplorationMapConfig());
         map_manager_->enableGlobalPointCloudMap(makeGlobalPointCloudMapConfig());
         map_manager_->enableGlobalRegionGrid(makeGlobalRegionGridConfig());
+        exploration_manager_ = std::make_unique<exploration::ExplorationManager>(
+                makeExplorationConfig(), map_manager_, astar_ptr_, ros_ptr_);
         const auto ellipsoid_optimizer_config =
                 optimization_utils::EllipsoidOptimizer::makeConfig(cfg_.ellipsoid_optimizer,
                                                                    cfg_.ellipsoid_optimizer_fallback);
@@ -934,6 +936,120 @@ namespace general_planner {
         ros_ptr_->warn(" -- [GeneralPlanner] in [ReplanOnce]: generateBackupTrajectory return {}, replan Failed return",
                        RET_CODE_STR[back_ret_code].c_str());
         return FAILED;
+    }
+
+    RET_CODE GeneralPlanner::PlanExplorationFromRest(const bool &new_task) {
+        exploration::ExplorationGoal goal;
+        rog_map::RobotState robot;
+        {
+            std::lock_guard<std::mutex> guard(replan_lock_);
+            latest_replan.reset();
+            robot_state_ = map_manager_->getRobotState();
+            robot = robot_state_;
+            if (!robot.rcv) {
+                latest_replan.setRetCode(GENERAL_RET_CODE::GENERAL_NO_ODOM);
+                ros_ptr_->warn(" -- [Exploration] PlanFromRest failed: no odom.");
+                return FAILED;
+            }
+            if (exploration_manager_ == nullptr) {
+                latest_replan.setRetCode(GENERAL_RET_CODE::GENERAL_UNDEFINED);
+                ros_ptr_->warn(" -- [Exploration] PlanFromRest failed: manager is not initialized.");
+                return FAILED;
+            }
+            if (new_task) {
+                exploration_manager_->reset();
+                latest_exploration_goal_ = exploration::ExplorationGoal{};
+            }
+        }
+
+        if (!exploration_manager_->planNextGoal(robot, robot.yaw, goal)) {
+            std::lock_guard<std::mutex> guard(replan_lock_);
+            latest_replan.setGoal(robot.p, robot.yaw, robot);
+            if (exploration_manager_->isExplorationFinished()) {
+                latest_replan.setRetCode(GENERAL_RET_CODE::GENERAL_SUCCESS_NO_BACKUP);
+                ros_ptr_->info(" -- [Exploration] Exploration finished: {}.", goal.reason);
+                return FINISH;
+            }
+            latest_replan.setRetCode(GENERAL_RET_CODE::GENERAL_UNDEFINED);
+            ros_ptr_->warn(" -- [Exploration] Failed to select goal: {}.", goal.reason);
+            return FAILED;
+        }
+
+        {
+            std::lock_guard<std::mutex> guard(replan_lock_);
+            latest_exploration_goal_ = goal;
+        }
+
+        const RET_CODE ret = PlanFromRest(goal.position, goal.yaw, true);
+        if (ret == FAILED || ret == EMER) {
+            exploration_manager_->onGoalFailed(goal, RET_CODE_STR[ret],
+                                               ros_ptr_ ? ros_ptr_->getSimTime() : 0.0);
+        }
+        return ret;
+    }
+
+    RET_CODE GeneralPlanner::ReplanExplorationOnce(const bool &new_task) {
+        exploration::ExplorationGoal goal;
+        exploration::ExplorationGoal previous_goal;
+        rog_map::RobotState robot;
+        {
+            std::lock_guard<std::mutex> guard(replan_lock_);
+            latest_replan.reset();
+            robot_state_ = map_manager_->getRobotState();
+            robot = robot_state_;
+            if (!robot.rcv) {
+                latest_replan.setRetCode(GENERAL_RET_CODE::GENERAL_NO_ODOM);
+                ros_ptr_->warn(" -- [Exploration] Replan failed: no odom.");
+                return FAILED;
+            }
+            if (exploration_manager_ == nullptr) {
+                latest_replan.setRetCode(GENERAL_RET_CODE::GENERAL_UNDEFINED);
+                ros_ptr_->warn(" -- [Exploration] Replan failed: manager is not initialized.");
+                return FAILED;
+            }
+            if (new_task) {
+                exploration_manager_->reset();
+                latest_exploration_goal_ = exploration::ExplorationGoal{};
+            }
+            previous_goal = latest_exploration_goal_;
+        }
+
+        if (!exploration_manager_->planNextGoal(robot, robot.yaw, goal)) {
+            std::lock_guard<std::mutex> guard(replan_lock_);
+            latest_replan.setGoal(robot.p, robot.yaw, robot);
+            if (exploration_manager_->isExplorationFinished()) {
+                latest_replan.setRetCode(GENERAL_RET_CODE::GENERAL_SUCCESS_NO_BACKUP);
+                ros_ptr_->info(" -- [Exploration] Exploration finished: {}.", goal.reason);
+                return FINISH;
+            }
+            latest_replan.setRetCode(GENERAL_RET_CODE::GENERAL_UNDEFINED);
+            ros_ptr_->warn(" -- [Exploration] Failed to select replan goal: {}.", goal.reason);
+            return FAILED;
+        }
+
+        const bool goal_switched =
+                !previous_goal.valid ||
+                previous_goal.type != goal.type ||
+                (goal.position - previous_goal.position).norm() >
+                std::max(0.2, cfg_.exploration_route_replan_distance_threshold);
+
+        {
+            std::lock_guard<std::mutex> guard(replan_lock_);
+            latest_exploration_goal_ = goal;
+        }
+
+        const RET_CODE ret = ReplanOnce(goal.position, goal.yaw, goal_switched);
+        if (ret == FAILED || ret == EMER) {
+            exploration_manager_->onGoalFailed(goal, RET_CODE_STR[ret],
+                                               ros_ptr_ ? ros_ptr_->getSimTime() : 0.0);
+        }
+        return ret;
+    }
+
+    bool GeneralPlanner::getLatestExplorationGoal(exploration::ExplorationGoal &goal) const {
+        std::lock_guard<std::mutex> guard(replan_lock_);
+        goal = latest_exploration_goal_;
+        return latest_exploration_goal_.valid;
     }
 
     RET_CODE GeneralPlanner::PlanSE3AggressiveFromRest(const Vec3f &goal_p,
@@ -4466,6 +4582,89 @@ namespace general_planner {
         frontend_cfg.rotate_surface_with_yaw_rate =
                 cfg_.perching_rotate_surface_with_yaw_rate;
         return frontend_cfg;
+    }
+
+    exploration::ExplorationManager::Config GeneralPlanner::makeExplorationConfig() const {
+        exploration::ExplorationManager::Config cfg;
+        cfg.enable = cfg_.exploration_enable;
+        cfg.print_log = cfg_.exploration_print_log;
+
+        cfg.observation_map.enable = cfg_.exploration_enable;
+        cfg.observation_map.resolution = cfg_.exploration_observation_resolution;
+        cfg.observation_map.min_observation_distance = cfg_.exploration_observation_min_distance;
+        cfg.observation_map.well_observed_distance = cfg_.exploration_observation_well_distance;
+        cfg.observation_map.max_observation_distance = cfg_.exploration_observation_max_distance;
+        cfg.observation_map.cloud_downsample_step = cfg_.exploration_observation_cloud_downsample_step;
+        cfg.observation_map.max_points_per_update = cfg_.exploration_observation_max_points_per_update;
+        cfg.observation_map.frontier_cluster_radius = cfg_.exploration_observation_frontier_cluster_radius;
+        cfg.observation_map.frontier_normal_similarity = cfg_.exploration_observation_frontier_normal_similarity;
+        cfg.observation_map.min_frontier_cluster_size = cfg_.exploration_observation_min_frontier_cluster_size;
+        if (cfg_.exploration_observation_bbox_min.size() == 3) {
+            cfg.observation_map.bbox_min_x = cfg_.exploration_observation_bbox_min[0];
+            cfg.observation_map.bbox_min_y = cfg_.exploration_observation_bbox_min[1];
+            cfg.observation_map.bbox_min_z = cfg_.exploration_observation_bbox_min[2];
+        }
+        if (cfg_.exploration_observation_bbox_max.size() == 3) {
+            cfg.observation_map.bbox_max_x = cfg_.exploration_observation_bbox_max[0];
+            cfg.observation_map.bbox_max_y = cfg_.exploration_observation_bbox_max[1];
+            cfg.observation_map.bbox_max_z = cfg_.exploration_observation_bbox_max[2];
+        }
+
+        cfg.frontier_database.association_distance = cfg_.exploration_frontier_association_distance;
+        cfg.frontier_database.bbox_overlap_min_ratio = cfg_.exploration_frontier_bbox_overlap_min_ratio;
+        cfg.frontier_database.max_failed_count = cfg_.exploration_frontier_max_failed_count;
+        cfg.frontier_database.max_selected_count_without_gain =
+                cfg_.exploration_frontier_max_selected_count_without_gain;
+        cfg.frontier_database.blacklist_time = cfg_.exploration_frontier_blacklist_time;
+        cfg.frontier_database.covered_gain_threshold = cfg_.exploration_frontier_covered_gain_threshold;
+        cfg.frontier_database.missing_frontier_timeout = cfg_.exploration_frontier_missing_timeout;
+        cfg.frontier_database.dormant_time = cfg_.exploration_frontier_dormant_time;
+
+        cfg.viewpoint_manager.min_distance = cfg_.exploration_viewpoint_min_distance;
+        cfg.viewpoint_manager.max_distance = cfg_.exploration_viewpoint_max_distance;
+        cfg.viewpoint_manager.radius_samples = cfg_.exploration_viewpoint_radius_samples;
+        cfg.viewpoint_manager.yaw_samples = cfg_.exploration_viewpoint_yaw_samples;
+        cfg.viewpoint_manager.height_samples = cfg_.exploration_viewpoint_height_samples;
+        cfg.viewpoint_manager.height_step = cfg_.exploration_viewpoint_height_step;
+        cfg.viewpoint_manager.safe_distance = cfg_.exploration_viewpoint_safe_distance;
+        cfg.viewpoint_manager.sensor_range = cfg_.exploration_viewpoint_sensor_range;
+        cfg.viewpoint_manager.horizontal_fov_deg = cfg_.exploration_viewpoint_horizontal_fov_deg;
+        cfg.viewpoint_manager.vertical_fov_deg = cfg_.exploration_viewpoint_vertical_fov_deg;
+        cfg.viewpoint_manager.normal_dot_min = cfg_.exploration_viewpoint_normal_dot_min;
+        cfg.viewpoint_manager.max_cells_per_gain_eval = cfg_.exploration_viewpoint_max_cells_per_gain_eval;
+        cfg.viewpoint_manager.line_of_sight_step = cfg_.exploration_viewpoint_line_of_sight_step;
+        cfg.viewpoint_manager.min_gain = cfg_.exploration_viewpoint_min_gain;
+        cfg.viewpoint_manager.use_local_map_safety = cfg_.exploration_viewpoint_use_local_map_safety;
+
+        cfg.topo_graph.history_node_min_distance = cfg_.exploration_topo_history_node_min_distance;
+        cfg.topo_graph.connect_radius = cfg_.exploration_topo_connect_radius;
+        cfg.topo_graph.local_edge_astar_timeout = cfg_.exploration_topo_local_edge_astar_timeout;
+        cfg.topo_graph.global_edge_max_length = cfg_.exploration_topo_global_edge_max_length;
+        cfg.topo_graph.max_history_nodes = cfg_.exploration_topo_max_history_nodes;
+        cfg.topo_graph.use_local_astar_for_edges = cfg_.exploration_topo_use_local_astar_for_edges;
+        cfg.topo_graph.use_global_line_free_for_edges = cfg_.exploration_topo_use_global_line_free_for_edges;
+        cfg.topo_graph.global_line_safe_distance = cfg_.exploration_topo_global_line_safe_distance;
+        cfg.topo_graph.global_line_step = cfg_.exploration_topo_global_line_step;
+
+        cfg.global_guidance.enable = cfg_.exploration_global_guidance_enable;
+        cfg.global_guidance.max_frontiers_in_tour = cfg_.exploration_global_guidance_max_frontiers_in_tour;
+        cfg.global_guidance.weight_path_cost = cfg_.exploration_global_guidance_weight_path_cost;
+        cfg.global_guidance.weight_gain = cfg_.exploration_global_guidance_weight_gain;
+        cfg.global_guidance.weight_revisit = cfg_.exploration_global_guidance_weight_revisit;
+        cfg.global_guidance.use_two_opt = cfg_.exploration_global_guidance_use_two_opt;
+        cfg.global_guidance.keep_current_target = cfg_.exploration_global_guidance_keep_current_target;
+
+        cfg.route_waypoint_lookahead = cfg_.exploration_route_waypoint_lookahead;
+        cfg.route_waypoint_min_distance = cfg_.exploration_route_waypoint_min_distance;
+        cfg.route_waypoint_max_distance = cfg_.exploration_route_waypoint_max_distance;
+        cfg.local_goal_safe_distance = cfg_.exploration_local_goal_safe_distance;
+        cfg.route_replan_distance_threshold = cfg_.exploration_route_replan_distance_threshold;
+        cfg.use_local_map_goal_safety = cfg_.exploration_global_route_use_local_map_safety;
+        cfg.repeated_goal_threshold = cfg_.exploration_stuck_repeated_goal_threshold;
+        cfg.repeated_goal_distance = cfg_.exploration_stuck_repeated_goal_distance;
+        cfg.min_robot_displacement = cfg_.exploration_stuck_min_robot_displacement;
+        cfg.min_explored_volume_gain = cfg_.exploration_stuck_min_explored_volume_gain;
+        return cfg;
     }
 
     GlobalExplorationMapConfig GeneralPlanner::makeGlobalExplorationMapConfig() const {

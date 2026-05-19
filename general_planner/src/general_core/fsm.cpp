@@ -123,6 +123,12 @@ namespace fsm {
             finish_plan = true;
             cout << GREEN << " -- [Fsm] Composite task finished." << RESET << endl;
             ChangeState("ReplanTimerCallback", WAIT_GOAL);
+        } else if (ret_code == FINISH && explorationMode()) {
+            gi_.new_goal = false;
+            task_new_ = false;
+            finish_plan = true;
+            cout << GREEN << " -- [Fsm] Exploration finished." << RESET << endl;
+            ChangeState("ReplanTimerCallback", WAIT_GOAL);
         } else if (ret_code == SUCCESS || ret_code == FINISH) {
             gi_.new_goal = false;
             task_new_ = false;
@@ -233,6 +239,13 @@ namespace fsm {
                     finish_plan = true;
                     cout << GREEN << " -- [Fsm] Composite task finished." << RESET << endl;
                     ChangeState("MainFsmCallback", WAIT_GOAL);
+                } else if (retcode == FINISH && explorationMode()) {
+                    gi_.new_goal = false;
+                    task_new_ = false;
+                    plan_from_rest_ = false;
+                    finish_plan = true;
+                    cout << GREEN << " -- [Fsm] Exploration finished." << RESET << endl;
+                    ChangeState("MainFsmCallback", WAIT_GOAL);
                 } else if (retcode == SUCCESS || retcode == FINISH) {
                     gi_.new_goal = false;
                     task_new_ = false;
@@ -305,6 +318,10 @@ namespace fsm {
 
     bool Fsm::fullCycleMode() const {
         return cfg_.task_mode == TaskMode::FULL_CYCLE;
+    }
+
+    bool Fsm::explorationMode() const {
+        return cfg_.task_mode == TaskMode::EXPLORATION;
     }
 
     void Fsm::resetActiveTask() {
@@ -436,6 +453,11 @@ namespace fsm {
             planner_ptr_->setTrackingPerchingRequest(false);
         }
         if (new_mode == cfg_.task_mode) {
+            if (new_mode == TaskMode::EXPLORATION) {
+                finish_plan = false;
+                task_new_ = true;
+                started_ = true;
+            }
             if (active_task_) {
                 active_task_->reset();
             }
@@ -452,7 +474,8 @@ namespace fsm {
             perching_surface_first_rcv_time_ = -1.0;
             last_dynamic_takeoff_wait_log_time_ = -1.0;
         }
-        if (new_mode == TaskMode::TRACKING_PERCHING ||
+        if (new_mode == TaskMode::EXPLORATION ||
+            new_mode == TaskMode::TRACKING_PERCHING ||
             new_mode == TaskMode::FULL_CYCLE) {
             started_ = true;
         }
@@ -535,6 +558,9 @@ namespace fsm {
                    !planner_ptr_->trackingPerchingContactReached() &&
                    dynamicTakeoffTaskReady();
         }
+        if (explorationMode()) {
+            return cfg_.exploration_enable && started_ && !finish_plan;
+        }
         return false;
     }
 
@@ -550,6 +576,9 @@ namespace fsm {
         }
         if (dynamicTakeoffMode()) {
             return false;
+        }
+        if (explorationMode()) {
+            return cfg_.exploration_enable && started_ && !finish_plan;
         }
         if (fullCycleMode()) {
             return started_ && !finish_plan;

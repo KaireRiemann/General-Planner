@@ -23,7 +23,8 @@ namespace task_planner {
     enum class ManagedTaskMode {
         STATE_TO_STATE = 0,
         TRACKING = 1,
-        PERCHING = 2
+        PERCHING = 2,
+        EXPLORATION = 3
     };
 
     inline std::string normalizeTaskMode(std::string mode) {
@@ -39,6 +40,9 @@ namespace task_planner {
         if (mode == "perch" || mode == "perching") {
             return "perching";
         }
+        if (mode == "explore" || mode == "exploration") {
+            return "exploration";
+        }
         return "state2state";
     }
 
@@ -50,6 +54,9 @@ namespace task_planner {
         if (normalized == "perching") {
             return ManagedTaskMode::PERCHING;
         }
+        if (normalized == "exploration") {
+            return ManagedTaskMode::EXPLORATION;
+        }
         return ManagedTaskMode::STATE_TO_STATE;
     }
 
@@ -59,6 +66,8 @@ namespace task_planner {
                 return "tracking";
             case ManagedTaskMode::PERCHING:
                 return "perching";
+            case ManagedTaskMode::EXPLORATION:
+                return "exploration";
             case ManagedTaskMode::STATE_TO_STATE:
             default:
                 return "state2state";

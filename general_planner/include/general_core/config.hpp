@@ -111,6 +111,73 @@ namespace general_planner {
         bool se3_use_numeric_shape_gradient{false};
 
         bool exploration_enable{false};
+        bool exploration_print_log{true};
+
+        double exploration_observation_resolution{0.25};
+        double exploration_observation_min_distance{0.2};
+        double exploration_observation_well_distance{4.0};
+        double exploration_observation_max_distance{12.0};
+        int exploration_observation_cloud_downsample_step{1};
+        int exploration_observation_max_points_per_update{12000};
+        double exploration_observation_frontier_cluster_radius{0.65};
+        double exploration_observation_frontier_normal_similarity{0.35};
+        int exploration_observation_min_frontier_cluster_size{8};
+        std::vector<double> exploration_observation_bbox_min{-50.0, -50.0, -2.0};
+        std::vector<double> exploration_observation_bbox_max{50.0, 50.0, 10.0};
+
+        double exploration_frontier_association_distance{1.2};
+        double exploration_frontier_bbox_overlap_min_ratio{0.08};
+        int exploration_frontier_max_failed_count{3};
+        int exploration_frontier_max_selected_count_without_gain{4};
+        double exploration_frontier_blacklist_time{8.0};
+        double exploration_frontier_covered_gain_threshold{4.0};
+        double exploration_frontier_missing_timeout{2.0};
+        double exploration_frontier_dormant_time{4.0};
+
+        double exploration_viewpoint_min_distance{1.4};
+        double exploration_viewpoint_max_distance{4.0};
+        int exploration_viewpoint_radius_samples{3};
+        int exploration_viewpoint_yaw_samples{16};
+        int exploration_viewpoint_height_samples{3};
+        double exploration_viewpoint_height_step{0.6};
+        double exploration_viewpoint_safe_distance{0.45};
+        double exploration_viewpoint_sensor_range{7.0};
+        double exploration_viewpoint_horizontal_fov_deg{90.0};
+        double exploration_viewpoint_vertical_fov_deg{60.0};
+        double exploration_viewpoint_normal_dot_min{0.25};
+        int exploration_viewpoint_max_cells_per_gain_eval{260};
+        double exploration_viewpoint_line_of_sight_step{0.20};
+        double exploration_viewpoint_min_gain{3.0};
+        bool exploration_viewpoint_use_local_map_safety{false};
+
+        double exploration_topo_history_node_min_distance{1.0};
+        double exploration_topo_connect_radius{8.0};
+        double exploration_topo_local_edge_astar_timeout{0.05};
+        double exploration_topo_global_edge_max_length{14.0};
+        int exploration_topo_max_history_nodes{500};
+        bool exploration_topo_use_local_astar_for_edges{true};
+        bool exploration_topo_use_global_line_free_for_edges{true};
+        double exploration_topo_global_line_safe_distance{0.45};
+        double exploration_topo_global_line_step{0.25};
+
+        bool exploration_global_guidance_enable{true};
+        int exploration_global_guidance_max_frontiers_in_tour{16};
+        double exploration_global_guidance_weight_path_cost{1.0};
+        double exploration_global_guidance_weight_gain{2.0};
+        double exploration_global_guidance_weight_revisit{0.5};
+        bool exploration_global_guidance_use_two_opt{true};
+        bool exploration_global_guidance_keep_current_target{true};
+
+        double exploration_route_waypoint_lookahead{3.0};
+        double exploration_route_waypoint_min_distance{1.0};
+        double exploration_route_waypoint_max_distance{5.0};
+        double exploration_local_goal_safe_distance{0.35};
+        double exploration_route_replan_distance_threshold{1.0};
+        bool exploration_global_route_use_local_map_safety{false};
+        int exploration_stuck_repeated_goal_threshold{3};
+        double exploration_stuck_repeated_goal_distance{0.5};
+        double exploration_stuck_min_robot_displacement{0.5};
+        double exploration_stuck_min_explored_volume_gain{1.0};
 
         bool global_exploration_map_enable{false};
         double global_exploration_map_resolution{0.20};
@@ -454,6 +521,133 @@ namespace general_planner {
             loader.LoadParam("general_planner/se3_aggressive/use_numeric_shape_gradient",
                              se3_use_numeric_shape_gradient, false);
             loader.LoadParam("general_planner/exploration_enable", exploration_enable, false);
+            loader.LoadParam("general_planner/exploration/print_log",
+                             exploration_print_log, true);
+            loader.LoadParam("general_planner/exploration/observation_map/resolution",
+                             exploration_observation_resolution, 0.25);
+            loader.LoadParam("general_planner/exploration/observation_map/min_distance",
+                             exploration_observation_min_distance, 0.2);
+            loader.LoadParam("general_planner/exploration/observation_map/well_observed_distance",
+                             exploration_observation_well_distance, 4.0);
+            loader.LoadParam("general_planner/exploration/observation_map/max_distance",
+                             exploration_observation_max_distance, 12.0);
+            loader.LoadParam("general_planner/exploration/observation_map/cloud_downsample_step",
+                             exploration_observation_cloud_downsample_step, 1);
+            loader.LoadParam("general_planner/exploration/observation_map/max_points_per_update",
+                             exploration_observation_max_points_per_update, 12000);
+            loader.LoadParam("general_planner/exploration/observation_map/frontier_cluster_radius",
+                             exploration_observation_frontier_cluster_radius, 0.65);
+            loader.LoadParam("general_planner/exploration/observation_map/frontier_normal_similarity",
+                             exploration_observation_frontier_normal_similarity, 0.35);
+            loader.LoadParam("general_planner/exploration/observation_map/min_frontier_cluster_size",
+                             exploration_observation_min_frontier_cluster_size, 8);
+            loader.LoadParam("general_planner/exploration/observation_map/bbox_min",
+                             exploration_observation_bbox_min, std::vector<double>{-50.0, -50.0, -2.0});
+            loader.LoadParam("general_planner/exploration/observation_map/bbox_max",
+                             exploration_observation_bbox_max, std::vector<double>{50.0, 50.0, 10.0});
+
+            loader.LoadParam("general_planner/exploration/frontier_database/association_distance",
+                             exploration_frontier_association_distance, 1.2);
+            loader.LoadParam("general_planner/exploration/frontier_database/bbox_overlap_min_ratio",
+                             exploration_frontier_bbox_overlap_min_ratio, 0.08);
+            loader.LoadParam("general_planner/exploration/frontier_database/max_failed_count",
+                             exploration_frontier_max_failed_count, 3);
+            loader.LoadParam("general_planner/exploration/frontier_database/max_selected_count_without_gain",
+                             exploration_frontier_max_selected_count_without_gain, 4);
+            loader.LoadParam("general_planner/exploration/frontier_database/blacklist_time",
+                             exploration_frontier_blacklist_time, 8.0);
+            loader.LoadParam("general_planner/exploration/frontier_database/covered_gain_threshold",
+                             exploration_frontier_covered_gain_threshold, 4.0);
+            loader.LoadParam("general_planner/exploration/frontier_database/missing_frontier_timeout",
+                             exploration_frontier_missing_timeout, 2.0);
+            loader.LoadParam("general_planner/exploration/frontier_database/dormant_time",
+                             exploration_frontier_dormant_time, 4.0);
+
+            loader.LoadParam("general_planner/exploration/viewpoint/min_distance",
+                             exploration_viewpoint_min_distance, 1.4);
+            loader.LoadParam("general_planner/exploration/viewpoint/max_distance",
+                             exploration_viewpoint_max_distance, 4.0);
+            loader.LoadParam("general_planner/exploration/viewpoint/radius_samples",
+                             exploration_viewpoint_radius_samples, 3);
+            loader.LoadParam("general_planner/exploration/viewpoint/yaw_samples",
+                             exploration_viewpoint_yaw_samples, 16);
+            loader.LoadParam("general_planner/exploration/viewpoint/height_samples",
+                             exploration_viewpoint_height_samples, 3);
+            loader.LoadParam("general_planner/exploration/viewpoint/height_step",
+                             exploration_viewpoint_height_step, 0.6);
+            loader.LoadParam("general_planner/exploration/viewpoint/safe_distance",
+                             exploration_viewpoint_safe_distance, 0.45);
+            loader.LoadParam("general_planner/exploration/viewpoint/sensor_range",
+                             exploration_viewpoint_sensor_range, 7.0);
+            loader.LoadParam("general_planner/exploration/viewpoint/horizontal_fov_deg",
+                             exploration_viewpoint_horizontal_fov_deg, 90.0);
+            loader.LoadParam("general_planner/exploration/viewpoint/vertical_fov_deg",
+                             exploration_viewpoint_vertical_fov_deg, 60.0);
+            loader.LoadParam("general_planner/exploration/viewpoint/normal_dot_min",
+                             exploration_viewpoint_normal_dot_min, 0.25);
+            loader.LoadParam("general_planner/exploration/viewpoint/max_cells_per_gain_eval",
+                             exploration_viewpoint_max_cells_per_gain_eval, 260);
+            loader.LoadParam("general_planner/exploration/viewpoint/line_of_sight_step",
+                             exploration_viewpoint_line_of_sight_step, 0.20);
+            loader.LoadParam("general_planner/exploration/viewpoint/min_gain",
+                             exploration_viewpoint_min_gain, 3.0);
+            loader.LoadParam("general_planner/exploration/viewpoint/use_local_map_safety",
+                             exploration_viewpoint_use_local_map_safety, false);
+
+            loader.LoadParam("general_planner/exploration/topo_graph/history_node_min_distance",
+                             exploration_topo_history_node_min_distance, 1.0);
+            loader.LoadParam("general_planner/exploration/topo_graph/connect_radius",
+                             exploration_topo_connect_radius, 8.0);
+            loader.LoadParam("general_planner/exploration/topo_graph/local_edge_astar_timeout",
+                             exploration_topo_local_edge_astar_timeout, 0.05);
+            loader.LoadParam("general_planner/exploration/topo_graph/global_edge_max_length",
+                             exploration_topo_global_edge_max_length, 14.0);
+            loader.LoadParam("general_planner/exploration/topo_graph/max_history_nodes",
+                             exploration_topo_max_history_nodes, 500);
+            loader.LoadParam("general_planner/exploration/topo_graph/use_local_astar_for_edges",
+                             exploration_topo_use_local_astar_for_edges, true);
+            loader.LoadParam("general_planner/exploration/topo_graph/use_global_line_free_for_edges",
+                             exploration_topo_use_global_line_free_for_edges, true);
+            loader.LoadParam("general_planner/exploration/topo_graph/global_line_safe_distance",
+                             exploration_topo_global_line_safe_distance, 0.45);
+            loader.LoadParam("general_planner/exploration/topo_graph/global_line_step",
+                             exploration_topo_global_line_step, 0.25);
+
+            loader.LoadParam("general_planner/exploration/global_guidance/enable",
+                             exploration_global_guidance_enable, true);
+            loader.LoadParam("general_planner/exploration/global_guidance/max_frontiers_in_tour",
+                             exploration_global_guidance_max_frontiers_in_tour, 16);
+            loader.LoadParam("general_planner/exploration/global_guidance/weight_path_cost",
+                             exploration_global_guidance_weight_path_cost, 1.0);
+            loader.LoadParam("general_planner/exploration/global_guidance/weight_gain",
+                             exploration_global_guidance_weight_gain, 2.0);
+            loader.LoadParam("general_planner/exploration/global_guidance/weight_revisit",
+                             exploration_global_guidance_weight_revisit, 0.5);
+            loader.LoadParam("general_planner/exploration/global_guidance/use_two_opt",
+                             exploration_global_guidance_use_two_opt, true);
+            loader.LoadParam("general_planner/exploration/global_guidance/keep_current_target",
+                             exploration_global_guidance_keep_current_target, true);
+
+            loader.LoadParam("general_planner/exploration/global_route/route_waypoint_lookahead",
+                             exploration_route_waypoint_lookahead, 3.0);
+            loader.LoadParam("general_planner/exploration/global_route/route_waypoint_min_distance",
+                             exploration_route_waypoint_min_distance, 1.0);
+            loader.LoadParam("general_planner/exploration/global_route/route_waypoint_max_distance",
+                             exploration_route_waypoint_max_distance, 5.0);
+            loader.LoadParam("general_planner/exploration/global_route/local_goal_safe_distance",
+                             exploration_local_goal_safe_distance, 0.35);
+            loader.LoadParam("general_planner/exploration/global_route/route_replan_distance_threshold",
+                             exploration_route_replan_distance_threshold, 1.0);
+            loader.LoadParam("general_planner/exploration/global_route/use_local_map_safety",
+                             exploration_global_route_use_local_map_safety, false);
+            loader.LoadParam("general_planner/exploration/stuck/repeated_goal_threshold",
+                             exploration_stuck_repeated_goal_threshold, 3);
+            loader.LoadParam("general_planner/exploration/stuck/repeated_goal_distance",
+                             exploration_stuck_repeated_goal_distance, 0.5);
+            loader.LoadParam("general_planner/exploration/stuck/min_robot_displacement",
+                             exploration_stuck_min_robot_displacement, 0.5);
+            loader.LoadParam("general_planner/exploration/stuck/min_explored_volume_gain",
+                             exploration_stuck_min_explored_volume_gain, 1.0);
             loader.LoadParam("general_planner/global_exploration_map/enable",
                              global_exploration_map_enable, false);
             loader.LoadParam("general_planner/global_exploration_map/resolution",

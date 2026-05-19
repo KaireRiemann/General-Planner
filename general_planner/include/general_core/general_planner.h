@@ -50,6 +50,7 @@
 #include "general_core/tracking_perching_transition_manager.hpp"
 #include "general_core/tracking_to_perching_initializer.hpp"
 #include "general_core/se3_aggressive_manager.hpp"
+#include "exploration/exploration_manager.hpp"
 
 #include "general_core/general_ret_code.hpp"
 #include "utils/header/fmt_eigen.hpp"
@@ -113,6 +114,8 @@ namespace general_planner {
         std::unique_ptr<TrackingPerchingTransitionManager> tracking_perching_manager_;
         std::unique_ptr<TrackingToPerchingInitializer> tracking_to_perching_initializer_;
         std::unique_ptr<SE3AggressiveManager> se3_aggressive_manager_;
+        std::unique_ptr<exploration::ExplorationManager> exploration_manager_;
+        exploration::ExplorationGoal latest_exploration_goal_;
 
         vector<double> time_consuming_;
 
@@ -293,6 +296,12 @@ namespace general_planner {
 
         RET_CODE ReplanDynamicTakeoffOnce(const traj_opt::PerchingSurfaceState &surface,
                                           const bool &new_task);
+
+        RET_CODE PlanExplorationFromRest(const bool &new_task);
+
+        RET_CODE ReplanExplorationOnce(const bool &new_task);
+
+        bool getLatestExplorationGoal(exploration::ExplorationGoal &goal) const;
 
         bool globalExplorationMapReady() const {
             return map_manager_ != nullptr && map_manager_->globalExplorationMapReady();
@@ -503,6 +512,8 @@ namespace general_planner {
 
         TakeoffFrontend::Config makeTakeoffFrontendConfig() const;
 
+        exploration::ExplorationManager::Config makeExplorationConfig() const;
+
         GlobalExplorationMapConfig makeGlobalExplorationMapConfig() const;
 
         GlobalPointCloudMapConfig makeGlobalPointCloudMapConfig() const;
@@ -545,6 +556,10 @@ namespace general_planner {
         void updateROGMap(const rog_map::PointCloud &cloud, const super_utils::Pose &pose) {
             const double stamp = ros_ptr_ ? ros_ptr_->getSimTime() : 0.0;
             map_manager_->updateMapWithGlobal(cloud, pose, CloudFrame::WORLD, stamp);
+            if (exploration_manager_ != nullptr) {
+                const auto robot = map_manager_->getRobotState();
+                exploration_manager_->updateObservation(cloud, pose, CloudFrame::WORLD, robot.p, stamp);
+            }
         }
 
         void updateROGMapWithGlobal(const rog_map::PointCloud &cloud,
@@ -552,6 +567,10 @@ namespace general_planner {
                                     CloudFrame frame) {
             const double stamp = ros_ptr_ ? ros_ptr_->getSimTime() : 0.0;
             map_manager_->updateMapWithGlobal(cloud, pose, frame, stamp);
+            if (exploration_manager_ != nullptr) {
+                const auto robot = map_manager_->getRobotState();
+                exploration_manager_->updateObservation(cloud, pose, frame, robot.p, stamp);
+            }
         }
 
         void updateGlobalMapOnly(const rog_map::PointCloud &cloud,
@@ -559,6 +578,9 @@ namespace general_planner {
                                  CloudFrame frame) {
             const double stamp = ros_ptr_ ? ros_ptr_->getSimTime() : 0.0;
             map_manager_->updateGlobalMapsOnly(cloud, pose, frame, stamp);
+            if (exploration_manager_ != nullptr) {
+                exploration_manager_->updateObservation(cloud, pose, frame, pose.first, stamp);
+            }
         }
 
         LogOneReplan getLatestReplanLog() {

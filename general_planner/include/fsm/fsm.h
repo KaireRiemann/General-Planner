@@ -196,6 +196,8 @@ namespace fsm {
 
         bool fullCycleMode() const;
 
+        bool explorationMode() const;
+
         void setTaskModeFromString(const std::string &mode);
 
         void resetActiveTask();

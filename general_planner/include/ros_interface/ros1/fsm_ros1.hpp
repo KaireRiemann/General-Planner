@@ -35,7 +35,10 @@
 #include "nav_msgs/Odometry.h"
 #include "quadrotor_msgs/PositionCommand.h"
 #include "quadrotor_msgs/PolynomialTrajectory.h"
+#include "sensor_msgs/PointCloud2.h"
 #include "std_msgs/String.h"
+
+#include <pcl_conversions/pcl_conversions.h>
 
 #include <algorithm>
 #include <array>
@@ -58,6 +61,7 @@ namespace fsm {
         ros::Subscriber tracking_target_sub_;
         ros::Subscriber tracking_prediction_sub_;
         ros::Subscriber perching_surface_sub_;
+        ros::Subscriber exploration_cloud_sub_;
         ros::Subscriber swarm_broadcast_traj_sub_;
         ros::Subscriber swarm_state_sub_;
         ros::Publisher cmd_pub, mpc_cmd_pub_, path_pub_;
@@ -782,6 +786,21 @@ namespace fsm {
             setTaskModeFromString(msg->data);
         }
 
+        void explorationCloudCallback(const sensor_msgs::PointCloud2ConstPtr &msg) {
+            if (!planner_ptr_) {
+                return;
+            }
+            rog_map::RobotState robot;
+            planner_ptr_->getRobotState(robot);
+            if (!robot.rcv) {
+                return;
+            }
+            rog_map::PointCloud cloud;
+            pcl::fromROSMsg(*msg, cloud);
+            const super_utils::Pose pose = std::make_pair(robot.p, robot.q);
+            planner_ptr_->updateGlobalMapOnly(cloud, pose, general_planner::CloudFrame::WORLD);
+        }
+
         void init(const ros::NodeHandle &nh, const std::string &cfg_path) {
             // 初始化参数读取
             nh_ = nh;
@@ -794,6 +813,14 @@ namespace fsm {
             cmd_pub = nh_.advertise<quadrotor_msgs::PositionCommand>(cfg_.cmd_topic, 10);
             mpc_cmd_pub_ = nh_.advertise<quadrotor_msgs::PolynomialTrajectory>(cfg_.mpc_cmd_topic, 10);
             path_pub_ = nh_.advertise<nav_msgs::Path>("fsm/path", 100);
+
+            if (cfg_.exploration_enable) {
+                const auto map_cfg = map_ptr_->getMapConfig();
+                exploration_cloud_sub_ = nh_.subscribe(map_cfg.cloud_topic, 1,
+                                                       &FsmRos1::explorationCloudCallback, this);
+                cout << YELLOW << " -- [Fsm] EXPLORATION MAP FEED: cloud "
+                     << map_cfg.cloud_topic << ", frame WORLD" << RESET << endl;
+            }
 
             int cmd_cnt = 0;
 
@@ -861,6 +888,11 @@ namespace fsm {
             } else if ((state2stateMode() || se3AggressiveMode()) && cfg_.click_goal_en) {
                 goal_sub_ = nh_.subscribe(cfg_.click_goal_topic, 1, &FsmRos1::goalCallback, this);
                 cout << YELLOW << " -- [Fsm] CLICKGOAL ENABLE." << RESET << endl;
+                cmd_cnt++;
+            } else if (explorationMode()) {
+                task_mode_sub_ = nh_.subscribe(cfg_.task_mode_topic, 10,
+                                               &FsmRos1::taskModeCallback, this);
+                cout << YELLOW << " -- [Fsm] EXPLORATION TASK ENABLE." << RESET << endl;
                 cmd_cnt++;
             } else if (trackingMode()) {
                 tracking_target_sub_ = nh_.subscribe(cfg_.tracking_target_odom_topic, 10,

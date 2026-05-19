@@ -1,0 +1,187 @@
+#pragma once
+
+#include <cstdint>
+#include <limits>
+#include <string>
+#include <vector>
+
+#include <Eigen/Eigen>
+#include <super_utils/type_utils.hpp>
+
+namespace general_planner {
+namespace exploration {
+
+enum class SurfaceVoxelState : uint8_t {
+    POORLY_OBSERVED = 0,
+    WELL_OBSERVED = 1,
+    FRONTIER = 2
+};
+
+enum class FrontierState {
+    ACTIVE,
+    SELECTED,
+    COVERED,
+    DORMANT,
+    UNREACHABLE,
+    BLACKLISTED
+};
+
+enum class ExplorationGoalType {
+    FRONTIER_VIEWPOINT,
+    GLOBAL_ROUTE_WAYPOINT,
+    UNKNOWN
+};
+
+enum class TopoNodeType {
+    ODOM,
+    HISTORY_ODOM,
+    REGION,
+    FRONTIER_VIEWPOINT,
+    ROUTE_WAYPOINT
+};
+
+struct SurfaceFrontierCluster {
+    EIGEN_MAKE_ALIGNED_OPERATOR_NEW
+
+    int transient_id{-1};
+    super_utils::vec_E<super_utils::Vec3f> cells;
+    super_utils::vec_E<super_utils::Vec3f> normals;
+
+    super_utils::Vec3f center{super_utils::Vec3f::Zero()};
+    super_utils::Vec3f normal{super_utils::Vec3f::UnitX()};
+    super_utils::Vec3f bbox_min{super_utils::Vec3f::Zero()};
+    super_utils::Vec3f bbox_max{super_utils::Vec3f::Zero()};
+
+    int raw_size{0};
+    double stamp{0.0};
+    super_utils::Vec3f generated_position{super_utils::Vec3f::Zero()};
+    double generated_travel_distance{0.0};
+};
+
+struct ExplorationViewpoint {
+    EIGEN_MAKE_ALIGNED_OPERATOR_NEW
+
+    int frontier_id{-1};
+    int viewpoint_id{-1};
+
+    super_utils::Vec3f position{super_utils::Vec3f::Zero()};
+    double yaw{0.0};
+
+    double gain_raw{0.0};
+    double gain_norm{0.0};
+    double distance_to_surface{std::numeric_limits<double>::infinity()};
+
+    bool reachable{false};
+    bool visited{false};
+    bool local_safe{false};
+    bool global_safe{false};
+
+    double last_checked_time{-1.0};
+};
+
+struct FrontierRecord {
+    EIGEN_MAKE_ALIGNED_OPERATOR_NEW
+
+    int stable_id{-1};
+    int region_id{-1};
+
+    FrontierState state{FrontierState::ACTIVE};
+
+    super_utils::Vec3f center{super_utils::Vec3f::Zero()};
+    super_utils::Vec3f normal{super_utils::Vec3f::UnitX()};
+    super_utils::Vec3f bbox_min{super_utils::Vec3f::Zero()};
+    super_utils::Vec3f bbox_max{super_utils::Vec3f::Zero()};
+
+    super_utils::vec_E<super_utils::Vec3f> cells;
+    super_utils::vec_E<super_utils::Vec3f> normals;
+
+    int cell_count{0};
+    double last_gain{0.0};
+    double best_gain{0.0};
+
+    std::vector<ExplorationViewpoint> viewpoints;
+    ExplorationViewpoint best_viewpoint;
+
+    int selected_count{0};
+    int failed_count{0};
+    double last_selected_time{-1.0};
+    double last_observed_time{-1.0};
+    double first_observed_time{-1.0};
+
+    super_utils::Vec3f generated_position{super_utils::Vec3f::Zero()};
+    double generated_travel_distance{0.0};
+
+    bool has_reachable_viewpoint{false};
+};
+
+struct ExplorationTopoNode {
+    EIGEN_MAKE_ALIGNED_OPERATOR_NEW
+
+    int id{-1};
+    TopoNodeType type{TopoNodeType::REGION};
+
+    int frontier_id{-1};
+    int region_id{-1};
+
+    super_utils::Vec3f position{super_utils::Vec3f::Zero()};
+    double yaw{0.0};
+
+    bool active{true};
+};
+
+struct ExplorationTopoEdge {
+    EIGEN_MAKE_ALIGNED_OPERATOR_NEW
+
+    int from{-1};
+    int to{-1};
+    double cost{0.0};
+    bool reachable{true};
+    super_utils::vec_E<super_utils::Vec3f> path;
+};
+
+struct GlobalRoute {
+    EIGEN_MAKE_ALIGNED_OPERATOR_NEW
+
+    bool valid{false};
+    int target_frontier_id{-1};
+    std::vector<int> node_ids;
+    super_utils::vec_E<super_utils::Vec3f> path;
+    double cost{0.0};
+};
+
+struct ExplorationGoal {
+    EIGEN_MAKE_ALIGNED_OPERATOR_NEW
+
+    bool valid{false};
+    ExplorationGoalType type{ExplorationGoalType::UNKNOWN};
+
+    super_utils::Vec3f position{super_utils::Vec3f::Zero()};
+    double yaw{0.0};
+
+    int frontier_id{-1};
+    int route_node_id{-1};
+
+    double gain{0.0};
+    double travel_cost{0.0};
+    std::string reason;
+    GlobalRoute route;
+};
+
+inline const char *goalTypeName(const ExplorationGoalType type) {
+    switch (type) {
+        case ExplorationGoalType::FRONTIER_VIEWPOINT:
+            return "FRONTIER_VIEWPOINT";
+        case ExplorationGoalType::GLOBAL_ROUTE_WAYPOINT:
+            return "GLOBAL_ROUTE_WAYPOINT";
+        case ExplorationGoalType::UNKNOWN:
+        default:
+            return "UNKNOWN";
+    }
+}
+
+inline bool frontierStateSelectable(const FrontierState state) {
+    return state == FrontierState::ACTIVE || state == FrontierState::SELECTED;
+}
+
+}  // namespace exploration
+}  // namespace general_planner

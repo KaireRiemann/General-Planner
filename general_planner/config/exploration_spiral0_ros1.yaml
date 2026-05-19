@@ -1,0 +1,279 @@
+fsm:
+  task_mode: "exploration"
+  task_mode_topic: "/planning/task_mode"
+  auto_start: true
+  click_goal_en: false
+  click_goal_topic: "/goal"
+  click_height: 1.5
+  click_yaw_en: false
+  replan_rate: 1.0
+  cmd_topic: "/planning/pos_cmd"
+  mpc_cmd_topic: "/planning_cmd/poly_traj"
+  timer_en: true
+
+general_planner:
+  exploration_enable: true
+  backup_traj_en: false
+  esdf_traj_en: true
+  esdf_safe_distance: 0.35
+  detailed_log_en: false
+  visualization_en: true
+  use_fov_cut: false
+  print_log: true
+  visual_process: false
+  frontend_in_known_free: false
+  goal_yaw_en: true
+  goal_vel_en: false
+  corridor_bound_dis: 1.0
+  corridor_line_max_length: 1.2
+  safe_corridor_line_max_length: 5.0
+  iris_iter_num: 2
+  ellipsoid_optimizer: classic
+  ellipsoid_optimizer_fallback: false
+  obs_skip_num: 1
+  replan_forward_dt: 0.1
+  planning_horizon: 6.0
+  sensing_horizon: -1
+  receding_dis: 3.5
+  robot_r: 0.25
+  frontend_astar_time_out: 0.25
+  over_wall_search_en: true
+  over_wall_max_climb: 3.0
+  over_wall_height_step: 0.4
+  over_wall_min_blocked_span: 0.8
+  over_wall_min_progress_gain: 0.5
+  over_wall_forward_ratio: 0.9
+  unknown_goal_reveal_en: true
+  yaw_dot_max: 2.5
+  yaw_mode: 1
+  mpc_horizon: 15
+
+  exploration:
+    print_log: true
+    observation_map:
+      resolution: 0.3
+      min_distance: 0.2
+      well_observed_distance: 5.0
+      max_distance: 22.0
+      cloud_downsample_step: 1
+      max_points_per_update: 18000
+      frontier_cluster_radius: 0.8
+      frontier_normal_similarity: 0.15
+      min_frontier_cluster_size: 6
+      bbox_min: [ -65.0, -35.0, -1.0 ]
+      bbox_max: [ 25.0, 12.0, 24.0 ]
+    frontier_database:
+      association_distance: 1.5
+      bbox_overlap_min_ratio: 0.05
+      max_failed_count: 10
+      max_selected_count_without_gain: 8
+      blacklist_time: 10.0
+      covered_gain_threshold: 4.0
+      missing_frontier_timeout: 4.0
+      dormant_time: 6.0
+    viewpoint:
+      min_distance: 1.0
+      max_distance: 5.0
+      radius_samples: 4
+      yaw_samples: 18
+      height_samples: 5
+      height_step: 0.6
+      safe_distance: 0.3
+      sensor_range: 10.0
+      horizontal_fov_deg: 140.0
+      vertical_fov_deg: 90.0
+      normal_dot_min: -0.20
+      max_cells_per_gain_eval: 320
+      line_of_sight_step: 0.25
+      min_gain: 0.5
+      use_local_map_safety: false
+    topo_graph:
+      history_node_min_distance: 1.0
+      connect_radius: 10.0
+      local_edge_astar_timeout: 0.05
+      global_edge_max_length: 16.0
+      max_history_nodes: 700
+      use_local_astar_for_edges: false
+      use_global_line_free_for_edges: true
+      global_line_safe_distance: 0.3
+      global_line_step: 0.35
+    global_guidance:
+      enable: true
+      max_frontiers_in_tour: 24
+      weight_path_cost: 1.0
+      weight_gain: 2.2
+      weight_revisit: 0.7
+      use_two_opt: true
+      keep_current_target: true
+    global_route:
+      route_waypoint_lookahead: 4.0
+      route_waypoint_min_distance: 1.2
+      route_waypoint_max_distance: 5.0
+      local_goal_safe_distance: 0.3
+      route_replan_distance_threshold: 0.8
+      use_local_map_safety: false
+    stuck:
+      repeated_goal_threshold: 50
+      repeated_goal_distance: 0.6
+      min_robot_displacement: 0.5
+      min_explored_volume_gain: 1.0
+
+  global_exploration_map:
+    enable: true
+    resolution: 0.3
+    raycast_step: 0.2
+    max_range: 22.0
+    min_range: 0.2
+    bbox_min: [ -65.0, -35.0, -1.0 ]
+    bbox_max: [ 25.0, 12.0, 24.0 ]
+    occupied_hit_threshold: 2
+    free_miss_threshold: 1
+    update_min_interval: 0.15
+    cloud_downsample_step: 1
+    max_points_per_update: 16000
+  global_pointcloud_map:
+    enable: true
+    voxel_size: 0.15
+    save_path: "/tmp/exploration_spiral0_global_map.pcd"
+  global_region_grid:
+    enable: true
+    region_size_xy: 5.0
+    region_size_z: 3.0
+    min_frontier_count: 8
+    explored_ratio_threshold: 0.85
+
+traj_opt:
+  switch:
+    save_log_en: true
+    print_optimizer_log: false
+
+  boundary:
+    max_vel: 2.5
+    max_acc: 4.0
+    max_jerk: 80.0
+    max_omg: 2.0
+    max_acc_thr: 20.0
+    min_acc_thr: 6.0
+    penna_margin: 0.05
+
+  exp_traj:
+    pos_constraint_type: 1
+    energy_cost_type: 4
+    block_energy_cost: false
+    opt_accuracy: 5.0e-6
+    scale_factor: 1.0
+    integral_reso: 15
+    smooth_eps: 0.01
+    penna_t: 12000.0
+    penna_pos: 5.0e+6
+    penna_vel: 5.0e+5
+    penna_acc: 5.0e+5
+    penna_jerk: -5.0e+5
+    penna_attract: 1.0e+3
+    penna_omg: 5.0e+5
+    penna_thr: 1.0e+5
+
+  backup_traj:
+    uniform_time_en: true
+    pos_constraint_type: 1
+    piece_num: 2
+    energy_cost_type: 4
+    block_energy_cost: true
+    opt_accuracy: 1.0e-6
+    scale_factor: 1.0
+    integral_reso: 12
+    smooth_eps: 0.01
+    penna_t: 1200.0
+    penna_ts: 1.0e+5
+    penna_pos: 1.0e+6
+    penna_vel: 1.0e+5
+    penna_acc: 1.0e+5
+    penna_jerk: -1.0e+5
+    penna_omg: 1.0e+5
+    penna_thr: 1.0e+5
+
+  esdf_traj:
+    block_energy_cost: false
+    opt_accuracy: 5.0e-6
+    integral_reso: 16
+    smooth_eps: 0.01
+    init_profile_vel_ratio: 1.0
+    init_duration_scale: 1.0
+    penna_t: 30000.0
+    penna_pos: 5.0e+6
+    penna_vel: 5.0e+5
+    penna_acc: 5.0e+5
+    penna_jerk: 5.0e+5
+    penna_attract: 1.0e+4
+    penna_omg: 5.0e+5
+    penna_thr: 1.0e+5
+
+  flatness:
+    mass: 1.64
+    dh: 0.35
+    dv: 0.35
+    cp: 0.001
+    v_eps: 0.0001
+    grav: 9.81
+
+astar:
+  map_voxel_num: [ 700, 700, 180 ]
+  visual_process: false
+  allow_diag: true
+  heu_type: 2
+  debug_visualization_en: false
+
+rog_map:
+  resolution: 0.2
+  inflation_resolution: 0.2
+  inflation_step: 2
+  unk_inflation_en: false
+  unk_inflation_step: 1
+  map_size: [ 50, 50, 26 ]
+  fix_map_origin: [ 0, 0, 1.5 ]
+  frontier_extraction_en: false
+
+  virtual_ceil_height: 24.5
+  virtual_ground_height: -0.2
+
+  load_pcd_en: false
+
+  map_sliding:
+    enable: true
+    threshold: 0.4
+
+  esdf:
+    enable: true
+    resolution: 0.2
+    local_update_box: [ 20, 20, 12 ]
+
+  ros_callback:
+    enable: true
+    cloud_topic: "/cloud_registered"
+    odom_topic: "/lidar_slam/odom"
+    odom_timeout: 2.0
+
+  visualization:
+    enable: true
+    use_dynamic_reconfigure: false
+    time_rate: 2
+    frame_rate: 0
+    range: [ 20, 20, 12 ]
+    frame_id: "world"
+    pub_unknown_map_en: false
+
+  intensity_thresh: -10
+  point_filt_num: 1
+
+  raycasting:
+    enable: true
+    batch_update_size: 1
+    local_update_box: [ 20, 20, 12 ]
+    ray_range: [ 0.5, 22.0 ]
+    p_min: 0.12
+    p_miss: 0.49
+    p_free: 0.499
+    p_occ: 0.85
+    p_hit: 0.9
+    p_max: 0.98
+    unk_thresh: 1.0
