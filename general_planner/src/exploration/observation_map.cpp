@@ -17,6 +17,10 @@ double clamp01(const double v) {
 
 ObservationMap::ObservationMap(Config cfg) : cfg_(std::move(cfg)) {
     cfg_.resolution = std::max(1.0e-3, cfg_.resolution);
+    cfg_.good_observation_force_trust_length =
+            std::max(cfg_.min_observation_distance, cfg_.good_observation_force_trust_length);
+    cfg_.good_observation_trust_length =
+            std::max(cfg_.good_observation_force_trust_length, cfg_.good_observation_trust_length);
     cfg_.cloud_downsample_step = std::max(1, cfg_.cloud_downsample_step);
     cfg_.max_points_per_update = std::max(0, cfg_.max_points_per_update);
     cfg_.frontier_cluster_radius = std::max(cfg_.resolution, cfg_.frontier_cluster_radius);
@@ -66,19 +70,24 @@ void ObservationMap::update(const rog_map::PointCloud &cloud,
             normal.normalize();
         }
 
+        auto it = voxels_.find(key);
+        double direction_score = 1.0;
+        if (it != voxels_.end() && it->second.normal.norm() > 1.0e-6) {
+            direction_score = std::max(0.0, it->second.normal.dot(normal));
+        }
         const double quality = clamp01((cfg_.max_observation_distance - range) /
                                        std::max(1.0e-3,
                                                 cfg_.max_observation_distance -
                                                 cfg_.well_observed_distance));
-        const bool well_observed = range <= cfg_.well_observed_distance;
-        auto it = voxels_.find(key);
+        const SurfaceVoxelState observed_state = classifyObservation(range, direction_score);
         if (it == voxels_.end()) {
             SurfaceVoxel voxel;
             voxel.center = center;
             voxel.normal = normal;
             voxel.quality = quality;
-            voxel.state = well_observed ? SurfaceVoxelState::WELL_OBSERVED
-                                        : SurfaceVoxelState::POORLY_OBSERVED;
+            voxel.observation_distance = range;
+            voxel.direction_score = direction_score;
+            voxel.state = observed_state;
             voxel.first_seen_time = stamp;
             voxel.last_seen_time = stamp;
             voxel.generated_travel_distance = travel_distance;
@@ -93,11 +102,13 @@ void ObservationMap::update(const rog_map::PointCloud &cloud,
                 voxel.normal.normalize();
             }
             voxel.quality = std::max(voxel.quality, quality);
+            voxel.observation_distance = range;
+            voxel.direction_score = direction_score;
             voxel.last_seen_time = stamp;
-            if (well_observed) {
-                voxel.state = SurfaceVoxelState::WELL_OBSERVED;
-            } else if (voxel.state != SurfaceVoxelState::WELL_OBSERVED) {
-                voxel.state = SurfaceVoxelState::POORLY_OBSERVED;
+            if (observed_state == SurfaceVoxelState::DENSE) {
+                voxel.state = SurfaceVoxelState::DENSE;
+            } else if (voxel.state != SurfaceVoxelState::DENSE) {
+                voxel.state = observed_state;
             }
         }
     }
@@ -115,6 +126,7 @@ void ObservationMap::getFrontierClusters(std::vector<SurfaceFrontierCluster> &cl
         VoxelKey key;
         super_utils::Vec3f pos;
         super_utils::Vec3f normal;
+        ObservationCellState state{ObservationCellState::FRONTIER_DIS};
         double stamp{0.0};
         double travel_distance{0.0};
         super_utils::Vec3f generated_position{super_utils::Vec3f::Zero()};
@@ -126,13 +138,14 @@ void ObservationMap::getFrontierClusters(std::vector<SurfaceFrontierCluster> &cl
         points.reserve(frontier_keys_.size());
         for (const auto &key : frontier_keys_) {
             const auto it = voxels_.find(key);
-            if (it == voxels_.end() || it->second.state != SurfaceVoxelState::FRONTIER) {
+            if (it == voxels_.end() || !isFrontierCellState(it->second.state)) {
                 continue;
             }
             FrontierPoint point;
             point.key = key;
             point.pos = it->second.center;
             point.normal = it->second.normal;
+            point.state = it->second.state;
             point.stamp = it->second.last_seen_time;
             point.travel_distance = it->second.generated_travel_distance;
             point.generated_position = it->second.generated_position;
@@ -176,6 +189,7 @@ void ObservationMap::getFrontierClusters(std::vector<SurfaceFrontierCluster> &cl
             const auto &current_point = points[static_cast<std::size_t>(current)];
             cluster.cells.push_back(current_point.pos);
             cluster.normals.push_back(current_point.normal);
+            cluster.cell_states.push_back(current_point.state);
             cluster.stamp = std::max(cluster.stamp, current_point.stamp);
             if (cluster.cells.size() == 1U) {
                 cluster.generated_position = current_point.generated_position;
@@ -217,14 +231,25 @@ void ObservationMap::getFrontierClusters(std::vector<SurfaceFrontierCluster> &cl
         }
         cluster.center.setZero();
         cluster.normal.setZero();
+        int frontier_dis_count = 0;
+        int frontier_dir_count = 0;
         cluster.bbox_min = cluster.cells.front();
         cluster.bbox_max = cluster.cells.front();
         for (std::size_t i = 0; i < cluster.cells.size(); ++i) {
             cluster.center += cluster.cells[i];
             cluster.normal += cluster.normals[i];
+            if (i < cluster.cell_states.size() &&
+                cluster.cell_states[i] == ObservationCellState::FRONTIER_DIR) {
+                ++frontier_dir_count;
+            } else {
+                ++frontier_dis_count;
+            }
             cluster.bbox_min = cluster.bbox_min.cwiseMin(cluster.cells[i]);
             cluster.bbox_max = cluster.bbox_max.cwiseMax(cluster.cells[i]);
         }
+        cluster.dominant_state = frontier_dir_count > frontier_dis_count
+                                 ? ObservationCellState::FRONTIER_DIR
+                                 : ObservationCellState::FRONTIER_DIS;
         cluster.center /= static_cast<double>(cluster.cells.size());
         if (cluster.normal.norm() > 1.0e-6) {
             cluster.normal.normalize();
@@ -245,6 +270,15 @@ bool ObservationMap::getVoxel(const super_utils::Vec3f &position, SurfaceVoxel &
     return true;
 }
 
+SurfaceVoxelState ObservationMap::getCellState(const super_utils::Vec3f &position) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    const auto it = voxels_.find(posToKey(position));
+    if (it == voxels_.end()) {
+        return SurfaceVoxelState::UNKNOWN;
+    }
+    return it->second.state;
+}
+
 double ObservationMap::nearestSurfaceDistance(const super_utils::Vec3f &position,
                                               const double max_search_radius) const {
     std::lock_guard<std::mutex> lock(mutex_);
@@ -260,7 +294,7 @@ double ObservationMap::nearestSurfaceDistance(const super_utils::Vec3f &position
             for (int dz = -r; dz <= r; ++dz) {
                 const VoxelKey key = center + VoxelKey(dx, dy, dz);
                 const auto it = voxels_.find(key);
-                if (it == voxels_.end()) {
+                if (it == voxels_.end() || !isObservedCellState(it->second.state)) {
                     continue;
                 }
                 const double sq = (it->second.center - position).squaredNorm();
@@ -335,11 +369,33 @@ bool ObservationMap::insideBounds(const super_utils::Vec3f &position) const {
            position.y() <= cfg_.bbox_max_y && position.z() <= cfg_.bbox_max_z;
 }
 
-bool ObservationMap::computeIsFrontier(const VoxelKey &key) const {
-    const auto it = voxels_.find(key);
-    if (it == voxels_.end() || it->second.state == SurfaceVoxelState::WELL_OBSERVED) {
-        return false;
+SurfaceVoxelState ObservationMap::classifyObservation(const double range,
+                                                      const double direction_score) const {
+    if (range < cfg_.min_observation_distance || range > cfg_.max_observation_distance) {
+        return SurfaceVoxelState::UNKNOWN;
     }
+    if (range <= cfg_.good_observation_force_trust_length) {
+        return SurfaceVoxelState::DENSE;
+    }
+    if (range <= cfg_.good_observation_trust_length &&
+        direction_score >= cfg_.good_observation_direction_score) {
+        return SurfaceVoxelState::DENSE;
+    }
+    return SurfaceVoxelState::SPARSE;
+}
+
+SurfaceVoxelState ObservationMap::computeFrontierState(const VoxelKey &key) const {
+    const auto it = voxels_.find(key);
+    if (it == voxels_.end()) {
+        return SurfaceVoxelState::UNKNOWN;
+    }
+    if (it->second.state == SurfaceVoxelState::DENSE) {
+        return SurfaceVoxelState::DENSE;
+    }
+    if (!hasSparseOrFrontierState(it->second.state)) {
+        return it->second.state;
+    }
+    bool has_dense_neighbor = false;
     for (int dx = -1; dx <= 1; ++dx) {
         for (int dy = -1; dy <= 1; ++dy) {
             for (int dz = -1; dz <= 1; ++dz) {
@@ -347,13 +403,26 @@ bool ObservationMap::computeIsFrontier(const VoxelKey &key) const {
                     continue;
                 }
                 const auto nit = voxels_.find(key + VoxelKey(dx, dy, dz));
-                if (nit != voxels_.end() && nit->second.state == SurfaceVoxelState::WELL_OBSERVED) {
-                    return true;
+                if (nit != voxels_.end() && hasDenseState(nit->second.state)) {
+                    has_dense_neighbor = true;
+                    break;
                 }
             }
+            if (has_dense_neighbor) {
+                break;
+            }
+        }
+        if (has_dense_neighbor) {
+            break;
         }
     }
-    return false;
+    if (!has_dense_neighbor) {
+        return SurfaceVoxelState::SPARSE;
+    }
+    if (it->second.direction_score < cfg_.good_observation_direction_score) {
+        return SurfaceVoxelState::FRONTIER_DIR;
+    }
+    return SurfaceVoxelState::FRONTIER_DIS;
 }
 
 void ObservationMap::updateFrontierAround(const VoxelKey &key) {
@@ -365,19 +434,24 @@ void ObservationMap::updateFrontierAround(const VoxelKey &key) {
                 if (it == voxels_.end()) {
                     continue;
                 }
-                const bool frontier = computeIsFrontier(current);
-                if (frontier) {
-                    it->second.state = SurfaceVoxelState::FRONTIER;
+                const SurfaceVoxelState updated_state = computeFrontierState(current);
+                it->second.state = updated_state;
+                if (isFrontierCellState(updated_state)) {
                     frontier_keys_.insert(current);
                 } else {
                     frontier_keys_.erase(current);
-                    if (it->second.state == SurfaceVoxelState::FRONTIER) {
-                        it->second.state = SurfaceVoxelState::POORLY_OBSERVED;
-                    }
                 }
             }
         }
     }
+}
+
+bool ObservationMap::hasDenseState(const SurfaceVoxelState state) {
+    return state == SurfaceVoxelState::DENSE;
+}
+
+bool ObservationMap::hasSparseOrFrontierState(const SurfaceVoxelState state) {
+    return state == SurfaceVoxelState::SPARSE || isFrontierCellState(state);
 }
 
 }  // namespace exploration

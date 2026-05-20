@@ -489,7 +489,10 @@ namespace general_planner {
         traj_manager_->setSwarmTrajectories(swarm_trajs_);
 
         const auto rog_map_cfg = map_manager_->getMapConfig();
-        astar_ptr_ = std::make_shared<path_search::Astar>(cfg_path, ros_ptr_, map_manager_);
+        astar_ptr_ = std::make_shared<path_search::Astar>(cfg_path,
+                                                          ros_ptr_,
+                                                          map_manager_,
+                                                          cfg_.astar_backend);
         if (traj_manager_->plain()) {
             traj_manager_->plain()->setLocalAstar(astar_ptr_);
         }
@@ -514,7 +517,8 @@ namespace general_planner {
                                                       cfg_.robot_r,
                                                       cfg_.obs_skip_num,
                                                       cfg_.iris_iter_num,
-                                                      ellipsoid_optimizer_config);
+                                                      ellipsoid_optimizer_config,
+                                                      cfg_.corridor_backend);
         cg_ptr_->SetLineNeighborList(cfg_.seed_line_neighbour);
         se3_aggressive_manager_ =
                 std::make_unique<SE3AggressiveManager>(cfg_, ros_ptr_, map_manager_, astar_ptr_, cg_ptr_);
@@ -939,58 +943,17 @@ namespace general_planner {
     }
 
     RET_CODE GeneralPlanner::PlanExplorationFromRest(const bool &new_task) {
-        exploration::ExplorationGoal goal;
-        rog_map::RobotState robot;
-        {
-            std::lock_guard<std::mutex> guard(replan_lock_);
-            latest_replan.reset();
-            robot_state_ = map_manager_->getRobotState();
-            robot = robot_state_;
-            if (!robot.rcv) {
-                latest_replan.setRetCode(GENERAL_RET_CODE::GENERAL_NO_ODOM);
-                ros_ptr_->warn(" -- [Exploration] PlanFromRest failed: no odom.");
-                return FAILED;
-            }
-            if (exploration_manager_ == nullptr) {
-                latest_replan.setRetCode(GENERAL_RET_CODE::GENERAL_UNDEFINED);
-                ros_ptr_->warn(" -- [Exploration] PlanFromRest failed: manager is not initialized.");
-                return FAILED;
-            }
-            if (new_task) {
-                exploration_manager_->reset();
-                latest_exploration_goal_ = exploration::ExplorationGoal{};
-            }
-        }
-
-        if (!exploration_manager_->planNextGoal(robot, robot.yaw, goal)) {
-            std::lock_guard<std::mutex> guard(replan_lock_);
-            latest_replan.setGoal(robot.p, robot.yaw, robot);
-            if (exploration_manager_->isExplorationFinished()) {
-                latest_replan.setRetCode(GENERAL_RET_CODE::GENERAL_SUCCESS_NO_BACKUP);
-                ros_ptr_->info(" -- [Exploration] Exploration finished: {}.", goal.reason);
-                return FINISH;
-            }
-            latest_replan.setRetCode(GENERAL_RET_CODE::GENERAL_UNDEFINED);
-            ros_ptr_->warn(" -- [Exploration] Failed to select goal: {}.", goal.reason);
-            return FAILED;
-        }
-
-        {
-            std::lock_guard<std::mutex> guard(replan_lock_);
-            latest_exploration_goal_ = goal;
-        }
-
-        const RET_CODE ret = PlanFromRest(goal.position, goal.yaw, true);
-        if (ret == FAILED || ret == EMER) {
-            exploration_manager_->onGoalFailed(goal, RET_CODE_STR[ret],
-                                               ros_ptr_ ? ros_ptr_->getSimTime() : 0.0);
-        }
-        return ret;
+        return PlanExplorationOnce(new_task, true);
     }
 
     RET_CODE GeneralPlanner::ReplanExplorationOnce(const bool &new_task) {
-        exploration::ExplorationGoal goal;
-        exploration::ExplorationGoal previous_goal;
+        return PlanExplorationOnce(new_task, false);
+    }
+
+    RET_CODE GeneralPlanner::PlanExplorationOnce(const bool &new_task,
+                                                 const bool &from_rest) {
+        exploration::ExplorationPlan plan;
+        exploration::ExplorationPlan previous_plan;
         rog_map::RobotState robot;
         {
             std::lock_guard<std::mutex> guard(replan_lock_);
@@ -999,49 +962,78 @@ namespace general_planner {
             robot = robot_state_;
             if (!robot.rcv) {
                 latest_replan.setRetCode(GENERAL_RET_CODE::GENERAL_NO_ODOM);
-                ros_ptr_->warn(" -- [Exploration] Replan failed: no odom.");
+                ros_ptr_->warn(" -- [Exploration] PlanOnce failed: no odom.");
                 return FAILED;
             }
             if (exploration_manager_ == nullptr) {
                 latest_replan.setRetCode(GENERAL_RET_CODE::GENERAL_UNDEFINED);
-                ros_ptr_->warn(" -- [Exploration] Replan failed: manager is not initialized.");
+                ros_ptr_->warn(" -- [Exploration] PlanOnce failed: manager is not initialized.");
                 return FAILED;
             }
             if (new_task) {
                 exploration_manager_->reset();
                 latest_exploration_goal_ = exploration::ExplorationGoal{};
+                latest_exploration_plan_ = exploration::ExplorationPlan{};
             }
-            previous_goal = latest_exploration_goal_;
+            previous_plan = latest_exploration_plan_;
         }
 
-        if (!exploration_manager_->planNextGoal(robot, robot.yaw, goal)) {
-            std::lock_guard<std::mutex> guard(replan_lock_);
-            latest_replan.setGoal(robot.p, robot.yaw, robot);
-            if (exploration_manager_->isExplorationFinished()) {
-                latest_replan.setRetCode(GENERAL_RET_CODE::GENERAL_SUCCESS_NO_BACKUP);
-                ros_ptr_->info(" -- [Exploration] Exploration finished: {}.", goal.reason);
-                return FINISH;
+        if (!exploration_manager_->planOnce(robot, robot.yaw, plan)) {
+            {
+                std::lock_guard<std::mutex> guard(replan_lock_);
+                latest_replan.setGoal(robot.p, robot.yaw, robot);
+                latest_exploration_plan_ = plan;
+                latest_exploration_goal_ = plan.goal;
+                if (plan.no_frontier && exploration_manager_->isExplorationFinished()) {
+                    latest_replan.setRetCode(GENERAL_RET_CODE::GENERAL_SUCCESS_NO_BACKUP);
+                    ros_ptr_->info(" -- [Exploration] Exploration finished: {}.", plan.reason);
+                    return FINISH;
+                }
+                latest_replan.setRetCode(GENERAL_RET_CODE::GENERAL_UNDEFINED);
             }
-            latest_replan.setRetCode(GENERAL_RET_CODE::GENERAL_UNDEFINED);
-            ros_ptr_->warn(" -- [Exploration] Failed to select replan goal: {}.", goal.reason);
-            return FAILED;
+            ros_ptr_->warn(" -- [Exploration] Failed to select exploration guide: {}.", plan.reason);
+            return tryCommitExplorationBackupFallback(plan.reason);
         }
 
         const bool goal_switched =
-                !previous_goal.valid ||
-                previous_goal.type != goal.type ||
-                (goal.position - previous_goal.position).norm() >
+                from_rest ||
+                !previous_plan.valid ||
+                previous_plan.goal.type != plan.goal.type ||
+                (plan.next_goal - previous_plan.next_goal).norm() >
                 std::max(0.2, cfg_.exploration_route_replan_distance_threshold);
 
         {
             std::lock_guard<std::mutex> guard(replan_lock_);
-            latest_exploration_goal_ = goal;
+            latest_exploration_plan_ = plan;
+            latest_exploration_goal_ = plan.goal;
+            active_exploration_plan_ = plan;
+            active_exploration_guide_ = plan.valid && plan.guide_path.size() >= 2U;
         }
 
-        const RET_CODE ret = ReplanOnce(goal.position, goal.yaw, goal_switched);
+        const RET_CODE ret = from_rest
+                             ? PlanFromRest(plan.next_goal, plan.next_yaw, true)
+                             : ReplanOnce(plan.next_goal, plan.next_yaw, goal_switched);
+        {
+            std::lock_guard<std::mutex> guard(replan_lock_);
+            active_exploration_guide_ = false;
+            active_exploration_plan_ = exploration::ExplorationPlan{};
+        }
         if (ret == FAILED || ret == EMER) {
-            exploration_manager_->onGoalFailed(goal, RET_CODE_STR[ret],
+            exploration_manager_->onGoalFailed(plan.goal, RET_CODE_STR[ret],
                                                ros_ptr_ ? ros_ptr_->getSimTime() : 0.0);
+            const RET_CODE fallback_ret = tryCommitExplorationBackupFallback(RET_CODE_STR[ret]);
+            if (!from_rest && fallback_ret == NO_NEED) {
+                ros_ptr_->info(" -- [Exploration] Replan fallback has no trajectory to commit, request PlanFromRest.");
+                return NEW_TRAJ;
+            }
+            return fallback_ret;
+        }
+        if (!from_rest && (ret == SUCCESS || ret == NO_NEED)) {
+            const double remaining = getCommittedTrajectoryRemainingDuration();
+            if (remaining <= std::max(0.02, 0.5 * cfg_.replan_forward_dt)) {
+                ros_ptr_->info(" -- [Exploration] Current local trajectory ended, request PlanFromRest for next guide.");
+                return NEW_TRAJ;
+            }
         }
         return ret;
     }
@@ -4587,6 +4579,7 @@ namespace general_planner {
     exploration::ExplorationManager::Config GeneralPlanner::makeExplorationConfig() const {
         exploration::ExplorationManager::Config cfg;
         cfg.enable = cfg_.exploration_enable;
+        cfg.use_epic_frontend = cfg_.exploration_use_epic_frontend;
         cfg.print_log = cfg_.exploration_print_log;
 
         cfg.observation_map.enable = cfg_.exploration_enable;
@@ -4594,6 +4587,12 @@ namespace general_planner {
         cfg.observation_map.min_observation_distance = cfg_.exploration_observation_min_distance;
         cfg.observation_map.well_observed_distance = cfg_.exploration_observation_well_distance;
         cfg.observation_map.max_observation_distance = cfg_.exploration_observation_max_distance;
+        cfg.observation_map.good_observation_force_trust_length =
+                cfg_.exploration_observation_good_force_trust_length;
+        cfg.observation_map.good_observation_trust_length =
+                cfg_.exploration_observation_good_trust_length;
+        cfg.observation_map.good_observation_direction_score =
+                cfg_.exploration_observation_good_direction_score;
         cfg.observation_map.cloud_downsample_step = cfg_.exploration_observation_cloud_downsample_step;
         cfg.observation_map.max_points_per_update = cfg_.exploration_observation_max_points_per_update;
         cfg.observation_map.frontier_cluster_radius = cfg_.exploration_observation_frontier_cluster_radius;
@@ -4635,6 +4634,16 @@ namespace general_planner {
         cfg.viewpoint_manager.line_of_sight_step = cfg_.exploration_viewpoint_line_of_sight_step;
         cfg.viewpoint_manager.min_gain = cfg_.exploration_viewpoint_min_gain;
         cfg.viewpoint_manager.use_local_map_safety = cfg_.exploration_viewpoint_use_local_map_safety;
+        cfg.viewpoint_manager.cluster_by_visibility_sphere =
+                cfg_.exploration_viewpoint_cluster_by_visibility_sphere;
+        cfg.viewpoint_manager.use_topo_reachability_filter =
+                cfg_.exploration_viewpoint_use_topo_reachability_filter;
+        cfg.viewpoint_manager.max_viewpoint_clusters = cfg_.exploration_viewpoint_max_clusters;
+        cfg.viewpoint_manager.viewpoint_cluster_connectivity_scale =
+                cfg_.exploration_viewpoint_cluster_connectivity_scale;
+        cfg.viewpoint_manager.topo_reachability_timeout =
+                cfg_.exploration_viewpoint_topo_reachability_timeout;
+        cfg.viewpoint_manager.epic_yaw_bins = cfg_.exploration_viewpoint_epic_yaw_bins;
 
         cfg.topo_graph.history_node_min_distance = cfg_.exploration_topo_history_node_min_distance;
         cfg.topo_graph.connect_radius = cfg_.exploration_topo_connect_radius;
@@ -4645,6 +4654,11 @@ namespace general_planner {
         cfg.topo_graph.use_global_line_free_for_edges = cfg_.exploration_topo_use_global_line_free_for_edges;
         cfg.topo_graph.global_line_safe_distance = cfg_.exploration_topo_global_line_safe_distance;
         cfg.topo_graph.global_line_step = cfg_.exploration_topo_global_line_step;
+        cfg.topo_graph.use_parallel_bubble_astar_for_edges =
+                cfg_.exploration_topo_use_parallel_bubble_astar_for_edges;
+        cfg.topo_graph.bubble_astar_resolution = cfg_.exploration_topo_bubble_astar_resolution;
+        cfg.topo_graph.bubble_astar_safe_distance = cfg_.exploration_topo_bubble_astar_safe_distance;
+        cfg.topo_graph.bubble_astar_max_nodes = cfg_.exploration_topo_bubble_astar_max_nodes;
 
         cfg.global_guidance.enable = cfg_.exploration_global_guidance_enable;
         cfg.global_guidance.max_frontiers_in_tour = cfg_.exploration_global_guidance_max_frontiers_in_tour;
@@ -4653,6 +4667,13 @@ namespace general_planner {
         cfg.global_guidance.weight_revisit = cfg_.exploration_global_guidance_weight_revisit;
         cfg.global_guidance.use_two_opt = cfg_.exploration_global_guidance_use_two_opt;
         cfg.global_guidance.keep_current_target = cfg_.exploration_global_guidance_keep_current_target;
+        cfg.global_guidance.use_lkh = cfg_.exploration_global_guidance_use_lkh;
+        cfg.global_guidance.lkh_fallback_to_two_opt =
+                cfg_.exploration_global_guidance_lkh_fallback_to_two_opt;
+        cfg.global_guidance.tsp_dir = cfg_.exploration_global_guidance_tsp_dir;
+        cfg.global_guidance.tsp_problem_name = cfg_.exploration_global_guidance_tsp_problem_name;
+        cfg.global_guidance.lkh_executable = cfg_.exploration_global_guidance_lkh_executable;
+        cfg.global_guidance.lkh_cost_scale = cfg_.exploration_global_guidance_lkh_cost_scale;
 
         cfg.route_waypoint_lookahead = cfg_.exploration_route_waypoint_lookahead;
         cfg.route_waypoint_min_distance = cfg_.exploration_route_waypoint_min_distance;
@@ -4697,6 +4718,17 @@ namespace general_planner {
         map_cfg.enable = cfg_.exploration_enable && cfg_.global_pointcloud_map_enable;
         map_cfg.voxel_size = cfg_.global_pointcloud_map_voxel_size;
         map_cfg.save_path = cfg_.global_pointcloud_map_save_path;
+        map_cfg.crop_enable = cfg_.global_pointcloud_map_crop_enable;
+        if (cfg_.global_pointcloud_map_crop_min.size() == 3) {
+            map_cfg.crop_min = Eigen::Vector3d(cfg_.global_pointcloud_map_crop_min[0],
+                                               cfg_.global_pointcloud_map_crop_min[1],
+                                               cfg_.global_pointcloud_map_crop_min[2]);
+        }
+        if (cfg_.global_pointcloud_map_crop_max.size() == 3) {
+            map_cfg.crop_max = Eigen::Vector3d(cfg_.global_pointcloud_map_crop_max[0],
+                                               cfg_.global_pointcloud_map_crop_max[1],
+                                               cfg_.global_pointcloud_map_crop_max[2]);
+        }
         return map_cfg;
     }
 
@@ -5532,6 +5564,53 @@ namespace general_planner {
         std::fill(time_consuming_.begin(), time_consuming_.end(), 0);
     }
 
+    RET_CODE GeneralPlanner::generateExpTrajFromGuidePath(const exploration::ExplorationPlan &plan,
+                                                          ExpTraj &last_exp_traj_info,
+                                                          ExpTraj &out_exp_traj_info) {
+        active_exploration_plan_ = plan;
+        active_exploration_guide_ = plan.valid && plan.guide_path.size() >= 2U;
+        const RET_CODE ret = generateExpTraj(last_exp_traj_info, out_exp_traj_info);
+        active_exploration_guide_ = false;
+        active_exploration_plan_ = exploration::ExplorationPlan{};
+        return ret;
+    }
+
+    RET_CODE GeneralPlanner::tryCommitExplorationBackupFallback(const std::string &reason) {
+        std::lock_guard<std::mutex> guard(replan_lock_);
+        if (last_exp_traj_info_.empty()) {
+            ros_ptr_->warn(" -- [Exploration] Planning failed ({}), no previous exp traj for backup fallback.",
+                           reason);
+            return FAILED;
+        }
+
+        ros_ptr_->warn(" -- [Exploration] Planning failed ({}), trying backup trajectory fallback.",
+                       reason);
+        BackupTraj back_traj_info;
+        const RET_CODE back_ret_code = generateBackupTrajectory(last_exp_traj_info_, back_traj_info);
+        if (back_ret_code == SUCCESS) {
+            if (!cmd_traj_info_.setTrajectory(last_exp_traj_info_, back_traj_info)) {
+                ros_ptr_->warn(" -- [Exploration] Backup fallback generated but commit failed.");
+                return FAILED;
+            }
+            robot_on_backup_traj_ = false;
+            latest_replan.setRetCode(GENERAL_SUCCESS_WITH_BACKUP);
+            TimeConsuming t_viz("exploration_backup_fallback_viz", false);
+            ros_ptr_->vizCommittedTraj(cmd_traj_info_.posTraj(), cmd_traj_info_.getBackupTrajStartTT());
+            time_consuming_[VISUALIZATION] += t_viz.stop();
+            return SUCCESS;
+        }
+        if (back_ret_code == NO_NEED || back_ret_code == FINISH) {
+            ros_ptr_->warn(" -- [Exploration] Backup fallback not needed ({}); keep current trajectory.",
+                           RET_CODE_STR[back_ret_code]);
+            latest_replan.setRetCode(GENERAL_SUCCESS_NO_BACKUP);
+            return NO_NEED;
+        }
+
+        ros_ptr_->warn(" -- [Exploration] Backup fallback failed with {}.",
+                       RET_CODE_STR[back_ret_code]);
+        return FAILED;
+    }
+
 
     RET_CODE GeneralPlanner::generateExpTraj(ExpTraj &last_exp_traj_info, ExpTraj &out_exp_traj_info) {
         /* 1) Log the exp traj frontend time*/
@@ -5775,8 +5854,106 @@ namespace general_planner {
             guide_stamp.insert(guide_stamp.begin(), 0.0);
         }
 
+        const bool use_exploration_guide =
+                active_exploration_guide_ &&
+                active_exploration_plan_.valid &&
+                active_exploration_plan_.guide_path.size() >= 2U;
+        auto appendExplorationGuideSuffix = [&]() {
+            if (!use_exploration_guide || guide_path.empty() || guide_stamp.empty()) {
+                return false;
+            }
+            const auto &frontend_path = active_exploration_plan_.guide_path;
+            const Vec3f base = guide_path.back();
+            std::size_t nearest_id = 0U;
+            double nearest_dis = std::numeric_limits<double>::infinity();
+            for (std::size_t i = 0; i < frontend_path.size(); ++i) {
+                const double dis = (frontend_path[i] - base).squaredNorm();
+                if (dis < nearest_dis) {
+                    nearest_dis = dis;
+                    nearest_id = i;
+                }
+            }
+            const bool forward_order =
+                    (frontend_path.front() - base).squaredNorm() <=
+                    (frontend_path.back() - base).squaredNorm();
+
+            double remaining_horizon = std::max(0.0, temp_horizon);
+            double stamp = guide_stamp.back();
+            Vec3f last = base;
+            std::size_t appended = 0U;
+            const double max_segment_len = std::max(cfg_.resolution * 2.0,
+                                                    0.8 * cfg_.corridor_line_max_length);
+            auto appendLimited = [&](const Vec3f &point) {
+                if (!point.allFinite()) {
+                    return true;
+                }
+                const Vec3f delta = point - last;
+                const double dist = delta.norm();
+                if (dist < std::max(1.0e-4, cfg_.resolution * 0.1)) {
+                    return true;
+                }
+                Vec3f out = point;
+                double use_dist = dist;
+                bool keep_going = true;
+                if (use_dist > remaining_horizon) {
+                    if (remaining_horizon < std::max(cfg_.resolution * 2.0, 0.2)) {
+                        return false;
+                    }
+                    out = last + delta / dist * remaining_horizon;
+                    use_dist = remaining_horizon;
+                    keep_going = false;
+                }
+                const Vec3f segment_start = last;
+                const int segment_num = std::max(1,
+                                                 static_cast<int>(std::ceil(use_dist / max_segment_len)));
+                for (int seg_id = 1; seg_id <= segment_num; ++seg_id) {
+                    const double ratio = static_cast<double>(seg_id) / static_cast<double>(segment_num);
+                    const Vec3f seg_point = segment_start + (out - segment_start) * ratio;
+                    const double seg_dist = (seg_point - last).norm();
+                    if (seg_dist < std::max(1.0e-4, cfg_.resolution * 0.1)) {
+                        continue;
+                    }
+                    stamp += std::max(0.05, seg_dist / std::max(1.0e-3, cfg_.exp_traj_cfg.max_vel));
+                    guide_path.emplace_back(seg_point);
+                    guide_stamp.emplace_back(stamp);
+                    last = seg_point;
+                    ++appended;
+                }
+                remaining_horizon -= use_dist;
+                return keep_going;
+            };
+
+            if (forward_order) {
+                for (std::size_t i = nearest_id; i < frontend_path.size(); ++i) {
+                    if (!appendLimited(frontend_path[i])) {
+                        break;
+                    }
+                }
+            } else {
+                for (int i = static_cast<int>(nearest_id); i >= 0; --i) {
+                    if (!appendLimited(frontend_path[static_cast<std::size_t>(i)])) {
+                        break;
+                    }
+                }
+            }
+            if (appended > 0U && cfg_.print_log) {
+                ros_ptr_->info(" -- [Exploration] Use EPIC guide path for local trajectory: input_size={}, appended={}, endpoint=[{:.3f} {:.3f} {:.3f}].",
+                               frontend_path.size(),
+                               appended,
+                               guide_path.back().x(),
+                               guide_path.back().y(),
+                               guide_path.back().z());
+            }
+            return appended > 0U;
+        };
+
         // if need a geometry path
         if (temp_horizon > cfg_.resolution * 2) {
+            bool appended_exploration_guide = appendExplorationGuideSuffix();
+            if (!appended_exploration_guide) {
+                if (use_exploration_guide) {
+                    ros_ptr_->warn(" -- [Exploration] EPIC guide path could not extend local guide, fall back to point-to-point A*.");
+                }
             /// start point TT + exp_traj start_WT
 //            double path_search_start_point_WT = guide_stamp.back() + guide_pos_traj.start_WT;
             // if the goal is close to the last point of the guide path, just add the goal to the guide path
@@ -5869,6 +6046,7 @@ namespace general_planner {
                         guide_stamp.emplace_back(time_stamp);
                     }
                 }
+            }
             }
 	        }
 

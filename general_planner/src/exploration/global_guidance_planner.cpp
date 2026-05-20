@@ -10,7 +10,14 @@ namespace exploration {
 
 GlobalGuidancePlanner::GlobalGuidancePlanner(Config cfg)
         : cfg_(std::move(cfg)),
-          tsp_solver_(TspSolver::Config{cfg_.use_two_opt, 40}) {}
+          tsp_solver_(TspSolver::Config{cfg_.use_two_opt,
+                                        40,
+                                        cfg_.use_lkh,
+                                        cfg_.lkh_fallback_to_two_opt,
+                                        cfg_.tsp_dir,
+                                        cfg_.tsp_problem_name,
+                                        cfg_.lkh_executable,
+                                        cfg_.lkh_cost_scale}) {}
 
 bool GlobalGuidancePlanner::buildGuidance(const super_utils::Vec3f &robot_pos,
                                           const double current_travel_distance,
@@ -108,6 +115,22 @@ bool GlobalGuidancePlanner::buildGuidance(const super_utils::Vec3f &robot_pos,
                     gain_bias +
                     cfg_.weight_revisit *
                     static_cast<double>(candidates[static_cast<std::size_t>(j)].frontier.selected_count);
+        }
+    }
+    for (int i = 0; i < n; ++i) {
+        cost_matrix[static_cast<std::size_t>(i + 1)][0] =
+                2.0e3 - 0.2 * candidates[static_cast<std::size_t>(i)].route.cost;
+    }
+    for (int i = 0; i <= n; ++i) {
+        for (int j = 1; j <= n; ++j) {
+            for (int k = 1; k <= n; ++k) {
+                const double ik = cost_matrix[static_cast<std::size_t>(i)][static_cast<std::size_t>(k)];
+                const double kj = cost_matrix[static_cast<std::size_t>(k)][static_cast<std::size_t>(j)];
+                const double ij = cost_matrix[static_cast<std::size_t>(i)][static_cast<std::size_t>(j)];
+                if (std::isfinite(ik) && std::isfinite(kj) && ij > ik + kj) {
+                    cost_matrix[static_cast<std::size_t>(i)][static_cast<std::size_t>(j)] = ik + kj + 1.0e-2;
+                }
+            }
         }
     }
 

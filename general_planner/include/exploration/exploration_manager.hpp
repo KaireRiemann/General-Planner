@@ -15,6 +15,7 @@ public:
 
     struct Config {
         bool enable{false};
+        bool use_epic_frontend{true};
         bool print_log{true};
 
         ObservationMap::Config observation_map;
@@ -47,9 +48,21 @@ public:
                            const super_utils::Vec3f &sensor_position,
                            double stamp);
 
+    int updateFrontiers(double stamp);
+    void updateTopoGraph(const rog_map::RobotState &robot,
+                         double current_yaw,
+                         double stamp = -1.0);
+    bool planGlobalTour(const rog_map::RobotState &robot,
+                        double current_yaw,
+                        GlobalGuidanceResult &result);
+
     bool planNextGoal(const rog_map::RobotState &robot,
                       double current_yaw,
                       ExplorationGoal &goal);
+
+    bool planOnce(const rog_map::RobotState &robot,
+                  double current_yaw,
+                  ExplorationPlan &plan);
 
     void onGoalReached(const ExplorationGoal &goal, double stamp);
     void onGoalFailed(const ExplorationGoal &goal, const std::string &reason, double stamp);
@@ -64,6 +77,13 @@ public:
     int observationFrontierCount() const { return observation_map_ ? observation_map_->frontierVoxelCount() : 0; }
 
 private:
+    void validateRuntimeConfig() const;
+
+    static super_utils::vec_E<super_utils::Vec3f> buildGuidePathToGoal(
+            const GlobalRoute &route,
+            const super_utils::Vec3f &robot_pos,
+            const super_utils::Vec3f &goal_pos);
+
     bool selectNextLocalSubgoal(const GlobalRoute &route,
                                 const rog_map::RobotState &robot,
                                 ExplorationGoal &goal) const;
@@ -78,6 +98,9 @@ private:
                         const std::string &reason,
                         bool fallback) const;
 
+    void visualizePlan(const ExplorationPlan &plan,
+                       const std::vector<FrontierRecord> &active_frontiers) const;
+
 private:
     Config cfg_;
     MapManager::Ptr map_manager_;
@@ -85,6 +108,7 @@ private:
     ros_interface::RosInterface::Ptr ros_ptr_;
 
     std::shared_ptr<ObservationMap> observation_map_;
+    EpicMapAdapter::Ptr map_adapter_;
     std::unique_ptr<FrontierDatabase> frontier_db_;
     std::unique_ptr<ViewpointManager> viewpoint_manager_;
     std::unique_ptr<TopoGraph> topo_graph_;
@@ -101,6 +125,8 @@ private:
     bool has_last_observation_position_{false};
     bool exploration_finished_{false};
 };
+
+using EpicExplorationFrontend = ExplorationManager;
 
 }  // namespace exploration
 }  // namespace general_planner

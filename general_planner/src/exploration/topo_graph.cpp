@@ -16,7 +16,15 @@ TopoGraph::TopoGraph(Config cfg,
         : cfg_(std::move(cfg)),
           map_manager_(std::move(map_manager)),
           astar_(std::move(astar)),
-          observation_map_(std::move(observation_map)) {}
+          observation_map_(std::move(observation_map)) {
+    if (cfg_.use_parallel_bubble_astar_for_edges) {
+        ParallelBubbleAstar::Config bubble_cfg;
+        bubble_cfg.resolution = cfg_.bubble_astar_resolution;
+        bubble_cfg.safe_distance = cfg_.bubble_astar_safe_distance;
+        bubble_cfg.max_nodes = cfg_.bubble_astar_max_nodes;
+        bubble_astar_ = std::make_unique<ParallelBubbleAstar>(bubble_cfg, map_manager_);
+    }
+}
 
 void TopoGraph::updateOdomNode(const super_utils::Vec3f &pos, const double yaw) {
     if (odom_node_id_ < 0) {
@@ -143,6 +151,110 @@ bool TopoGraph::graphSearchBetweenFrontiers(const int from_frontier_id,
     return !path.empty();
 }
 
+bool TopoGraph::routeToPosition(const super_utils::Vec3f &position,
+                                double &cost,
+                                const double timeout) const {
+    GlobalRoute route;
+    if (!routeToPosition(position, route, timeout)) {
+        cost = std::numeric_limits<double>::infinity();
+        return false;
+    }
+    cost = route.cost;
+    return true;
+}
+
+bool TopoGraph::routeToPosition(const super_utils::Vec3f &position,
+                                GlobalRoute &route,
+                                const double timeout) const {
+    route = GlobalRoute{};
+    (void)timeout;
+    if (odom_node_id_ < 0 || nodes_.find(odom_node_id_) == nodes_.end() ||
+        !position.allFinite()) {
+        return false;
+    }
+
+    std::vector<int> source_ids;
+    source_ids.reserve(history_node_ids_.size() + 1U);
+    source_ids.push_back(odom_node_id_);
+    for (const int history_id : history_node_ids_) {
+        if (nodes_.find(history_id) != nodes_.end()) {
+            source_ids.push_back(history_id);
+        }
+    }
+    std::sort(source_ids.begin(),
+              source_ids.end(),
+              [this, &position](const int lhs, const int rhs) {
+                  return (nodes_.at(lhs).position - position).squaredNorm() <
+                         (nodes_.at(rhs).position - position).squaredNorm();
+              });
+
+    double best_cost = std::numeric_limits<double>::infinity();
+    std::vector<int> best_node_ids;
+    super_utils::vec_E<super_utils::Vec3f> best_path;
+    for (const int source_id : source_ids) {
+        double graph_cost = 0.0;
+        std::vector<int> graph_nodes;
+        super_utils::vec_E<super_utils::Vec3f> graph_path;
+        if (source_id == odom_node_id_) {
+            graph_nodes.push_back(odom_node_id_);
+            graph_path.push_back(nodes_.at(odom_node_id_).position);
+        } else {
+            graph_nodes = dijkstra(odom_node_id_, source_id, graph_cost);
+            if (graph_nodes.empty()) {
+                continue;
+            }
+            for (std::size_t i = 0; i + 1 < graph_nodes.size(); ++i) {
+                const int from = graph_nodes[i];
+                const int to = graph_nodes[i + 1];
+                const auto ait = adjacency_.find(from);
+                if (ait == adjacency_.end()) {
+                    continue;
+                }
+                for (const auto &edge : ait->second) {
+                    if (edge.to != to) {
+                        continue;
+                    }
+                    if (graph_path.empty()) {
+                        graph_path.insert(graph_path.end(), edge.path.begin(), edge.path.end());
+                    } else if (!edge.path.empty()) {
+                        graph_path.insert(graph_path.end(), edge.path.begin() + 1, edge.path.end());
+                    }
+                    break;
+                }
+            }
+        }
+
+        super_utils::vec_E<super_utils::Vec3f> tail_path;
+        double tail_cost = 0.0;
+        if (!tryBuildEdgeBetweenPositions(nodes_.at(source_id).position, position, tail_path, tail_cost)) {
+            continue;
+        }
+        const double total_cost = graph_cost + tail_cost;
+        if (total_cost >= best_cost) {
+            continue;
+        }
+        best_cost = total_cost;
+        best_node_ids = graph_nodes;
+        best_path = graph_path;
+        if (best_path.empty()) {
+            best_path.push_back(nodes_.at(source_id).position);
+        }
+        if (!tail_path.empty()) {
+            best_path.insert(best_path.end(), tail_path.begin() + (best_path.empty() ? 0 : 1), tail_path.end());
+        }
+    }
+
+    if (!std::isfinite(best_cost)) {
+        return false;
+    }
+    route.valid = true;
+    route.target_frontier_id = -1;
+    route.node_ids = best_node_ids;
+    route.path = best_path;
+    route.cost = best_cost;
+    return true;
+}
+
 bool TopoGraph::getNode(const int node_id, ExplorationTopoNode &node) const {
     const auto it = nodes_.find(node_id);
     if (it == nodes_.end()) {
@@ -150,6 +262,23 @@ bool TopoGraph::getNode(const int node_id, ExplorationTopoNode &node) const {
     }
     node = it->second;
     return true;
+}
+
+void TopoGraph::getGraph(std::vector<ExplorationTopoNode> &nodes,
+                         std::vector<ExplorationTopoEdge> &edges) const {
+    nodes.clear();
+    edges.clear();
+    nodes.reserve(nodes_.size());
+    for (const auto &kv : nodes_) {
+        nodes.emplace_back(kv.second);
+    }
+    for (const auto &kv : adjacency_) {
+        for (const auto &edge : kv.second) {
+            if (edge.from <= edge.to) {
+                edges.emplace_back(edge);
+            }
+        }
+    }
 }
 
 void TopoGraph::markEdgeUnreachable(const int from, const int to) {
@@ -198,17 +327,7 @@ bool TopoGraph::tryBuildEdge(const int from_id,
     const super_utils::Vec3f goal = tit->second.position;
     super_utils::vec_E<super_utils::Vec3f> path;
     double cost = 0.0;
-    bool ok = false;
-    if (cfg_.use_local_astar_for_edges &&
-        map_manager_ != nullptr &&
-        map_manager_->insideLocalMap(start) &&
-        map_manager_->insideLocalMap(goal)) {
-        ok = localAstarPath(start, goal, path, cost);
-    }
-    if (!ok && cfg_.use_global_line_free_for_edges) {
-        ok = globalLineOrObservedFreePath(start, goal, path, cost);
-    }
-    if (!ok) {
+    if (!tryBuildEdgeBetweenPositions(start, goal, path, cost)) {
         return false;
     }
     edge.from = from_id;
@@ -217,6 +336,42 @@ bool TopoGraph::tryBuildEdge(const int from_id,
     edge.reachable = true;
     edge.path = path;
     return true;
+}
+
+bool TopoGraph::tryBuildEdgeBetweenPositions(const super_utils::Vec3f &start,
+                                             const super_utils::Vec3f &goal,
+                                             super_utils::vec_E<super_utils::Vec3f> &path,
+                                             double &cost) const {
+    path.clear();
+    cost = 0.0;
+    bool ok = false;
+    if (cfg_.use_local_astar_for_edges &&
+        map_manager_ != nullptr &&
+        map_manager_->insideLocalMap(start) &&
+        map_manager_->insideLocalMap(goal)) {
+        ok = localAstarPath(start, goal, path, cost);
+    }
+    if (!ok && bubble_astar_ != nullptr) {
+        super_utils::Vec3f bbox_min = start.cwiseMin(goal) -
+                                      super_utils::Vec3f::Constant(cfg_.connect_radius);
+        super_utils::Vec3f bbox_max = start.cwiseMax(goal) +
+                                      super_utils::Vec3f::Constant(cfg_.connect_radius);
+        const int ret = bubble_astar_->search(start,
+                                              goal,
+                                              path,
+                                              cfg_.local_edge_astar_timeout,
+                                              false,
+                                              bbox_min,
+                                              bbox_max);
+        ok = ret == ParallelBubbleAstar::REACH_END && !path.empty();
+        if (ok) {
+            bubble_astar_->calculatePathCost(path, cost);
+        }
+    }
+    if (!ok && cfg_.use_global_line_free_for_edges) {
+        ok = globalLineOrObservedFreePath(start, goal, path, cost);
+    }
+    return ok;
 }
 
 bool TopoGraph::localAstarPath(const super_utils::Vec3f &start,

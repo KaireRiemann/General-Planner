@@ -32,8 +32,9 @@ namespace path_search {
 
     Astar::Astar(const std::string &cfg_path,
                  const ros_interface::RosInterface::Ptr &ros_ptr,
-                 const general_planner::MapManager::Ptr &map_manager)
-        : map_manager_(map_manager), ros_ptr_(ros_ptr) {
+                 const general_planner::MapManager::Ptr &map_manager,
+                 const general_planner::MapBackend backend)
+        : map_manager_(map_manager), backend_(backend), ros_ptr_(ros_ptr) {
         cfg_ = PathSearchConfig(cfg_path);
         cout << rog_map::GREEN << " -- [RM] Init Astar-map." << rog_map::RESET << endl;
         int map_buffer_size = cfg_.map_voxel_num(0) * cfg_.map_voxel_num(1) * cfg_.map_voxel_num(2);
@@ -259,8 +260,11 @@ namespace path_search {
                 double dis = (hit_pt - start_pt).norm();
                 local_start_pt = start_pt + dir * (dis + md_.resolution * 2);
                 start_pt_out_local_map = true;
-                if (!map_manager_->getNearestInfCellNot(OCCUPIED, local_start_pt,
-                                                    local_start_pt, 3.0)) {
+                if (!map_manager_->findNearestStateValid(local_start_pt,
+                                                         backend_,
+                                                         local_start_pt,
+                                                         3.0,
+                                                         true)) {
                     if (cfg_.visual_process || cfg_.debug_visualization_en) {
                         ros_ptr_->vizAstarPoints(local_start_pt, Color::Orange(),
                                                  "local_start_pt",
@@ -282,7 +286,11 @@ namespace path_search {
                 double dis = (hit_pt - end_pt).norm();
                 local_end_pt = end_pt + dir * (dis + 2.5);
 
-                if (!map_manager_->getNearestInfCellNot(OCCUPIED, local_end_pt, local_end_pt, 2.0)) {
+                if (!map_manager_->findNearestStateValid(local_end_pt,
+                                                         backend_,
+                                                         local_end_pt,
+                                                         2.0,
+                                                         true)) {
                     ros_ptr_->error(
                             " -- [A*] Error with: {}, Goal point [{}] deeply occupied, cannot find feasible path.",
                             RET_CODE_STR[INIT_ERROR],
@@ -447,10 +455,10 @@ namespace path_search {
                         rog_map::GridType neighbor_type;
 
                         if (md_.use_inf_map) {
-                            neighbor_type = map_manager_->getInfGridType(neighborPos);
+                            neighbor_type = map_manager_->getPolicyGridType(neighborPos, backend_, true);
                         } else {
                             if (!md_.use_inf_neighbor) {
-                                neighbor_type = map_manager_->getGridType(neighborPos);
+                                neighbor_type = map_manager_->getPolicyGridType(neighborPos, backend_, false);
                             } else {
                                 // use prob map, but query all neighbors of the current node
                                 // if there is one neighbor is occupied, then the neighbor is occupied.
@@ -571,14 +579,17 @@ namespace path_search {
         /// 2) Check start point
 
         if (!insideLocalMap(start_pt) ||
-            !map_manager_->insideLocalMap(start_pt)) {
+            !map_manager_->isInMap(start_pt, backend_)) {
             fmt::print(fg(fmt::color::indian_red), " -- [A*] {}: escape start point is not inside local map.\n",
                        RET_CODE_STR[INIT_ERROR].c_str());
             return INIT_ERROR;
         }
         rog_map::Vec3f local_start_pt = start_pt;
-//        rog_map::GridType start_type = map_manager_->getGridType(local_start_pt);
-        if (!map_manager_->getNearestCellNot(OCCUPIED, start_pt, local_start_pt,3.0)) {
+        if (!map_manager_->findNearestStateValid(start_pt,
+                                                 backend_,
+                                                 local_start_pt,
+                                                 3.0,
+                                                 false)) {
             cout << rog_map::RED <<
                  " -- [A*] " << RET_CODE_STR[INIT_ERROR]
                  << " : escape start point deeply occupied, cannot find feasible path.\n" << rog_map::RESET << endl;
@@ -624,7 +635,7 @@ namespace path_search {
             }
             rog_map::Vec3f cur_pos;
             globalIndexToPos(current->id_g, cur_pos);
-            rog_map::GridType cur_inf_type = map_manager_->getInfGridType(cur_pos);
+            rog_map::GridType cur_inf_type = map_manager_->getPolicyGridType(cur_pos, backend_, true);
             if (md_.unknown_as_occ && cur_inf_type != OCCUPIED && cur_inf_type != UNKNOWN) {
                 retrievePath(current, node_path);
                 ConvertNodePathToPointPath(node_path, out_path);
@@ -655,16 +666,16 @@ namespace path_search {
                         neighborIdx(1) = (current->id_g)(1) + dy;
                         neighborIdx(2) = (current->id_g)(2) + dz;
                         globalIndexToPos(neighborIdx, neighborPos);
-                        if (!map_manager_->insideLocalMap(neighborPos) ||
+                        if (!map_manager_->isInMap(neighborPos, backend_) ||
                             !insideLocalMap(neighborIdx)) {
                             continue;
                         }
 
                         rog_map::GridType neighbor_type;
                         if (md_.use_inf_map) {
-                            neighbor_type = map_manager_->getInfGridType(neighborPos);
+                            neighbor_type = map_manager_->getPolicyGridType(neighborPos, backend_, true);
                         } else {
-                            neighbor_type = map_manager_->getGridType(neighborPos);
+                            neighbor_type = map_manager_->getPolicyGridType(neighborPos, backend_, false);
                         }
 
                         if (neighbor_type == OCCUPIED || neighbor_type == OUT_OF_MAP) {
@@ -735,10 +746,10 @@ namespace path_search {
             globalIndexToPos(nei_id, nei_pos);
             rog_map::GridType nei_type;
             if (md_.use_inf_map) {
-                nei_type = map_manager_->getInfGridType(nei_pos);
+                nei_type = map_manager_->getPolicyGridType(nei_pos, backend_, true);
             }
             else {
-                nei_type = map_manager_->getGridType(nei_pos);
+                nei_type = map_manager_->getPolicyGridType(nei_pos, backend_, false);
             }
             if (nei_type == type) {
                 return true;

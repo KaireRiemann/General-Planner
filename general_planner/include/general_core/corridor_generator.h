@@ -59,6 +59,7 @@ namespace general_planner {
         double virtual_groud_height_ = 0.0;
         double virtual_ceil_height_ = 0.0;
         MapManager::Ptr map_manager_;
+        MapBackend backend_{MapBackend::ROG};
         vec_E<Vec3i> line_seed_neighbor_list;
         CIRI::Ptr ciri_;
         std::ofstream failed_traj_log;
@@ -86,7 +87,8 @@ namespace general_planner {
                           const int box_search_skip_num,
                           const int iris_iter_num,
                           const optimization_utils::EllipsoidOptimizerConfig &ellipsoid_optimizer_config =
-                                  optimization_utils::EllipsoidOptimizerConfig());
+                                  optimization_utils::EllipsoidOptimizerConfig(),
+                          MapBackend backend = MapBackend::ROG);
 
         ~CorridorGenerator() = default;
 

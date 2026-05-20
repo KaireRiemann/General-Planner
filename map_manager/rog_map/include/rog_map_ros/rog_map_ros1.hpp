@@ -319,8 +319,10 @@ namespace rog_map {
 
             if (cfg_.ros_callback_en) {
                 rc_.odom_sub = nh_.subscribe(cfg_.odom_topic, 1, &ROGMapROS::odomCallback, this);
-                rc_.cloud_sub = nh_.subscribe(cfg_.cloud_topic, 1, &ROGMapROS::cloudCallback, this);
-                rc_.update_timer = nh_.createTimer(ros::Duration(0.001), &ROGMapROS::updateCallback, this);
+                if (cfg_.ros_callback_cloud_en) {
+                    rc_.cloud_sub = nh_.subscribe(cfg_.cloud_topic, 1, &ROGMapROS::cloudCallback, this);
+                    rc_.update_timer = nh_.createTimer(ros::Duration(0.001), &ROGMapROS::updateCallback, this);
+                }
             }
         }
 

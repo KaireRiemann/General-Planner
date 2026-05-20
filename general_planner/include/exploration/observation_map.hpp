@@ -14,10 +14,12 @@ namespace exploration {
 struct SurfaceVoxel {
     EIGEN_MAKE_ALIGNED_OPERATOR_NEW
 
-    SurfaceVoxelState state{SurfaceVoxelState::POORLY_OBSERVED};
+    SurfaceVoxelState state{SurfaceVoxelState::UNKNOWN};
     super_utils::Vec3f center{super_utils::Vec3f::Zero()};
     super_utils::Vec3f normal{super_utils::Vec3f::UnitX()};
     double quality{0.0};
+    double observation_distance{0.0};
+    double direction_score{1.0};
     double last_seen_time{0.0};
     double first_seen_time{0.0};
     double generated_travel_distance{0.0};
@@ -34,6 +36,9 @@ public:
         double min_observation_distance{0.2};
         double well_observed_distance{4.0};
         double max_observation_distance{12.0};
+        double good_observation_force_trust_length{1.5};
+        double good_observation_trust_length{4.0};
+        double good_observation_direction_score{0.5};
         int cloud_downsample_step{1};
         int max_points_per_update{12000};
         double normal_ema_alpha{0.35};
@@ -60,6 +65,7 @@ public:
     void getFrontierClusters(std::vector<SurfaceFrontierCluster> &clusters) const;
 
     bool getVoxel(const super_utils::Vec3f &position, SurfaceVoxel &voxel) const;
+    SurfaceVoxelState getCellState(const super_utils::Vec3f &position) const;
 
     double nearestSurfaceDistance(const super_utils::Vec3f &position,
                                   double max_search_radius) const;
@@ -85,8 +91,11 @@ private:
                                              CloudFrame frame) const;
 
     bool insideBounds(const super_utils::Vec3f &position) const;
-    bool computeIsFrontier(const VoxelKey &key) const;
+    SurfaceVoxelState classifyObservation(double range, double direction_score) const;
+    SurfaceVoxelState computeFrontierState(const VoxelKey &key) const;
     void updateFrontierAround(const VoxelKey &key);
+    static bool hasDenseState(SurfaceVoxelState state);
+    static bool hasSparseOrFrontierState(SurfaceVoxelState state);
 
 private:
     Config cfg_;
@@ -97,4 +106,3 @@ private:
 
 }  // namespace exploration
 }  // namespace general_planner
-

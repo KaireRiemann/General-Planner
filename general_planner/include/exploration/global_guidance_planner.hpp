@@ -1,5 +1,7 @@
 #pragma once
 
+#include <string>
+
 #include "exploration/topo_graph.hpp"
 #include "exploration/tsp_solver.hpp"
 
@@ -25,6 +27,12 @@ public:
         double weight_revisit{0.5};
         bool use_two_opt{true};
         bool keep_current_target{true};
+        bool use_lkh{false};
+        bool lkh_fallback_to_two_opt{true};
+        std::string tsp_dir{"/tmp/general_planner_tsp"};
+        std::string tsp_problem_name{"general_planner_global"};
+        std::string lkh_executable;
+        int lkh_cost_scale{100};
     };
 
     explicit GlobalGuidancePlanner(Config cfg);
@@ -52,4 +60,3 @@ private:
 
 }  // namespace exploration
 }  // namespace general_planner
-

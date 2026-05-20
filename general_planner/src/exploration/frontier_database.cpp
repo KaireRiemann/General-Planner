@@ -24,7 +24,9 @@ void FrontierDatabase::update(const std::vector<SurfaceFrontierCluster> &cluster
         record.bbox_max = cluster.bbox_max;
         record.cells = cluster.cells;
         record.normals = cluster.normals;
+        record.cell_states = cluster.cell_states;
         record.cell_count = cluster.raw_size;
+        record.dominant_state = cluster.dominant_state;
         record.last_observed_time = stamp;
         if (record.first_observed_time < 0.0) {
             record.first_observed_time = stamp;

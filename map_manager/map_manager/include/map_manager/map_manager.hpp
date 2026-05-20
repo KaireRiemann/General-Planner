@@ -7,11 +7,14 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <map_manager/global_exploration_map.hpp>
 #include <map_manager/global_pointcloud_map.hpp>
 #include <map_manager/global_region_grid.hpp>
+#include <map_manager/map_backend.hpp>
+#include <map_manager/pointcloud_map.hpp>
 #include <rog_map/rog_map.h>
 #include <rog_map_ros/rog_map_ros1.hpp>
 #include <rog_map_ros/rog_map_ros2.hpp>
@@ -36,6 +39,11 @@ public:
         map_ = map;
     }
 
+    void setPointCloudMap(const PointCloudMap::Ptr &map)
+    {
+        pointcloud_map_ = map;
+    }
+
     bool ready() const
     {
         return map_ != nullptr;
@@ -49,6 +57,16 @@ public:
     rog_map::ROGMapROS::Ptr rawRosMap() const
     {
         return map_;
+    }
+
+    PointCloudMap::Ptr rawPointCloudMap() const
+    {
+        return pointcloud_map_;
+    }
+
+    bool hasPointCloudMap() const
+    {
+        return pointcloud_map_ != nullptr;
     }
 
     rog_map::Config getMapConfig() const
@@ -79,8 +97,17 @@ public:
     void enableGlobalPointCloudMap(const GlobalPointCloudMapConfig &cfg)
     {
         if (cfg.enable) {
-            global_pointcloud_map_ = std::make_unique<GlobalPointCloudMap>(cfg);
+            const bool use_global_pointcloud_backend =
+                    pointcloud_map_ == nullptr ||
+                    pointcloud_map_.get() == global_pointcloud_map_.get();
+            global_pointcloud_map_ = std::make_shared<GlobalPointCloudMap>(cfg);
+            if (use_global_pointcloud_backend) {
+                pointcloud_map_ = global_pointcloud_map_;
+            }
         } else {
+            if (pointcloud_map_.get() == global_pointcloud_map_.get()) {
+                pointcloud_map_.reset();
+            }
             global_pointcloud_map_.reset();
         }
     }
@@ -376,6 +403,342 @@ public:
         map_->boxSearchInflate(box_min, box_max, gt, out_points);
     }
 
+    bool isStateValid(const rog_map::Vec3f &pos,
+                      const MapBackend backend = MapBackend::ROG) const
+    {
+        switch (backend) {
+            case MapBackend::POINT_CLOUD:
+                return isPointCloudStateValid(pos);
+            case MapBackend::HYBRID:
+                if (!isRogStateValid(pos)) {
+                    return false;
+                }
+                return pointcloud_map_ == nullptr || isPointCloudStateValid(pos);
+            case MapBackend::ROG:
+            default:
+                return isRogStateValid(pos);
+        }
+    }
+
+    bool isStateValid(const rog_map::Vec3f &pos,
+                      const MapBackend backend,
+                      const bool use_inf_map,
+                      const bool unknown_as_occupied) const
+    {
+        const auto state = getPolicyGridType(pos, backend, use_inf_map);
+        if (state == rog_map::GridType::OCCUPIED ||
+            state == rog_map::GridType::OUT_OF_MAP) {
+            return false;
+        }
+        return !(unknown_as_occupied && state == rog_map::GridType::UNKNOWN);
+    }
+
+    bool isLineFree(const rog_map::Vec3f &start_pt,
+                    const rog_map::Vec3f &end_pt,
+                    const MapBackend backend) const
+    {
+        switch (backend) {
+            case MapBackend::POINT_CLOUD:
+                return isPointCloudLineFree(start_pt, end_pt);
+            case MapBackend::HYBRID:
+                if (map_ == nullptr || !map_->isLineFree(start_pt, end_pt, true, false)) {
+                    return false;
+                }
+                return pointcloud_map_ == nullptr || isPointCloudLineFree(start_pt, end_pt);
+            case MapBackend::ROG:
+            default:
+                return map_ != nullptr && map_->isLineFree(start_pt, end_pt, true, false);
+        }
+    }
+
+    bool isLineFree(const rog_map::Vec3f &start_pt,
+                    const rog_map::Vec3f &end_pt,
+                    const MapBackend backend,
+                    const double &max_dis,
+                    const rog_map::vec_E<rog_map::Vec3i> &neighbor_list) const
+    {
+        switch (backend) {
+            case MapBackend::POINT_CLOUD:
+                return isPointCloudLineFree(start_pt, end_pt, max_dis);
+            case MapBackend::HYBRID:
+                if (map_ == nullptr || !map_->isLineFree(start_pt, end_pt, max_dis, neighbor_list)) {
+                    return false;
+                }
+                return pointcloud_map_ == nullptr || isPointCloudLineFree(start_pt, end_pt, max_dis);
+            case MapBackend::ROG:
+            default:
+                return map_ != nullptr && map_->isLineFree(start_pt, end_pt, max_dis, neighbor_list);
+        }
+    }
+
+    bool isLineFree(const rog_map::Vec3f &start_pt,
+                    const rog_map::Vec3f &end_pt,
+                    const MapBackend backend,
+                    const bool &use_inf_map,
+                    const bool &use_unk_as_occ) const
+    {
+        switch (backend) {
+            case MapBackend::POINT_CLOUD:
+                return isPointCloudLineFree(start_pt, end_pt);
+            case MapBackend::HYBRID:
+                if (map_ == nullptr ||
+                    !map_->isLineFree(start_pt, end_pt, use_inf_map, use_unk_as_occ)) {
+                    return false;
+                }
+                return pointcloud_map_ == nullptr || isPointCloudLineFree(start_pt, end_pt);
+            case MapBackend::ROG:
+            default:
+                return map_ != nullptr && map_->isLineFree(start_pt, end_pt, use_inf_map, use_unk_as_occ);
+        }
+    }
+
+    void getObstaclePointsInBox(rog_map::Vec3f &box_min,
+                                rog_map::Vec3f &box_max,
+                                const MapBackend backend,
+                                rog_map::vec_E<rog_map::Vec3f> &out_points) const
+    {
+        out_points.clear();
+        switch (backend) {
+            case MapBackend::POINT_CLOUD:
+                getPointCloudObstaclePointsInBox(box_min, box_max, out_points);
+                return;
+            case MapBackend::HYBRID: {
+                if (map_ != nullptr) {
+                    map_->boundBoxByLocalMap(box_min, box_max);
+                    map_->boxSearch(box_min, box_max, rog_map::GridType::OCCUPIED, out_points);
+                }
+                if (pointcloud_map_ != nullptr) {
+                    rog_map::vec_E<rog_map::Vec3f> pc_points;
+                    getPointCloudObstaclePointsInBox(box_min, box_max, pc_points);
+                    out_points.insert(out_points.end(), pc_points.begin(), pc_points.end());
+                }
+                return;
+            }
+            case MapBackend::ROG:
+            default:
+                if (map_ != nullptr) {
+                    map_->boundBoxByLocalMap(box_min, box_max);
+                    map_->boxSearch(box_min, box_max, rog_map::GridType::OCCUPIED, out_points);
+                }
+                return;
+        }
+    }
+
+    rog_map::GridType getPolicyGridType(const rog_map::Vec3f &pos,
+                                        const MapBackend backend,
+                                        const bool use_inf_map) const
+    {
+        switch (backend) {
+            case MapBackend::POINT_CLOUD:
+                return getPointCloudGridType(pos);
+            case MapBackend::HYBRID: {
+                const auto rog_state = getRogGridType(pos, use_inf_map);
+                if (rog_state == rog_map::GridType::OCCUPIED ||
+                    rog_state == rog_map::GridType::OUT_OF_MAP) {
+                    return rog_state;
+                }
+                if (pointcloud_map_ == nullptr) {
+                    return rog_state;
+                }
+                const auto pc_state = getPointCloudGridType(pos);
+                if (pc_state == rog_map::GridType::OCCUPIED ||
+                    pc_state == rog_map::GridType::OUT_OF_MAP) {
+                    return pc_state;
+                }
+                return rog_state;
+            }
+            case MapBackend::ROG:
+            default:
+                return getRogGridType(pos, use_inf_map);
+        }
+    }
+
+    bool findNearestStateValid(const rog_map::Vec3f &start_pos,
+                               const MapBackend backend,
+                               rog_map::Vec3f &nearest_pt,
+                               const double &max_dis,
+                               const bool use_inf_map) const
+    {
+        switch (backend) {
+            case MapBackend::POINT_CLOUD:
+                return findNearestPointCloudStateValid(start_pos, nearest_pt, max_dis);
+            case MapBackend::HYBRID:
+                if (pointcloud_map_ == nullptr) {
+                    return findNearestRogStateValid(start_pos, nearest_pt, max_dis, use_inf_map);
+                }
+                return findNearestSampledStateValid(start_pos, backend, nearest_pt, max_dis, use_inf_map);
+            case MapBackend::ROG:
+            default:
+                return findNearestRogStateValid(start_pos, nearest_pt, max_dis, use_inf_map);
+        }
+    }
+
+    bool isInMap(const rog_map::Vec3f &pos,
+                 const MapBackend backend) const
+    {
+        switch (backend) {
+            case MapBackend::POINT_CLOUD:
+                return pointcloud_map_ != nullptr && pos.allFinite() &&
+                       pointcloud_map_->isInMap(pos.cast<float>());
+            case MapBackend::HYBRID:
+                if (map_ == nullptr || !map_->insideLocalMap(pos)) {
+                    return false;
+                }
+                return pointcloud_map_ == nullptr || pointcloud_map_->isInMap(pos.cast<float>());
+            case MapBackend::ROG:
+            default:
+                return map_ != nullptr && map_->insideLocalMap(pos);
+        }
+    }
+
+    double getDisToOcc(const Eigen::Vector3f &pt) const
+    {
+        if (pointcloud_map_ != nullptr) {
+            return pointcloud_map_->getDisToOcc(pt);
+        }
+
+        if (map_ == nullptr || !pt.allFinite()) {
+            return 0.0;
+        }
+
+        const rog_map::Vec3f pos = pt.cast<double>();
+        double dist = 0.0;
+        rog_map::Vec3f grad = rog_map::Vec3f::Zero();
+        if (evaluateESDF(pos, dist, grad)) {
+            return dist;
+        }
+
+        PointCloudMap::PointVector nearest;
+        std::vector<float> sqr_distances;
+        KNN(pt, 1, nearest, sqr_distances);
+        if (!sqr_distances.empty()) {
+            return std::sqrt(static_cast<double>(sqr_distances.front()));
+        }
+
+        // Match EPIC's empty-neighbor placeholder scale until a real point-cloud backend is wired.
+        return 10.0;
+    }
+
+    void KNN(const PointCloudMap::PointType &pt,
+             const int k,
+             PointCloudMap::PointVector &pts,
+             std::vector<float> &sqr_distances) const
+    {
+        if (pointcloud_map_ != nullptr) {
+            pointcloud_map_->KNN(pt, k, pts, sqr_distances);
+            return;
+        }
+
+        pts.clear();
+        sqr_distances.clear();
+        if (map_ == nullptr || k <= 0) {
+            return;
+        }
+
+        const Eigen::Vector3f query(pt.x, pt.y, pt.z);
+        if (!query.allFinite()) {
+            return;
+        }
+
+        rog_map::Vec3f box_min = query.cast<double>() -
+                                 rog_map::Vec3f::Constant(10.0);
+        rog_map::Vec3f box_max = query.cast<double>() +
+                                 rog_map::Vec3f::Constant(10.0);
+        boundBoxByLocalMap(box_min, box_max);
+
+        rog_map::vec_E<rog_map::Vec3f> occupied_points;
+        boxSearch(box_min, box_max, rog_map::GridType::OCCUPIED, occupied_points);
+
+        std::vector<std::pair<float, PointCloudMap::PointType>> candidates;
+        candidates.reserve(occupied_points.size());
+        for (const auto &p : occupied_points) {
+            const Eigen::Vector3f pf = p.cast<float>();
+            const float sqr_dist = (pf - query).squaredNorm();
+            PointCloudMap::PointType out;
+            out.x = pf.x();
+            out.y = pf.y();
+            out.z = pf.z();
+            candidates.emplace_back(sqr_dist, out);
+        }
+
+        const auto keep = std::min<std::size_t>(static_cast<std::size_t>(k), candidates.size());
+        std::partial_sort(candidates.begin(),
+                          candidates.begin() + static_cast<std::ptrdiff_t>(keep),
+                          candidates.end(),
+                          [](const auto &lhs, const auto &rhs) {
+                              return lhs.first < rhs.first;
+                          });
+
+        pts.reserve(keep);
+        sqr_distances.reserve(keep);
+        for (std::size_t i = 0; i < keep; ++i) {
+            sqr_distances.emplace_back(candidates[i].first);
+            pts.emplace_back(candidates[i].second);
+        }
+    }
+
+    void KNN(const Eigen::Vector3f &pt,
+             const int k,
+             PointCloudMap::PointVector &pts,
+             std::vector<float> &sqr_distances) const
+    {
+        PointCloudMap::PointType query;
+        query.x = pt.x();
+        query.y = pt.y();
+        query.z = pt.z();
+        KNN(query, k, pts, sqr_distances);
+    }
+
+    void boxSearchPointCloud(const Eigen::Vector3f &box_min,
+                             const Eigen::Vector3f &box_max,
+                             PointCloudMap::PointVector &pts) const
+    {
+        if (pointcloud_map_ != nullptr) {
+            pointcloud_map_->boxSearchPointCloud(box_min, box_max, pts);
+            return;
+        }
+
+        pts.clear();
+        if (map_ == nullptr || !box_min.allFinite() || !box_max.allFinite()) {
+            return;
+        }
+
+        rog_map::Vec3f min_d = box_min.cast<double>();
+        rog_map::Vec3f max_d = box_max.cast<double>();
+        boundBoxByLocalMap(min_d, max_d);
+
+        rog_map::vec_E<rog_map::Vec3f> occupied_points;
+        boxSearch(min_d, max_d, rog_map::GridType::OCCUPIED, occupied_points);
+        pts.reserve(occupied_points.size());
+        for (const auto &p : occupied_points) {
+            const Eigen::Vector3f pf = p.cast<float>();
+            PointCloudMap::PointType out;
+            out.x = pf.x();
+            out.y = pf.y();
+            out.z = pf.z();
+            pts.emplace_back(out);
+        }
+    }
+
+    bool isInBox(const Eigen::Vector3f &pt) const
+    {
+        if (pointcloud_map_ != nullptr) {
+            return pointcloud_map_->isInBox(pt);
+        }
+        // TODO(pointcloud-map): ROGMap has no exploration-box/dead-area policy yet.
+        const rog_map::Vec3f pos = pt.cast<double>();
+        return map_ != nullptr && pt.allFinite() && map_->insideLocalMap(pos);
+    }
+
+    bool isInMap(const Eigen::Vector3f &pt) const
+    {
+        if (pointcloud_map_ != nullptr) {
+            return pointcloud_map_->isInMap(pt);
+        }
+        const rog_map::Vec3f pos = pt.cast<double>();
+        return map_ != nullptr && pt.allFinite() && map_->insideLocalMap(pos);
+    }
+
     bool hasESDF() const
     {
         return map_ != nullptr && map_->hasESDF();
@@ -471,9 +834,161 @@ public:
     }
 
 private:
+    rog_map::GridType getRogGridType(const rog_map::Vec3f &pos,
+                                     const bool use_inf_map) const
+    {
+        if (map_ == nullptr) {
+            return rog_map::GridType::OUT_OF_MAP;
+        }
+        return use_inf_map ? map_->getInfGridType(pos) : map_->getGridType(pos);
+    }
+
+    bool isRogStateValid(const rog_map::Vec3f &pos) const
+    {
+        return map_ != nullptr && !map_->isOccupiedInflate(pos);
+    }
+
+    rog_map::GridType getPointCloudGridType(const rog_map::Vec3f &pos) const
+    {
+        if (pointcloud_map_ == nullptr || !pos.allFinite()) {
+            return rog_map::GridType::OUT_OF_MAP;
+        }
+        const Eigen::Vector3f pos_f = pos.cast<float>();
+        if (!pointcloud_map_->isInMap(pos_f) || !pointcloud_map_->isInBox(pos_f)) {
+            return rog_map::GridType::OUT_OF_MAP;
+        }
+        const double dist = pointcloud_map_->getDisToOcc(pos_f);
+        if (!std::isfinite(dist) || dist <= 1.0e-3) {
+            return rog_map::GridType::OCCUPIED;
+        }
+        return rog_map::GridType::KNOWN_FREE;
+    }
+
+    bool isPointCloudStateValid(const rog_map::Vec3f &pos) const
+    {
+        return getPointCloudGridType(pos) == rog_map::GridType::KNOWN_FREE;
+    }
+
+    bool isPointCloudLineFree(const rog_map::Vec3f &start_pt,
+                              const rog_map::Vec3f &end_pt,
+                              const double max_dis = -1.0) const
+    {
+        if (pointcloud_map_ == nullptr || !start_pt.allFinite() || !end_pt.allFinite()) {
+            return false;
+        }
+        const rog_map::Vec3f delta = end_pt - start_pt;
+        const double length = delta.norm();
+        if (max_dis > 0.0 && length > max_dis) {
+            return false;
+        }
+        const double step = map_ != nullptr ? std::max(0.05, map_->getResolution()) : 0.10;
+        const int samples = std::max(1, static_cast<int>(std::ceil(length / step)));
+        for (int i = 0; i <= samples; ++i) {
+            const double ratio = static_cast<double>(i) / static_cast<double>(samples);
+            if (!isPointCloudStateValid(start_pt + ratio * delta)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    void getPointCloudObstaclePointsInBox(const rog_map::Vec3f &box_min,
+                                          const rog_map::Vec3f &box_max,
+                                          rog_map::vec_E<rog_map::Vec3f> &out_points) const
+    {
+        out_points.clear();
+        if (pointcloud_map_ == nullptr || !box_min.allFinite() || !box_max.allFinite()) {
+            return;
+        }
+        PointCloudMap::PointVector pc_points;
+        pointcloud_map_->boxSearchPointCloud(box_min.cast<float>(), box_max.cast<float>(), pc_points);
+        out_points.reserve(pc_points.size());
+        for (const auto &p : pc_points) {
+            out_points.emplace_back(p.x, p.y, p.z);
+        }
+    }
+
+    bool findNearestRogStateValid(const rog_map::Vec3f &start_pos,
+                                  rog_map::Vec3f &nearest_pt,
+                                  const double &max_dis,
+                                  const bool use_inf_map) const
+    {
+        if (map_ == nullptr) {
+            return false;
+        }
+        if (use_inf_map) {
+            return map_->getNearestInfCellNot(rog_map::GridType::OCCUPIED,
+                                              start_pos,
+                                              nearest_pt,
+                                              max_dis);
+        }
+        return map_->getNearestCellNot(rog_map::GridType::OCCUPIED,
+                                       start_pos,
+                                       nearest_pt,
+                                       max_dis);
+    }
+
+    bool findNearestPointCloudStateValid(const rog_map::Vec3f &start_pos,
+                                         rog_map::Vec3f &nearest_pt,
+                                         const double &max_dis) const
+    {
+        return findNearestSampledStateValid(start_pos,
+                                            MapBackend::POINT_CLOUD,
+                                            nearest_pt,
+                                            max_dis,
+                                            true);
+    }
+
+    bool findNearestSampledStateValid(const rog_map::Vec3f &start_pos,
+                                      const MapBackend backend,
+                                      rog_map::Vec3f &nearest_pt,
+                                      const double &max_dis,
+                                      const bool use_inf_map) const
+    {
+        if (!start_pos.allFinite() || max_dis < 0.0) {
+            return false;
+        }
+        if (isStateValid(start_pos, backend, use_inf_map, false)) {
+            nearest_pt = start_pos;
+            return true;
+        }
+
+        const double step = map_ != nullptr ? std::max(0.05, map_->getResolution()) : 0.10;
+        const int max_step = static_cast<int>(std::ceil(max_dis / step));
+        double best_sq = std::numeric_limits<double>::infinity();
+        bool found = false;
+        for (int r = 1; r <= max_step; ++r) {
+            for (int dx = -r; dx <= r; ++dx) {
+                for (int dy = -r; dy <= r; ++dy) {
+                    for (int dz = -r; dz <= r; ++dz) {
+                        if (std::max({std::abs(dx), std::abs(dy), std::abs(dz)}) != r) {
+                            continue;
+                        }
+                        const rog_map::Vec3f candidate =
+                                start_pos + step * rog_map::Vec3f(dx, dy, dz);
+                        const double sq = (candidate - start_pos).squaredNorm();
+                        if (sq > max_dis * max_dis || sq >= best_sq) {
+                            continue;
+                        }
+                        if (isStateValid(candidate, backend, use_inf_map, false)) {
+                            nearest_pt = candidate;
+                            best_sq = sq;
+                            found = true;
+                        }
+                    }
+                }
+            }
+            if (found) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     rog_map::ROGMapROS::Ptr map_;
+    PointCloudMap::Ptr pointcloud_map_;
     std::unique_ptr<GlobalExplorationMap> global_exploration_map_;
-    std::unique_ptr<GlobalPointCloudMap> global_pointcloud_map_;
+    GlobalPointCloudMap::Ptr global_pointcloud_map_;
     std::unique_ptr<GlobalRegionGrid> global_region_grid_;
     std::mutex global_update_mutex_;
     double last_global_update_stamp_{-1.0};

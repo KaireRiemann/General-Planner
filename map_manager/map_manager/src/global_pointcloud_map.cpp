@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 
 #include <pcl/io/pcd_io.h>
 
@@ -100,6 +101,108 @@ bool GlobalPointCloudMap::insideCrop(const Eigen::Vector3d &p) const {
     }
     return (p - cfg_.crop_min).minCoeff() >= -1.0e-9 &&
            (cfg_.crop_max - p).minCoeff() >= -1.0e-9;
+}
+
+double GlobalPointCloudMap::getDisToOcc(const Eigen::Vector3f &pt) const {
+    if (!pt.allFinite() || !insideCrop(pt.cast<double>())) {
+        return 0.0;
+    }
+
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!cloud_ || cloud_->empty()) {
+        return 10.0;
+    }
+
+    double best_sq = std::numeric_limits<double>::infinity();
+    for (const auto &p : cloud_->points) {
+        const Eigen::Vector3f obstacle(p.x, p.y, p.z);
+        best_sq = std::min(best_sq, static_cast<double>((obstacle - pt).squaredNorm()));
+    }
+    return std::isfinite(best_sq) ? std::sqrt(best_sq) : 10.0;
+}
+
+void GlobalPointCloudMap::KNN(const PointType &pt,
+                              const int k,
+                              PointVector &pts,
+                              std::vector<float> &sqr_distances) const {
+    pts.clear();
+    sqr_distances.clear();
+    if (k <= 0) {
+        return;
+    }
+
+    const Eigen::Vector3f query(pt.x, pt.y, pt.z);
+    if (!query.allFinite()) {
+        return;
+    }
+
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!cloud_ || cloud_->empty()) {
+        return;
+    }
+
+    std::vector<std::pair<float, PointType>> candidates;
+    candidates.reserve(cloud_->size());
+    for (const auto &p : cloud_->points) {
+        PointType out;
+        out.x = p.x;
+        out.y = p.y;
+        out.z = p.z;
+        const float sqr_dist = (Eigen::Vector3f(out.x, out.y, out.z) - query).squaredNorm();
+        candidates.emplace_back(sqr_dist, out);
+    }
+
+    const auto keep = std::min<std::size_t>(static_cast<std::size_t>(k), candidates.size());
+    std::partial_sort(candidates.begin(),
+                      candidates.begin() + static_cast<std::ptrdiff_t>(keep),
+                      candidates.end(),
+                      [](const auto &lhs, const auto &rhs) {
+                          return lhs.first < rhs.first;
+                      });
+
+    pts.reserve(keep);
+    sqr_distances.reserve(keep);
+    for (std::size_t i = 0; i < keep; ++i) {
+        sqr_distances.emplace_back(candidates[i].first);
+        pts.emplace_back(candidates[i].second);
+    }
+}
+
+void GlobalPointCloudMap::boxSearchPointCloud(const Eigen::Vector3f &box_min,
+                                              const Eigen::Vector3f &box_max,
+                                              PointVector &pts) const {
+    pts.clear();
+    if (!box_min.allFinite() || !box_max.allFinite()) {
+        return;
+    }
+
+    const Eigen::Vector3f min_pt = box_min.cwiseMin(box_max);
+    const Eigen::Vector3f max_pt = box_min.cwiseMax(box_max);
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!cloud_ || cloud_->empty()) {
+        return;
+    }
+
+    for (const auto &p : cloud_->points) {
+        const Eigen::Vector3f candidate(p.x, p.y, p.z);
+        if ((candidate - min_pt).minCoeff() < 0.0f ||
+            (max_pt - candidate).minCoeff() < 0.0f) {
+            continue;
+        }
+        PointType out;
+        out.x = p.x;
+        out.y = p.y;
+        out.z = p.z;
+        pts.emplace_back(out);
+    }
+}
+
+bool GlobalPointCloudMap::isInBox(const Eigen::Vector3f &pt) const {
+    return pt.allFinite() && insideCrop(pt.cast<double>());
+}
+
+bool GlobalPointCloudMap::isInMap(const Eigen::Vector3f &pt) const {
+    return isInBox(pt);
 }
 
 }  // namespace general_planner

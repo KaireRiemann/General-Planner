@@ -1,11 +1,16 @@
 fsm:
   task_mode: "exploration"
+  task_planner_en: false
   task_mode_topic: "/planning/task_mode"
   auto_start: true
   click_goal_en: false
   click_goal_topic: "/goal"
   click_height: 1.5
   click_yaw_en: false
+  tracking_target_odom_topic: "/tracking/target_odom"
+  tracking_target_prediction_topic: "/tracking/target_prediction"
+  perching_surface_odom_topic: "/perching/surface_odom"
+  task_timeout: 1.0
   replan_rate: 1.0
   cmd_topic: "/planning/pos_cmd"
   mpc_cmd_topic: "/planning_cmd/poly_traj"
@@ -13,8 +18,8 @@ fsm:
 
 general_planner:
   exploration_enable: true
-  backup_traj_en: false
-  esdf_traj_en: true
+  backup_traj_en: true
+  esdf_traj_en: false
   esdf_safe_distance: 0.35
   detailed_log_en: false
   visualization_en: true
@@ -49,12 +54,20 @@ general_planner:
   mpc_horizon: 15
 
   exploration:
+    enable: true
+    use_epic_frontend: true
+    astar_backend: "pointcloud"
+    corridor_backend: "pointcloud"
+    tsp_dir: "/tmp/general_planner_tsp"
     print_log: true
     observation_map:
       resolution: 0.3
       min_distance: 0.2
       well_observed_distance: 5.0
       max_distance: 22.0
+      good_force_trust_length: 4.5
+      good_trust_length: 12.0
+      good_direction_score: 0.6
       cloud_downsample_step: 1
       max_points_per_update: 18000
       frontier_cluster_radius: 0.8
@@ -87,6 +100,12 @@ general_planner:
       line_of_sight_step: 0.25
       min_gain: 0.5
       use_local_map_safety: false
+      cluster_by_visibility_sphere: true
+      use_topo_reachability_filter: true
+      max_clusters: 12
+      cluster_connectivity_scale: 1.0
+      topo_reachability_timeout: 0.03
+      epic_yaw_bins: 8
     topo_graph:
       history_node_min_distance: 1.0
       connect_radius: 10.0
@@ -97,6 +116,10 @@ general_planner:
       use_global_line_free_for_edges: true
       global_line_safe_distance: 0.3
       global_line_step: 0.35
+      use_parallel_bubble_astar_for_edges: true
+      bubble_astar_resolution: 0.4
+      bubble_astar_safe_distance: 0.6
+      bubble_astar_max_nodes: 1000000
     global_guidance:
       enable: true
       max_frontiers_in_tour: 24
@@ -105,6 +128,12 @@ general_planner:
       weight_revisit: 0.7
       use_two_opt: true
       keep_current_target: true
+      use_lkh: false
+      lkh_fallback_to_two_opt: true
+      tsp_dir: "/tmp/general_planner_tsp"
+      tsp_problem_name: "general_planner_spiral0"
+      lkh_executable: ""
+      lkh_cost_scale: 100
     global_route:
       route_waypoint_lookahead: 4.0
       route_waypoint_min_distance: 1.2
@@ -135,6 +164,9 @@ general_planner:
     enable: true
     voxel_size: 0.15
     save_path: "/tmp/exploration_spiral0_global_map.pcd"
+    crop_enable: true
+    crop_min: [ -65.0, -35.0, -1.0 ]
+    crop_max: [ 25.0, 12.0, 24.0 ]
   global_region_grid:
     enable: true
     region_size_xy: 5.0
@@ -243,18 +275,19 @@ rog_map:
     threshold: 0.4
 
   esdf:
-    enable: true
+    enable: false
     resolution: 0.2
     local_update_box: [ 20, 20, 12 ]
 
   ros_callback:
     enable: true
+    cloud_enable: false
     cloud_topic: "/cloud_registered"
     odom_topic: "/lidar_slam/odom"
     odom_timeout: 2.0
 
   visualization:
-    enable: true
+    enable: false
     use_dynamic_reconfigure: false
     time_rate: 2
     frame_rate: 0
@@ -266,7 +299,7 @@ rog_map:
   point_filt_num: 1
 
   raycasting:
-    enable: true
+    enable: false
     batch_update_size: 1
     local_update_box: [ 20, 20, 12 ]
     ray_range: [ 0.5, 22.0 ]

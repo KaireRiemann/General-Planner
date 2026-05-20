@@ -5,6 +5,7 @@
 
 #include <path_search/astar.h>
 
+#include "exploration/parallel_bubble_astar.hpp"
 #include "exploration/viewpoint_manager.hpp"
 
 namespace general_planner {
@@ -32,6 +33,10 @@ public:
         bool use_global_line_free_for_edges{true};
         double global_line_safe_distance{0.45};
         double global_line_step{0.25};
+        bool use_parallel_bubble_astar_for_edges{false};
+        double bubble_astar_resolution{0.5};
+        double bubble_astar_safe_distance{0.45};
+        int bubble_astar_max_nodes{8000};
     };
 
     TopoGraph(Config cfg,
@@ -47,8 +52,16 @@ public:
     bool graphSearchBetweenFrontiers(int from_frontier_id,
                                      int to_frontier_id,
                                      double &cost) const;
+    bool routeToPosition(const super_utils::Vec3f &position,
+                         double &cost,
+                         double timeout = 0.03) const;
+    bool routeToPosition(const super_utils::Vec3f &position,
+                         GlobalRoute &route,
+                         double timeout = 0.03) const;
 
     bool getNode(int node_id, ExplorationTopoNode &node) const;
+    void getGraph(std::vector<ExplorationTopoNode> &nodes,
+                  std::vector<ExplorationTopoEdge> &edges) const;
     void markEdgeUnreachable(int from, int to);
     void removeInactiveFrontierNodes(const std::unordered_set<int> &active_frontier_ids);
     void reset();
@@ -58,6 +71,10 @@ public:
 
 private:
     bool tryBuildEdge(int from_id, int to_id, ExplorationTopoEdge &edge) const;
+    bool tryBuildEdgeBetweenPositions(const super_utils::Vec3f &start,
+                                      const super_utils::Vec3f &goal,
+                                      super_utils::vec_E<super_utils::Vec3f> &path,
+                                      double &cost) const;
 
     bool localAstarPath(const super_utils::Vec3f &start,
                         const super_utils::Vec3f &goal,
@@ -78,6 +95,7 @@ private:
     MapManager::Ptr map_manager_;
     path_search::Astar::Ptr astar_;
     std::shared_ptr<ObservationMap> observation_map_;
+    std::unique_ptr<ParallelBubbleAstar> bubble_astar_;
 
     int next_node_id_{0};
     int odom_node_id_{-1};
@@ -92,4 +110,3 @@ private:
 
 }  // namespace exploration
 }  // namespace general_planner
-

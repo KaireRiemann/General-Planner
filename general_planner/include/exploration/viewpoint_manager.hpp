@@ -1,9 +1,12 @@
 #pragma once
 
+#include "exploration/epic_map_adapter.hpp"
 #include "exploration/frontier_database.hpp"
 
 namespace general_planner {
 namespace exploration {
+
+class TopoGraph;
 
 class ViewpointManager {
 public:
@@ -25,6 +28,12 @@ public:
         double line_of_sight_step{0.20};
         double min_gain{3.0};
         bool use_local_map_safety{false};
+        bool cluster_by_visibility_sphere{true};
+        bool use_topo_reachability_filter{true};
+        int max_viewpoint_clusters{8};
+        double viewpoint_cluster_connectivity_scale{1.0};
+        double topo_reachability_timeout{0.03};
+        int epic_yaw_bins{8};
     };
 
     explicit ViewpointManager(Config cfg);
@@ -32,6 +41,8 @@ public:
     bool generateBestViewpoints(const FrontierRecord &frontier,
                                 const ObservationMap &observation_map,
                                 const MapManager::Ptr &map_manager,
+                                const EpicMapAdapter::Ptr &map_adapter,
+                                const TopoGraph *topo_graph,
                                 const super_utils::Vec3f &robot_pos,
                                 double current_yaw,
                                 double stamp,
@@ -42,8 +53,13 @@ private:
     bool viewpointSafe(const super_utils::Vec3f &position,
                        const ObservationMap &observation_map,
                        const MapManager::Ptr &map_manager,
+                       const EpicMapAdapter::Ptr &map_adapter,
                        bool &local_safe,
                        double &surface_distance) const;
+
+    bool topoReachable(const TopoGraph *topo_graph,
+                       const super_utils::Vec3f &position,
+                       double &topo_cost) const;
 
     double evaluateGain(const FrontierRecord &frontier,
                         const ExplorationViewpoint &candidate,

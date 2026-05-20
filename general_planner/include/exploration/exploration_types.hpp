@@ -11,11 +11,15 @@
 namespace general_planner {
 namespace exploration {
 
-enum class SurfaceVoxelState : uint8_t {
-    POORLY_OBSERVED = 0,
-    WELL_OBSERVED = 1,
-    FRONTIER = 2
+enum class ObservationCellState : uint8_t {
+    DENSE = 0,
+    SPARSE = 1,
+    UNKNOWN = 2,
+    FRONTIER_DIS = 3,
+    FRONTIER_DIR = 4
 };
+
+using SurfaceVoxelState = ObservationCellState;
 
 enum class FrontierState {
     ACTIVE,
@@ -46,11 +50,13 @@ struct SurfaceFrontierCluster {
     int transient_id{-1};
     super_utils::vec_E<super_utils::Vec3f> cells;
     super_utils::vec_E<super_utils::Vec3f> normals;
+    std::vector<ObservationCellState> cell_states;
 
     super_utils::Vec3f center{super_utils::Vec3f::Zero()};
     super_utils::Vec3f normal{super_utils::Vec3f::UnitX()};
     super_utils::Vec3f bbox_min{super_utils::Vec3f::Zero()};
     super_utils::Vec3f bbox_max{super_utils::Vec3f::Zero()};
+    ObservationCellState dominant_state{ObservationCellState::FRONTIER_DIS};
 
     int raw_size{0};
     double stamp{0.0};
@@ -70,6 +76,8 @@ struct ExplorationViewpoint {
     double gain_raw{0.0};
     double gain_norm{0.0};
     double distance_to_surface{std::numeric_limits<double>::infinity()};
+    double topo_cost{std::numeric_limits<double>::infinity()};
+    int covered_frontier_count{0};
 
     bool reachable{false};
     bool visited{false};
@@ -94,8 +102,10 @@ struct FrontierRecord {
 
     super_utils::vec_E<super_utils::Vec3f> cells;
     super_utils::vec_E<super_utils::Vec3f> normals;
+    std::vector<ObservationCellState> cell_states;
 
     int cell_count{0};
+    ObservationCellState dominant_state{ObservationCellState::FRONTIER_DIS};
     double last_gain{0.0};
     double best_gain{0.0};
 
@@ -167,6 +177,20 @@ struct ExplorationGoal {
     GlobalRoute route;
 };
 
+struct ExplorationPlan {
+    EIGEN_MAKE_ALIGNED_OPERATOR_NEW
+
+    bool valid{false};
+    bool no_frontier{false};
+
+    super_utils::vec_E<super_utils::Vec3f> guide_path;
+    super_utils::Vec3f next_goal{super_utils::Vec3f::Zero()};
+    double next_yaw{0.0};
+
+    ExplorationGoal goal;
+    std::string reason;
+};
+
 inline const char *goalTypeName(const ExplorationGoalType type) {
     switch (type) {
         case ExplorationGoalType::FRONTIER_VIEWPOINT:
@@ -181,6 +205,34 @@ inline const char *goalTypeName(const ExplorationGoalType type) {
 
 inline bool frontierStateSelectable(const FrontierState state) {
     return state == FrontierState::ACTIVE || state == FrontierState::SELECTED;
+}
+
+inline bool isFrontierCellState(const ObservationCellState state) {
+    return state == ObservationCellState::FRONTIER_DIS ||
+           state == ObservationCellState::FRONTIER_DIR;
+}
+
+inline bool isObservedCellState(const ObservationCellState state) {
+    return state == ObservationCellState::DENSE ||
+           state == ObservationCellState::SPARSE ||
+           isFrontierCellState(state);
+}
+
+inline const char *observationCellStateName(const ObservationCellState state) {
+    switch (state) {
+        case ObservationCellState::DENSE:
+            return "DENSE";
+        case ObservationCellState::SPARSE:
+            return "SPARSE";
+        case ObservationCellState::UNKNOWN:
+            return "UNKNOWN";
+        case ObservationCellState::FRONTIER_DIS:
+            return "FRONTIER_DIS";
+        case ObservationCellState::FRONTIER_DIR:
+            return "FRONTIER_DIR";
+        default:
+            return "UNKNOWN";
+    }
 }
 
 }  // namespace exploration

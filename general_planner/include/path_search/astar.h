@@ -78,6 +78,7 @@ namespace path_search {
     class Astar {
 
         general_planner::MapManager::Ptr map_manager_;
+        general_planner::MapBackend backend_{general_planner::MapBackend::ROG};
         ros_interface::RosInterface::Ptr ros_ptr_;
 
         PathSearchConfig cfg_;
@@ -137,7 +138,8 @@ namespace path_search {
 
         Astar(const std::string & cfg_path,
               const ros_interface::RosInterface::Ptr &ros_ptr,
-              const general_planner::MapManager::Ptr &map_manager);
+              const general_planner::MapManager::Ptr &map_manager,
+              general_planner::MapBackend backend = general_planner::MapBackend::ROG);
 
         ~Astar() {};
 

@@ -26,6 +26,7 @@
 #define GENERAL_PLANNER_CONFIG_HPP
 
 #include <rog_map/rog_map_core/config.hpp>
+#include <map_manager/map_backend.hpp>
 #include <traj_opt/config.hpp>
 #include <utils/header/yaml_loader.hpp>
 
@@ -70,6 +71,8 @@ namespace general_planner {
         double esdf_safe_distance{0.3};
         double frontend_astar_time_out{0.1};
         bool over_wall_search_en{true};
+        MapBackend astar_backend{MapBackend::ROG};
+        MapBackend corridor_backend{MapBackend::ROG};
         double over_wall_max_climb{3.0};
         double over_wall_height_step{0.3};
         double over_wall_min_blocked_span{0.8};
@@ -111,12 +114,16 @@ namespace general_planner {
         bool se3_use_numeric_shape_gradient{false};
 
         bool exploration_enable{false};
+        bool exploration_use_epic_frontend{true};
         bool exploration_print_log{true};
 
         double exploration_observation_resolution{0.25};
         double exploration_observation_min_distance{0.2};
         double exploration_observation_well_distance{4.0};
         double exploration_observation_max_distance{12.0};
+        double exploration_observation_good_force_trust_length{1.5};
+        double exploration_observation_good_trust_length{4.0};
+        double exploration_observation_good_direction_score{0.5};
         int exploration_observation_cloud_downsample_step{1};
         int exploration_observation_max_points_per_update{12000};
         double exploration_observation_frontier_cluster_radius{0.65};
@@ -149,6 +156,12 @@ namespace general_planner {
         double exploration_viewpoint_line_of_sight_step{0.20};
         double exploration_viewpoint_min_gain{3.0};
         bool exploration_viewpoint_use_local_map_safety{false};
+        bool exploration_viewpoint_cluster_by_visibility_sphere{true};
+        bool exploration_viewpoint_use_topo_reachability_filter{true};
+        int exploration_viewpoint_max_clusters{8};
+        double exploration_viewpoint_cluster_connectivity_scale{1.0};
+        double exploration_viewpoint_topo_reachability_timeout{0.03};
+        int exploration_viewpoint_epic_yaw_bins{8};
 
         double exploration_topo_history_node_min_distance{1.0};
         double exploration_topo_connect_radius{8.0};
@@ -159,6 +172,10 @@ namespace general_planner {
         bool exploration_topo_use_global_line_free_for_edges{true};
         double exploration_topo_global_line_safe_distance{0.45};
         double exploration_topo_global_line_step{0.25};
+        bool exploration_topo_use_parallel_bubble_astar_for_edges{false};
+        double exploration_topo_bubble_astar_resolution{0.5};
+        double exploration_topo_bubble_astar_safe_distance{0.45};
+        int exploration_topo_bubble_astar_max_nodes{8000};
 
         bool exploration_global_guidance_enable{true};
         int exploration_global_guidance_max_frontiers_in_tour{16};
@@ -167,6 +184,12 @@ namespace general_planner {
         double exploration_global_guidance_weight_revisit{0.5};
         bool exploration_global_guidance_use_two_opt{true};
         bool exploration_global_guidance_keep_current_target{true};
+        bool exploration_global_guidance_use_lkh{false};
+        bool exploration_global_guidance_lkh_fallback_to_two_opt{true};
+        std::string exploration_global_guidance_tsp_dir{"/tmp/general_planner_tsp"};
+        std::string exploration_global_guidance_tsp_problem_name{"general_planner_global"};
+        std::string exploration_global_guidance_lkh_executable;
+        int exploration_global_guidance_lkh_cost_scale{100};
 
         double exploration_route_waypoint_lookahead{3.0};
         double exploration_route_waypoint_min_distance{1.0};
@@ -195,6 +218,9 @@ namespace general_planner {
         bool global_pointcloud_map_enable{false};
         double global_pointcloud_map_voxel_size{0.10};
         std::string global_pointcloud_map_save_path{"/tmp/explored_global_map.pcd"};
+        bool global_pointcloud_map_crop_enable{false};
+        std::vector<double> global_pointcloud_map_crop_min{-50.0, -50.0, -2.0};
+        std::vector<double> global_pointcloud_map_crop_max{50.0, 50.0, 10.0};
 
         bool global_region_grid_enable{false};
         double global_region_grid_region_size_xy{4.0};
@@ -461,6 +487,14 @@ namespace general_planner {
             loader.LoadParam("general_planner/receding_dis", receding_dis, 5.0);
             loader.LoadParam("general_planner/robot_r", robot_r, 0.3);
             loader.LoadParam("general_planner/frontend_astar_time_out", frontend_astar_time_out, 0.1);
+            std::string astar_backend_name{"rog"};
+            std::string corridor_backend_name{"rog"};
+            loader.LoadParam("general_planner/astar_backend", astar_backend_name, std::string("rog"));
+            loader.LoadParam("general_planner/corridor_backend", corridor_backend_name, std::string("rog"));
+            loader.LoadParam("general_planner/exploration/astar_backend", astar_backend_name, astar_backend_name);
+            loader.LoadParam("general_planner/exploration/corridor_backend", corridor_backend_name, corridor_backend_name);
+            astar_backend = mapBackendFromString(astar_backend_name);
+            corridor_backend = mapBackendFromString(corridor_backend_name);
             loader.LoadParam("general_planner/over_wall_search_en", over_wall_search_en, true);
             loader.LoadParam("general_planner/over_wall_max_climb", over_wall_max_climb, 3.0);
             loader.LoadParam("general_planner/over_wall_height_step", over_wall_height_step, 0.3);
@@ -521,6 +555,9 @@ namespace general_planner {
             loader.LoadParam("general_planner/se3_aggressive/use_numeric_shape_gradient",
                              se3_use_numeric_shape_gradient, false);
             loader.LoadParam("general_planner/exploration_enable", exploration_enable, false);
+            loader.LoadParam("general_planner/exploration/enable", exploration_enable, exploration_enable);
+            loader.LoadParam("general_planner/exploration/use_epic_frontend",
+                             exploration_use_epic_frontend, true);
             loader.LoadParam("general_planner/exploration/print_log",
                              exploration_print_log, true);
             loader.LoadParam("general_planner/exploration/observation_map/resolution",
@@ -531,6 +568,12 @@ namespace general_planner {
                              exploration_observation_well_distance, 4.0);
             loader.LoadParam("general_planner/exploration/observation_map/max_distance",
                              exploration_observation_max_distance, 12.0);
+            loader.LoadParam("general_planner/exploration/observation_map/good_force_trust_length",
+                             exploration_observation_good_force_trust_length, 1.5);
+            loader.LoadParam("general_planner/exploration/observation_map/good_trust_length",
+                             exploration_observation_good_trust_length, 4.0);
+            loader.LoadParam("general_planner/exploration/observation_map/good_direction_score",
+                             exploration_observation_good_direction_score, 0.5);
             loader.LoadParam("general_planner/exploration/observation_map/cloud_downsample_step",
                              exploration_observation_cloud_downsample_step, 1);
             loader.LoadParam("general_planner/exploration/observation_map/max_points_per_update",
@@ -593,6 +636,18 @@ namespace general_planner {
                              exploration_viewpoint_min_gain, 3.0);
             loader.LoadParam("general_planner/exploration/viewpoint/use_local_map_safety",
                              exploration_viewpoint_use_local_map_safety, false);
+            loader.LoadParam("general_planner/exploration/viewpoint/cluster_by_visibility_sphere",
+                             exploration_viewpoint_cluster_by_visibility_sphere, true);
+            loader.LoadParam("general_planner/exploration/viewpoint/use_topo_reachability_filter",
+                             exploration_viewpoint_use_topo_reachability_filter, true);
+            loader.LoadParam("general_planner/exploration/viewpoint/max_clusters",
+                             exploration_viewpoint_max_clusters, 8);
+            loader.LoadParam("general_planner/exploration/viewpoint/cluster_connectivity_scale",
+                             exploration_viewpoint_cluster_connectivity_scale, 1.0);
+            loader.LoadParam("general_planner/exploration/viewpoint/topo_reachability_timeout",
+                             exploration_viewpoint_topo_reachability_timeout, 0.03);
+            loader.LoadParam("general_planner/exploration/viewpoint/epic_yaw_bins",
+                             exploration_viewpoint_epic_yaw_bins, 8);
 
             loader.LoadParam("general_planner/exploration/topo_graph/history_node_min_distance",
                              exploration_topo_history_node_min_distance, 1.0);
@@ -612,6 +667,14 @@ namespace general_planner {
                              exploration_topo_global_line_safe_distance, 0.45);
             loader.LoadParam("general_planner/exploration/topo_graph/global_line_step",
                              exploration_topo_global_line_step, 0.25);
+            loader.LoadParam("general_planner/exploration/topo_graph/use_parallel_bubble_astar_for_edges",
+                             exploration_topo_use_parallel_bubble_astar_for_edges, false);
+            loader.LoadParam("general_planner/exploration/topo_graph/bubble_astar_resolution",
+                             exploration_topo_bubble_astar_resolution, 0.5);
+            loader.LoadParam("general_planner/exploration/topo_graph/bubble_astar_safe_distance",
+                             exploration_topo_bubble_astar_safe_distance, 0.45);
+            loader.LoadParam("general_planner/exploration/topo_graph/bubble_astar_max_nodes",
+                             exploration_topo_bubble_astar_max_nodes, 8000);
 
             loader.LoadParam("general_planner/exploration/global_guidance/enable",
                              exploration_global_guidance_enable, true);
@@ -627,6 +690,20 @@ namespace general_planner {
                              exploration_global_guidance_use_two_opt, true);
             loader.LoadParam("general_planner/exploration/global_guidance/keep_current_target",
                              exploration_global_guidance_keep_current_target, true);
+            loader.LoadParam("general_planner/exploration/global_guidance/use_lkh",
+                             exploration_global_guidance_use_lkh, false);
+            loader.LoadParam("general_planner/exploration/global_guidance/lkh_fallback_to_two_opt",
+                             exploration_global_guidance_lkh_fallback_to_two_opt, true);
+            loader.LoadParam("general_planner/exploration/global_guidance/tsp_dir",
+                             exploration_global_guidance_tsp_dir, std::string("/tmp/general_planner_tsp"));
+            loader.LoadParam("general_planner/exploration/tsp_dir",
+                             exploration_global_guidance_tsp_dir, exploration_global_guidance_tsp_dir);
+            loader.LoadParam("general_planner/exploration/global_guidance/tsp_problem_name",
+                             exploration_global_guidance_tsp_problem_name, std::string("general_planner_global"));
+            loader.LoadParam("general_planner/exploration/global_guidance/lkh_executable",
+                             exploration_global_guidance_lkh_executable, std::string(""));
+            loader.LoadParam("general_planner/exploration/global_guidance/lkh_cost_scale",
+                             exploration_global_guidance_lkh_cost_scale, 100);
 
             loader.LoadParam("general_planner/exploration/global_route/route_waypoint_lookahead",
                              exploration_route_waypoint_lookahead, 3.0);
@@ -679,6 +756,12 @@ namespace general_planner {
                              global_pointcloud_map_voxel_size, 0.10);
             loader.LoadParam("general_planner/global_pointcloud_map/save_path",
                              global_pointcloud_map_save_path, std::string("/tmp/explored_global_map.pcd"));
+            loader.LoadParam("general_planner/global_pointcloud_map/crop_enable",
+                             global_pointcloud_map_crop_enable, false);
+            loader.LoadParam("general_planner/global_pointcloud_map/crop_min",
+                             global_pointcloud_map_crop_min, std::vector<double>{-50.0, -50.0, -2.0});
+            loader.LoadParam("general_planner/global_pointcloud_map/crop_max",
+                             global_pointcloud_map_crop_max, std::vector<double>{50.0, 50.0, 10.0});
 
             loader.LoadParam("general_planner/global_region_grid/enable",
                              global_region_grid_enable, false);

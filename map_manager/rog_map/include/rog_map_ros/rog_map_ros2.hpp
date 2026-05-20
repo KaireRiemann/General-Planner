@@ -360,15 +360,17 @@ namespace rog_map {
                 so.callback_group = rc_.odom_me_cbk_group;
                 rc_.odom_sub = nh_->create_subscription<nav_msgs::msg::Odometry>(
                     cfg_.odom_topic, qos, std::bind(&ROGMapROS::odomCallback, this, std::placeholders::_1), so);
-                so.callback_group = rc_.cloud_me_cbk_group;
-                rc_.cloud_sub = nh_->create_subscription<sensor_msgs::msg::PointCloud2>(
-                    cfg_.cloud_topic, qos, std::bind(&ROGMapROS::cloudCallback, this, std::placeholders::_1), so);
-                rc_.update_cbk_group = nh_->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
-                rc_.update_timer = nh_->create_wall_timer(
-                    std::chrono::milliseconds(1), // 0.001秒，即1毫秒
-                    std::bind(&ROGMapROS::updateCallback, this),
-                    rc_.update_cbk_group
-                );
+                if (cfg_.ros_callback_cloud_en) {
+                    so.callback_group = rc_.cloud_me_cbk_group;
+                    rc_.cloud_sub = nh_->create_subscription<sensor_msgs::msg::PointCloud2>(
+                        cfg_.cloud_topic, qos, std::bind(&ROGMapROS::cloudCallback, this, std::placeholders::_1), so);
+                    rc_.update_cbk_group = nh_->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+                    rc_.update_timer = nh_->create_wall_timer(
+                        std::chrono::milliseconds(1),
+                        std::bind(&ROGMapROS::updateCallback, this),
+                        rc_.update_cbk_group
+                    );
+                }
             }
         }
 

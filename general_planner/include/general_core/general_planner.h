@@ -116,6 +116,9 @@ namespace general_planner {
         std::unique_ptr<SE3AggressiveManager> se3_aggressive_manager_;
         std::unique_ptr<exploration::ExplorationManager> exploration_manager_;
         exploration::ExplorationGoal latest_exploration_goal_;
+        exploration::ExplorationPlan latest_exploration_plan_;
+        exploration::ExplorationPlan active_exploration_plan_;
+        bool active_exploration_guide_{false};
 
         vector<double> time_consuming_;
 
@@ -301,6 +304,9 @@ namespace general_planner {
 
         RET_CODE ReplanExplorationOnce(const bool &new_task);
 
+        RET_CODE PlanExplorationOnce(const bool &new_task,
+                                     const bool &from_rest);
+
         bool getLatestExplorationGoal(exploration::ExplorationGoal &goal) const;
 
         bool globalExplorationMapReady() const {
@@ -331,8 +337,14 @@ namespace general_planner {
         RET_CODE generateExpTraj(ExpTraj &last_exp_traj_info,
                                  ExpTraj &out_exp_traj_info);
 
+        RET_CODE generateExpTrajFromGuidePath(const exploration::ExplorationPlan &plan,
+                                              ExpTraj &last_exp_traj_info,
+                                              ExpTraj &out_exp_traj_info);
+
         /* For Backup traj generation */
         RET_CODE generateBackupTrajectory(ExpTraj &ref_exp_traj, BackupTraj &back_traj_info);
+
+        RET_CODE tryCommitExplorationBackupFallback(const std::string &reason);
 
         int getNearestFurtherGoalPoint(const vec_E<Vec3f> &goals, const Vec3f &start_pt);
 

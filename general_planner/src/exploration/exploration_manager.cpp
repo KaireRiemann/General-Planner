@@ -2,6 +2,11 @@
 
 #include <algorithm>
 #include <cmath>
+#include <fstream>
+#include <limits>
+#include <stdexcept>
+
+#include <boost/filesystem.hpp>
 
 namespace general_planner {
 namespace exploration {
@@ -30,7 +35,9 @@ ExplorationManager::ExplorationManager(Config cfg,
           map_manager_(std::move(map_manager)),
           astar_(std::move(astar)),
           ros_ptr_(std::move(ros_ptr)) {
+    validateRuntimeConfig();
     observation_map_ = std::make_shared<ObservationMap>(cfg_.observation_map);
+    map_adapter_ = std::make_shared<EpicMapAdapter>(map_manager_);
     frontier_db_ = std::make_unique<FrontierDatabase>(cfg_.frontier_database);
     viewpoint_manager_ = std::make_unique<ViewpointManager>(cfg_.viewpoint_manager);
     topo_graph_ = std::make_unique<TopoGraph>(cfg_.topo_graph, map_manager_, astar_, observation_map_);
@@ -50,35 +57,32 @@ void ExplorationManager::updateObservation(const rog_map::PointCloud &cloud,
     }
     last_observation_position_ = sensor_position;
     has_last_observation_position_ = true;
+    if (map_adapter_ != nullptr) {
+        map_adapter_->updateCloudOdom(cloud, pose, frame, sensor_position);
+    }
     observation_map_->update(cloud, pose, frame, sensor_position, travel_distance_, stamp);
 }
 
-bool ExplorationManager::planNextGoal(const rog_map::RobotState &robot,
-                                      const double current_yaw,
-                                      ExplorationGoal &goal) {
-    goal = ExplorationGoal{};
-    const double stamp = ros_ptr_ ? ros_ptr_->getSimTime() : 0.0;
-    if (!cfg_.enable) {
-        goal.reason = "exploration disabled";
-        logPlanSummary(goal, goal.reason, false);
-        return false;
+int ExplorationManager::updateFrontiers(const double stamp) {
+    if (!cfg_.enable || observation_map_ == nullptr || frontier_db_ == nullptr) {
+        return 0;
     }
-    if (observation_map_ == nullptr || frontier_db_ == nullptr ||
-        viewpoint_manager_ == nullptr || topo_graph_ == nullptr ||
-        global_guidance_planner_ == nullptr) {
-        goal.reason = "exploration modules are not ready";
-        logPlanSummary(goal, goal.reason, false);
-        return false;
-    }
-    if (!robot.rcv) {
-        goal.reason = "no odom";
-        logPlanSummary(goal, goal.reason, false);
-        return false;
-    }
-
     std::vector<SurfaceFrontierCluster> clusters;
     observation_map_->getFrontierClusters(clusters);
     frontier_db_->update(clusters, stamp);
+    return frontier_db_->activeCount();
+}
+
+void ExplorationManager::updateTopoGraph(const rog_map::RobotState &robot,
+                                         const double current_yaw,
+                                         const double stamp_in) {
+    if (!cfg_.enable || !robot.rcv || frontier_db_ == nullptr ||
+        viewpoint_manager_ == nullptr || topo_graph_ == nullptr) {
+        return;
+    }
+    const double stamp = stamp_in >= 0.0 ? stamp_in : (ros_ptr_ ? ros_ptr_->getSimTime() : 0.0);
+    topo_graph_->updateOdomNode(robot.p, current_yaw);
+    topo_graph_->updateHistoryOdomNodes(robot.p, current_yaw);
 
     std::vector<FrontierRecord> active_frontiers = frontier_db_->getActiveFrontiers();
     for (const auto &frontier : active_frontiers) {
@@ -87,6 +91,8 @@ bool ExplorationManager::planNextGoal(const rog_map::RobotState &robot,
         viewpoint_manager_->generateBestViewpoints(frontier,
                                                    *observation_map_,
                                                    map_manager_,
+                                                   map_adapter_,
+                                                   topo_graph_.get(),
                                                    robot.p,
                                                    current_yaw,
                                                    stamp,
@@ -96,29 +102,100 @@ bool ExplorationManager::planNextGoal(const rog_map::RobotState &robot,
     }
 
     active_frontiers = frontier_db_->getActiveFrontiers();
-    topo_graph_->updateOdomNode(robot.p, current_yaw);
-    topo_graph_->updateHistoryOdomNodes(robot.p, current_yaw);
     topo_graph_->insertOrUpdateFrontierNodes(active_frontiers);
+}
 
-    if (active_frontiers.empty()) {
-        exploration_finished_ = observation_map_->observedVoxelCount() > 0;
-        goal.reason = exploration_finished_ ? "no active frontier" : "observation map empty";
-        logPlanSummary(goal, goal.reason, false);
+bool ExplorationManager::planGlobalTour(const rog_map::RobotState &robot,
+                                        const double current_yaw,
+                                        GlobalGuidanceResult &result) {
+    result = GlobalGuidanceResult{};
+    if (!cfg_.enable || !cfg_.use_epic_frontend || !robot.rcv ||
+        frontier_db_ == nullptr || topo_graph_ == nullptr ||
+        global_guidance_planner_ == nullptr) {
+        result.reason = !cfg_.enable ? "exploration disabled" : "exploration modules are not ready";
         return false;
     }
-
-    GlobalGuidanceResult guidance;
+    (void)current_yaw;
+    const std::vector<FrontierRecord> active_frontiers = frontier_db_->getActiveFrontiers();
     if (!global_guidance_planner_->buildGuidance(robot.p,
                                                  travel_distance_,
                                                  active_frontiers,
                                                  *topo_graph_,
                                                  current_target_frontier_id_,
                                                  current_route_,
-                                                 guidance)) {
+                                                 result)) {
+        return false;
+    }
+    current_route_ = result.route;
+    current_target_frontier_id_ = current_route_.target_frontier_id;
+    return true;
+}
+
+bool ExplorationManager::planNextGoal(const rog_map::RobotState &robot,
+                                      const double current_yaw,
+                                      ExplorationGoal &goal) {
+    ExplorationPlan plan;
+    const bool ok = planOnce(robot, current_yaw, plan);
+    goal = plan.goal;
+    return ok;
+}
+
+bool ExplorationManager::planOnce(const rog_map::RobotState &robot,
+                                  const double current_yaw,
+                                  ExplorationPlan &plan) {
+    plan = ExplorationPlan{};
+    ExplorationGoal &goal = plan.goal;
+    goal = ExplorationGoal{};
+    const double stamp = ros_ptr_ ? ros_ptr_->getSimTime() : 0.0;
+    if (!cfg_.enable) {
+        goal.reason = "exploration disabled";
+        plan.reason = goal.reason;
+        logPlanSummary(goal, goal.reason, false);
+        return false;
+    }
+    if (!cfg_.use_epic_frontend) {
+        goal.reason = "epic exploration frontend disabled";
+        plan.reason = goal.reason;
+        logPlanSummary(goal, goal.reason, false);
+        return false;
+    }
+    if (observation_map_ == nullptr || frontier_db_ == nullptr ||
+        viewpoint_manager_ == nullptr || topo_graph_ == nullptr ||
+        global_guidance_planner_ == nullptr) {
+        goal.reason = "exploration modules are not ready";
+        plan.reason = goal.reason;
+        logPlanSummary(goal, goal.reason, false);
+        return false;
+    }
+    if (!robot.rcv) {
+        goal.reason = "no odom";
+        plan.reason = goal.reason;
+        logPlanSummary(goal, goal.reason, false);
+        return false;
+    }
+
+    updateFrontiers(stamp);
+    updateTopoGraph(robot, current_yaw, stamp);
+    std::vector<FrontierRecord> active_frontiers = frontier_db_->getActiveFrontiers();
+
+    if (active_frontiers.empty()) {
+        exploration_finished_ = observation_map_->observedVoxelCount() > 0;
+        goal.reason = exploration_finished_ ? "no active frontier" : "observation map empty";
+        plan.no_frontier = true;
+        plan.reason = goal.reason;
+        logPlanSummary(goal, goal.reason, false);
+        visualizePlan(plan, active_frontiers);
+        return false;
+    }
+
+    GlobalGuidanceResult guidance;
+    if (!planGlobalTour(robot, current_yaw, guidance)) {
         current_target_frontier_id_ = -1;
         current_route_ = GlobalRoute{};
         goal.reason = guidance.reason;
+        plan.reason = goal.reason;
         logPlanSummary(goal, goal.reason, false);
+        visualizePlan(plan, active_frontiers);
         return false;
     }
 
@@ -131,7 +208,9 @@ bool ExplorationManager::planNextGoal(const rog_map::RobotState &robot,
         current_target_frontier_id_ = -1;
         current_route_ = GlobalRoute{};
         goal.reason = "global route has no local reachable subgoal";
+        plan.reason = goal.reason;
         logPlanSummary(goal, goal.reason, false);
+        visualizePlan(plan, active_frontiers);
         return false;
     }
 
@@ -141,12 +220,21 @@ bool ExplorationManager::planNextGoal(const rog_map::RobotState &robot,
         current_route_ = GlobalRoute{};
         goal.valid = false;
         goal.reason = "stuck detected, blacklist current frontier";
+        plan.reason = goal.reason;
         logPlanSummary(goal, goal.reason, false);
+        visualizePlan(plan, active_frontiers);
         return false;
     }
 
     exploration_finished_ = false;
+    plan.valid = true;
+    plan.no_frontier = false;
+    plan.next_goal = goal.position;
+    plan.next_yaw = goal.yaw;
+    plan.guide_path = buildGuidePathToGoal(goal.route, robot.p, goal.position);
+    plan.reason = "goal selected";
     logPlanSummary(goal, "goal selected", false);
+    visualizePlan(plan, active_frontiers);
     return true;
 }
 
@@ -206,6 +294,85 @@ void ExplorationManager::reset() {
     travel_distance_ = 0.0;
     has_last_observation_position_ = false;
     exploration_finished_ = false;
+}
+
+void ExplorationManager::validateRuntimeConfig() const {
+    if (!cfg_.enable || !cfg_.use_epic_frontend) {
+        return;
+    }
+
+    if (map_manager_ == nullptr || !map_manager_->hasPointCloudMap()) {
+        throw std::runtime_error(
+                "EPIC exploration frontend requires PointCloudMap when exploration/use_epic_frontend=true");
+    }
+
+    const bool bbox_valid =
+            cfg_.observation_map.bbox_min_x < cfg_.observation_map.bbox_max_x &&
+            cfg_.observation_map.bbox_min_y < cfg_.observation_map.bbox_max_y &&
+            cfg_.observation_map.bbox_min_z < cfg_.observation_map.bbox_max_z;
+    if (!bbox_valid) {
+        throw std::invalid_argument("EPIC exploration observation map boundaries are invalid");
+    }
+
+    if (cfg_.global_guidance.tsp_dir.empty()) {
+        throw std::invalid_argument("EPIC exploration tsp_dir is empty");
+    }
+
+    boost::system::error_code ec;
+    const boost::filesystem::path tsp_dir(cfg_.global_guidance.tsp_dir);
+    boost::filesystem::create_directories(tsp_dir, ec);
+    if (ec || !boost::filesystem::is_directory(tsp_dir)) {
+        throw std::runtime_error("EPIC exploration tsp_dir does not exist or cannot be created: " +
+                                 cfg_.global_guidance.tsp_dir);
+    }
+
+    const boost::filesystem::path probe_path =
+            tsp_dir / ".general_planner_epic_write_probe";
+    {
+        std::ofstream probe(probe_path.string(), std::ios::out | std::ios::trunc);
+        if (!probe.good()) {
+            throw std::runtime_error("EPIC exploration tsp_dir is not writable: " +
+                                     cfg_.global_guidance.tsp_dir);
+        }
+    }
+    boost::filesystem::remove(probe_path, ec);
+}
+
+super_utils::vec_E<super_utils::Vec3f> ExplorationManager::buildGuidePathToGoal(
+        const GlobalRoute &route,
+        const super_utils::Vec3f &robot_pos,
+        const super_utils::Vec3f &goal_pos) {
+    super_utils::vec_E<super_utils::Vec3f> guide;
+    auto append_unique = [&guide](const super_utils::Vec3f &point) {
+        if (!point.allFinite()) {
+            return;
+        }
+        if (guide.empty() || (guide.back() - point).norm() > 1.0e-4) {
+            guide.emplace_back(point);
+        }
+    };
+
+    append_unique(robot_pos);
+    if (route.path.empty()) {
+        append_unique(goal_pos);
+        return guide;
+    }
+
+    std::size_t goal_index = 0U;
+    double best_dist = std::numeric_limits<double>::infinity();
+    for (std::size_t i = 0; i < route.path.size(); ++i) {
+        const double dist = (route.path[i] - goal_pos).squaredNorm();
+        if (dist < best_dist) {
+            best_dist = dist;
+            goal_index = i;
+        }
+    }
+
+    for (std::size_t i = 0; i <= goal_index && i < route.path.size(); ++i) {
+        append_unique(route.path[i]);
+    }
+    append_unique(goal_pos);
+    return guide;
 }
 
 bool ExplorationManager::selectNextLocalSubgoal(const GlobalRoute &route,
@@ -351,6 +518,32 @@ void ExplorationManager::logPlanSummary(const ExplorationGoal &goal,
                    goal.position.z(),
                    fallback,
                    reason);
+}
+
+void ExplorationManager::visualizePlan(const ExplorationPlan &plan,
+                                       const std::vector<FrontierRecord> &active_frontiers) const {
+    if (!ros_ptr_) {
+        return;
+    }
+    std::vector<ExplorationViewpoint> viewpoints;
+    for (const auto &frontier : active_frontiers) {
+        viewpoints.insert(viewpoints.end(), frontier.viewpoints.begin(), frontier.viewpoints.end());
+    }
+
+    std::vector<ExplorationTopoNode> topo_nodes;
+    std::vector<ExplorationTopoEdge> topo_edges;
+    if (topo_graph_) {
+        topo_graph_->getGraph(topo_nodes, topo_edges);
+    }
+
+    ros_ptr_->vizExplorationFrontierClusters(active_frontiers);
+    ros_ptr_->vizExplorationTopoGraph(topo_nodes, topo_edges);
+    ros_ptr_->vizExplorationViewpoints(viewpoints);
+    if (!plan.guide_path.empty()) {
+        ros_ptr_->vizExplorationGlobalTour(plan.guide_path);
+    } else if (current_route_.valid && !current_route_.path.empty()) {
+        ros_ptr_->vizExplorationGlobalTour(current_route_.path);
+    }
 }
 
 }  // namespace exploration

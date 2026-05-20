@@ -1,5 +1,6 @@
 #pragma once
 
+#include <string>
 #include <vector>
 
 namespace general_planner {
@@ -10,6 +11,12 @@ public:
     struct Config {
         bool use_two_opt{true};
         int two_opt_max_iterations{40};
+        bool use_lkh{false};
+        bool lkh_fallback_to_two_opt{true};
+        std::string tsp_dir{"/tmp/general_planner_tsp"};
+        std::string problem_name{"general_planner_global"};
+        std::string lkh_executable;
+        int lkh_cost_scale{100};
     };
 
     explicit TspSolver(Config cfg);
@@ -18,6 +25,11 @@ public:
                        std::vector<int> &order) const;
 
 private:
+    bool solveATSPWithLKH(const std::vector<std::vector<double>> &cost_matrix,
+                          std::vector<int> &order) const;
+    bool solveGreedyTwoOpt(const std::vector<std::vector<double>> &cost_matrix,
+                           std::vector<int> &order) const;
+
     void twoOpt(const std::vector<std::vector<double>> &cost_matrix,
                 std::vector<int> &order) const;
 
@@ -30,4 +42,3 @@ private:
 
 }  // namespace exploration
 }  // namespace general_planner
-

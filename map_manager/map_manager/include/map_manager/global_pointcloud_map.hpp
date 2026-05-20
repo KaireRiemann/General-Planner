@@ -6,6 +6,7 @@
 
 #include <Eigen/Eigen>
 #include <map_manager/global_exploration_map.hpp>
+#include <map_manager/pointcloud_map.hpp>
 #include <pcl/point_cloud.h>
 #include <pcl/point_types.h>
 #include <rog_map/rog_map.h>
@@ -24,7 +25,7 @@ struct GlobalPointCloudMapConfig {
     Eigen::Vector3d crop_max{50.0, 50.0, 10.0};
 };
 
-class GlobalPointCloudMap {
+class GlobalPointCloudMap : public PointCloudMap {
 public:
     using Ptr = std::shared_ptr<GlobalPointCloudMap>;
 
@@ -41,6 +42,17 @@ public:
     int pointCount() const;
 
     void reset();
+
+    double getDisToOcc(const Eigen::Vector3f &pt) const override;
+    void KNN(const PointType &pt,
+             int k,
+             PointVector &pts,
+             std::vector<float> &sqr_distances) const override;
+    void boxSearchPointCloud(const Eigen::Vector3f &box_min,
+                             const Eigen::Vector3f &box_max,
+                             PointVector &pts) const override;
+    bool isInBox(const Eigen::Vector3f &pt) const override;
+    bool isInMap(const Eigen::Vector3f &pt) const override;
 
 private:
     Eigen::Vector3i posToKey(const Eigen::Vector3d &p) const;
