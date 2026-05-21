@@ -11,6 +11,7 @@ enum class MapBackend
 {
     ROG,
     POINT_CLOUD,
+    LOCAL_EDT,
     HYBRID
 };
 
@@ -33,6 +34,9 @@ inline MapBackend mapBackendFromString(const std::string &name)
     if (normalized == "hybrid") {
         return MapBackend::HYBRID;
     }
+    if (normalized == "local_edt" || normalized == "edt" || normalized == "esdf") {
+        return MapBackend::LOCAL_EDT;
+    }
     return MapBackend::ROG;
 }
 
@@ -43,6 +47,8 @@ inline std::string mapBackendToString(const MapBackend backend)
             return "point_cloud";
         case MapBackend::HYBRID:
             return "hybrid";
+        case MapBackend::LOCAL_EDT:
+            return "local_edt";
         case MapBackend::ROG:
         default:
             return "rog";

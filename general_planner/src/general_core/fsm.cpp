@@ -110,6 +110,16 @@ namespace fsm {
             ChangeState("ReplanTimerCallback", EMER_STOP);
         } else if (ret_code == NEW_TRAJ) {
             ChangeState("ReplanTimerCallback", GENERATE_TRAJ);
+        } else if (ret_code == NO_NEED && explorationMode()) {
+            const double remaining = planner_ptr_->getCommittedTrajectoryRemainingDuration();
+            if (remaining > 0.05) {
+                publishPolyTraj();
+                if (machine_state_ != FOLLOW_TRAJ) {
+                    ChangeState("ReplanTimerCallback", FOLLOW_TRAJ);
+                }
+            } else {
+                ChangeState("ReplanTimerCallback", GENERATE_TRAJ);
+            }
         } else if (ret_code == NO_NEED && (trackingMode() || trackingPerchingMode() || fullCycleMode())) {
             publishPolyTraj();
             if (trackingMode() && replan_tracking_static) {
@@ -226,7 +236,17 @@ namespace fsm {
                     ChangeState("MainFsmCallback", WAIT_GOAL);
                     return;
                 }
-                if (retcode == NO_NEED && trackingMode()) {
+                if (retcode == NO_NEED && explorationMode()) {
+                    const double remaining = planner_ptr_->getCommittedTrajectoryRemainingDuration();
+                    if (remaining > 0.05) {
+                        plan_from_rest_ = true;
+                        finish_plan = false;
+                        publishPolyTraj();
+                        ChangeState("MainFsmCallback", FOLLOW_TRAJ);
+                    } else {
+                        cout << YELLOW << " -- [Fsm] Exploration has no active trajectory to keep, try replan." << RESET << endl;
+                    }
+                } else if (retcode == NO_NEED && trackingMode()) {
                     plan_from_rest_ = true;
                     finish_plan = false;
                     publishPolyTraj();
@@ -559,7 +579,19 @@ namespace fsm {
                    dynamicTakeoffTaskReady();
         }
         if (explorationMode()) {
-            return cfg_.exploration_enable && started_ && !finish_plan;
+            if (!cfg_.exploration_enable || !started_ || finish_plan) {
+                return false;
+            }
+            if (planner_ptr_ && planner_ptr_->explorationObservationReady()) {
+                return true;
+            }
+            static double last_wait_observation_log = -1.0;
+            const double now = ros_ptr_ ? ros_ptr_->getSimTime() : 0.0;
+            if (last_wait_observation_log < 0.0 || now - last_wait_observation_log > 1.0) {
+                cout << YELLOW << " -- [Fsm] Exploration waits for first cloud observation." << RESET << endl;
+                last_wait_observation_log = now;
+            }
+            return false;
         }
         return false;
     }
@@ -578,7 +610,11 @@ namespace fsm {
             return false;
         }
         if (explorationMode()) {
-            return cfg_.exploration_enable && started_ && !finish_plan;
+            return cfg_.exploration_enable &&
+                   started_ &&
+                   !finish_plan &&
+                   planner_ptr_ &&
+                   planner_ptr_->explorationObservationReady();
         }
         if (fullCycleMode()) {
             return started_ && !finish_plan;

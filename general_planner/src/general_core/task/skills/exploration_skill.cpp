@@ -23,6 +23,13 @@ TaskTickResult ExplorationSkill::tick(const TaskContext &ctx) {
         result.reason = "exploration planner missing";
         return result;
     }
+    if (!planner_->explorationObservationReady()) {
+        TaskTickResult result;
+        result.status = TaskStatus::NOT_READY;
+        result.legacy_ret = super_utils::NO_NEED;
+        result.reason = "waiting for first exploration cloud observation";
+        return result;
+    }
     const RET_CODE ret = from_rest_
                          ? planner_->PlanExplorationFromRest(ctx.new_task)
                          : planner_->ReplanExplorationOnce(ctx.new_task);

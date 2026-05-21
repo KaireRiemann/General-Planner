@@ -35,15 +35,20 @@ find_package(catkin REQUIRED COMPONENTS
         map_manager
         yaml-cpp
         tf
+        lidar_map
+        pointcloud_topo
+        frontier_manager
+        lkh_tsp_solver
 )
 find_package(yaml-cpp REQUIRED)
 find_package(Boost REQUIRED COMPONENTS system filesystem regex iostreams)
 find_package(Eigen3 REQUIRED)
 find_package(PCL REQUIRED)
+find_package(OpenCV REQUIRED)
 catkin_package(
         INCLUDE_DIRS
         LIBRARIES general_planner_core
-        CATKIN_DEPENDS roscpp rospy std_msgs rog_map map_manager
+        CATKIN_DEPENDS roscpp rospy std_msgs rog_map map_manager lidar_map pointcloud_topo frontier_manager lkh_tsp_solver
         #  DEPENDS system_lib
 )
 
@@ -54,12 +59,14 @@ include_directories(
         ${catkin_INCLUDE_DIRS}
         ${Eigen3_INCLUDE_DIRS}
         ${PCL_INCLUDE_DIRS}
+        ${OpenCV_INCLUDE_DIRS}
 )
 
 
 set(THIRD_PARTY
         ${catkin_LIBRARIES}
         ${PCL_LIBRARIES}
+        ${OpenCV_LIBS}
         ${Boost_LIBRARIES}
         #        general_planner
         yaml-cpp

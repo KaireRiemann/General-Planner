@@ -55,11 +55,16 @@ general_planner:
 
   exploration:
     enable: true
+    frontend_type: "epic_original"
     use_epic_frontend: true
-    astar_backend: "pointcloud"
-    corridor_backend: "pointcloud"
+    cloud_frame: "WORLD"
+    astar_backend: "rog"
+    corridor_backend: "rog"
     tsp_dir: "/tmp/general_planner_tsp"
     print_log: true
+    epic_lio:
+      enable: true
+      voxel_leaf_size: 0.12
     observation_map:
       resolution: 0.3
       min_distance: 0.2
@@ -108,10 +113,10 @@ general_planner:
       epic_yaw_bins: 8
     topo_graph:
       history_node_min_distance: 1.0
-      connect_radius: 10.0
+      connect_radius: 5.0
       local_edge_astar_timeout: 0.05
-      global_edge_max_length: 16.0
-      max_history_nodes: 700
+      global_edge_max_length: 10.0
+      max_history_nodes: 220
       use_local_astar_for_edges: false
       use_global_line_free_for_edges: true
       global_line_safe_distance: 0.3
@@ -120,6 +125,25 @@ general_planner:
       bubble_astar_resolution: 0.4
       bubble_astar_safe_distance: 0.6
       bubble_astar_max_nodes: 1000000
+      use_epic_region_bubble_graph: true
+      max_edges_per_node: 10
+      max_region_edges_per_node: 7
+      max_frontier_edges_per_node: 4
+      max_history_edges_per_node: 2
+      max_candidate_neighbors: 20
+    topo:
+      use_epic_region_bubble_graph: true
+      region_size_xy: 3.3
+      region_size_z: 2.0
+      min_subregion_size_xy: 1.11
+      min_subregion_size_z: 0.51
+      bubble_min_radius: 0.61
+      frontier_bubble_min_radius: 0.61
+      cube_discrete_size: 0.4
+      max_update_region_num: 30
+      neighbor_mode: 18
+      edge_search_padding_scale: 1.0
+      edge_safe_distance: 0.45
     global_guidance:
       enable: true
       max_frontiers_in_tour: 24
@@ -128,8 +152,8 @@ general_planner:
       weight_revisit: 0.7
       use_two_opt: true
       keep_current_target: true
-      use_lkh: false
-      lkh_fallback_to_two_opt: true
+      use_lkh: true
+      lkh_fallback_to_two_opt: false
       tsp_dir: "/tmp/general_planner_tsp"
       tsp_problem_name: "general_planner_spiral0"
       lkh_executable: ""
@@ -141,6 +165,23 @@ general_planner:
       local_goal_safe_distance: 0.3
       route_replan_distance_threshold: 0.8
       use_local_map_safety: false
+    runtime:
+      local_goal_lookahead: 4.0
+      local_goal_min_distance: 1.0
+      final_goal_radius: 0.7
+      route_progress_min: 0.5
+      max_local_segment_fail_count: 3
+      keep_active_target: true
+      switch_score_ratio: 1.25
+    local_guide:
+      backend: "hybrid"
+      shortcut_enable: true
+      astar_repair_enable: true
+      unknown_as_occupied: false
+      planning_horizon: 8.0
+      max_segment_length: 1.0
+      safe_distance: 0.45
+      line_step: 0.20
     stuck:
       repeated_goal_threshold: 50
       repeated_goal_distance: 0.6
@@ -161,7 +202,7 @@ general_planner:
     cloud_downsample_step: 1
     max_points_per_update: 16000
   global_pointcloud_map:
-    enable: true
+    enable: false
     voxel_size: 0.15
     save_path: "/tmp/exploration_spiral0_global_map.pcd"
     crop_enable: true

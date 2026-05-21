@@ -330,6 +330,32 @@ namespace ros_interface {
                 center.pose.position.z = frontier.center.z();
                 mkr_arr.markers.emplace_back(center);
 
+                if (frontier.normal.squaredNorm() > 1.0e-6) {
+                    visualization_msgs::Marker normal;
+                    normal.header.frame_id = DEFAULT_FRAME_ID;
+                    normal.header.stamp = ros::Time::now();
+                    normal.ns = "exploration_frontier_normal";
+                    normal.id = marker_id++;
+                    normal.action = visualization_msgs::Marker::ADD;
+                    normal.pose.orientation.w = 1.0;
+                    normal.type = visualization_msgs::Marker::LINE_LIST;
+                    normal.scale.x = 0.045;
+                    normal.color = color;
+                    normal.color.a = 0.9;
+                    geometry_msgs::Point p0;
+                    p0.x = frontier.center.x();
+                    p0.y = frontier.center.y();
+                    p0.z = frontier.center.z();
+                    const Vec3f normal_tip = frontier.center + frontier.normal.normalized() * 0.8;
+                    geometry_msgs::Point p1;
+                    p1.x = normal_tip.x();
+                    p1.y = normal_tip.y();
+                    p1.z = normal_tip.z();
+                    normal.points.emplace_back(p0);
+                    normal.points.emplace_back(p1);
+                    mkr_arr.markers.emplace_back(normal);
+                }
+
                 if (!frontier.cells.empty()) {
                     visualization_msgs::Marker cells;
                     cells.header.frame_id = DEFAULT_FRAME_ID;
@@ -378,44 +404,122 @@ namespace ros_interface {
             };
 
             visualization_msgs::MarkerArray mkr_arr;
-            visualization_msgs::Marker node_marker;
-            node_marker.header.frame_id = DEFAULT_FRAME_ID;
-            node_marker.header.stamp = ros::Time::now();
-            node_marker.ns = "exploration_topo_nodes";
-            node_marker.id = 0;
-            node_marker.action = visualization_msgs::Marker::ADD;
-            node_marker.pose.orientation.w = 1.0;
-            node_marker.type = visualization_msgs::Marker::SPHERE_LIST;
-            node_marker.scale.x = 0.22;
-            node_marker.scale.y = 0.22;
-            node_marker.scale.z = 0.22;
-            node_marker.color = Color::Teal();
-            node_marker.color.a = 0.9;
+            int marker_id = 0;
+            auto makeNodeMarker = [&](const std::string &ns,
+                                      const Color &color,
+                                      const double scale) {
+                visualization_msgs::Marker marker;
+                marker.header.frame_id = DEFAULT_FRAME_ID;
+                marker.header.stamp = ros::Time::now();
+                marker.ns = ns;
+                marker.id = marker_id++;
+                marker.action = visualization_msgs::Marker::ADD;
+                marker.pose.orientation.w = 1.0;
+                marker.type = visualization_msgs::Marker::SPHERE_LIST;
+                marker.scale.x = scale;
+                marker.scale.y = scale;
+                marker.scale.z = scale;
+                marker.color = color;
+                return marker;
+            };
+            visualization_msgs::Marker odom_nodes =
+                    makeNodeMarker("exploration_topo_odom", Color::Yellow(), 0.34);
+            visualization_msgs::Marker history_nodes =
+                    makeNodeMarker("exploration_topo_history", Color::SteelBlue(), 0.18);
+            visualization_msgs::Marker region_nodes =
+                    makeNodeMarker("exploration_topo_region", Color::Teal(), 0.20);
+            visualization_msgs::Marker frontier_nodes =
+                    makeNodeMarker("exploration_topo_frontier_viewpoint", Color::Orange(), 0.30);
             for (const auto &node : nodes) {
-                node_marker.points.emplace_back(toPoint(node.position));
+                switch (node.type) {
+                    case general_planner::exploration::TopoNodeType::ODOM:
+                        odom_nodes.points.emplace_back(toPoint(node.position));
+                        break;
+                    case general_planner::exploration::TopoNodeType::HISTORY_ODOM:
+                        history_nodes.points.emplace_back(toPoint(node.position));
+                        break;
+                    case general_planner::exploration::TopoNodeType::FRONTIER_VIEWPOINT:
+                        frontier_nodes.points.emplace_back(toPoint(node.position));
+                        break;
+                    case general_planner::exploration::TopoNodeType::REGION:
+                    case general_planner::exploration::TopoNodeType::ROUTE_WAYPOINT:
+                    default:
+                        region_nodes.points.emplace_back(toPoint(node.position));
+                        break;
+                }
             }
-            mkr_arr.markers.emplace_back(node_marker);
+            if (!odom_nodes.points.empty()) {
+                mkr_arr.markers.emplace_back(odom_nodes);
+            }
+            if (!history_nodes.points.empty()) {
+                mkr_arr.markers.emplace_back(history_nodes);
+            }
+            if (!region_nodes.points.empty()) {
+                mkr_arr.markers.emplace_back(region_nodes);
+            }
+            if (!frontier_nodes.points.empty()) {
+                mkr_arr.markers.emplace_back(frontier_nodes);
+            }
 
-            visualization_msgs::Marker edge_marker;
-            edge_marker.header.frame_id = DEFAULT_FRAME_ID;
-            edge_marker.header.stamp = ros::Time::now();
-            edge_marker.ns = "exploration_topo_edges";
-            edge_marker.id = 1;
-            edge_marker.action = visualization_msgs::Marker::ADD;
-            edge_marker.pose.orientation.w = 1.0;
-            edge_marker.type = visualization_msgs::Marker::LINE_LIST;
-            edge_marker.scale.x = 0.035;
-            edge_marker.color = Color::SteelBlue();
-            edge_marker.color.a = 0.75;
+            auto makeEdgeMarker = [&](const std::string &ns,
+                                      const Color &color,
+                                      const double width) {
+                visualization_msgs::Marker marker;
+                marker.header.frame_id = DEFAULT_FRAME_ID;
+                marker.header.stamp = ros::Time::now();
+                marker.ns = ns;
+                marker.id = marker_id++;
+                marker.action = visualization_msgs::Marker::ADD;
+                marker.pose.orientation.w = 1.0;
+                marker.type = visualization_msgs::Marker::LINE_LIST;
+                marker.scale.x = width;
+                marker.color = color;
+                return marker;
+            };
+            visualization_msgs::Marker local_edges =
+                    makeEdgeMarker("exploration_topo_edges_local_astar", Color::Green(), 0.05);
+            visualization_msgs::Marker bubble_edges =
+                    makeEdgeMarker("exploration_topo_edges_bubble_astar", Color::SteelBlue(), 0.04);
+            visualization_msgs::Marker observed_edges =
+                    makeEdgeMarker("exploration_topo_edges_observed_line", Color::Yellow(), 0.03);
+            visualization_msgs::Marker unknown_edges =
+                    makeEdgeMarker("exploration_topo_edges_unknown", Color(0.8, 0.8, 0.8, 0.55), 0.025);
             for (const auto &edge : edges) {
+                visualization_msgs::Marker *edge_marker = &unknown_edges;
+                switch (edge.source) {
+                    case general_planner::exploration::GuidanceEdgeSource::LOCAL_ASTAR:
+                        edge_marker = &local_edges;
+                        break;
+                    case general_planner::exploration::GuidanceEdgeSource::BUBBLE_ASTAR:
+                        edge_marker = &bubble_edges;
+                        break;
+                    case general_planner::exploration::GuidanceEdgeSource::OBSERVED_LINE:
+                        edge_marker = &observed_edges;
+                        break;
+                    case general_planner::exploration::GuidanceEdgeSource::UNKNOWN:
+                    default:
+                        edge_marker = &unknown_edges;
+                        break;
+                }
                 if (edge.path.size() >= 2U) {
                     for (std::size_t i = 0; i + 1 < edge.path.size(); ++i) {
-                        edge_marker.points.emplace_back(toPoint(edge.path[i]));
-                        edge_marker.points.emplace_back(toPoint(edge.path[i + 1]));
+                        edge_marker->points.emplace_back(toPoint(edge.path[i]));
+                        edge_marker->points.emplace_back(toPoint(edge.path[i + 1]));
                     }
                 }
             }
-            mkr_arr.markers.emplace_back(edge_marker);
+            if (!local_edges.points.empty()) {
+                mkr_arr.markers.emplace_back(local_edges);
+            }
+            if (!bubble_edges.points.empty()) {
+                mkr_arr.markers.emplace_back(bubble_edges);
+            }
+            if (!observed_edges.points.empty()) {
+                mkr_arr.markers.emplace_back(observed_edges);
+            }
+            if (!unknown_edges.points.empty()) {
+                mkr_arr.markers.emplace_back(unknown_edges);
+            }
             exploration_topo_pub_.publish(mkr_arr);
         }
 
@@ -464,15 +568,34 @@ namespace ros_interface {
             yaws.color = Color::Yellow();
             yaws.color.a = 0.9;
 
+            visualization_msgs::Marker links;
+            links.header.frame_id = DEFAULT_FRAME_ID;
+            links.header.stamp = ros::Time::now();
+            links.ns = "exploration_viewpoint_frontier_links";
+            links.id = 2;
+            links.action = visualization_msgs::Marker::ADD;
+            links.pose.orientation.w = 1.0;
+            links.type = visualization_msgs::Marker::LINE_LIST;
+            links.scale.x = 0.025;
+            links.color = Color::Orange();
+            links.color.a = 0.55;
+
             for (const auto &viewpoint : viewpoints) {
                 points.points.emplace_back(toPoint(viewpoint.position));
                 const Vec3f tip = viewpoint.position +
                                   Vec3f(std::cos(viewpoint.yaw), std::sin(viewpoint.yaw), 0.0) * 0.65;
                 yaws.points.emplace_back(toPoint(viewpoint.position));
                 yaws.points.emplace_back(toPoint(tip));
+                if ((viewpoint.frontier_center - viewpoint.position).norm() > 1.0e-4) {
+                    links.points.emplace_back(toPoint(viewpoint.position));
+                    links.points.emplace_back(toPoint(viewpoint.frontier_center));
+                }
             }
             mkr_arr.markers.emplace_back(points);
             mkr_arr.markers.emplace_back(yaws);
+            if (!links.points.empty()) {
+                mkr_arr.markers.emplace_back(links);
+            }
             exploration_viewpoint_pub_.publish(mkr_arr);
         }
 

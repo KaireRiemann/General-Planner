@@ -25,6 +25,7 @@
 
 #include <iostream>
 #include <fstream>
+#include <cmath>
 #include <memory>
 #include "Eigen/Eigen"
 
@@ -50,7 +51,7 @@
 #include "general_core/tracking_perching_transition_manager.hpp"
 #include "general_core/tracking_to_perching_initializer.hpp"
 #include "general_core/se3_aggressive_manager.hpp"
-#include "exploration/exploration_manager.hpp"
+#include "exploration/epic_exploration_manager.hpp"
 
 #include "general_core/general_ret_code.hpp"
 #include "utils/header/fmt_eigen.hpp"
@@ -114,7 +115,7 @@ namespace general_planner {
         std::unique_ptr<TrackingPerchingTransitionManager> tracking_perching_manager_;
         std::unique_ptr<TrackingToPerchingInitializer> tracking_to_perching_initializer_;
         std::unique_ptr<SE3AggressiveManager> se3_aggressive_manager_;
-        std::unique_ptr<exploration::ExplorationManager> exploration_manager_;
+        std::unique_ptr<exploration::EpicExplorationManager> exploration_manager_;
         exploration::ExplorationGoal latest_exploration_goal_;
         exploration::ExplorationPlan latest_exploration_plan_;
         exploration::ExplorationPlan active_exploration_plan_;
@@ -308,6 +309,14 @@ namespace general_planner {
                                      const bool &from_rest);
 
         bool getLatestExplorationGoal(exploration::ExplorationGoal &goal) const;
+
+        bool explorationObservationReady() const {
+            return exploration_manager_ != nullptr && exploration_manager_->hasObservation();
+        }
+
+        double latestExplorationObservationStamp() const {
+            return exploration_manager_ != nullptr ? exploration_manager_->lastObservationStamp() : -1.0;
+        }
 
         bool globalExplorationMapReady() const {
             return map_manager_ != nullptr && map_manager_->globalExplorationMapReady();
@@ -524,7 +533,7 @@ namespace general_planner {
 
         TakeoffFrontend::Config makeTakeoffFrontendConfig() const;
 
-        exploration::ExplorationManager::Config makeExplorationConfig() const;
+        exploration::EpicExplorationManager::Config makeExplorationConfig() const;
 
         GlobalExplorationMapConfig makeGlobalExplorationMapConfig() const;
 
@@ -566,22 +575,37 @@ namespace general_planner {
         }
 
         void updateROGMap(const rog_map::PointCloud &cloud, const super_utils::Pose &pose) {
-            const double stamp = ros_ptr_ ? ros_ptr_->getSimTime() : 0.0;
-            map_manager_->updateMapWithGlobal(cloud, pose, CloudFrame::WORLD, stamp);
-            if (exploration_manager_ != nullptr) {
-                const auto robot = map_manager_->getRobotState();
-                exploration_manager_->updateObservation(cloud, pose, CloudFrame::WORLD, robot.p, stamp);
-            }
+            updateExplorationMaps(cloud, pose, CloudFrame::WORLD);
         }
 
         void updateROGMapWithGlobal(const rog_map::PointCloud &cloud,
                                     const super_utils::Pose &pose,
                                     CloudFrame frame) {
+            updateExplorationMaps(cloud, pose, frame);
+        }
+
+        void updateExplorationMaps(const rog_map::PointCloud &cloud,
+                                   const super_utils::Pose &pose,
+                                   CloudFrame frame) {
             const double stamp = ros_ptr_ ? ros_ptr_->getSimTime() : 0.0;
             map_manager_->updateMapWithGlobal(cloud, pose, frame, stamp);
             if (exploration_manager_ != nullptr) {
-                const auto robot = map_manager_->getRobotState();
-                exploration_manager_->updateObservation(cloud, pose, frame, robot.p, stamp);
+                auto robot = map_manager_->getRobotState();
+                if (!robot.rcv) {
+                    robot.rcv = true;
+                    robot.p = pose.first;
+                    robot.q = pose.second;
+                    robot.v.setZero();
+                    robot.a.setZero();
+                    robot.j.setZero();
+                    robot.yaw = std::atan2(2.0 * (pose.second.w() * pose.second.z() +
+                                                   pose.second.x() * pose.second.y()),
+                                           1.0 - 2.0 * (pose.second.y() * pose.second.y() +
+                                                        pose.second.z() * pose.second.z()));
+                }
+                robot.rcv_time = stamp;
+                map_manager_->updateEpicLioMap(cloud, pose, frame, robot);
+                exploration_manager_->onCloudOdom(cloud, pose, frame, robot, stamp);
             }
         }
 
@@ -591,7 +615,18 @@ namespace general_planner {
             const double stamp = ros_ptr_ ? ros_ptr_->getSimTime() : 0.0;
             map_manager_->updateGlobalMapsOnly(cloud, pose, frame, stamp);
             if (exploration_manager_ != nullptr) {
-                exploration_manager_->updateObservation(cloud, pose, frame, pose.first, stamp);
+                auto robot = map_manager_->getRobotState();
+                if (!robot.rcv) {
+                    robot.rcv = true;
+                    robot.p = pose.first;
+                    robot.q = pose.second;
+                    robot.v.setZero();
+                    robot.a.setZero();
+                    robot.j.setZero();
+                }
+                robot.rcv_time = stamp;
+                map_manager_->updateEpicLioMap(cloud, pose, frame, robot);
+                exploration_manager_->onCloudOdom(cloud, pose, frame, robot, stamp);
             }
         }
 

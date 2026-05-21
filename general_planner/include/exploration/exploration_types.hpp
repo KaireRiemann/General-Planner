@@ -44,6 +44,13 @@ enum class TopoNodeType {
     ROUTE_WAYPOINT
 };
 
+enum class GuidanceEdgeSource {
+    UNKNOWN,
+    LOCAL_ASTAR,
+    BUBBLE_ASTAR,
+    OBSERVED_LINE
+};
+
 struct SurfaceFrontierCluster {
     EIGEN_MAKE_ALIGNED_OPERATOR_NEW
 
@@ -71,6 +78,8 @@ struct ExplorationViewpoint {
     int viewpoint_id{-1};
 
     super_utils::Vec3f position{super_utils::Vec3f::Zero()};
+    super_utils::Vec3f frontier_center{super_utils::Vec3f::Zero()};
+    super_utils::Vec3f frontier_normal{super_utils::Vec3f::UnitX()};
     double yaw{0.0};
 
     double gain_raw{0.0};
@@ -146,6 +155,7 @@ struct ExplorationTopoEdge {
     int to{-1};
     double cost{0.0};
     bool reachable{true};
+    GuidanceEdgeSource source{GuidanceEdgeSource::UNKNOWN};
     super_utils::vec_E<super_utils::Vec3f> path;
 };
 
@@ -157,6 +167,11 @@ struct GlobalRoute {
     std::vector<int> node_ids;
     super_utils::vec_E<super_utils::Vec3f> path;
     double cost{0.0};
+
+    int local_astar_edge_count{0};
+    int bubble_astar_edge_count{0};
+    int observed_line_edge_count{0};
+    int unknown_edge_count{0};
 };
 
 struct ExplorationGoal {
@@ -187,6 +202,17 @@ struct ExplorationPlan {
     super_utils::Vec3f next_goal{super_utils::Vec3f::Zero()};
     double next_yaw{0.0};
 
+    super_utils::Vec3f final_goal{super_utils::Vec3f::Zero()};
+    double final_yaw{0.0};
+    bool local_goal_is_final{false};
+    bool goal_switched{false};
+    int target_frontier_id{-1};
+    int target_viewpoint_id{-1};
+    double route_progress_length{0.0};
+    int local_fail_count{0};
+    std::size_t raw_route_path_size{0U};
+    std::size_t refined_guide_path_size{0U};
+
     ExplorationGoal goal;
     std::string reason;
 };
@@ -201,6 +227,27 @@ inline const char *goalTypeName(const ExplorationGoalType type) {
         default:
             return "UNKNOWN";
     }
+}
+
+inline const char *guidanceEdgeSourceName(const GuidanceEdgeSource source) {
+    switch (source) {
+        case GuidanceEdgeSource::LOCAL_ASTAR:
+            return "local_astar";
+        case GuidanceEdgeSource::BUBBLE_ASTAR:
+            return "bubble_astar";
+        case GuidanceEdgeSource::OBSERVED_LINE:
+            return "observed_line";
+        case GuidanceEdgeSource::UNKNOWN:
+        default:
+            return "unknown";
+    }
+}
+
+inline std::string guidanceRouteSourceSummary(const GlobalRoute &route) {
+    return std::string("local_astar=") + std::to_string(route.local_astar_edge_count) +
+           ", bubble_astar=" + std::to_string(route.bubble_astar_edge_count) +
+           ", observed_line=" + std::to_string(route.observed_line_edge_count) +
+           ", unknown=" + std::to_string(route.unknown_edge_count);
 }
 
 inline bool frontierStateSelectable(const FrontierState state) {

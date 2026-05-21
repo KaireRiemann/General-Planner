@@ -114,6 +114,8 @@ namespace general_planner {
         bool se3_use_numeric_shape_gradient{false};
 
         bool exploration_enable{false};
+        std::string exploration_frontend_type{"epic_original"};
+        std::string exploration_cloud_frame{"WORLD"};
         bool exploration_use_epic_frontend{true};
         bool exploration_print_log{true};
 
@@ -176,6 +178,23 @@ namespace general_planner {
         double exploration_topo_bubble_astar_resolution{0.5};
         double exploration_topo_bubble_astar_safe_distance{0.45};
         int exploration_topo_bubble_astar_max_nodes{8000};
+        bool exploration_topo_use_epic_region_bubble_graph{true};
+        double exploration_topo_region_size_xy{4.0};
+        double exploration_topo_region_size_z{2.0};
+        double exploration_topo_min_subregion_size_xy{0.5};
+        double exploration_topo_min_subregion_size_z{0.5};
+        double exploration_topo_bubble_min_radius{0.5};
+        double exploration_topo_frontier_bubble_min_radius{0.5};
+        double exploration_topo_cube_discrete_size{0.3};
+        int exploration_topo_max_update_region_num{20};
+        int exploration_topo_neighbor_mode{26};
+        double exploration_topo_edge_search_padding_scale{1.0};
+        double exploration_topo_edge_safe_distance{0.45};
+        int exploration_topo_max_edges_per_node{10};
+        int exploration_topo_max_region_edges_per_node{8};
+        int exploration_topo_max_frontier_edges_per_node{4};
+        int exploration_topo_max_history_edges_per_node{3};
+        int exploration_topo_max_candidate_neighbors{24};
 
         bool exploration_global_guidance_enable{true};
         int exploration_global_guidance_max_frontiers_in_tour{16};
@@ -184,7 +203,7 @@ namespace general_planner {
         double exploration_global_guidance_weight_revisit{0.5};
         bool exploration_global_guidance_use_two_opt{true};
         bool exploration_global_guidance_keep_current_target{true};
-        bool exploration_global_guidance_use_lkh{false};
+        bool exploration_global_guidance_use_lkh{true};
         bool exploration_global_guidance_lkh_fallback_to_two_opt{true};
         std::string exploration_global_guidance_tsp_dir{"/tmp/general_planner_tsp"};
         std::string exploration_global_guidance_tsp_problem_name{"general_planner_global"};
@@ -197,6 +216,21 @@ namespace general_planner {
         double exploration_local_goal_safe_distance{0.35};
         double exploration_route_replan_distance_threshold{1.0};
         bool exploration_global_route_use_local_map_safety{false};
+        double exploration_runtime_final_goal_radius{0.7};
+        double exploration_runtime_route_progress_min{0.5};
+        int exploration_runtime_max_local_segment_fail_count{3};
+        bool exploration_runtime_keep_active_target{true};
+        double exploration_runtime_switch_score_ratio{1.25};
+        double exploration_local_guide_lookahead{4.0};
+        double exploration_local_guide_min_distance{1.0};
+        double exploration_local_guide_planning_horizon{8.0};
+        double exploration_local_guide_max_segment_length{1.0};
+        double exploration_local_guide_safe_distance{0.45};
+        double exploration_local_guide_line_step{0.20};
+        bool exploration_local_guide_shortcut_enable{true};
+        bool exploration_local_guide_astar_repair_enable{true};
+        bool exploration_local_guide_unknown_as_occupied{false};
+        MapBackend exploration_local_guide_backend{MapBackend::HYBRID};
         int exploration_stuck_repeated_goal_threshold{3};
         double exploration_stuck_repeated_goal_distance{0.5};
         double exploration_stuck_min_robot_displacement{0.5};
@@ -556,6 +590,10 @@ namespace general_planner {
                              se3_use_numeric_shape_gradient, false);
             loader.LoadParam("general_planner/exploration_enable", exploration_enable, false);
             loader.LoadParam("general_planner/exploration/enable", exploration_enable, exploration_enable);
+            loader.LoadParam("general_planner/exploration/frontend_type",
+                             exploration_frontend_type, std::string("epic_original"));
+            loader.LoadParam("general_planner/exploration/cloud_frame",
+                             exploration_cloud_frame, std::string("WORLD"));
             loader.LoadParam("general_planner/exploration/use_epic_frontend",
                              exploration_use_epic_frontend, true);
             loader.LoadParam("general_planner/exploration/print_log",
@@ -675,6 +713,43 @@ namespace general_planner {
                              exploration_topo_bubble_astar_safe_distance, 0.45);
             loader.LoadParam("general_planner/exploration/topo_graph/bubble_astar_max_nodes",
                              exploration_topo_bubble_astar_max_nodes, 8000);
+            loader.LoadParam("general_planner/exploration/topo/use_epic_region_bubble_graph",
+                             exploration_topo_use_epic_region_bubble_graph, true);
+            loader.LoadParam("general_planner/exploration/topo_graph/use_epic_region_bubble_graph",
+                             exploration_topo_use_epic_region_bubble_graph,
+                             exploration_topo_use_epic_region_bubble_graph);
+            loader.LoadParam("general_planner/exploration/topo/region_size_xy",
+                             exploration_topo_region_size_xy, 4.0);
+            loader.LoadParam("general_planner/exploration/topo/region_size_z",
+                             exploration_topo_region_size_z, 2.0);
+            loader.LoadParam("general_planner/exploration/topo/min_subregion_size_xy",
+                             exploration_topo_min_subregion_size_xy, 0.5);
+            loader.LoadParam("general_planner/exploration/topo/min_subregion_size_z",
+                             exploration_topo_min_subregion_size_z, 0.5);
+            loader.LoadParam("general_planner/exploration/topo/bubble_min_radius",
+                             exploration_topo_bubble_min_radius, 0.5);
+            loader.LoadParam("general_planner/exploration/topo/frontier_bubble_min_radius",
+                             exploration_topo_frontier_bubble_min_radius, 0.5);
+            loader.LoadParam("general_planner/exploration/topo/cube_discrete_size",
+                             exploration_topo_cube_discrete_size, 0.3);
+            loader.LoadParam("general_planner/exploration/topo/max_update_region_num",
+                             exploration_topo_max_update_region_num, 20);
+            loader.LoadParam("general_planner/exploration/topo/neighbor_mode",
+                             exploration_topo_neighbor_mode, 26);
+            loader.LoadParam("general_planner/exploration/topo/edge_search_padding_scale",
+                             exploration_topo_edge_search_padding_scale, 1.0);
+            loader.LoadParam("general_planner/exploration/topo/edge_safe_distance",
+                             exploration_topo_edge_safe_distance, 0.45);
+            loader.LoadParam("general_planner/exploration/topo_graph/max_edges_per_node",
+                             exploration_topo_max_edges_per_node, 10);
+            loader.LoadParam("general_planner/exploration/topo_graph/max_region_edges_per_node",
+                             exploration_topo_max_region_edges_per_node, 8);
+            loader.LoadParam("general_planner/exploration/topo_graph/max_frontier_edges_per_node",
+                             exploration_topo_max_frontier_edges_per_node, 4);
+            loader.LoadParam("general_planner/exploration/topo_graph/max_history_edges_per_node",
+                             exploration_topo_max_history_edges_per_node, 3);
+            loader.LoadParam("general_planner/exploration/topo_graph/max_candidate_neighbors",
+                             exploration_topo_max_candidate_neighbors, 24);
 
             loader.LoadParam("general_planner/exploration/global_guidance/enable",
                              exploration_global_guidance_enable, true);
@@ -691,7 +766,7 @@ namespace general_planner {
             loader.LoadParam("general_planner/exploration/global_guidance/keep_current_target",
                              exploration_global_guidance_keep_current_target, true);
             loader.LoadParam("general_planner/exploration/global_guidance/use_lkh",
-                             exploration_global_guidance_use_lkh, false);
+                             exploration_global_guidance_use_lkh, true);
             loader.LoadParam("general_planner/exploration/global_guidance/lkh_fallback_to_two_opt",
                              exploration_global_guidance_lkh_fallback_to_two_opt, true);
             loader.LoadParam("general_planner/exploration/global_guidance/tsp_dir",
@@ -717,6 +792,44 @@ namespace general_planner {
                              exploration_route_replan_distance_threshold, 1.0);
             loader.LoadParam("general_planner/exploration/global_route/use_local_map_safety",
                              exploration_global_route_use_local_map_safety, false);
+            loader.LoadParam("general_planner/exploration/runtime/final_goal_radius",
+                             exploration_runtime_final_goal_radius, 0.7);
+            loader.LoadParam("general_planner/exploration/runtime/route_progress_min",
+                             exploration_runtime_route_progress_min, 0.5);
+            loader.LoadParam("general_planner/exploration/runtime/max_local_segment_fail_count",
+                             exploration_runtime_max_local_segment_fail_count, 3);
+            loader.LoadParam("general_planner/exploration/runtime/keep_active_target",
+                             exploration_runtime_keep_active_target, true);
+            loader.LoadParam("general_planner/exploration/runtime/switch_score_ratio",
+                             exploration_runtime_switch_score_ratio, 1.25);
+            loader.LoadParam("general_planner/exploration/local_guide/local_goal_lookahead",
+                             exploration_local_guide_lookahead, 4.0);
+            loader.LoadParam("general_planner/exploration/runtime/local_goal_lookahead",
+                             exploration_local_guide_lookahead, exploration_local_guide_lookahead);
+            loader.LoadParam("general_planner/exploration/local_guide/local_goal_min_distance",
+                             exploration_local_guide_min_distance, 1.0);
+            loader.LoadParam("general_planner/exploration/runtime/local_goal_min_distance",
+                             exploration_local_guide_min_distance, exploration_local_guide_min_distance);
+            loader.LoadParam("general_planner/exploration/local_guide/planning_horizon",
+                             exploration_local_guide_planning_horizon, 8.0);
+            loader.LoadParam("general_planner/exploration/local_guide/max_segment_length",
+                             exploration_local_guide_max_segment_length, 1.0);
+            loader.LoadParam("general_planner/exploration/local_guide/safe_distance",
+                             exploration_local_guide_safe_distance, 0.45);
+            loader.LoadParam("general_planner/exploration/local_guide/line_step",
+                             exploration_local_guide_line_step, 0.20);
+            loader.LoadParam("general_planner/exploration/local_guide/shortcut_enable",
+                             exploration_local_guide_shortcut_enable, true);
+            loader.LoadParam("general_planner/exploration/local_guide/astar_repair_enable",
+                             exploration_local_guide_astar_repair_enable, true);
+            loader.LoadParam("general_planner/exploration/local_guide/unknown_as_occupied",
+                             exploration_local_guide_unknown_as_occupied, false);
+            {
+                std::string backend_name = mapBackendToString(exploration_local_guide_backend);
+                loader.LoadParam("general_planner/exploration/local_guide/backend",
+                                 backend_name, backend_name);
+                exploration_local_guide_backend = mapBackendFromString(backend_name);
+            }
             loader.LoadParam("general_planner/exploration/stuck/repeated_goal_threshold",
                              exploration_stuck_repeated_goal_threshold, 3);
             loader.LoadParam("general_planner/exploration/stuck/repeated_goal_distance",

@@ -20,6 +20,11 @@
 #include <rog_map_ros/rog_map_ros2.hpp>
 #include <super_utils/type_utils.hpp>
 
+namespace fast_planner
+{
+class LIOInterface;
+}
+
 namespace general_planner
 {
 class MapManager
@@ -68,6 +73,29 @@ public:
     {
         return pointcloud_map_ != nullptr;
     }
+
+    void setEpicLioMap(const std::shared_ptr<fast_planner::LIOInterface> &lio);
+    bool hasEpicLioMap() const;
+    std::shared_ptr<fast_planner::LIOInterface> epicLio() const;
+    void initEpicLioMap(ros::NodeHandle &nh);
+    void updateEpicLioMap(const rog_map::PointCloud &cloud,
+                          const super_utils::Pose &pose,
+                          CloudFrame frame,
+                          const rog_map::RobotState &robot);
+    double getEpicDisToOcc(const Eigen::Vector3f &pt) const;
+    void epicKNN(const PointCloudMap::PointType &pt,
+                 int k,
+                 PointCloudMap::PointVector &pts,
+                 std::vector<float> &sqr_distances) const;
+    void epicKNN(const Eigen::Vector3f &pt,
+                 int k,
+                 PointCloudMap::PointVector &pts,
+                 std::vector<float> &sqr_distances) const;
+    void epicBoxSearch(const Eigen::Vector3f &box_min,
+                       const Eigen::Vector3f &box_max,
+                       PointCloudMap::PointVector &pts) const;
+    bool epicIsInBox(const Eigen::Vector3f &pt) const;
+    bool epicIsInMap(const Eigen::Vector3f &pt) const;
 
     rog_map::Config getMapConfig() const
     {
@@ -409,6 +437,8 @@ public:
         switch (backend) {
             case MapBackend::POINT_CLOUD:
                 return isPointCloudStateValid(pos);
+            case MapBackend::LOCAL_EDT:
+                return hasESDF() && getESDFDistance(pos) > 0.0;
             case MapBackend::HYBRID:
                 if (!isRogStateValid(pos)) {
                     return false;
@@ -440,6 +470,8 @@ public:
         switch (backend) {
             case MapBackend::POINT_CLOUD:
                 return isPointCloudLineFree(start_pt, end_pt);
+            case MapBackend::LOCAL_EDT:
+                return isSegmentSafe(start_pt, end_pt, 0.0, MapBackend::LOCAL_EDT, getResolution());
             case MapBackend::HYBRID:
                 if (map_ == nullptr || !map_->isLineFree(start_pt, end_pt, true, false)) {
                     return false;
@@ -460,6 +492,8 @@ public:
         switch (backend) {
             case MapBackend::POINT_CLOUD:
                 return isPointCloudLineFree(start_pt, end_pt, max_dis);
+            case MapBackend::LOCAL_EDT:
+                return isSegmentSafe(start_pt, end_pt, max_dis, MapBackend::LOCAL_EDT, getResolution());
             case MapBackend::HYBRID:
                 if (map_ == nullptr || !map_->isLineFree(start_pt, end_pt, max_dis, neighbor_list)) {
                     return false;
@@ -480,6 +514,8 @@ public:
         switch (backend) {
             case MapBackend::POINT_CLOUD:
                 return isPointCloudLineFree(start_pt, end_pt);
+            case MapBackend::LOCAL_EDT:
+                return isSegmentSafe(start_pt, end_pt, 0.0, MapBackend::LOCAL_EDT, getResolution());
             case MapBackend::HYBRID:
                 if (map_ == nullptr ||
                     !map_->isLineFree(start_pt, end_pt, use_inf_map, use_unk_as_occ)) {
@@ -501,6 +537,12 @@ public:
         switch (backend) {
             case MapBackend::POINT_CLOUD:
                 getPointCloudObstaclePointsInBox(box_min, box_max, out_points);
+                return;
+            case MapBackend::LOCAL_EDT:
+                if (map_ != nullptr) {
+                    map_->boundBoxByLocalMap(box_min, box_max);
+                    map_->boxSearch(box_min, box_max, rog_map::GridType::OCCUPIED, out_points);
+                }
                 return;
             case MapBackend::HYBRID: {
                 if (map_ != nullptr) {
@@ -531,6 +573,12 @@ public:
         switch (backend) {
             case MapBackend::POINT_CLOUD:
                 return getPointCloudGridType(pos);
+            case MapBackend::LOCAL_EDT:
+                if (!hasESDF()) {
+                    return rog_map::GridType::UNKNOWN;
+                }
+                return getESDFDistance(pos) > 0.0 ? rog_map::GridType::KNOWN_FREE
+                                                  : rog_map::GridType::OCCUPIED;
             case MapBackend::HYBRID: {
                 const auto rog_state = getRogGridType(pos, use_inf_map);
                 if (rog_state == rog_map::GridType::OCCUPIED ||
@@ -562,6 +610,8 @@ public:
         switch (backend) {
             case MapBackend::POINT_CLOUD:
                 return findNearestPointCloudStateValid(start_pos, nearest_pt, max_dis);
+            case MapBackend::LOCAL_EDT:
+                return findNearestRogStateValid(start_pos, nearest_pt, max_dis, use_inf_map);
             case MapBackend::HYBRID:
                 if (pointcloud_map_ == nullptr) {
                     return findNearestRogStateValid(start_pos, nearest_pt, max_dis, use_inf_map);
@@ -578,13 +628,20 @@ public:
     {
         switch (backend) {
             case MapBackend::POINT_CLOUD:
-                return pointcloud_map_ != nullptr && pos.allFinite() &&
-                       pointcloud_map_->isInMap(pos.cast<float>());
+                if (pointcloud_map_ != nullptr) {
+                    return pos.allFinite() && pointcloud_map_->isInMap(pos.cast<float>());
+                }
+                return epicIsInMap(pos.cast<float>());
+            case MapBackend::LOCAL_EDT:
+                return map_ != nullptr && map_->insideLocalMap(pos);
             case MapBackend::HYBRID:
                 if (map_ == nullptr || !map_->insideLocalMap(pos)) {
                     return false;
                 }
-                return pointcloud_map_ == nullptr || pointcloud_map_->isInMap(pos.cast<float>());
+                if (pointcloud_map_ != nullptr) {
+                    return pointcloud_map_->isInMap(pos.cast<float>());
+                }
+                return !hasEpicLioMap() || epicIsInMap(pos.cast<float>());
             case MapBackend::ROG:
             default:
                 return map_ != nullptr && map_->insideLocalMap(pos);
@@ -595,6 +652,10 @@ public:
     {
         if (pointcloud_map_ != nullptr) {
             return pointcloud_map_->getDisToOcc(pt);
+        }
+
+        if (hasEpicLioMap()) {
+            return getEpicDisToOcc(pt);
         }
 
         if (map_ == nullptr || !pt.allFinite()) {
@@ -619,6 +680,78 @@ public:
         return 10.0;
     }
 
+    double getClearance(const rog_map::Vec3f &pos,
+                        const MapBackend backend = MapBackend::HYBRID) const
+    {
+        if (!pos.allFinite()) {
+            return 0.0;
+        }
+        switch (backend) {
+            case MapBackend::POINT_CLOUD:
+                return getDisToOcc(pos.cast<float>());
+            case MapBackend::LOCAL_EDT:
+                return hasESDF() ? getESDFDistance(pos) : 0.0;
+            case MapBackend::HYBRID: {
+                double clearance = std::numeric_limits<double>::infinity();
+                if (pointcloud_map_ != nullptr) {
+                    clearance = std::min(clearance, getDisToOcc(pos.cast<float>()));
+                }
+                if (hasESDF()) {
+                    clearance = std::min(clearance, getESDFDistance(pos));
+                }
+                if (!std::isfinite(clearance)) {
+                    clearance = getDisToOcc(pos.cast<float>());
+                }
+                return clearance;
+            }
+            case MapBackend::ROG:
+            default:
+                if (hasESDF()) {
+                    return getESDFDistance(pos);
+                }
+                return isRogStateValid(pos) ? std::numeric_limits<double>::infinity() : 0.0;
+        }
+    }
+
+    bool isStateSafe(const rog_map::Vec3f &pos,
+                     const double safe_distance,
+                     const MapBackend backend = MapBackend::HYBRID) const
+    {
+        if (!pos.allFinite()) {
+            return false;
+        }
+        if (!isInMap(pos, backend)) {
+            return false;
+        }
+        if (!isStateValid(pos, backend, true, false)) {
+            return false;
+        }
+        const double clearance = getClearance(pos, backend);
+        return !std::isfinite(clearance) || clearance >= safe_distance;
+    }
+
+    bool isSegmentSafe(const rog_map::Vec3f &start_pt,
+                       const rog_map::Vec3f &end_pt,
+                       const double safe_distance,
+                       const MapBackend backend = MapBackend::HYBRID,
+                       const double step = 0.20) const
+    {
+        if (!start_pt.allFinite() || !end_pt.allFinite()) {
+            return false;
+        }
+        const double length = (end_pt - start_pt).norm();
+        const int samples = std::max(1, static_cast<int>(
+                std::ceil(length / std::max(1.0e-3, step))));
+        for (int i = 0; i <= samples; ++i) {
+            const double ratio = static_cast<double>(i) / static_cast<double>(samples);
+            const rog_map::Vec3f p = start_pt + ratio * (end_pt - start_pt);
+            if (!isStateSafe(p, safe_distance, backend)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
     void KNN(const PointCloudMap::PointType &pt,
              const int k,
              PointCloudMap::PointVector &pts,
@@ -626,6 +759,11 @@ public:
     {
         if (pointcloud_map_ != nullptr) {
             pointcloud_map_->KNN(pt, k, pts, sqr_distances);
+            return;
+        }
+
+        if (hasEpicLioMap()) {
+            epicKNN(pt, k, pts, sqr_distances);
             return;
         }
 
@@ -698,6 +836,11 @@ public:
             return;
         }
 
+        if (hasEpicLioMap()) {
+            epicBoxSearch(box_min, box_max, pts);
+            return;
+        }
+
         pts.clear();
         if (map_ == nullptr || !box_min.allFinite() || !box_max.allFinite()) {
             return;
@@ -725,6 +868,9 @@ public:
         if (pointcloud_map_ != nullptr) {
             return pointcloud_map_->isInBox(pt);
         }
+        if (hasEpicLioMap()) {
+            return epicIsInBox(pt);
+        }
         // TODO(pointcloud-map): ROGMap has no exploration-box/dead-area policy yet.
         const rog_map::Vec3f pos = pt.cast<double>();
         return map_ != nullptr && pt.allFinite() && map_->insideLocalMap(pos);
@@ -734,6 +880,9 @@ public:
     {
         if (pointcloud_map_ != nullptr) {
             return pointcloud_map_->isInMap(pt);
+        }
+        if (hasEpicLioMap()) {
+            return epicIsInMap(pt);
         }
         const rog_map::Vec3f pos = pt.cast<double>();
         return map_ != nullptr && pt.allFinite() && map_->insideLocalMap(pos);
@@ -851,7 +1000,18 @@ private:
     rog_map::GridType getPointCloudGridType(const rog_map::Vec3f &pos) const
     {
         if (pointcloud_map_ == nullptr || !pos.allFinite()) {
-            return rog_map::GridType::OUT_OF_MAP;
+            if (!hasEpicLioMap() || !pos.allFinite()) {
+                return rog_map::GridType::OUT_OF_MAP;
+            }
+            const Eigen::Vector3f pos_f = pos.cast<float>();
+            if (!epicIsInMap(pos_f) || !epicIsInBox(pos_f)) {
+                return rog_map::GridType::OUT_OF_MAP;
+            }
+            const double dist = getEpicDisToOcc(pos_f);
+            if (!std::isfinite(dist) || dist <= 1.0e-3) {
+                return rog_map::GridType::OCCUPIED;
+            }
+            return rog_map::GridType::KNOWN_FREE;
         }
         const Eigen::Vector3f pos_f = pos.cast<float>();
         if (!pointcloud_map_->isInMap(pos_f) || !pointcloud_map_->isInBox(pos_f)) {
@@ -873,7 +1033,9 @@ private:
                               const rog_map::Vec3f &end_pt,
                               const double max_dis = -1.0) const
     {
-        if (pointcloud_map_ == nullptr || !start_pt.allFinite() || !end_pt.allFinite()) {
+        if ((pointcloud_map_ == nullptr && !hasEpicLioMap()) ||
+            !start_pt.allFinite() ||
+            !end_pt.allFinite()) {
             return false;
         }
         const rog_map::Vec3f delta = end_pt - start_pt;
@@ -897,7 +1059,9 @@ private:
                                           rog_map::vec_E<rog_map::Vec3f> &out_points) const
     {
         out_points.clear();
-        if (pointcloud_map_ == nullptr || !box_min.allFinite() || !box_max.allFinite()) {
+        if ((pointcloud_map_ == nullptr && !hasEpicLioMap()) ||
+            !box_min.allFinite() ||
+            !box_max.allFinite()) {
             return;
         }
         PointCloudMap::PointVector pc_points;
@@ -987,6 +1151,8 @@ private:
 
     rog_map::ROGMapROS::Ptr map_;
     PointCloudMap::Ptr pointcloud_map_;
+    std::shared_ptr<fast_planner::LIOInterface> epic_lio_;
+    mutable std::mutex epic_lio_mutex_;
     std::unique_ptr<GlobalExplorationMap> global_exploration_map_;
     GlobalPointCloudMap::Ptr global_pointcloud_map_;
     std::unique_ptr<GlobalRegionGrid> global_region_grid_;

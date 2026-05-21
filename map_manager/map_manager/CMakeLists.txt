@@ -28,9 +28,11 @@ find_package(catkin REQUIRED COMPONENTS
         visualization_msgs
         message_filters
         rog_map
+        lidar_map
 )
 find_package(Eigen3 REQUIRED)
 find_package(PCL REQUIRED)
+find_package(OpenCV REQUIRED)
 
 catkin_package(
         INCLUDE_DIRS include
@@ -45,6 +47,7 @@ catkin_package(
         visualization_msgs
         message_filters
         rog_map
+        lidar_map
 )
 
 include_directories(
@@ -54,6 +57,7 @@ include_directories(
         ${catkin_INCLUDE_DIRS}
         ${Eigen3_INCLUDE_DIRS}
         ${PCL_INCLUDE_DIRS}
+        ${OpenCV_INCLUDE_DIRS}
 )
 
 file(GLOB_RECURSE srcs CONFIGURE_DEPENDS src/*.cpp include/*.h include/*.hpp)
@@ -62,4 +66,5 @@ target_include_directories(map_manager_core PUBLIC include)
 target_link_libraries(map_manager_core PUBLIC
         ${catkin_LIBRARIES}
         ${PCL_LIBRARIES}
+        ${OpenCV_LIBS}
 )

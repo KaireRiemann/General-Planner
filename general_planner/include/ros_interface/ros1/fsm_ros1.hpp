@@ -45,6 +45,7 @@
 #include <cmath>
 #include <exception>
 #include <functional>
+#include <iomanip>
 #include <limits>
 #include <map>
 #include <mutex>
@@ -76,6 +77,8 @@ namespace fsm {
         std::map<int, nav_msgs::Odometry> swarm_state_buffer_;
         unsigned int traj_seq_{0};
         ros::Time last_tracking_prediction_path_time_;
+        bool exploration_cloud_seen_{false};
+        double last_exploration_cloud_wait_log_{-1.0};
 
         vector<quadrotor_msgs::PositionCommand> cmd_logs_;
 
@@ -793,12 +796,37 @@ namespace fsm {
             rog_map::RobotState robot;
             planner_ptr_->getRobotState(robot);
             if (!robot.rcv) {
+                const double now = ros_ptr_ ? ros_ptr_->getSimTime() : msg->header.stamp.toSec();
+                if (last_exploration_cloud_wait_log_ < 0.0 ||
+                    now - last_exploration_cloud_wait_log_ > 1.0) {
+                    cout << YELLOW << " -- [Fsm] Drop exploration cloud before odom is ready: topic_stamp="
+                         << std::fixed << std::setprecision(3) << msg->header.stamp.toSec()
+                         << RESET << endl;
+                    last_exploration_cloud_wait_log_ = now;
+                }
                 return;
             }
             rog_map::PointCloud cloud;
             pcl::fromROSMsg(*msg, cloud);
+            if (!exploration_cloud_seen_) {
+                cout << GREEN << " -- [Fsm] First exploration cloud received: msg_points="
+                     << static_cast<std::size_t>(msg->width) * static_cast<std::size_t>(msg->height)
+                     << ", converted_points=" << cloud.size()
+                     << ", stamp=" << std::fixed << std::setprecision(3) << msg->header.stamp.toSec()
+                     << RESET << endl;
+                exploration_cloud_seen_ = true;
+            }
+            if (cloud.empty()) {
+                const double now = ros_ptr_ ? ros_ptr_->getSimTime() : msg->header.stamp.toSec();
+                if (last_exploration_cloud_wait_log_ < 0.0 ||
+                    now - last_exploration_cloud_wait_log_ > 1.0) {
+                    cout << YELLOW << " -- [Fsm] Drop empty exploration cloud after conversion." << RESET << endl;
+                    last_exploration_cloud_wait_log_ = now;
+                }
+                return;
+            }
             const super_utils::Pose pose = std::make_pair(robot.p, robot.q);
-            planner_ptr_->updateGlobalMapOnly(cloud, pose, general_planner::CloudFrame::WORLD);
+            planner_ptr_->updateExplorationMaps(cloud, pose, general_planner::CloudFrame::WORLD);
         }
 
         void init(const ros::NodeHandle &nh, const std::string &cfg_path) {
