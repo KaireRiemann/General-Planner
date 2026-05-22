@@ -42,6 +42,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <cmath>
 #include <exception>
 #include <functional>
@@ -81,6 +82,20 @@ namespace fsm {
         double last_exploration_cloud_wait_log_{-1.0};
 
         vector<quadrotor_msgs::PositionCommand> cmd_logs_;
+
+        static general_planner::CloudFrame parseExplorationCloudFrame(std::string frame) {
+            std::transform(frame.begin(), frame.end(), frame.begin(),
+                           [](unsigned char c) {
+                               return static_cast<char>(std::toupper(c));
+                           });
+            if (frame == "LIDAR" || frame == "SENSOR") {
+                return general_planner::CloudFrame::LIDAR;
+            }
+            if (frame == "BODY") {
+                return general_planner::CloudFrame::BODY;
+            }
+            return general_planner::CloudFrame::WORLD;
+        }
 
         void resetVisualizedPath() override {
             path.poses.clear();
@@ -826,7 +841,8 @@ namespace fsm {
                 return;
             }
             const super_utils::Pose pose = std::make_pair(robot.p, robot.q);
-            planner_ptr_->updateExplorationMaps(cloud, pose, general_planner::CloudFrame::WORLD);
+            planner_ptr_->updateExplorationMaps(
+                    cloud, pose, parseExplorationCloudFrame(cfg_.exploration_cloud_frame));
         }
 
         void init(const ros::NodeHandle &nh, const std::string &cfg_path) {
@@ -847,7 +863,8 @@ namespace fsm {
                 exploration_cloud_sub_ = nh_.subscribe(map_cfg.cloud_topic, 1,
                                                        &FsmRos1::explorationCloudCallback, this);
                 cout << YELLOW << " -- [Fsm] EXPLORATION MAP FEED: cloud "
-                     << map_cfg.cloud_topic << ", frame WORLD" << RESET << endl;
+                     << map_cfg.cloud_topic << ", frame "
+                     << cfg_.exploration_cloud_frame << RESET << endl;
             }
 
             int cmd_cnt = 0;

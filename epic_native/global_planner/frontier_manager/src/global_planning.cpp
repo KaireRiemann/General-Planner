@@ -161,6 +161,10 @@ void FrontierManager::generateTSPViewpoints(Eigen::Vector3f&center,  vector<Topo
   }
   if (idx2.empty()) {
     viewpoints.clear();
+    ROS_WARN("[EPIC Frontier] no selectable viewpoint: clusters total=%zu considered=%zu dormant_skip=%d transient_unreachable_seen=%d reachable_after_topo=%zu selected=%zu",
+             cluster_list_.size(), revp_clusters_vec.size(), dormant_skip,
+             transient_unreachable_seen, clusters_can_be_searched_.size(),
+             tsp_clusters.size());
     ROS_INFO("vp cluster cost: %fms  ,remove unreachable cost: %fms, select vp cost: %fms",
              (t2 - t1).toSec() * 1000, (t3 - t2).toSec() * 1000,
              (t4 - t3).toSec() * 1000);

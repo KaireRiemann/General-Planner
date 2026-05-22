@@ -4752,7 +4752,10 @@ namespace general_planner {
         cfg.local_guide.safe_distance = cfg_.exploration_local_guide_safe_distance;
         cfg.local_guide.line_step = cfg_.exploration_local_guide_line_step;
         cfg.local_guide.shortcut_enable = cfg_.exploration_local_guide_shortcut_enable;
-        cfg.local_guide.astar_repair_enable = cfg_.exploration_local_guide_astar_repair_enable;
+        cfg.local_guide.astar_repair_enable =
+                cfg_.exploration_use_epic_frontend
+                ? false
+                : cfg_.exploration_local_guide_astar_repair_enable;
         cfg.local_guide.unknown_as_occupied = cfg_.exploration_local_guide_unknown_as_occupied;
         cfg.local_guide.backend = cfg_.exploration_local_guide_backend;
         cfg.repeated_goal_threshold = cfg_.exploration_stuck_repeated_goal_threshold;

@@ -209,12 +209,32 @@ private:
     void seedEpicParams();
     void initializeNativeModules();
 
+    struct NativeTourTarget {
+        Eigen::Vector3f position{Eigen::Vector3f::Zero()};
+        float yaw{0.0F};
+        int frontier_id{-1};
+        int viewpoint_id{-1};
+    };
+
+    bool updateNativeTopoState(const rog_map::RobotState &robot,
+                               double current_yaw,
+                               ExplorationPlan &plan);
+    bool buildPlanFromActiveNativeGoal(const rog_map::RobotState &robot,
+                                       double current_yaw,
+                                       ExplorationPlan &plan);
     bool updateNativeGlobalPlan(const rog_map::RobotState &robot,
                                 double current_yaw,
                                 ExplorationPlan &plan);
     bool buildNativeGuide(const rog_map::RobotState &robot,
                           double current_yaw,
                           ExplorationPlan &plan);
+    bool updateNativeGoalNode(const Eigen::Vector3f &goal, float yaw);
+    bool rebuildRouteToNextGoal(const rog_map::RobotState &robot,
+                                double timeout,
+                                GlobalRoute &route) const;
+    void clearNativeGoalState();
+    bool setNativeGoalFromTourTarget(std::size_t target_index);
+    bool frontierSelectable(int frontier_id) const;
     bool routeBetweenNativeNodes(const std::shared_ptr<TopoNode> &start,
                                  const std::shared_ptr<TopoNode> &goal,
                                  double timeout,
@@ -249,15 +269,23 @@ private:
     std::shared_ptr<TopoGraph> graph_;
     std::shared_ptr<GraphVisualizer> graph_visualizer_;
     std::unique_ptr<LocalGuideBuilder> local_guide_builder_;
+    std::shared_ptr<TopoNode> next_goal_node_;
+    std::vector<Eigen::Vector3f> global_tour_;
+    std::vector<NativeTourTarget> native_tour_targets_;
+    std::size_t native_tour_cursor_{0U};
 
     mutable std::mutex mutex_;
     bool initialized_{false};
     bool has_observation_{false};
     bool exploration_finished_{false};
+    bool next_goal_node_valid_{false};
+    bool next_goal_node_inserted_{false};
+    bool has_last_goal_cost_frame_value_{false};
     int last_native_result_{-1};
     int active_frontier_id_{-1};
     int active_viewpoint_id_{-1};
     int plan_seq_{0};
+    double last_goal_cost_frame_value_{std::numeric_limits<double>::infinity()};
     std::unordered_map<int, int> local_fail_count_by_frontier_;
     super_utils::Vec3f last_sensor_position_{super_utils::Vec3f::Zero()};
     double last_observation_stamp_{-1.0};
