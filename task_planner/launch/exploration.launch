@@ -1,7 +1,7 @@
 <launch>
     <arg name="marsim" default="true"/>
     <arg name="sim_config" default="exploration_spiral0.yaml"/>
-    <arg name="planner_config" default="exploration_spiral0_ros1.yaml"/>
+    <arg name="planner_config" default="exploration.yaml"/>
     <arg name="planner_config_path" default=""/>
     <arg name="task_planner" default="false"/>
     <arg name="task_config" default="exploration.yaml"/>

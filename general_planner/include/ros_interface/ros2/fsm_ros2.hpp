@@ -187,12 +187,13 @@ namespace fsm {
         typedef std::shared_ptr<FsmRos2> Ptr;
 
         void saveReplanLogToFile(const string &name = "") {
+            const auto replan_logs = snapshotReplanLogs();
             // run statistic
             double total_length{0.0};
             int total_replan_num{0};
             double average_compt_t{0.0};
             Vec3f cur_p{0, 0, 0};
-            for (auto rp: replan_logs_) {
+            for (auto rp: replan_logs) {
                 if (rp.getRetCode() > 0) {
                     if (cur_p.norm() < 1e-6) {
                         cur_p = rp.getRobotP();
@@ -219,7 +220,7 @@ namespace fsm {
                                          ? LOG_FILE_DIR(
                                                  "cmd_logs/" + BinaryFileHandler<int>::getCurrentTimeStr() + ".csv")
                                          : LOG_FILE_DIR("cmd_logs/" + name + ".csv");
-            BinaryFileHandler<vector<LogOneReplan>>::save(save_path, replan_logs_);
+            BinaryFileHandler<vector<LogOneReplan>>::save(save_path, replan_logs);
 
             std::ofstream csv_writer;
             csv_writer.open(csv_path, std::ios::out | std::ios::trunc);

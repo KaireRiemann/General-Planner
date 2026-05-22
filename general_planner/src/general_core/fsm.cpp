@@ -51,7 +51,23 @@ namespace fsm {
         write_time_ << endl;
     }
 
+    std::pair<std::size_t, int> Fsm::appendLatestReplanLog() {
+        LogOneReplan log = planner_ptr_->getLatestReplanLog();
+        std::lock_guard<std::mutex> lock(replan_logs_mutex_);
+        replan_logs_.push_back(std::move(log));
+        return {replan_logs_.size() - 1U, replan_logs_.back().getRetCode()};
+    }
+
+    vector<LogOneReplan> Fsm::snapshotReplanLogs() const {
+        std::lock_guard<std::mutex> lock(replan_logs_mutex_);
+        return replan_logs_;
+    }
+
     void Fsm::callReplanOnce() {
+        std::unique_lock<std::mutex> tick_lock(fsm_tick_mutex_, std::try_to_lock);
+        if (!tick_lock.owns_lock()) {
+            return;
+        }
         if (stop) {
             return;
         }
@@ -155,11 +171,15 @@ namespace fsm {
         planner_ptr_->getModuleTimeConsuming(log_module_time);
         log_module_time[log_module_time.size() - 2] = replan_once_time.stop();
         // save on log
-        replan_logs_.push_back(planner_ptr_->getLatestReplanLog());
+        appendLatestReplanLog();
         WriteTimeToLog();
     }
 
     void Fsm::callMainFsmOnce() {
+        std::unique_lock<std::mutex> tick_lock(fsm_tick_mutex_, std::try_to_lock);
+        if (!tick_lock.owns_lock()) {
+            return;
+        }
         if (stop) {
             return;
         }
@@ -283,7 +303,7 @@ namespace fsm {
                     cout << YELLOW << " -- [Fsm] PlanFromRest failed, try replan." << RESET << endl;
                     // ros::Duration(0.1).sleep();
                 }
-                replan_logs_.push_back(planner_ptr_->getLatestReplanLog());
+                appendLatestReplanLog();
                 break;
             }
             case FOLLOW_TRAJ: {

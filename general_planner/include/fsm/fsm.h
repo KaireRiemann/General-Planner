@@ -137,9 +137,9 @@ namespace fsm {
             }
 
             // save on log
-            replan_logs_.push_back(planner_ptr_->getLatestReplanLog());
+            const auto log_id = appendLatestReplanLog();
             fmt::print(fmt::fg(fmt::color::green), " -- Replan ID: {}, ret code: {}\n",
-                       replan_logs_.size() - 1, replan_logs_.back().getRetCode());
+                       log_id.first, log_id.second);
         }
 
         Eigen::Quaterniond eulerToQuaternion(double roll, double pitch, double yaw) {
@@ -166,6 +166,8 @@ namespace fsm {
 
     protected:
         vector<LogOneReplan> replan_logs_;
+        mutable std::mutex fsm_tick_mutex_;
+        mutable std::mutex replan_logs_mutex_;
         /* Callback functions */
         bool finish_plan = false;
         double system_start_time_;
@@ -173,6 +175,10 @@ namespace fsm {
         bool traj_finish_{false};
 
         void WriteTimeToLog();
+
+        std::pair<std::size_t, int> appendLatestReplanLog();
+
+        vector<LogOneReplan> snapshotReplanLogs() const;
 
         void callReplanOnce();
 

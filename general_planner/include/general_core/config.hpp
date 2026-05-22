@@ -117,7 +117,12 @@ namespace general_planner {
         std::string exploration_frontend_type{"epic_original"};
         std::string exploration_cloud_frame{"WORLD"};
         bool exploration_use_epic_frontend{true};
+        bool exploration_update_rog_map{false};
+        bool exploration_backup_traj_enable{false};
+        bool exploration_backend_fallback_enable{false};
         bool exploration_print_log{true};
+        bool exploration_epic_lio_publish_map{true};
+        double exploration_epic_lio_publish_map_period{0.5};
 
         double exploration_observation_resolution{0.25};
         double exploration_observation_min_distance{0.2};
@@ -596,8 +601,20 @@ namespace general_planner {
                              exploration_cloud_frame, std::string("WORLD"));
             loader.LoadParam("general_planner/exploration/use_epic_frontend",
                              exploration_use_epic_frontend, true);
+            loader.LoadParam("general_planner/exploration/update_rog_map",
+                             exploration_update_rog_map, !exploration_use_epic_frontend);
+            loader.LoadParam("general_planner/exploration/backup_traj_enable",
+                             exploration_backup_traj_enable,
+                             backup_traj_en && !exploration_use_epic_frontend);
+            loader.LoadParam("general_planner/exploration/backend_fallback_enable",
+                             exploration_backend_fallback_enable,
+                             backup_traj_en && !exploration_use_epic_frontend);
             loader.LoadParam("general_planner/exploration/print_log",
                              exploration_print_log, true);
+            loader.LoadParam("general_planner/exploration/epic_lio/publish_map",
+                             exploration_epic_lio_publish_map, true);
+            loader.LoadParam("general_planner/exploration/epic_lio/publish_map_period",
+                             exploration_epic_lio_publish_map_period, 0.5);
             loader.LoadParam("general_planner/exploration/observation_map/resolution",
                              exploration_observation_resolution, 0.25);
             loader.LoadParam("general_planner/exploration/observation_map/min_distance",

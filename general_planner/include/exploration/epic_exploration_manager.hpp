@@ -9,6 +9,8 @@
 #include <unordered_map>
 #include <vector>
 
+#include <ros/ros.h>
+
 #include "exploration/exploration_types.hpp"
 #include "exploration/local_guide_builder.hpp"
 
@@ -140,6 +142,8 @@ public:
         bool enable{false};
         bool use_epic_frontend{true};
         bool print_log{true};
+        bool publish_lio_map{true};
+        double publish_lio_map_period{0.5};
         ObservationConfig observation_map;
         FrontierDatabaseConfig frontier_database;
         ViewpointConfig viewpoint_manager;
@@ -216,6 +220,15 @@ private:
         int viewpoint_id{-1};
     };
 
+    struct NativeFrontierStats {
+        int total{0};
+        int in_search_box{0};
+        int selectable{0};
+        int reachable{0};
+        int dormant{0};
+        int unreachable{0};
+    };
+
     bool updateNativeTopoState(const rog_map::RobotState &robot,
                                double current_yaw,
                                ExplorationPlan &plan);
@@ -240,6 +253,11 @@ private:
                                  double timeout,
                                  super_utils::vec_E<super_utils::Vec3f> &path,
                                  double &cost) const;
+    bool buildDirectNativePath(const Eigen::Vector3f &start,
+                               const Eigen::Vector3f &goal,
+                               double timeout,
+                               super_utils::vec_E<super_utils::Vec3f> &path,
+                               double &cost) const;
     bool solveNativeAtspTour(const Eigen::MatrixXd &cost_matrix,
                              std::vector<int> &order) const;
     bool solveNativeAtspTourLkh(const Eigen::MatrixXd &cost_matrix,
@@ -249,12 +267,15 @@ private:
     void setNativeFrontierDormant(int frontier_id, bool unreachable);
     void updateNativeFrontiersFromLatestCloud(double stamp);
     void visualizeNativeState() const;
+    void publishNativeTourOrder() const;
+    void publishExplorationBox() const;
     void resetRuntimeState();
 
     static super_utils::Vec3f toVec3d(const Eigen::Vector3f &p);
     static double pathLength(const super_utils::vec_E<super_utils::Vec3f> &path);
     static void appendUnique(super_utils::vec_E<super_utils::Vec3f> &path,
                              const super_utils::Vec3f &point);
+    NativeFrontierStats getNativeFrontierStats() const;
 
 private:
     Config cfg_;
@@ -270,6 +291,8 @@ private:
     std::shared_ptr<GraphVisualizer> graph_visualizer_;
     std::unique_ptr<LocalGuideBuilder> local_guide_builder_;
     std::shared_ptr<TopoNode> next_goal_node_;
+    mutable ros::Publisher native_tour_order_pub_;
+    mutable ros::Publisher exploration_box_pub_;
     std::vector<Eigen::Vector3f> global_tour_;
     std::vector<NativeTourTarget> native_tour_targets_;
     std::size_t native_tour_cursor_{0U};
@@ -287,6 +310,7 @@ private:
     int plan_seq_{0};
     double last_goal_cost_frame_value_{std::numeric_limits<double>::infinity()};
     std::unordered_map<int, int> local_fail_count_by_frontier_;
+    std::unordered_map<int, int> topo_route_fail_count_by_frontier_;
     super_utils::Vec3f last_sensor_position_{super_utils::Vec3f::Zero()};
     double last_observation_stamp_{-1.0};
     bool has_last_sensor_position_{false};

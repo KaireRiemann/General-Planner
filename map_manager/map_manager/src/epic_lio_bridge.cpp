@@ -33,6 +33,15 @@ void MapManager::initEpicLioMap(ros::NodeHandle &nh)
         epic_lio_ = std::make_shared<fast_planner::LIOInterface>();
         epic_lio_->init(nh);
     }
+    nh.param("epic_lio/publish_map", epic_lio_publish_map_, true);
+    nh.param("epic_lio/publish_map_period", epic_lio_publish_map_period_, 0.5);
+    epic_lio_publish_map_period_ = std::max(0.05, epic_lio_publish_map_period_);
+    if (epic_lio_publish_map_ && !epic_lio_map_pub_) {
+        epic_lio_map_pub_ = nh.advertise<sensor_msgs::PointCloud2>("epic_lio/cloud", 1);
+        ros::NodeHandle root_nh;
+        epic_lio_legacy_map_pub_ =
+                root_nh.advertise<sensor_msgs::PointCloud2>("/laser_cloud_surround", 1);
+    }
 }
 
 void MapManager::updateEpicLioMap(const rog_map::PointCloud &cloud,
@@ -94,6 +103,63 @@ void MapManager::updateEpicLioMap(const rog_map::PointCloud &cloud,
     odom->twist.twist.linear.z = odom_v.z();
 
     lio->updateCloudMapOdometry(cloud_msg, odom);
+    publishEpicLioMap(cloud_msg->header.stamp);
+}
+
+void MapManager::publishEpicLioMap(const ros::Time &stamp) const
+{
+    std::shared_ptr<fast_planner::LIOInterface> lio;
+    ros::Publisher map_pub;
+    ros::Publisher legacy_map_pub;
+    {
+        std::lock_guard<std::mutex> lock(epic_lio_mutex_);
+        if (!epic_lio_publish_map_) {
+            return;
+        }
+        const ros::Time now = ros::Time::now();
+        if (!last_epic_lio_map_publish_stamp_.isZero() &&
+            (now - last_epic_lio_map_publish_stamp_).toSec() <
+                    epic_lio_publish_map_period_) {
+            return;
+        }
+        last_epic_lio_map_publish_stamp_ = now;
+        lio = epic_lio_;
+        map_pub = epic_lio_map_pub_;
+        legacy_map_pub = epic_lio_legacy_map_pub_;
+    }
+
+    if (lio == nullptr || lio->lp_ == nullptr) {
+        return;
+    }
+    if ((map_pub.getNumSubscribers() <= 0) &&
+        (legacy_map_pub.getNumSubscribers() <= 0)) {
+        return;
+    }
+
+    PointVector native_pts;
+    lio->boxSearch(lio->lp_->global_map_min_boundary_,
+                   lio->lp_->global_map_max_boundary_,
+                   native_pts);
+    if (native_pts.empty()) {
+        return;
+    }
+
+    pcl::PointCloud<pcl::PointXYZ> map_cloud;
+    map_cloud.points = native_pts;
+    map_cloud.width = static_cast<uint32_t>(map_cloud.points.size());
+    map_cloud.height = 1;
+    map_cloud.is_dense = true;
+
+    sensor_msgs::PointCloud2 msg;
+    pcl::toROSMsg(map_cloud, msg);
+    msg.header.frame_id = "world";
+    msg.header.stamp = stamp.isZero() ? ros::Time::now() : stamp;
+    if (map_pub.getNumSubscribers() > 0) {
+        map_pub.publish(msg);
+    }
+    if (legacy_map_pub.getNumSubscribers() > 0) {
+        legacy_map_pub.publish(msg);
+    }
 }
 
 double MapManager::getEpicDisToOcc(const Eigen::Vector3f &pt) const

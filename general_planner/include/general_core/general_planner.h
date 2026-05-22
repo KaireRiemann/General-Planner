@@ -588,7 +588,11 @@ namespace general_planner {
                                    const super_utils::Pose &pose,
                                    CloudFrame frame) {
             const double stamp = ros_ptr_ ? ros_ptr_->getSimTime() : 0.0;
-            map_manager_->updateMapWithGlobal(cloud, pose, frame, stamp);
+            const bool use_epic_exploration_maps =
+                    cfg_.exploration_enable && cfg_.exploration_use_epic_frontend;
+            const bool update_rog_map =
+                    !use_epic_exploration_maps || cfg_.exploration_update_rog_map;
+            map_manager_->updateMapWithGlobal(cloud, pose, frame, stamp, update_rog_map);
             if (exploration_manager_ != nullptr) {
                 auto robot = map_manager_->getRobotState();
                 if (!robot.rcv) {

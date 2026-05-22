@@ -36,6 +36,18 @@ enum class ExplorationGoalType {
     UNKNOWN
 };
 
+enum class ExplorationPlanStatus {
+    INVALID,
+    OK,
+    TRUE_FINISHED,
+    WAIT_FOR_OBSERVATION,
+    FRONTIER_EXISTS_NO_VIEWPOINT,
+    VIEWPOINT_EXISTS_NO_TOPO_ROUTE,
+    LOCAL_GUIDE_FAILED,
+    BACKEND_FAILED,
+    FRONTEND_NOT_READY
+};
+
 enum class TopoNodeType {
     ODOM,
     HISTORY_ODOM,
@@ -197,6 +209,7 @@ struct ExplorationPlan {
 
     bool valid{false};
     bool no_frontier{false};
+    ExplorationPlanStatus status{ExplorationPlanStatus::INVALID};
 
     super_utils::vec_E<super_utils::Vec3f> guide_path;
     super_utils::Vec3f next_goal{super_utils::Vec3f::Zero()};
@@ -216,6 +229,38 @@ struct ExplorationPlan {
     ExplorationGoal goal;
     std::string reason;
 };
+
+inline const char *explorationPlanStatusName(const ExplorationPlanStatus status) {
+    switch (status) {
+        case ExplorationPlanStatus::OK:
+            return "OK";
+        case ExplorationPlanStatus::TRUE_FINISHED:
+            return "TRUE_FINISHED";
+        case ExplorationPlanStatus::WAIT_FOR_OBSERVATION:
+            return "WAIT_FOR_OBSERVATION";
+        case ExplorationPlanStatus::FRONTIER_EXISTS_NO_VIEWPOINT:
+            return "FRONTIER_EXISTS_NO_VIEWPOINT";
+        case ExplorationPlanStatus::VIEWPOINT_EXISTS_NO_TOPO_ROUTE:
+            return "VIEWPOINT_EXISTS_NO_TOPO_ROUTE";
+        case ExplorationPlanStatus::LOCAL_GUIDE_FAILED:
+            return "LOCAL_GUIDE_FAILED";
+        case ExplorationPlanStatus::BACKEND_FAILED:
+            return "BACKEND_FAILED";
+        case ExplorationPlanStatus::FRONTEND_NOT_READY:
+            return "FRONTEND_NOT_READY";
+        case ExplorationPlanStatus::INVALID:
+        default:
+            return "INVALID";
+    }
+}
+
+inline bool explorationPlanStatusRecoverable(const ExplorationPlanStatus status) {
+    return status == ExplorationPlanStatus::WAIT_FOR_OBSERVATION ||
+           status == ExplorationPlanStatus::FRONTIER_EXISTS_NO_VIEWPOINT ||
+           status == ExplorationPlanStatus::VIEWPOINT_EXISTS_NO_TOPO_ROUTE ||
+           status == ExplorationPlanStatus::LOCAL_GUIDE_FAILED ||
+           status == ExplorationPlanStatus::FRONTEND_NOT_READY;
+}
 
 inline const char *goalTypeName(const ExplorationGoalType type) {
     switch (type) {

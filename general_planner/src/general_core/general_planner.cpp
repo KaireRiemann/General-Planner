@@ -748,8 +748,12 @@ namespace general_planner {
 
 
         /// 1) First, shift the start_point to free space.
+        const bool exploration_backend_active =
+                active_exploration_guide_ && active_exploration_plan_.valid;
+        const MapBackend start_backend =
+                exploration_backend_active ? cfg_.corridor_backend : MapBackend::ROG;
         Vec3f local_star_pt;
-        if (!map_manager_->getNearestCellNot(GridType::OCCUPIED, robot_state_.p, local_star_pt, 3.0)) {
+        if (!map_manager_->findNearestStateValid(robot_state_.p, start_backend, local_star_pt, 3.0, true)) {
             ros_ptr_->error(
                     " -- [GeneralPlanner] in [PlanFromRest] Local start point is deeply occupied, which should not happened.");
             latest_replan.setRetCode(GENERAL_RET_CODE::GENERAL_NO_START_POINT);
@@ -770,6 +774,23 @@ namespace general_planner {
             return FAILED;
         } else {
             ros_ptr_->info(" -- [GeneralPlanner] in [PlanFromRest] GenerateExpTrajectory SUCCESS.");
+        }
+
+        const bool use_backup_for_this_plan =
+                cfg_.backup_traj_en &&
+                (!exploration_backend_active || cfg_.exploration_backup_traj_enable);
+        if (!use_backup_for_this_plan) {
+            robot_on_backup_traj_ = false;
+            cmd_traj_info_.setTrajectory(exp_traj_info);
+            last_exp_traj_info_ = exp_traj_info;
+            gi_.new_goal = false;
+            {
+                TimeConsuming t_viz("viz goal VisualizeCommitTrajectory", false);
+                ros_ptr_->vizCommittedTraj(cmd_traj_info_.posTraj(), -1);
+                time_consuming_[VISUALIZATION] += t_viz.stop();
+            }
+            latest_replan.setRetCode(GENERAL_RET_CODE::GENERAL_SUCCESS_NO_BACKUP);
+            return SUCCESS;
         }
 
         back_traj_info.setEmpty();
@@ -873,6 +894,25 @@ namespace general_planner {
             time_consuming_[VISUALIZATION] += t_viz.stop();
         }
 
+
+        const bool exploration_backend_active =
+                active_exploration_guide_ && active_exploration_plan_.valid;
+        const bool use_backup_for_this_plan =
+                cfg_.backup_traj_en &&
+                (!exploration_backend_active || cfg_.exploration_backup_traj_enable);
+        if (!use_backup_for_this_plan) {
+            robot_on_backup_traj_ = false;
+            cmd_traj_info_.setTrajectory(exp_traj_info);
+            last_exp_traj_info_ = exp_traj_info;
+            gi_.new_goal = false;
+            {
+                TimeConsuming t_viz("tviz", false);
+                ros_ptr_->vizCommittedTraj(cmd_traj_info_.posTraj(), -1);
+                time_consuming_[VISUALIZATION] += t_viz.stop();
+            }
+            latest_replan.setRetCode(GENERAL_SUCCESS_NO_BACKUP);
+            return SUCCESS;
+        }
 
         BackupTraj back_traj_info;
         // 2）生成back轨迹
@@ -1010,14 +1050,34 @@ namespace general_planner {
                 latest_replan.setGoal(robot.p, robot.yaw, robot);
                 latest_exploration_plan_ = plan;
                 latest_exploration_goal_ = plan.goal;
-                if (plan.no_frontier && exploration_manager_->isExplorationFinished()) {
+                if (plan.status == exploration::ExplorationPlanStatus::TRUE_FINISHED &&
+                    plan.no_frontier &&
+                    exploration_manager_->isExplorationFinished()) {
                     latest_replan.setRetCode(GENERAL_RET_CODE::GENERAL_SUCCESS_NO_BACKUP);
                     ros_ptr_->info(" -- [Exploration] Exploration finished: {}.", plan.reason);
                     return FINISH;
                 }
-                latest_replan.setRetCode(GENERAL_RET_CODE::GENERAL_UNDEFINED);
+                latest_replan.setRetCode(
+                        exploration::explorationPlanStatusRecoverable(plan.status)
+                        ? GENERAL_RET_CODE::GENERAL_SUCCESS_NO_BACKUP
+                        : GENERAL_RET_CODE::GENERAL_UNDEFINED);
             }
-            ros_ptr_->warn(" -- [Exploration] Failed to select exploration guide: {}.", plan.reason);
+            if (exploration::explorationPlanStatusRecoverable(plan.status)) {
+                if (plan.status == exploration::ExplorationPlanStatus::LOCAL_GUIDE_FAILED &&
+                    plan.target_frontier_id >= 0) {
+                    exploration_manager_->onLocalSegmentFailed(
+                            plan,
+                            plan.reason,
+                            ros_ptr_ ? ros_ptr_->getSimTime() : 0.0);
+                }
+                ros_ptr_->warn(" -- [Exploration] Recoverable planning state [{}]: {}. Keep exploration task active.",
+                               exploration::explorationPlanStatusName(plan.status),
+                               plan.reason);
+                return NO_NEED;
+            }
+            ros_ptr_->warn(" -- [Exploration] Failed to select exploration guide [{}]: {}.",
+                           exploration::explorationPlanStatusName(plan.status),
+                           plan.reason);
             return tryCommitExplorationBackupFallback(plan.reason);
         }
 
@@ -1046,7 +1106,12 @@ namespace general_planner {
             active_exploration_plan_ = exploration::ExplorationPlan{};
         }
         if (ret == FAILED || ret == EMER) {
-            if (plan.local_goal_is_final) {
+            plan.status = exploration::ExplorationPlanStatus::BACKEND_FAILED;
+            const bool robot_at_final =
+                    plan.local_goal_is_final &&
+                    (robot.p - plan.final_goal).norm() <=
+                    std::max(0.3, cfg_.exploration_runtime_final_goal_radius);
+            if (robot_at_final) {
                 exploration_manager_->onGoalFailed(plan.goal, RET_CODE_STR[ret],
                                                    ros_ptr_ ? ros_ptr_->getSimTime() : 0.0);
             } else {
@@ -4617,6 +4682,8 @@ namespace general_planner {
         cfg.enable = cfg_.exploration_enable;
         cfg.use_epic_frontend = cfg_.exploration_use_epic_frontend;
         cfg.print_log = cfg_.exploration_print_log;
+        cfg.publish_lio_map = cfg_.exploration_epic_lio_publish_map;
+        cfg.publish_lio_map_period = cfg_.exploration_epic_lio_publish_map_period;
 
         cfg.observation_map.enable = cfg_.exploration_enable;
         cfg.observation_map.resolution = cfg_.exploration_observation_resolution;
@@ -4757,7 +4824,14 @@ namespace general_planner {
                 ? false
                 : cfg_.exploration_local_guide_astar_repair_enable;
         cfg.local_guide.unknown_as_occupied = cfg_.exploration_local_guide_unknown_as_occupied;
-        cfg.local_guide.backend = cfg_.exploration_local_guide_backend;
+        cfg.local_guide.backend = cfg_.exploration_use_epic_frontend
+                                  ? MapBackend::POINT_CLOUD
+                                  : cfg_.exploration_local_guide_backend;
+        if (cfg_.exploration_use_epic_frontend) {
+            cfg.local_guide.safe_distance =
+                    std::min(cfg.local_guide.safe_distance,
+                             std::max(0.05, cfg.local_goal_safe_distance));
+        }
         cfg.repeated_goal_threshold = cfg_.exploration_stuck_repeated_goal_threshold;
         cfg.repeated_goal_distance = cfg_.exploration_stuck_repeated_goal_distance;
         cfg.min_robot_displacement = cfg_.exploration_stuck_min_robot_displacement;
@@ -5656,6 +5730,18 @@ namespace general_planner {
 
     RET_CODE GeneralPlanner::tryCommitExplorationBackupFallback(const std::string &reason) {
         std::lock_guard<std::mutex> guard(replan_lock_);
+        if (!cfg_.exploration_backend_fallback_enable) {
+            if (last_exp_traj_info_.empty()) {
+                latest_replan.setRetCode(GENERAL_RET_CODE::GENERAL_SUCCESS_NO_BACKUP);
+                ros_ptr_->warn(" -- [Exploration] Planning failed ({}), backup fallback disabled and no trajectory is active; keep exploration task waiting for a repaired guide.",
+                               reason);
+                return NO_NEED;
+            }
+            latest_replan.setRetCode(GENERAL_RET_CODE::GENERAL_SUCCESS_NO_BACKUP);
+            ros_ptr_->warn(" -- [Exploration] Planning failed ({}), backup fallback disabled; keep current trajectory and retry exploration frontend.",
+                           reason);
+            return NO_NEED;
+        }
         if (last_exp_traj_info_.empty()) {
             ros_ptr_->warn(" -- [Exploration] Planning failed ({}), no previous exp traj for backup fallback.",
                            reason);
@@ -5720,6 +5806,44 @@ namespace general_planner {
         const bool use_plain_exp_traj = cfg_.plain_traj_en;
         const bool use_esdf_exp_traj = cfg_.esdf_traj_en && !use_plain_exp_traj;
         const bool use_distance_field_exp_traj = use_plain_exp_traj || use_esdf_exp_traj;
+        const bool use_exploration_backend =
+                active_exploration_guide_ && active_exploration_plan_.valid;
+        const MapBackend trajectory_backend =
+                use_exploration_backend ? cfg_.corridor_backend : MapBackend::ROG;
+        const double trajectory_safe_distance =
+                use_exploration_backend ? std::max(0.0, cfg_.exploration_local_guide_safe_distance) : 0.0;
+        const double trajectory_line_step =
+                use_exploration_backend ? std::max(1.0e-3, cfg_.exploration_local_guide_line_step)
+                                        : std::max(1.0e-3, cfg_.resolution);
+        auto trajectoryPointUsable = [&](const Vec3f &point,
+                                         const bool unknown_as_occupied) {
+            if (!point.allFinite()) {
+                return false;
+            }
+            const auto grid_type = map_manager_->getPolicyGridType(point, trajectory_backend, true);
+            if (grid_type == rog_map::GridType::OCCUPIED ||
+                grid_type == rog_map::GridType::OUT_OF_MAP) {
+                return false;
+            }
+            if (unknown_as_occupied && grid_type == rog_map::GridType::UNKNOWN) {
+                return false;
+            }
+            if (trajectory_safe_distance > 0.0 &&
+                !map_manager_->isStateSafe(point, trajectory_safe_distance, trajectory_backend)) {
+                return false;
+            }
+            return true;
+        };
+        auto trajectorySegmentUsable = [&](const Vec3f &a, const Vec3f &b) {
+            if (!trajectoryPointUsable(a, false) || !trajectoryPointUsable(b, false)) {
+                return false;
+            }
+            return map_manager_->isSegmentSafe(a,
+                                               b,
+                                               trajectory_safe_distance,
+                                               trajectory_backend,
+                                               trajectory_line_step);
+        };
 
         /* 2) Check last exp traj */
         if (planning_from_rest) {
@@ -5835,9 +5959,7 @@ namespace general_planner {
                     continue;
                 }
 
-                rog_map::GridType temp_grid = map_manager_->getInfGridType(temp_pt);
-
-                if (temp_grid == rog_map::GridType::OCCUPIED || temp_grid == rog_map::GridType::OUT_OF_MAP) {
+                if (!trajectoryPointUsable(temp_pt, false)) {
                     last_exp_traj_info.setWholeTrajKnownFreeFlag(false);
                     break;
                 }
@@ -5892,7 +6014,7 @@ namespace general_planner {
             } else {
                 temp_pt = last_exp_traj_time_pos.back().second;
                 // * 8) Pop all evaluated pts after the sampled point.
-                while (map_manager_->isOccupiedInflate(temp_pt) ||
+                while (!trajectoryPointUsable(temp_pt, false) ||
                        (temp_pt - pos_init_state.col(0)).norm() > split_dis) {
                     last_exp_traj_time_pos.pop_back();
                     last_exp_traj_vel.pop_back();
@@ -5934,8 +6056,7 @@ namespace general_planner {
         }
 
         const bool use_exploration_guide =
-                active_exploration_guide_ &&
-                active_exploration_plan_.valid &&
+                use_exploration_backend &&
                 active_exploration_plan_.guide_path.size() >= 2U;
         auto appendExplorationGuideSuffix = [&]() {
             if (!use_exploration_guide || guide_path.empty() || guide_stamp.empty()) {
@@ -5991,6 +6112,9 @@ namespace general_planner {
                     const double seg_dist = (seg_point - last).norm();
                     if (seg_dist < std::max(1.0e-4, cfg_.resolution * 0.1)) {
                         continue;
+                    }
+                    if (use_exploration_backend && !trajectorySegmentUsable(last, seg_point)) {
+                        return false;
                     }
                     stamp += std::max(0.05, seg_dist / std::max(1.0e-3, cfg_.exp_traj_cfg.max_vel));
                     guide_path.emplace_back(seg_point);
@@ -6630,8 +6754,9 @@ namespace general_planner {
 
         // 1) check and shift pts
         // 		For start point, must be collision free
+        const MapBackend path_backend = cfg_.astar_backend;
         rog_map::GridType start_type;
-        start_type = map_manager_->getGridType(start_pt);
+        start_type = map_manager_->getPolicyGridType(start_pt, path_backend, false);
 
         /// If the start_pt is obstacle in prob map, just shift it to the nearest free point.
         if (start_type == rog_map::GridType::OCCUPIED ||
@@ -6667,9 +6792,9 @@ namespace general_planner {
         double temp_plannning_horizon = searching_horizon;
         //            int start_id = getNearestFurtherGoalPoint(goal_waypoints, start_pt);
 
-        const bool goal_inside_local_map = map_manager_->insideLocalMap(goal);
+        const bool goal_inside_local_map = map_manager_->isInMap(goal, path_backend);
         const rog_map::GridType goal_inf_type =
-                goal_inside_local_map ? map_manager_->getInfGridType(goal) : OUT_OF_MAP;
+                goal_inside_local_map ? map_manager_->getPolicyGridType(goal, path_backend, true) : OUT_OF_MAP;
         const bool hidden_unknown_goal = cfg_.unknown_goal_reveal_en &&
                                          goal_inside_local_map &&
                                          goal_inf_type == UNKNOWN;
@@ -6718,10 +6843,10 @@ namespace general_planner {
         }
 
         auto pointUsable = [&](const Vec3f &point) {
-            if (!point.allFinite() || !map_manager_->insideLocalMap(point)) {
+            if (!point.allFinite() || !map_manager_->isInMap(point, path_backend)) {
                 return false;
             }
-            const rog_map::GridType inf_type = map_manager_->getInfGridType(point);
+            const rog_map::GridType inf_type = map_manager_->getPolicyGridType(point, path_backend, true);
             if (inf_type == OCCUPIED || inf_type == OUT_OF_MAP) {
                 return false;
             }
@@ -6731,7 +6856,7 @@ namespace general_planner {
         auto lineUsable = [&](const Vec3f &a, const Vec3f &b) {
             return pointUsable(a) &&
                    pointUsable(b) &&
-                   map_manager_->isLineFree(a, b, true, unknown_as_occupied_for_frontend);
+                   map_manager_->isLineFree(a, b, path_backend, true, unknown_as_occupied_for_frontend);
         };
 
         auto blockedSpanOnDirectLine = [&]() {

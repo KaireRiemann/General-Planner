@@ -58,13 +58,18 @@ general_planner:
     frontend_type: "epic_original"
     use_epic_frontend: true
     cloud_frame: "WORLD"
-    astar_backend: "rog"
-    corridor_backend: "rog"
+    update_rog_map: false
+    backup_traj_enable: false
+    backend_fallback_enable: false
+    astar_backend: "point_cloud"
+    corridor_backend: "point_cloud"
     tsp_dir: "/tmp/general_planner_tsp"
     print_log: true
     epic_lio:
       enable: true
       voxel_leaf_size: 0.12
+      publish_map: true
+      publish_map_period: 0.5
     observation_map:
       resolution: 0.3
       min_distance: 0.2
@@ -78,8 +83,8 @@ general_planner:
       frontier_cluster_radius: 0.8
       frontier_normal_similarity: 0.15
       min_frontier_cluster_size: 6
-      bbox_min: [ -65.0, -35.0, -1.0 ]
-      bbox_max: [ 25.0, 12.0, 24.0 ]
+      bbox_min: [ -100.0, -80.0, -1.0 ]
+      bbox_max: [ 100.0, 80.0, 5.0 ]
     frontier_database:
       association_distance: 1.5
       bbox_overlap_min_ratio: 0.05
@@ -107,14 +112,14 @@ general_planner:
       use_local_map_safety: false
       cluster_by_visibility_sphere: true
       use_topo_reachability_filter: true
-      max_clusters: 12
+      max_clusters: 18
       cluster_connectivity_scale: 1.0
-      topo_reachability_timeout: 0.03
+      topo_reachability_timeout: 0.06
       epic_yaw_bins: 8
     topo_graph:
       history_node_min_distance: 1.0
-      connect_radius: 5.0
-      local_edge_astar_timeout: 0.05
+      connect_radius: 6.5
+      local_edge_astar_timeout: 0.08
       global_edge_max_length: 10.0
       max_history_nodes: 220
       use_local_astar_for_edges: false
@@ -126,11 +131,11 @@ general_planner:
       bubble_astar_safe_distance: 0.6
       bubble_astar_max_nodes: 1000000
       use_epic_region_bubble_graph: true
-      max_edges_per_node: 10
-      max_region_edges_per_node: 7
-      max_frontier_edges_per_node: 4
+      max_edges_per_node: 12
+      max_region_edges_per_node: 9
+      max_frontier_edges_per_node: 6
       max_history_edges_per_node: 2
-      max_candidate_neighbors: 20
+      max_candidate_neighbors: 32
     topo:
       use_epic_region_bubble_graph: true
       region_size_xy: 3.3
@@ -146,7 +151,7 @@ general_planner:
       edge_safe_distance: 0.45
     global_guidance:
       enable: true
-      max_frontiers_in_tour: 24
+      max_frontiers_in_tour: 32
       weight_path_cost: 1.0
       weight_gain: 2.2
       weight_revisit: 0.7
@@ -159,28 +164,28 @@ general_planner:
       lkh_executable: ""
       lkh_cost_scale: 100
     global_route:
-      route_waypoint_lookahead: 4.0
+      route_waypoint_lookahead: 6.5
       route_waypoint_min_distance: 1.2
-      route_waypoint_max_distance: 5.0
+      route_waypoint_max_distance: 7.0
       local_goal_safe_distance: 0.3
-      route_replan_distance_threshold: 0.8
+      route_replan_distance_threshold: 1.5
       use_local_map_safety: false
     runtime:
-      local_goal_lookahead: 4.0
+      local_goal_lookahead: 6.5
       local_goal_min_distance: 1.0
       final_goal_radius: 0.7
-      route_progress_min: 0.5
+      route_progress_min: 0.8
       max_local_segment_fail_count: 3
       keep_active_target: true
       switch_score_ratio: 1.25
     local_guide:
-      backend: "hybrid"
+      backend: "point_cloud"
       shortcut_enable: true
       astar_repair_enable: true
       unknown_as_occupied: false
-      planning_horizon: 8.0
-      max_segment_length: 1.0
-      safe_distance: 0.45
+      planning_horizon: 12.0
+      max_segment_length: 1.2
+      safe_distance: 0.30
       line_step: 0.20
     stuck:
       repeated_goal_threshold: 50
@@ -194,8 +199,8 @@ general_planner:
     raycast_step: 0.2
     max_range: 22.0
     min_range: 0.2
-    bbox_min: [ -65.0, -35.0, -1.0 ]
-    bbox_max: [ 25.0, 12.0, 24.0 ]
+    bbox_min: [ -80.0, -80.0, -1.0 ]
+    bbox_max: [ 80.0, 80.0, 24.0 ]
     occupied_hit_threshold: 2
     free_miss_threshold: 1
     update_min_interval: 0.15
@@ -206,8 +211,8 @@ general_planner:
     voxel_size: 0.15
     save_path: "/tmp/exploration_spiral0_global_map.pcd"
     crop_enable: true
-    crop_min: [ -65.0, -35.0, -1.0 ]
-    crop_max: [ 25.0, 12.0, 24.0 ]
+    crop_min: [ -80.0, -80.0, -1.0 ]
+    crop_max: [ 80.0, 80.0, 24.0 ]
   global_region_grid:
     enable: true
     region_size_xy: 5.0
