@@ -38,6 +38,8 @@
 #include "sensor_msgs/PointCloud2.h"
 #include "std_msgs/String.h"
 
+#include <pcl/point_cloud.h>
+#include <pcl/point_types.h>
 #include <pcl_conversions/pcl_conversions.h>
 
 #include <algorithm>
@@ -805,6 +807,39 @@ namespace fsm {
             setTaskModeFromString(msg->data);
         }
 
+        static bool pointCloudHasField(const sensor_msgs::PointCloud2 &msg,
+                                       const std::string &field_name) {
+            return std::any_of(msg.fields.begin(), msg.fields.end(),
+                               [&](const sensor_msgs::PointField &field) {
+                                   return field.name == field_name;
+                               });
+        }
+
+        static void convertExplorationCloud(const sensor_msgs::PointCloud2 &msg,
+                                            rog_map::PointCloud &cloud) {
+            if (pointCloudHasField(msg, "intensity")) {
+                pcl::fromROSMsg(msg, cloud);
+                return;
+            }
+
+            pcl::PointCloud<pcl::PointXYZ> xyz_cloud;
+            pcl::fromROSMsg(msg, xyz_cloud);
+            cloud.clear();
+            cloud.header = xyz_cloud.header;
+            cloud.width = xyz_cloud.width;
+            cloud.height = xyz_cloud.height;
+            cloud.is_dense = xyz_cloud.is_dense;
+            cloud.points.reserve(xyz_cloud.points.size());
+            for (const auto &xyz : xyz_cloud.points) {
+                rog_map::PclPoint point;
+                point.x = xyz.x;
+                point.y = xyz.y;
+                point.z = xyz.z;
+                point.intensity = 0.0F;
+                cloud.points.push_back(point);
+            }
+        }
+
         void explorationCloudCallback(const sensor_msgs::PointCloud2ConstPtr &msg) {
             if (!planner_ptr_) {
                 return;
@@ -823,7 +858,7 @@ namespace fsm {
                 return;
             }
             rog_map::PointCloud cloud;
-            pcl::fromROSMsg(*msg, cloud);
+            convertExplorationCloud(*msg, cloud);
             if (!exploration_cloud_seen_) {
                 cout << GREEN << " -- [Fsm] First exploration cloud received: msg_points="
                      << static_cast<std::size_t>(msg->width) * static_cast<std::size_t>(msg->height)

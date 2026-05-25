@@ -21,11 +21,19 @@ class TopoNode;
 class TopoGraph;
 
 namespace fast_planner {
+class BubbleAstar;
+class FastSearcher;
 class LIOInterface;
 }
 
 namespace general_planner {
 namespace exploration {
+
+enum class ExplorationPlanningMode {
+    FOLLOW_ACTIVE_TARGET,
+    REFRESH_GLOBAL_IF_NEEDED,
+    FORCE_REFRESH_GLOBAL
+};
 
 class EpicExplorationManager {
 public:
@@ -46,12 +54,26 @@ public:
             double frontier_cluster_radius{0.65};
             double frontier_normal_similarity{0.35};
             int min_frontier_cluster_size{8};
+            double frontier_cluster_min_radius{1.8};
+            double frontier_cluster_min_size{2.0};
+            double frontier_cluster_max_size{8.0};
+            double frontier_cluster_direction_radius{0.0};
+            int frontier_cluster_minimum_point_num{10};
             double bbox_min_x{-50.0};
             double bbox_min_y{-50.0};
             double bbox_min_z{-2.0};
             double bbox_max_x{50.0};
             double bbox_max_y{50.0};
             double bbox_max_z{10.0};
+        };
+
+        struct LidarPerceptionConfig {
+            double lidar_pitch_deg{40.0};
+            double fov_up_deg{52.0};
+            double fov_down_deg{-7.0};
+            double viewpoint_fov_up_deg{48.0};
+            double viewpoint_fov_down_deg{-5.0};
+            double max_ray_length{16.0};
         };
 
         struct FrontierDatabaseConfig {
@@ -63,6 +85,9 @@ public:
             double covered_gain_threshold{4.0};
             double missing_frontier_timeout{2.0};
             double dormant_time{4.0};
+            double visited_viewpoint_radius{1.5};
+            double visited_viewpoint_penalty{600.0};
+            int max_visited_viewpoints{400};
         };
 
         struct ViewpointConfig {
@@ -72,6 +97,14 @@ public:
             int yaw_samples{16};
             int height_samples{3};
             double height_step{0.6};
+            double sample_pillar_min_height{-2.0};
+            double sample_pillar_max_height{2.5};
+            double sample_pillar_min_radius{1.0};
+            double sample_pillar_max_radius{4.0};
+            int sample_pillar_height_layer_num{5};
+            int sample_pillar_radius_layer_num{8};
+            int sample_pillar_circle_sample_num{4};
+            int local_tsp_size{10};
             double safe_distance{0.45};
             double sensor_range{7.0};
             double horizontal_fov_deg{90.0};
@@ -144,7 +177,9 @@ public:
         bool print_log{true};
         bool publish_lio_map{true};
         double publish_lio_map_period{0.5};
+        double lio_self_filter_radius{0.8};
         ObservationConfig observation_map;
+        LidarPerceptionConfig lidar_perception;
         FrontierDatabaseConfig frontier_database;
         ViewpointConfig viewpoint_manager;
         TopoConfig topo_graph;
@@ -193,6 +228,10 @@ public:
     bool planOnce(const rog_map::RobotState &robot,
                   double current_yaw,
                   ExplorationPlan &plan);
+    bool planOnce(const rog_map::RobotState &robot,
+                  double current_yaw,
+                  ExplorationPlan &plan,
+                  ExplorationPlanningMode mode);
 
     void onGoalReached(const ExplorationGoal &goal, double stamp);
     void onGoalFailed(const ExplorationGoal &goal,
@@ -246,8 +285,13 @@ private:
                                 double timeout,
                                 GlobalRoute &route) const;
     void clearNativeGoalState();
+    void clearNativeTourState();
+    void rebuildGlobalTourFromCursor(const Eigen::Vector3f &start);
+    bool advanceNativeTourTarget(const Eigen::Vector3f &start);
     bool setNativeGoalFromTourTarget(std::size_t target_index);
     bool frontierSelectable(int frontier_id) const;
+    void rememberVisitedNativeViewpoint(const Eigen::Vector3f &position);
+    double visitedNativeViewpointPenalty(const Eigen::Vector3f &position) const;
     bool routeBetweenNativeNodes(const std::shared_ptr<TopoNode> &start,
                                  const std::shared_ptr<TopoNode> &goal,
                                  double timeout,
@@ -273,6 +317,7 @@ private:
 
     static super_utils::Vec3f toVec3d(const Eigen::Vector3f &p);
     static double pathLength(const super_utils::vec_E<super_utils::Vec3f> &path);
+    double nativeRouteCost(const std::vector<Eigen::Vector3f> &path) const;
     static void appendUnique(super_utils::vec_E<super_utils::Vec3f> &path,
                              const super_utils::Vec3f &point);
     NativeFrontierStats getNativeFrontierStats() const;
@@ -286,6 +331,8 @@ private:
 
     std::shared_ptr<fast_planner::LIOInterface> lio_interface_;
     std::shared_ptr<ParallelBubbleAstar> parallel_path_finder_;
+    std::shared_ptr<fast_planner::BubbleAstar> bubble_path_finder_;
+    std::shared_ptr<fast_planner::FastSearcher> fast_searcher_;
     std::shared_ptr<FrontierManager> frontier_manager_;
     std::shared_ptr<TopoGraph> graph_;
     std::shared_ptr<GraphVisualizer> graph_visualizer_;
@@ -295,6 +342,7 @@ private:
     mutable ros::Publisher exploration_box_pub_;
     std::vector<Eigen::Vector3f> global_tour_;
     std::vector<NativeTourTarget> native_tour_targets_;
+    std::vector<Eigen::Vector3f> visited_native_viewpoints_;
     std::size_t native_tour_cursor_{0U};
 
     mutable std::mutex mutex_;

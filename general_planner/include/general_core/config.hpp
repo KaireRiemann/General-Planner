@@ -123,6 +123,13 @@ namespace general_planner {
         bool exploration_print_log{true};
         bool exploration_epic_lio_publish_map{true};
         double exploration_epic_lio_publish_map_period{0.5};
+        double exploration_epic_lio_self_filter_radius{0.8};
+        double exploration_lidar_pitch_deg{40.0};
+        double exploration_lidar_fov_up_deg{52.0};
+        double exploration_lidar_fov_down_deg{-7.0};
+        double exploration_lidar_viewpoint_fov_up_deg{48.0};
+        double exploration_lidar_viewpoint_fov_down_deg{-5.0};
+        double exploration_lidar_max_ray_length{16.0};
 
         double exploration_observation_resolution{0.25};
         double exploration_observation_min_distance{0.2};
@@ -136,6 +143,11 @@ namespace general_planner {
         double exploration_observation_frontier_cluster_radius{0.65};
         double exploration_observation_frontier_normal_similarity{0.35};
         int exploration_observation_min_frontier_cluster_size{8};
+        double exploration_frontier_cluster_min_radius{1.8};
+        double exploration_frontier_cluster_min_size{2.0};
+        double exploration_frontier_cluster_max_size{8.0};
+        double exploration_frontier_cluster_direction_radius{0.0};
+        int exploration_frontier_cluster_minimum_point_num{10};
         std::vector<double> exploration_observation_bbox_min{-50.0, -50.0, -2.0};
         std::vector<double> exploration_observation_bbox_max{50.0, 50.0, 10.0};
 
@@ -147,6 +159,9 @@ namespace general_planner {
         double exploration_frontier_covered_gain_threshold{4.0};
         double exploration_frontier_missing_timeout{2.0};
         double exploration_frontier_dormant_time{4.0};
+        double exploration_frontier_visited_viewpoint_radius{1.5};
+        double exploration_frontier_visited_viewpoint_penalty{600.0};
+        int exploration_frontier_max_visited_viewpoints{400};
 
         double exploration_viewpoint_min_distance{1.4};
         double exploration_viewpoint_max_distance{4.0};
@@ -154,6 +169,14 @@ namespace general_planner {
         int exploration_viewpoint_yaw_samples{16};
         int exploration_viewpoint_height_samples{3};
         double exploration_viewpoint_height_step{0.6};
+        double exploration_viewpoint_sample_pillar_min_height{-2.0};
+        double exploration_viewpoint_sample_pillar_max_height{2.5};
+        double exploration_viewpoint_sample_pillar_min_radius{1.0};
+        double exploration_viewpoint_sample_pillar_max_radius{4.0};
+        int exploration_viewpoint_sample_pillar_height_layer_num{5};
+        int exploration_viewpoint_sample_pillar_radius_layer_num{8};
+        int exploration_viewpoint_sample_pillar_circle_sample_num{4};
+        int exploration_viewpoint_local_tsp_size{10};
         double exploration_viewpoint_safe_distance{0.45};
         double exploration_viewpoint_sensor_range{7.0};
         double exploration_viewpoint_horizontal_fov_deg{90.0};
@@ -226,11 +249,19 @@ namespace general_planner {
         int exploration_runtime_max_local_segment_fail_count{3};
         bool exploration_runtime_keep_active_target{true};
         double exploration_runtime_switch_score_ratio{1.25};
+        double exploration_runtime_global_update_dt{0.2};
+        double exploration_runtime_replan_time_after_traj_start{0.5};
+        double exploration_runtime_replan_time_before_traj_end{0.5};
+        double exploration_runtime_safety_check_dt{0.15};
+        double exploration_runtime_safety_check_horizon{2.0};
+        double exploration_runtime_stop_traj_time{0.2};
+        double exploration_runtime_collision_replan_time{0.5};
         double exploration_local_guide_lookahead{4.0};
         double exploration_local_guide_min_distance{1.0};
         double exploration_local_guide_planning_horizon{8.0};
         double exploration_local_guide_max_segment_length{1.0};
         double exploration_local_guide_safe_distance{0.45};
+        double exploration_local_guide_start_safe_distance{0.20};
         double exploration_local_guide_line_step{0.20};
         bool exploration_local_guide_shortcut_enable{true};
         bool exploration_local_guide_astar_repair_enable{true};
@@ -615,6 +646,20 @@ namespace general_planner {
                              exploration_epic_lio_publish_map, true);
             loader.LoadParam("general_planner/exploration/epic_lio/publish_map_period",
                              exploration_epic_lio_publish_map_period, 0.5);
+            loader.LoadParam("general_planner/exploration/epic_lio/self_filter_radius",
+                             exploration_epic_lio_self_filter_radius, 0.8);
+            loader.LoadParam("general_planner/exploration/lidar_perception/lidar_pitch",
+                             exploration_lidar_pitch_deg, 40.0);
+            loader.LoadParam("general_planner/exploration/lidar_perception/fov_up",
+                             exploration_lidar_fov_up_deg, 52.0);
+            loader.LoadParam("general_planner/exploration/lidar_perception/fov_down",
+                             exploration_lidar_fov_down_deg, -7.0);
+            loader.LoadParam("general_planner/exploration/lidar_perception/fov_viewpoint_up",
+                             exploration_lidar_viewpoint_fov_up_deg, 48.0);
+            loader.LoadParam("general_planner/exploration/lidar_perception/fov_viewpoint_down",
+                             exploration_lidar_viewpoint_fov_down_deg, -5.0);
+            loader.LoadParam("general_planner/exploration/lidar_perception/max_ray_length",
+                             exploration_lidar_max_ray_length, 16.0);
             loader.LoadParam("general_planner/exploration/observation_map/resolution",
                              exploration_observation_resolution, 0.25);
             loader.LoadParam("general_planner/exploration/observation_map/min_distance",
@@ -639,6 +684,16 @@ namespace general_planner {
                              exploration_observation_frontier_normal_similarity, 0.35);
             loader.LoadParam("general_planner/exploration/observation_map/min_frontier_cluster_size",
                              exploration_observation_min_frontier_cluster_size, 8);
+            loader.LoadParam("general_planner/exploration/observation_map/frontier_cluster_min_radius",
+                             exploration_frontier_cluster_min_radius, 1.8);
+            loader.LoadParam("general_planner/exploration/observation_map/frontier_cluster_min_size",
+                             exploration_frontier_cluster_min_size, 2.0);
+            loader.LoadParam("general_planner/exploration/observation_map/frontier_cluster_max_size",
+                             exploration_frontier_cluster_max_size, 8.0);
+            loader.LoadParam("general_planner/exploration/observation_map/frontier_cluster_direction_radius",
+                             exploration_frontier_cluster_direction_radius, 0.0);
+            loader.LoadParam("general_planner/exploration/observation_map/frontier_cluster_minimum_point_num",
+                             exploration_frontier_cluster_minimum_point_num, 10);
             loader.LoadParam("general_planner/exploration/observation_map/bbox_min",
                              exploration_observation_bbox_min, std::vector<double>{-50.0, -50.0, -2.0});
             loader.LoadParam("general_planner/exploration/observation_map/bbox_max",
@@ -660,6 +715,12 @@ namespace general_planner {
                              exploration_frontier_missing_timeout, 2.0);
             loader.LoadParam("general_planner/exploration/frontier_database/dormant_time",
                              exploration_frontier_dormant_time, 4.0);
+            loader.LoadParam("general_planner/exploration/frontier_database/visited_viewpoint_radius",
+                             exploration_frontier_visited_viewpoint_radius, 1.5);
+            loader.LoadParam("general_planner/exploration/frontier_database/visited_viewpoint_penalty",
+                             exploration_frontier_visited_viewpoint_penalty, 600.0);
+            loader.LoadParam("general_planner/exploration/frontier_database/max_visited_viewpoints",
+                             exploration_frontier_max_visited_viewpoints, 400);
 
             loader.LoadParam("general_planner/exploration/viewpoint/min_distance",
                              exploration_viewpoint_min_distance, 1.4);
@@ -673,6 +734,22 @@ namespace general_planner {
                              exploration_viewpoint_height_samples, 3);
             loader.LoadParam("general_planner/exploration/viewpoint/height_step",
                              exploration_viewpoint_height_step, 0.6);
+            loader.LoadParam("general_planner/exploration/viewpoint/sample_pillar_min_height",
+                             exploration_viewpoint_sample_pillar_min_height, -2.0);
+            loader.LoadParam("general_planner/exploration/viewpoint/sample_pillar_max_height",
+                             exploration_viewpoint_sample_pillar_max_height, 2.5);
+            loader.LoadParam("general_planner/exploration/viewpoint/sample_pillar_min_radius",
+                             exploration_viewpoint_sample_pillar_min_radius, 1.0);
+            loader.LoadParam("general_planner/exploration/viewpoint/sample_pillar_max_radius",
+                             exploration_viewpoint_sample_pillar_max_radius, 4.0);
+            loader.LoadParam("general_planner/exploration/viewpoint/sample_pillar_height_layer_num",
+                             exploration_viewpoint_sample_pillar_height_layer_num, 5);
+            loader.LoadParam("general_planner/exploration/viewpoint/sample_pillar_radius_layer_num",
+                             exploration_viewpoint_sample_pillar_radius_layer_num, 8);
+            loader.LoadParam("general_planner/exploration/viewpoint/sample_pillar_circle_sample_num",
+                             exploration_viewpoint_sample_pillar_circle_sample_num, 4);
+            loader.LoadParam("general_planner/exploration/viewpoint/local_tsp_size",
+                             exploration_viewpoint_local_tsp_size, 10);
             loader.LoadParam("general_planner/exploration/viewpoint/safe_distance",
                              exploration_viewpoint_safe_distance, 0.45);
             loader.LoadParam("general_planner/exploration/viewpoint/sensor_range",
@@ -819,6 +896,20 @@ namespace general_planner {
                              exploration_runtime_keep_active_target, true);
             loader.LoadParam("general_planner/exploration/runtime/switch_score_ratio",
                              exploration_runtime_switch_score_ratio, 1.25);
+            loader.LoadParam("general_planner/exploration/runtime/global_update_dt",
+                             exploration_runtime_global_update_dt, 0.2);
+            loader.LoadParam("general_planner/exploration/runtime/replan_time_after_traj_start",
+                             exploration_runtime_replan_time_after_traj_start, 0.5);
+            loader.LoadParam("general_planner/exploration/runtime/replan_time_before_traj_end",
+                             exploration_runtime_replan_time_before_traj_end, 0.5);
+            loader.LoadParam("general_planner/exploration/runtime/safety_check_dt",
+                             exploration_runtime_safety_check_dt, 0.15);
+            loader.LoadParam("general_planner/exploration/runtime/safety_check_horizon",
+                             exploration_runtime_safety_check_horizon, 2.0);
+            loader.LoadParam("general_planner/exploration/runtime/stop_traj_time",
+                             exploration_runtime_stop_traj_time, 0.2);
+            loader.LoadParam("general_planner/exploration/runtime/collision_replan_time",
+                             exploration_runtime_collision_replan_time, 0.5);
             loader.LoadParam("general_planner/exploration/local_guide/local_goal_lookahead",
                              exploration_local_guide_lookahead, 4.0);
             loader.LoadParam("general_planner/exploration/runtime/local_goal_lookahead",
@@ -833,6 +924,8 @@ namespace general_planner {
                              exploration_local_guide_max_segment_length, 1.0);
             loader.LoadParam("general_planner/exploration/local_guide/safe_distance",
                              exploration_local_guide_safe_distance, 0.45);
+            loader.LoadParam("general_planner/exploration/local_guide/start_safe_distance",
+                             exploration_local_guide_start_safe_distance, 0.20);
             loader.LoadParam("general_planner/exploration/local_guide/line_step",
                              exploration_local_guide_line_step, 0.20);
             loader.LoadParam("general_planner/exploration/local_guide/shortcut_enable",

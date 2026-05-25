@@ -19,6 +19,7 @@ public:
         double planning_horizon{8.0};
         double max_segment_length{1.0};
         double safe_distance{0.45};
+        double start_safe_distance{0.20};
         double line_step{0.20};
         bool shortcut_enable{true};
         bool astar_repair_enable{true};
@@ -55,6 +56,9 @@ public:
 private:
     bool segmentSafe(const super_utils::Vec3f &a,
                      const super_utils::Vec3f &b) const;
+    bool segmentSafe(const super_utils::Vec3f &a,
+                     const super_utils::Vec3f &b,
+                     double safe_distance) const;
     bool repairSegment(const super_utils::Vec3f &a,
                        const super_utils::Vec3f &b,
                        super_utils::vec_E<super_utils::Vec3f> &path) const;
@@ -69,6 +73,8 @@ private:
                                    bool &trimmed,
                                    std::string &reason) const;
     bool stateSafe(const super_utils::Vec3f &p) const;
+    bool stateSafe(const super_utils::Vec3f &p,
+                   double safe_distance) const;
     super_utils::vec_E<super_utils::Vec3f> shortcutPath(
             const super_utils::vec_E<super_utils::Vec3f> &path) const;
     void densifyPath(super_utils::vec_E<super_utils::Vec3f> &path) const;

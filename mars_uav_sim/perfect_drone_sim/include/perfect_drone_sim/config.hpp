@@ -30,6 +30,7 @@ namespace perfect_drone {
         double init_roll{0.0};
         double init_pitch{0.0};
         double init_yaw{0.0};
+        double lidar_pitch{0.0};
         double sensing_rate;
 
         Config() = default;
@@ -50,6 +51,7 @@ namespace perfect_drone {
             loader.LoadParam("init_roll", init_roll, 0.0);
             loader.LoadParam("init_pitch", init_pitch, 0.0);
             loader.LoadParam("init_yaw", init_yaw, 0.0);
+            loader.LoadParam("lidar_pitch", lidar_pitch, 0.0);
             loader.LoadParam("sensing_rate", sensing_rate, 10.0);
         }
     };

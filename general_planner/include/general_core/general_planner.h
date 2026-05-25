@@ -120,6 +120,19 @@ namespace general_planner {
         exploration::ExplorationPlan latest_exploration_plan_;
         exploration::ExplorationPlan active_exploration_plan_;
         bool active_exploration_guide_{false};
+        enum class ExplorationRuntimeState {
+            WAIT_OBSERVATION,
+            UPDATE_GLOBAL,
+            PLAN_LOCAL,
+            EXEC_LOCAL,
+            RECOVER,
+            FINISH
+        };
+        ExplorationRuntimeState exploration_runtime_state_{ExplorationRuntimeState::WAIT_OBSERVATION};
+        double exploration_last_global_update_wt_{-1.0};
+        double exploration_last_local_commit_wt_{-1.0};
+        double exploration_last_runtime_log_wt_{-1.0};
+        bool exploration_has_committed_local_traj_{false};
 
         vector<double> time_consuming_;
 
@@ -354,6 +367,19 @@ namespace general_planner {
         RET_CODE generateBackupTrajectory(ExpTraj &ref_exp_traj, BackupTraj &back_traj_info);
 
         RET_CODE tryCommitExplorationBackupFallback(const std::string &reason);
+
+        void resetExplorationRuntimeState(bool hard_reset);
+
+        static const char *explorationRuntimeStateName(ExplorationRuntimeState state);
+
+        bool getExplorationCommittedTrajectoryActivity(double now,
+                                                       double &elapsed,
+                                                       double &remaining);
+
+        bool currentExplorationTrajectoryUnsafe(double now,
+                                                double *collision_time = nullptr);
+
+        bool truncateExplorationCommittedTrajectory(double stop_time);
 
         int getNearestFurtherGoalPoint(const vec_E<Vec3f> &goals, const Vec3f &start_pt);
 

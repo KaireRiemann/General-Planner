@@ -37,7 +37,7 @@ general_planner:
   ellipsoid_optimizer_fallback: false
   obs_skip_num: 1
   replan_forward_dt: 0.1
-  planning_horizon: 6.0
+  planning_horizon: 10.0
   sensing_horizon: -1
   receding_dis: 3.5
   robot_r: 0.25
@@ -49,7 +49,7 @@ general_planner:
   over_wall_min_progress_gain: 0.5
   over_wall_forward_ratio: 0.9
   unknown_goal_reveal_en: true
-  yaw_dot_max: 2.5
+  yaw_dot_max: 3.0
   yaw_mode: 1
   mpc_horizon: 15
 
@@ -70,21 +70,34 @@ general_planner:
       voxel_leaf_size: 0.12
       publish_map: true
       publish_map_period: 0.5
+      self_filter_radius: 0.8
+    lidar_perception:
+      lidar_pitch: 40.0
+      fov_up: 52.0
+      fov_down: -7.0
+      fov_viewpoint_up: 48.0
+      fov_viewpoint_down: -5.0
+      max_ray_length: 16.0
     observation_map:
-      resolution: 0.3
+      resolution: 0.4
       min_distance: 0.2
       well_observed_distance: 5.0
-      max_distance: 22.0
+      max_distance: 15.0
       good_force_trust_length: 4.5
       good_trust_length: 12.0
       good_direction_score: 0.6
       cloud_downsample_step: 1
       max_points_per_update: 18000
-      frontier_cluster_radius: 0.8
-      frontier_normal_similarity: 0.15
-      min_frontier_cluster_size: 6
-      bbox_min: [ -100.0, -80.0, -1.0 ]
-      bbox_max: [ 100.0, 80.0, 5.0 ]
+      frontier_cluster_radius: 1.8
+      frontier_normal_similarity: 0.0
+      min_frontier_cluster_size: 10
+      frontier_cluster_min_radius: 1.8
+      frontier_cluster_min_size: 2.0
+      frontier_cluster_max_size: 8.0
+      frontier_cluster_direction_radius: 0.0
+      frontier_cluster_minimum_point_num: 10
+      bbox_min: [ -48.1, -206.0, -7.1 ]
+      bbox_max: [ 176.0, 124.0, 34.1 ]
     frontier_database:
       association_distance: 1.5
       bbox_overlap_min_ratio: 0.05
@@ -94,15 +107,26 @@ general_planner:
       covered_gain_threshold: 4.0
       missing_frontier_timeout: 4.0
       dormant_time: 6.0
+      visited_viewpoint_radius: 2.0
+      visited_viewpoint_penalty: 700.0
+      max_visited_viewpoints: 500
     viewpoint:
       min_distance: 1.0
-      max_distance: 5.0
-      radius_samples: 4
-      yaw_samples: 18
+      max_distance: 4.0
+      radius_samples: 8
+      yaw_samples: 4
       height_samples: 5
-      height_step: 0.6
-      safe_distance: 0.3
-      sensor_range: 10.0
+      height_step: 1.125
+      sample_pillar_min_height: -2.0
+      sample_pillar_max_height: 2.5
+      sample_pillar_min_radius: 1.0
+      sample_pillar_max_radius: 4.0
+      sample_pillar_height_layer_num: 5
+      sample_pillar_radius_layer_num: 8
+      sample_pillar_circle_sample_num: 4
+      local_tsp_size: 10
+      safe_distance: 0.6
+      sensor_range: 16.0
       horizontal_fov_deg: 140.0
       vertical_fov_deg: 90.0
       normal_dot_min: -0.20
@@ -119,7 +143,7 @@ general_planner:
     topo_graph:
       history_node_min_distance: 1.0
       connect_radius: 6.5
-      local_edge_astar_timeout: 0.08
+      local_edge_astar_timeout: 0.01
       global_edge_max_length: 10.0
       max_history_nodes: 220
       use_local_astar_for_edges: false
@@ -145,13 +169,13 @@ general_planner:
       bubble_min_radius: 0.61
       frontier_bubble_min_radius: 0.61
       cube_discrete_size: 0.4
-      max_update_region_num: 30
+      max_update_region_num: 99999999
       neighbor_mode: 18
       edge_search_padding_scale: 1.0
       edge_safe_distance: 0.45
     global_guidance:
       enable: true
-      max_frontiers_in_tour: 32
+      max_frontiers_in_tour: 10
       weight_path_cost: 1.0
       weight_gain: 2.2
       weight_revisit: 0.7
@@ -164,28 +188,36 @@ general_planner:
       lkh_executable: ""
       lkh_cost_scale: 100
     global_route:
-      route_waypoint_lookahead: 6.5
+      route_waypoint_lookahead: 10.0
       route_waypoint_min_distance: 1.2
       route_waypoint_max_distance: 7.0
-      local_goal_safe_distance: 0.3
+      local_goal_safe_distance: 0.45
       route_replan_distance_threshold: 1.5
       use_local_map_safety: false
     runtime:
-      local_goal_lookahead: 6.5
+      local_goal_lookahead: 10.0
       local_goal_min_distance: 1.0
       final_goal_radius: 0.7
       route_progress_min: 0.8
       max_local_segment_fail_count: 3
       keep_active_target: true
       switch_score_ratio: 1.25
+      global_update_dt: 0.2
+      replan_time_after_traj_start: 0.5
+      replan_time_before_traj_end: 0.5
+      safety_check_dt: 0.15
+      safety_check_horizon: 2.0
+      stop_traj_time: 0.2
+      collision_replan_time: 0.5
     local_guide:
       backend: "point_cloud"
       shortcut_enable: true
       astar_repair_enable: true
       unknown_as_occupied: false
-      planning_horizon: 12.0
+      planning_horizon: 10.0
       max_segment_length: 1.2
-      safe_distance: 0.30
+      safe_distance: 0.45
+      start_safe_distance: 0.20
       line_step: 0.20
     stuck:
       repeated_goal_threshold: 50
@@ -199,8 +231,8 @@ general_planner:
     raycast_step: 0.2
     max_range: 22.0
     min_range: 0.2
-    bbox_min: [ -80.0, -80.0, -1.0 ]
-    bbox_max: [ 80.0, 80.0, 24.0 ]
+    bbox_min: [ -48.1, -206.0, -7.1 ]
+    bbox_max: [ 176.0, 124.0, 34.1 ]
     occupied_hit_threshold: 2
     free_miss_threshold: 1
     update_min_interval: 0.15
@@ -211,8 +243,8 @@ general_planner:
     voxel_size: 0.15
     save_path: "/tmp/exploration_spiral0_global_map.pcd"
     crop_enable: true
-    crop_min: [ -80.0, -80.0, -1.0 ]
-    crop_max: [ 80.0, 80.0, 24.0 ]
+    crop_min: [ -48.1, -206.0, -7.1 ]
+    crop_max: [ 176.0, 124.0, 34.1 ]
   global_region_grid:
     enable: true
     region_size_xy: 5.0
@@ -226,7 +258,7 @@ traj_opt:
     print_optimizer_log: false
 
   boundary:
-    max_vel: 2.5
+    max_vel: 4.0
     max_acc: 4.0
     max_jerk: 80.0
     max_omg: 2.0

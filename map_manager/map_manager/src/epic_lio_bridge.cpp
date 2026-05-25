@@ -35,7 +35,9 @@ void MapManager::initEpicLioMap(ros::NodeHandle &nh)
     }
     nh.param("epic_lio/publish_map", epic_lio_publish_map_, true);
     nh.param("epic_lio/publish_map_period", epic_lio_publish_map_period_, 0.5);
+    nh.param("epic_lio/self_filter_radius", epic_lio_self_filter_radius_, 0.0);
     epic_lio_publish_map_period_ = std::max(0.05, epic_lio_publish_map_period_);
+    epic_lio_self_filter_radius_ = std::max(0.0, epic_lio_self_filter_radius_);
     if (epic_lio_publish_map_ && !epic_lio_map_pub_) {
         epic_lio_map_pub_ = nh.advertise<sensor_msgs::PointCloud2>("epic_lio/cloud", 1);
         ros::NodeHandle root_nh;
@@ -58,6 +60,13 @@ void MapManager::updateEpicLioMap(const rog_map::PointCloud &cloud,
         return;
     }
 
+    const rog_map::Vec3f odom_p = robot.rcv ? robot.p : pose.first;
+    const rog_map::Vec3f odom_v = robot.rcv ? robot.v : rog_map::Vec3f::Zero();
+    const Eigen::Quaterniond odom_q = robot.rcv ? robot.q.normalized()
+                                                : pose.second.normalized();
+    const double self_filter_radius_sq =
+            epic_lio_self_filter_radius_ * epic_lio_self_filter_radius_;
+
     pcl::PointCloud<pcl::PointXYZ> world_cloud;
     world_cloud.points.reserve(cloud.points.size());
     for (const auto &point : cloud.points) {
@@ -65,6 +74,10 @@ void MapManager::updateEpicLioMap(const rog_map::PointCloud &cloud,
         const rog_map::Vec3f world =
                 frame == CloudFrame::WORLD ? raw : pose.first + pose.second * raw;
         if (!world.allFinite()) {
+            continue;
+        }
+        if (self_filter_radius_sq > 0.0 &&
+            (world - odom_p).squaredNorm() < self_filter_radius_sq) {
             continue;
         }
         world_cloud.points.emplace_back(static_cast<float>(world.x()),
@@ -87,10 +100,6 @@ void MapManager::updateEpicLioMap(const rog_map::PointCloud &cloud,
 
     nav_msgs::Odometry::Ptr odom(new nav_msgs::Odometry);
     odom->header = cloud_msg->header;
-    const rog_map::Vec3f odom_p = robot.rcv ? robot.p : pose.first;
-    const rog_map::Vec3f odom_v = robot.rcv ? robot.v : rog_map::Vec3f::Zero();
-    const Eigen::Quaterniond odom_q = robot.rcv ? robot.q.normalized()
-                                                : pose.second.normalized();
     odom->pose.pose.position.x = odom_p.x();
     odom->pose.pose.position.y = odom_p.y();
     odom->pose.pose.position.z = odom_p.z();

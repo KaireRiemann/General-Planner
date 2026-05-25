@@ -57,6 +57,7 @@
     <build_depend>quadrotor_msgs</build_depend>
     <build_depend>lidar_map</build_depend>
     <build_depend>pointcloud_topo</build_depend>
+    <build_depend>path_searching</build_depend>
     <build_depend>frontier_manager</build_depend>
     <build_depend>lkh_tsp_solver</build_depend>
 
@@ -68,6 +69,7 @@
     <build_export_depend>map_manager</build_export_depend>
     <build_export_depend>lidar_map</build_export_depend>
     <build_export_depend>pointcloud_topo</build_export_depend>
+    <build_export_depend>path_searching</build_export_depend>
     <build_export_depend>frontier_manager</build_export_depend>
     <build_export_depend>lkh_tsp_solver</build_export_depend>
 
@@ -79,6 +81,7 @@
     <exec_depend>map_manager</exec_depend>
     <exec_depend>lidar_map</exec_depend>
     <exec_depend>pointcloud_topo</exec_depend>
+    <exec_depend>path_searching</exec_depend>
     <exec_depend>frontier_manager</exec_depend>
     <exec_depend>lkh_tsp_solver</exec_depend>
 

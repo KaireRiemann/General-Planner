@@ -112,7 +112,9 @@ namespace perfect_drone {
 
         void publishPC() {
             pcl::PointCloud<marsim::PointType>::Ptr local_map(new pcl::PointCloud<marsim::PointType>);
-            render_ptr_->renderOnceInWorld(position_.cast<float>(), q_.cast<float>(), ros::Time::now().toSec(),
+            const Eigen::Quaterniond lidar_q =
+                    q_ * Eigen::AngleAxisd(cfg_.lidar_pitch * M_PI / 180.0, Vec3::UnitY());
+            render_ptr_->renderOnceInWorld(position_.cast<float>(), lidar_q.cast<float>(), ros::Time::now().toSec(),
                                            local_map);
             sensor_msgs::PointCloud2 pc_msg;
             pcl::toROSMsg(*local_map, pc_msg);

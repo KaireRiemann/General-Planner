@@ -1184,6 +1184,7 @@ private:
     mutable ros::Publisher epic_lio_legacy_map_pub_;
     bool epic_lio_publish_map_{true};
     double epic_lio_publish_map_period_{0.5};
+    double epic_lio_self_filter_radius_{0.0};
     mutable ros::Time last_epic_lio_map_publish_stamp_;
     std::unique_ptr<GlobalExplorationMap> global_exploration_map_;
     GlobalPointCloudMap::Ptr global_pointcloud_map_;

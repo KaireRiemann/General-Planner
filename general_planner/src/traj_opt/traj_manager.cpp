@@ -26,6 +26,23 @@ void truncateToSixDecimals(double &num)
   num = std::trunc(num * 1e6) / 1e6;
 }
 
+double yawDelta(const double from, const double to)
+{
+  return std::atan2(std::sin(to - from), std::cos(to - from));
+}
+
+double normalizeYawNear(const double reference, const double yaw)
+{
+  return reference + yawDelta(reference, yaw);
+}
+
+double clampYawStep(const double reference, const double yaw, const double max_delta)
+{
+  const double delta = yawDelta(reference, yaw);
+  const double bounded_delta = std::max(-max_delta, std::min(max_delta, delta));
+  return reference + bounded_delta;
+}
+
 void normalizeHPoly(PolyhedronH &poly)
 {
   if (poly.rows() == 0)
@@ -1332,33 +1349,48 @@ void YawTrajOpt::getYawWaypointAllocation(const Vec4f &init_state,
                                           Vec4f &goal_state,
                                           VecDf &way_pts,
                                           VecDf &times,
-                                          const Trajectory &pos_traj)
+                                          const Trajectory &pos_traj,
+                                          const double yaw_dot_max)
 {
   double eval_t = 0.0;
   double last_yaw = init_state(0);
   way_pts.resize(std::max(0, static_cast<int>(times.size()) - 1));
   const double pos_traj_duration = pos_traj.getTotalDuration();
+  const double yaw_rate_limit = std::max(0.1, yaw_dot_max);
+  constexpr double kLookBack = 0.25;
+  constexpr double kMinLookAhead = 0.75;
+  constexpr double kMaxLookAhead = 1.50;
+  constexpr double kMinHeadingDisplacement = 0.25;
   for (int i = 0; i < way_pts.size(); ++i)
   {
     eval_t += times(i);
     double cur_yaw = last_yaw;
-    Vec3f pt_i = pos_traj.getPos(eval_t);
-    Vec3f pt_g;
-    if (eval_t + 0.5 >= pos_traj_duration)
+    const double lookahead =
+        std::min(kMaxLookAhead, std::max(kMinLookAhead, static_cast<double>(times(i))));
+    double t0 = std::max(0.0, eval_t - kLookBack);
+    double t1 = std::min(pos_traj_duration, eval_t + lookahead);
+    if (eval_t + lookahead >= pos_traj_duration)
     {
-      pt_g = pos_traj.getPos(pos_traj_duration);
-      pt_i = pos_traj.getPos(pos_traj_duration - 0.5 > 0.0 ? pos_traj_duration - 0.5 : 0.0);
+      t0 = std::max(0.0, pos_traj_duration - lookahead);
+      t1 = pos_traj_duration;
     }
-    else
+    if (t1 - t0 < 0.2 && pos_traj_duration > 0.2)
     {
-      pt_g = pos_traj.getPos(eval_t + 0.5);
+      t0 = std::max(0.0, eval_t - 0.5 * lookahead);
+      t1 = std::min(pos_traj_duration, t0 + 0.2);
     }
 
+    Vec3f pt_i = pos_traj.getPos(t0);
+    const Vec3f pt_g = pos_traj.getPos(t1);
+
     const Vec3f dir = pt_g - pt_i;
-    if (dir.norm() > 0.1)
+    if (std::hypot(dir.x(), dir.y()) > kMinHeadingDisplacement)
     {
       cur_yaw = std::atan2(dir.y(), dir.x());
-      geometry_utils::normalizeNextYaw(last_yaw, cur_yaw);
+      cur_yaw = normalizeYawNear(last_yaw, cur_yaw);
+      const double max_delta =
+          std::max(0.25, yaw_rate_limit * std::max(0.05, static_cast<double>(times(i))) * 0.85);
+      cur_yaw = clampYawStep(last_yaw, cur_yaw, max_delta);
     }
     way_pts(i) = cur_yaw;
     last_yaw = cur_yaw;
@@ -1366,11 +1398,11 @@ void YawTrajOpt::getYawWaypointAllocation(const Vec4f &init_state,
 
   if (way_pts.size() == 0)
   {
-    geometry_utils::normalizeNextYaw(init_state[0], goal_state[0]);
+    goal_state[0] = normalizeYawNear(init_state[0], goal_state[0]);
   }
   else
   {
-    geometry_utils::normalizeNextYaw(way_pts(way_pts.size() - 1), goal_state[0]);
+    goal_state[0] = normalizeYawNear(way_pts(way_pts.size() - 1), goal_state[0]);
   }
 }
 
@@ -1448,7 +1480,7 @@ bool YawTrajOpt::optimize(const Vec4f &istate_in,
   VecDf times;
   getYawTimeAllocation(pos_traj_dur, times);
   VecDf way_pts;
-  getYawWaypointAllocation(init_state, goal_state, way_pts, times, pos_traj);
+  getYawWaypointAllocation(init_state, goal_state, way_pts, times, pos_traj, yaw_dot_max_);
 
   Eigen::Matrix<double, 1, Eigen::Dynamic> inner(1, way_pts.size());
   for (int i = 0; i < way_pts.size(); ++i)

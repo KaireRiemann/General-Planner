@@ -18,6 +18,9 @@ LocalGuideBuilder::LocalGuideBuilder(Config cfg,
     cfg_.final_goal_radius = std::max(0.1, cfg_.final_goal_radius);
     cfg_.planning_horizon = std::max(cfg_.local_goal_lookahead, cfg_.planning_horizon);
     cfg_.max_segment_length = std::max(0.2, cfg_.max_segment_length);
+    cfg_.safe_distance = std::max(0.0, cfg_.safe_distance);
+    cfg_.start_safe_distance = std::min(cfg_.safe_distance,
+                                        std::max(0.0, cfg_.start_safe_distance));
     cfg_.line_step = std::max(0.05, cfg_.line_step);
 }
 
@@ -145,8 +148,14 @@ bool LocalGuideBuilder::build(const Request &request, Result &result) const {
 
 bool LocalGuideBuilder::segmentSafe(const super_utils::Vec3f &a,
                                     const super_utils::Vec3f &b) const {
+    return segmentSafe(a, b, cfg_.safe_distance);
+}
+
+bool LocalGuideBuilder::segmentSafe(const super_utils::Vec3f &a,
+                                    const super_utils::Vec3f &b,
+                                    const double safe_distance) const {
     return map_manager_ == nullptr ||
-           map_manager_->isSegmentSafe(a, b, cfg_.safe_distance, cfg_.backend, cfg_.line_step);
+           map_manager_->isSegmentSafe(a, b, safe_distance, cfg_.backend, cfg_.line_step);
 }
 
 bool LocalGuideBuilder::repairSegment(const super_utils::Vec3f &a,
@@ -183,6 +192,17 @@ bool LocalGuideBuilder::appendSafeOrRepairedSegment(
         return true;
     }
 
+    const bool first_segment =
+            path.size() <= 1U && !path.empty() && (a - path.front()).norm() < 1.0e-4;
+    const bool relaxed_start =
+            first_segment && !stateSafe(a) && stateSafe(a, cfg_.start_safe_distance);
+    if (relaxed_start && stateSafe(b) && segmentSafe(a, b, cfg_.start_safe_distance)) {
+        if ((b - path.back()).norm() > 1.0e-4) {
+            path.push_back(b);
+        }
+        return true;
+    }
+
     super_utils::vec_E<super_utils::Vec3f> repair;
     if (repairSegment(a, b, repair) && repair.size() >= 2U) {
         for (std::size_t i = 1; i < repair.size(); ++i) {
@@ -209,7 +229,12 @@ bool LocalGuideBuilder::appendSafePrefixOfSegment(
         reason = "local guide unsafe zero-length segment";
         return false;
     }
-    if (!stateSafe(a)) {
+    const bool first_segment =
+            path.size() <= 1U && !path.empty() && (a - path.front()).norm() < 1.0e-4;
+    const bool start_full_safe = stateSafe(a);
+    const bool relaxed_start =
+            first_segment && !start_full_safe && stateSafe(a, cfg_.start_safe_distance);
+    if (!start_full_safe && !relaxed_start) {
         reason = "local guide start is unsafe";
         return false;
     }
@@ -217,9 +242,21 @@ bool LocalGuideBuilder::appendSafePrefixOfSegment(
     const int samples = std::max(2, static_cast<int>(
             std::ceil(length / std::max(0.05, cfg_.line_step))));
     super_utils::Vec3f last_safe = a;
+    bool waiting_for_full_clearance = relaxed_start;
     for (int i = 1; i <= samples; ++i) {
         const double ratio = static_cast<double>(i) / static_cast<double>(samples);
         const super_utils::Vec3f p = a + ratio * delta;
+        if (waiting_for_full_clearance) {
+            if (!stateSafe(p, cfg_.start_safe_distance) ||
+                !segmentSafe(last_safe, p, cfg_.start_safe_distance)) {
+                break;
+            }
+            last_safe = p;
+            if (stateSafe(p)) {
+                waiting_for_full_clearance = false;
+            }
+            continue;
+        }
         if (!stateSafe(p) || !segmentSafe(last_safe, p)) {
             break;
         }
@@ -228,8 +265,12 @@ bool LocalGuideBuilder::appendSafePrefixOfSegment(
 
     const double usable = (last_safe - a).norm();
     const double total = pathLength(path) + usable;
-    if (usable < std::max(0.2, cfg_.max_segment_length * 0.25) ||
-        total < cfg_.local_goal_min_distance) {
+    const double min_usable =
+            first_segment ? std::max(0.15, cfg_.max_segment_length * 0.15)
+                          : std::max(0.2, cfg_.max_segment_length * 0.25);
+    const double min_total =
+            first_segment ? min_usable : cfg_.local_goal_min_distance;
+    if (usable < min_usable || total < min_total) {
         reason = "local guide unsafe and repair failed";
         return false;
     }
@@ -242,7 +283,12 @@ bool LocalGuideBuilder::appendSafePrefixOfSegment(
 }
 
 bool LocalGuideBuilder::stateSafe(const super_utils::Vec3f &p) const {
-    return map_manager_ == nullptr || map_manager_->isStateSafe(p, cfg_.safe_distance, cfg_.backend);
+    return stateSafe(p, cfg_.safe_distance);
+}
+
+bool LocalGuideBuilder::stateSafe(const super_utils::Vec3f &p,
+                                  const double safe_distance) const {
+    return map_manager_ == nullptr || map_manager_->isStateSafe(p, safe_distance, cfg_.backend);
 }
 
 super_utils::vec_E<super_utils::Vec3f> LocalGuideBuilder::shortcutPath(

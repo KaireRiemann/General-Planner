@@ -494,9 +494,13 @@ namespace fsm {
         }
         if (new_mode == cfg_.task_mode) {
             if (new_mode == TaskMode::EXPLORATION) {
+                started_ = true;
+                if (!finish_plan) {
+                    return;
+                }
+                cout << YELLOW << " -- [Fsm] Exploration restart request received." << RESET << endl;
                 finish_plan = false;
                 task_new_ = true;
-                started_ = true;
             }
             if (active_task_) {
                 active_task_->reset();

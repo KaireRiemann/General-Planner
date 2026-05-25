@@ -171,7 +171,7 @@ Visualization Manager:
           Use Fixed Frame: true
           Use rainbow: true
           Value: false
-        - Alpha: 0.65000000000000002
+        - Alpha: 0.75
           Autocompute Intensity Bounds: true
           Autocompute Value Bounds:
             Max Value: 2.7592508792877197
@@ -181,7 +181,7 @@ Visualization Manager:
           Channel Name: intensity
           Class: rviz/PointCloud2
           Color: 187; 187; 187
-          Color Transformer: AxisColor
+          Color Transformer: FlatColor
           Decay Time: 0
           Enabled: true
           Invert Rainbow: false
@@ -192,12 +192,12 @@ Visualization Manager:
           Queue Size: 2
           Selectable: true
           Size (Pixels): 2
-          Size (m): 0.05000000074505806
-          Style: Points
+          Size (m): 0.07999999821186066
+          Style: Flat Squares
           Topic: /laser_cloud_surround
           Unreliable: false
           Use Fixed Frame: true
-          Use rainbow: true
+          Use rainbow: false
           Value: true
         - Alpha: 1
           Autocompute Intensity Bounds: true

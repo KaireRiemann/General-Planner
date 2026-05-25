@@ -16,6 +16,7 @@
 #include <lidar_map/lidar_map.h>
 #include <lkh_tsp_solver/lkh_interface.h>
 #include <nav_msgs/Odometry.h>
+#include <path_searching/bubble_astar.h>
 #include <pcl_conversions/pcl_conversions.h>
 #include <pointcloud_topo/graph.h>
 #include <pointcloud_topo/graph_visualizer.hpp>
@@ -51,6 +52,10 @@ std::vector<double> vecToStd(const Vec &v) {
             static_cast<double>(v.z())};
 }
 
+bool isLocalGuideStartUnsafe(const std::string &reason) {
+    return reason.find("local guide start is unsafe") != std::string::npos;
+}
+
 }  // namespace
 
 EpicExplorationManager::EpicExplorationManager(Config cfg,
@@ -68,6 +73,7 @@ EpicExplorationManager::EpicExplorationManager(Config cfg,
 
 void EpicExplorationManager::seedEpicParams() {
     const auto &obs = cfg_.observation_map;
+    const auto &lidar = cfg_.lidar_perception;
     const auto &vp = cfg_.viewpoint_manager;
     const auto &topo = cfg_.topo_graph;
 
@@ -100,19 +106,20 @@ void EpicExplorationManager::seedEpicParams() {
 
     setParamDefault(nh_, "odometry_topic", std::string("/quad_0/lidar_slam/odom"));
     setParamDefault(nh_, "cloud_topic", std::string("/cloud_registered"));
-    setParamDefault(nh_, "box_num", 1);
-    setParamDefault(nh_, "box_0/down", vecToStd(bbox_min));
-    setParamDefault(nh_, "box_0/up", vecToStd(bbox_max));
-    setParamDefault(nh_, "dead_area_num", 0);
+    nh_.setParam("box_num", 1);
+    nh_.setParam("box_0/down", vecToStd(bbox_min));
+    nh_.setParam("box_0/up", vecToStd(bbox_max));
+    nh_.setParam("dead_area_num", 0);
 
-    const double sensor_range = std::max(1.0, vp.sensor_range);
-    const double vertical_half_fov = std::max(5.0, 0.5 * vp.vertical_fov_deg);
-    setParamDefault(nh_, "lidar_perception/max_ray_length", sensor_range);
-    setParamDefault(nh_, "lidar_perception/fov_up", vertical_half_fov);
-    setParamDefault(nh_, "lidar_perception/fov_down", -vertical_half_fov);
-    setParamDefault(nh_, "lidar_perception/fov_viewpoint_up", vertical_half_fov);
-    setParamDefault(nh_, "lidar_perception/fov_viewpoint_down", -vertical_half_fov);
-    setParamDefault(nh_, "lidar_perception/lidar_pitch", 0.0);
+    nh_.setParam("lidar_perception/max_ray_length",
+                 std::max(1.0, lidar.max_ray_length));
+    nh_.setParam("lidar_perception/fov_up", lidar.fov_up_deg);
+    nh_.setParam("lidar_perception/fov_down", lidar.fov_down_deg);
+    nh_.setParam("lidar_perception/fov_viewpoint_up",
+                 lidar.viewpoint_fov_up_deg);
+    nh_.setParam("lidar_perception/fov_viewpoint_down",
+                 lidar.viewpoint_fov_down_deg);
+    nh_.setParam("lidar_perception/lidar_pitch", lidar.lidar_pitch_deg);
 
     const double min_region_xy = std::max(0.05, topo.min_subregion_size_xy);
     const double min_region_z = std::max(0.05, topo.min_subregion_size_z);
@@ -132,9 +139,9 @@ void EpicExplorationManager::seedEpicParams() {
     nh_.setParam("bubble_topo/cube_discrete_size",
                  std::max(0.05, topo.cube_discrete_size));
     nh_.setParam("parallel_astar/update_connection_timeout",
-                 std::max(0.01, topo.local_edge_astar_timeout));
+                 std::max(1.0e-4, topo.local_edge_astar_timeout));
     nh_.setParam("parallel_astar/insert_node_timeout",
-                 std::max(0.01, topo.local_edge_astar_timeout));
+                 std::max(1.0e-4, topo.local_edge_astar_timeout));
     nh_.setParam("max_update_region_num",
                  std::max(1, topo.max_update_region_num));
 
@@ -147,54 +154,53 @@ void EpicExplorationManager::seedEpicParams() {
                     std::max(0.05, topo.bubble_astar_safe_distance));
     setParamDefault(nh_, "bubble_astar/debug", false);
 
-    setParamDefault(nh_, "FrontierManager/cell_size",
-                    std::max(0.05, obs.resolution));
-    setParamDefault(nh_, "FrontierManager/noise_cell_range", 1);
-    setParamDefault(nh_, "FrontierManager/good_observation_direction_score",
-                    obs.good_observation_direction_score);
-    setParamDefault(nh_, "FrontierManager/good_observation_trust_length",
-                    obs.good_observation_trust_length);
-    setParamDefault(nh_, "FrontierManager/good_observation_force_trust_length",
-                    obs.good_observation_force_trust_length);
-    setParamDefault(nh_, "FrontierManager/update_length",
-                    std::max(1.0, obs.max_observation_distance));
-    setParamDefault(nh_, "FrontierManager/view_frt", true);
-    setParamDefault(nh_, "FrontierManager/view_cluster", true);
-    setParamDefault(nh_, "FrontierManager/cluster_min_radius",
-                    std::max(0.1, obs.frontier_cluster_radius * 0.5));
-    setParamDefault(nh_, "FrontierManager/cluster_min_size",
-                    std::max(0.1, obs.frontier_cluster_radius));
-    setParamDefault(nh_, "FrontierManager/cluster_max_size",
-                    std::max(0.2, obs.frontier_cluster_radius * 2.0));
-    setParamDefault(nh_, "FrontierManager/cluster_direction_radius",
-                    std::max(0.1, obs.frontier_cluster_radius));
-    setParamDefault(nh_, "FrontierManager/cluster_minmum_point_num",
-                    std::max(1, obs.min_frontier_cluster_size));
+    nh_.setParam("FrontierManager/cell_size", std::max(0.05, obs.resolution));
+    nh_.setParam("FrontierManager/noise_cell_range", 1);
+    nh_.setParam("FrontierManager/good_observation_direction_score",
+                 obs.good_observation_direction_score);
+    nh_.setParam("FrontierManager/good_observation_trust_length",
+                 obs.good_observation_trust_length);
+    nh_.setParam("FrontierManager/good_observation_force_trust_length",
+                 obs.good_observation_force_trust_length);
+    nh_.setParam("FrontierManager/update_length",
+                 std::max(1.0, obs.max_observation_distance));
+    nh_.setParam("FrontierManager/view_frt", true);
+    nh_.setParam("FrontierManager/view_cluster", true);
+    nh_.setParam("FrontierManager/cluster_min_radius",
+                 std::max(0.1, obs.frontier_cluster_min_radius));
+    nh_.setParam("FrontierManager/cluster_min_size",
+                 std::max(0.1, obs.frontier_cluster_min_size));
+    nh_.setParam("FrontierManager/cluster_max_size",
+                 std::max(obs.frontier_cluster_min_size,
+                          obs.frontier_cluster_max_size));
+    nh_.setParam("FrontierManager/cluster_direction_radius",
+                 obs.frontier_cluster_direction_radius);
+    nh_.setParam("FrontierManager/cluster_minmum_point_num",
+                 std::max(1, obs.frontier_cluster_minimum_point_num));
 
-    setParamDefault(nh_, "ViewpointManager/sample_pillar_height_layer_num",
-                    std::max(1, vp.height_samples));
-    setParamDefault(nh_, "ViewpointManager/sample_pillar_radius_layer_num",
-                    std::max(1, vp.radius_samples));
-    setParamDefault(nh_, "ViewpointManager/sample_pillar_circle_sample_num",
-                    std::max(4, vp.yaw_samples));
-    const double height_span = std::max(0.1, vp.height_step *
-                                             std::max(1, vp.height_samples - 1));
-    setParamDefault(nh_, "ViewpointManager/sample_pillar_max_height",
-                    0.5 * height_span);
-    setParamDefault(nh_, "ViewpointManager/sample_pillar_min_height",
-                    -0.5 * height_span);
-    setParamDefault(nh_, "ViewpointManager/sample_pillar_min_radius",
-                    std::max(0.1, vp.min_distance));
-    setParamDefault(nh_, "ViewpointManager/sample_pillar_max_radius",
-                    std::max(vp.min_distance + 0.1, vp.max_distance));
-    setParamDefault(nh_, "ViewpointManager/consider_range",
-                    std::max(1, vp.max_cells_per_gain_eval));
-    setParamDefault(nh_, "ViewpointManager/global_recluster_size",
-                    std::max(1, vp.max_viewpoint_clusters));
-    setParamDefault(nh_, "ViewpointManager/local_tsp_size",
-                    std::max(1, cfg_.global_guidance.max_frontiers_in_tour));
-    setParamDefault(nh_, "ViewpointManager/view_direction_range",
-                    120.0);
+    nh_.setParam("ViewpointManager/sample_pillar_height_layer_num",
+                 std::max(1, vp.sample_pillar_height_layer_num));
+    nh_.setParam("ViewpointManager/sample_pillar_radius_layer_num",
+                 std::max(1, vp.sample_pillar_radius_layer_num));
+    nh_.setParam("ViewpointManager/sample_pillar_circle_sample_num",
+                 std::max(1, vp.sample_pillar_circle_sample_num));
+    nh_.setParam("ViewpointManager/sample_pillar_max_height",
+                 vp.sample_pillar_max_height);
+    nh_.setParam("ViewpointManager/sample_pillar_min_height",
+                 vp.sample_pillar_min_height);
+    nh_.setParam("ViewpointManager/sample_pillar_min_radius",
+                 std::max(0.1, vp.sample_pillar_min_radius));
+    nh_.setParam("ViewpointManager/sample_pillar_max_radius",
+                 std::max(vp.sample_pillar_min_radius + 0.1,
+                          vp.sample_pillar_max_radius));
+    nh_.setParam("ViewpointManager/consider_range",
+                 std::max(1, vp.max_cells_per_gain_eval));
+    nh_.setParam("ViewpointManager/global_recluster_size",
+                 std::max(1, vp.max_viewpoint_clusters));
+    nh_.setParam("ViewpointManager/local_tsp_size",
+                 std::max(1, std::max(vp.local_tsp_size,
+                                      cfg_.global_guidance.max_frontiers_in_tour)));
+    nh_.setParam("ViewpointManager/view_direction_range", 120.0);
     nh_.setParam("ViewpointManager/min_clearance",
                  std::max(0.05, vp.safe_distance));
     nh_.setParam("ViewpointManager/topo_reachability_timeout",
@@ -205,32 +211,33 @@ void EpicExplorationManager::seedEpicParams() {
     nh_.setParam("epic_lio/publish_map", cfg_.publish_lio_map);
     nh_.setParam("epic_lio/publish_map_period",
                  std::max(0.05, cfg_.publish_lio_map_period));
+    nh_.setParam("epic_lio/self_filter_radius",
+                 std::max(0.0, cfg_.lio_self_filter_radius));
 
-    setParamDefault(nh_, "max_traj_len",
-                    std::max(2.0, cfg_.local_guide.planning_horizon));
-    setParamDefault(nh_, "DilateRadiusSoft", std::max(0.05, cfg_.local_guide.safe_distance));
-    setParamDefault(nh_, "DilateRadiusHard", std::max(0.05, cfg_.local_goal_safe_distance));
-    setParamDefault(nh_, "MaxVelMag", 3.0);
-    setParamDefault(nh_, "maxBdrMag", 3.0);
-    setParamDefault(nh_, "MaxTiltAngle", 0.8);
-    setParamDefault(nh_, "MinThrust", 0.0);
-    setParamDefault(nh_, "MaxThrust", 20.0);
-    setParamDefault(nh_, "VehicleMass", 1.0);
-    setParamDefault(nh_, "GravAcc", 9.81);
-    setParamDefault(nh_, "HorizDrag", 0.0);
-    setParamDefault(nh_, "VertDrag", 0.0);
-    setParamDefault(nh_, "ParasDrag", 0.0);
-    setParamDefault(nh_, "SpeedEps", 0.01);
-    setParamDefault(nh_, "WeightT", 1.0);
-    setParamDefault(nh_, "WeightSafeT", 1.0);
-    setParamDefault(nh_, "ChiVec", std::vector<double>{1.0, 1.0, 1.0});
-    setParamDefault(nh_, "SmoothingEps", 0.01);
-    setParamDefault(nh_, "IntegralIntervs", 8);
-    setParamDefault(nh_, "RelCostTol", 1.0e-5);
-    setParamDefault(nh_, "MaxCorridorSize", 7.0);
-    setParamDefault(nh_, "yaw_rho_vis", 1.0);
-    setParamDefault(nh_, "yaw_max_vel", 1.0);
-    setParamDefault(nh_, "yaw_time_fwd", 1.0);
+    nh_.setParam("max_traj_len", std::max(2.0, cfg_.local_guide.planning_horizon));
+    nh_.setParam("DilateRadiusSoft", 0.6);
+    nh_.setParam("DilateRadiusHard", 0.45);
+    nh_.setParam("MaxCorridorSize", 4.0);
+    nh_.setParam("MaxVelMag", 4.0);
+    nh_.setParam("maxBdrMag", 10000.0);
+    nh_.setParam("MaxTiltAngle", 1.0);
+    nh_.setParam("MinThrust", 15.0);
+    nh_.setParam("MaxThrust", 22.0);
+    nh_.setParam("VehicleMass", 1.9);
+    nh_.setParam("GravAcc", 9.8);
+    nh_.setParam("HorizDrag", 0.0);
+    nh_.setParam("VertDrag", 0.0);
+    nh_.setParam("ParasDrag", 0.0);
+    nh_.setParam("SpeedEps", 0.0001);
+    nh_.setParam("WeightT", 700.0);
+    nh_.setParam("WeightSafeT", 200.0);
+    nh_.setParam("ChiVec", std::vector<double>{1.1e+5, 1.5e+4, 1.1e+4, 1.1e+5, 1.1e+6});
+    nh_.setParam("SmoothingEps", 0.015);
+    nh_.setParam("IntegralIntervs", 32);
+    nh_.setParam("RelCostTol", 1.1e-6);
+    nh_.setParam("yaw_rho_vis", 10000.0);
+    nh_.setParam("yaw_max_vel", 4.0);
+    nh_.setParam("yaw_time_fwd", 2.5);
 
     setParamDefault(nh_, "exploration/tsp_dir", cfg_.global_guidance.tsp_dir);
     setParamDefault(nh_, "viewpoint_param/global_viewpoint_num",
@@ -254,6 +261,8 @@ void EpicExplorationManager::initializeNativeModules() {
         throw std::runtime_error("EPIC Native exploration failed to initialize LIOInterface");
     }
     parallel_path_finder_ = std::make_shared<ParallelBubbleAstar>();
+    bubble_path_finder_ = std::make_shared<fast_planner::BubbleAstar>();
+    fast_searcher_ = std::make_shared<fast_planner::FastSearcher>();
     frontier_manager_ = std::make_shared<FrontierManager>();
     graph_ = std::make_shared<TopoGraph>();
     graph_visualizer_ = std::make_shared<GraphVisualizer>();
@@ -266,6 +275,8 @@ void EpicExplorationManager::initializeNativeModules() {
 
     graph_->init(nh_, lio_interface_, parallel_path_finder_);
     parallel_path_finder_->init(nh_, lio_interface_);
+    bubble_path_finder_->init(nh_, lio_interface_);
+    fast_searcher_->init(graph_, bubble_path_finder_);
     graph_visualizer_->init(nh_);
     native_tour_order_pub_ =
             nh_.advertise<visualization_msgs::MarkerArray>(
@@ -401,6 +412,16 @@ bool EpicExplorationManager::planNextGoal(const rog_map::RobotState &robot,
 bool EpicExplorationManager::planOnce(const rog_map::RobotState &robot,
                                       const double current_yaw,
                                       ExplorationPlan &plan) {
+    return planOnce(robot,
+                    current_yaw,
+                    plan,
+                    ExplorationPlanningMode::REFRESH_GLOBAL_IF_NEEDED);
+}
+
+bool EpicExplorationManager::planOnce(const rog_map::RobotState &robot,
+                                      const double current_yaw,
+                                      ExplorationPlan &plan,
+                                      const ExplorationPlanningMode mode) {
     plan = ExplorationPlan{};
     std::lock_guard<std::mutex> lock(mutex_);
 
@@ -433,8 +454,23 @@ bool EpicExplorationManager::planOnce(const rog_map::RobotState &robot,
         last_plan_ = plan;
         return false;
     }
-    if (!buildPlanFromActiveNativeGoal(robot, current_yaw, plan) &&
-        !updateNativeGlobalPlan(robot, current_yaw, plan)) {
+
+    bool goal_ready = false;
+    if (mode != ExplorationPlanningMode::FORCE_REFRESH_GLOBAL) {
+        goal_ready = buildPlanFromActiveNativeGoal(robot, current_yaw, plan);
+    }
+    if (!goal_ready) {
+        if (mode == ExplorationPlanningMode::FOLLOW_ACTIVE_TARGET) {
+            plan.status = ExplorationPlanStatus::VIEWPOINT_EXISTS_NO_TOPO_ROUTE;
+            plan.reason = "native EPIC active tour target is unavailable";
+            plan.goal.reason = plan.reason;
+            last_plan_ = plan;
+            visualizeNativeState();
+            return false;
+        }
+        goal_ready = updateNativeGlobalPlan(robot, current_yaw, plan);
+    }
+    if (!goal_ready) {
         last_plan_ = plan;
         return false;
     }
@@ -536,32 +572,35 @@ bool EpicExplorationManager::buildPlanFromActiveNativeGoal(
 
     const double goal_distance = (robot.p - toVec3d(active_goal)).norm();
     if (goal_distance <= std::max(0.3, cfg_.final_goal_radius)) {
+        rememberVisitedNativeViewpoint(active_goal);
         if (active_frontier_id >= 0) {
             setNativeFrontierDormant(active_frontier_id, false);
             local_fail_count_by_frontier_.erase(active_frontier_id);
             topo_route_fail_count_by_frontier_.erase(active_frontier_id);
         }
-        clearNativeGoalState();
-        global_tour_.clear();
-        native_tour_targets_.clear();
-        native_tour_cursor_ = 0U;
-        has_last_goal_cost_frame_value_ = false;
-        last_goal_cost_frame_value_ = std::numeric_limits<double>::infinity();
-        active_frontier_id_ = -1;
-        active_viewpoint_id_ = -1;
-        if (ros_ptr_ && cfg_.print_log) {
-            ros_ptr_->info(" -- [EPIC Native] Active viewpoint reached; refresh frontier viewpoints and global tour.");
+        if (advanceNativeTourTarget(robot.p.cast<float>())) {
+            active_goal = native_tour_targets_[native_tour_cursor_].position;
+            active_yaw = native_tour_targets_[native_tour_cursor_].yaw;
+            active_frontier_id = active_frontier_id_;
+            active_viewpoint_id = active_viewpoint_id_;
+            if (ros_ptr_ && cfg_.print_log) {
+                ros_ptr_->info(" -- [EPIC Native] Active viewpoint reached; continue native tour cursor={}/{}.",
+                               native_tour_cursor_ + 1U,
+                               native_tour_targets_.size());
+            }
+        } else {
+            clearNativeTourState();
+            has_last_goal_cost_frame_value_ = false;
+            last_goal_cost_frame_value_ = std::numeric_limits<double>::infinity();
+            if (ros_ptr_ && cfg_.print_log) {
+                ros_ptr_->info(" -- [EPIC Native] Active viewpoint reached; refresh frontier viewpoints and global tour.");
+            }
+            return false;
         }
-        return false;
     }
 
     if (!frontierSelectable(active_frontier_id)) {
-        clearNativeGoalState();
-        global_tour_.clear();
-        native_tour_targets_.clear();
-        native_tour_cursor_ = 0U;
-        active_frontier_id_ = -1;
-        active_viewpoint_id_ = -1;
+        clearNativeTourState();
         return false;
     }
 
@@ -683,7 +722,12 @@ bool EpicExplorationManager::updateNativeGlobalPlan(const rog_map::RobotState &r
     double dis2last_goal = std::numeric_limits<double>::infinity();
     super_utils::vec_E<super_utils::Vec3f> last_goal_path;
     bool last_goal_reachable = false;
-    if (next_goal_node_valid_ && next_goal_node_ && lio_interface_) {
+    const bool allow_keep_current_target =
+            cfg_.keep_active_target || cfg_.global_guidance.keep_current_target;
+    if (allow_keep_current_target &&
+        next_goal_node_valid_ &&
+        next_goal_node_ &&
+        lio_interface_) {
         const double clearance = lio_interface_->getDisToOcc(next_goal_node_->center_);
         if (std::isfinite(clearance) &&
             clearance > parallel_path_finder_->safe_distance_ + 0.1 &&
@@ -711,6 +755,7 @@ bool EpicExplorationManager::updateNativeGlobalPlan(const rog_map::RobotState &r
         super_utils::vec_E<super_utils::Vec3f> base_path;
         double odom_cost{std::numeric_limits<double>::infinity()};
         double base_cost{std::numeric_limits<double>::infinity()};
+        double visited_penalty{0.0};
         int frontier_id{-1};
     };
     std::vector<Candidate> candidates;
@@ -791,6 +836,7 @@ bool EpicExplorationManager::updateNativeGlobalPlan(const rog_map::RobotState &r
                     kUnreachableCost +
                     static_cast<double>((base_node->center_ - viewpoint->center_).norm());
         }
+        candidate.visited_penalty = visitedNativeViewpointPenalty(viewpoint->center_);
         candidates.push_back(std::move(candidate));
     }
 
@@ -829,15 +875,45 @@ bool EpicExplorationManager::updateNativeGlobalPlan(const rog_map::RobotState &r
         }
     }
 
+    const auto failPenalty = [&](const Candidate &candidate) {
+        if (candidate.frontier_id < 0) {
+            return 0.0;
+        }
+        const auto it = local_fail_count_by_frontier_.find(candidate.frontier_id);
+        if (it == local_fail_count_by_frontier_.end()) {
+            return 0.0;
+        }
+        const int capped_count =
+                std::min(it->second, std::max(1, cfg_.max_local_segment_fail_count));
+        return 20.0 * static_cast<double>(capped_count);
+    };
+    const auto entryCost = [&](const Candidate &candidate) {
+        const double path_cost =
+                cfg_.global_guidance.weight_path_cost * candidate.base_cost;
+        const double revisit_cost =
+                cfg_.global_guidance.weight_revisit * failPenalty(candidate) +
+                candidate.visited_penalty;
+        const double outward_reward =
+                cfg_.global_guidance.weight_gain * 0.2 *
+                std::min(candidate.odom_cost, kUnreachableCost);
+        return std::max(1.0, path_cost + revisit_cost - outward_reward);
+    };
+    const int max_candidates =
+            std::max(1, cfg_.global_guidance.max_frontiers_in_tour);
+    if (static_cast<int>(candidates.size()) > max_candidates) {
+        std::stable_sort(candidates.begin(), candidates.end(),
+                         [&](const Candidate &a, const Candidate &b) {
+                             return entryCost(a) < entryCost(b);
+                         });
+        candidates.resize(static_cast<std::size_t>(max_candidates));
+    }
+
     const int dim = static_cast<int>(candidates.size()) + 1;
     Eigen::MatrixXd cost_matrix(dim, dim);
     cost_matrix.setZero();
     for (int i = 1; i < dim; ++i) {
         const auto &candidate = candidates[static_cast<std::size_t>(i - 1)];
-        cost_matrix(0, i) =
-                candidate.base_cost +
-                cfg_.global_guidance.weight_revisit *
-                static_cast<double>(local_fail_count_by_frontier_[candidate.frontier_id]);
+        cost_matrix(0, i) = entryCost(candidate);
     }
 
     for (int i = 1; i < dim; ++i) {
@@ -856,7 +932,10 @@ bool EpicExplorationManager::updateNativeGlobalPlan(const rog_map::RobotState &r
                 pair_cost = kUnreachableCost +
                             static_cast<double>((from->center_ - to->center_).norm());
             }
-            cost_matrix(i, j) = pair_cost;
+            cost_matrix(i, j) =
+                    std::max(1.0,
+                             cfg_.global_guidance.weight_path_cost * pair_cost +
+                             candidates[static_cast<std::size_t>(j - 1)].visited_penalty);
         }
     }
 
@@ -865,8 +944,10 @@ bool EpicExplorationManager::updateNativeGlobalPlan(const rog_map::RobotState &r
     // closed loop around the robot.
     for (int i = 1; i < dim; ++i) {
         cost_matrix(i, 0) =
-                kUnreachableCost -
-                candidates[static_cast<std::size_t>(i - 1)].odom_cost * 0.2;
+                std::max(1.0,
+                         kUnreachableCost -
+                         cfg_.global_guidance.weight_gain *
+                         candidates[static_cast<std::size_t>(i - 1)].odom_cost * 0.2);
     }
     for (int i = 0; i < dim; ++i) {
         for (int j = 1; j < dim; ++j) {
@@ -937,16 +1018,7 @@ bool EpicExplorationManager::updateNativeGlobalPlan(const rog_map::RobotState &r
     selected.frontier_id = native_tour_targets_.front().frontier_id;
     const int viewpoint_id = native_tour_targets_.front().viewpoint_id;
 
-    global_tour_.clear();
-    global_tour_.reserve(native_tour_targets_.size() + 1U);
-    global_tour_.push_back(pos);
-    for (const auto &target : native_tour_targets_) {
-        global_tour_.push_back(target.position);
-    }
-    if (graph_visualizer_) {
-        graph_visualizer_->vizTour(global_tour_, VizColor::RED, "global");
-    }
-    publishNativeTourOrder();
+    rebuildGlobalTourFromCursor(pos);
 
     if (!last_goal_reachable && std::isfinite(selected.base_cost)) {
         last_goal_cost_frame_value_ = selected.base_cost;
@@ -996,12 +1068,14 @@ bool EpicExplorationManager::updateNativeGlobalPlan(const rog_map::RobotState &r
     last_native_result_ = 1;
 
     if (ros_ptr_ && cfg_.print_log) {
-        ros_ptr_->info(" -- [EPIC Native] Global planning target frontier_id={}, candidates={}, last_goal_reachable={}, dis2last_goal={:.3f}, route_cost={:.3f}, global_tour_size={}.",
+        ros_ptr_->info(" -- [EPIC Native] Global planning target frontier_id={}, candidates={}, last_goal_reachable={}, dis2last_goal={:.3f}, route_cost={:.3f}, visited_penalty={:.1f}, visited_cache={}, global_tour_size={}.",
                        selected.frontier_id,
                        candidates.size(),
                        last_goal_reachable,
                        std::isfinite(dis2last_goal) ? dis2last_goal : -1.0,
                        route.cost,
+                       selected.visited_penalty,
+                       visited_native_viewpoints_.size(),
                        global_tour_.size());
     }
     return true;
@@ -1105,6 +1179,55 @@ void EpicExplorationManager::clearNativeGoalState() {
     next_goal_node_valid_ = false;
 }
 
+void EpicExplorationManager::clearNativeTourState() {
+    clearNativeGoalState();
+    global_tour_.clear();
+    native_tour_targets_.clear();
+    native_tour_cursor_ = 0U;
+    active_frontier_id_ = -1;
+    active_viewpoint_id_ = -1;
+    publishNativeTourOrder();
+}
+
+void EpicExplorationManager::rebuildGlobalTourFromCursor(const Eigen::Vector3f &start) {
+    global_tour_.clear();
+    if (!start.allFinite() ||
+        native_tour_targets_.empty() ||
+        native_tour_cursor_ >= native_tour_targets_.size()) {
+        publishNativeTourOrder();
+        return;
+    }
+
+    global_tour_.push_back(start);
+    for (std::size_t i = native_tour_cursor_; i < native_tour_targets_.size(); ++i) {
+        if (native_tour_targets_[i].position.allFinite()) {
+            global_tour_.push_back(native_tour_targets_[i].position);
+        }
+    }
+    if (graph_visualizer_) {
+        graph_visualizer_->vizTour(global_tour_, VizColor::RED, "global");
+    }
+    publishNativeTourOrder();
+}
+
+bool EpicExplorationManager::advanceNativeTourTarget(const Eigen::Vector3f &start) {
+    if (native_tour_targets_.empty() ||
+        native_tour_cursor_ + 1U >= native_tour_targets_.size()) {
+        return false;
+    }
+
+    const std::size_t next_cursor = native_tour_cursor_ + 1U;
+    if (!setNativeGoalFromTourTarget(next_cursor)) {
+        clearNativeTourState();
+        return false;
+    }
+
+    has_last_goal_cost_frame_value_ = false;
+    last_goal_cost_frame_value_ = std::numeric_limits<double>::infinity();
+    rebuildGlobalTourFromCursor(start);
+    return true;
+}
+
 bool EpicExplorationManager::setNativeGoalFromTourTarget(const std::size_t target_index) {
     if (target_index >= native_tour_targets_.size()) {
         return false;
@@ -1133,6 +1256,60 @@ bool EpicExplorationManager::frontierSelectable(const int frontier_id) const {
         return !cluster->is_dormant_ && cluster->is_reachable_;
     }
     return true;
+}
+
+void EpicExplorationManager::rememberVisitedNativeViewpoint(const Eigen::Vector3f &position) {
+    if (!position.allFinite()) {
+        return;
+    }
+    const double radius =
+            std::max(0.05, cfg_.frontier_database.visited_viewpoint_radius);
+    for (auto &visited : visited_native_viewpoints_) {
+        if ((visited - position).norm() <= radius * 0.5) {
+            visited = 0.7F * visited + 0.3F * position;
+            return;
+        }
+    }
+
+    visited_native_viewpoints_.push_back(position);
+    const int max_count =
+            std::max(0, cfg_.frontier_database.max_visited_viewpoints);
+    if (max_count <= 0) {
+        visited_native_viewpoints_.clear();
+        return;
+    }
+    while (static_cast<int>(visited_native_viewpoints_.size()) > max_count) {
+        visited_native_viewpoints_.erase(visited_native_viewpoints_.begin());
+    }
+}
+
+double EpicExplorationManager::visitedNativeViewpointPenalty(
+        const Eigen::Vector3f &position) const {
+    const double radius =
+            std::max(0.05, cfg_.frontier_database.visited_viewpoint_radius);
+    const double max_penalty =
+            std::max(0.0, cfg_.frontier_database.visited_viewpoint_penalty);
+    if (!position.allFinite() ||
+        visited_native_viewpoints_.empty() ||
+        max_penalty <= 0.0) {
+        return 0.0;
+    }
+
+    double nearest = std::numeric_limits<double>::infinity();
+    for (const auto &visited : visited_native_viewpoints_) {
+        if (!visited.allFinite()) {
+            continue;
+        }
+        nearest = std::min(nearest,
+                           static_cast<double>((visited - position).norm()));
+    }
+    if (!std::isfinite(nearest) || nearest > 2.0 * radius) {
+        return 0.0;
+    }
+    if (nearest <= radius) {
+        return max_penalty * (1.0 + (radius - nearest) / radius);
+    }
+    return max_penalty * (2.0 * radius - nearest) / radius;
 }
 
 bool EpicExplorationManager::updateNativeGoalNode(const Eigen::Vector3f &goal,
@@ -1234,14 +1411,37 @@ bool EpicExplorationManager::rebuildRouteToNextGoal(const rog_map::RobotState &r
 
     double cost = std::numeric_limits<double>::infinity();
     super_utils::vec_E<super_utils::Vec3f> path;
-    if (!routeBetweenNativeNodes(graph_->odom_node_,
-                                 next_goal_node_,
-                                 timeout,
-                                 path,
-                                 cost) ||
-        path.size() < 2U ||
-        !std::isfinite(cost)) {
-        return false;
+    if (fast_searcher_) {
+        std::vector<Eigen::Vector3f> native_path;
+        const int ret = fast_searcher_->search(graph_->odom_node_,
+                                               robot.v.cast<float>(),
+                                               next_goal_node_,
+                                               std::max(0.2, timeout),
+                                               native_path);
+        if (ret == fast_planner::BubbleAstar::REACH_END && native_path.size() >= 2U) {
+            appendUnique(path, toVec3d(graph_->odom_node_->center_));
+            for (const auto &p : native_path) {
+                appendUnique(path, toVec3d(p));
+            }
+            appendUnique(path, toVec3d(next_goal_node_->center_));
+            std::vector<Eigen::Vector3f> complete_native_path;
+            complete_native_path.reserve(path.size());
+            for (const auto &p : path) {
+                complete_native_path.emplace_back(p.cast<float>());
+            }
+            cost = nativeRouteCost(complete_native_path);
+        }
+    }
+    if (path.size() < 2U || !std::isfinite(cost)) {
+        if (!routeBetweenNativeNodes(graph_->odom_node_,
+                                     next_goal_node_,
+                                     timeout,
+                                     path,
+                                     cost) ||
+            path.size() < 2U ||
+            !std::isfinite(cost)) {
+            return false;
+        }
     }
 
     route.valid = true;
@@ -1262,6 +1462,26 @@ bool EpicExplorationManager::routeBetweenNativeNodes(
     cost = std::numeric_limits<double>::infinity();
     if (!graph_ || !start || !goal) {
         return false;
+    }
+
+    if (fast_searcher_) {
+        std::vector<Eigen::Vector3f> native_path;
+        const int ret = fast_searcher_->topoSearch(start, goal, timeout, native_path);
+        if (ret == fast_planner::BubbleAstar::REACH_END && native_path.size() >= 2U) {
+            appendUnique(path, toVec3d(start->center_));
+            for (const auto &p : native_path) {
+                appendUnique(path, toVec3d(p));
+            }
+            appendUnique(path, toVec3d(goal->center_));
+            std::vector<Eigen::Vector3f> complete_native_path;
+            complete_native_path.reserve(path.size());
+            for (const auto &p : path) {
+                complete_native_path.emplace_back(p.cast<float>());
+            }
+            cost = nativeRouteCost(complete_native_path);
+            return path.size() >= 2U && std::isfinite(cost);
+        }
+        path.clear();
     }
 
     std::vector<TopoNode::Ptr> topo_path;
@@ -1286,7 +1506,12 @@ bool EpicExplorationManager::routeBetweenNativeNodes(
         }
     }
     appendUnique(path, toVec3d(goal->center_));
-    cost = pathLength(path);
+    std::vector<Eigen::Vector3f> native_path;
+    native_path.reserve(path.size());
+    for (const auto &p : path) {
+        native_path.emplace_back(p.cast<float>());
+    }
+    cost = nativeRouteCost(native_path);
     return path.size() >= 2U && std::isfinite(cost);
 }
 
@@ -1325,7 +1550,7 @@ bool EpicExplorationManager::buildDirectNativePath(
         appendUnique(path, toVec3d(point));
     }
     appendUnique(path, toVec3d(goal));
-    cost = pathLength(path);
+    cost = nativeRouteCost(native_path);
     return path.size() >= 2U && std::isfinite(cost);
 }
 
@@ -1748,17 +1973,21 @@ void EpicExplorationManager::onGoalReached(const ExplorationGoal &goal,
     (void)stamp;
     std::lock_guard<std::mutex> lock(mutex_);
     if (goal.frontier_id == active_frontier_id_) {
+        rememberVisitedNativeViewpoint(goal.position.cast<float>());
         setNativeFrontierDormant(goal.frontier_id, false);
         local_fail_count_by_frontier_.erase(goal.frontier_id);
         topo_route_fail_count_by_frontier_.erase(goal.frontier_id);
         has_last_goal_cost_frame_value_ = false;
         last_goal_cost_frame_value_ = std::numeric_limits<double>::infinity();
-        clearNativeGoalState();
-        global_tour_.clear();
-        native_tour_targets_.clear();
-        native_tour_cursor_ = 0U;
-        active_frontier_id_ = -1;
-        active_viewpoint_id_ = -1;
+        if (advanceNativeTourTarget(goal.position.cast<float>())) {
+            if (ros_ptr_ && cfg_.print_log) {
+                ros_ptr_->info(" -- [EPIC Native] Reached current viewpoint; advance native tour cursor={}/{}.",
+                               native_tour_cursor_ + 1U,
+                               native_tour_targets_.size());
+            }
+            return;
+        }
+        clearNativeTourState();
         if (ros_ptr_ && cfg_.print_log) {
             ros_ptr_->info(" -- [EPIC Native] Reached current viewpoint; clear active target and refresh global planning next tick.");
         }
@@ -1779,14 +2008,9 @@ void EpicExplorationManager::onGoalFailed(const ExplorationGoal &goal,
         setNativeFrontierDormant(goal.frontier_id, true);
         local_fail_count_by_frontier_.erase(goal.frontier_id);
         topo_route_fail_count_by_frontier_.erase(goal.frontier_id);
-        clearNativeGoalState();
-        global_tour_.clear();
-        native_tour_targets_.clear();
-        native_tour_cursor_ = 0U;
+        clearNativeTourState();
         has_last_goal_cost_frame_value_ = false;
         last_goal_cost_frame_value_ = std::numeric_limits<double>::infinity();
-        active_frontier_id_ = -1;
-        active_viewpoint_id_ = -1;
     }
 }
 
@@ -1812,23 +2036,39 @@ void EpicExplorationManager::onLocalSegmentFailed(const ExplorationPlan &plan,
                        plan.target_viewpoint_id,
                        reason);
     }
-    const int fail_count = ++local_fail_count_by_frontier_[plan.target_frontier_id];
-    if (fail_count >= std::max(1, cfg_.max_local_segment_fail_count)) {
-        setNativeFrontierDormant(plan.target_frontier_id, true);
+    if (isLocalGuideStartUnsafe(reason)) {
+        if (plan.target_frontier_id >= 0) {
+            local_fail_count_by_frontier_.erase(plan.target_frontier_id);
+        }
+        if (plan.target_frontier_id == active_frontier_id_) {
+            clearNativeTourState();
+            has_last_goal_cost_frame_value_ = false;
+            last_goal_cost_frame_value_ = std::numeric_limits<double>::infinity();
+        }
         if (ros_ptr_) {
-            ros_ptr_->warn(" -- [EPIC Native] Frontier {} marked unreachable after {} local segment failures.",
+            ros_ptr_->warn(" -- [EPIC Native] Local guide start is unsafe; refresh native tour without marking frontier unreachable.");
+        }
+        return;
+    }
+    if (plan.target_frontier_id < 0) {
+        clearNativeTourState();
+        has_last_goal_cost_frame_value_ = false;
+        last_goal_cost_frame_value_ = std::numeric_limits<double>::infinity();
+        return;
+    }
+    int &fail_count = local_fail_count_by_frontier_[plan.target_frontier_id];
+    fail_count = std::min(fail_count + 1,
+                          std::max(1, cfg_.max_local_segment_fail_count));
+    if (fail_count >= std::max(1, cfg_.max_local_segment_fail_count)) {
+        if (ros_ptr_) {
+            ros_ptr_->warn(" -- [EPIC Native] Frontier {} deferred after {} local segment failures; keep reachable for future global refresh.",
                            plan.target_frontier_id,
                            fail_count);
         }
         if (plan.target_frontier_id == active_frontier_id_) {
-            clearNativeGoalState();
-            global_tour_.clear();
-            native_tour_targets_.clear();
-            native_tour_cursor_ = 0U;
+            clearNativeTourState();
             has_last_goal_cost_frame_value_ = false;
             last_goal_cost_frame_value_ = std::numeric_limits<double>::infinity();
-            active_frontier_id_ = -1;
-            active_viewpoint_id_ = -1;
         }
     }
 }
@@ -1871,6 +2111,7 @@ void EpicExplorationManager::reset() {
     last_goal_cost_frame_value_ = std::numeric_limits<double>::infinity();
     global_tour_.clear();
     native_tour_targets_.clear();
+    visited_native_viewpoints_.clear();
     native_tour_cursor_ = 0U;
     local_fail_count_by_frontier_.clear();
     topo_route_fail_count_by_frontier_.clear();
@@ -1888,6 +2129,7 @@ void EpicExplorationManager::resetRuntimeState() {
     last_goal_cost_frame_value_ = std::numeric_limits<double>::infinity();
     global_tour_.clear();
     native_tour_targets_.clear();
+    visited_native_viewpoints_.clear();
     native_tour_cursor_ = 0U;
     local_fail_count_by_frontier_.clear();
     topo_route_fail_count_by_frontier_.clear();
@@ -1911,6 +2153,20 @@ double EpicExplorationManager::pathLength(const super_utils::vec_E<super_utils::
         length += (path[i] - path[i - 1U]).norm();
     }
     return length;
+}
+
+double EpicExplorationManager::nativeRouteCost(
+        const std::vector<Eigen::Vector3f> &path) const {
+    if (path.size() < 2U) {
+        return std::numeric_limits<double>::infinity();
+    }
+    double weighted_length = 0.0;
+    for (std::size_t i = 1U; i < path.size(); ++i) {
+        const Eigen::Vector3f delta = path[i] - path[i - 1U];
+        weighted_length += static_cast<double>(delta.norm() +
+                                               0.5F * std::fabs(delta.z()));
+    }
+    return weighted_length / 2.0;
 }
 
 void EpicExplorationManager::appendUnique(super_utils::vec_E<super_utils::Vec3f> &path,

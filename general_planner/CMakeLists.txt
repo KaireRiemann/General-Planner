@@ -37,6 +37,7 @@ find_package(catkin REQUIRED COMPONENTS
         tf
         lidar_map
         pointcloud_topo
+        path_searching
         frontier_manager
         lkh_tsp_solver
 )
@@ -48,7 +49,7 @@ find_package(OpenCV REQUIRED)
 catkin_package(
         INCLUDE_DIRS
         LIBRARIES general_planner_core
-        CATKIN_DEPENDS roscpp rospy std_msgs rog_map map_manager lidar_map pointcloud_topo frontier_manager lkh_tsp_solver
+        CATKIN_DEPENDS roscpp rospy std_msgs rog_map map_manager lidar_map pointcloud_topo path_searching frontier_manager lkh_tsp_solver
         #  DEPENDS system_lib
 )
 
