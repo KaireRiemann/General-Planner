@@ -1,0 +1,40 @@
+<launch>
+    <arg name="drone_id" default="$(env DRONE_ID)"/>
+    <arg name="rviz" default="false"/>
+    <arg name="drone_num" default="$(env DRONE_NUM)"/>
+    
+
+    <rosparam command="load" file="$(find registration)/config/param.yaml" />
+    <node name="drone_$(arg drone_id)_l2l_registration_node" pkg="registration" type="lidar2lidar_registration_node" output="screen" >
+        <remap from="~my_map" to="/drone_$(arg drone_id)_map"/>
+        <remap from="~ref_map" to="/other_map"/>
+        <remap from="~trigger" to="/trigger_to_drones"/>
+./
+        <param name="trigger_time" value="20"/>
+        <param name="icp_pattern" value="icpPlaneToPlane"/>
+        <param name="icp_iter"  value="100"/>
+        <param name="max_cor_dis" value="5"/>
+        <param name="ransac_iter" value="10"/>
+        <param name="g_neibor_k" value="50"/>
+
+        <param name="resolution"    value="0.1"/>
+        <param name="is_use_pcd"    value="false"/>
+        <param name="other_map_fn"   value="/home/zuzu/Documents/BAG/FY_Project/Gym_line/drone_5.pcd"/>
+    </node>
+
+    <!-- <include file="$(find swarm_bridge)/launch/bridge_tcp_drone.launch">
+        <arg name="drone_id"    value="$(arg drone_id)"/>
+        <arg name="drone_num"   value="$(arg drone_num)"/>
+    </include> -->
+
+
+    <!-- <include file="$(find fast_lio)/launch/mapping_with_driver.launch">
+        <arg name="drone_id"    value="$(arg drone_id)"/>
+    </include> -->
+
+	<group if="$(arg rviz)">
+        <node name="rviz" pkg="rviz" type="rviz" args="-d $(find registration)/config/l2l.rviz" required="true"/>
+	</group>
+  
+  </launch>
+  

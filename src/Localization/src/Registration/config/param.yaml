@@ -1,0 +1,140 @@
+regsitraion:
+  init_p: [0,0,0,0,0,0]  #init pos and rot
+  map_range: [-40,40,-40,40,-5,5]
+
+
+# src_pcd_fn: "/home/zuzu/Documents/BAG/FY_Project/new/outdoor/outdoor_1.pcd"
+# tar_pcd_fn: "/home/zuzu/Documents/BAG/FY_Project/rs_lidar/rs_lidar4/rs_lidar4.pcd"
+# full_pcd_fn: "/home/zuzu/Documents/BAG/FY_Project/new/drone1_01.pcd"
+# rosbag_path: "/home/zuzu/Documents/BAG/odom.bag"
+# odom_topic: "/vins_estimator/imu_propagate"
+# bag_dir: "/home/zuzu/Documents/BAG/FY_Project/rs_lidar/"
+
+# min_z: 0.03
+# init_guess: [0, -0, 0, 0, 0, 0]
+# init_distrb: [0, 0, 0, 0, 0, 0]
+# local_map_size: [-6, 6, -6, 6, -2.0, 2]
+# visual_map_size: [-3, 3, -3, 3, -2.0, 3]
+
+# visual_lidar_registration:
+#   test_type: 0  # 0:for single test 1:for batch test
+#   is_display: true
+#   display_time: 2
+#   test_num: 1
+#   dataset_name: "rs_lidar7" #rs_lidar1-8
+#   datasets: ["rs_lidar1", "rs_lidar2","rs_lidar3","rs_lidar4","rs_lidar5","rs_lidar6","rs_lidar7","rs_lidar8"]
+#   icp_pattern: "PointToPlane" #icpPlaneToPlane icpPointToPlane PointToPlane PointToPoint GDPointToPlane
+#   test_id: [0, 1]
+#   icp_iter: 100
+#   ransac_iter: 20
+#   max_cor_dis: 3
+#   neibor_k: 15
+#   trans_eps: 1e-2
+#   fitness_eps: 1e-2
+
+# visual_lidar_test_node:
+#   test_type: 0  # 0:for single test 1:for batch test
+#   is_display: true
+#   display_time: 1
+#   local_map_type: "4"
+#   test_num: 1
+#   neibor_k: 50
+#   full_map_name: "fullmap_z.pcd"
+#   ndt_resolution: 0.5
+#   ndt_stepsize: 0.8
+#   local_map_minNeighbors: 5
+#   local_map_radius: 0.15
+#   local_map_min_z: -0.1 
+#   pcl_search_radius: 0.15
+#   pcl_minNeighbors: 5
+#   ground_height: 0.15
+#   score_thre: 0.1
+#   dataset_name: "rs_lidar7" #rs_lidar1-8
+#   datasets: ["rs_lidar1", "rs_lidar2","rs_lidar3","rs_lidar4","rs_lidar5","rs_lidar6","rs_lidar7","rs_lidar8"]
+#   icp_pattern: "PointToPlaneWithNormal" 
+#   #icpPlaneToPlane icpPointToPlane PointToPlane fastGICP  PointToPlaneWithNormal fgicpst fgicpmt
+#   test_id: [24, 1]
+#   icp_iter: 5
+#   ransac_iter: 20
+#   inlier_thre: 0.05
+#   min_ratio: 0.1
+#   max_ratio: 0.9
+#   trim_ratio: 0.95
+#   rsc_inlier: 0.3
+#   rsc_iter: 100
+#   max_cor_dis: 3
+#   trans_eps: 1e-2
+#   fitness_eps: 1e-2
+
+# # start_time_vec: [2,20,40,68,100,130,152,180,206,233,262,290]
+# icp_test:
+#   p_err_thre: 0.2
+#   q_err_thre: 5
+#   is_display: false
+#   display_time: 1000
+#   dataset_name: "Local_map" #Institute_outdoor Gym_complex Gym_line Gym_simple Badminton
+#   datasets: ["Gym_complex", "Gym_line","Institute_outdoor"]
+#   overlap_dist: 0.05
+#   test_type: -1  # 0: small-to-full 1: small-to-small 3:single-single -1:whole
+#   skip_num: 1
+#   test_num: 2
+#   test_id: [0, 1]
+#   icp_pattern: "icpPlaneToPlane" #icpPlaneToPlane icpPointToPlane PointToPlane PointToPoint GDPointToPlane
+#   icp_patterns_test: ["icpPlaneToPlane","icpPointToPlane","PointToPlane","PointToPoint"]
+#   icp_iter: 100
+#   ransac_iter: 20
+#   max_cor_dis: 2
+#   max_cor_dis_range: [0.5, 5]
+#   neibor_k: 15
+#   trans_eps: 1e-2
+#   fitness_eps: 1e-2
+
+# pc_registered:
+#   use_feature: 0 # 0:BSC 1:FPFH 2:RoPs 3: None
+#   corres_estimation_method: 0 #0:KM 1:NN 2:NNR  
+#   resolution: 0.5
+#   neighborhood_radius: 0.5
+#   curvature_non_max_radius: 0.1
+#   weight_adjustment_ratio: 1.1
+#   weight_adjustment_step: 0.1
+#   reg_dof: 6
+#   estimated_IoU: 0.9
+#   launch_viewer: false
+#   p_err: [4.5,3,0]
+#   angle_err: [0,0,0]
+#   test_num: 50
+#   non_stable_ratio_threshold: 0.5
+#   thre21: 0.5
+#   thre32: 0.5
+#   init_p: [0,-4,0]
+#   init_angle: [10,10,10]
+#   # init_p: [6.88072 -0.909238  0.775162]
+#   # init_angle: [0,0,50.0598]
+#   # static_-3_4.4_0.pcd -> 
+#   #    0.999716  -0.0224652  0.00790504     4.50695
+#   #   0.0227008    0.999259  -0.0310839     2.88541
+#   # -0.00720088   0.0312545    0.999486  -0.0361465
+#   #           0           0           0           1
+#   #    0.999973  0.00294871 -0.00676208    0.157972
+#   # -0.00310218    0.999735  -0.0227996      -4.493
+#   #  0.00669306   0.0228199    0.999717   -0.114534
+#   #           0           0           0           1
+#   # outdoor1->outdoor3
+#   #    0.72399   0.689733  -0.010373    10.0513
+#   #  -0.689677   0.723472 -0.0305507   -6.39866
+#   # -0.0135672  0.0292724   0.999479   -0.18973
+#   # outdoor1->outdoor3
+
+#   #   -0.046341   -0.998615   0.0249218    -2.28942
+#   #    0.998901  -0.0461503  0.00817084     6.12593
+#   # -0.00700937    0.025273    0.999656   -0.175568
+#   #           0           0           0           1
+
+#   # rostopic name
+#   odom_topic: "/Odometry_map"
+#   pc_world_topic: "/cloud_registered"
+#   pc_body_topic: "/cloud_registered_body"
+
+#   # debug
+#   debug_flag: false
+#   tf_pub_flag: true

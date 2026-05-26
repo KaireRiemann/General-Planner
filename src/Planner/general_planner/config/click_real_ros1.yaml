@@ -52,8 +52,8 @@ traj_opt:
     print_optimizer_log: false
 
   boundary:
-    max_vel: 6.0
-    max_acc: 8.0
+    max_vel: 0.8
+    max_acc: 3.0
     max_jerk: 120.0
     max_omg: 2.5
     max_acc_thr: 20.0
@@ -140,8 +140,8 @@ rog_map:
   frontier_extraction_en: false
 
   # Virtual ceil and ground
-  virtual_ceil_height: 5.5
-  virtual_ground_height: -0.1
+  virtual_ceil_height: 3.5
+  virtual_ground_height: -0.5
 
   load_pcd_en: false
 

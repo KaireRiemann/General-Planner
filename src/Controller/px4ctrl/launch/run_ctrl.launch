@@ -1,7 +1,7 @@
 <launch>
 	<!-- <arg name="takeoff_height" default="0.6" /> -->
 	<node pkg="px4ctrl" type="px4ctrl_node" name="px4ctrl" output="screen">
-		<remap from="~odom" to="/ekf_quat/ekf_odom" />
+		<remap from="~odom" to="/ekf/ekf_odom" />
 		<remap from="~cmd" to="/planning/pos_cmd" />
 		<!-- kdkd take off height -->
     	<!-- <param name="auto_takeoff_land/takeoff_height" value="$(arg takeoff_height)" /> -->

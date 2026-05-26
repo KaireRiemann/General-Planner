@@ -1,0 +1,91 @@
+<launch>
+<!-- Launch file for Livox AVIA LiDAR -->
+
+	<arg name="drone_id" default="0"/>
+
+	<rosparam command="load" file="$(find fast_lio)/config/avia.yaml" />
+
+	<param name="self_id" type="int" value="$(arg drone_id)"/>  
+	<param name="feature_extract_enable" type="bool" value="0"/>
+	<param name="point_filter_num" type="int" value="3"/>
+	<param name="max_iteration" type="int" value="3" />
+	<param name="filter_size_surf" type="double" value="0.5" />
+	<param name="filter_size_map" type="double" value="0.5" />
+	<param name="cube_side_length" type="double" value="1000" />
+	<param name="runtime_pos_log_enable" type="bool" value="0" />
+	
+	<remap from="fullmap" to="/drone_$(arg drone_id)_map"/>
+    <node pkg="fast_lio" type="fastlio_mapping" name="laserMapping" output="screen" />
+
+	<!--user configure parameters for ros start-->
+	<arg name="lvx_file_path" default="livox_test.lvx"/>
+	<!-- <arg name="bd_list" default="47MDKAA0010267"/>  -->
+	<arg name="bd_list" default="47MDL6Q0010034"/>    
+
+	<arg name="xfer_format" default="1"/> 		<!--0-Pointcloud2(PointXYZRTL), 1-customized pointcloud format-->
+	<arg name="multi_topic" default="0"/> 		<!--0-All LiDARs share the same topic, 1-One LiDAR one topic-->
+	<arg name="data_src" default="0"/> 			<!--0-lidar, others-Invalid data src-->
+	<arg name="publish_freq" default="10.0"/> 	<!--freqency of publish, 5.0, 10.0, 20.0, 50.0, etc.-->
+	<arg name="output_type" default="0"/>
+	<arg name="rviz_enable" default="false"/>
+	<arg name="ekf_enable" default="true"/>
+	<arg name="rosbag_enable" default="true"/>
+	<arg name="cmdline_arg" default="$(arg bd_list)"/>
+	<arg name="msg_frame_id" default="livox_frame"/>
+	<arg name="lidar_bag" default="true"/>
+	<arg name="imu_bag" default="true"/>
+	<!--user configure parameters for ros end--> 
+
+	<param name="xfer_format" value="$(arg xfer_format)"/>
+	<param name="multi_topic" value="$(arg multi_topic)"/>
+	<param name="data_src" value="$(arg data_src)"/>
+	<param name="publish_freq" type="double" value="$(arg publish_freq)"/>
+	<param name="output_data_type" value="$(arg output_type)"/>
+	<param name="cmdline_str" type="string" value="$(arg bd_list)"/>
+	<param name="cmdline_file_path" type="string" value="$(arg lvx_file_path)"/>
+	<param name="user_config_path" type="string" value="$(find livox_ros_driver2)/config/MID360_config.json"/>
+	<param name="frame_id" type="string" value="$(arg msg_frame_id)"/>
+	<param name="enable_lidar_bag" type="bool" value="$(arg lidar_bag)"/>
+	<param name="enable_imu_bag" type="bool" value="$(arg imu_bag)"/>
+
+	<!-- <node name="livox_lidar_publisher2" pkg="livox_ros_driver2"
+	      type="livox_ros_driver2_node" required="true"
+	      output="screen" args="$(arg cmdline_arg)"/> -->
+	<node name="livox_lidar_publisher2" pkg="livox_ros_driver2"
+	      type="livox_ros_driver2_node" required="true"
+	       args="$(arg cmdline_arg)"/>
+
+	<group if="$(arg rviz_enable)">
+	    <node launch-prefix="nice" pkg="rviz" type="rviz" name="rviz" args="-d $(find fast_lio)/rviz_cfg/loam_livox.rviz" />
+	</group>
+
+
+	<group if="$(arg ekf_enable)">
+	    <node pkg="ekf" type="ekf" name="ekf" output="screen">
+        <remap from="~imu" to="/mavros/imu/data"/>
+        <!-- <remap from="~imu" to="/livox/imu"/> -->
+
+        <remap from="~bodyodometry" to="/Odometry"/> 
+        <!-- <remap from="~bodyodometry" to="/vrpn_client_node/pn_lidar5/pose"/>  -->
+
+        <remap from="~ekf_odom" to="/ekf/ekf_odom"/>
+
+        <!-- parms -->
+        <rosparam file="$(find ekf)/launch/PX4_vio_drone.yaml" command="load" />
+
+        <!--body in IMU frame-->
+        <param name="imu_trans_x" type="double" value="0.0"/> 
+        <param name="imu_trans_y" type="double" value="0.0"/> 
+        <param name="imu_trans_z" type="double" value="0.0"/> 
+
+        <!-- Qt -->
+        <param name="gyro_cov" type="double" value="0.2"/> 
+        <param name="acc_cov" type="double" value="1.0"/>
+        <!-- Rt -->
+        <param name="position_cov" type="double" value="0.0005"/>
+        <param name="q_rp_cov" type="double" value="0.01"/>
+        <param name="q_yaw_cov" type="double" value="0.01"/>   
+    </node>
+	</group>
+
+</launch>

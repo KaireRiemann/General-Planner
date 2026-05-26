@@ -4,3 +4,5 @@
 **/.vscode
 src/Localization/FAST_LIO/PCD
 *.dae
+*.csv
+*.pcd
