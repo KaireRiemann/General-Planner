@@ -227,7 +227,7 @@ namespace general_planner {
         bool exploration_global_guidance_enable{true};
         int exploration_global_guidance_max_frontiers_in_tour{16};
         double exploration_global_guidance_weight_path_cost{1.0};
-        double exploration_global_guidance_weight_gain{2.0};
+        double exploration_global_guidance_weight_gain{1.0};
         double exploration_global_guidance_weight_revisit{0.5};
         bool exploration_global_guidance_use_two_opt{true};
         bool exploration_global_guidance_keep_current_target{true};
@@ -852,7 +852,7 @@ namespace general_planner {
             loader.LoadParam("general_planner/exploration/global_guidance/weight_path_cost",
                              exploration_global_guidance_weight_path_cost, 1.0);
             loader.LoadParam("general_planner/exploration/global_guidance/weight_gain",
-                             exploration_global_guidance_weight_gain, 2.0);
+                             exploration_global_guidance_weight_gain, 1.0);
             loader.LoadParam("general_planner/exploration/global_guidance/weight_revisit",
                              exploration_global_guidance_weight_revisit, 0.5);
             loader.LoadParam("general_planner/exploration/global_guidance/use_two_opt",

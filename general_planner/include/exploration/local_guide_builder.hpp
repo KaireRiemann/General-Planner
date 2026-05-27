@@ -44,6 +44,7 @@ public:
         double next_yaw{0.0};
         bool local_goal_is_final{false};
         double route_progress_length{0.0};
+        ExplorationFailureType failure_type{ExplorationFailureType::NONE};
         std::string reason;
     };
 

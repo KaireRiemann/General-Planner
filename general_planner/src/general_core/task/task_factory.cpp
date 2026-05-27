@@ -5,9 +5,9 @@
 #include <iostream>
 
 #include "general_core/task/composites/full_cycle_task.hpp"
+#include "general_core/task/composites/exploration_task.hpp"
 #include "general_core/task/composites/tracking_perching_task.hpp"
 #include "general_core/task/skills/dynamic_takeoff_skill.hpp"
-#include "general_core/task/skills/exploration_skill.hpp"
 #include "general_core/task/skills/perching_skill.hpp"
 #include "general_core/task/skills/se3_aggressive_skill.hpp"
 #include "general_core/task/skills/state_to_state_skill.hpp"
@@ -60,7 +60,7 @@ std::unique_ptr<TaskPrimitive> TaskFactory::create(const std::string &mode_strin
     if (mode == "tracking") {
         task = std::make_unique<TrackingSkill>(planner, false);
     } else if (mode == "exploration") {
-        task = std::make_unique<ExplorationSkill>(planner);
+        task = std::make_unique<ExplorationTask>(planner);
     } else if (mode == "perching") {
         task = std::make_unique<PerchingSkill>(planner);
     } else if (mode == "dynamic_takeoff") {

@@ -751,7 +751,8 @@ namespace general_planner {
         const bool exploration_backend_active =
                 active_exploration_guide_ && active_exploration_plan_.valid;
         const MapBackend start_backend =
-                exploration_backend_active ? cfg_.corridor_backend : MapBackend::ROG;
+                exploration_backend_active ? cfg_.exploration_local_guide_backend
+                                           : MapBackend::ROG;
         Vec3f local_star_pt;
         if (!map_manager_->findNearestStateValid(robot_state_.p, start_backend, local_star_pt, 3.0, true)) {
             ros_ptr_->error(
@@ -1005,8 +1006,8 @@ namespace general_planner {
         exploration::ExplorationPlan previous_plan;
         rog_map::RobotState robot;
         const double now = ros_ptr_ ? ros_ptr_->getSimTime() : 0.0;
-        const double min_remaining_for_replan =
-                std::max(0.02, 0.5 * cfg_.replan_forward_dt);
+        const auto policy = getExplorationRuntimePolicy();
+        const double min_remaining_for_replan = policy.min_remaining_for_replan;
         {
             std::lock_guard<std::mutex> guard(replan_lock_);
             latest_replan.reset();
@@ -1033,11 +1034,13 @@ namespace general_planner {
             previous_plan = latest_exploration_plan_;
         }
 
-        if (previous_plan.valid &&
-            previous_plan.local_goal_is_final &&
-            previous_plan.target_frontier_id >= 0 &&
-            (robot.p - previous_plan.final_goal).norm() <=
-            std::max(0.3, cfg_.exploration_runtime_final_goal_radius)) {
+        const bool previous_target_reached =
+                previous_plan.valid &&
+                previous_plan.target_frontier_id >= 0 &&
+                previous_plan.final_goal.allFinite() &&
+                (robot.p - previous_plan.final_goal).norm() <=
+                std::max(0.3, cfg_.exploration_runtime_final_goal_radius);
+        if (previous_target_reached) {
             exploration_manager_->onGoalReached(previous_plan.goal,
                                                ros_ptr_ ? ros_ptr_->getSimTime() : 0.0);
         }
@@ -1054,7 +1057,14 @@ namespace general_planner {
         double traj_remaining = 0.0;
         const bool has_active_traj =
                 getExplorationCommittedTrajectoryActivity(now, traj_elapsed, traj_remaining);
-        if (!from_rest && (!has_active_traj || traj_remaining <= min_remaining_for_replan)) {
+        bool plan_from_rest = from_rest;
+        if (plan_from_rest && has_active_traj && !new_task) {
+            plan_from_rest = false;
+            if (cfg_.print_log) {
+                ros_ptr_->info(" -- [Exploration] Replan from current trajectory forward state instead of rest.");
+            }
+        }
+        if (!plan_from_rest && (!has_active_traj || traj_remaining <= min_remaining_for_replan)) {
             std::lock_guard<std::mutex> guard(replan_lock_);
             exploration_runtime_state_ = ExplorationRuntimeState::PLAN_LOCAL;
             latest_replan.setGoal(robot.p, robot.yaw, robot);
@@ -1066,14 +1076,17 @@ namespace general_planner {
         bool attempted_global_update = false;
         exploration::ExplorationPlanningMode planning_mode =
                 exploration::ExplorationPlanningMode::FORCE_REFRESH_GLOBAL;
-        if (!from_rest && has_active_traj) {
+        const bool continue_active_target_after_local_segment =
+                previous_plan.valid &&
+                previous_plan.target_frontier_id >= 0 &&
+                !previous_target_reached;
+        if (!plan_from_rest && has_active_traj) {
             double collision_time = -1.0;
             const bool trajectory_unsafe =
                     currentExplorationTrajectoryUnsafe(now, &collision_time);
             if (trajectory_unsafe) {
-                const double stop_time = std::max(0.05, cfg_.exploration_runtime_stop_traj_time);
-                const double immediate_collision_time =
-                        std::max(stop_time, cfg_.exploration_runtime_collision_replan_time);
+                const double stop_time = policy.stop_traj_time;
+                const double immediate_collision_time = policy.collision_replan_time;
                 if (collision_time >= 0.0 && collision_time <= immediate_collision_time) {
                     const bool truncated = truncateExplorationCommittedTrajectory(stop_time);
                     {
@@ -1087,15 +1100,13 @@ namespace general_planner {
                                    truncated ? "truncated current command" : "could not truncate current command");
                     return NEW_TRAJ;
                 }
-                planning_mode = cfg_.exploration_runtime_keep_active_target
-                                ? exploration::ExplorationPlanningMode::FOLLOW_ACTIVE_TARGET
-                                : exploration::ExplorationPlanningMode::FORCE_REFRESH_GLOBAL;
+                planning_mode = exploration::ExplorationPlanningMode::FORCE_REFRESH_GLOBAL;
             } else {
                 const bool in_start_suppression_window =
                         traj_elapsed <
-                        std::max(0.0, cfg_.exploration_runtime_replan_time_after_traj_start) &&
+                        policy.replan_time_after_traj_start &&
                         traj_remaining >
-                        std::max(0.0, cfg_.exploration_runtime_replan_time_before_traj_end);
+                        policy.replan_time_before_traj_end;
                 if (in_start_suppression_window) {
                     std::lock_guard<std::mutex> guard(replan_lock_);
                     exploration_runtime_state_ = ExplorationRuntimeState::EXEC_LOCAL;
@@ -1104,12 +1115,11 @@ namespace general_planner {
                     return NO_NEED;
                 }
 
-                const double global_update_dt =
-                        std::max(0.0, cfg_.exploration_runtime_global_update_dt);
+                const double global_update_dt = policy.global_update_dt;
                 const bool near_traj_end =
                         traj_remaining <=
                         std::max(min_remaining_for_replan,
-                                 cfg_.exploration_runtime_replan_time_before_traj_end);
+                                 policy.replan_time_before_traj_end);
                 const bool global_update_due =
                         exploration_last_global_update_wt_ < 0.0 ||
                         now - exploration_last_global_update_wt_ >= global_update_dt ||
@@ -1125,12 +1135,53 @@ namespace general_planner {
             }
         }
 
-        if (from_rest || !previous_plan.valid) {
-            planning_mode = exploration::ExplorationPlanningMode::FORCE_REFRESH_GLOBAL;
+        if (plan_from_rest || !previous_plan.valid) {
+            planning_mode = continue_active_target_after_local_segment
+                            ? exploration::ExplorationPlanningMode::FOLLOW_ACTIVE_TARGET
+                            : exploration::ExplorationPlanningMode::FORCE_REFRESH_GLOBAL;
         }
         if (!cfg_.exploration_runtime_keep_active_target &&
             planning_mode == exploration::ExplorationPlanningMode::FOLLOW_ACTIVE_TARGET) {
             planning_mode = exploration::ExplorationPlanningMode::FORCE_REFRESH_GLOBAL;
+        }
+
+        Vec3f guide_anchor = robot.p;
+        double guide_anchor_yaw = robot.yaw;
+        bool guide_anchor_valid = false;
+        if (!plan_from_rest && has_active_traj) {
+            Trajectory committed_pos_traj;
+            Trajectory committed_yaw_traj;
+            double committed_start_wt = 0.0;
+            double committed_duration = 0.0;
+            cmd_traj_info_.lock();
+            if (!cmd_traj_info_.empty() && !cmd_traj_info_.posTraj().empty()) {
+                committed_pos_traj = cmd_traj_info_.posTraj();
+                committed_yaw_traj = cmd_traj_info_.yawTraj();
+                committed_start_wt = cmd_traj_info_.getStartWallTime();
+                committed_duration = cmd_traj_info_.getTotalDuration();
+            }
+            cmd_traj_info_.unlock();
+
+            if (!committed_pos_traj.empty() && committed_duration > 1.0e-3) {
+                const double eval_t = std::clamp(now - committed_start_wt + cfg_.replan_forward_dt,
+                                                 0.0,
+                                                 committed_duration);
+                StatePVAJ anchor_state;
+                if (committed_pos_traj.getState(eval_t, anchor_state) &&
+                    anchor_state.col(0).allFinite()) {
+                    guide_anchor = anchor_state.col(0);
+                    guide_anchor_valid = true;
+                    if (!committed_yaw_traj.empty()) {
+                        const double yaw_t = std::clamp(eval_t,
+                                                        0.0,
+                                                        committed_yaw_traj.getTotalDuration());
+                        const Vec3f yaw_vec = committed_yaw_traj.getPos(yaw_t);
+                        if (std::isfinite(yaw_vec[0])) {
+                            guide_anchor_yaw = yaw_vec[0];
+                        }
+                    }
+                }
+            }
         }
 
         {
@@ -1141,7 +1192,12 @@ namespace general_planner {
                     : ExplorationRuntimeState::UPDATE_GLOBAL;
         }
 
-        bool planned = exploration_manager_->planOnce(robot, robot.yaw, plan, planning_mode);
+        bool planned = exploration_manager_->planOnce(robot,
+                                                      robot.yaw,
+                                                      plan,
+                                                      planning_mode,
+                                                      guide_anchor_valid ? &guide_anchor : nullptr,
+                                                      guide_anchor_yaw);
         attempted_global_update =
                 planning_mode != exploration::ExplorationPlanningMode::FOLLOW_ACTIVE_TARGET;
         if (!planned &&
@@ -1152,7 +1208,12 @@ namespace general_planner {
                            plan.reason);
             plan = exploration::ExplorationPlan{};
             planning_mode = exploration::ExplorationPlanningMode::FORCE_REFRESH_GLOBAL;
-            planned = exploration_manager_->planOnce(robot, robot.yaw, plan, planning_mode);
+            planned = exploration_manager_->planOnce(robot,
+                                                     robot.yaw,
+                                                     plan,
+                                                     planning_mode,
+                                                     guide_anchor_valid ? &guide_anchor : nullptr,
+                                                     guide_anchor_yaw);
             attempted_global_update = true;
         }
         if (attempted_global_update) {
@@ -1200,13 +1261,67 @@ namespace general_planner {
             return tryCommitExplorationBackupFallback(plan.reason);
         }
 
+        const double target_switch_distance =
+                std::max(std::max(0.3, cfg_.exploration_route_replan_distance_threshold),
+                         cfg_.planning_horizon * 0.3);
+        const bool final_goals_valid =
+                previous_plan.final_goal.allFinite() &&
+                plan.final_goal.allFinite();
+        const double final_goal_delta =
+                final_goals_valid
+                ? (plan.final_goal - previous_plan.final_goal).norm()
+                : std::numeric_limits<double>::infinity();
+        const bool same_physical_target =
+                final_goals_valid && final_goal_delta <= target_switch_distance;
+        const bool frontier_switched =
+                !same_physical_target &&
+                (previous_plan.target_frontier_id >= 0 ||
+                 plan.target_frontier_id >= 0) &&
+                previous_plan.target_frontier_id != plan.target_frontier_id;
+        const bool viewpoint_switched =
+                !same_physical_target &&
+                previous_plan.target_viewpoint_id >= 0 &&
+                plan.target_viewpoint_id >= 0 &&
+                previous_plan.target_viewpoint_id != plan.target_viewpoint_id;
+        const bool final_goal_switched =
+                final_goals_valid && final_goal_delta > target_switch_distance;
         const bool goal_switched =
-                from_rest ||
+                plan_from_rest ||
                 !previous_plan.valid ||
                 previous_plan.goal.type != plan.goal.type ||
-                (plan.next_goal - previous_plan.next_goal).norm() >
-                std::max(0.2, cfg_.exploration_route_replan_distance_threshold);
+                previous_plan.safe_start_recovery != plan.safe_start_recovery ||
+                frontier_switched ||
+                viewpoint_switched ||
+                final_goal_switched;
         plan.goal_switched = goal_switched;
+        if (cfg_.print_log) {
+            std::string switch_reason = "continuous_target";
+            if (plan_from_rest) {
+                switch_reason = "plan_from_rest";
+            } else if (!previous_plan.valid) {
+                switch_reason = "no_previous_plan";
+            } else if (previous_plan.goal.type != plan.goal.type) {
+                switch_reason = "goal_type";
+            } else if (previous_plan.safe_start_recovery != plan.safe_start_recovery) {
+                switch_reason = "safe_start_recovery";
+            } else if (frontier_switched) {
+                switch_reason = "frontier_id";
+            } else if (viewpoint_switched) {
+                switch_reason = "viewpoint_id";
+            } else if (final_goal_switched) {
+                switch_reason = "physical_goal";
+            }
+            ros_ptr_->info(" -- [Exploration] Target continuity: switched={}, reason={}, same_physical={}, goal_delta={:.3f}, threshold={:.3f}, prev_frontier={}, new_frontier={}, prev_viewpoint={}, new_viewpoint={}.",
+                           goal_switched,
+                           switch_reason,
+                           same_physical_target,
+                           final_goals_valid ? final_goal_delta : -1.0,
+                           target_switch_distance,
+                           previous_plan.target_frontier_id,
+                           plan.target_frontier_id,
+                           previous_plan.target_viewpoint_id,
+                           plan.target_viewpoint_id);
+        }
 
         {
             std::lock_guard<std::mutex> guard(replan_lock_);
@@ -1216,7 +1331,7 @@ namespace general_planner {
             active_exploration_guide_ = plan.valid && plan.guide_path.size() >= 2U;
         }
 
-        const RET_CODE ret = from_rest
+        const RET_CODE ret = plan_from_rest
                              ? PlanFromRest(plan.next_goal, plan.next_yaw, true)
                              : ReplanOnce(plan.next_goal, plan.next_yaw, goal_switched);
         {
@@ -1224,8 +1339,35 @@ namespace general_planner {
             active_exploration_guide_ = false;
             active_exploration_plan_ = exploration::ExplorationPlan{};
         }
+        if (!plan_from_rest && ret == FAILED && has_active_traj) {
+            const double retry_now = ros_ptr_ ? ros_ptr_->getSimTime() : now;
+            double retry_elapsed = 0.0;
+            double retry_remaining = 0.0;
+            const bool still_active =
+                    getExplorationCommittedTrajectoryActivity(retry_now,
+                                                              retry_elapsed,
+                                                              retry_remaining);
+            double retry_collision_time = -1.0;
+            const bool retry_unsafe =
+                    still_active &&
+                    currentExplorationTrajectoryUnsafe(retry_now, &retry_collision_time);
+            if (still_active &&
+                retry_remaining > min_remaining_for_replan &&
+                !retry_unsafe) {
+                {
+                    std::lock_guard<std::mutex> guard(replan_lock_);
+                    exploration_runtime_state_ = ExplorationRuntimeState::EXEC_LOCAL;
+                    latest_replan.setGoal(robot.p, robot.yaw, robot);
+                    latest_replan.setRetCode(GENERAL_RET_CODE::GENERAL_SUCCESS_NO_BACKUP);
+                }
+                ros_ptr_->warn(" -- [Exploration] Continuous replan failed, keep current safe trajectory and retry. remaining={:.3f}s.",
+                               retry_remaining);
+                return NO_NEED;
+            }
+        }
         if (ret == FAILED || ret == EMER) {
             plan.status = exploration::ExplorationPlanStatus::BACKEND_FAILED;
+            plan.failure_type = exploration::ExplorationFailureType::BACKEND_FAILED;
             {
                 std::lock_guard<std::mutex> guard(replan_lock_);
                 exploration_runtime_state_ = ExplorationRuntimeState::RECOVER;
@@ -1247,7 +1389,7 @@ namespace general_planner {
                 exploration_runtime_state_ = ExplorationRuntimeState::EXEC_LOCAL;
                 exploration_has_committed_local_traj_ = true;
             }
-            if (!from_rest && fallback_ret == NO_NEED) {
+            if (!plan_from_rest && fallback_ret == NO_NEED) {
                 ros_ptr_->info(" -- [Exploration] Replan fallback has no trajectory to commit, request PlanFromRest.");
                 return NEW_TRAJ;
             }
@@ -1266,7 +1408,7 @@ namespace general_planner {
                     has_active_traj ? ExplorationRuntimeState::EXEC_LOCAL
                                     : ExplorationRuntimeState::PLAN_LOCAL;
         }
-        if (!from_rest && (ret == SUCCESS || ret == NO_NEED)) {
+        if (!plan_from_rest && (ret == SUCCESS || ret == NO_NEED)) {
             const double remaining = getCommittedTrajectoryRemainingDuration();
             if (remaining <= min_remaining_for_replan) {
                 ros_ptr_->info(" -- [Exploration] Current local trajectory ended, request PlanFromRest for next guide.");
@@ -1274,6 +1416,124 @@ namespace general_planner {
             }
         }
         return ret;
+    }
+
+    GeneralPlanner::ExplorationRuntimePolicy
+    GeneralPlanner::getExplorationRuntimePolicy() const {
+        ExplorationRuntimePolicy policy;
+        policy.global_update_dt = std::max(0.0, cfg_.exploration_runtime_global_update_dt);
+        policy.replan_forward_dt = std::max(0.0, cfg_.replan_forward_dt);
+        policy.min_remaining_for_replan =
+                std::max(0.02, policy.replan_forward_dt + 0.05);
+        policy.replan_time_after_traj_start =
+                std::max(0.0, cfg_.exploration_runtime_replan_time_after_traj_start);
+        policy.replan_time_before_traj_end =
+                std::max(std::max(0.0, cfg_.exploration_runtime_replan_time_before_traj_end),
+                         policy.min_remaining_for_replan + policy.global_update_dt + 0.05);
+        policy.stop_traj_time = std::max(0.05, cfg_.exploration_runtime_stop_traj_time);
+        policy.collision_replan_time =
+                std::max(policy.stop_traj_time, cfg_.exploration_runtime_collision_replan_time);
+        return policy;
+    }
+
+    GeneralPlanner::ExplorationExecutionStatus
+    GeneralPlanner::getExplorationExecutionStatus(const double now) {
+        ExplorationExecutionStatus status;
+        status.has_observation = explorationObservationReady();
+        status.has_active_trajectory =
+                getExplorationCommittedTrajectoryActivity(now,
+                                                          status.traj_elapsed,
+                                                          status.traj_remaining);
+        if (status.has_active_trajectory) {
+            status.trajectory_unsafe =
+                    currentExplorationTrajectoryUnsafe(now, &status.collision_time);
+        }
+        return status;
+    }
+
+    GeneralPlanner::ExplorationFrontendUpdateResult
+    GeneralPlanner::refreshExplorationGlobalPlan() {
+        ExplorationFrontendUpdateResult result;
+        const double now = ros_ptr_ ? ros_ptr_->getSimTime() : 0.0;
+        if (exploration_manager_ == nullptr) {
+            result.reason = "exploration manager is not initialized";
+            return result;
+        }
+
+        robot_state_ = map_manager_ ? map_manager_->getRobotState() : rog_map::RobotState{};
+        const rog_map::RobotState robot = robot_state_;
+        if (!robot.rcv) {
+            result.reason = "no odom";
+            std::lock_guard<std::mutex> guard(replan_lock_);
+            exploration_runtime_state_ = ExplorationRuntimeState::WAIT_OBSERVATION;
+            latest_replan.setRetCode(GENERAL_RET_CODE::GENERAL_NO_ODOM);
+            return result;
+        }
+        if (!exploration_manager_->hasObservation()) {
+            result.reason = "waiting for first exploration cloud observation";
+            std::lock_guard<std::mutex> guard(replan_lock_);
+            exploration_runtime_state_ = ExplorationRuntimeState::WAIT_OBSERVATION;
+            latest_replan.setGoal(robot.p, robot.yaw, robot);
+            latest_replan.setRetCode(GENERAL_RET_CODE::GENERAL_SUCCESS_NO_BACKUP);
+            return result;
+        }
+
+        {
+            std::lock_guard<std::mutex> guard(replan_lock_);
+            exploration_runtime_state_ = ExplorationRuntimeState::UPDATE_GLOBAL;
+        }
+
+        exploration::ExplorationPlan plan;
+        const bool ok = exploration_manager_->refreshGlobalPlan(robot, robot.yaw, plan);
+        const bool finished =
+                !ok &&
+                plan.status == exploration::ExplorationPlanStatus::TRUE_FINISHED &&
+                plan.no_frontier &&
+                exploration_manager_->isExplorationFinished();
+
+        {
+            std::lock_guard<std::mutex> guard(replan_lock_);
+            exploration_last_global_update_wt_ = now;
+            if (ok || finished) {
+                latest_exploration_plan_ = plan;
+            }
+            latest_exploration_goal_ = plan.goal;
+            latest_replan.setGoal(robot.p, robot.yaw, robot);
+            latest_replan.setRetCode(ok
+                                     ? GENERAL_RET_CODE::GENERAL_SUCCESS_NO_BACKUP
+                                     : GENERAL_RET_CODE::GENERAL_UNDEFINED);
+            if (ok) {
+                exploration_runtime_state_ = ExplorationRuntimeState::PLAN_LOCAL;
+            } else if (finished) {
+                exploration_runtime_state_ = ExplorationRuntimeState::FINISH;
+            }
+        }
+
+        result.ready = true;
+        result.updated = ok;
+        result.finished = finished;
+        result.no_frontier = plan.no_frontier;
+        result.plan = plan;
+        result.reason = ok ? "global tour refreshed" : plan.reason;
+        return result;
+    }
+
+    void GeneralPlanner::resetExplorationTaskRuntime(const bool hard_reset) {
+        std::lock_guard<std::mutex> guard(replan_lock_);
+        if (hard_reset && exploration_manager_ != nullptr) {
+            exploration_manager_->reset();
+        }
+        if (hard_reset) {
+            latest_exploration_goal_ = exploration::ExplorationGoal{};
+            latest_exploration_plan_ = exploration::ExplorationPlan{};
+        }
+        active_exploration_plan_ = exploration::ExplorationPlan{};
+        active_exploration_guide_ = false;
+        resetExplorationRuntimeState(hard_reset);
+    }
+
+    bool GeneralPlanner::truncateActiveExplorationTrajectory(const double stop_time) {
+        return truncateExplorationCommittedTrajectory(stop_time);
     }
 
     bool GeneralPlanner::getLatestExplorationGoal(exploration::ExplorationGoal &goal) const {
@@ -5872,7 +6132,8 @@ namespace general_planner {
             return false;
         }
         const MapBackend backend =
-                cfg_.exploration_use_epic_frontend ? MapBackend::POINT_CLOUD : cfg_.corridor_backend;
+                cfg_.exploration_use_epic_frontend ? cfg_.exploration_local_guide_backend
+                                                   : cfg_.corridor_backend;
         if (!map_manager_->ready(backend)) {
             return false;
         }
@@ -6191,7 +6452,8 @@ namespace general_planner {
         const bool use_exploration_backend =
                 active_exploration_guide_ && active_exploration_plan_.valid;
         const MapBackend trajectory_backend =
-                use_exploration_backend ? cfg_.corridor_backend : MapBackend::ROG;
+                use_exploration_backend ? cfg_.exploration_local_guide_backend
+                                        : MapBackend::ROG;
         double trajectory_safe_distance =
                 use_exploration_backend ? std::max(0.0, cfg_.exploration_local_guide_safe_distance) : 0.0;
         if (use_exploration_backend && cfg_.exploration_use_epic_frontend) {
@@ -6396,7 +6658,24 @@ namespace general_planner {
             // *    is given, we should only receiding a small distance and replan new trajectory ASAP
             double split_dis = cfg_.receding_dis;
             if (use_exploration_backend) {
-                split_dis = 0.0;
+                const bool keep_short_prefix =
+                        !active_exploration_plan_.goal_switched &&
+                        last_exp_traj_info.wholeTrajKnownFree() &&
+                        cfg_.receding_dis > 0.0;
+                split_dis = keep_short_prefix
+                            ? std::min(cfg_.receding_dis,
+                                       std::max(cfg_.resolution * 3.0,
+                                                cfg_.exp_traj_cfg.max_vel * cfg_.replan_forward_dt))
+                            : 0.0;
+                if (cfg_.print_log) {
+                    ros_ptr_->info(" -- [Exploration] Prefix decision: keep={}, split_dis={:.3f}, goal_switched={}, whole_free={}, receding_dis={:.3f}, forward_dt={:.3f}.",
+                                   keep_short_prefix,
+                                   split_dis,
+                                   active_exploration_plan_.goal_switched,
+                                   last_exp_traj_info.wholeTrajKnownFree(),
+                                   cfg_.receding_dis,
+                                   cfg_.replan_forward_dt);
+                }
             } else if (last_exp_traj_info.wholeTrajKnownFree() && !gi_.new_goal && cfg_.receding_dis > 0.0) {
                 split_dis = std::numeric_limits<double>::max();
             }
@@ -6471,14 +6750,40 @@ namespace general_planner {
             }
             const auto &frontend_path = active_exploration_plan_.guide_path;
             const Vec3f base = guide_path.back();
-            std::size_t nearest_id = 0U;
-            double nearest_dis = std::numeric_limits<double>::infinity();
-            for (std::size_t i = 0; i < frontend_path.size(); ++i) {
-                const double dis = (frontend_path[i] - base).squaredNorm();
-                if (dis < nearest_dis) {
-                    nearest_dis = dis;
-                    nearest_id = i;
+            struct GuideProjection {
+                bool valid{false};
+                std::size_t segment_id{0U};
+                double segment_t{0.0};
+                double distance_sq{std::numeric_limits<double>::infinity()};
+                Vec3f point{Vec3f::Zero()};
+            };
+            GuideProjection projection;
+            for (std::size_t i = 0; i + 1U < frontend_path.size(); ++i) {
+                const Vec3f a = frontend_path[i];
+                const Vec3f b = frontend_path[i + 1U];
+                const Vec3f ab = b - a;
+                const double len_sq = ab.squaredNorm();
+                double t = 0.0;
+                Vec3f projected = a;
+                if (len_sq > 1.0e-8) {
+                    t = std::clamp((base - a).dot(ab) / len_sq, 0.0, 1.0);
+                    projected = a + t * ab;
                 }
+                const double distance_sq = (projected - base).squaredNorm();
+                if (!projection.valid || distance_sq < projection.distance_sq) {
+                    projection.valid = true;
+                    projection.segment_id = i;
+                    projection.segment_t = t;
+                    projection.distance_sq = distance_sq;
+                    projection.point = projected;
+                }
+            }
+            if (!projection.valid) {
+                projection.valid = true;
+                projection.segment_id = 0U;
+                projection.segment_t = 0.0;
+                projection.distance_sq = (frontend_path.front() - base).squaredNorm();
+                projection.point = frontend_path.front();
             }
             double remaining_horizon = std::max(0.0, temp_horizon);
             double stamp = guide_stamp.back();
@@ -6549,15 +6854,23 @@ namespace general_planner {
                 return keep_going;
             };
 
-            for (std::size_t i = nearest_id; i < frontend_path.size(); ++i) {
+            if (projection.valid && !appendLimited(projection.point)) {
+                return appended > 0U;
+            }
+            const std::size_t start_id =
+                    projection.valid ? std::min(projection.segment_id + 1U,
+                                                frontend_path.size())
+                                     : 0U;
+            for (std::size_t i = start_id; i < frontend_path.size(); ++i) {
                 if (!appendLimited(frontend_path[i])) {
                     break;
                 }
             }
             if (appended > 0U && cfg_.print_log) {
-                ros_ptr_->info(" -- [Exploration] Use EPIC guide path for local trajectory: input_size={}, appended={}, endpoint=[{:.3f} {:.3f} {:.3f}].",
+                ros_ptr_->info(" -- [Exploration] Use EPIC guide path for local trajectory: input_size={}, appended={}, attach_dis={:.3f}, endpoint=[{:.3f} {:.3f} {:.3f}].",
                                frontend_path.size(),
                                appended,
+                               std::sqrt(std::max(0.0, projection.distance_sq)),
                                guide_path.back().x(),
                                guide_path.back().y(),
                                guide_path.back().z());

@@ -2,8 +2,11 @@ fsm:
   task_mode: "exploration"
   task_planner_en: false
   task_mode_topic: "/planning/task_mode"
-  auto_start: true
-  click_goal_en: false
+  auto_start: false
+  exploration_waypoints_topic: "/waypoint_generator/waypoints"
+  exploration_start_trigger_topic: "/traj_start_trigger"
+  exploration_goal_trigger_topic: "/move_base_simple/goal"
+  click_goal_en: true
   click_goal_topic: "/goal"
   click_height: 1.5
   click_yaw_en: false
@@ -11,7 +14,7 @@ fsm:
   tracking_target_prediction_topic: "/tracking/target_prediction"
   perching_surface_odom_topic: "/perching/surface_odom"
   task_timeout: 1.0
-  replan_rate: 1.0
+  replan_rate: 10.0
   cmd_topic: "/planning/pos_cmd"
   mpc_cmd_topic: "/planning_cmd/poly_traj"
   timer_en: true
@@ -36,7 +39,7 @@ general_planner:
   ellipsoid_optimizer: classic
   ellipsoid_optimizer_fallback: false
   obs_skip_num: 1
-  replan_forward_dt: 0.1
+  replan_forward_dt: 0.2
   planning_horizon: 10.0
   sensing_horizon: -1
   receding_dis: 3.5
@@ -96,7 +99,7 @@ general_planner:
       frontier_cluster_max_size: 8.0
       frontier_cluster_direction_radius: 0.0
       frontier_cluster_minimum_point_num: 10
-      bbox_min: [ -48.1, -206.0, -7.1 ]
+      bbox_min: [ -70.1, -206.0, -7.1 ]
       bbox_max: [ 176.0, 124.0, 34.1 ]
     frontier_database:
       association_distance: 1.5
@@ -177,7 +180,7 @@ general_planner:
       enable: true
       max_frontiers_in_tour: 10
       weight_path_cost: 1.0
-      weight_gain: 2.2
+      weight_gain: 1.0
       weight_revisit: 0.7
       use_two_opt: true
       keep_current_target: true
@@ -192,7 +195,7 @@ general_planner:
       route_waypoint_min_distance: 1.2
       route_waypoint_max_distance: 7.0
       local_goal_safe_distance: 0.45
-      route_replan_distance_threshold: 1.5
+      route_replan_distance_threshold: 2.0
       use_local_map_safety: false
     runtime:
       local_goal_lookahead: 10.0
@@ -202,9 +205,9 @@ general_planner:
       max_local_segment_fail_count: 3
       keep_active_target: true
       switch_score_ratio: 1.25
-      global_update_dt: 0.2
-      replan_time_after_traj_start: 0.5
-      replan_time_before_traj_end: 0.5
+      global_update_dt: 0.6
+      replan_time_after_traj_start: 0.7
+      replan_time_before_traj_end: 0.8
       safety_check_dt: 0.15
       safety_check_horizon: 2.0
       stop_traj_time: 0.2

@@ -79,9 +79,9 @@ void FrontierManager::visfrtcluster() {
     } else {
       SetMarker(VizColor::RED, "aabb", 1.0, 0.5, aabb_marker, 1.0);
     }
-    SetMarker(VizColor::WHITE, "viewpoint_number", 0.5, 1.0, viewpoint_number, 1.0);
+    SetMarker(VizColor::RED, "viewpoint_number", 0.5, 1.0, viewpoint_number, 1.0);
     SetMarker(VizColor::RED, "best_viewpoint", 0.5, 1.0, best_viewpoint, 1.0);
-    SetMarker(VizColor::WHITE, "vp_frt_connecter", 0.05, 0.7, vp_frt_connecter, 1.0);
+    SetMarker(VizColor::RED, "vp_frt_connecter", 0.05, 0.7, vp_frt_connecter, 1.0);
 
     aabb_marker.id = sf_cluster->id_;
     viewpoint_number.id = sf_cluster->id_;

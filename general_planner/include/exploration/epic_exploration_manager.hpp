@@ -159,9 +159,9 @@ public:
 
         struct GlobalGuidanceConfig {
             bool enable{true};
-            int max_frontiers_in_tour{16};
+            int max_frontiers_in_tour{10};
             double weight_path_cost{1.0};
-            double weight_gain{2.0};
+            double weight_gain{1.0};
             double weight_revisit{0.5};
             bool use_two_opt{true};
             bool keep_current_target{true};
@@ -231,7 +231,12 @@ public:
     bool planOnce(const rog_map::RobotState &robot,
                   double current_yaw,
                   ExplorationPlan &plan,
-                  ExplorationPlanningMode mode);
+                  ExplorationPlanningMode mode,
+                  const super_utils::Vec3f *guide_anchor = nullptr,
+                  double guide_anchor_yaw = std::numeric_limits<double>::quiet_NaN());
+    bool refreshGlobalPlan(const rog_map::RobotState &robot,
+                           double current_yaw,
+                           ExplorationPlan &plan);
 
     void onGoalReached(const ExplorationGoal &goal, double stamp);
     void onGoalFailed(const ExplorationGoal &goal,
@@ -277,9 +282,32 @@ private:
     bool updateNativeGlobalPlan(const rog_map::RobotState &robot,
                                 double current_yaw,
                                 ExplorationPlan &plan);
+    bool buildPlanForNativeTourTarget(std::size_t target_index,
+                                      const rog_map::RobotState &robot,
+                                      ExplorationPlan &plan);
     bool buildNativeGuide(const rog_map::RobotState &robot,
                           double current_yaw,
-                          ExplorationPlan &plan);
+                          ExplorationPlan &plan,
+                          const super_utils::Vec3f *guide_anchor = nullptr,
+                          double guide_anchor_yaw = std::numeric_limits<double>::quiet_NaN());
+    bool nativeViewpointSafe(const Eigen::Vector3f &position,
+                             double *clearance = nullptr) const;
+    std::size_t filterUnsafeNativeViewpoints(std::vector<std::shared_ptr<TopoNode>> &viewpoints);
+    bool buildSafeStartRecoveryPlan(const rog_map::RobotState &robot,
+                                    double current_yaw,
+                                    const std::string &reason,
+                                    ExplorationPlan &plan,
+                                    const super_utils::Vec3f *guide_anchor = nullptr,
+                                    double guide_anchor_yaw = std::numeric_limits<double>::quiet_NaN()) const;
+    bool retryNativeTourCandidates(const rog_map::RobotState &robot,
+                                   double current_yaw,
+                                   const ExplorationPlan &failed_plan,
+                                   ExplorationPlan &plan,
+                                   const super_utils::Vec3f *guide_anchor = nullptr,
+                                   double guide_anchor_yaw = std::numeric_limits<double>::quiet_NaN());
+    void recordLocalGuideFailure(const ExplorationPlan &plan,
+                                 const std::string &reason,
+                                 bool clear_active_target);
     bool updateNativeGoalNode(const Eigen::Vector3f &goal, float yaw);
     bool rebuildRouteToNextGoal(const rog_map::RobotState &robot,
                                 double timeout,
@@ -288,9 +316,15 @@ private:
     void clearNativeTourState();
     void rebuildGlobalTourFromCursor(const Eigen::Vector3f &start);
     bool advanceNativeTourTarget(const Eigen::Vector3f &start);
-    bool setNativeGoalFromTourTarget(std::size_t target_index);
+    int stableNativeViewpointId(const Eigen::Vector3f &position,
+                                int frontier_id) const;
+    bool setNativeGoalFromTourTarget(std::size_t target_index,
+                                     bool commit_active_target = true);
+    void recordUnsafeNativeViewpointFailure(int frontier_id,
+                                            const std::string &reason);
     bool frontierSelectable(int frontier_id) const;
     void rememberVisitedNativeViewpoint(const Eigen::Vector3f &position);
+    void rememberVisitedNativeGuidePath(const ExplorationPlan &plan);
     double visitedNativeViewpointPenalty(const Eigen::Vector3f &position) const;
     bool routeBetweenNativeNodes(const std::shared_ptr<TopoNode> &start,
                                  const std::shared_ptr<TopoNode> &goal,
@@ -351,6 +385,7 @@ private:
     bool exploration_finished_{false};
     bool next_goal_node_valid_{false};
     bool next_goal_node_inserted_{false};
+    bool active_target_committed_{false};
     bool has_last_goal_cost_frame_value_{false};
     int last_native_result_{-1};
     int active_frontier_id_{-1};
@@ -359,6 +394,7 @@ private:
     double last_goal_cost_frame_value_{std::numeric_limits<double>::infinity()};
     std::unordered_map<int, int> local_fail_count_by_frontier_;
     std::unordered_map<int, int> topo_route_fail_count_by_frontier_;
+    std::unordered_map<int, int> unsafe_viewpoint_fail_count_by_frontier_;
     super_utils::Vec3f last_sensor_position_{super_utils::Vec3f::Zero()};
     double last_observation_stamp_{-1.0};
     bool has_last_sensor_position_{false};

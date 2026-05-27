@@ -31,12 +31,18 @@
 
 #include "ros/ros.h"
 #include "geometry_msgs/PoseStamped.h"
+#include "message_filters/subscriber.h"
+#include "message_filters/sync_policies/approximate_time.h"
+#include "message_filters/synchronizer.h"
 #include "nav_msgs/Path.h"
 #include "nav_msgs/Odometry.h"
 #include "quadrotor_msgs/PositionCommand.h"
 #include "quadrotor_msgs/PolynomialTrajectory.h"
 #include "sensor_msgs/PointCloud2.h"
+#include "std_msgs/Header.h"
 #include "std_msgs/String.h"
+
+#include <boost/bind/bind.hpp>
 
 #include <pcl/point_cloud.h>
 #include <pcl/point_types.h>
@@ -51,6 +57,7 @@
 #include <iomanip>
 #include <limits>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <queue>
 #include <sstream>
@@ -66,11 +73,19 @@ namespace fsm {
         ros::Subscriber tracking_prediction_sub_;
         ros::Subscriber perching_surface_sub_;
         ros::Subscriber exploration_cloud_sub_;
+        using ExplorationCloudOdomSyncPolicy =
+                message_filters::sync_policies::ApproximateTime<sensor_msgs::PointCloud2, nav_msgs::Odometry>;
+        std::unique_ptr<message_filters::Subscriber<sensor_msgs::PointCloud2>> exploration_cloud_filter_sub_;
+        std::unique_ptr<message_filters::Subscriber<nav_msgs::Odometry>> exploration_odom_filter_sub_;
+        std::unique_ptr<message_filters::Synchronizer<ExplorationCloudOdomSyncPolicy>> exploration_cloud_odom_sync_;
+        ros::Subscriber exploration_waypoints_trigger_sub_;
+        ros::Subscriber exploration_start_trigger_sub_;
+        ros::Subscriber exploration_goal_trigger_sub_;
         ros::Subscriber swarm_broadcast_traj_sub_;
         ros::Subscriber swarm_state_sub_;
         ros::Publisher cmd_pub, mpc_cmd_pub_, path_pub_;
         ros::Publisher swarm_traj_pub_, swarm_state_pub_;
-        ros::Timer execution_timer_, replan_timer_, cmd_timer_;
+        ros::Timer execution_timer_, replan_timer_, cmd_timer_, exploration_frontend_timer_;
         quadrotor_msgs::PositionCommand pid_cmd_;
         rog_map::ROGMapROS::Ptr map_ptr_;
         quadrotor_msgs::PositionCommand latest_cmd;
@@ -82,6 +97,9 @@ namespace fsm {
         ros::Time last_tracking_prediction_path_time_;
         bool exploration_cloud_seen_{false};
         double last_exploration_cloud_wait_log_{-1.0};
+        double last_exploration_frontend_wait_log_{-1.0};
+        double last_exploration_frontend_update_log_{-1.0};
+        std::mutex exploration_frontend_mutex_;
 
         vector<quadrotor_msgs::PositionCommand> cmd_logs_;
 
@@ -202,6 +220,8 @@ namespace fsm {
                                  : "full_cycle";
             } else if (se3AggressiveMode()) {
                 task_phase = "se3_aggressive";
+            } else if (explorationMode()) {
+                task_phase = "exploration";
             } else if (trackingPerchingPerchingActive()) {
                 task_phase = "tracking_perching_perching";
             } else if (trackingMode()) {
@@ -807,6 +827,80 @@ namespace fsm {
             setTaskModeFromString(msg->data);
         }
 
+        void explorationWaypointsTriggerCallback(const nav_msgs::PathConstPtr &msg) {
+            if (!msg || msg->poses.empty()) {
+                return;
+            }
+            if (msg->poses.front().pose.position.z < -0.1) {
+                return;
+            }
+            std::lock_guard<std::mutex> lock(exploration_frontend_mutex_);
+            if (triggerExploration(cfg_.exploration_waypoints_topic)) {
+                exploration_frontend_timer_.stop();
+            }
+        }
+
+        void explorationPoseTriggerCallback(const geometry_msgs::PoseStampedConstPtr &msg,
+                                            const std::string &source) {
+            if (!msg) {
+                return;
+            }
+            if (msg->pose.position.z < -0.1) {
+                return;
+            }
+            std::lock_guard<std::mutex> lock(exploration_frontend_mutex_);
+            if (triggerExploration(source)) {
+                exploration_frontend_timer_.stop();
+            }
+        }
+
+        void explorationFrontendTimerCallback(const ros::TimerEvent &event) {
+            (void)event;
+            if (!explorationMode() || !cfg_.exploration_enable || !planner_ptr_) {
+                return;
+            }
+            if (started_ && !finish_plan) {
+                return;
+            }
+            std::unique_lock<std::mutex> lock(exploration_frontend_mutex_, std::try_to_lock);
+            if (!lock.owns_lock()) {
+                return;
+            }
+            const double now = ros_ptr_ ? ros_ptr_->getSimTime() : ros::Time::now().toSec();
+            rog_map::RobotState robot;
+            planner_ptr_->getRobotState(robot);
+            if (!robot.rcv || now - robot.rcv_time > 0.2) {
+                return;
+            }
+            if (!planner_ptr_->explorationObservationReady()) {
+                if (last_exploration_frontend_wait_log_ < 0.0 ||
+                    now - last_exploration_frontend_wait_log_ > 1.0) {
+                    cout << YELLOW << " -- [Fsm] Exploration frontend warmup waits for first cloud."
+                         << RESET << endl;
+                    last_exploration_frontend_wait_log_ = now;
+                }
+                return;
+            }
+
+            const auto update = planner_ptr_->refreshExplorationGlobalPlan();
+            if (!update.ready) {
+                if (last_exploration_frontend_wait_log_ < 0.0 ||
+                    now - last_exploration_frontend_wait_log_ > 1.0) {
+                    cout << YELLOW << " -- [Fsm] Exploration frontend warmup waits: "
+                         << update.reason << RESET << endl;
+                    last_exploration_frontend_wait_log_ = now;
+                }
+                return;
+            }
+            if (update.updated &&
+                (last_exploration_frontend_update_log_ < 0.0 ||
+                 now - last_exploration_frontend_update_log_ > 1.0)) {
+                cout << GREEN << " -- [Fsm] Exploration frontend warmup updated global tour."
+                     << RESET << endl;
+                last_exploration_frontend_update_log_ = now;
+            }
+        }
+
         static bool pointCloudHasField(const sensor_msgs::PointCloud2 &msg,
                                        const std::string &field_name) {
             return std::any_of(msg.fields.begin(), msg.fields.end(),
@@ -840,12 +934,43 @@ namespace fsm {
             }
         }
 
-        void explorationCloudCallback(const sensor_msgs::PointCloud2ConstPtr &msg) {
+        static double messageStampOrFallback(const std_msgs::Header &header,
+                                             const double fallback) {
+            const double stamp = header.stamp.toSec();
+            return stamp > 0.0 ? stamp : fallback;
+        }
+
+        static rog_map::RobotState robotStateFromOdom(const nav_msgs::Odometry &odom,
+                                                      const double stamp) {
+            rog_map::RobotState robot;
+            robot.rcv = true;
+            robot.rcv_time = messageStampOrFallback(odom.header, stamp);
+            robot.p = super_utils::Vec3f(odom.pose.pose.position.x,
+                                         odom.pose.pose.position.y,
+                                         odom.pose.pose.position.z);
+            robot.v = super_utils::Vec3f(odom.twist.twist.linear.x,
+                                         odom.twist.twist.linear.y,
+                                         odom.twist.twist.linear.z);
+            robot.a.setZero();
+            robot.j.setZero();
+            robot.q = super_utils::Quatf(odom.pose.pose.orientation.w,
+                                         odom.pose.pose.orientation.x,
+                                         odom.pose.pose.orientation.y,
+                                         odom.pose.pose.orientation.z);
+            robot.q.normalize();
+            robot.yaw = std::atan2(2.0 * (robot.q.w() * robot.q.z() +
+                                          robot.q.x() * robot.q.y()),
+                                   1.0 - 2.0 * (robot.q.y() * robot.q.y() +
+                                                robot.q.z() * robot.q.z()));
+            return robot;
+        }
+
+        void feedExplorationCloud(const sensor_msgs::PointCloud2ConstPtr &msg,
+                                  rog_map::RobotState robot,
+                                  const char *source) {
             if (!planner_ptr_) {
                 return;
             }
-            rog_map::RobotState robot;
-            planner_ptr_->getRobotState(robot);
             if (!robot.rcv) {
                 const double now = ros_ptr_ ? ros_ptr_->getSimTime() : msg->header.stamp.toSec();
                 if (last_exploration_cloud_wait_log_ < 0.0 ||
@@ -857,6 +982,8 @@ namespace fsm {
                 }
                 return;
             }
+            const double stamp = messageStampOrFallback(msg->header, robot.rcv_time);
+            robot.rcv_time = stamp;
             rog_map::PointCloud cloud;
             convertExplorationCloud(*msg, cloud);
             if (!exploration_cloud_seen_) {
@@ -864,6 +991,7 @@ namespace fsm {
                      << static_cast<std::size_t>(msg->width) * static_cast<std::size_t>(msg->height)
                      << ", converted_points=" << cloud.size()
                      << ", stamp=" << std::fixed << std::setprecision(3) << msg->header.stamp.toSec()
+                     << ", source=" << source
                      << RESET << endl;
                 exploration_cloud_seen_ = true;
             }
@@ -877,8 +1005,22 @@ namespace fsm {
                 return;
             }
             const super_utils::Pose pose = std::make_pair(robot.p, robot.q);
-            planner_ptr_->updateExplorationMaps(
-                    cloud, pose, parseExplorationCloudFrame(cfg_.exploration_cloud_frame));
+            planner_ptr_->updateExplorationMapsWithRobot(
+                    cloud, pose, parseExplorationCloudFrame(cfg_.exploration_cloud_frame), robot, stamp);
+        }
+
+        void explorationCloudCallback(const sensor_msgs::PointCloud2ConstPtr &msg) {
+            rog_map::RobotState robot;
+            if (planner_ptr_) {
+                planner_ptr_->getRobotState(robot);
+            }
+            feedExplorationCloud(msg, robot, "latest_odom");
+        }
+
+        void explorationCloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr &msg,
+                                          const nav_msgs::OdometryConstPtr &odom) {
+            const double stamp = messageStampOrFallback(msg->header, odom->header.stamp.toSec());
+            feedExplorationCloud(msg, robotStateFromOdom(*odom, stamp), "synced_cloud_odom");
         }
 
         void init(const ros::NodeHandle &nh, const std::string &cfg_path) {
@@ -896,10 +1038,31 @@ namespace fsm {
 
             if (cfg_.exploration_enable) {
                 const auto map_cfg = map_ptr_->getMapConfig();
-                exploration_cloud_sub_ = nh_.subscribe(map_cfg.cloud_topic, 1,
-                                                       &FsmRos1::explorationCloudCallback, this);
+                if (!map_cfg.odom_topic.empty()) {
+                    exploration_cloud_filter_sub_ =
+                            std::make_unique<message_filters::Subscriber<sensor_msgs::PointCloud2>>(
+                                    nh_, map_cfg.cloud_topic, 1);
+                    exploration_odom_filter_sub_ =
+                            std::make_unique<message_filters::Subscriber<nav_msgs::Odometry>>(
+                                    nh_, map_cfg.odom_topic, 5);
+                    exploration_cloud_odom_sync_ =
+                            std::make_unique<message_filters::Synchronizer<ExplorationCloudOdomSyncPolicy>>(
+                                    ExplorationCloudOdomSyncPolicy(10),
+                                    *exploration_cloud_filter_sub_,
+                                    *exploration_odom_filter_sub_);
+                    exploration_cloud_odom_sync_->registerCallback(
+                            boost::bind(&FsmRos1::explorationCloudOdomCallback,
+                                        this,
+                                        boost::placeholders::_1,
+                                        boost::placeholders::_2));
+                } else {
+                    exploration_cloud_sub_ = nh_.subscribe(map_cfg.cloud_topic, 1,
+                                                           &FsmRos1::explorationCloudCallback, this);
+                }
                 cout << YELLOW << " -- [Fsm] EXPLORATION MAP FEED: cloud "
-                     << map_cfg.cloud_topic << ", frame "
+                     << map_cfg.cloud_topic << ", odom "
+                     << (map_cfg.odom_topic.empty() ? std::string("<latest-state fallback>") : map_cfg.odom_topic)
+                     << ", frame "
                      << cfg_.exploration_cloud_frame << RESET << endl;
             }
 
@@ -1056,11 +1219,70 @@ namespace fsm {
                 exit(0);
             }
 
+            if (explorationMode()) {
+                if (cfg_.click_goal_en &&
+                    !cfg_.click_goal_topic.empty() &&
+                    cfg_.click_goal_topic != cfg_.exploration_start_trigger_topic &&
+                    cfg_.click_goal_topic != cfg_.exploration_goal_trigger_topic) {
+                    goal_sub_ =
+                            nh_.subscribe<geometry_msgs::PoseStamped>(
+                                    cfg_.click_goal_topic, 1,
+                                    [this](const geometry_msgs::PoseStampedConstPtr &msg) {
+                                        this->explorationPoseTriggerCallback(
+                                                msg, this->cfg_.click_goal_topic);
+                                    });
+                    cout << YELLOW << " -- [Fsm] EXPLORATION CLICK GOAL TRIGGER: "
+                         << cfg_.click_goal_topic << RESET << endl;
+                }
+                if (!cfg_.exploration_waypoints_topic.empty()) {
+                    exploration_waypoints_trigger_sub_ =
+                            nh_.subscribe(cfg_.exploration_waypoints_topic, 1,
+                                          &FsmRos1::explorationWaypointsTriggerCallback, this);
+                    cout << YELLOW << " -- [Fsm] EXPLORATION WAYPOINT TRIGGER: "
+                         << cfg_.exploration_waypoints_topic << RESET << endl;
+                }
+                if (!cfg_.exploration_start_trigger_topic.empty()) {
+                    exploration_start_trigger_sub_ =
+                            nh_.subscribe<geometry_msgs::PoseStamped>(
+                                    cfg_.exploration_start_trigger_topic, 1,
+                                    [this](const geometry_msgs::PoseStampedConstPtr &msg) {
+                                        this->explorationPoseTriggerCallback(
+                                                msg, this->cfg_.exploration_start_trigger_topic);
+                                    });
+                    cout << YELLOW << " -- [Fsm] EXPLORATION START TRIGGER: "
+                         << cfg_.exploration_start_trigger_topic << RESET << endl;
+                }
+                if (!cfg_.exploration_goal_trigger_topic.empty()) {
+                    exploration_goal_trigger_sub_ =
+                            nh_.subscribe<geometry_msgs::PoseStamped>(
+                                    cfg_.exploration_goal_trigger_topic, 1,
+                                    [this](const geometry_msgs::PoseStampedConstPtr &msg) {
+                                        this->explorationPoseTriggerCallback(
+                                                msg, this->cfg_.exploration_goal_trigger_topic);
+                                    });
+                    cout << YELLOW << " -- [Fsm] EXPLORATION GOAL TRIGGER: "
+                         << cfg_.exploration_goal_trigger_topic << RESET << endl;
+                }
+            }
+
             if (cfg_.timer_en) {
                 execution_timer_ = nh_.createTimer(ros::Duration(0.01), &FsmRos1::mainFsmTimerCallback, this); // 100Hz
                 cmd_timer_ = nh_.createTimer(ros::Duration(0.01), &FsmRos1::pubCmdTimerCallback, this); // 100Hz
                 replan_timer_ = nh_.createTimer(ros::Duration(1.0 / cfg_.replan_rate), &FsmRos1::replanTimerCallback,
                                                 this); // 10Hz
+                if (explorationMode() && cfg_.exploration_enable && planner_ptr_) {
+                    const auto policy = planner_ptr_->getExplorationRuntimePolicy();
+                    const double warmup_dt = policy.global_update_dt > 1.0e-3
+                                             ? policy.global_update_dt
+                                             : 0.2;
+                    exploration_frontend_timer_ =
+                            nh_.createTimer(ros::Duration(std::max(0.05, warmup_dt)),
+                                            &FsmRos1::explorationFrontendTimerCallback,
+                                            this);
+                    cout << YELLOW << " -- [Fsm] EXPLORATION FRONTEND WARMUP TIMER: "
+                         << std::fixed << std::setprecision(2)
+                         << std::max(0.05, warmup_dt) << " s" << RESET << endl;
+                }
             }
 
             write_time_.open(DEBUG_FILE_DIR("time_consuming.csv"), std::ios::out | std::ios::trunc);

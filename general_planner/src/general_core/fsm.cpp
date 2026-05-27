@@ -84,7 +84,7 @@ namespace fsm {
             return;
         }
 
-        if (plan_from_rest_) {
+        if (plan_from_rest_ && !explorationMode()) {
             plan_from_rest_ = false;
             return;
         }
@@ -118,24 +118,32 @@ namespace fsm {
         const auto result = active_task_->tick(buildTaskContext());
         logTaskTickResult(result);
         ret_code = result.legacy_ret;
+        if (result.status == general_planner::TaskStatus::NOT_READY) {
+            return;
+        }
         if (ret_code == FAILED) {
 //            cout << YELLOW << " -- [Fsm] ReplanOnce failed." << RESET << endl;
         } else { cout << GREEN << " -- [Fsm] ReplanOnce succeed." << RESET << endl; }
 
-        if (ret_code == EMER) {
+        if (result.status == general_planner::TaskStatus::EMERGENCY ||
+            ret_code == EMER) {
             ChangeState("ReplanTimerCallback", EMER_STOP);
+        } else if (result.status == general_planner::TaskStatus::FINISHED ||
+                   ret_code == FINISH) {
+            gi_.new_goal = false;
+            task_new_ = false;
+            finish_plan = true;
+            cout << GREEN << " -- [Fsm] Task finished." << RESET << endl;
+            ChangeState("ReplanTimerCallback", WAIT_GOAL);
+        } else if (result.status == general_planner::TaskStatus::KEEP_CURRENT) {
+            publishPolyTraj();
+            if (trackingMode() && replan_tracking_static) {
+                ChangeState("ReplanTimerCallback", HOLD_TRACKING);
+            } else if (machine_state_ != FOLLOW_TRAJ) {
+                ChangeState("ReplanTimerCallback", FOLLOW_TRAJ);
+            }
         } else if (ret_code == NEW_TRAJ) {
             ChangeState("ReplanTimerCallback", GENERATE_TRAJ);
-        } else if (ret_code == NO_NEED && explorationMode()) {
-            const double remaining = planner_ptr_->getCommittedTrajectoryRemainingDuration();
-            if (remaining > 0.05) {
-                publishPolyTraj();
-                if (machine_state_ != FOLLOW_TRAJ) {
-                    ChangeState("ReplanTimerCallback", FOLLOW_TRAJ);
-                }
-            } else {
-                ChangeState("ReplanTimerCallback", GENERATE_TRAJ);
-            }
         } else if (ret_code == NO_NEED && (trackingMode() || trackingPerchingMode() || fullCycleMode())) {
             publishPolyTraj();
             if (trackingMode() && replan_tracking_static) {
@@ -143,19 +151,7 @@ namespace fsm {
             } else if (machine_state_ != FOLLOW_TRAJ) {
                 ChangeState("ReplanTimerCallback", FOLLOW_TRAJ);
             }
-        } else if (ret_code == FINISH && (trackingPerchingMode() || fullCycleMode())) {
-            gi_.new_goal = false;
-            task_new_ = false;
-            finish_plan = true;
-            cout << GREEN << " -- [Fsm] Composite task finished." << RESET << endl;
-            ChangeState("ReplanTimerCallback", WAIT_GOAL);
-        } else if (ret_code == FINISH && explorationMode()) {
-            gi_.new_goal = false;
-            task_new_ = false;
-            finish_plan = true;
-            cout << GREEN << " -- [Fsm] Exploration finished." << RESET << endl;
-            ChangeState("ReplanTimerCallback", WAIT_GOAL);
-        } else if (ret_code == SUCCESS || ret_code == FINISH) {
+        } else if (ret_code == SUCCESS) {
             gi_.new_goal = false;
             task_new_ = false;
             publishPolyTraj();
@@ -196,7 +192,11 @@ namespace fsm {
                 return;
             }
             if (!started_) {
-                cout << YELLOW << " -- [Fsm] Wait for goal." << RESET << endl;
+                if (explorationMode()) {
+                    cout << YELLOW << " -- [Fsm] Wait for exploration trigger." << RESET << endl;
+                } else {
+                    cout << YELLOW << " -- [Fsm] Wait for goal." << RESET << endl;
+                }
             }
             cout << std::fixed << std::setprecision(3);
             cout << GREEN << " -- [Fsm " << cur_t << "] Current state: " << MACHINE_STATE_STR[machine_state_]
@@ -205,11 +205,16 @@ namespace fsm {
 
         switch (machine_state_) {
             case INIT: {
-                if (!started_) {
-                    return;
-                }
                 if ((!robot_state_.rcv || (ros_ptr_->getSimTime() - robot_state_.rcv_time) > 0.1)) {
                     cout << YELLOW << " -- [Fsm] No odom." << RESET << endl;
+                    return;
+                }
+                if (explorationMode()) {
+                    ChangeState("MainFsmCallback", WAIT_GOAL);
+                    break;
+                }
+                if (!started_) {
+                    return;
                 }
                 ChangeState("MainFsmCallback", WAIT_GOAL);
                 break;
@@ -256,44 +261,37 @@ namespace fsm {
                     ChangeState("MainFsmCallback", WAIT_GOAL);
                     return;
                 }
-                if (retcode == NO_NEED && explorationMode()) {
-                    const double remaining = planner_ptr_->getCommittedTrajectoryRemainingDuration();
-                    if (remaining > 0.05) {
-                        plan_from_rest_ = true;
-                        finish_plan = false;
-                        publishPolyTraj();
-                        ChangeState("MainFsmCallback", FOLLOW_TRAJ);
-                    } else {
-                        cout << YELLOW << " -- [Fsm] Exploration has no active trajectory to keep, try replan." << RESET << endl;
-                    }
+                if (result.status == general_planner::TaskStatus::EMERGENCY ||
+                    retcode == EMER) {
+                    ChangeState("MainFsmCallback", EMER_STOP);
+                } else if (result.status == general_planner::TaskStatus::FINISHED ||
+                           retcode == FINISH) {
+                    gi_.new_goal = false;
+                    task_new_ = false;
+                    plan_from_rest_ = false;
+                    finish_plan = true;
+                    cout << GREEN << " -- [Fsm] Task finished." << RESET << endl;
+                    ChangeState("MainFsmCallback", WAIT_GOAL);
+                } else if (result.status == general_planner::TaskStatus::KEEP_CURRENT) {
+                    plan_from_rest_ = false;
+                    finish_plan = false;
+                    publishPolyTraj();
+                    ChangeState("MainFsmCallback",
+                                trackingMode() && planned_tracking_static ? HOLD_TRACKING : FOLLOW_TRAJ);
                 } else if (retcode == NO_NEED && trackingMode()) {
                     plan_from_rest_ = true;
                     finish_plan = false;
                     publishPolyTraj();
                     ChangeState("MainFsmCallback",
                                 planned_tracking_static ? HOLD_TRACKING : FOLLOW_TRAJ);
-                } else if (retcode == FINISH && (trackingPerchingMode() || fullCycleMode())) {
-                    gi_.new_goal = false;
-                    task_new_ = false;
+                } else if (retcode == NEW_TRAJ) {
                     plan_from_rest_ = false;
-                    finish_plan = true;
-                    cout << GREEN << " -- [Fsm] Composite task finished." << RESET << endl;
-                    ChangeState("MainFsmCallback", WAIT_GOAL);
-                } else if (retcode == FINISH && explorationMode()) {
-                    gi_.new_goal = false;
-                    task_new_ = false;
-                    plan_from_rest_ = false;
-                    finish_plan = true;
-                    cout << GREEN << " -- [Fsm] Exploration finished." << RESET << endl;
-                    ChangeState("MainFsmCallback", WAIT_GOAL);
-                } else if (retcode == SUCCESS || retcode == FINISH) {
-                    gi_.new_goal = false;
-                    task_new_ = false;
-                    plan_from_rest_ = true;
                     finish_plan = false;
-                    if (retcode == FINISH) {
-                        finish_plan = true;
-                    }
+                } else if (retcode == SUCCESS) {
+                    gi_.new_goal = false;
+                    task_new_ = false;
+                    plan_from_rest_ = !explorationMode();
+                    finish_plan = false;
 
                     publishPolyTraj();
 
@@ -606,18 +604,35 @@ namespace fsm {
             if (!cfg_.exploration_enable || !started_ || finish_plan) {
                 return false;
             }
-            if (planner_ptr_ && planner_ptr_->explorationObservationReady()) {
-                return true;
-            }
-            static double last_wait_observation_log = -1.0;
-            const double now = ros_ptr_ ? ros_ptr_->getSimTime() : 0.0;
-            if (last_wait_observation_log < 0.0 || now - last_wait_observation_log > 1.0) {
-                cout << YELLOW << " -- [Fsm] Exploration waits for first cloud observation." << RESET << endl;
-                last_wait_observation_log = now;
-            }
-            return false;
+            return true;
         }
         return false;
+    }
+
+    bool Fsm::triggerExploration(const std::string &source) {
+        if (!explorationMode()) {
+            return false;
+        }
+        if (!cfg_.exploration_enable) {
+            cout << YELLOW << " -- [Fsm] Ignore exploration trigger from " << source
+                 << ": exploration is disabled." << RESET << endl;
+            return false;
+        }
+        if (started_ && !finish_plan) {
+            cout << YELLOW << " -- [Fsm] Ignore exploration trigger from " << source
+                 << ": exploration is already active." << RESET << endl;
+            return false;
+        }
+
+        started_ = true;
+        finish_plan = false;
+        plan_from_rest_ = false;
+        task_new_ = true;
+        if (active_task_) {
+            active_task_->reset();
+        }
+        cout << GREEN << " -- [Fsm] Exploration triggered by " << source << RESET << endl;
+        return true;
     }
 
     bool Fsm::shouldGenerateAfterTrajFinish() {
@@ -636,9 +651,7 @@ namespace fsm {
         if (explorationMode()) {
             return cfg_.exploration_enable &&
                    started_ &&
-                   !finish_plan &&
-                   planner_ptr_ &&
-                   planner_ptr_->explorationObservationReady();
+                   !finish_plan;
         }
         if (fullCycleMode()) {
             return started_ && !finish_plan;

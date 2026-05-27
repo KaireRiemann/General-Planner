@@ -220,6 +220,8 @@ namespace fsm {
 
         bool activeTaskReady();
 
+        bool triggerExploration(const std::string &source);
+
         bool shouldGenerateAfterTrajFinish();
 
         bool trackingExecutionState() const;

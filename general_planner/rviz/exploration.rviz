@@ -171,29 +171,29 @@ Visualization Manager:
           Use Fixed Frame: true
           Use rainbow: true
           Value: false
-        - Alpha: 0.75
+        - Alpha: 0.10000000149011612
           Autocompute Intensity Bounds: true
           Autocompute Value Bounds:
-            Max Value: 2.7592508792877197
-            Min Value: -0.9228500127792358
+            Max Value: 4.937349796295166
+            Min Value: -1.2020000219345093
             Value: false
           Axis: Z
           Channel Name: intensity
           Class: rviz/PointCloud2
           Color: 187; 187; 187
-          Color Transformer: FlatColor
-          Decay Time: 0
+          Color Transformer: AxisColor
+          Decay Time: 500
           Enabled: true
           Invert Rainbow: false
           Max Color: 255; 255; 255
           Min Color: 0; 0; 0
           Name: LIOMap
           Position Transformer: XYZ
-          Queue Size: 2
+          Queue Size: 10
           Selectable: true
-          Size (Pixels): 2
-          Size (m): 0.07999999821186066
-          Style: Flat Squares
+          Size (Pixels): 1
+          Size (m): 0.10000000149011612
+          Style: Points
           Topic: /laser_cloud_surround
           Unreliable: false
           Use Fixed Frame: true
@@ -263,7 +263,7 @@ Visualization Manager:
           Radius: 0.10000000149011612
           Reference Frame: <Fixed Frame>
           Show Trail: false
-          Value: true
+          Value: false
       Enabled: true
       Name: Sensing
     - Class: rviz/Group
@@ -273,12 +273,7 @@ Visualization Manager:
           Marker Topic: /viz_graph_topic
           Name: TopoGraph
           Namespaces:
-            boundary: false
-            box id: false
-            odom_edge: false
-            skeleton_edge: false
-            topo_node: false
-            viewpoint_edge: false
+            {}
           Queue Size: 100
           Value: false
         - Class: rviz/MarkerArray
@@ -286,8 +281,7 @@ Visualization Manager:
           Marker Topic: /global_tour
           Name: GlobalTour
           Namespaces:
-            global_path: false
-            global_path_order: false
+            {}
           Queue Size: 100
           Value: false
         - Class: rviz/MarkerArray
@@ -314,10 +308,7 @@ Visualization Manager:
           Marker Topic: /fsm_node/sf_cluster_marker
           Name: FrontierClusters
           Namespaces:
-            aabb: false
-            best_viewpoint: false
-            viewpoint_number: false
-            vp_frt_connecter: false
+            {}
           Queue Size: 100
           Value: false
         - Alpha: 1
@@ -449,8 +440,7 @@ Visualization Manager:
           Marker Topic: /fsm_node/visualization/frontend_path
           Name: Astar
           Namespaces:
-            guide_path: true
-            guide_path_line: true
+            {}
           Queue Size: 100
           Value: true
         - Class: rviz/MarkerArray
@@ -458,8 +448,7 @@ Visualization Manager:
           Marker Topic: /fsm_node/visualization/goal
           Name: Goal
           Namespaces:
-            goal: true
-            goal_line: true
+            {}
           Queue Size: 100
           Value: true
         - Class: rviz/MarkerArray
@@ -495,8 +484,7 @@ Visualization Manager:
           Marker Topic: /fsm_node/visualization/exp_traj
           Name: ESDFTraj
           Namespaces:
-            exp_traj: true
-            exp_traj_waypoints: true
+            {}
           Queue Size: 100
           Value: true
         - Class: rviz/MarkerArray
@@ -560,13 +548,13 @@ Visualization Manager:
           Queue Size: 100
           Value: true
         - Class: rviz/MarkerArray
-          Enabled: true
+          Enabled: false
           Marker Topic: /fsm_node/visualization/yaw_traj
           Name: Yaw
           Namespaces:
-            yaw_traj: true
+            {}
           Queue Size: 100
-          Value: true
+          Value: false
       Enabled: true
       Name: TrajOpt
     - Class: rviz/Group
@@ -599,7 +587,7 @@ Visualization Manager:
       Value: false
   Enabled: true
   Global Options:
-    Background Color: 37; 44; 48
+    Background Color: 0; 0; 0
     Default Light: true
     Fixed Frame: world
     Frame Rate: 30
@@ -614,7 +602,7 @@ Visualization Manager:
   Views:
     Current:
       Class: rviz/Orbit
-      Distance: 133.92724609375
+      Distance: 100.66856384277344
       Enable Stereo Rendering:
         Stereo Eye Separation: 0.05999999865889549
         Stereo Focal Distance: 1
@@ -622,17 +610,17 @@ Visualization Manager:
         Value: false
       Field of View: 0.7853981852531433
       Focal Point:
-        X: -18.22981834411621
-        Y: 3.4356186389923096
-        Z: -8.666318893432617
+        X: -1.1784305572509766
+        Y: 0.15695683658123016
+        Z: -22.362445831298828
       Focal Shape Fixed Size: false
       Focal Shape Size: 0.05000000074505806
       Invert Z Axis: false
       Name: Current View
       Near Clip Distance: 0.009999999776482582
-      Pitch: 1.0347973108291626
+      Pitch: 0.919796347618103
       Target Frame: world
-      Yaw: 4.376784324645996
+      Yaw: 0.05176667869091034
     Saved: ~
 Window Geometry:
   Displays:

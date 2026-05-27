@@ -58,8 +58,10 @@ void FrontierManager::generateTSPViewpoints(Eigen::Vector3f&center,  vector<Topo
       dormant_skip++;
       continue;
     }
-    if (!cluster->is_reachable_)
+    if (!cluster->is_reachable_) {
       transient_unreachable_seen++;
+      continue;
+    }
     if (revp_clusters_set.count(cluster))
       continue;
     old_clusters_within_consideration.push_back(cluster);

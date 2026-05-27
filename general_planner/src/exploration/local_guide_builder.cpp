@@ -7,6 +7,23 @@
 namespace general_planner {
 namespace exploration {
 
+namespace {
+
+ExplorationFailureType localGuideFailureFromReason(const std::string &reason) {
+    if (reason.find("start is unsafe") != std::string::npos) {
+        return ExplorationFailureType::LOCAL_START_UNSAFE;
+    }
+    if (reason.find("repair failed") != std::string::npos) {
+        return ExplorationFailureType::LOCAL_REPAIR_FAILED;
+    }
+    if (reason.find("unsafe") != std::string::npos) {
+        return ExplorationFailureType::LOCAL_SEGMENT_UNSAFE;
+    }
+    return ExplorationFailureType::LOCAL_SEGMENT_UNSAFE;
+}
+
+}  // namespace
+
 LocalGuideBuilder::LocalGuideBuilder(Config cfg,
                                      MapManager::Ptr map_manager,
                                      path_search::Astar::Ptr astar)
@@ -27,41 +44,83 @@ LocalGuideBuilder::LocalGuideBuilder(Config cfg,
 bool LocalGuideBuilder::build(const Request &request, Result &result) const {
     result = Result{};
     if (!request.robot_pos.allFinite() || !request.final_goal.allFinite()) {
+        result.failure_type = ExplorationFailureType::LOCAL_SEGMENT_UNSAFE;
         result.reason = "invalid guide endpoints";
         return false;
     }
 
     const auto &raw = request.route.path;
     super_utils::vec_E<super_utils::Vec3f> source;
+    double progress_to_nearest = 0.0;
+
     if (raw.empty()) {
         source.push_back(request.robot_pos);
         source.push_back(request.final_goal);
     } else {
-        source = raw;
-    }
-    if ((source.front() - request.robot_pos).norm() > cfg_.max_segment_length) {
-        source.insert(source.begin(), request.robot_pos);
-    } else {
-        source.front() = request.robot_pos;
+        struct RouteProjection {
+            bool valid{false};
+            std::size_t segment_id{0U};
+            double segment_t{0.0};
+            double distance_sq{std::numeric_limits<double>::infinity()};
+            double progress{0.0};
+            super_utils::Vec3f point{super_utils::Vec3f::Zero()};
+        };
+
+        RouteProjection best;
+        double accumulated = 0.0;
+        for (std::size_t i = 0; i + 1U < raw.size(); ++i) {
+            const auto &a = raw[i];
+            const auto &b = raw[i + 1U];
+            const super_utils::Vec3f ab = b - a;
+            const double len_sq = ab.squaredNorm();
+            const double len = std::sqrt(len_sq);
+            double t = 0.0;
+            super_utils::Vec3f projected = a;
+            if (len_sq > 1.0e-8) {
+                t = std::clamp((request.robot_pos - a).dot(ab) / len_sq, 0.0, 1.0);
+                projected = a + t * ab;
+            }
+            const double distance_sq = (projected - request.robot_pos).squaredNorm();
+            if (!best.valid || distance_sq < best.distance_sq) {
+                best.valid = true;
+                best.segment_id = i;
+                best.segment_t = t;
+                best.distance_sq = distance_sq;
+                best.progress = accumulated + t * len;
+                best.point = projected;
+            }
+            accumulated += len;
+        }
+        if (!best.valid) {
+            for (std::size_t i = 0; i < raw.size(); ++i) {
+                const double distance_sq = (raw[i] - request.robot_pos).squaredNorm();
+                if (!best.valid || distance_sq < best.distance_sq) {
+                    best.valid = true;
+                    best.segment_id = i;
+                    best.segment_t = 0.0;
+                    best.distance_sq = distance_sq;
+                    best.progress = 0.0;
+                    best.point = raw[i];
+                }
+            }
+        }
+        progress_to_nearest = best.valid ? best.progress : 0.0;
+
+        source.push_back(request.robot_pos);
+        if (best.valid && (best.point - source.back()).norm() > 1.0e-4) {
+            source.push_back(best.point);
+        }
+        const std::size_t next_id = best.valid
+                                    ? std::min(best.segment_id + 1U, raw.size())
+                                    : 0U;
+        for (std::size_t i = next_id; i < raw.size(); ++i) {
+            if ((raw[i] - source.back()).norm() > 1.0e-4) {
+                source.push_back(raw[i]);
+            }
+        }
     }
     if ((source.back() - request.final_goal).norm() > cfg_.final_goal_radius) {
         source.push_back(request.final_goal);
-    }
-
-    std::size_t nearest_id = 0U;
-    double nearest_sq = std::numeric_limits<double>::infinity();
-    double progress_to_nearest = 0.0;
-    double accumulated = 0.0;
-    for (std::size_t i = 0; i < source.size(); ++i) {
-        const double sq = (source[i] - request.robot_pos).squaredNorm();
-        if (sq < nearest_sq) {
-            nearest_sq = sq;
-            nearest_id = i;
-            progress_to_nearest = accumulated;
-        }
-        if (i + 1U < source.size()) {
-            accumulated += (source[i + 1U] - source[i]).norm();
-        }
     }
 
     super_utils::vec_E<super_utils::Vec3f> prefix;
@@ -69,7 +128,7 @@ bool LocalGuideBuilder::build(const Request &request, Result &result) const {
     double length = 0.0;
     super_utils::Vec3f last = request.robot_pos;
     bool reached_final = (request.robot_pos - request.final_goal).norm() <= cfg_.final_goal_radius;
-    for (std::size_t i = nearest_id; i < source.size(); ++i) {
+    for (std::size_t i = 0U; i < source.size(); ++i) {
         const super_utils::Vec3f point = source[i];
         const double step = (point - last).norm();
         if (step < 1.0e-4) {
@@ -119,6 +178,7 @@ bool LocalGuideBuilder::build(const Request &request, Result &result) const {
         if (!appendSafeOrRepairedSegment(a, b, repaired, trimmed_before_final, trim_reason)) {
             result.reason = trim_reason.empty() ? "local guide unsafe and repair failed"
                                                 : trim_reason;
+            result.failure_type = localGuideFailureFromReason(result.reason);
             return false;
         }
         if (trimmed_before_final) {
@@ -128,6 +188,7 @@ bool LocalGuideBuilder::build(const Request &request, Result &result) const {
     }
     densifyPath(repaired);
     if (repaired.size() < 2U) {
+        result.failure_type = ExplorationFailureType::LOCAL_SEGMENT_UNSAFE;
         result.reason = "refined guide too short";
         return false;
     }

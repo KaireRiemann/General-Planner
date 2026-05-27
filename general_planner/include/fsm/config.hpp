@@ -129,6 +129,9 @@ namespace fsm {
         bool exploration_enable{false};
         string exploration_cloud_frame{"WORLD"};
         string task_mode_topic{"/planning/task_mode"};
+        string exploration_waypoints_topic{"/waypoint_generator/waypoints"};
+        string exploration_start_trigger_topic{"/traj_start_trigger"};
+        string exploration_goal_trigger_topic{"/move_base_simple/goal"};
         string tracking_target_odom_topic{"/tracking/target_odom"};
         string tracking_target_prediction_topic{"/tracking/target_prediction"};
         bool tracking_use_target_prediction_path{true};
@@ -186,6 +189,12 @@ namespace fsm {
             loader.LoadParam("general_planner/exploration/cloud_frame",
                              exploration_cloud_frame, string("WORLD"));
             loader.LoadParam("fsm/task_mode_topic", task_mode_topic, string("/planning/task_mode"));
+            loader.LoadParam("fsm/exploration_waypoints_topic", exploration_waypoints_topic,
+                             string("/waypoint_generator/waypoints"));
+            loader.LoadParam("fsm/exploration_start_trigger_topic", exploration_start_trigger_topic,
+                             string("/traj_start_trigger"));
+            loader.LoadParam("fsm/exploration_goal_trigger_topic", exploration_goal_trigger_topic,
+                             string("/move_base_simple/goal"));
             loader.LoadParam("fsm/tracking_target_odom_topic", tracking_target_odom_topic,
                              string("/tracking/target_odom"));
             loader.LoadParam("fsm/tracking_target_prediction_topic", tracking_target_prediction_topic,

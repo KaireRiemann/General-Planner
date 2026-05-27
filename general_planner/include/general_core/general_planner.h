@@ -321,6 +321,44 @@ namespace general_planner {
         RET_CODE PlanExplorationOnce(const bool &new_task,
                                      const bool &from_rest);
 
+        struct ExplorationRuntimePolicy {
+            double global_update_dt{0.2};
+            double replan_time_after_traj_start{0.5};
+            double replan_time_before_traj_end{0.5};
+            double replan_forward_dt{0.2};
+            double min_remaining_for_replan{0.25};
+            double stop_traj_time{0.2};
+            double collision_replan_time{0.5};
+        };
+
+        struct ExplorationExecutionStatus {
+            bool has_observation{false};
+            bool has_active_trajectory{false};
+            bool trajectory_unsafe{false};
+            double traj_elapsed{0.0};
+            double traj_remaining{0.0};
+            double collision_time{-1.0};
+        };
+
+        struct ExplorationFrontendUpdateResult {
+            bool ready{false};
+            bool updated{false};
+            bool finished{false};
+            bool no_frontier{false};
+            exploration::ExplorationPlan plan;
+            std::string reason;
+        };
+
+        ExplorationRuntimePolicy getExplorationRuntimePolicy() const;
+
+        ExplorationExecutionStatus getExplorationExecutionStatus(double now);
+
+        ExplorationFrontendUpdateResult refreshExplorationGlobalPlan();
+
+        void resetExplorationTaskRuntime(bool hard_reset);
+
+        bool truncateActiveExplorationTrajectory(double stop_time);
+
         bool getLatestExplorationGoal(exploration::ExplorationGoal &goal) const;
 
         bool explorationObservationReady() const {
@@ -614,13 +652,24 @@ namespace general_planner {
                                    const super_utils::Pose &pose,
                                    CloudFrame frame) {
             const double stamp = ros_ptr_ ? ros_ptr_->getSimTime() : 0.0;
+            rog_map::RobotState robot = map_manager_->getRobotState();
+            updateExplorationMapsWithRobot(cloud, pose, frame, robot, stamp);
+        }
+
+        void updateExplorationMapsWithRobot(const rog_map::PointCloud &cloud,
+                                            const super_utils::Pose &pose,
+                                            CloudFrame frame,
+                                            rog_map::RobotState robot,
+                                            double stamp) {
+            if (stamp <= 0.0) {
+                stamp = ros_ptr_ ? ros_ptr_->getSimTime() : 0.0;
+            }
             const bool use_epic_exploration_maps =
                     cfg_.exploration_enable && cfg_.exploration_use_epic_frontend;
             const bool update_rog_map =
                     !use_epic_exploration_maps || cfg_.exploration_update_rog_map;
             map_manager_->updateMapWithGlobal(cloud, pose, frame, stamp, update_rog_map);
             if (exploration_manager_ != nullptr) {
-                auto robot = map_manager_->getRobotState();
                 if (!robot.rcv) {
                     robot.rcv = true;
                     robot.p = pose.first;
@@ -630,8 +679,8 @@ namespace general_planner {
                     robot.j.setZero();
                     robot.yaw = std::atan2(2.0 * (pose.second.w() * pose.second.z() +
                                                    pose.second.x() * pose.second.y()),
-                                           1.0 - 2.0 * (pose.second.y() * pose.second.y() +
-                                                        pose.second.z() * pose.second.z()));
+                                                       1.0 - 2.0 * (pose.second.y() * pose.second.y() +
+                                                                    pose.second.z() * pose.second.z()));
                 }
                 robot.rcv_time = stamp;
                 map_manager_->updateEpicLioMap(cloud, pose, frame, robot);

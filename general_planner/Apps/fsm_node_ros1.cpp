@@ -64,7 +64,7 @@ int main(int argc, char **argv) {
         cfg_path = dft_cfg_path;
         cout << " -- [Fsm-Test] Load default config: " << cfg_path << endl;
     }
-
+    
     fsm_ptr = make_shared<FsmRos1>();
     fsm_ptr->init(nh, cfg_path);
 

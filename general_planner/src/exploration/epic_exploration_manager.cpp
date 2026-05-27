@@ -56,6 +56,11 @@ bool isLocalGuideStartUnsafe(const std::string &reason) {
     return reason.find("local guide start is unsafe") != std::string::npos;
 }
 
+bool isStartUnsafeFailure(const ExplorationPlan &plan) {
+    return plan.failure_type == ExplorationFailureType::LOCAL_START_UNSAFE ||
+           isLocalGuideStartUnsafe(plan.reason);
+}
+
 }  // namespace
 
 EpicExplorationManager::EpicExplorationManager(Config cfg,
@@ -421,30 +426,36 @@ bool EpicExplorationManager::planOnce(const rog_map::RobotState &robot,
 bool EpicExplorationManager::planOnce(const rog_map::RobotState &robot,
                                       const double current_yaw,
                                       ExplorationPlan &plan,
-                                      const ExplorationPlanningMode mode) {
+                                      const ExplorationPlanningMode mode,
+                                      const super_utils::Vec3f *guide_anchor,
+                                      const double guide_anchor_yaw) {
     plan = ExplorationPlan{};
     std::lock_guard<std::mutex> lock(mutex_);
 
     if (!cfg_.enable) {
         plan.status = ExplorationPlanStatus::FRONTEND_NOT_READY;
+        plan.failure_type = ExplorationFailureType::FRONTEND_NOT_READY;
         plan.reason = "exploration disabled";
         plan.goal.reason = plan.reason;
         return false;
     }
     if (!initialized_) {
         plan.status = ExplorationPlanStatus::FRONTEND_NOT_READY;
+        plan.failure_type = ExplorationFailureType::FRONTEND_NOT_READY;
         plan.reason = "native EPIC modules are not ready";
         plan.goal.reason = plan.reason;
         return false;
     }
     if (!robot.rcv) {
         plan.status = ExplorationPlanStatus::WAIT_FOR_OBSERVATION;
+        plan.failure_type = ExplorationFailureType::WAIT_OBSERVATION;
         plan.reason = "no odom";
         plan.goal.reason = plan.reason;
         return false;
     }
     if (!has_observation_) {
         plan.status = ExplorationPlanStatus::WAIT_FOR_OBSERVATION;
+        plan.failure_type = ExplorationFailureType::WAIT_OBSERVATION;
         plan.reason = "native EPIC has no cloud observation";
         plan.goal.reason = plan.reason;
         return false;
@@ -462,6 +473,7 @@ bool EpicExplorationManager::planOnce(const rog_map::RobotState &robot,
     if (!goal_ready) {
         if (mode == ExplorationPlanningMode::FOLLOW_ACTIVE_TARGET) {
             plan.status = ExplorationPlanStatus::VIEWPOINT_EXISTS_NO_TOPO_ROUTE;
+            plan.failure_type = ExplorationFailureType::TOPO_ROUTE;
             plan.reason = "native EPIC active tour target is unavailable";
             plan.goal.reason = plan.reason;
             last_plan_ = plan;
@@ -474,35 +486,119 @@ bool EpicExplorationManager::planOnce(const rog_map::RobotState &robot,
         last_plan_ = plan;
         return false;
     }
-    if (!buildNativeGuide(robot, current_yaw, plan)) {
+    auto finalize_success = [&]() {
+        plan.valid = true;
+        plan.no_frontier = false;
+        plan.status = ExplorationPlanStatus::OK;
+        if (plan.reason.empty() || plan.reason.find("failed") != std::string::npos) {
+            plan.reason = plan.safe_start_recovery
+                          ? "native EPIC safe-start recovery guide selected"
+                          : "native EPIC guide selected";
+        }
+        plan.goal.reason = plan.reason;
+        last_plan_ = plan;
+
+        if (ros_ptr_ && cfg_.print_log) {
+            ros_ptr_->info(" -- [EPIC Native] Guide selected frontier_id={}, viewpoint_id={}, failure_type={}, recovery={}, native_clusters={}, topo_nodes={}, path_size={}, next=[{:.3f} {:.3f} {:.3f}], final=[{:.3f} {:.3f} {:.3f}], final_reached={}.",
+                           plan.target_frontier_id,
+                           plan.target_viewpoint_id,
+                           explorationFailureTypeName(plan.failure_type),
+                           plan.safe_start_recovery,
+                           frontier_manager_ ? frontier_manager_->cluster_list_.size() : 0,
+                           graph_ ? graph_->history_odom_nodes_.size() : 0,
+                           plan.guide_path.size(),
+                           plan.next_goal.x(),
+                           plan.next_goal.y(),
+                           plan.next_goal.z(),
+                           plan.final_goal.x(),
+                           plan.final_goal.y(),
+                           plan.final_goal.z(),
+                           plan.local_goal_is_final);
+        }
+        visualizeNativeState();
+        return true;
+    };
+
+    if (!buildNativeGuide(robot, current_yaw, plan, guide_anchor, guide_anchor_yaw)) {
+        const ExplorationPlan failed_plan = plan;
+        if (isStartUnsafeFailure(failed_plan) &&
+            buildSafeStartRecoveryPlan(robot,
+                                       current_yaw,
+                                       failed_plan.reason,
+                                       plan,
+                                       guide_anchor,
+                                       guide_anchor_yaw)) {
+            return finalize_success();
+        }
+        if (retryNativeTourCandidates(robot,
+                                      current_yaw,
+                                      failed_plan,
+                                      plan,
+                                      guide_anchor,
+                                      guide_anchor_yaw)) {
+            return finalize_success();
+        }
+        last_plan_ = failed_plan;
+        return false;
+    }
+
+    return finalize_success();
+}
+
+bool EpicExplorationManager::refreshGlobalPlan(const rog_map::RobotState &robot,
+                                               const double current_yaw,
+                                               ExplorationPlan &plan) {
+    plan = ExplorationPlan{};
+    std::lock_guard<std::mutex> lock(mutex_);
+
+    if (!cfg_.enable) {
+        plan.status = ExplorationPlanStatus::FRONTEND_NOT_READY;
+        plan.failure_type = ExplorationFailureType::FRONTEND_NOT_READY;
+        plan.reason = "exploration disabled";
+        plan.goal.reason = plan.reason;
+        return false;
+    }
+    if (!initialized_) {
+        plan.status = ExplorationPlanStatus::FRONTEND_NOT_READY;
+        plan.failure_type = ExplorationFailureType::FRONTEND_NOT_READY;
+        plan.reason = "native EPIC modules are not ready";
+        plan.goal.reason = plan.reason;
+        return false;
+    }
+    if (!robot.rcv) {
+        plan.status = ExplorationPlanStatus::WAIT_FOR_OBSERVATION;
+        plan.failure_type = ExplorationFailureType::WAIT_OBSERVATION;
+        plan.reason = "no odom";
+        plan.goal.reason = plan.reason;
+        return false;
+    }
+    if (!has_observation_) {
+        plan.status = ExplorationPlanStatus::WAIT_FOR_OBSERVATION;
+        plan.failure_type = ExplorationFailureType::WAIT_OBSERVATION;
+        plan.reason = "native EPIC has no cloud observation";
+        plan.goal.reason = plan.reason;
+        return false;
+    }
+
+    if (!updateNativeTopoState(robot, current_yaw, plan)) {
         last_plan_ = plan;
         return false;
     }
 
-    plan.valid = true;
-    plan.no_frontier = false;
-    plan.status = ExplorationPlanStatus::OK;
-    plan.reason = "native EPIC guide selected";
-    plan.goal.reason = plan.reason;
-    active_frontier_id_ = plan.target_frontier_id;
-    active_viewpoint_id_ = plan.target_viewpoint_id;
+    const bool ok = updateNativeGlobalPlan(robot, current_yaw, plan);
     last_plan_ = plan;
-
-    if (ros_ptr_ && cfg_.print_log) {
-        ros_ptr_->info(" -- [EPIC Native] Guide selected frontier_id={}, viewpoint_id={}, native_clusters={}, topo_nodes={}, path_size={}, next=[{:.3f} {:.3f} {:.3f}], final=[{:.3f} {:.3f} {:.3f}], final_reached={}.",
-                       plan.target_frontier_id,
-                       plan.target_viewpoint_id,
-                       frontier_manager_ ? frontier_manager_->cluster_list_.size() : 0,
-                       graph_ ? graph_->history_odom_nodes_.size() : 0,
-                       plan.guide_path.size(),
-                       plan.next_goal.x(),
-                       plan.next_goal.y(),
-                       plan.next_goal.z(),
-                       plan.final_goal.x(),
-                       plan.final_goal.y(),
-                       plan.final_goal.z(),
-                       plan.local_goal_is_final);
+    if (!ok) {
+        return false;
     }
+    if (!native_tour_targets_.empty() &&
+        native_tour_cursor_ < native_tour_targets_.size()) {
+        setNativeGoalFromTourTarget(native_tour_cursor_, true);
+    }
+
+    plan.valid = plan.goal.valid;
+    plan.status = ExplorationPlanStatus::OK;
+    plan.reason = "native EPIC global tour refreshed";
+    plan.goal.reason = plan.reason;
     visualizeNativeState();
     return true;
 }
@@ -512,6 +608,7 @@ bool EpicExplorationManager::updateNativeTopoState(const rog_map::RobotState &ro
                                                    ExplorationPlan &plan) {
     if (!frontier_manager_ || !graph_ || !parallel_path_finder_) {
         plan.status = ExplorationPlanStatus::FRONTEND_NOT_READY;
+        plan.failure_type = ExplorationFailureType::FRONTEND_NOT_READY;
         plan.reason = "native EPIC modules missing";
         plan.goal.reason = plan.reason;
         return false;
@@ -530,6 +627,7 @@ bool EpicExplorationManager::updateNativeTopoState(const rog_map::RobotState &ro
     if (graph_->odom_node_->neighbors_.empty()) {
         plan.reason = "native EPIC topo odom node has no neighbors";
         plan.status = ExplorationPlanStatus::VIEWPOINT_EXISTS_NO_TOPO_ROUTE;
+        plan.failure_type = ExplorationFailureType::TOPO_ROUTE;
         plan.goal.reason = plan.reason;
         visualizeNativeState();
         return false;
@@ -546,6 +644,9 @@ bool EpicExplorationManager::buildPlanFromActiveNativeGoal(
     const bool has_tour_target =
             !native_tour_targets_.empty() &&
             native_tour_cursor_ < native_tour_targets_.size();
+    if (!active_target_committed_) {
+        return false;
+    }
     if (!has_persistent_goal && !has_tour_target) {
         return false;
     }
@@ -604,12 +705,11 @@ bool EpicExplorationManager::buildPlanFromActiveNativeGoal(
         return false;
     }
 
-    if (lio_interface_) {
-        const double clearance = lio_interface_->getDisToOcc(active_goal);
-        if (!std::isfinite(clearance) ||
-            clearance <= parallel_path_finder_->safe_distance_ + 0.1) {
-            return false;
-        }
+    if (!nativeViewpointSafe(active_goal, nullptr)) {
+        recordUnsafeNativeViewpointFailure(active_frontier_id,
+                                           "active native viewpoint is unsafe");
+        clearNativeTourState();
+        return false;
     }
 
     GlobalRoute route;
@@ -636,6 +736,29 @@ bool EpicExplorationManager::buildPlanFromActiveNativeGoal(
         }
     }
     if (!route.valid) {
+        return false;
+    }
+    const double route_goal_reached_threshold =
+            std::max(cfg_.final_goal_radius,
+                     cfg_.local_guide.local_goal_min_distance);
+    if (route.cost <= route_goal_reached_threshold) {
+        rememberVisitedNativeViewpoint(active_goal);
+        if (active_frontier_id >= 0) {
+            setNativeFrontierDormant(active_frontier_id, false);
+            local_fail_count_by_frontier_.erase(active_frontier_id);
+            topo_route_fail_count_by_frontier_.erase(active_frontier_id);
+        }
+        if (advanceNativeTourTarget(robot.p.cast<float>())) {
+            if (ros_ptr_ && cfg_.print_log) {
+                ros_ptr_->info(" -- [EPIC Native] Active target route is too short for local trajectory ({:.3f}m <= {:.3f}m); advance native tour cursor={}/{}.",
+                               route.cost,
+                               route_goal_reached_threshold,
+                               native_tour_cursor_ + 1U,
+                               native_tour_targets_.size());
+            }
+            return buildPlanFromActiveNativeGoal(robot, current_yaw, plan);
+        }
+        clearNativeTourState();
         return false;
     }
     route.target_frontier_id = active_frontier_id;
@@ -683,6 +806,13 @@ bool EpicExplorationManager::updateNativeGlobalPlan(const rog_map::RobotState &r
     std::vector<TopoNode::Ptr> viewpoints;
     Eigen::Vector3f center_pose = pos;
     frontier_manager_->generateTSPViewpoints(center_pose, viewpoints);
+    const std::size_t unsafe_viewpoint_rejected =
+            filterUnsafeNativeViewpoints(viewpoints);
+    if (unsafe_viewpoint_rejected > 0U && ros_ptr_ && cfg_.print_log) {
+        ros_ptr_->warn(" -- [EPIC Native] Rejected {} unsafe native viewpoints before global tour, remaining={}.",
+                       unsafe_viewpoint_rejected,
+                       viewpoints.size());
+    }
     if (viewpoints.empty()) {
         const NativeFrontierStats stats = getNativeFrontierStats();
         const bool no_selectable_frontier_in_box =
@@ -692,6 +822,7 @@ bool EpicExplorationManager::updateNativeGlobalPlan(const rog_map::RobotState &r
         plan.status = no_selectable_frontier_in_box
                       ? ExplorationPlanStatus::TRUE_FINISHED
                       : ExplorationPlanStatus::FRONTIER_EXISTS_NO_VIEWPOINT;
+        plan.failure_type = ExplorationFailureType::NO_VIEWPOINT;
         plan.reason = no_selectable_frontier_in_box
                       ? "native EPIC no selectable frontier in search box"
                       : "native EPIC has frontier clusters but no reachable/selected viewpoint";
@@ -777,31 +908,18 @@ bool EpicExplorationManager::updateNativeGlobalPlan(const rog_map::RobotState &r
             continue;
         }
         if (viewpoint->neighbors_.empty()) {
-            const double direct_timeout = std::max(0.2, graph_timeout);
-            if (!buildDirectNativePath(graph_->odom_node_->center_,
-                                       viewpoint->center_,
-                                       direct_timeout,
-                                       candidate.odom_path,
-                                       candidate.odom_cost)) {
-                ++rejected_no_neighbor;
-                if (candidate.frontier_id >= 0) {
-                    rejected_frontier_ids.insert(candidate.frontier_id);
-                }
-                continue;
+            ++rejected_no_neighbor;
+            if (candidate.frontier_id >= 0) {
+                rejected_frontier_ids.insert(candidate.frontier_id);
             }
-            ++repaired_direct_route;
+            continue;
         }
         if (candidate.odom_path.empty() &&
             !routeBetweenNativeNodes(graph_->odom_node_,
                                      viewpoint,
                                      graph_timeout,
                                      candidate.odom_path,
-                                     candidate.odom_cost) &&
-            !buildDirectNativePath(graph_->odom_node_->center_,
-                                   viewpoint->center_,
-                                   std::max(0.2, graph_timeout),
-                                   candidate.odom_path,
-                                   candidate.odom_cost)) {
+                                     candidate.odom_cost)) {
             ++rejected_odom_route;
             if (candidate.frontier_id >= 0) {
                 rejected_frontier_ids.insert(candidate.frontier_id);
@@ -820,16 +938,11 @@ bool EpicExplorationManager::updateNativeGlobalPlan(const rog_map::RobotState &r
         if (base_node == graph_->odom_node_) {
             candidate.base_path = candidate.odom_path;
             candidate.base_cost = candidate.odom_cost;
-        } else if ((!routeBetweenNativeNodes(base_node,
-                                             viewpoint,
-                                             graph_timeout,
-                                             candidate.base_path,
-                                             candidate.base_cost) &&
-                    !buildDirectNativePath(base_node->center_,
-                                           viewpoint->center_,
-                                           std::max(0.2, graph_timeout),
-                                           candidate.base_path,
-                                           candidate.base_cost)) ||
+        } else if (!routeBetweenNativeNodes(base_node,
+                                            viewpoint,
+                                            graph_timeout,
+                                            candidate.base_path,
+                                            candidate.base_cost) ||
                    candidate.base_path.size() < 2U ||
                    !std::isfinite(candidate.base_cost)) {
             candidate.base_cost =
@@ -853,6 +966,7 @@ bool EpicExplorationManager::updateNativeGlobalPlan(const rog_map::RobotState &r
         }
         graph_->removeNodes(viewpoints);
         plan.status = ExplorationPlanStatus::VIEWPOINT_EXISTS_NO_TOPO_ROUTE;
+        plan.failure_type = ExplorationFailureType::TOPO_ROUTE;
         plan.reason = "native EPIC topo graph could not route to any frontier viewpoint";
         plan.goal.reason = plan.reason;
         if (ros_ptr_) {
@@ -893,10 +1007,7 @@ bool EpicExplorationManager::updateNativeGlobalPlan(const rog_map::RobotState &r
         const double revisit_cost =
                 cfg_.global_guidance.weight_revisit * failPenalty(candidate) +
                 candidate.visited_penalty;
-        const double outward_reward =
-                cfg_.global_guidance.weight_gain * 0.2 *
-                std::min(candidate.odom_cost, kUnreachableCost);
-        return std::max(1.0, path_cost + revisit_cost - outward_reward);
+        return std::max(1.0, path_cost + revisit_cost);
     };
     const int max_candidates =
             std::max(1, cfg_.global_guidance.max_frontiers_in_tour);
@@ -965,6 +1076,7 @@ bool EpicExplorationManager::updateNativeGlobalPlan(const rog_map::RobotState &r
     } else if (!solveNativeAtspTour(cost_matrix, tour_order)) {
         graph_->removeNodes(viewpoints);
         plan.status = ExplorationPlanStatus::VIEWPOINT_EXISTS_NO_TOPO_ROUTE;
+        plan.failure_type = ExplorationFailureType::TOPO_ROUTE;
         plan.reason = "native EPIC global tour solver failed";
         plan.goal.reason = plan.reason;
         visualizeNativeState();
@@ -1002,8 +1114,9 @@ bool EpicExplorationManager::updateNativeGlobalPlan(const rog_map::RobotState &r
         target.yaw = candidate.node->yaw_;
         target.frontier_id = candidate.frontier_id >= 0
                              ? candidate.frontier_id
-                             : plan_seq_ + 1 + static_cast<int>(order_id);
-        target.viewpoint_id = plan_seq_ + 1 + static_cast<int>(order_id);
+                             : -1;
+        target.viewpoint_id =
+                stableNativeViewpointId(target.position, target.frontier_id);
         native_tour_targets_.push_back(target);
     }
     native_tour_cursor_ = 0U;
@@ -1017,6 +1130,7 @@ bool EpicExplorationManager::updateNativeGlobalPlan(const rog_map::RobotState &r
     }
     selected.frontier_id = native_tour_targets_.front().frontier_id;
     const int viewpoint_id = native_tour_targets_.front().viewpoint_id;
+    plan.native_tour_index = 0U;
 
     rebuildGlobalTourFromCursor(pos);
 
@@ -1030,7 +1144,7 @@ bool EpicExplorationManager::updateNativeGlobalPlan(const rog_map::RobotState &r
     route.target_frontier_id = selected.frontier_id;
 
     graph_->removeNodes(viewpoints);
-    const bool goal_node_ready = setNativeGoalFromTourTarget(0U);
+    const bool goal_node_ready = setNativeGoalFromTourTarget(0U, false);
     if (!goal_node_ready ||
         !rebuildRouteToNextGoal(robot, graph_timeout, route)) {
         if (ros_ptr_) {
@@ -1042,6 +1156,7 @@ bool EpicExplorationManager::updateNativeGlobalPlan(const rog_map::RobotState &r
     }
     if (!route.valid) {
         plan.status = ExplorationPlanStatus::VIEWPOINT_EXISTS_NO_TOPO_ROUTE;
+        plan.failure_type = ExplorationFailureType::TOPO_ROUTE;
         plan.reason = "native EPIC failed to rebuild route to selected next goal";
         plan.goal.reason = plan.reason;
         visualizeNativeState();
@@ -1083,10 +1198,34 @@ bool EpicExplorationManager::updateNativeGlobalPlan(const rog_map::RobotState &r
 
 bool EpicExplorationManager::buildNativeGuide(const rog_map::RobotState &robot,
                                               const double current_yaw,
-                                              ExplorationPlan &plan) {
+                                              ExplorationPlan &plan,
+                                              const super_utils::Vec3f *guide_anchor,
+                                              const double guide_anchor_yaw) {
     if (!parallel_path_finder_ || !local_guide_builder_) {
         plan.status = ExplorationPlanStatus::FRONTEND_NOT_READY;
+        plan.failure_type = ExplorationFailureType::FRONTEND_NOT_READY;
         plan.reason = "native EPIC guide builder is not ready";
+        plan.goal.reason = plan.reason;
+        return false;
+    }
+
+    const bool has_guide_anchor =
+            guide_anchor != nullptr && guide_anchor->allFinite();
+    const super_utils::Vec3f guide_start =
+            has_guide_anchor ? *guide_anchor : robot.p;
+    const double guide_yaw =
+            std::isfinite(guide_anchor_yaw) ? guide_anchor_yaw : current_yaw;
+    plan.guide_anchor_valid = has_guide_anchor;
+    plan.guide_anchor = guide_start;
+    plan.guide_anchor_yaw = guide_yaw;
+
+    if (plan.target_frontier_id >= 0 &&
+        !nativeViewpointSafe(plan.final_goal.cast<float>(), nullptr)) {
+        recordUnsafeNativeViewpointFailure(plan.target_frontier_id,
+                                           "selected native viewpoint is unsafe");
+        plan.status = ExplorationPlanStatus::LOCAL_GUIDE_FAILED;
+        plan.failure_type = ExplorationFailureType::LOCAL_SEGMENT_UNSAFE;
+        plan.reason = "selected native viewpoint is unsafe";
         plan.goal.reason = plan.reason;
         return false;
     }
@@ -1094,17 +1233,18 @@ bool EpicExplorationManager::buildNativeGuide(const rog_map::RobotState &robot,
     GlobalRoute local_route = plan.goal.route;
     if (local_route.path.size() < 2U) {
         std::vector<Eigen::Vector3f> native_path;
-        const Eigen::Vector3f start = robot.p.cast<float>();
+        const Eigen::Vector3f start = guide_start.cast<float>();
         const Eigen::Vector3f goal = plan.final_goal.cast<float>();
         const int search_ret = parallel_path_finder_->search(start, goal, native_path, 1.0, true);
         if (search_ret != ParallelBubbleAstar::REACH_END || native_path.size() < 2U) {
             plan.status = ExplorationPlanStatus::VIEWPOINT_EXISTS_NO_TOPO_ROUTE;
+            plan.failure_type = ExplorationFailureType::TOPO_ROUTE;
             plan.reason = "native EPIC failed to connect odom to next viewpoint";
             plan.goal.reason = plan.reason;
             return false;
         }
         local_route.path.clear();
-        appendUnique(local_route.path, robot.p);
+        appendUnique(local_route.path, guide_start);
         for (const auto &p_f : native_path) {
             appendUnique(local_route.path, toVec3d(p_f));
         }
@@ -1118,8 +1258,8 @@ bool EpicExplorationManager::buildNativeGuide(const rog_map::RobotState &robot,
 
     LocalGuideBuilder::Request request;
     request.route = local_route;
-    request.robot_pos = robot.p;
-    request.current_yaw = current_yaw;
+    request.robot_pos = guide_start;
+    request.current_yaw = guide_yaw;
     request.final_goal = plan.final_goal;
     request.final_yaw = plan.final_yaw;
     request.target_frontier_id = plan.target_frontier_id;
@@ -1127,6 +1267,7 @@ bool EpicExplorationManager::buildNativeGuide(const rog_map::RobotState &robot,
     LocalGuideBuilder::Result result;
     if (local_guide_builder_ == nullptr || !local_guide_builder_->build(request, result)) {
         plan.status = ExplorationPlanStatus::LOCAL_GUIDE_FAILED;
+        plan.failure_type = result.failure_type;
         plan.reason = result.reason.empty() ? "native EPIC local guide refinement failed"
                                             : result.reason;
         plan.goal.reason = plan.reason;
@@ -1139,8 +1280,336 @@ bool EpicExplorationManager::buildNativeGuide(const rog_map::RobotState &robot,
     plan.local_goal_is_final = result.local_goal_is_final;
     plan.guide_path = std::move(result.guide_path);
     plan.refined_guide_path_size = plan.guide_path.size();
-    plan.route_progress_length = pathLength(plan.guide_path);
+    plan.route_progress_length = result.route_progress_length;
     return true;
+}
+
+bool EpicExplorationManager::nativeViewpointSafe(const Eigen::Vector3f &position,
+                                                 double *clearance) const {
+    if (clearance != nullptr) {
+        *clearance = std::numeric_limits<double>::infinity();
+    }
+    if (!position.allFinite()) {
+        return false;
+    }
+
+    const super_utils::Vec3f p = toVec3d(position);
+    const double safe_distance =
+            std::max({0.0,
+                      cfg_.viewpoint_manager.safe_distance,
+                      cfg_.local_goal_safe_distance,
+                      parallel_path_finder_ ? static_cast<double>(parallel_path_finder_->safe_distance_) : 0.0});
+    bool checked = false;
+    double min_clearance = std::numeric_limits<double>::infinity();
+
+    if (lio_interface_) {
+        const double lio_clearance = lio_interface_->getDisToOcc(position);
+        min_clearance = std::min(min_clearance, lio_clearance);
+        checked = true;
+        if (!std::isfinite(lio_clearance) || lio_clearance < safe_distance) {
+            if (clearance != nullptr) {
+                *clearance = lio_clearance;
+            }
+            return false;
+        }
+        if (!lio_interface_->IsInBox(position)) {
+            if (clearance != nullptr) {
+                *clearance = lio_clearance;
+            }
+            return false;
+        }
+    }
+
+    if (map_manager_ != nullptr) {
+        const MapBackend backend = cfg_.local_guide.backend;
+        checked = true;
+        const double map_clearance = map_manager_->getClearance(p, backend);
+        min_clearance = std::min(min_clearance, map_clearance);
+        if (!map_manager_->isStateSafe(p, safe_distance, backend)) {
+            if (clearance != nullptr) {
+                *clearance = map_clearance;
+            }
+            return false;
+        }
+    }
+
+    if (clearance != nullptr) {
+        *clearance = min_clearance;
+    }
+    return checked;
+}
+
+std::size_t EpicExplorationManager::filterUnsafeNativeViewpoints(
+        std::vector<TopoNode::Ptr> &viewpoints) {
+    const std::size_t before = viewpoints.size();
+    viewpoints.erase(std::remove_if(viewpoints.begin(),
+                                    viewpoints.end(),
+                                    [&](const TopoNode::Ptr &viewpoint) {
+                                        if (!viewpoint) {
+                                            return true;
+                                        }
+                                        if (nativeViewpointSafe(viewpoint->center_, nullptr)) {
+                                            return false;
+                                        }
+                                        const int frontier_id =
+                                                frontierIdForViewpoint(toVec3d(viewpoint->center_));
+                                        recordUnsafeNativeViewpointFailure(
+                                                frontier_id,
+                                                "generated native viewpoint is unsafe");
+                                        return true;
+                                    }),
+                    viewpoints.end());
+    return before - viewpoints.size();
+}
+
+bool EpicExplorationManager::buildPlanForNativeTourTarget(
+        const std::size_t target_index,
+        const rog_map::RobotState &robot,
+        ExplorationPlan &plan) {
+    plan = ExplorationPlan{};
+    if (target_index >= native_tour_targets_.size()) {
+        plan.status = ExplorationPlanStatus::VIEWPOINT_EXISTS_NO_TOPO_ROUTE;
+        plan.failure_type = ExplorationFailureType::TOPO_ROUTE;
+        plan.reason = "native EPIC tour target index is invalid";
+        plan.goal.reason = plan.reason;
+        return false;
+    }
+
+    const auto target = native_tour_targets_[target_index];
+    if (!target.position.allFinite()) {
+        plan.status = ExplorationPlanStatus::VIEWPOINT_EXISTS_NO_TOPO_ROUTE;
+        plan.failure_type = ExplorationFailureType::TOPO_ROUTE;
+        plan.reason = "native EPIC tour target position is invalid";
+        plan.goal.reason = plan.reason;
+        return false;
+    }
+    if (!nativeViewpointSafe(target.position, nullptr)) {
+        recordUnsafeNativeViewpointFailure(target.frontier_id,
+                                           "retry native viewpoint is unsafe");
+        plan.status = ExplorationPlanStatus::VIEWPOINT_EXISTS_NO_TOPO_ROUTE;
+        plan.failure_type = ExplorationFailureType::TOPO_ROUTE;
+        plan.reason = "native EPIC retry tour target is unsafe";
+        plan.goal.reason = plan.reason;
+        return false;
+    }
+
+    const double graph_timeout =
+            std::max(1.0e-3, cfg_.topo_graph.local_edge_astar_timeout);
+    GlobalRoute route;
+    const bool goal_node_ready = setNativeGoalFromTourTarget(target_index, false);
+    if (goal_node_ready) {
+        rebuildRouteToNextGoal(robot, graph_timeout, route);
+    }
+    if (!route.valid) {
+        super_utils::vec_E<super_utils::Vec3f> direct_path;
+        double direct_cost = std::numeric_limits<double>::infinity();
+        if (buildDirectNativePath(robot.p.cast<float>(),
+                                  target.position,
+                                  std::max(0.2, graph_timeout),
+                                  direct_path,
+                                  direct_cost)) {
+            route.valid = true;
+            route.path = std::move(direct_path);
+            route.cost = direct_cost;
+            route.bubble_astar_edge_count =
+                    static_cast<int>(std::max<std::size_t>(1U, route.path.size() - 1U));
+        }
+    }
+    if (!route.valid) {
+        plan.status = ExplorationPlanStatus::VIEWPOINT_EXISTS_NO_TOPO_ROUTE;
+        plan.failure_type = ExplorationFailureType::TOPO_ROUTE;
+        plan.reason = "native EPIC failed to route to retry tour target";
+        plan.goal.reason = plan.reason;
+        return false;
+    }
+
+    route.target_frontier_id = target.frontier_id;
+    plan.goal.valid = true;
+    plan.goal.type = ExplorationGoalType::FRONTIER_VIEWPOINT;
+    plan.goal.position = toVec3d(target.position);
+    plan.goal.yaw = target.yaw;
+    plan.goal.frontier_id = target.frontier_id;
+    plan.goal.route_node_id = target.viewpoint_id;
+    plan.goal.travel_cost = route.cost;
+    plan.goal.gain = 0.0;
+    plan.goal.route = route;
+    plan.final_goal = plan.goal.position;
+    plan.final_yaw = plan.goal.yaw;
+    plan.target_frontier_id = plan.goal.frontier_id;
+    plan.target_viewpoint_id = plan.goal.route_node_id;
+    plan.native_tour_index = target_index;
+    plan.raw_route_path_size = route.path.size();
+    plan.reason = "native EPIC retry tour target";
+    return true;
+}
+
+bool EpicExplorationManager::buildSafeStartRecoveryPlan(
+        const rog_map::RobotState &robot,
+        const double current_yaw,
+        const std::string &reason,
+        ExplorationPlan &plan,
+        const super_utils::Vec3f *guide_anchor,
+        const double guide_anchor_yaw) const {
+    plan = ExplorationPlan{};
+    const bool has_guide_anchor =
+            guide_anchor != nullptr && guide_anchor->allFinite();
+    const super_utils::Vec3f guide_start =
+            has_guide_anchor ? *guide_anchor : robot.p;
+    const double guide_yaw =
+            std::isfinite(guide_anchor_yaw) ? guide_anchor_yaw : current_yaw;
+    if (map_manager_ == nullptr || !guide_start.allFinite()) {
+        return false;
+    }
+
+    const MapBackend backend = cfg_.local_guide.backend;
+    const double safe_distance =
+            std::min(std::max(0.0, cfg_.local_guide.safe_distance),
+                     std::max(0.05, cfg_.local_goal_safe_distance));
+    const double line_step = std::max(0.05, cfg_.local_guide.line_step);
+    super_utils::Vec3f safe_start;
+    if (!map_manager_->findNearestStateValid(guide_start,
+                                             backend,
+                                             safe_start,
+                                             3.0,
+                                             true)) {
+        return false;
+    }
+
+    const super_utils::Vec3f yaw_dir(std::cos(guide_yaw), std::sin(guide_yaw), 0.0);
+    super_utils::Vec3f escape_dir = safe_start - guide_start;
+    escape_dir.z() = 0.0;
+    if (escape_dir.norm() < 0.1) {
+        escape_dir = yaw_dir;
+    } else {
+        escape_dir.normalize();
+    }
+
+    std::vector<super_utils::Vec3f> dirs;
+    dirs.reserve(6);
+    dirs.push_back(escape_dir);
+    dirs.push_back(yaw_dir);
+    dirs.push_back(-yaw_dir);
+    dirs.emplace_back(-escape_dir.y(), escape_dir.x(), 0.0);
+    dirs.emplace_back(escape_dir.y(), -escape_dir.x(), 0.0);
+    dirs.emplace_back(0.0, 0.0, 1.0);
+
+    super_utils::Vec3f recovery_goal = super_utils::Vec3f::Zero();
+    bool goal_found = false;
+    for (const double step : {0.6, 1.0, 1.5, 2.0}) {
+        for (const auto &dir_raw : dirs) {
+            if (dir_raw.norm() < 1.0e-3) {
+                continue;
+            }
+            const super_utils::Vec3f dir = dir_raw.normalized();
+            const super_utils::Vec3f candidate = safe_start + step * dir;
+            if (!candidate.allFinite()) {
+                continue;
+            }
+            if (map_manager_->isStateSafe(candidate, safe_distance, backend) &&
+                map_manager_->isSegmentSafe(safe_start,
+                                            candidate,
+                                            safe_distance,
+                                            backend,
+                                            line_step)) {
+                recovery_goal = candidate;
+                goal_found = true;
+                break;
+            }
+        }
+        if (goal_found) {
+            break;
+        }
+    }
+    if (!goal_found) {
+        return false;
+    }
+
+    plan.valid = true;
+    plan.safe_start_recovery = true;
+    plan.guide_anchor_valid = has_guide_anchor;
+    plan.guide_anchor = guide_start;
+    plan.guide_anchor_yaw = guide_yaw;
+    plan.status = ExplorationPlanStatus::OK;
+    plan.failure_type = ExplorationFailureType::LOCAL_START_UNSAFE;
+    plan.reason = reason.empty() ? "safe-start recovery" : "safe-start recovery: " + reason;
+    plan.guide_path.clear();
+    appendUnique(plan.guide_path, guide_start);
+    appendUnique(plan.guide_path, safe_start);
+    appendUnique(plan.guide_path, recovery_goal);
+    if (plan.guide_path.size() < 2U) {
+        return false;
+    }
+    plan.next_goal = recovery_goal;
+    plan.next_yaw = std::atan2((recovery_goal - safe_start).y(),
+                               (recovery_goal - safe_start).x());
+    plan.final_goal = recovery_goal;
+    plan.final_yaw = plan.next_yaw;
+    plan.local_goal_is_final = false;
+    plan.target_frontier_id = -1;
+    plan.target_viewpoint_id = -1;
+    plan.refined_guide_path_size = plan.guide_path.size();
+    plan.raw_route_path_size = plan.guide_path.size();
+    plan.route_progress_length = pathLength(plan.guide_path);
+    plan.goal.valid = true;
+    plan.goal.type = ExplorationGoalType::GLOBAL_ROUTE_WAYPOINT;
+    plan.goal.position = recovery_goal;
+    plan.goal.yaw = plan.next_yaw;
+    plan.goal.frontier_id = -1;
+    plan.goal.route_node_id = -1;
+    plan.goal.travel_cost = plan.route_progress_length;
+    plan.goal.route.valid = true;
+    plan.goal.route.path = plan.guide_path;
+    plan.goal.route.cost = plan.route_progress_length;
+    plan.goal.reason = plan.reason;
+    return true;
+}
+
+bool EpicExplorationManager::retryNativeTourCandidates(
+        const rog_map::RobotState &robot,
+        const double current_yaw,
+        const ExplorationPlan &failed_plan,
+        ExplorationPlan &plan,
+        const super_utils::Vec3f *guide_anchor,
+        const double guide_anchor_yaw) {
+    if (native_tour_targets_.empty() ||
+        failed_plan.native_tour_index + 1U >= native_tour_targets_.size()) {
+        return false;
+    }
+
+    recordLocalGuideFailure(failed_plan, failed_plan.reason, false);
+    const std::size_t start_index = failed_plan.native_tour_index + 1U;
+    for (std::size_t idx = start_index; idx < native_tour_targets_.size(); ++idx) {
+        ExplorationPlan candidate_plan;
+        if (!buildPlanForNativeTourTarget(idx, robot, candidate_plan)) {
+            continue;
+        }
+        if (buildNativeGuide(robot,
+                             current_yaw,
+                             candidate_plan,
+                             guide_anchor,
+                             guide_anchor_yaw)) {
+            if (ros_ptr_ && cfg_.print_log) {
+                ros_ptr_->info(" -- [EPIC Native] Retry native tour candidate succeeded index={}/{} frontier_id={}.",
+                               idx + 1U,
+                               native_tour_targets_.size(),
+                               candidate_plan.target_frontier_id);
+            }
+            plan = candidate_plan;
+            return true;
+        }
+        if (isStartUnsafeFailure(candidate_plan) &&
+            buildSafeStartRecoveryPlan(robot,
+                                       current_yaw,
+                                       candidate_plan.reason,
+                                       plan,
+                                       guide_anchor,
+                                       guide_anchor_yaw)) {
+            return true;
+        }
+        recordLocalGuideFailure(candidate_plan, candidate_plan.reason, false);
+    }
+    plan = failed_plan;
+    return false;
 }
 
 void EpicExplorationManager::clearNativeGoalState() {
@@ -1186,6 +1655,7 @@ void EpicExplorationManager::clearNativeTourState() {
     native_tour_cursor_ = 0U;
     active_frontier_id_ = -1;
     active_viewpoint_id_ = -1;
+    active_target_committed_ = false;
     publishNativeTourOrder();
 }
 
@@ -1217,7 +1687,7 @@ bool EpicExplorationManager::advanceNativeTourTarget(const Eigen::Vector3f &star
     }
 
     const std::size_t next_cursor = native_tour_cursor_ + 1U;
-    if (!setNativeGoalFromTourTarget(next_cursor)) {
+    if (!setNativeGoalFromTourTarget(next_cursor, true)) {
         clearNativeTourState();
         return false;
     }
@@ -1228,7 +1698,17 @@ bool EpicExplorationManager::advanceNativeTourTarget(const Eigen::Vector3f &star
     return true;
 }
 
-bool EpicExplorationManager::setNativeGoalFromTourTarget(const std::size_t target_index) {
+int EpicExplorationManager::stableNativeViewpointId(const Eigen::Vector3f &position,
+                                                    const int frontier_id) const {
+    (void)position;
+    // EPIC keeps one selected viewpoint per frontier cluster in the global tour.
+    // Reusing the frontier id prevents every global refresh from looking like a
+    // brand-new local target to the downstream trajectory splicer.
+    return frontier_id >= 0 ? frontier_id : -1;
+}
+
+bool EpicExplorationManager::setNativeGoalFromTourTarget(const std::size_t target_index,
+                                                         const bool commit_active_target) {
     if (target_index >= native_tour_targets_.size()) {
         return false;
     }
@@ -1237,12 +1717,42 @@ bool EpicExplorationManager::setNativeGoalFromTourTarget(const std::size_t targe
         return false;
     }
     native_tour_cursor_ = target_index;
-    active_frontier_id_ = target.frontier_id;
-    active_viewpoint_id_ = target.viewpoint_id;
     if (!updateNativeGoalNode(target.position, target.yaw)) {
         return false;
     }
+    if (commit_active_target) {
+        active_frontier_id_ = target.frontier_id;
+        active_viewpoint_id_ = target.viewpoint_id;
+        active_target_committed_ = true;
+    }
     return true;
+}
+
+void EpicExplorationManager::recordUnsafeNativeViewpointFailure(
+        const int frontier_id,
+        const std::string &reason) {
+    if (frontier_id < 0) {
+        return;
+    }
+    const int fail_count = ++unsafe_viewpoint_fail_count_by_frontier_[frontier_id];
+    local_fail_count_by_frontier_[frontier_id] =
+            std::max(local_fail_count_by_frontier_[frontier_id], fail_count);
+    if (fail_count >= std::max(1, cfg_.max_local_segment_fail_count)) {
+        setNativeFrontierDormant(frontier_id, true);
+        unsafe_viewpoint_fail_count_by_frontier_.erase(frontier_id);
+        local_fail_count_by_frontier_.erase(frontier_id);
+        topo_route_fail_count_by_frontier_.erase(frontier_id);
+        if (frontier_id == active_frontier_id_) {
+            clearNativeTourState();
+            has_last_goal_cost_frame_value_ = false;
+            last_goal_cost_frame_value_ = std::numeric_limits<double>::infinity();
+        }
+        if (ros_ptr_) {
+            ros_ptr_->warn(" -- [EPIC Native] Frontier {} marked dormant after unsafe viewpoint failures: {}.",
+                           frontier_id,
+                           reason);
+        }
+    }
 }
 
 bool EpicExplorationManager::frontierSelectable(const int frontier_id) const {
@@ -1280,6 +1790,23 @@ void EpicExplorationManager::rememberVisitedNativeViewpoint(const Eigen::Vector3
     }
     while (static_cast<int>(visited_native_viewpoints_.size()) > max_count) {
         visited_native_viewpoints_.erase(visited_native_viewpoints_.begin());
+    }
+}
+
+void EpicExplorationManager::rememberVisitedNativeGuidePath(const ExplorationPlan &plan) {
+    if (plan.safe_start_recovery) {
+        return;
+    }
+    for (const auto &p : plan.guide_path) {
+        if (p.allFinite()) {
+            rememberVisitedNativeViewpoint(p.cast<float>());
+        }
+    }
+    if (plan.next_goal.allFinite()) {
+        rememberVisitedNativeViewpoint(plan.next_goal.cast<float>());
+    }
+    if (plan.final_goal.allFinite()) {
+        rememberVisitedNativeViewpoint(plan.final_goal.cast<float>());
     }
 }
 
@@ -1801,9 +2328,9 @@ void EpicExplorationManager::publishNativeTourOrder() const {
     init_marker(path_marker, "tour_order_path", 0);
     path_marker.type = visualization_msgs::Marker::LINE_STRIP;
     path_marker.scale.x = 0.18;
-    path_marker.color.r = 0.02F;
-    path_marker.color.g = 0.02F;
-    path_marker.color.b = 0.02F;
+    path_marker.color.r = 1.0F;
+    path_marker.color.g = 0.0F;
+    path_marker.color.b = 0.0F;
     path_marker.color.a = 0.95F;
     path_marker.points.reserve(global_tour_.size());
     for (const auto &p : global_tour_) {
@@ -1839,9 +2366,9 @@ void EpicExplorationManager::publishNativeTourOrder() const {
     init_marker(start_label, "tour_order_labels", 0);
     start_label.type = visualization_msgs::Marker::TEXT_VIEW_FACING;
     start_label.scale.z = 0.65;
-    start_label.color.r = 0.02F;
-    start_label.color.g = 0.02F;
-    start_label.color.b = 0.02F;
+    start_label.color.r = 1.0F;
+    start_label.color.g = 0.0F;
+    start_label.color.b = 0.0F;
     start_label.color.a = 1.0F;
     start_label.pose.position.x = global_tour_.front().x();
     start_label.pose.position.y = global_tour_.front().y();
@@ -1854,9 +2381,9 @@ void EpicExplorationManager::publishNativeTourOrder() const {
         init_marker(label, "tour_order_labels", static_cast<int>(i));
         label.type = visualization_msgs::Marker::TEXT_VIEW_FACING;
         label.scale.z = 0.75;
-        label.color.r = 0.02F;
-        label.color.g = 0.02F;
-        label.color.b = 0.02F;
+        label.color.r = 1.0F;
+        label.color.g = 0.0F;
+        label.color.b = 0.0F;
         label.color.a = 1.0F;
         label.pose.position.x = global_tour_[i].x();
         label.pose.position.y = global_tour_[i].y();
@@ -1928,9 +2455,9 @@ void EpicExplorationManager::publishExplorationBox() const {
     box_marker.type = visualization_msgs::Marker::LINE_LIST;
     box_marker.pose.orientation.w = 1.0;
     box_marker.scale.x = 0.12;
-    box_marker.color.r = 0.05F;
-    box_marker.color.g = 0.05F;
-    box_marker.color.b = 0.05F;
+    box_marker.color.r = 1.0F;
+    box_marker.color.g = 1.0F;
+    box_marker.color.b = 1.0F;
     box_marker.color.a = 0.55F;
     add_edge(box_marker, 0, 0, 0, 1, 0, 0);
     add_edge(box_marker, 1, 0, 0, 1, 1, 0);
@@ -1958,9 +2485,9 @@ void EpicExplorationManager::publishExplorationBox() const {
     label.pose.position.y = box_min.y();
     label.pose.position.z = box_max.z() + 0.5F;
     label.scale.z = 0.8;
-    label.color.r = 0.05F;
-    label.color.g = 0.05F;
-    label.color.b = 0.05F;
+    label.color.r = 1.0F;
+    label.color.g = 1.0F;
+    label.color.b = 1.0F;
     label.color.a = 0.8F;
     label.text = "exploration box";
     markers.markers.push_back(label);
@@ -1977,6 +2504,7 @@ void EpicExplorationManager::onGoalReached(const ExplorationGoal &goal,
         setNativeFrontierDormant(goal.frontier_id, false);
         local_fail_count_by_frontier_.erase(goal.frontier_id);
         topo_route_fail_count_by_frontier_.erase(goal.frontier_id);
+        unsafe_viewpoint_fail_count_by_frontier_.erase(goal.frontier_id);
         has_last_goal_cost_frame_value_ = false;
         last_goal_cost_frame_value_ = std::numeric_limits<double>::infinity();
         if (advanceNativeTourTarget(goal.position.cast<float>())) {
@@ -2008,6 +2536,7 @@ void EpicExplorationManager::onGoalFailed(const ExplorationGoal &goal,
         setNativeFrontierDormant(goal.frontier_id, true);
         local_fail_count_by_frontier_.erase(goal.frontier_id);
         topo_route_fail_count_by_frontier_.erase(goal.frontier_id);
+        unsafe_viewpoint_fail_count_by_frontier_.erase(goal.frontier_id);
         clearNativeTourState();
         has_last_goal_cost_frame_value_ = false;
         last_goal_cost_frame_value_ = std::numeric_limits<double>::infinity();
@@ -2019,9 +2548,59 @@ void EpicExplorationManager::onLocalSegmentCommitted(const ExplorationPlan &plan
     (void)stamp;
     std::lock_guard<std::mutex> lock(mutex_);
     last_plan_ = plan;
+    rememberVisitedNativeGuidePath(plan);
+    if (!plan.safe_start_recovery &&
+        plan.target_frontier_id >= 0 &&
+        plan.native_tour_index < native_tour_targets_.size()) {
+        setNativeGoalFromTourTarget(plan.native_tour_index, true);
+    }
     if (plan.target_frontier_id >= 0) {
         local_fail_count_by_frontier_[plan.target_frontier_id] = 0;
         topo_route_fail_count_by_frontier_.erase(plan.target_frontier_id);
+    }
+}
+
+void EpicExplorationManager::recordLocalGuideFailure(const ExplorationPlan &plan,
+                                                     const std::string &reason,
+                                                     const bool clear_active_target) {
+    if (isLocalGuideStartUnsafe(reason) ||
+        plan.failure_type == ExplorationFailureType::LOCAL_START_UNSAFE) {
+        if (plan.target_frontier_id >= 0) {
+            recordUnsafeNativeViewpointFailure(plan.target_frontier_id,
+                                               "local guide start is unsafe");
+        }
+        if (clear_active_target || plan.target_frontier_id == active_frontier_id_) {
+            clearNativeTourState();
+            has_last_goal_cost_frame_value_ = false;
+            last_goal_cost_frame_value_ = std::numeric_limits<double>::infinity();
+        }
+        if (ros_ptr_) {
+            ros_ptr_->warn(" -- [EPIC Native] Local guide start is unsafe; use safe-start recovery/global refresh without marking frontier unreachable.");
+        }
+        return;
+    }
+    if (plan.target_frontier_id < 0) {
+        if (clear_active_target) {
+            clearNativeTourState();
+            has_last_goal_cost_frame_value_ = false;
+            last_goal_cost_frame_value_ = std::numeric_limits<double>::infinity();
+        }
+        return;
+    }
+    int &fail_count = local_fail_count_by_frontier_[plan.target_frontier_id];
+    fail_count = std::min(fail_count + 1,
+                          std::max(1, cfg_.max_local_segment_fail_count));
+    if (fail_count >= std::max(1, cfg_.max_local_segment_fail_count)) {
+        if (ros_ptr_) {
+            ros_ptr_->warn(" -- [EPIC Native] Frontier {} deferred after {} local segment failures; keep reachable for future global refresh.",
+                           plan.target_frontier_id,
+                           fail_count);
+        }
+        if (clear_active_target || plan.target_frontier_id == active_frontier_id_) {
+            clearNativeTourState();
+            has_last_goal_cost_frame_value_ = false;
+            last_goal_cost_frame_value_ = std::numeric_limits<double>::infinity();
+        }
     }
 }
 
@@ -2036,41 +2615,7 @@ void EpicExplorationManager::onLocalSegmentFailed(const ExplorationPlan &plan,
                        plan.target_viewpoint_id,
                        reason);
     }
-    if (isLocalGuideStartUnsafe(reason)) {
-        if (plan.target_frontier_id >= 0) {
-            local_fail_count_by_frontier_.erase(plan.target_frontier_id);
-        }
-        if (plan.target_frontier_id == active_frontier_id_) {
-            clearNativeTourState();
-            has_last_goal_cost_frame_value_ = false;
-            last_goal_cost_frame_value_ = std::numeric_limits<double>::infinity();
-        }
-        if (ros_ptr_) {
-            ros_ptr_->warn(" -- [EPIC Native] Local guide start is unsafe; refresh native tour without marking frontier unreachable.");
-        }
-        return;
-    }
-    if (plan.target_frontier_id < 0) {
-        clearNativeTourState();
-        has_last_goal_cost_frame_value_ = false;
-        last_goal_cost_frame_value_ = std::numeric_limits<double>::infinity();
-        return;
-    }
-    int &fail_count = local_fail_count_by_frontier_[plan.target_frontier_id];
-    fail_count = std::min(fail_count + 1,
-                          std::max(1, cfg_.max_local_segment_fail_count));
-    if (fail_count >= std::max(1, cfg_.max_local_segment_fail_count)) {
-        if (ros_ptr_) {
-            ros_ptr_->warn(" -- [EPIC Native] Frontier {} deferred after {} local segment failures; keep reachable for future global refresh.",
-                           plan.target_frontier_id,
-                           fail_count);
-        }
-        if (plan.target_frontier_id == active_frontier_id_) {
-            clearNativeTourState();
-            has_last_goal_cost_frame_value_ = false;
-            last_goal_cost_frame_value_ = std::numeric_limits<double>::infinity();
-        }
-    }
+    recordLocalGuideFailure(plan, reason, true);
 }
 
 void EpicExplorationManager::onLowGain(const ExplorationGoal &goal,
@@ -2106,6 +2651,7 @@ void EpicExplorationManager::reset() {
     last_native_result_ = -1;
     active_frontier_id_ = -1;
     active_viewpoint_id_ = -1;
+    active_target_committed_ = false;
     plan_seq_ = 0;
     has_last_goal_cost_frame_value_ = false;
     last_goal_cost_frame_value_ = std::numeric_limits<double>::infinity();
@@ -2115,6 +2661,7 @@ void EpicExplorationManager::reset() {
     native_tour_cursor_ = 0U;
     local_fail_count_by_frontier_.clear();
     topo_route_fail_count_by_frontier_.clear();
+    unsafe_viewpoint_fail_count_by_frontier_.clear();
     last_plan_ = ExplorationPlan{};
 }
 
@@ -2124,6 +2671,7 @@ void EpicExplorationManager::resetRuntimeState() {
     last_native_result_ = -1;
     active_frontier_id_ = -1;
     active_viewpoint_id_ = -1;
+    active_target_committed_ = false;
     plan_seq_ = 0;
     has_last_goal_cost_frame_value_ = false;
     last_goal_cost_frame_value_ = std::numeric_limits<double>::infinity();
@@ -2133,6 +2681,7 @@ void EpicExplorationManager::resetRuntimeState() {
     native_tour_cursor_ = 0U;
     local_fail_count_by_frontier_.clear();
     topo_route_fail_count_by_frontier_.clear();
+    unsafe_viewpoint_fail_count_by_frontier_.clear();
     has_observation_ = false;
     has_last_sensor_position_ = false;
     observation_update_count_ = 0;

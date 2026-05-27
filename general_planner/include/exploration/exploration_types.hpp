@@ -48,6 +48,18 @@ enum class ExplorationPlanStatus {
     FRONTEND_NOT_READY
 };
 
+enum class ExplorationFailureType {
+    NONE,
+    WAIT_OBSERVATION,
+    NO_VIEWPOINT,
+    TOPO_ROUTE,
+    LOCAL_START_UNSAFE,
+    LOCAL_SEGMENT_UNSAFE,
+    LOCAL_REPAIR_FAILED,
+    BACKEND_FAILED,
+    FRONTEND_NOT_READY
+};
+
 enum class TopoNodeType {
     ODOM,
     HISTORY_ODOM,
@@ -219,12 +231,18 @@ struct ExplorationPlan {
     double final_yaw{0.0};
     bool local_goal_is_final{false};
     bool goal_switched{false};
+    bool safe_start_recovery{false};
+    bool guide_anchor_valid{false};
+    super_utils::Vec3f guide_anchor{super_utils::Vec3f::Zero()};
+    double guide_anchor_yaw{0.0};
     int target_frontier_id{-1};
     int target_viewpoint_id{-1};
+    std::size_t native_tour_index{0U};
     double route_progress_length{0.0};
     int local_fail_count{0};
     std::size_t raw_route_path_size{0U};
     std::size_t refined_guide_path_size{0U};
+    ExplorationFailureType failure_type{ExplorationFailureType::NONE};
 
     ExplorationGoal goal;
     std::string reason;
@@ -260,6 +278,37 @@ inline bool explorationPlanStatusRecoverable(const ExplorationPlanStatus status)
            status == ExplorationPlanStatus::VIEWPOINT_EXISTS_NO_TOPO_ROUTE ||
            status == ExplorationPlanStatus::LOCAL_GUIDE_FAILED ||
            status == ExplorationPlanStatus::FRONTEND_NOT_READY;
+}
+
+inline const char *explorationFailureTypeName(const ExplorationFailureType type) {
+    switch (type) {
+        case ExplorationFailureType::NONE:
+            return "NONE";
+        case ExplorationFailureType::WAIT_OBSERVATION:
+            return "WAIT_OBSERVATION";
+        case ExplorationFailureType::NO_VIEWPOINT:
+            return "NO_VIEWPOINT";
+        case ExplorationFailureType::TOPO_ROUTE:
+            return "TOPO_ROUTE";
+        case ExplorationFailureType::LOCAL_START_UNSAFE:
+            return "LOCAL_START_UNSAFE";
+        case ExplorationFailureType::LOCAL_SEGMENT_UNSAFE:
+            return "LOCAL_SEGMENT_UNSAFE";
+        case ExplorationFailureType::LOCAL_REPAIR_FAILED:
+            return "LOCAL_REPAIR_FAILED";
+        case ExplorationFailureType::BACKEND_FAILED:
+            return "BACKEND_FAILED";
+        case ExplorationFailureType::FRONTEND_NOT_READY:
+            return "FRONTEND_NOT_READY";
+        default:
+            return "UNKNOWN";
+    }
+}
+
+inline bool explorationFailureIsLocalGuide(const ExplorationFailureType type) {
+    return type == ExplorationFailureType::LOCAL_START_UNSAFE ||
+           type == ExplorationFailureType::LOCAL_SEGMENT_UNSAFE ||
+           type == ExplorationFailureType::LOCAL_REPAIR_FAILED;
 }
 
 inline const char *goalTypeName(const ExplorationGoalType type) {
