@@ -1,8 +1,12 @@
 /build
 /devel
+/bags
 
 **/.vscode
 src/Localization/FAST_LIO/PCD
 *.dae
 *.csv
 *.pcd
+*.bag
+__pycache__/
+*.pyc

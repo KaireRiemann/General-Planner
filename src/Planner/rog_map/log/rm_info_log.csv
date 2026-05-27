@@ -14,8 +14,8 @@
 	map_sliding_en: 1
 	fix_map_origin:   0   0 1.5
 	visualization_range: 15 15  4
-	virtual_ceil_height: 2.9
-	virtual_ground_height: -0.1
+	virtual_ceil_height: 4.9
+	virtual_ground_height: 0.3
 	batch_update_size: 1
 	frontier_extraction_en: 0
 [InfMap]

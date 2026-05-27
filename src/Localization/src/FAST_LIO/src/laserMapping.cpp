@@ -56,7 +56,7 @@
 #include <tf/transform_datatypes.h>
 #include <tf/transform_broadcaster.h>
 #include <geometry_msgs/Vector3.h>
-#include <livox_ros_driver/CustomMsg.h>
+#include <livox_ros_driver2/CustomMsg.h>
 #include "preprocess.h"
 #include <ikd-Tree/ikd_Tree.h>
 #include <std_msgs/Empty.h>
@@ -357,7 +357,7 @@ void standard_pcl_cbk(const sensor_msgs::PointCloud2::ConstPtr &msg)
 
 double timediff_lidar_wrt_imu = 0.0;
 bool   timediff_set_flg = false;
-void livox_pcl_cbk(const livox_ros_driver::CustomMsg::ConstPtr &msg) 
+void livox_pcl_cbk(const livox_ros_driver2::CustomMsg::ConstPtr &msg) 
 {
     mtx_buffer.lock();
     double preprocess_start_time = omp_get_wtime();
@@ -383,7 +383,7 @@ void livox_pcl_cbk(const livox_ros_driver::CustomMsg::ConstPtr &msg)
 
     // wmywmy transform point into virtual lidar frame
     Eigen::Vector3d temp1, temp2;
-    livox_ros_driver::CustomMsg::Ptr new_msg(new livox_ros_driver::CustomMsg(*msg));
+    livox_ros_driver2::CustomMsg::Ptr new_msg(new livox_ros_driver2::CustomMsg(*msg));
     for (int i=0; i<new_msg->points.size(); i++)
     {
         temp1[0] = new_msg->points[i].x;

@@ -24,11 +24,14 @@ set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${ADDITIONAL_CXX_FLAG}")
 find_package(catkin REQUIRED COMPONENTS
   roscpp
   rospy
+  geometry_msgs
+  nav_msgs
   # cmake_utils
 )
 
 
 find_package(Eigen3 REQUIRED) # try to find manually installed eigen (Usually in /usr/local with provided FindEigen3.cmake)
+set(EIGEN3_INCLUDE_DIRS ${EIGEN3_INCLUDE_DIR})
 
 ###################################
 ## catkin specific configuration ##
@@ -36,8 +39,8 @@ find_package(Eigen3 REQUIRED) # try to find manually installed eigen (Usually in
 catkin_package(
   INCLUDE_DIRS include
   # LIBRARIES uav_utils
-  CATKIN_DEPENDS roscpp rospy
-  # DEPENDS system_lib
+  CATKIN_DEPENDS roscpp rospy geometry_msgs nav_msgs
+  DEPENDS EIGEN3
 )
 
 ###########
@@ -47,7 +50,7 @@ catkin_package(
 
 include_directories(
   include
-  ${EIGEN_INCLUDE_DIRS}
+  ${EIGEN3_INCLUDE_DIRS}
   ${catkin_INCLUDE_DIRS}
 )
 
@@ -93,7 +96,7 @@ install(DIRECTORY include/${PROJECT_NAME}/
 ## Add gtest based cpp test target and link libraries
 catkin_add_gtest(${PROJECT_NAME}-test src/${PROJECT_NAME}_test.cpp)
 if(TARGET ${PROJECT_NAME}-test)
-  target_link_libraries(${PROJECT_NAME}-test ${PROJECT_NAME})
+  target_link_libraries(${PROJECT_NAME}-test ${catkin_LIBRARIES})
 endif()
 
 ## Add folders to be run by python nosetests

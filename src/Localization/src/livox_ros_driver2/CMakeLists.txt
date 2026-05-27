@@ -95,6 +95,7 @@ find_library(LIVOX_LIDAR_SDK_LIBRARY  liblivox_lidar_sdk_static.a    /usr/local/
 link_directories(${PCL_LIBRARY_DIRS})
 add_definitions(${PCL_DEFINITIONS})
 
+if(LIVOX_LIDAR_SDK_LIBRARY)
 #---------------------------------------------------------------------------------------
 # generate excutable and add libraries
 #---------------------------------------------------------------------------------------
@@ -173,6 +174,9 @@ install(TARGETS ${PROJECT_NAME}_node
   LIBRARY DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
   RUNTIME DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
+else()
+  message(WARNING "Livox SDK2 static library not found; skipping ${PROJECT_NAME}_node. Message generation remains enabled.")
+endif()
 
 install(DIRECTORY launch_ROS1/
   DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}/launch_ROS1

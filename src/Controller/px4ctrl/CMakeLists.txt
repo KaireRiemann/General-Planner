@@ -9,8 +9,6 @@ ADD_COMPILE_OPTIONS(-std=c++14 )
 set(CMAKE_CXX_FLAGS_RELEASE "-O3 -Wall -g")
 
 
-find_package(PCL REQUIRED)
-
 find_package(catkin REQUIRED COMPONENTS
   roscpp
   rospy
@@ -48,7 +46,6 @@ add_dependencies(px4ctrl_node quadrotor_msgs)
 
 target_link_libraries(px4ctrl_node
   ${catkin_LIBRARIES}
-  ${PCL_INCLUDE_DIRS}
 )
 
 catkin_install_python(PROGRAMS thrust_calibrate_scrips/thrust_calibrate.py
