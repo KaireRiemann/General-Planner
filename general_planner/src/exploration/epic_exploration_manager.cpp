@@ -678,6 +678,7 @@ bool EpicExplorationManager::buildPlanFromActiveNativeGoal(
             setNativeFrontierDormant(active_frontier_id, false);
             local_fail_count_by_frontier_.erase(active_frontier_id);
             topo_route_fail_count_by_frontier_.erase(active_frontier_id);
+            transient_unreachable_retry_wt_by_frontier_.erase(active_frontier_id);
         }
         if (advanceNativeTourTarget(robot.p.cast<float>())) {
             active_goal = native_tour_targets_[native_tour_cursor_].position;
@@ -747,6 +748,7 @@ bool EpicExplorationManager::buildPlanFromActiveNativeGoal(
             setNativeFrontierDormant(active_frontier_id, false);
             local_fail_count_by_frontier_.erase(active_frontier_id);
             topo_route_fail_count_by_frontier_.erase(active_frontier_id);
+            transient_unreachable_retry_wt_by_frontier_.erase(active_frontier_id);
         }
         if (advanceNativeTourTarget(robot.p.cast<float>())) {
             if (ros_ptr_ && cfg_.print_log) {
@@ -805,7 +807,21 @@ bool EpicExplorationManager::updateNativeGlobalPlan(const rog_map::RobotState &r
 
     std::vector<TopoNode::Ptr> viewpoints;
     Eigen::Vector3f center_pose = pos;
+    const double now = ros_ptr_ ? ros_ptr_->getSimTime() : last_observation_stamp_;
+    const NativeFrontierStats stats_before_viewpoints = getNativeFrontierStats();
+    const bool revive_all_transient =
+            stats_before_viewpoints.selectable > 0 &&
+            stats_before_viewpoints.reachable == 0 &&
+            stats_before_viewpoints.unreachable > 0;
+    const int revived_transient =
+            reviveTransientNativeFrontiers(revive_all_transient, now);
+    if (revived_transient > 0 && ros_ptr_ && cfg_.print_log) {
+        ros_ptr_->warn(" -- [EPIC Native] Revived {} transient unreachable frontiers before viewpoint generation (force={}).",
+                       revived_transient,
+                       revive_all_transient);
+    }
     frontier_manager_->generateTSPViewpoints(center_pose, viewpoints);
+    rememberTransientNativeUnreachableFrontiers(now);
     const std::size_t unsafe_viewpoint_rejected =
             filterUnsafeNativeViewpoints(viewpoints);
     if (unsafe_viewpoint_rejected > 0U && ros_ptr_ && cfg_.print_log) {
@@ -816,7 +832,7 @@ bool EpicExplorationManager::updateNativeGlobalPlan(const rog_map::RobotState &r
     if (viewpoints.empty()) {
         const NativeFrontierStats stats = getNativeFrontierStats();
         const bool no_selectable_frontier_in_box =
-                stats.in_search_box == 0 || stats.selectable == 0;
+                (stats.in_search_box == 0 || stats.selectable == 0);
         exploration_finished_ = no_selectable_frontier_in_box;
         plan.no_frontier = no_selectable_frontier_in_box;
         plan.status = no_selectable_frontier_in_box
@@ -828,7 +844,7 @@ bool EpicExplorationManager::updateNativeGlobalPlan(const rog_map::RobotState &r
                       : "native EPIC has frontier clusters but no reachable/selected viewpoint";
         plan.goal.reason = plan.reason;
         if (ros_ptr_) {
-            ros_ptr_->warn(" -- [EPIC Native] No viewpoint selected: status={}, finished={}, total_clusters={}, in_box={}, selectable={}, reachable={}, dormant={}, unreachable={}.",
+            ros_ptr_->warn(" -- [EPIC Native] No viewpoint selected: status={}, finished={}, native_total={}, in_box={}, selectable={}, reachable={}, dormant={}, unreachable={}.",
                            explorationPlanStatusName(plan.status),
                            exploration_finished_,
                            stats.total,
@@ -907,20 +923,35 @@ bool EpicExplorationManager::updateNativeGlobalPlan(const rog_map::RobotState &r
             ++rejected_no_neighbor;
             continue;
         }
-        if (viewpoint->neighbors_.empty()) {
-            ++rejected_no_neighbor;
-            if (candidate.frontier_id >= 0) {
-                rejected_frontier_ids.insert(candidate.frontier_id);
-            }
-            continue;
+        bool odom_route_ready = false;
+        if (!viewpoint->neighbors_.empty()) {
+            odom_route_ready =
+                    routeBetweenNativeNodes(graph_->odom_node_,
+                                            viewpoint,
+                                            graph_timeout,
+                                            candidate.odom_path,
+                                            candidate.odom_cost);
         }
-        if (candidate.odom_path.empty() &&
-            !routeBetweenNativeNodes(graph_->odom_node_,
-                                     viewpoint,
-                                     graph_timeout,
-                                     candidate.odom_path,
-                                     candidate.odom_cost)) {
-            ++rejected_odom_route;
+        if (!odom_route_ready) {
+            super_utils::vec_E<super_utils::Vec3f> direct_path;
+            double direct_cost = std::numeric_limits<double>::infinity();
+            if (buildDirectNativePath(graph_->odom_node_->center_,
+                                      viewpoint->center_,
+                                      std::max(0.2, graph_timeout),
+                                      direct_path,
+                                      direct_cost)) {
+                candidate.odom_path = std::move(direct_path);
+                candidate.odom_cost = direct_cost;
+                odom_route_ready = true;
+                ++repaired_direct_route;
+            }
+        }
+        if (!odom_route_ready) {
+            if (viewpoint->neighbors_.empty()) {
+                ++rejected_no_neighbor;
+            } else {
+                ++rejected_odom_route;
+            }
             if (candidate.frontier_id >= 0) {
                 rejected_frontier_ids.insert(candidate.frontier_id);
             }
@@ -938,28 +969,46 @@ bool EpicExplorationManager::updateNativeGlobalPlan(const rog_map::RobotState &r
         if (base_node == graph_->odom_node_) {
             candidate.base_path = candidate.odom_path;
             candidate.base_cost = candidate.odom_cost;
-        } else if (!routeBetweenNativeNodes(base_node,
+        } else {
+            const bool base_route_ready =
+                    routeBetweenNativeNodes(base_node,
                                             viewpoint,
                                             graph_timeout,
                                             candidate.base_path,
-                                            candidate.base_cost) ||
-                   candidate.base_path.size() < 2U ||
-                   !std::isfinite(candidate.base_cost)) {
-            candidate.base_cost =
-                    kUnreachableCost +
-                    static_cast<double>((base_node->center_ - viewpoint->center_).norm());
+                                            candidate.base_cost) &&
+                    candidate.base_path.size() >= 2U &&
+                    std::isfinite(candidate.base_cost);
+            if (!base_route_ready) {
+                super_utils::vec_E<super_utils::Vec3f> direct_path;
+                double direct_cost = std::numeric_limits<double>::infinity();
+                if (buildDirectNativePath(base_node->center_,
+                                          viewpoint->center_,
+                                          std::max(0.2, graph_timeout),
+                                          direct_path,
+                                          direct_cost)) {
+                    candidate.base_path = std::move(direct_path);
+                    candidate.base_cost = direct_cost;
+                    ++repaired_direct_route;
+                } else {
+                    candidate.base_cost =
+                            kUnreachableCost +
+                            static_cast<double>((base_node->center_ - viewpoint->center_).norm());
+                }
+            }
         }
         candidate.visited_penalty = visitedNativeViewpointPenalty(viewpoint->center_);
         candidates.push_back(std::move(candidate));
     }
 
     if (candidates.empty()) {
-        std::vector<int> newly_dormant;
+        std::vector<int> newly_deferred;
         for (const int frontier_id : rejected_frontier_ids) {
             const int fail_count = ++topo_route_fail_count_by_frontier_[frontier_id];
             if (fail_count >= std::max(1, cfg_.max_local_segment_fail_count)) {
-                setNativeFrontierDormant(frontier_id, true);
-                newly_dormant.push_back(frontier_id);
+                setNativeFrontierTemporarilyUnreachable(
+                        frontier_id,
+                        "topo graph could not route to generated viewpoint");
+                newly_deferred.push_back(frontier_id);
                 topo_route_fail_count_by_frontier_.erase(frontier_id);
                 local_fail_count_by_frontier_.erase(frontier_id);
             }
@@ -970,14 +1019,14 @@ bool EpicExplorationManager::updateNativeGlobalPlan(const rog_map::RobotState &r
         plan.reason = "native EPIC topo graph could not route to any frontier viewpoint";
         plan.goal.reason = plan.reason;
         if (ros_ptr_) {
-            ros_ptr_->warn(" -- [EPIC Native] Viewpoint route filtering rejected all candidates: viewpoints={}, no_neighbor={}, odom_route_failed={}, bad_path_or_cost={}, direct_repaired={}, affected_frontiers={}, newly_dormant={}.",
+            ros_ptr_->warn(" -- [EPIC Native] Viewpoint route filtering rejected all candidates: viewpoints={}, no_neighbor={}, odom_route_failed={}, bad_path_or_cost={}, direct_repaired={}, affected_frontiers={}, newly_deferred={}.",
                            viewpoints.size(),
                            rejected_no_neighbor,
                            rejected_odom_route,
                            rejected_bad_cost,
                            repaired_direct_route,
                            rejected_frontier_ids.size(),
-                           newly_dormant.size());
+                           newly_deferred.size());
         }
         visualizeNativeState();
         return false;
@@ -1738,7 +1787,7 @@ void EpicExplorationManager::recordUnsafeNativeViewpointFailure(
     local_fail_count_by_frontier_[frontier_id] =
             std::max(local_fail_count_by_frontier_[frontier_id], fail_count);
     if (fail_count >= std::max(1, cfg_.max_local_segment_fail_count)) {
-        setNativeFrontierDormant(frontier_id, true);
+        setNativeFrontierTemporarilyUnreachable(frontier_id, reason);
         unsafe_viewpoint_fail_count_by_frontier_.erase(frontier_id);
         local_fail_count_by_frontier_.erase(frontier_id);
         topo_route_fail_count_by_frontier_.erase(frontier_id);
@@ -1748,22 +1797,129 @@ void EpicExplorationManager::recordUnsafeNativeViewpointFailure(
             last_goal_cost_frame_value_ = std::numeric_limits<double>::infinity();
         }
         if (ros_ptr_) {
-            ros_ptr_->warn(" -- [EPIC Native] Frontier {} marked dormant after unsafe viewpoint failures: {}.",
+            ros_ptr_->warn(" -- [EPIC Native] Frontier {} temporarily deferred after unsafe viewpoint failures: {}.",
                            frontier_id,
                            reason);
         }
     }
 }
 
+void EpicExplorationManager::setNativeFrontierTemporarilyUnreachable(
+        const int frontier_id,
+        const std::string &reason) {
+    if (!frontier_manager_ || frontier_id < 0) {
+        return;
+    }
+
+    const double now = ros_ptr_ ? ros_ptr_->getSimTime() : last_observation_stamp_;
+    const double retry_delay = transientUnreachableRetryDelay();
+    bool updated = false;
+    for (auto &cluster : frontier_manager_->cluster_list_) {
+        if (!cluster || cluster->id_ != frontier_id) {
+            continue;
+        }
+        if (!cluster->is_dormant_) {
+            cluster->is_reachable_ = false;
+            transient_unreachable_retry_wt_by_frontier_[frontier_id] =
+                    now + retry_delay;
+            updated = true;
+        }
+        break;
+    }
+
+    if (updated && ros_ptr_ && cfg_.print_log) {
+        ros_ptr_->warn(" -- [EPIC Native] Frontier {} marked transient unreachable for {:.2f}s: {}.",
+                       frontier_id,
+                       retry_delay,
+                       reason);
+    }
+}
+
+int EpicExplorationManager::reviveTransientNativeFrontiers(const bool force,
+                                                           const double stamp) {
+    if (!frontier_manager_) {
+        return 0;
+    }
+
+    const double now = stamp > 0.0
+                       ? stamp
+                       : (ros_ptr_ ? ros_ptr_->getSimTime() : last_observation_stamp_);
+    int revived = 0;
+    for (auto &cluster : frontier_manager_->cluster_list_) {
+        if (!cluster || cluster->is_dormant_ || cluster->is_reachable_) {
+            continue;
+        }
+        const auto retry_it =
+                transient_unreachable_retry_wt_by_frontier_.find(cluster->id_);
+        const bool retry_due =
+                retry_it == transient_unreachable_retry_wt_by_frontier_.end() ||
+                now >= retry_it->second;
+        if (!force && !retry_due) {
+            continue;
+        }
+        cluster->is_reachable_ = true;
+        transient_unreachable_retry_wt_by_frontier_.erase(cluster->id_);
+        ++revived;
+    }
+    return revived;
+}
+
+void EpicExplorationManager::rememberTransientNativeUnreachableFrontiers(
+        const double stamp) {
+    if (!frontier_manager_) {
+        return;
+    }
+
+    const double now = stamp > 0.0
+                       ? stamp
+                       : (ros_ptr_ ? ros_ptr_->getSimTime() : last_observation_stamp_);
+    const double retry_delay = transientUnreachableRetryDelay();
+    std::unordered_set<int> live_ids;
+    for (const auto &cluster : frontier_manager_->cluster_list_) {
+        if (!cluster) {
+            continue;
+        }
+        live_ids.insert(cluster->id_);
+        if (cluster->is_dormant_ || cluster->is_reachable_) {
+            continue;
+        }
+        if (transient_unreachable_retry_wt_by_frontier_.count(cluster->id_) == 0U) {
+            transient_unreachable_retry_wt_by_frontier_[cluster->id_] =
+                    now + retry_delay;
+        }
+    }
+
+    for (auto it = transient_unreachable_retry_wt_by_frontier_.begin();
+         it != transient_unreachable_retry_wt_by_frontier_.end();) {
+        if (live_ids.count(it->first) == 0U) {
+            it = transient_unreachable_retry_wt_by_frontier_.erase(it);
+        } else {
+            ++it;
+        }
+    }
+}
+
+double EpicExplorationManager::transientUnreachableRetryDelay() const {
+    const double dormant_hint =
+            std::max(0.0, cfg_.frontier_database.dormant_time);
+    if (dormant_hint <= 1.0e-3) {
+        return 0.8;
+    }
+    return std::clamp(0.25 * dormant_hint, 0.5, 2.0);
+}
+
 bool EpicExplorationManager::frontierSelectable(const int frontier_id) const {
-    if (frontier_id < 0 || !frontier_manager_) {
+    if (frontier_id < 0) {
+        return true;
+    }
+    if (!frontier_manager_) {
         return true;
     }
     for (const auto &cluster : frontier_manager_->cluster_list_) {
         if (!cluster || cluster->id_ != frontier_id) {
             continue;
         }
-        return !cluster->is_dormant_ && cluster->is_reachable_;
+        return !cluster->is_dormant_;
     }
     return true;
 }
@@ -2266,13 +2422,23 @@ void EpicExplorationManager::setNativeFrontierDormant(const int frontier_id,
 }
 
 void EpicExplorationManager::updateNativeFrontiersFromLatestCloud(const double stamp) {
-    (void)stamp;
     if (!frontier_manager_ || !graph_ || !lio_interface_ || !lio_interface_->ld_) {
+        return;
+    }
+    const std::size_t lio_cloud_size =
+            lio_interface_->ld_->lidar_cloud_.points.size();
+    if (lio_cloud_size == 0U) {
         return;
     }
     std::vector<ClusterInfo::Ptr> new_clusters;
     std::vector<int> cluster_removed;
     frontier_manager_->updateFrontierClusters(new_clusters, cluster_removed);
+    for (const int removed_id : cluster_removed) {
+        local_fail_count_by_frontier_.erase(removed_id);
+        topo_route_fail_count_by_frontier_.erase(removed_id);
+        unsafe_viewpoint_fail_count_by_frontier_.erase(removed_id);
+        transient_unreachable_retry_wt_by_frontier_.erase(removed_id);
+    }
     const int odom_id = graph_->history_odom_nodes_.empty()
                         ? -1
                         : static_cast<int>(graph_->history_odom_nodes_.size()) - 1;
@@ -2280,6 +2446,27 @@ void EpicExplorationManager::updateNativeFrontiersFromLatestCloud(const double s
         if (cluster) {
             cluster->odom_id_ = odom_id;
         }
+    }
+    const double now = stamp > 0.0
+                       ? stamp
+                       : (ros_ptr_ ? ros_ptr_->getSimTime() : last_observation_stamp_);
+    if (ros_ptr_ && cfg_.print_log &&
+        (last_frontier_flow_log_stamp_ < 0.0 ||
+         now - last_frontier_flow_log_stamp_ > 1.0)) {
+        const NativeFrontierStats stats = getNativeFrontierStats();
+        ros_ptr_->info(" -- [EPIC Native] Frontier flow: lio_cloud={}, new_clusters={}, removed_clusters={}, total={}, in_box={}, selectable={}, reachable={}, dormant={}, unreachable={}, odom_id={}, history_odom={}.",
+                       lio_cloud_size,
+                       new_clusters.size(),
+                       cluster_removed.size(),
+                       stats.total,
+                       stats.in_search_box,
+                       stats.selectable,
+                       stats.reachable,
+                       stats.dormant,
+                       stats.unreachable,
+                       odom_id,
+                       graph_->history_odom_nodes_.size());
+        last_frontier_flow_log_stamp_ = now;
     }
 }
 
@@ -2505,6 +2692,7 @@ void EpicExplorationManager::onGoalReached(const ExplorationGoal &goal,
         local_fail_count_by_frontier_.erase(goal.frontier_id);
         topo_route_fail_count_by_frontier_.erase(goal.frontier_id);
         unsafe_viewpoint_fail_count_by_frontier_.erase(goal.frontier_id);
+        transient_unreachable_retry_wt_by_frontier_.erase(goal.frontier_id);
         has_last_goal_cost_frame_value_ = false;
         last_goal_cost_frame_value_ = std::numeric_limits<double>::infinity();
         if (advanceNativeTourTarget(goal.position.cast<float>())) {
@@ -2533,7 +2721,8 @@ void EpicExplorationManager::onGoalFailed(const ExplorationGoal &goal,
                        reason);
     }
     if (goal.frontier_id == active_frontier_id_) {
-        setNativeFrontierDormant(goal.frontier_id, true);
+        setNativeFrontierTemporarilyUnreachable(goal.frontier_id,
+                                                "committed goal failed: " + reason);
         local_fail_count_by_frontier_.erase(goal.frontier_id);
         topo_route_fail_count_by_frontier_.erase(goal.frontier_id);
         unsafe_viewpoint_fail_count_by_frontier_.erase(goal.frontier_id);
@@ -2662,6 +2851,7 @@ void EpicExplorationManager::reset() {
     local_fail_count_by_frontier_.clear();
     topo_route_fail_count_by_frontier_.clear();
     unsafe_viewpoint_fail_count_by_frontier_.clear();
+    transient_unreachable_retry_wt_by_frontier_.clear();
     last_plan_ = ExplorationPlan{};
 }
 
@@ -2682,11 +2872,13 @@ void EpicExplorationManager::resetRuntimeState() {
     local_fail_count_by_frontier_.clear();
     topo_route_fail_count_by_frontier_.clear();
     unsafe_viewpoint_fail_count_by_frontier_.clear();
+    transient_unreachable_retry_wt_by_frontier_.clear();
     has_observation_ = false;
     has_last_sensor_position_ = false;
     observation_update_count_ = 0;
     last_observation_cloud_size_ = 0;
     last_empty_cloud_log_stamp_ = -1.0;
+    last_frontier_flow_log_stamp_ = -1.0;
     travel_distance_ = 0.0;
     last_observation_stamp_ = -1.0;
     last_plan_ = ExplorationPlan{};

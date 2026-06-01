@@ -142,6 +142,12 @@ namespace fsm {
             } else if (machine_state_ != FOLLOW_TRAJ) {
                 ChangeState("ReplanTimerCallback", FOLLOW_TRAJ);
             }
+        } else if (result.status == general_planner::TaskStatus::RUNNING &&
+                   ret_code == NO_NEED &&
+                   explorationMode()) {
+            if (machine_state_ != FOLLOW_TRAJ) {
+                ChangeState("ReplanTimerCallback", GENERATE_TRAJ);
+            }
         } else if (ret_code == NEW_TRAJ) {
             ChangeState("ReplanTimerCallback", GENERATE_TRAJ);
         } else if (ret_code == NO_NEED && (trackingMode() || trackingPerchingMode() || fullCycleMode())) {
@@ -278,6 +284,11 @@ namespace fsm {
                     publishPolyTraj();
                     ChangeState("MainFsmCallback",
                                 trackingMode() && planned_tracking_static ? HOLD_TRACKING : FOLLOW_TRAJ);
+                } else if (result.status == general_planner::TaskStatus::RUNNING &&
+                           retcode == NO_NEED &&
+                           explorationMode()) {
+                    plan_from_rest_ = true;
+                    finish_plan = false;
                 } else if (retcode == NO_NEED && trackingMode()) {
                     plan_from_rest_ = true;
                     finish_plan = false;

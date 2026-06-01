@@ -11,6 +11,7 @@ enum class MapBackend
 {
     ROG,
     POINT_CLOUD,
+    EPIC_LIO,
     LOCAL_EDT,
     HYBRID
 };
@@ -31,6 +32,11 @@ inline MapBackend mapBackendFromString(const std::string &name)
         normalized == "pc" || normalized == "pcl") {
         return MapBackend::POINT_CLOUD;
     }
+    if (normalized == "epic_lio" || normalized == "epic_lio_map" ||
+        normalized == "lio" || normalized == "lio_map" ||
+        normalized == "epic") {
+        return MapBackend::EPIC_LIO;
+    }
     if (normalized == "hybrid") {
         return MapBackend::HYBRID;
     }
@@ -45,6 +51,8 @@ inline std::string mapBackendToString(const MapBackend backend)
     switch (backend) {
         case MapBackend::POINT_CLOUD:
             return "point_cloud";
+        case MapBackend::EPIC_LIO:
+            return "epic_lio";
         case MapBackend::HYBRID:
             return "hybrid";
         case MapBackend::LOCAL_EDT:

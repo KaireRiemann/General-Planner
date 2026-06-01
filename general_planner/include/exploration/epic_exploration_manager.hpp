@@ -322,6 +322,12 @@ private:
                                      bool commit_active_target = true);
     void recordUnsafeNativeViewpointFailure(int frontier_id,
                                             const std::string &reason);
+    void setNativeFrontierTemporarilyUnreachable(int frontier_id,
+                                                 const std::string &reason);
+    int reviveTransientNativeFrontiers(bool force,
+                                       double stamp);
+    void rememberTransientNativeUnreachableFrontiers(double stamp);
+    double transientUnreachableRetryDelay() const;
     bool frontierSelectable(int frontier_id) const;
     void rememberVisitedNativeViewpoint(const Eigen::Vector3f &position);
     void rememberVisitedNativeGuidePath(const ExplorationPlan &plan);
@@ -395,12 +401,14 @@ private:
     std::unordered_map<int, int> local_fail_count_by_frontier_;
     std::unordered_map<int, int> topo_route_fail_count_by_frontier_;
     std::unordered_map<int, int> unsafe_viewpoint_fail_count_by_frontier_;
+    std::unordered_map<int, double> transient_unreachable_retry_wt_by_frontier_;
     super_utils::Vec3f last_sensor_position_{super_utils::Vec3f::Zero()};
     double last_observation_stamp_{-1.0};
     bool has_last_sensor_position_{false};
     int observation_update_count_{0};
     std::size_t last_observation_cloud_size_{0};
     double last_empty_cloud_log_stamp_{-1.0};
+    double last_frontier_flow_log_stamp_{-1.0};
     double travel_distance_{0.0};
     ExplorationPlan last_plan_;
 };

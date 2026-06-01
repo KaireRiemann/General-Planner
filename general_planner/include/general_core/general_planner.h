@@ -668,7 +668,9 @@ namespace general_planner {
                     cfg_.exploration_enable && cfg_.exploration_use_epic_frontend;
             const bool update_rog_map =
                     !use_epic_exploration_maps || cfg_.exploration_update_rog_map;
-            map_manager_->updateMapWithGlobal(cloud, pose, frame, stamp, update_rog_map);
+            if (update_rog_map) {
+                map_manager_->updateMapWithGlobal(cloud, pose, frame, stamp, true);
+            }
             if (exploration_manager_ != nullptr) {
                 if (!robot.rcv) {
                     robot.rcv = true;

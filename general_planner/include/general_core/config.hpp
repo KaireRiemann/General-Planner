@@ -940,6 +940,11 @@ namespace general_planner {
                                  backend_name, backend_name);
                 exploration_local_guide_backend = mapBackendFromString(backend_name);
             }
+            if (exploration_use_epic_frontend) {
+                astar_backend = MapBackend::EPIC_LIO;
+                corridor_backend = MapBackend::EPIC_LIO;
+                exploration_local_guide_backend = MapBackend::EPIC_LIO;
+            }
             loader.LoadParam("general_planner/exploration/stuck/repeated_goal_threshold",
                              exploration_stuck_repeated_goal_threshold, 3);
             loader.LoadParam("general_planner/exploration/stuck/repeated_goal_distance",

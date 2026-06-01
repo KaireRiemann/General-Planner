@@ -60,6 +60,19 @@ TaskTickResult ExplorationTask::tick(const TaskContext &ctx) {
                                       ? "exploration finished"
                                       : update.reason);
                 }
+                if (!update.updated) {
+                    exploration::ExplorationGoal warmed_goal;
+                    if (planner_->getLatestExplorationGoal(warmed_goal)) {
+                        changeStage(PLAN_LOCAL);
+                        continue;
+                    }
+                    changeStage(UPDATE_GLOBAL);
+                    return makeResult(TaskStatus::RUNNING,
+                                      super_utils::NO_NEED,
+                                      update.reason.empty()
+                                      ? "waiting for reachable exploration guide"
+                                      : update.reason);
+                }
                 changeStage(PLAN_LOCAL);
                 continue;
             }
@@ -227,7 +240,7 @@ TaskTickResult ExplorationTask::handlePlanResult(const RET_CODE ret,
                               "exploration keeps current local trajectory");
         }
         from_rest_ = true;
-        changeStage(PLAN_LOCAL);
+        changeStage(UPDATE_GLOBAL);
         return makeResult(TaskStatus::RUNNING,
                           super_utils::NO_NEED,
                           "waiting for reachable exploration guide");

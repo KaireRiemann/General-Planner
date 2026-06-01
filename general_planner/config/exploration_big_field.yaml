@@ -8,7 +8,7 @@ fsm:
   exploration_goal_trigger_topic: "/move_base_simple/goal"
   click_goal_en: true
   click_goal_topic: "/goal"
-  click_height: 1.5
+  click_height: 2.0
   click_yaw_en: false
   tracking_target_odom_topic: "/tracking/target_odom"
   tracking_target_prediction_topic: "/tracking/target_prediction"
@@ -32,7 +32,7 @@ general_planner:
   frontend_in_known_free: false
   goal_yaw_en: true
   goal_vel_en: false
-  corridor_bound_dis: 1.0
+  corridor_bound_dis: 4.0
   corridor_line_max_length: 1.2
   safe_corridor_line_max_length: 5.0
   iris_iter_num: 2
@@ -52,20 +52,20 @@ general_planner:
   over_wall_min_progress_gain: 0.5
   over_wall_forward_ratio: 0.9
   unknown_goal_reveal_en: true
-  yaw_dot_max: 3.0
+  yaw_dot_max: 4.0
   yaw_mode: 1
   mpc_horizon: 15
 
   exploration:
     enable: true
-    frontend_type: "epic_original"
-    use_epic_frontend: true
+    frontend_type: "global_map"
+    use_epic_frontend: false
     cloud_frame: "WORLD"
-    update_rog_map: false
-    backup_traj_enable: false
-    backend_fallback_enable: false
-    astar_backend: "epic_lio"
-    corridor_backend: "epic_lio"
+    update_rog_map: true
+    backup_traj_enable: true
+    backend_fallback_enable: true
+    astar_backend: "rog"
+    corridor_backend: "rog"
     tsp_dir: "/tmp/general_planner_tsp"
     print_log: true
     epic_lio:
@@ -73,21 +73,21 @@ general_planner:
       voxel_leaf_size: 0.12
       publish_map: true
       publish_map_period: 0.5
-      self_filter_radius: 0.8
+      self_filter_radius: 0.0
     lidar_perception:
-      lidar_pitch: 40.0
-      fov_up: 52.0
-      fov_down: -7.0
-      fov_viewpoint_up: 48.0
-      fov_viewpoint_down: -5.0
-      max_ray_length: 16.0
+      lidar_pitch: 0.0
+      fov_up: 89.0
+      fov_down: -89.0
+      fov_viewpoint_up: 89.0
+      fov_viewpoint_down: -89.0
+      max_ray_length: 55.0
     observation_map:
       resolution: 0.4
       min_distance: 0.2
       well_observed_distance: 5.0
-      max_distance: 15.0
-      good_force_trust_length: 4.5
-      good_trust_length: 12.0
+      max_distance: 55.0
+      good_force_trust_length: 6.0
+      good_trust_length: 55.0
       good_direction_score: 0.6
       cloud_downsample_step: 1
       max_points_per_update: 18000
@@ -99,7 +99,7 @@ general_planner:
       frontier_cluster_max_size: 8.0
       frontier_cluster_direction_radius: 0.0
       frontier_cluster_minimum_point_num: 10
-      bbox_min: [ -70.1, -206.0, -7.1 ]
+      bbox_min: [ -48.1, -206.0, -7.1 ]
       bbox_max: [ 176.0, 124.0, 34.1 ]
     frontier_database:
       association_distance: 1.5
@@ -136,17 +136,18 @@ general_planner:
       max_cells_per_gain_eval: 320
       line_of_sight_step: 0.25
       min_gain: 0.5
-      use_local_map_safety: false
+      use_local_map_safety: true
       cluster_by_visibility_sphere: true
-      use_topo_reachability_filter: true
-      max_clusters: 18
+      use_topo_reachability_filter: false
+      max_clusters: 10
       cluster_connectivity_scale: 1.0
-      topo_reachability_timeout: 0.06
+      topo_reachability_timeout: 0.0003
+      reachability_only_raycast: true
       epic_yaw_bins: 8
     topo_graph:
-      history_node_min_distance: 1.0
+      history_node_min_distance: 3.0
       connect_radius: 6.5
-      local_edge_astar_timeout: 0.01
+      local_edge_astar_timeout: 0.002
       global_edge_max_length: 10.0
       max_history_nodes: 220
       use_local_astar_for_edges: false
@@ -154,7 +155,7 @@ general_planner:
       global_line_safe_distance: 0.3
       global_line_step: 0.35
       use_parallel_bubble_astar_for_edges: true
-      bubble_astar_resolution: 0.4
+      bubble_astar_resolution: 0.2
       bubble_astar_safe_distance: 0.6
       bubble_astar_max_nodes: 1000000
       use_epic_region_bubble_graph: true
@@ -185,7 +186,7 @@ general_planner:
       use_two_opt: true
       keep_current_target: true
       use_lkh: true
-      lkh_fallback_to_two_opt: false
+      lkh_fallback_to_two_opt: true
       tsp_dir: "/tmp/general_planner_tsp"
       tsp_problem_name: "general_planner_spiral0"
       lkh_executable: ""
@@ -200,21 +201,22 @@ general_planner:
     runtime:
       local_goal_lookahead: 10.0
       local_goal_min_distance: 1.0
-      final_goal_radius: 0.7
+      final_goal_radius: 1.0
       route_progress_min: 0.8
       max_local_segment_fail_count: 3
+      defer_local_segment_failures: false
       keep_active_target: true
       switch_score_ratio: 1.25
-      global_update_dt: 0.6
-      replan_time_after_traj_start: 0.7
-      replan_time_before_traj_end: 0.8
+      global_update_dt: 0.2
+      replan_time_after_traj_start: 0.5
+      replan_time_before_traj_end: 0.5
       safety_check_dt: 0.15
       safety_check_horizon: 2.0
       stop_traj_time: 0.2
       collision_replan_time: 0.5
     local_guide:
-      backend: "epic_lio"
-      shortcut_enable: true
+      backend: "rog"
+      shortcut_enable: false
       astar_repair_enable: true
       unknown_as_occupied: false
       planning_horizon: 10.0
@@ -222,6 +224,10 @@ general_planner:
       safe_distance: 0.45
       start_safe_distance: 0.20
       line_step: 0.20
+      allow_short_safe_prefix: true
+      short_safe_prefix_min_length: 0.10
+      raw_fallback_enable: true
+      precheck_enable: true
     stuck:
       repeated_goal_threshold: 50
       repeated_goal_distance: 0.6
@@ -232,12 +238,14 @@ general_planner:
     enable: true
     resolution: 0.3
     raycast_step: 0.2
-    max_range: 22.0
+    max_range: 60.0
     min_range: 0.2
     bbox_min: [ -48.1, -206.0, -7.1 ]
     bbox_max: [ 176.0, 124.0, 34.1 ]
     occupied_hit_threshold: 2
     free_miss_threshold: 1
+    maintain_frontiers: true
+    use_26_neighbor_frontier: false
     update_min_interval: 0.15
     cloud_downsample_step: 1
     max_points_per_update: 16000
@@ -264,7 +272,7 @@ traj_opt:
     max_vel: 4.0
     max_acc: 4.0
     max_jerk: 80.0
-    max_omg: 2.0
+    max_omg: 4.0
     max_acc_thr: 20.0
     min_acc_thr: 6.0
     penna_margin: 0.05
@@ -322,7 +330,7 @@ traj_opt:
     penna_thr: 1.0e+5
 
   flatness:
-    mass: 1.64
+    mass: 1.9
     dh: 0.35
     dv: 0.35
     cp: 0.001
@@ -343,7 +351,7 @@ rog_map:
   unk_inflation_en: false
   unk_inflation_step: 1
   map_size: [ 50, 50, 26 ]
-  fix_map_origin: [ 0, 0, 1.5 ]
+  fix_map_origin: [ 5.0, 0.0, 2.0 ]
   frontier_extraction_en: false
 
   virtual_ceil_height: 24.5

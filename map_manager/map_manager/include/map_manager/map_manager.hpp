@@ -64,6 +64,8 @@ public:
         switch (backend) {
             case MapBackend::POINT_CLOUD:
                 return hasPointCloudBackend();
+            case MapBackend::EPIC_LIO:
+                return hasEpicLioMap();
             case MapBackend::LOCAL_EDT:
                 return hasESDF();
             case MapBackend::HYBRID:
@@ -96,7 +98,7 @@ public:
 
     bool hasPointCloudBackend() const
     {
-        return pointcloud_map_ != nullptr || hasEpicLioMap();
+        return pointcloud_map_ != nullptr;
     }
 
     void setEpicLioMap(const std::shared_ptr<fast_planner::LIOInterface> &lio);
@@ -464,6 +466,8 @@ public:
         switch (backend) {
             case MapBackend::POINT_CLOUD:
                 return isPointCloudStateValid(pos);
+            case MapBackend::EPIC_LIO:
+                return isEpicLioStateValid(pos);
             case MapBackend::LOCAL_EDT:
                 return hasESDF() && getESDFDistance(pos) > 0.0;
             case MapBackend::HYBRID:
@@ -497,6 +501,8 @@ public:
         switch (backend) {
             case MapBackend::POINT_CLOUD:
                 return isPointCloudLineFree(start_pt, end_pt);
+            case MapBackend::EPIC_LIO:
+                return isEpicLioLineFree(start_pt, end_pt);
             case MapBackend::LOCAL_EDT:
                 return isSegmentSafe(start_pt, end_pt, 0.0, MapBackend::LOCAL_EDT, getResolution());
             case MapBackend::HYBRID:
@@ -519,6 +525,8 @@ public:
         switch (backend) {
             case MapBackend::POINT_CLOUD:
                 return isPointCloudLineFree(start_pt, end_pt, max_dis);
+            case MapBackend::EPIC_LIO:
+                return isEpicLioLineFree(start_pt, end_pt, max_dis);
             case MapBackend::LOCAL_EDT:
                 return isSegmentSafe(start_pt, end_pt, max_dis, MapBackend::LOCAL_EDT, getResolution());
             case MapBackend::HYBRID:
@@ -541,6 +549,8 @@ public:
         switch (backend) {
             case MapBackend::POINT_CLOUD:
                 return isPointCloudLineFree(start_pt, end_pt);
+            case MapBackend::EPIC_LIO:
+                return isEpicLioLineFree(start_pt, end_pt);
             case MapBackend::LOCAL_EDT:
                 return isSegmentSafe(start_pt, end_pt, 0.0, MapBackend::LOCAL_EDT, getResolution());
             case MapBackend::HYBRID:
@@ -564,6 +574,9 @@ public:
         switch (backend) {
             case MapBackend::POINT_CLOUD:
                 getPointCloudObstaclePointsInBox(box_min, box_max, out_points);
+                return;
+            case MapBackend::EPIC_LIO:
+                getEpicLioObstaclePointsInBox(box_min, box_max, out_points);
                 return;
             case MapBackend::LOCAL_EDT:
                 if (map_ != nullptr) {
@@ -600,6 +613,8 @@ public:
         switch (backend) {
             case MapBackend::POINT_CLOUD:
                 return getPointCloudGridType(pos);
+            case MapBackend::EPIC_LIO:
+                return getEpicLioGridType(pos);
             case MapBackend::LOCAL_EDT:
                 if (!hasESDF()) {
                     return rog_map::GridType::UNKNOWN;
@@ -637,6 +652,8 @@ public:
         switch (backend) {
             case MapBackend::POINT_CLOUD:
                 return findNearestPointCloudStateValid(start_pos, nearest_pt, max_dis);
+            case MapBackend::EPIC_LIO:
+                return findNearestEpicLioStateValid(start_pos, nearest_pt, max_dis);
             case MapBackend::LOCAL_EDT:
                 return findNearestRogStateValid(start_pos, nearest_pt, max_dis, use_inf_map);
             case MapBackend::HYBRID:
@@ -658,6 +675,8 @@ public:
                 if (pointcloud_map_ != nullptr) {
                     return pos.allFinite() && pointcloud_map_->isInMap(pos.cast<float>());
                 }
+                return false;
+            case MapBackend::EPIC_LIO:
                 return pos.allFinite() && hasEpicLioMap() && epicIsInMap(pos.cast<float>());
             case MapBackend::LOCAL_EDT:
                 return map_ != nullptr && map_->insideLocalMap(pos);
@@ -715,7 +734,11 @@ public:
         }
         switch (backend) {
             case MapBackend::POINT_CLOUD:
-                return getDisToOcc(pos.cast<float>());
+                return pointcloud_map_ != nullptr
+                       ? pointcloud_map_->getDisToOcc(pos.cast<float>())
+                       : 0.0;
+            case MapBackend::EPIC_LIO:
+                return hasEpicLioMap() ? getEpicDisToOcc(pos.cast<float>()) : 0.0;
             case MapBackend::LOCAL_EDT:
                 return hasESDF() ? getESDFDistance(pos) : 0.0;
             case MapBackend::HYBRID: {
@@ -1027,18 +1050,7 @@ private:
     rog_map::GridType getPointCloudGridType(const rog_map::Vec3f &pos) const
     {
         if (pointcloud_map_ == nullptr || !pos.allFinite()) {
-            if (!hasEpicLioMap() || !pos.allFinite()) {
-                return rog_map::GridType::OUT_OF_MAP;
-            }
-            const Eigen::Vector3f pos_f = pos.cast<float>();
-            if (!epicIsInMap(pos_f) || !epicIsInBox(pos_f)) {
-                return rog_map::GridType::OUT_OF_MAP;
-            }
-            const double dist = getEpicDisToOcc(pos_f);
-            if (!std::isfinite(dist) || dist <= 1.0e-3) {
-                return rog_map::GridType::OCCUPIED;
-            }
-            return rog_map::GridType::KNOWN_FREE;
+            return rog_map::GridType::OUT_OF_MAP;
         }
         const Eigen::Vector3f pos_f = pos.cast<float>();
         if (!pointcloud_map_->isInMap(pos_f) || !pointcloud_map_->isInBox(pos_f)) {
@@ -1051,16 +1063,37 @@ private:
         return rog_map::GridType::KNOWN_FREE;
     }
 
+    rog_map::GridType getEpicLioGridType(const rog_map::Vec3f &pos) const
+    {
+        if (!hasEpicLioMap() || !pos.allFinite()) {
+            return rog_map::GridType::OUT_OF_MAP;
+        }
+        const Eigen::Vector3f pos_f = pos.cast<float>();
+        if (!epicIsInMap(pos_f) || !epicIsInBox(pos_f)) {
+            return rog_map::GridType::OUT_OF_MAP;
+        }
+        const double dist = getEpicDisToOcc(pos_f);
+        if (!std::isfinite(dist) || dist <= 1.0e-3) {
+            return rog_map::GridType::OCCUPIED;
+        }
+        return rog_map::GridType::KNOWN_FREE;
+    }
+
     bool isPointCloudStateValid(const rog_map::Vec3f &pos) const
     {
         return getPointCloudGridType(pos) == rog_map::GridType::KNOWN_FREE;
+    }
+
+    bool isEpicLioStateValid(const rog_map::Vec3f &pos) const
+    {
+        return getEpicLioGridType(pos) == rog_map::GridType::KNOWN_FREE;
     }
 
     bool isPointCloudLineFree(const rog_map::Vec3f &start_pt,
                               const rog_map::Vec3f &end_pt,
                               const double max_dis = -1.0) const
     {
-        if ((pointcloud_map_ == nullptr && !hasEpicLioMap()) ||
+        if (pointcloud_map_ == nullptr ||
             !start_pt.allFinite() ||
             !end_pt.allFinite()) {
             return false;
@@ -1081,12 +1114,37 @@ private:
         return true;
     }
 
+    bool isEpicLioLineFree(const rog_map::Vec3f &start_pt,
+                           const rog_map::Vec3f &end_pt,
+                           const double max_dis = -1.0) const
+    {
+        if (!hasEpicLioMap() ||
+            !start_pt.allFinite() ||
+            !end_pt.allFinite()) {
+            return false;
+        }
+        const rog_map::Vec3f delta = end_pt - start_pt;
+        const double length = delta.norm();
+        if (max_dis > 0.0 && length > max_dis) {
+            return false;
+        }
+        const double step = map_ != nullptr ? std::max(0.05, map_->getResolution()) : 0.10;
+        const int samples = std::max(1, static_cast<int>(std::ceil(length / step)));
+        for (int i = 0; i <= samples; ++i) {
+            const double ratio = static_cast<double>(i) / static_cast<double>(samples);
+            if (!isEpicLioStateValid(start_pt + ratio * delta)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
     void getPointCloudObstaclePointsInBox(const rog_map::Vec3f &box_min,
                                           const rog_map::Vec3f &box_max,
                                           rog_map::vec_E<rog_map::Vec3f> &out_points) const
     {
         out_points.clear();
-        if ((pointcloud_map_ == nullptr && !hasEpicLioMap()) ||
+        if (pointcloud_map_ == nullptr ||
             !box_min.allFinite() ||
             !box_max.allFinite()) {
             return;
@@ -1095,6 +1153,24 @@ private:
         boxSearchPointCloud(box_min.cast<float>(), box_max.cast<float>(), pc_points);
         out_points.reserve(pc_points.size());
         for (const auto &p : pc_points) {
+            out_points.emplace_back(p.x, p.y, p.z);
+        }
+    }
+
+    void getEpicLioObstaclePointsInBox(const rog_map::Vec3f &box_min,
+                                       const rog_map::Vec3f &box_max,
+                                       rog_map::vec_E<rog_map::Vec3f> &out_points) const
+    {
+        out_points.clear();
+        if (!hasEpicLioMap() ||
+            !box_min.allFinite() ||
+            !box_max.allFinite()) {
+            return;
+        }
+        PointCloudMap::PointVector lio_points;
+        epicBoxSearch(box_min.cast<float>(), box_max.cast<float>(), lio_points);
+        out_points.reserve(lio_points.size());
+        for (const auto &p : lio_points) {
             out_points.emplace_back(p.x, p.y, p.z);
         }
     }
@@ -1125,6 +1201,17 @@ private:
     {
         return findNearestSampledStateValid(start_pos,
                                             MapBackend::POINT_CLOUD,
+                                            nearest_pt,
+                                            max_dis,
+                                            true);
+    }
+
+    bool findNearestEpicLioStateValid(const rog_map::Vec3f &start_pos,
+                                      rog_map::Vec3f &nearest_pt,
+                                      const double &max_dis) const
+    {
+        return findNearestSampledStateValid(start_pos,
+                                            MapBackend::EPIC_LIO,
                                             nearest_pt,
                                             max_dis,
                                             true);

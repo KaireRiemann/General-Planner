@@ -16,8 +16,10 @@ Panels:
         - /Frontend1/ExpSfc1/Namespaces1
         - /Frontend1/FreeSfc1
         - /Frontend1/FreeSfc1/Namespaces1
+        - /Backend1
         - /Backend1/BackupTraj1
         - /Backend1/BackupTraj1/Namespaces1
+        - /Backend1/Path1
         - /TrajOpt1/BackUp1/Namespaces1
         - /TrajOpt1/Exp1/Namespaces1
         - /Debug1/Astar1
@@ -304,6 +306,30 @@ Visualization Manager:
           Queue Size: 100
           Value: true
         - Class: rviz/MarkerArray
+          Enabled: true
+          Marker Topic: /fsm_node/visualization/exploration/frontiers
+          Name: GlobalMapFrontiers
+          Namespaces:
+            {}
+          Queue Size: 100
+          Value: true
+        - Class: rviz/MarkerArray
+          Enabled: true
+          Marker Topic: /fsm_node/visualization/exploration/viewpoints
+          Name: GlobalMapViewpoints
+          Namespaces:
+            {}
+          Queue Size: 100
+          Value: true
+        - Class: rviz/MarkerArray
+          Enabled: true
+          Marker Topic: /fsm_node/visualization/exploration/global_tour
+          Name: GlobalMapTour
+          Namespaces:
+            {}
+          Queue Size: 100
+          Value: true
+        - Class: rviz/MarkerArray
           Enabled: false
           Marker Topic: /fsm_node/sf_cluster_marker
           Name: FrontierClusters
@@ -440,7 +466,8 @@ Visualization Manager:
           Marker Topic: /fsm_node/visualization/frontend_path
           Name: Astar
           Namespaces:
-            {}
+            guide_path: true
+            guide_path_line: true
           Queue Size: 100
           Value: true
         - Class: rviz/MarkerArray
@@ -448,7 +475,8 @@ Visualization Manager:
           Marker Topic: /fsm_node/visualization/goal
           Name: Goal
           Namespaces:
-            {}
+            goal: true
+            goal_line: true
           Queue Size: 100
           Value: true
         - Class: rviz/MarkerArray
@@ -484,7 +512,8 @@ Visualization Manager:
           Marker Topic: /fsm_node/visualization/exp_traj
           Name: ESDFTraj
           Namespaces:
-            {}
+            exp_traj: true
+            exp_traj_waypoints: true
           Queue Size: 100
           Value: true
         - Class: rviz/MarkerArray
@@ -506,7 +535,7 @@ Visualization Manager:
         - Alpha: 1
           Buffer Length: 1
           Class: rviz/Path
-          Color: 245; 121; 0
+          Color: 255; 255; 255
           Enabled: true
           Head Diameter: 0.30000001192092896
           Head Length: 0.20000000298023224
@@ -602,7 +631,7 @@ Visualization Manager:
   Views:
     Current:
       Class: rviz/Orbit
-      Distance: 100.66856384277344
+      Distance: 116.17900085449219
       Enable Stereo Rendering:
         Stereo Eye Separation: 0.05999999865889549
         Stereo Focal Distance: 1
@@ -610,17 +639,17 @@ Visualization Manager:
         Value: false
       Field of View: 0.7853981852531433
       Focal Point:
-        X: -1.1784305572509766
-        Y: 0.15695683658123016
-        Z: -22.362445831298828
+        X: 22.40135383605957
+        Y: -8.251651763916016
+        Z: -39.211421966552734
       Focal Shape Fixed Size: false
       Focal Shape Size: 0.05000000074505806
       Invert Z Axis: false
       Name: Current View
       Near Clip Distance: 0.009999999776482582
-      Pitch: 0.919796347618103
+      Pitch: 1.2047966718673706
       Target Frame: world
-      Yaw: 0.05176667869091034
+      Yaw: 5.84995174407959
     Saved: ~
 Window Geometry:
   Displays:

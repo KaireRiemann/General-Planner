@@ -751,8 +751,11 @@ namespace general_planner {
         const bool exploration_backend_active =
                 active_exploration_guide_ && active_exploration_plan_.valid;
         const MapBackend start_backend =
-                exploration_backend_active ? cfg_.exploration_local_guide_backend
-                                           : MapBackend::ROG;
+                exploration_backend_active
+                ? (cfg_.exploration_use_epic_frontend
+                   ? MapBackend::EPIC_LIO
+                   : cfg_.exploration_local_guide_backend)
+                : MapBackend::ROG;
         Vec3f local_star_pt;
         if (!map_manager_->findNearestStateValid(robot_state_.p, start_backend, local_star_pt, 3.0, true)) {
             ros_ptr_->error(
@@ -1221,6 +1224,8 @@ namespace general_planner {
         }
 
         if (!planned) {
+            const bool recoverable_status =
+                    exploration::explorationPlanStatusRecoverable(plan.status);
             {
                 std::lock_guard<std::mutex> guard(replan_lock_);
                 latest_replan.setGoal(robot.p, robot.yaw, robot);
@@ -1235,14 +1240,17 @@ namespace general_planner {
                     return FINISH;
                 }
                 exploration_runtime_state_ =
-                        has_active_traj ? ExplorationRuntimeState::EXEC_LOCAL
-                                        : ExplorationRuntimeState::RECOVER;
+                        recoverable_status
+                        ? (has_active_traj ? ExplorationRuntimeState::EXEC_LOCAL
+                                           : ExplorationRuntimeState::UPDATE_GLOBAL)
+                        : (has_active_traj ? ExplorationRuntimeState::EXEC_LOCAL
+                                           : ExplorationRuntimeState::RECOVER);
                 latest_replan.setRetCode(
-                        exploration::explorationPlanStatusRecoverable(plan.status)
+                        recoverable_status
                         ? GENERAL_RET_CODE::GENERAL_SUCCESS_NO_BACKUP
                         : GENERAL_RET_CODE::GENERAL_UNDEFINED);
             }
-            if (exploration::explorationPlanStatusRecoverable(plan.status)) {
+            if (recoverable_status) {
                 if (plan.status == exploration::ExplorationPlanStatus::LOCAL_GUIDE_FAILED &&
                     plan.target_frontier_id >= 0) {
                     exploration_manager_->onLocalSegmentFailed(
@@ -1490,6 +1498,8 @@ namespace general_planner {
                 plan.status == exploration::ExplorationPlanStatus::TRUE_FINISHED &&
                 plan.no_frontier &&
                 exploration_manager_->isExplorationFinished();
+        const bool recoverable =
+                !ok && exploration::explorationPlanStatusRecoverable(plan.status);
 
         {
             std::lock_guard<std::mutex> guard(replan_lock_);
@@ -1499,7 +1509,7 @@ namespace general_planner {
             }
             latest_exploration_goal_ = plan.goal;
             latest_replan.setGoal(robot.p, robot.yaw, robot);
-            latest_replan.setRetCode(ok
+            latest_replan.setRetCode((ok || recoverable)
                                      ? GENERAL_RET_CODE::GENERAL_SUCCESS_NO_BACKUP
                                      : GENERAL_RET_CODE::GENERAL_UNDEFINED);
             if (ok) {
@@ -5262,7 +5272,7 @@ namespace general_planner {
                 : cfg_.exploration_local_guide_astar_repair_enable;
         cfg.local_guide.unknown_as_occupied = cfg_.exploration_local_guide_unknown_as_occupied;
         cfg.local_guide.backend = cfg_.exploration_use_epic_frontend
-                                  ? MapBackend::POINT_CLOUD
+                                  ? MapBackend::EPIC_LIO
                                   : cfg_.exploration_local_guide_backend;
         if (cfg_.exploration_use_epic_frontend) {
             cfg.local_guide.safe_distance =
@@ -6132,7 +6142,7 @@ namespace general_planner {
             return false;
         }
         const MapBackend backend =
-                cfg_.exploration_use_epic_frontend ? cfg_.exploration_local_guide_backend
+                cfg_.exploration_use_epic_frontend ? MapBackend::EPIC_LIO
                                                    : cfg_.corridor_backend;
         if (!map_manager_->ready(backend)) {
             return false;
@@ -6452,8 +6462,11 @@ namespace general_planner {
         const bool use_exploration_backend =
                 active_exploration_guide_ && active_exploration_plan_.valid;
         const MapBackend trajectory_backend =
-                use_exploration_backend ? cfg_.exploration_local_guide_backend
-                                        : MapBackend::ROG;
+                use_exploration_backend
+                ? (cfg_.exploration_use_epic_frontend
+                   ? MapBackend::EPIC_LIO
+                   : cfg_.exploration_local_guide_backend)
+                : MapBackend::ROG;
         double trajectory_safe_distance =
                 use_exploration_backend ? std::max(0.0, cfg_.exploration_local_guide_safe_distance) : 0.0;
         if (use_exploration_backend && cfg_.exploration_use_epic_frontend) {
