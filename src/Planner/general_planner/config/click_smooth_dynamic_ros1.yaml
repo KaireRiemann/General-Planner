@@ -9,6 +9,15 @@ fsm:
   timer_en: true
   state2state_plan_from_rest_max_failures: 5
   state2state_clear_goal_on_plan_failure: true
+  perception_replan_check_en: true
+  perception_replan_check_rate: 30.0
+  perception_replan_check_horizon: 2.0
+  perception_replan_check_dt: 0.08
+  perception_replan_min_interval: 0.08
+  perception_replan_consecutive_hits: 2
+  perception_replan_unknown_as_occupied: false
+  perception_replan_emergency_horizon: 0.45
+  perception_replan_log_period: 0.5
 
 general_planner:
   backup_traj_en: true

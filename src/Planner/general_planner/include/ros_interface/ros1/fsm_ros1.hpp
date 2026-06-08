@@ -62,7 +62,7 @@ namespace fsm {
         ros::Publisher cmd_pub, mpc_cmd_pub_, path_pub_;
         ros::Publisher swarm_traj_pub_, swarm_state_pub_;
         ros::Publisher diagnostic_event_pub_;
-        ros::Timer execution_timer_, replan_timer_, cmd_timer_;
+        ros::Timer execution_timer_, replan_timer_, cmd_timer_, perception_safety_timer_;
         quadrotor_msgs::PositionCommand pid_cmd_;
         rog_map::ROGMapROS::Ptr map_ptr_;
         quadrotor_msgs::PositionCommand latest_cmd;
@@ -1004,6 +1004,12 @@ namespace fsm {
                 cmd_timer_ = nh_.createTimer(ros::Duration(0.01), &FsmRos1::pubCmdTimerCallback, this); // 100Hz
                 replan_timer_ = nh_.createTimer(ros::Duration(1.0 / cfg_.replan_rate), &FsmRos1::replanTimerCallback,
                                                 this); // 10Hz
+                if (cfg_.perception_replan_check_en && cfg_.perception_replan_check_rate > 1.0e-3) {
+                    perception_safety_timer_ = nh_.createTimer(
+                            ros::Duration(1.0 / cfg_.perception_replan_check_rate),
+                            &FsmRos1::perceptionSafetyTimerCallback,
+                            this);
+                }
             }
 
             write_time_.open(DEBUG_FILE_DIR("time_consuming.csv"), std::ios::out | std::ios::trunc);
@@ -1020,9 +1026,11 @@ namespace fsm {
             openDiagnosticLogFile(LOG_FILE_DIR("diagnostic_events/general_runtime.csv"));
             recordDiagnosticEvent("INFO",
                                   "fsm_initialized",
-                                  fmt::format("task_mode={};replan_rate={:.3f};cmd_topic={};mpc_cmd_topic={}",
+                                  fmt::format("task_mode={};replan_rate={:.3f};perception_replan_check_en={};perception_replan_check_rate={:.3f};cmd_topic={};mpc_cmd_topic={}",
                                               cfg_.task_mode_str,
                                               cfg_.replan_rate,
+                                              static_cast<int>(cfg_.perception_replan_check_en),
+                                              cfg_.perception_replan_check_rate,
                                               cfg_.cmd_topic,
                                               cfg_.mpc_cmd_topic),
                                   -1,
@@ -1096,6 +1104,10 @@ namespace fsm {
 
         void replanTimerCallback(const ros::TimerEvent &event) {
             callReplanOnce();
+        }
+
+        void perceptionSafetyTimerCallback(const ros::TimerEvent &event) {
+            callPerceptionSafetyCheckOnce();
         }
 
         void mainFsmTimerCallback(const ros::TimerEvent &event) {

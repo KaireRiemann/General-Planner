@@ -69,6 +69,21 @@ namespace fsm {
             }
         }
 
+        std::string gridTypeName(const int grid_type) {
+            switch (grid_type) {
+                case rog_map::GridType::UNKNOWN:
+                    return "UNKNOWN";
+                case rog_map::GridType::OUT_OF_MAP:
+                    return "OUT_OF_MAP";
+                case rog_map::GridType::OCCUPIED:
+                    return "OCCUPIED";
+                case rog_map::GridType::KNOWN_FREE:
+                    return "KNOWN_FREE";
+                default:
+                    return std::to_string(grid_type);
+            }
+        }
+
         std::string csvEscape(const std::string &value) {
             bool needs_quotes = false;
             std::string escaped;
@@ -328,9 +343,16 @@ namespace fsm {
 
         TimeConsuming replan_once_time("replan_once_time", false);
         active_replan_id_ = next_replan_id_++;
+        const bool perception_replan_trigger = perception_replan_requested_;
+        const bool perception_replan_emergency = perception_replan_emergency_;
+        const auto perception_report = perception_replan_report_;
         recordDiagnosticEvent("INFO",
                               "replan_start",
-                              fmt::format("new_goal={}", static_cast<int>(gi_.new_goal)));
+                              fmt::format("new_goal={};perception_trigger={};perception_ttc={:.3f};perception_reason={}",
+                                          static_cast<int>(gi_.new_goal),
+                                          static_cast<int>(perception_replan_trigger),
+                                          perception_replan_trigger ? perception_report.time_to_collision : -1.0,
+                                          perception_replan_trigger ? perception_report.reason : "none"));
 
         RET_CODE ret_code = FAILED;
         bool replan_tracking_static = false;
@@ -378,9 +400,33 @@ namespace fsm {
                               fmt::format("new_goal={};ret={}", static_cast<int>(gi_.new_goal),
                                           retCodeName(ret_code)),
                               ret_code);
+        if (perception_replan_trigger) {
+            recordDiagnosticEvent(ret_code == FAILED ? "WARN" : "INFO",
+                                  "perception_replan_result",
+                                  fmt::format("ret={};emergency={};ttc={:.3f};reason={};grid={};pos=({:.3f},{:.3f},{:.3f})",
+                                              retCodeName(ret_code),
+                                              static_cast<int>(perception_replan_emergency),
+                                              perception_report.time_to_collision,
+                                              perception_report.reason,
+                                              gridTypeName(perception_report.grid_type),
+                                              perception_report.collision_pos.x(),
+                                              perception_report.collision_pos.y(),
+                                              perception_report.collision_pos.z()),
+                                  ret_code);
+        }
 
         if (ret_code == EMER) {
             ChangeState("ReplanTimerCallback", EMER_STOP);
+        } else if (ret_code == FAILED &&
+                   state2stateMode() &&
+                   perception_replan_trigger &&
+                   perception_replan_emergency) {
+            recordDiagnosticEvent("WARN",
+                                  "perception_replan_failed_keep_current",
+                                  fmt::format("keep_current_trajectory=1;ttc={:.3f};reason={}",
+                                              perception_report.time_to_collision,
+                                              perception_report.reason),
+                                  ret_code);
         } else if (ret_code == NEW_TRAJ) {
             ChangeState("ReplanTimerCallback", GENERATE_TRAJ);
         } else if (ret_code == NO_NEED && trackingMode()) {
@@ -421,7 +467,112 @@ namespace fsm {
                               -1,
                               false,
                               static_cast<int>(log_id.first));
+        if (perception_replan_trigger) {
+            perception_replan_requested_ = false;
+            perception_replan_emergency_ = false;
+        }
         WriteTimeToLog();
+    }
+
+    void Fsm::callPerceptionSafetyCheckOnce() {
+        if (!cfg_.perception_replan_check_en || !state2stateMode()) {
+            return;
+        }
+
+        bool should_trigger_replan = false;
+        {
+            std::unique_lock<std::mutex> tick_lock(fsm_tick_mutex_, std::try_to_lock);
+            if (!tick_lock.owns_lock()) {
+                return;
+            }
+            if (stop || machine_state_ != FOLLOW_TRAJ || finish_plan || plan_from_rest_) {
+                return;
+            }
+
+            planner_ptr_->getRobotState(robot_state_);
+            const double now = ros_ptr_->getSimTime();
+            if (!robot_state_.rcv || (now - robot_state_.rcv_time) > 0.2) {
+                return;
+            }
+
+            general_planner::GeneralPlanner::CommittedTrajectorySafetyReport report;
+            const bool safe = planner_ptr_->checkCommittedPositionTrajectorySafety(
+                    cfg_.perception_replan_check_horizon,
+                    cfg_.perception_replan_check_dt,
+                    cfg_.perception_replan_consecutive_hits,
+                    cfg_.perception_replan_unknown_as_occupied,
+                    &report);
+            if (safe) {
+                if (perception_replan_requested_) {
+                    perception_replan_requested_ = false;
+                    perception_replan_emergency_ = false;
+                }
+                return;
+            }
+
+            if (!report.valid) {
+                return;
+            }
+
+            const bool emergency =
+                    report.time_to_collision <= std::max(0.0, cfg_.perception_replan_emergency_horizon);
+            const double min_interval = std::max(0.0, cfg_.perception_replan_min_interval);
+            const bool interval_ok =
+                    last_perception_replan_request_time_ < 0.0 ||
+                    now - last_perception_replan_request_time_ >= min_interval ||
+                    emergency;
+
+            const double log_period = std::max(0.0, cfg_.perception_replan_log_period);
+            if (last_perception_replan_log_time_ < 0.0 ||
+                now - last_perception_replan_log_time_ >= log_period ||
+                emergency) {
+                last_perception_replan_log_time_ = now;
+                ros_ptr_->warn(" -- [Fsm] Perception safety collision: reason={}, ttc={:.3f}s, grid={}, pos=({:.2f},{:.2f},{:.2f}), emergency={}.",
+                               report.reason,
+                               report.time_to_collision,
+                               gridTypeName(report.grid_type),
+                               report.collision_pos.x(),
+                               report.collision_pos.y(),
+                               report.collision_pos.z(),
+                               static_cast<int>(emergency));
+                recordDiagnosticEvent("WARN",
+                                      "perception_traj_collision",
+                                      fmt::format("reason={};ttc={:.3f};grid={};hits={};pos=({:.3f},{:.3f},{:.3f});emergency={}",
+                                                  report.reason,
+                                                  report.time_to_collision,
+                                                  gridTypeName(report.grid_type),
+                                                  report.hit_count,
+                                                  report.collision_pos.x(),
+                                                  report.collision_pos.y(),
+                                                  report.collision_pos.z(),
+                                                  static_cast<int>(emergency)));
+            }
+
+            if (!interval_ok) {
+                return;
+            }
+
+            perception_replan_requested_ = true;
+            perception_replan_emergency_ = emergency;
+            perception_replan_report_ = report;
+            last_perception_replan_request_time_ = now;
+            should_trigger_replan = true;
+            recordDiagnosticEvent(emergency ? "ERROR" : "WARN",
+                                  "perception_replan_request",
+                                  fmt::format("reason={};ttc={:.3f};grid={};hits={};pos=({:.3f},{:.3f},{:.3f});emergency={}",
+                                              report.reason,
+                                              report.time_to_collision,
+                                              gridTypeName(report.grid_type),
+                                              report.hit_count,
+                                              report.collision_pos.x(),
+                                              report.collision_pos.y(),
+                                              report.collision_pos.z(),
+                                              static_cast<int>(emergency)));
+        }
+
+        if (should_trigger_replan) {
+            callReplanOnce();
+        }
     }
 
     void Fsm::callMainFsmOnce() {

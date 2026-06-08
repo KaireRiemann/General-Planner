@@ -195,6 +195,11 @@ namespace fsm {
         uint64_t next_replan_id_{1};
         uint64_t active_replan_id_{0};
         int state2state_plan_from_rest_fail_count_{0};
+        bool perception_replan_requested_{false};
+        bool perception_replan_emergency_{false};
+        double last_perception_replan_request_time_{-1.0};
+        double last_perception_replan_log_time_{-1.0};
+        general_planner::GeneralPlanner::CommittedTrajectorySafetyReport perception_replan_report_;
         /* Callback functions */
         bool finish_plan = false;
         double system_start_time_{0.0};
@@ -229,6 +234,8 @@ namespace fsm {
         virtual void publishDiagnosticEvent(const DiagnosticEvent &event) {}
 
         void callReplanOnce();
+
+        void callPerceptionSafetyCheckOnce();
 
         void callMainFsmOnce();
 

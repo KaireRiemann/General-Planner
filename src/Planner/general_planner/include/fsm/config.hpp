@@ -126,6 +126,15 @@ namespace fsm {
         double tracking_static_safety_check_horizon{1.5};
         double tracking_static_safety_check_dt{0.12};
         double tracking_static_replan_log_period{1.0};
+        bool perception_replan_check_en{false};
+        double perception_replan_check_rate{30.0};
+        double perception_replan_check_horizon{2.0};
+        double perception_replan_check_dt{0.08};
+        double perception_replan_min_interval{0.08};
+        int perception_replan_consecutive_hits{2};
+        bool perception_replan_unknown_as_occupied{false};
+        double perception_replan_emergency_horizon{0.45};
+        double perception_replan_log_period{0.5};
         double task_timeout{0.6};
         int state2state_plan_from_rest_max_failures{0};
         bool state2state_clear_goal_on_plan_failure{false};
@@ -187,6 +196,15 @@ namespace fsm {
             loader.LoadParam("fsm/tracking_static_safety_check_horizon", tracking_static_safety_check_horizon, 1.5);
             loader.LoadParam("fsm/tracking_static_safety_check_dt", tracking_static_safety_check_dt, 0.12);
             loader.LoadParam("fsm/tracking_static_replan_log_period", tracking_static_replan_log_period, 1.0);
+            loader.LoadParam("fsm/perception_replan_check_en", perception_replan_check_en, false);
+            loader.LoadParam("fsm/perception_replan_check_rate", perception_replan_check_rate, 30.0);
+            loader.LoadParam("fsm/perception_replan_check_horizon", perception_replan_check_horizon, 2.0);
+            loader.LoadParam("fsm/perception_replan_check_dt", perception_replan_check_dt, 0.08);
+            loader.LoadParam("fsm/perception_replan_min_interval", perception_replan_min_interval, 0.08);
+            loader.LoadParam("fsm/perception_replan_consecutive_hits", perception_replan_consecutive_hits, 2);
+            loader.LoadParam("fsm/perception_replan_unknown_as_occupied", perception_replan_unknown_as_occupied, false);
+            loader.LoadParam("fsm/perception_replan_emergency_horizon", perception_replan_emergency_horizon, 0.45);
+            loader.LoadParam("fsm/perception_replan_log_period", perception_replan_log_period, 0.5);
             loader.LoadParam("fsm/task_timeout", task_timeout, 0.6);
             loader.LoadParam("fsm/state2state_plan_from_rest_max_failures",
                              state2state_plan_from_rest_max_failures,

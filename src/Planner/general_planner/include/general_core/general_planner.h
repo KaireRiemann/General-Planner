@@ -25,6 +25,7 @@
 
 #include <iostream>
 #include <fstream>
+#include <limits>
 #include <memory>
 #include "Eigen/Eigen"
 
@@ -141,6 +142,19 @@ namespace general_planner {
         };
 
     public:
+        struct CommittedTrajectorySafetyReport {
+            bool valid{false};
+            bool safe{true};
+            double check_start_t{0.0};
+            double check_horizon{0.0};
+            double collision_t{0.0};
+            double time_to_collision{std::numeric_limits<double>::infinity()};
+            Vec3f collision_pos{Vec3f::Zero()};
+            int grid_type{static_cast<int>(rog_map::GridType::KNOWN_FREE)};
+            int hit_count{0};
+            std::string reason;
+        };
+
         EIGEN_MAKE_ALIGNED_OPERATOR_NEW
 
         explicit GeneralPlanner(const std::string &cfg_path,
@@ -170,6 +184,13 @@ namespace general_planner {
         Trajectory getCommittedYawTrajectory();
 
         double getCommittedTrajectoryRemainingDuration();
+
+        bool checkCommittedPositionTrajectorySafety(
+                double horizon,
+                double dt,
+                int consecutive_hits,
+                bool unknown_as_occupied,
+                CommittedTrajectorySafetyReport *report = nullptr);
 
         bool trackingPerchingPerchingActive() const;
 
@@ -290,6 +311,17 @@ namespace general_planner {
 
         bool prepareESDFGuideEndpoint(vec_Vec3f &guide_path,
                                       std::vector<double> &guide_stamp);
+
+        bool checkPositionTrajectorySafety(const Trajectory &traj,
+                                           double now_wt,
+                                           double horizon,
+                                           double dt,
+                                           int consecutive_hits,
+                                           bool unknown_as_occupied,
+                                           CommittedTrajectorySafetyReport *report) const;
+
+        bool state2stateCurrentTrajectorySafeForNoNeed(const Trajectory &traj,
+                                                       double start_t) const;
 
         bool buildTrackingGuideCorridor(traj_opt::TrackingProblem &problem,
                                         std::string *failure_reason = nullptr);
