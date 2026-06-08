@@ -22,9 +22,12 @@
 */
 
 #include <general_core/general_planner.h>
+#include <checker/state2state_checker.hpp>
+#include <checker/trajectory_checker.hpp>
 #include <algorithm>
 #include <cmath>
 #include <exception>
+#include <stdexcept>
 #include <limits>
 #include <memory>
 #include <super_utils/scope_timer.hpp>
@@ -40,6 +43,66 @@ namespace general_planner {
             if (out != nullptr) {
                 *out = reason;
             }
+        }
+
+        bool backupTrajectoryPlanningEnabled(const Config &cfg) {
+            return cfg.backup_traj_en && !cfg.esdf_traj_en && !cfg.plain_traj_en;
+        }
+
+        void logCheckResult(const ros_interface::RosInterface::Ptr &ros_ptr,
+                            const std::string &context,
+                            const checker::CheckResult &result) {
+            if (result.severity == checker::Severity::OK || ros_ptr == nullptr) {
+                return;
+            }
+            const std::string msg = fmt::format(" -- [Checker] {} [{}]: {}",
+                                                context,
+                                                result.code,
+                                                result.message);
+            if (result.severity == checker::Severity::WARN) {
+                ros_ptr->warn(msg);
+            } else {
+                ros_ptr->error(msg);
+            }
+        }
+
+        bool rejectOnCheckFailure(const ros_interface::RosInterface::Ptr &ros_ptr,
+                                  const std::string &context,
+                                  const checker::CheckResult &result) {
+            logCheckResult(ros_ptr, context, result);
+            return result.rejected();
+        }
+
+        void warnHighSpeedMargin(const ros_interface::RosInterface::Ptr &ros_ptr,
+                                 const Config &cfg,
+                                 const double speed,
+                                 const std::string &context) {
+            const auto result = checker::checkHighSpeedSafetyMargin(
+                    speed,
+                    cfg.exp_traj_cfg.max_acc,
+                    cfg.replan_forward_dt,
+                    cfg.sensing_horizon,
+                    cfg.safe_corridor_line_max_length,
+                    cfg.robot_r);
+            if (result.severity == checker::Severity::WARN) {
+                logCheckResult(ros_ptr, context, result);
+            }
+        }
+
+        void makeHoldCommandFromRobotState(const rog_map::RobotState &robot_state,
+                                           StatePVAJ &pvaj,
+                                           double &yaw,
+                                           double &yaw_dot,
+                                           bool &on_backup_traj,
+                                           bool &traj_finish) {
+            pvaj.setZero();
+            if (robot_state.rcv && robot_state.p.allFinite()) {
+                pvaj.col(0) = robot_state.p;
+            }
+            yaw = std::isfinite(robot_state.yaw) ? robot_state.yaw : 0.0;
+            yaw_dot = 0.0;
+            on_backup_traj = false;
+            traj_finish = true;
         }
 
         bool trackingPerchingPerchingStatus(
@@ -124,6 +187,35 @@ namespace general_planner {
                                                                   times);
             prefix_yaw.start_WT = yaw_traj.start_WT + clamped_start;
             return !prefix_yaw.empty();
+        }
+
+        bool buildYawBrakeTrajectory(const Vec4f &yaw_state,
+                                     const double duration,
+                                     const double start_wt,
+                                     Trajectory &yaw_traj) {
+            if (!yaw_state.allFinite() ||
+                !std::isfinite(duration) ||
+                duration <= 1.0e-5 ||
+                !std::isfinite(start_wt)) {
+                return false;
+            }
+
+            Eigen::Matrix<double, 1, 2> init_state;
+            Eigen::Matrix<double, 1, 2> goal_state;
+            const double yaw0 = yaw_state(0);
+            const double yaw_rate0 = yaw_state(1);
+            init_state << yaw0, yaw_rate0;
+            goal_state << yaw0 + 0.5 * yaw_rate0 * duration, 0.0;
+
+            Eigen::Matrix<double, 1, -1> waypoints(1, 0);
+            VecDf times(1);
+            times(0) = duration;
+            yaw_traj = poly_interpo::minimumAccInterpolation<1>(init_state,
+                                                                goal_state,
+                                                                waypoints,
+                                                                times);
+            yaw_traj.start_WT = start_wt;
+            return !yaw_traj.empty();
         }
 
         bool extractYawPrefixForStitching(const Trajectory &tracking_yaw,
@@ -293,6 +385,12 @@ namespace general_planner {
                 map_manager_(std::make_shared<MapManager>(map_ptr)),
                 ros_ptr_(ros_ptr) {
 
+        const auto config_check = checker::checkState2StateConfig(cfg_);
+        logCheckResult(ros_ptr_, "state2state config", config_check);
+        if (config_check.rejected()) {
+            throw std::invalid_argument("state2state config invalid: " + config_check.code +
+                                        " " + config_check.message);
+        }
         ros_ptr_->setResolution(cfg_.resolution);
         ros_ptr_->setVisualizationEn(cfg_.visualization_en);
         tracking_runtime_manager_ = std::make_unique<TrackingRuntimeManager>(cfg_, map_manager_);
@@ -545,6 +643,19 @@ namespace general_planner {
                                const bool &new_goal) {
         std::lock_guard<std::mutex> guard(replan_lock_);
         latest_replan.reset();
+        const auto input_check = checker::checkState2StateInput(goal_p,
+                                                                goal_yaw,
+                                                                robot_state_,
+                                                                map_manager_,
+                                                                ros_ptr_->getSimTime());
+        if (rejectOnCheckFailure(ros_ptr_, "PlanFromRest input", input_check)) {
+            latest_replan.setGoal(goal_p, goal_yaw, robot_state_);
+            latest_replan.setRetCode(input_check.code == "MAP_NOT_READY"
+                                     ? GENERAL_RET_CODE::GENERAL_MAP_NOT_READY
+                                     : GENERAL_RET_CODE::GENERAL_UNDEFINED);
+            return FAILED;
+        }
+        warnHighSpeedMargin(ros_ptr_, cfg_, robot_state_.v.norm(), "PlanFromRest high-speed margin");
         if (robot_state_.rcv == false) {
             latest_replan.setGoal(goal_p, goal_yaw, robot_state_);
             ros_ptr_->warn(" -- [GeneralPlanner] in [PlanFromRest]: No odom, force return.");
@@ -567,7 +678,7 @@ namespace general_planner {
 
         /// 1) First, shift the start_point to free space.
         Vec3f local_star_pt;
-        if (!map_manager_->getNearestCellNot(GridType::OCCUPIED, robot_state_.p, local_star_pt, 3.0)) {
+        if (!map_manager_->getNearestInfCellNot(GridType::OCCUPIED, robot_state_.p, local_star_pt, 3.0)) {
             ros_ptr_->error(
                     " -- [GeneralPlanner] in [PlanFromRest] Local start point is deeply occupied, which should not happened.");
             latest_replan.setRetCode(GENERAL_RET_CODE::GENERAL_NO_START_POINT);
@@ -576,10 +687,10 @@ namespace general_planner {
         latest_replan.setLocalStartP(local_star_pt);
 
         /// 2) Generate Exp traj
-        ExpTraj exp_traj_info;
-        BackupTraj back_traj_info;
-        last_exp_traj_info_.setEmpty();
-        local_start_p_ = local_star_pt;
+	        ExpTraj exp_traj_info;
+	        BackupTraj back_traj_info;
+	        last_exp_traj_info_.setEmpty();
+	        local_start_p_ = local_star_pt;
         RET_CODE exp_ret_code = generateExpTraj(last_exp_traj_info_, exp_traj_info);
         //GenerateRestToRestExpTraj(local_star_pt, exp_traj_info);
         if (exp_ret_code == FAILED) {
@@ -590,6 +701,25 @@ namespace general_planner {
             ros_ptr_->info(" -- [GeneralPlanner] in [PlanFromRest] GenerateExpTrajectory SUCCESS.");
         }
 
+        if (!backupTrajectoryPlanningEnabled(cfg_)) {
+            if (rejectOnCheckFailure(ros_ptr_,
+                                     "PlanFromRest exp commit",
+                                     checker::checkExpTrajectory(exp_traj_info, cfg_, "plan_from_rest_exp"))) {
+                return FAILED;
+	            }
+	            robot_on_backup_traj_ = false;
+	            cmd_traj_info_.setTrajectory(exp_traj_info);
+            last_exp_traj_info_ = exp_traj_info;
+            gi_.new_goal = false;
+            {
+                TimeConsuming t_viz("viz goal VisualizeCommitTrajectory", false);
+                ros_ptr_->vizCommittedTraj(cmd_traj_info_.posTraj(), -1);
+                time_consuming_[VISUALIZATION] += t_viz.stop();
+            }
+            latest_replan.setRetCode(GENERAL_RET_CODE::GENERAL_SUCCESS_NO_BACKUP);
+            return SUCCESS;
+        }
+
         back_traj_info.setEmpty();
         RET_CODE back_ret_code = generateBackupTrajectory(exp_traj_info, back_traj_info);;
 
@@ -598,10 +728,21 @@ namespace general_planner {
                 ros_ptr_->info(" -- [GeneralPlanner] in [PlanFromRest] generateBackupTrajectory SUCCESS.");
             }
 
-            cmd_traj_info_.setTrajectory(exp_traj_info, back_traj_info);
-            last_exp_traj_info_ = exp_traj_info;
-            robot_on_backup_traj_ = false;
-            gi_.new_goal = false;
+            if (rejectOnCheckFailure(ros_ptr_,
+                                     "PlanFromRest exp+backup commit",
+                                     checker::checkExpBackupCommit(exp_traj_info,
+                                                                   back_traj_info,
+                                                                   cfg_,
+                                                                   "plan_from_rest_exp_backup"))) {
+                return FAILED;
+	            }
+	            if (!cmd_traj_info_.setTrajectory(exp_traj_info, back_traj_info)) {
+	                ros_ptr_->error(" -- [Checker] PlanFromRest commit failed: CmdTraj rejected exp+backup trajectory.");
+	                return FAILED;
+	            }
+	            last_exp_traj_info_ = exp_traj_info;
+	            robot_on_backup_traj_ = false;
+	            gi_.new_goal = false;
 
             // For visualization
             {
@@ -615,8 +756,13 @@ namespace general_planner {
         } else if (back_ret_code == FINISH || back_ret_code == NO_NEED) {
             if (cfg_.print_log) {
                 ros_ptr_->info(" -- [GeneralPlanner] in [PlanFromRest] generateBackupTrajectory Finish or NO_NEED.");
+	            }
+	            robot_on_backup_traj_ = false;
+	            if (rejectOnCheckFailure(ros_ptr_,
+                                     "PlanFromRest exp commit",
+                                     checker::checkExpTrajectory(exp_traj_info, cfg_, "plan_from_rest_exp"))) {
+                return FAILED;
             }
-            robot_on_backup_traj_ = false;
             cmd_traj_info_.setTrajectory(exp_traj_info);
             last_exp_traj_info_ = exp_traj_info;
             gi_.new_goal = false;
@@ -642,6 +788,21 @@ namespace general_planner {
                              const bool &new_goal) {
         TimeConsuming replan_total_t("ReplanOnce", false);
         std::lock_guard<std::mutex> guard(replan_lock_);
+
+        const auto input_check = checker::checkState2StateInput(goal_p,
+                                                                goal_yaw,
+                                                                robot_state_,
+                                                                map_manager_,
+                                                                ros_ptr_->getSimTime());
+        if (rejectOnCheckFailure(ros_ptr_, "ReplanOnce input", input_check)) {
+            latest_replan.reset();
+            latest_replan.setGoal(goal_p, goal_yaw, robot_state_);
+            latest_replan.setRetCode(input_check.code == "MAP_NOT_READY"
+                                     ? GENERAL_RET_CODE::GENERAL_MAP_NOT_READY
+                                     : GENERAL_RET_CODE::GENERAL_UNDEFINED);
+            return FAILED;
+        }
+        warnHighSpeedMargin(ros_ptr_, cfg_, robot_state_.v.norm(), "ReplanOnce high-speed margin");
 
         gi_.goal_valid = true;
         gi_.goal_p = goal_p;
@@ -691,6 +852,24 @@ namespace general_planner {
             time_consuming_[VISUALIZATION] += t_viz.stop();
         }
 
+        if (!backupTrajectoryPlanningEnabled(cfg_)) {
+            if (rejectOnCheckFailure(ros_ptr_,
+                                     "ReplanOnce exp commit",
+                                     checker::checkExpTrajectory(exp_traj_info, cfg_, "replan_exp"))) {
+                return FAILED;
+	            }
+	            robot_on_backup_traj_ = false;
+	            cmd_traj_info_.setTrajectory(exp_traj_info);
+            last_exp_traj_info_ = exp_traj_info;
+            gi_.new_goal = false;
+            {
+                TimeConsuming t_viz("tviz", false);
+                ros_ptr_->vizCommittedTraj(cmd_traj_info_.posTraj(), -1);
+                time_consuming_[VISUALIZATION] += t_viz.stop();
+            }
+            latest_replan.setRetCode(GENERAL_SUCCESS_NO_BACKUP);
+            return SUCCESS;
+        }
 
         BackupTraj back_traj_info;
         // 2）生成back轨迹
@@ -712,10 +891,21 @@ namespace general_planner {
         }
 
         if (back_ret_code == SUCCESS) {
-            cmd_traj_info_.setTrajectory(exp_traj_info, back_traj_info);
-            last_exp_traj_info_ = exp_traj_info;
-            robot_on_backup_traj_ = false;
-            gi_.new_goal = false;
+            if (rejectOnCheckFailure(ros_ptr_,
+                                     "ReplanOnce exp+backup commit",
+                                     checker::checkExpBackupCommit(exp_traj_info,
+                                                                   back_traj_info,
+                                                                   cfg_,
+                                                                   "replan_exp_backup"))) {
+                return FAILED;
+	            }
+	            if (!cmd_traj_info_.setTrajectory(exp_traj_info, back_traj_info)) {
+	                ros_ptr_->error(" -- [Checker] ReplanOnce commit failed: CmdTraj rejected exp+backup trajectory.");
+	                return FAILED;
+	            }
+	            last_exp_traj_info_ = exp_traj_info;
+	            robot_on_backup_traj_ = false;
+	            gi_.new_goal = false;
 
             {
                 // For visualization
@@ -729,9 +919,9 @@ namespace general_planner {
                 ros_ptr_->info(" -- [GeneralPlanner] in [ReplanOnce]: Replan a new back traj success, all replan success.");
             return SUCCESS;
         } else if (back_ret_code == NO_NEED) {
-            // 这次生成backup轨迹的点没有意义,
-            robot_on_backup_traj_ = false;
-            last_exp_traj_info_ = exp_traj_info;
+	            // 这次生成backup轨迹的点没有意义,
+	            robot_on_backup_traj_ = false;
+	            last_exp_traj_info_ = exp_traj_info;
             gi_.new_goal = false;
 
 
@@ -748,10 +938,15 @@ namespace general_planner {
             return SUCCESS;
         } else if (back_ret_code == FINISH) {
             // Which means the exp traj is all in known free, no need for backup traj
-            cmd_traj_info_.setTrajectory(exp_traj_info);
-            last_exp_traj_info_ = exp_traj_info;
-            robot_on_backup_traj_ = false;
-            gi_.new_goal = false;
+            if (rejectOnCheckFailure(ros_ptr_,
+                                     "ReplanOnce exp commit",
+                                     checker::checkExpTrajectory(exp_traj_info, cfg_, "replan_exp"))) {
+                return FAILED;
+            }
+	            cmd_traj_info_.setTrajectory(exp_traj_info);
+	            last_exp_traj_info_ = exp_traj_info;
+	            robot_on_backup_traj_ = false;
+	            gi_.new_goal = false;
 
             {
                 TimeConsuming t_viz("tviz", false);
@@ -4005,14 +4200,28 @@ namespace general_planner {
                                              bool &on_backup_traj,
                                              bool &traj_finish) {
         cmd_traj_info_.lock();
-        const double &cur_t = ros_ptr_->getSimTime();
-        const double &cmd_start_WT = cmd_traj_info_.getStartWallTime();
+        if (cmd_traj_info_.empty()) {
+            cmd_traj_info_.unlock();
+            ros_ptr_->warn(" -- [Checker] getOneCommandFromTraj called with empty committed trajectory.");
+            makeHoldCommandFromRobotState(robot_state_, pvaj, yaw, yaw_dot, on_backup_traj, traj_finish);
+            return;
+        }
+        const double cur_t = ros_ptr_->getSimTime();
+        const double cmd_start_WT = cmd_traj_info_.getStartWallTime();
 //        const bool &backup_avilibale = cmd_traj_info_.backupTrajAvilibale();
 //        const double &backup_start_TT = cmd_traj_info_.getBackupTrajStartTT();
-        const double &total_dur = cmd_traj_info_.getTotalDuration();
+        const double total_dur = cmd_traj_info_.getTotalDuration();
+        if (!std::isfinite(cur_t) || !std::isfinite(cmd_start_WT) ||
+            !std::isfinite(total_dur) || total_dur <= 1.0e-6) {
+            cmd_traj_info_.unlock();
+            ros_ptr_->warn(" -- [Checker] getOneCommandFromTraj has invalid timing: cur_t={}, start_WT={}, duration={}.",
+                           cur_t, cmd_start_WT, total_dur);
+            makeHoldCommandFromRobotState(robot_state_, pvaj, yaw, yaw_dot, on_backup_traj, traj_finish);
+            return;
+        }
 
         traj_finish = (cur_t - cmd_start_WT) > total_dur;
-        const double &eval_t = traj_finish ? total_dur : (cur_t - cmd_start_WT);
+        const double eval_t = traj_finish ? total_dur : std::clamp(cur_t - cmd_start_WT, 0.0, total_dur);
 
 //        bool last_round_robot_on_backup_traj = robot_on_backup_traj_;
         robot_on_backup_traj_ = cmd_traj_info_.isTTOnBackupTraj(eval_t);
@@ -4035,6 +4244,13 @@ namespace general_planner {
         }
         if (isnan(yaw_dot)) {
             yaw_dot = 0;
+        }
+        if (checker::checkStateFinite(pvaj, "cmd_pvaj").rejected() ||
+            !std::isfinite(yaw) || !std::isfinite(yaw_dot)) {
+            cmd_traj_info_.unlock();
+            ros_ptr_->warn(" -- [Checker] getOneCommandFromTraj sampled invalid command at eval_t={}.", eval_t);
+            makeHoldCommandFromRobotState(robot_state_, pvaj, yaw, yaw_dot, on_backup_traj, traj_finish);
+            return;
         }
         if (takeoff_runtime_manager_ && active_takeoff_problem_valid_) {
             takeoff_runtime_manager_->updateStatusByPosition(pvaj.col(0),
@@ -4407,6 +4623,16 @@ namespace general_planner {
 	        const bool connected_goal = (guide_path.back().head(2) - gi_.goal_p.head(2)).norm() < cfg_.resolution * 2;
 	        out_exp_traj_info.setGoalConnectedFlag(connected_goal);
 
+        if (rejectOnCheckFailure(ros_ptr_,
+                                 "generateExpTraj guide",
+                                 checker::checkGuidePath(guide_path,
+                                                         guide_stamp,
+                                                         cfg_.resolution,
+                                                         "state2state_exp"))) {
+            return FAILED;
+        }
+        latest_replan.setGuidePath(guide_path);
+
         sfc.clear();
         {
             TimeConsuming t_viz("tviz", false);
@@ -4456,10 +4682,10 @@ namespace general_planner {
         traj_manager_->setSwarmCurrentWallTime(replan_process_start_WT);
         if (use_esdf_exp_traj) {
             temp_ret = traj_manager_->esdf()->optimize(pos_init_state,
-                                                pos_fina_state,
-                                                guide_path,
-                                                guide_stamp,
-                                                out_traj);
+                                                       pos_fina_state,
+                                                       guide_path,
+                                                       guide_stamp,
+                                                       out_traj);
             if (!temp_ret) {
                 if (!planning_from_rest && last_exp_traj_info.wholeTrajKnownFree()) {
                     out_exp_traj_info = last_exp_traj_info;
@@ -4473,10 +4699,10 @@ namespace general_planner {
             }
         } else if (use_plain_exp_traj) {
             temp_ret = traj_manager_->plain()->optimize(pos_init_state,
-                                                 pos_fina_state,
-                                                 guide_path,
-                                                 guide_stamp,
-                                                 out_traj);
+                                                        pos_fina_state,
+                                                        guide_path,
+                                                        guide_stamp,
+                                                        out_traj);
             if (!temp_ret) {
                 if (!planning_from_rest && last_exp_traj_info.wholeTrajKnownFree()) {
                     out_exp_traj_info = last_exp_traj_info;
@@ -4490,15 +4716,23 @@ namespace general_planner {
             }
         } else {
             temp_ret = traj_manager_->exp()->optimize(pos_init_state,
-                                               pos_fina_state,
-                                               guide_path,
-                                               guide_stamp,
-                                               sfc,
-                                               out_traj);
+                                                      pos_fina_state,
+                                                      guide_path,
+                                                      guide_stamp,
+                                                      sfc,
+                                                      out_traj);
         }
         time_consuming_[EXP_TRAJ_OPT] = t_exp_opt.stop();
-        if (use_esdf_exp_traj || use_plain_exp_traj) {
-            latest_replan.setExpCondition(VecDf(), vec_Vec3f(), pos_init_state, pos_fina_state, sfc);
+        if (use_esdf_exp_traj) {
+            VecDf init_ts;
+            vec_Vec3f init_ps;
+            traj_manager_->esdf()->getInitValue(init_ts, init_ps);
+            latest_replan.setExpCondition(init_ts, init_ps, pos_init_state, pos_fina_state, sfc);
+        } else if (use_plain_exp_traj) {
+            VecDf init_ts;
+            vec_Vec3f init_ps;
+            traj_manager_->plain()->getInitValue(init_ts, init_ps);
+            latest_replan.setExpCondition(init_ts, init_ps, pos_init_state, pos_fina_state, sfc);
         } else {
             VecDf init_ts;
             vec_Vec3f init_ps;
@@ -4578,6 +4812,15 @@ namespace general_planner {
         out_exp_traj_info.setTrajectory(new_traj_WT, temp_exp_traj, temp_yaw_traj, on_backup_start_TT,
                                         on_backup_end_TT);
 
+        if (rejectOnCheckFailure(ros_ptr_,
+                                 "generateExpTraj output",
+                                 checker::checkExpTrajectory(out_exp_traj_info,
+                                                             cfg_,
+                                                             "state2state_exp_output"))) {
+            out_exp_traj_info.setEmpty();
+            return FAILED;
+        }
+
         latest_replan.setExpYawTraj(temp_yaw_traj);
         latest_replan.setExpTraj(temp_exp_traj);
 
@@ -4589,6 +4832,15 @@ namespace general_planner {
         back_traj_info.setRobotPos(robot_state_.p);
         drone_state_mutex_.unlock();
         TimeConsuming t_back_frontend("t_back_frontend", false);
+
+        if (rejectOnCheckFailure(ros_ptr_,
+                                 "generateBackupTrajectory input exp",
+                                 checker::checkExpTrajectory(ref_exp_traj,
+                                                             cfg_,
+                                                             "backup_ref_exp"))) {
+            back_traj_info.setEmpty();
+            return FAILED;
+        }
 
         if (!cfg_.backup_traj_en || cfg_.esdf_traj_en || cfg_.plain_traj_en) {
             back_traj_info.setEmpty();
@@ -4638,6 +4890,12 @@ namespace general_planner {
                 all_traj_visible = false;
                 break;
             }
+        }
+
+        if (eval_ps.empty()) {
+            ros_ptr_->warn(" -- [Checker] generateBackupTrajectory has no sampled exp point, return NO_NEED.");
+            back_traj_info.setEmpty();
+            return NO_NEED;
         }
 
         if (all_traj_visible) {
@@ -4739,14 +4997,21 @@ namespace general_planner {
                 eval_t += cfg_.sample_traj_dt;
                 continue;
             }
-            temp_vel = ref_exp_traj.getVel(out_t);
+            temp_vel = ref_exp_traj.getVel(eval_t);
             double v_norm = temp_vel.norm();
             min_stop_dis.push_back(v_norm * v_norm / 2.0 / cfg_.exp_traj_cfg.max_acc);
             eval_ps.emplace_back(eval_t, cur_pos);
             last_pos = cur_pos;
             eval_t += cfg_.sample_traj_dt;
         }
-        eval_ps.pop_back();
+        if (!eval_ps.empty()) {
+            eval_ps.pop_back();
+        }
+        if (eval_ps.empty()) {
+            ros_ptr_->warn(" -- [Checker] generateBackupTrajectory backup seed samples are empty after trimming.");
+            back_traj_info.setEmpty();
+            return NO_NEED;
+        }
         seed_point = eval_ps.back().second;
         seed_point_t = eval_ps.back().first;
 
@@ -4755,6 +5020,13 @@ namespace general_planner {
         double t0 = ros_ptr_->getSimTime() -
                     ref_exp_traj.getStartWallTime() + 0.01;
         double te = seed_point_t;
+        if (!std::isfinite(t0) || !std::isfinite(te) || t0 < -1.0e-6 || te <= t0 + 1.0e-6 ||
+            te > ref_exp_traj.getTotalDuration() + 1.0e-6) {
+            ros_ptr_->warn(" -- [Checker] generateBackupTrajectory invalid backup time window: t0={}, te={}, exp_dur={}.",
+                           t0, te, ref_exp_traj.getTotalDuration());
+            back_traj_info.setEmpty();
+            return NO_NEED;
+        }
         //            cout << "t0: " << t0 << endl;
         //            cout << "te: " << te << endl;
         //            cout << "exp_traj_dur: " << ref_exp_traj.optimized_exp_traj.getTotalDuration() << endl;
@@ -4766,46 +5038,35 @@ namespace general_planner {
         TimeConsuming t_back_opt("t_back_opt", false);
         double opt_ts = heu_ts;
         Trajectory temp_pos_traj;
-        auto sfc0 = back_traj_info.getSFC();
         bool temp_ret = traj_manager_->backup()->optimize(ref_exp_traj.posTraj(),
-                                                 t0,
-                                                 te,
-                                                 heu_ts,
-                                                 heu_p,
-                                                 heu_dur,
-                                                 back_traj_info.getSFC(),
-                                                 temp_pos_traj,
-                                                 opt_ts);
+                                                          t0,
+                                                          te,
+                                                          heu_ts,
+                                                          heu_p,
+                                                          heu_dur,
+                                                          back_traj_info.getSFC(),
+                                                          temp_pos_traj,
+                                                          opt_ts);
         time_consuming_[BACK_TRAJ_OPT] = t_back_opt.stop();
 
-        {
-            double init_ts;
-            VecDf init_times;
-            vec_Vec3f init_ps;
-            traj_manager_->backup()->getInitValue(init_ts, init_times, init_ps);
-            latest_replan.setBackupCondition(init_ts, init_times, init_ps,
-                                             t0, te,
-                                             back_traj_info.getSFC());
-            Trajectory traj;
-            double out_ts;
-            traj_manager_->backup()->optimize(ref_exp_traj.posTraj(),
-                                     t0,
-                                     te,
-                                     init_ts,
-                                     sfc0,
-                                     init_times,
-                                     init_ps,
-                                     traj,
-                                     out_ts
-            );
-
-        }
+        double init_ts;
+        VecDf init_times;
+        vec_Vec3f init_ps;
+        traj_manager_->backup()->getInitValue(init_ts, init_times, init_ps);
+        latest_replan.setBackupCondition(init_ts, init_times, init_ps,
+                                         t0, te,
+                                         back_traj_info.getSFC());
 
         if (!temp_ret) {
             ros_ptr_->warn(" -- [GeneralPlanner] OptimizationBakTrajInPolytopes failed, force return");
             back_traj_info.setEmpty();
             return OPT_FAILED;
         } else {
+            if (!std::isfinite(opt_ts) || opt_ts < t0 - 1.0e-6 || opt_ts > te + 1.0e-6) {
+                ros_ptr_->error(" -- [Checker] generateBackupTrajectory invalid opt_ts={}, t0={}, te={}.",
+                                opt_ts, t0, te);
+                return OPT_FAILED;
+            }
             Vec4f yaw_init_vec = ref_exp_traj.getYawState(opt_ts).row(0);
             Vec4f yaw_goal{0, 0, 0, 0};
             bool free_end{true};
@@ -4842,8 +5103,43 @@ namespace general_planner {
             }
 
             back_traj_info.setTrajectory(new_ts_WT, opt_ts, temp_pos_traj, temp_yaw_traj);
-            latest_replan.setBackupTraj(temp_pos_traj);
-            latest_replan.setBackupYawTraj(temp_yaw_traj);
+            const auto backup_check = checker::checkBackupTrajectory(back_traj_info,
+                                                                     cfg_,
+                                                                     "state2state_backup_output");
+            if (backup_check.rejected()) {
+                const bool yaw_rate_limited =
+                        backup_check.code.find("YAW_RATE_LIMIT") != std::string::npos;
+                if (yaw_rate_limited) {
+                    Trajectory yaw_brake_traj;
+                    if (buildYawBrakeTrajectory(yaw_init_vec,
+                                                temp_pos_traj.getTotalDuration(),
+                                                new_ts_WT,
+                                                yaw_brake_traj)) {
+                        back_traj_info.setTrajectory(new_ts_WT, opt_ts, temp_pos_traj, yaw_brake_traj);
+                        const auto yaw_brake_check = checker::checkBackupTrajectory(
+                                back_traj_info,
+                                cfg_,
+                                "state2state_backup_yaw_brake_output");
+	                        if (!yaw_brake_check.rejected()) {
+	                            ros_ptr_->warn(" -- [GeneralPlanner] Normal backup yaw rejected [{}], use yaw-brake fallback.",
+	                                           backup_check.code);
+	                            latest_replan.setBackupTraj(temp_pos_traj);
+	                            latest_replan.setBackupYawTraj(yaw_brake_traj);
+	                            return SUCCESS;
+                        }
+                        logCheckResult(ros_ptr_,
+                                       "generateBackupTrajectory yaw-brake output",
+                                       yaw_brake_check);
+                    } else {
+                        ros_ptr_->warn(" -- [GeneralPlanner] Failed to build yaw-brake fallback for backup trajectory.");
+                    }
+                }
+                logCheckResult(ros_ptr_, "generateBackupTrajectory output", backup_check);
+	                back_traj_info.setEmpty();
+	                return OPT_FAILED;
+	            }
+	            latest_replan.setBackupTraj(temp_pos_traj);
+	            latest_replan.setBackupYawTraj(temp_yaw_traj);
             return SUCCESS;
         }
         ros_ptr_->warn(" -- [GeneralPlanner] Cannot find backup traj start point.");

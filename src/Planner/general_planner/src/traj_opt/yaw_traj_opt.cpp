@@ -22,8 +22,25 @@
 */
 
 #include "traj_opt/yaw_traj_opt.h"
+#include <algorithm>
+#include <cmath>
 #include <utils/optimization/polynomial_interpolation.h>
 using namespace geometry_utils;
+namespace {
+double yawDelta(const double from, const double to) {
+    return std::atan2(std::sin(to - from), std::cos(to - from));
+}
+
+double normalizeYawNear(const double reference, const double yaw) {
+    return reference + yawDelta(reference, yaw);
+}
+
+double clampYawStep(const double reference, const double yaw, const double max_delta) {
+    const double delta = yawDelta(reference, yaw);
+    const double bounded_delta = std::max(-max_delta, std::min(max_delta, delta));
+    return reference + bounded_delta;
+}
+}
 namespace traj_opt {
     using namespace color_text;
     void YawTrajOpt::getYawTimeAllocation(const double &duration, VecDf &times) const {
@@ -51,41 +68,50 @@ namespace traj_opt {
     }
 
     void YawTrajOpt::getYawWaypointAllocation(const Vec4f &init_state, Vec4f &goal_state, VecDf &way_pts, VecDf &times,
-                                              const Trajectory &pos_traj) {
+                                              const Trajectory &pos_traj, const double yaw_dot_max) {
         double eval_t = 0;
-        vec_Vec3f debug1, debug2;
         double last_yaw = init_state(0);
         way_pts.resize(times.size() - 1);
         const double pos_traj_duration = pos_traj.getTotalDuration();
+        const double yaw_rate_limit = std::max(0.1, yaw_dot_max);
+        constexpr double kLookBack = 0.25;
+        constexpr double kMinLookAhead = 0.75;
+        constexpr double kMaxLookAhead = 1.50;
+        constexpr double kMinHeadingDisplacement = 0.25;
         for (long int i = 0; i < times.size() - 1; i++) {
             eval_t += times(i);
-            double cur_yaw;
-            Vec3f pt_i = pos_traj.getPos(eval_t);
-            Vec3f pt_g;
-            if (eval_t + 0.5 >= pos_traj_duration) {
-                pt_g = pos_traj.getPos(pos_traj_duration);
-                pt_i = pos_traj.getPos(pos_traj_duration - 0.5 > 0 ? pos_traj_duration - 0.5 : 0);
-            } else {
-                pt_g = pos_traj.getPos(eval_t + 0.5);
+            double cur_yaw = last_yaw;
+            const double lookahead =
+                    std::min(kMaxLookAhead, std::max(kMinLookAhead, static_cast<double>(times(i))));
+            double t0 = std::max(0.0, eval_t - kLookBack);
+            double t1 = std::min(pos_traj_duration, eval_t + lookahead);
+            if (eval_t + lookahead >= pos_traj_duration) {
+                t0 = std::max(0.0, pos_traj_duration - lookahead);
+                t1 = pos_traj_duration;
+            }
+            if (t1 - t0 < 0.2 && pos_traj_duration > 0.2) {
+                t0 = std::max(0.0, eval_t - 0.5 * lookahead);
+                t1 = std::min(pos_traj_duration, t0 + 0.2);
             }
 
-
-            Vec3f dir = pt_g - pt_i;
-            if (dir.norm() > 0.1) {
+            const Vec3f pt_i = pos_traj.getPos(t0);
+            const Vec3f pt_g = pos_traj.getPos(t1);
+            const Vec3f dir = pt_g - pt_i;
+            if (std::hypot(dir.x(), dir.y()) > kMinHeadingDisplacement) {
                 cur_yaw = atan2(dir.y(), dir.x());
-                normalizeNextYaw(last_yaw, cur_yaw);
-            } else {
-//                    print(fg(color::indian_red),
-//                          " -- [GeneralPlanner] Yaw planning failed, the goal yaw is too close to the current yaw.\n");
-                cur_yaw = last_yaw;
+                cur_yaw = normalizeYawNear(last_yaw, cur_yaw);
+                const double max_delta =
+                        std::max(0.25,
+                                 yaw_rate_limit * std::max(0.05, static_cast<double>(times(i))) * 0.85);
+                cur_yaw = clampYawStep(last_yaw, cur_yaw, max_delta);
             }
             way_pts(i) = cur_yaw;
             last_yaw = cur_yaw;
         }
         if (way_pts.size() == 0) {
-            geometry_utils::normalizeNextYaw(init_state[0], goal_state[0]);
+            goal_state[0] = normalizeYawNear(init_state[0], goal_state[0]);
         } else {
-            geometry_utils::normalizeNextYaw(way_pts(way_pts.size() - 1), goal_state[0]);
+            goal_state[0] = normalizeYawNear(way_pts(way_pts.size() - 1), goal_state[0]);
         }
 //            print("Remain dis = {}.\n", (cur_drone_state_.position - gi_.mission_waypoints.back()).norm());
 //            print("Yaw way_pts init = {}\n", init_state(0));
@@ -139,7 +165,7 @@ namespace traj_opt {
         VecDf times;
         getYawTimeAllocation(pos_traj_dur, times);
         VecDf way_pts;
-        getYawWaypointAllocation(init_state, goal_state, way_pts, times, pos_traj);
+        getYawWaypointAllocation(init_state, goal_state, way_pts, times, pos_traj, yaw_dot_max_);
         Trajectory yaw_traj;
         switch (order) {
             case 3: {

@@ -102,9 +102,10 @@ namespace general_planner {
 
         FOVChecker::Ptr fov_checker_;
 
-        CmdTraj cmd_traj_info_;
-        ExpTraj last_exp_traj_info_;
-        std::unique_ptr<TrackingRuntimeManager> tracking_runtime_manager_;
+	        CmdTraj cmd_traj_info_;
+	        ExpTraj last_exp_traj_info_;
+
+	        std::unique_ptr<TrackingRuntimeManager> tracking_runtime_manager_;
         std::unique_ptr<PerchingRuntimeManager> perching_runtime_manager_;
         std::unique_ptr<TakeoffFrontend> takeoff_frontend_;
         std::unique_ptr<TakeoffRuntimeManager> takeoff_runtime_manager_;

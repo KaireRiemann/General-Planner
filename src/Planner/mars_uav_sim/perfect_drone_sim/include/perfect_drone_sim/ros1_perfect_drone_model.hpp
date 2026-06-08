@@ -18,6 +18,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <mutex>
 
 typedef Eigen::Matrix<double, 3, 1> Vec3;
 typedef Eigen::Matrix<double, 3, 3> Mat33;
@@ -47,8 +48,19 @@ namespace perfect_drone {
             cfg_ = Config(cfg_path);
             applyInitialPoseOverrides();
             nh_.param("use_command_attitude", use_command_attitude_, false);
+            nh_.param("dynamic_cloud_en", cfg_.dynamic_cloud_en, cfg_.dynamic_cloud_en);
+            nh_.param("dynamic_cloud_topic", cfg_.dynamic_cloud_topic, cfg_.dynamic_cloud_topic);
             render_ptr_ = std::make_shared<marsim::MarsimRender>(cfg_path);
             cmd_sub_ = nh_.subscribe(cfg_.cmd_topic, 100, &PerfectDrone::cmdCallback, this);
+            if (cfg_.dynamic_cloud_en) {
+                dynamic_cloud_sub_ = nh_.subscribe(cfg_.dynamic_cloud_topic,
+                                                   2,
+                                                   &PerfectDrone::dynamicCloudCallback,
+                                                   this,
+                                                   ros::TransportHints().tcpNoDelay());
+                ROS_INFO("PerfectDrone dynamic cloud enabled on topic: %s",
+                         cfg_.dynamic_cloud_topic.c_str());
+            }
             odom_pub_ = nh_.advertise<nav_msgs::Odometry>(cfg_.odom_topic, 100);
             pose_pub_ = nh_.advertise<geometry_msgs::PoseStamped>(cfg_.pose_topic, 100);
             robot_pub_ = nh_.advertise<visualization_msgs::Marker>("robot", 100);
@@ -112,8 +124,11 @@ namespace perfect_drone {
 
         void publishPC() {
             pcl::PointCloud<marsim::PointType>::Ptr local_map(new pcl::PointCloud<marsim::PointType>);
-            render_ptr_->renderOnceInWorld(position_.cast<float>(), q_.cast<float>(), ros::Time::now().toSec(),
-                                           local_map);
+            {
+                std::lock_guard<std::mutex> lock(render_mutex_);
+                render_ptr_->renderOnceInWorld(position_.cast<float>(), q_.cast<float>(), ros::Time::now().toSec(),
+                                               local_map);
+            }
             sensor_msgs::PointCloud2 pc_msg;
             pcl::toROSMsg(*local_map, pc_msg);
             pc_msg.header.frame_id = "world";
@@ -126,7 +141,7 @@ namespace perfect_drone {
 
     private:
         nav_msgs::Path path_;
-        ros::Subscriber cmd_sub_;
+        ros::Subscriber cmd_sub_, dynamic_cloud_sub_;
         ros::Publisher odom_pub_, robot_pub_, pose_pub_, path_pub_, global_pc_pub_, local_pc_pub_, vel_pub_;
         ros::Timer odom_pub_timer_;
         ros::Timer pc_pub_timer_;
@@ -138,6 +153,7 @@ namespace perfect_drone {
         nav_msgs::Odometry odom_;
         std::string mesh_resource_;
         bool use_command_attitude_{false};
+        std::mutex render_mutex_;
 
         static Eigen::Quaterniond quatFromRpy(const double roll,
                                               const double pitch,
@@ -203,6 +219,14 @@ namespace perfect_drone {
                 q_ = quatFromRpy(msg->attitude.x, msg->attitude.y, msg->attitude.z);
                 yaw_ = msg->attitude.z;
             }
+        }
+
+
+        void dynamicCloudCallback(const sensor_msgs::PointCloud2ConstPtr &msg) {
+            pcl::PointCloud<pcl::PointXYZI> dynamic_cloud;
+            pcl::fromROSMsg(*msg, dynamic_cloud);
+            std::lock_guard<std::mutex> lock(render_mutex_);
+            render_ptr_->input_dyn_clouds(std::move(dynamic_cloud));
         }
 
 

@@ -127,7 +127,11 @@ namespace fsm {
         double tracking_static_safety_check_dt{0.12};
         double tracking_static_replan_log_period{1.0};
         double task_timeout{0.6};
+        int state2state_plan_from_rest_max_failures{0};
+        bool state2state_clear_goal_on_plan_failure{false};
         double yaw_dot_max{};
+        bool diagnostic_log_en{true};
+        string diagnostic_event_topic{"/planning/diagnostics/events"};
         bool swarm_enable{false};
         int swarm_drone_id{-1};
         double swarm_des_clearance{0.75};
@@ -184,6 +188,15 @@ namespace fsm {
             loader.LoadParam("fsm/tracking_static_safety_check_dt", tracking_static_safety_check_dt, 0.12);
             loader.LoadParam("fsm/tracking_static_replan_log_period", tracking_static_replan_log_period, 1.0);
             loader.LoadParam("fsm/task_timeout", task_timeout, 0.6);
+            loader.LoadParam("fsm/state2state_plan_from_rest_max_failures",
+                             state2state_plan_from_rest_max_failures,
+                             0);
+            loader.LoadParam("fsm/state2state_clear_goal_on_plan_failure",
+                             state2state_clear_goal_on_plan_failure,
+                             false);
+            loader.LoadParam("fsm/diagnostic_log_en", diagnostic_log_en, true);
+            loader.LoadParam("fsm/diagnostic_event_topic", diagnostic_event_topic,
+                             string("/planning/diagnostics/events"));
             loader.LoadParam("general_planner/swarm/enable", swarm_enable, false);
             loader.LoadParam("general_planner/swarm/drone_id", swarm_drone_id, -1);
             loader.LoadParam("general_planner/swarm/des_clearance", swarm_des_clearance, 0.75);

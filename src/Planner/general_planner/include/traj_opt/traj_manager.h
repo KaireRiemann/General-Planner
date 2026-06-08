@@ -73,7 +73,8 @@ public:
                                        Vec4f &goal_state,
                                        VecDf &way_pts,
                                        VecDf &times,
-                                       const Trajectory &pos_traj);
+                                       const Trajectory &pos_traj,
+                                       double yaw_dot_max);
 
   bool optimize(const Vec4f &istate_in,
                 const Vec4f &gstate_in,
@@ -109,11 +110,22 @@ public:
   void setSwarmTrajectories(const SwarmTrajectoriesConstPtr &trajectories);
   void setSwarmCurrentWallTime(double wall_time);
 
-  bool optimize(const StatePVAJ &headPVAJ,
-                const StatePVAJ &tailPVAJ,
-                const vec_E<Vec3f> &guide_path,
-                const std::vector<double> &guide_t,
-                Trajectory &out_traj);
+	  bool optimize(const StatePVAJ &headPVAJ,
+	                const StatePVAJ &tailPVAJ,
+	                const vec_E<Vec3f> &guide_path,
+	                const std::vector<double> &guide_t,
+	                Trajectory &out_traj);
+
+	  void getInitValue(VecDf &ts, vec_Vec3f &ps) const
+	  {
+	    ts = opt_vars_.times;
+	    ps.clear();
+	    ps.reserve(static_cast<std::size_t>(opt_vars_.points.cols()));
+	    for (int i = 0; i < opt_vars_.points.cols(); ++i)
+	    {
+	      ps.emplace_back(opt_vars_.points.col(i));
+	    }
+	  }
 
 private:
   struct OptimizationVariables
@@ -204,11 +216,22 @@ public:
   void setSwarmTrajectories(const SwarmTrajectoriesConstPtr &trajectories);
   void setSwarmCurrentWallTime(double wall_time);
 
-  bool optimize(const StatePVAJ &headPVAJ,
-                const StatePVAJ &tailPVAJ,
-                const vec_E<Vec3f> &guide_path,
-                const std::vector<double> &guide_t,
-                Trajectory &out_traj);
+	  bool optimize(const StatePVAJ &headPVAJ,
+	                const StatePVAJ &tailPVAJ,
+	                const vec_E<Vec3f> &guide_path,
+	                const std::vector<double> &guide_t,
+	                Trajectory &out_traj);
+
+	  void getInitValue(VecDf &ts, vec_Vec3f &ps) const
+	  {
+	    ts = opt_vars_.times;
+	    ps.clear();
+	    ps.reserve(static_cast<std::size_t>(opt_vars_.points.cols()));
+	    for (int i = 0; i < opt_vars_.points.cols(); ++i)
+	    {
+	      ps.emplace_back(opt_vars_.points.col(i));
+	    }
+	  }
 
 private:
   struct OptimizationVariables

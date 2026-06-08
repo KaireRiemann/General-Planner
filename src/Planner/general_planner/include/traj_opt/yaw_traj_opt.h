@@ -55,7 +55,7 @@ namespace traj_opt {
         void getYawTimeAllocation(const double &duration, VecDf &times) const ;
 
         static void getYawWaypointAllocation(const Vec4f &init_state, Vec4f &goal_state, VecDf &way_pts, VecDf &times,
-                                      const Trajectory &pos_traj) ;
+                                      const Trajectory &pos_traj, double yaw_dot_max) ;
 
         bool optimize(const Vec4f &istate_in,
                       const Vec4f &gstate_in,

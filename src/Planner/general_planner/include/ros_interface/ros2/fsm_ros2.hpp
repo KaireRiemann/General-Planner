@@ -187,12 +187,13 @@ namespace fsm {
         typedef std::shared_ptr<FsmRos2> Ptr;
 
         void saveReplanLogToFile(const string &name = "") {
+            const auto replan_logs = snapshotReplanLogs();
             // run statistic
             double total_length{0.0};
             int total_replan_num{0};
             double average_compt_t{0.0};
             Vec3f cur_p{0, 0, 0};
-            for (auto rp: replan_logs_) {
+            for (auto rp: replan_logs) {
                 if (rp.getRetCode() > 0) {
                     if (cur_p.norm() < 1e-6) {
                         cur_p = rp.getRobotP();
@@ -219,10 +220,21 @@ namespace fsm {
                                          ? LOG_FILE_DIR(
                                                  "cmd_logs/" + BinaryFileHandler<int>::getCurrentTimeStr() + ".csv")
                                          : LOG_FILE_DIR("cmd_logs/" + name + ".csv");
-            BinaryFileHandler<vector<LogOneReplan>>::save(save_path, replan_logs_);
+            if (ensureLogParentDirectory(save_path)) {
+                BinaryFileHandler<vector<LogOneReplan>>::save(save_path, replan_logs);
+            } else {
+                fmt::print(stderr, " -- [Fsm] Failed to create replan log directory for {}\n", save_path);
+            }
 
-            std::ofstream csv_writer;
-            csv_writer.open(csv_path, std::ios::out | std::ios::trunc);
+            if (!ensureLogParentDirectory(csv_path)) {
+                fmt::print(stderr, " -- [Fsm] Failed to create cmd log directory for {}\n", csv_path);
+                return;
+            }
+            std::ofstream csv_writer(csv_path, std::ios::out | std::ios::trunc);
+            if (!csv_writer.is_open()) {
+                fmt::print(stderr, " -- [Fsm] Failed to open cmd log file {}\n", csv_path);
+                return;
+            }
             csv_writer
                     << "time,posi_x,posi_y,posi_z,vel_x,vel_y,vel_z,acc_x,acc_y,acc_z,jerk_x,jerk_y,jerk_z,yaw,yaw_rate,backup"
                     << std::endl;

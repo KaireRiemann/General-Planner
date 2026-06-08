@@ -24,6 +24,8 @@
 #ifndef LOG_UTILS_HPP
 #define LOG_UTILS_HPP
 
+#include <string>
+
 #include "ros_interface/ros_interface.hpp"
 
 namespace general_planner {
@@ -101,8 +103,52 @@ namespace general_planner {
             return robot_p;
         }
 
+        Vec3f getGoalP() const {
+            return goal_p;
+        }
+
+        double getGoalYaw() const {
+            return goal_yaw;
+        }
+
+        double getReplanStamp() const {
+            return replan_stamp;
+        }
+
+        Vec3f getLocalStartP() const {
+            return local_start_p;
+        }
+
+        const vec_Vec3f &getReferencePath() const {
+            return reference_path;
+        }
+
+        const vec_Vec3f &getExpInitPs() const {
+            return exp_init_ps;
+        }
+
+        const Trajectory &getExpTraj() const {
+            return exp_traj;
+        }
+
+        const Trajectory &getBackupTraj() const {
+            return backup_traj;
+        }
+
         double getTotalCompT() const {
             return total_t;
+        }
+
+        double getAstarTime() const {
+            return astar_t;
+        }
+
+        double getExpOptTime() const {
+            return exp_opt_t;
+        }
+
+        double getBackupOptTime() const {
+            return backup_opt_t;
         }
 
         void visualize(ros_interface::RosInterface::Ptr &viz_ptr) {

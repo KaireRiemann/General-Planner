@@ -22,10 +22,13 @@
 */
 
 #include <fsm/fsm.h>
+#include <checker/common_checker.hpp>
 #include <algorithm>
+#include <boost/filesystem.hpp>
 #include <cmath>
 #include <iomanip>
 #include <memory>
+#include <sstream>
 
 using namespace super_utils;
 
@@ -34,10 +37,102 @@ namespace fsm {
         double yawDiff(const double lhs, const double rhs) {
             return std::atan2(std::sin(lhs - rhs), std::cos(lhs - rhs));
         }
+
+        std::string retCodeName(const int ret_code) {
+            switch (ret_code) {
+                case FAILED:
+                    return "FAILED";
+                case NO_NEED:
+                    return "NO_NEED";
+                case SUCCESS:
+                    return "SUCCESS";
+                case FINISH:
+                    return "FINISH";
+                case NEW_TRAJ:
+                    return "NEW_TRAJ";
+                case EMER:
+                    return "EMER";
+                case OPT_FAILED:
+                    return "OPT_FAILED";
+                case INIT_ERROR:
+                    return "INIT_ERROR";
+                case REACH_HORIZON:
+                    return "REACH_HORIZON";
+                case REACH_GOAL:
+                    return "REACH_GOAL";
+                case NO_PATH:
+                    return "NO_PATH";
+                case TIME_OUT:
+                    return "TIME_OUT";
+                default:
+                    return std::to_string(ret_code);
+            }
+        }
+
+        std::string csvEscape(const std::string &value) {
+            bool needs_quotes = false;
+            std::string escaped;
+            escaped.reserve(value.size());
+            for (const char c: value) {
+                if (c == '"' || c == ',' || c == '\n' || c == '\r') {
+                    needs_quotes = true;
+                }
+                if (c == '"') {
+                    escaped.push_back('"');
+                }
+                escaped.push_back(c);
+            }
+            if (!needs_quotes) {
+                return escaped;
+            }
+            return "\"" + escaped + "\"";
+        }
+
+        void writeDiagnosticCsvHeader(std::ostream &out) {
+            out << "stamp,relative_time,replan_id,replan_log_id,level,event,task_mode,machine_state,detail,"
+                << "goal_x,goal_y,goal_z,goal_yaw,robot_x,robot_y,robot_z,robot_vx,robot_vy,robot_vz,"
+                << "robot_state_received,traj_seq,ret_code,ret_code_name,total_replan_time_ms,"
+                << "remaining_traj_s,on_backup"
+                << std::endl;
+        }
+
+        void writeDiagnosticCsvRow(std::ostream &out,
+                                   const Fsm::DiagnosticEvent &event,
+                                   const double system_start_time) {
+            out << std::fixed << std::setprecision(15)
+                << event.stamp << ","
+                << event.stamp - system_start_time << ","
+                << event.replan_id << ","
+                << event.replan_log_id << ","
+                << csvEscape(event.level) << ","
+                << csvEscape(event.event) << ","
+                << csvEscape(event.task_mode) << ","
+                << csvEscape(event.machine_state) << ","
+                << csvEscape(event.detail) << ","
+                << event.goal_p.x() << ","
+                << event.goal_p.y() << ","
+                << event.goal_p.z() << ","
+                << event.goal_yaw << ","
+                << event.robot_p.x() << ","
+                << event.robot_p.y() << ","
+                << event.robot_p.z() << ","
+                << event.robot_v.x() << ","
+                << event.robot_v.y() << ","
+                << event.robot_v.z() << ","
+                << static_cast<int>(event.robot_state_received) << ","
+                << event.traj_seq << ","
+                << event.ret_code << ","
+                << csvEscape(retCodeName(event.ret_code)) << ","
+                << event.total_replan_time_ms << ","
+                << event.remaining_traj_s << ","
+                << static_cast<int>(event.on_backup)
+                << std::endl;
+        }
     }
 
     Fsm::~Fsm() {
         write_time_.close();
+        diagnostic_event_log_.close();
     }
 
     void Fsm::WriteTimeToLog() {
@@ -51,7 +146,165 @@ namespace fsm {
         write_time_ << endl;
     }
 
+    std::pair<std::size_t, int> Fsm::appendLatestReplanLog() {
+        LogOneReplan log = planner_ptr_->getLatestReplanLog();
+        std::lock_guard<std::mutex> lock(replan_logs_mutex_);
+        replan_logs_.push_back(std::move(log));
+        return {replan_logs_.size() - 1U, replan_logs_.back().getRetCode()};
+    }
+
+    vector<LogOneReplan> Fsm::snapshotReplanLogs() const {
+        std::lock_guard<std::mutex> lock(replan_logs_mutex_);
+        return replan_logs_;
+    }
+
+    void Fsm::openDiagnosticLogFile(const std::string &path) {
+        if (!cfg_.diagnostic_log_en) {
+            return;
+        }
+        boost::system::error_code ec;
+        const boost::filesystem::path log_path(path);
+        const boost::filesystem::path parent = log_path.parent_path();
+        if (!parent.empty()) {
+            boost::filesystem::create_directories(parent, ec);
+        }
+        diagnostic_event_log_.open(path, std::ios::out | std::ios::trunc);
+        if (diagnostic_event_log_.is_open()) {
+            writeDiagnosticCsvHeader(diagnostic_event_log_);
+        }
+    }
+
+    vector<Fsm::DiagnosticEvent> Fsm::snapshotDiagnosticEvents() const {
+        std::lock_guard<std::mutex> lock(diagnostic_events_mutex_);
+        return diagnostic_events_;
+    }
+
+    std::string Fsm::diagnosticEventToString(const DiagnosticEvent &event) const {
+        std::ostringstream oss;
+        oss << std::fixed << std::setprecision(6)
+            << "stamp=" << event.stamp
+            << ";relative_time=" << event.stamp - system_start_time_
+            << ";replan_id=" << event.replan_id
+            << ";replan_log_id=" << event.replan_log_id
+            << ";level=" << event.level
+            << ";event=" << event.event
+            << ";task_mode=" << event.task_mode
+            << ";machine_state=" << event.machine_state
+            << ";detail=" << event.detail
+            << ";goal=[" << event.goal_p.x() << "," << event.goal_p.y() << "," << event.goal_p.z() << "]"
+            << ";goal_yaw=" << event.goal_yaw
+            << ";robot=[" << event.robot_p.x() << "," << event.robot_p.y() << "," << event.robot_p.z() << "]"
+            << ";robot_v=[" << event.robot_v.x() << "," << event.robot_v.y() << "," << event.robot_v.z() << "]"
+            << ";robot_state_received=" << static_cast<int>(event.robot_state_received)
+            << ";traj_seq=" << event.traj_seq
+            << ";ret_code=" << event.ret_code
+            << ";ret_code_name=" << retCodeName(event.ret_code)
+            << ";total_replan_time_ms=" << event.total_replan_time_ms
+            << ";remaining_traj_s=" << event.remaining_traj_s
+            << ";on_backup=" << static_cast<int>(event.on_backup);
+        return oss.str();
+    }
+
+    void Fsm::recordDiagnosticEvent(const std::string &level,
+                                    const std::string &event,
+                                    const std::string &detail,
+                                    const int ret_code,
+                                    const int traj_seq,
+                                    const bool on_backup,
+                                    const int replan_log_id,
+                                    const uint64_t replan_id_override) {
+        if (!cfg_.diagnostic_log_en) {
+            return;
+        }
+        DiagnosticEvent diagnostic_event;
+        diagnostic_event.stamp = ros_ptr_ ? ros_ptr_->getSimTime() : 0.0;
+        diagnostic_event.replan_id = replan_id_override == std::numeric_limits<uint64_t>::max()
+                                     ? active_replan_id_
+                                     : replan_id_override;
+        diagnostic_event.replan_log_id = replan_log_id;
+        diagnostic_event.level = level;
+        diagnostic_event.event = event;
+        diagnostic_event.task_mode = cfg_.task_mode_str;
+        diagnostic_event.machine_state = MACHINE_STATE_STR[static_cast<int>(machine_state_)];
+        diagnostic_event.detail = detail;
+        diagnostic_event.goal_p = gi_.goal_p;
+        diagnostic_event.goal_yaw = gi_.goal_yaw;
+        diagnostic_event.traj_seq = traj_seq;
+        diagnostic_event.ret_code = ret_code;
+        diagnostic_event.on_backup = on_backup;
+        if (planner_ptr_) {
+            rog_map::RobotState current_robot_state{};
+            planner_ptr_->getRobotState(current_robot_state);
+            diagnostic_event.robot_state_received = current_robot_state.rcv;
+            if (current_robot_state.rcv) {
+                diagnostic_event.robot_p = current_robot_state.p;
+                diagnostic_event.robot_v = current_robot_state.v;
+            }
+            diagnostic_event.total_replan_time_ms = planner_ptr_->getLatestTotalReplanTime() * 1000.0;
+            diagnostic_event.remaining_traj_s = planner_ptr_->getCommittedTrajectoryRemainingDuration();
+        } else {
+            diagnostic_event.robot_state_received = robot_state_.rcv;
+            if (robot_state_.rcv) {
+                diagnostic_event.robot_p = robot_state_.p;
+                diagnostic_event.robot_v = robot_state_.v;
+            }
+        }
+
+        {
+            std::lock_guard<std::mutex> lock(diagnostic_events_mutex_);
+            diagnostic_events_.push_back(diagnostic_event);
+            if (diagnostic_event_log_.is_open()) {
+                writeDiagnosticCsvRow(diagnostic_event_log_, diagnostic_event, system_start_time_);
+                diagnostic_event_log_.flush();
+            }
+        }
+
+        publishDiagnosticEvent(diagnostic_event);
+    }
+
+    void Fsm::saveDiagnosticLogToFile(const std::string &name) {
+        if (!cfg_.diagnostic_log_en) {
+            return;
+        }
+        const auto diagnostic_events = snapshotDiagnosticEvents();
+        const std::string csv_path = name.empty()
+                                     ? LOG_FILE_DIR("diagnostic_events/" +
+                                                    BinaryFileHandler<int>::getCurrentTimeStr() + ".csv")
+                                     : LOG_FILE_DIR("diagnostic_events/" + name + ".csv");
+        boost::system::error_code ec;
+        const boost::filesystem::path log_path(csv_path);
+        const boost::filesystem::path parent = log_path.parent_path();
+        if (!parent.empty()) {
+            boost::filesystem::create_directories(parent, ec);
+        }
+        std::ofstream csv_writer(csv_path, std::ios::out | std::ios::trunc);
+        if (!csv_writer.is_open()) {
+            return;
+        }
+        writeDiagnosticCsvHeader(csv_writer);
+        for (const auto &event: diagnostic_events) {
+            writeDiagnosticCsvRow(csv_writer, event, system_start_time_);
+        }
+    }
+
+    bool Fsm::ensureLogParentDirectory(const std::string &path) const {
+        boost::system::error_code ec;
+        const boost::filesystem::path log_path(path);
+        const boost::filesystem::path parent = log_path.parent_path();
+        if (parent.empty()) {
+            return true;
+        }
+        if (boost::filesystem::exists(parent, ec)) {
+            return boost::filesystem::is_directory(parent, ec);
+        }
+        return boost::filesystem::create_directories(parent, ec);
+    }
+
     void Fsm::callReplanOnce() {
+        std::unique_lock<std::mutex> tick_lock(fsm_tick_mutex_, std::try_to_lock);
+        if (!tick_lock.owns_lock()) {
+            return;
+        }
         if (stop) {
             return;
         }
@@ -74,6 +327,10 @@ namespace fsm {
         }
 
         TimeConsuming replan_once_time("replan_once_time", false);
+        active_replan_id_ = next_replan_id_++;
+        recordDiagnosticEvent("INFO",
+                              "replan_start",
+                              fmt::format("new_goal={}", static_cast<int>(gi_.new_goal)));
 
         RET_CODE ret_code = FAILED;
         bool replan_tracking_static = false;
@@ -116,6 +373,11 @@ namespace fsm {
         if (ret_code == FAILED) {
 //            cout << YELLOW << " -- [Fsm] ReplanOnce failed." << RESET << endl;
         } else { cout << GREEN << " -- [Fsm] ReplanOnce succeed." << RESET << endl; }
+        recordDiagnosticEvent(ret_code == FAILED ? "WARN" : "INFO",
+                              "replan_result",
+                              fmt::format("new_goal={};ret={}", static_cast<int>(gi_.new_goal),
+                                          retCodeName(ret_code)),
+                              ret_code);
 
         if (ret_code == EMER) {
             ChangeState("ReplanTimerCallback", EMER_STOP);
@@ -150,11 +412,23 @@ namespace fsm {
         planner_ptr_->getModuleTimeConsuming(log_module_time);
         log_module_time[log_module_time.size() - 2] = replan_once_time.stop();
         // save on log
-        replan_logs_.push_back(planner_ptr_->getLatestReplanLog());
+        const auto log_id = appendLatestReplanLog();
+        const bool replan_warn = log_id.second == FAILED || log_id.second == OPT_FAILED;
+        recordDiagnosticEvent(replan_warn ? "WARN" : "INFO",
+                              "replan_log_saved",
+                              fmt::format("ret={}", retCodeName(log_id.second)),
+                              log_id.second,
+                              -1,
+                              false,
+                              static_cast<int>(log_id.first));
         WriteTimeToLog();
     }
 
     void Fsm::callMainFsmOnce() {
+        std::unique_lock<std::mutex> tick_lock(fsm_tick_mutex_, std::try_to_lock);
+        if (!tick_lock.owns_lock()) {
+            return;
+        }
         if (stop) {
             return;
         }
@@ -200,14 +474,27 @@ namespace fsm {
             }
             case GENERATE_TRAJ: {
                 if (state2stateMode() && closeToGoal(0.1)) {
+                    recordDiagnosticEvent("INFO",
+                                          "goal_reached_without_plan",
+                                          "distance_below_threshold=0.1",
+                                          -1,
+                                          -1,
+                                          false,
+                                          -1,
+                                          0);
                     ChangeState("MainFsmCallback", WAIT_GOAL);
                     gi_.new_goal = false;
+                    state2state_plan_from_rest_fail_count_ = 0;
                     finish_plan = true;
                     return;
                 }
                 int retcode = FAILED;
                 bool planned_tracking_static = false;
                 if (state2stateMode()) {
+                    active_replan_id_ = next_replan_id_++;
+                    recordDiagnosticEvent("INFO",
+                                          "plan_from_rest_start",
+                                          fmt::format("new_goal={}", static_cast<int>(gi_.new_goal)));
                     retcode = planner_ptr_->PlanFromRest(gi_.goal_p, gi_.goal_yaw, gi_.new_goal);
                 } else if (trackingMode()) {
                     traj_opt::DynamicTargetStates prediction;
@@ -233,8 +520,23 @@ namespace fsm {
                 }
                 if (state2stateMode() && !planner_ptr_->goalValid()) {
                     cout << YELLOW << " -- [Fsm] Goal is invalid, skip this goal." << RESET << endl;
+                    recordDiagnosticEvent("WARN",
+                                          "plan_from_rest_result",
+                                          "goal_valid=0",
+                                          retcode);
+                    gi_.new_goal = false;
+                    started_ = false;
+                    state2state_plan_from_rest_fail_count_ = 0;
                     ChangeState("MainFsmCallback", WAIT_GOAL);
                     return;
+                }
+                if (state2stateMode()) {
+                    recordDiagnosticEvent(retcode == FAILED ? "WARN" : "INFO",
+                                          "plan_from_rest_result",
+                                          fmt::format("ret={};goal_valid={}",
+                                                      retCodeName(retcode),
+                                                      static_cast<int>(planner_ptr_->goalValid())),
+                                          retcode);
                 }
                 if (retcode == NO_NEED && trackingMode()) {
                     plan_from_rest_ = true;
@@ -252,6 +554,9 @@ namespace fsm {
                 } else if (retcode == SUCCESS || retcode == FINISH) {
                     gi_.new_goal = false;
                     task_new_ = false;
+                    if (state2stateMode()) {
+                        state2state_plan_from_rest_fail_count_ = 0;
+                    }
                     plan_from_rest_ = true;
                     finish_plan = false;
                     if (retcode == FINISH) {
@@ -263,10 +568,61 @@ namespace fsm {
                     ChangeState("MainFsmCallback",
                                 trackingMode() && planned_tracking_static ? STATIC_TRACKING : FOLLOW_TRAJ);
                 } else {
-                    cout << YELLOW << " -- [Fsm] PlanFromRest failed, try replan." << RESET << endl;
+                    if (state2stateMode()) {
+                        ++state2state_plan_from_rest_fail_count_;
+                        const int failure_limit = cfg_.state2state_plan_from_rest_max_failures;
+                        cout << YELLOW << " -- [Fsm] PlanFromRest failed, try replan. consecutive_failures="
+                             << state2state_plan_from_rest_fail_count_;
+                        if (failure_limit > 0) {
+                            cout << "/" << failure_limit;
+                        }
+                        cout << RESET << endl;
+                        recordDiagnosticEvent("WARN",
+                                              "plan_from_rest_consecutive_failure",
+                                              fmt::format("count={};limit={};clear_goal_on_limit={}",
+                                                          state2state_plan_from_rest_fail_count_,
+                                                          failure_limit,
+                                                          static_cast<int>(
+                                                                  cfg_.state2state_clear_goal_on_plan_failure)),
+                                              retcode);
+                        if (failure_limit > 0 &&
+                            state2state_plan_from_rest_fail_count_ >= failure_limit) {
+                            recordDiagnosticEvent("ERROR",
+                                                  "plan_from_rest_failure_limit_reached",
+                                                  fmt::format("count={};clear_goal={}",
+                                                              state2state_plan_from_rest_fail_count_,
+                                                              static_cast<int>(
+                                                                      cfg_.state2state_clear_goal_on_plan_failure)),
+                                                  retcode);
+                            if (cfg_.state2state_clear_goal_on_plan_failure) {
+                                cout << YELLOW << " -- [Fsm] PlanFromRest failed "
+                                     << state2state_plan_from_rest_fail_count_
+                                     << " times, clear current state2state goal and wait for a new goal."
+                                     << RESET << endl;
+                                gi_.new_goal = false;
+                                started_ = false;
+                                plan_from_rest_ = false;
+                                finish_plan = true;
+                                ChangeState("PlanFromRestFailureLimit", WAIT_GOAL);
+                            }
+                            state2state_plan_from_rest_fail_count_ = 0;
+                        }
+                    } else {
+                        cout << YELLOW << " -- [Fsm] PlanFromRest failed, try replan." << RESET << endl;
+                    }
                     // ros::Duration(0.1).sleep();
                 }
-                replan_logs_.push_back(planner_ptr_->getLatestReplanLog());
+                const auto log_id = appendLatestReplanLog();
+                if (state2stateMode()) {
+                    const bool replan_warn = log_id.second == FAILED || log_id.second == OPT_FAILED;
+                    recordDiagnosticEvent(replan_warn ? "WARN" : "INFO",
+                                          "replan_log_saved",
+                                          fmt::format("ret={}", retCodeName(log_id.second)),
+                                          log_id.second,
+                                          -1,
+                                          false,
+                                          static_cast<int>(log_id.first));
+                }
                 break;
             }
             case FOLLOW_TRAJ: {
@@ -716,10 +1072,44 @@ namespace fsm {
 
     void Fsm::setGoalPosiAndYaw(const Vec3f &p, const Quatf &q) {
 
+        if (!p.allFinite()) {
+            recordDiagnosticEvent("WARN",
+                                  "goal_rejected",
+                                  "reason=non_finite_position",
+                                  -1,
+                                  -1,
+                                  false,
+                                  -1,
+                                  0);
+            return;
+        }
+        if (!checker::quaternionValidOrDisabled(q)) {
+            recordDiagnosticEvent("WARN",
+                                  "goal_rejected",
+                                  "reason=invalid_quaternion",
+                                  -1,
+                                  -1,
+                                  false,
+                                  -1,
+                                  0);
+            return;
+        }
+
         auto click_point = p;
         if (cfg_.click_height > -5) {
             click_point.z() = cfg_.click_height;
         }
+        recordDiagnosticEvent("INFO",
+                              "goal_received",
+                              fmt::format("raw=[{:.3f},{:.3f},{:.3f}];click_height={:.3f};adjusted=[{:.3f},{:.3f},{:.3f}]",
+                                          p.x(), p.y(), p.z(),
+                                          cfg_.click_height,
+                                          click_point.x(), click_point.y(), click_point.z()),
+                              -1,
+                              -1,
+                              false,
+                              -1,
+                              0);
         const bool had_goal = started_;
         const Vec3f last_goal_p = gi_.goal_p;
         const double last_goal_yaw = gi_.goal_yaw;
@@ -728,11 +1118,30 @@ namespace fsm {
             cout << GREEN << " -- [Fsm] Get goal at " << RESET << gi_.goal_p.transpose() << endl;
         } else {
             fmt::print(fg(fmt::color::indian_red), "Goal is deeply occupied, skip this goal.\n");
+            recordDiagnosticEvent("WARN",
+                                  "goal_rejected",
+                                  fmt::format("reason=occupied_or_no_free_projection;raw=[{:.3f},{:.3f},{:.3f}];adjusted=[{:.3f},{:.3f},{:.3f}]",
+                                              p.x(), p.y(), p.z(),
+                                              click_point.x(), click_point.y(), click_point.z()),
+                                  -1,
+                                  -1,
+                                  false,
+                                  -1,
+                                  0);
             return;
         }
         if ((robot_state_.p - gi_.goal_p).norm() <
             0.1) {
             //                print(fg(color::gray), " -- [Rviz] Too close to goal, skip this target.\n");
+            recordDiagnosticEvent("INFO",
+                                  "goal_rejected",
+                                  fmt::format("reason=too_close;distance={:.3f}",
+                                              (robot_state_.p - gi_.goal_p).norm()),
+                                  -1,
+                                  -1,
+                                  false,
+                                  -1,
+                                  0);
             return;
         }
 
@@ -757,16 +1166,45 @@ namespace fsm {
                               (std::isfinite(last_goal_yaw) && std::isfinite(gi_.goal_yaw) &&
                                std::fabs(last_goal_yaw - gi_.goal_yaw) < 0.02);
         if (had_goal && (last_goal_p - gi_.goal_p).norm() < 0.05 && same_yaw) {
+            recordDiagnosticEvent("INFO",
+                                  "goal_duplicated",
+                                  fmt::format("position_delta={:.3f};same_yaw={}",
+                                              (last_goal_p - gi_.goal_p).norm(),
+                                              static_cast<int>(same_yaw)),
+                                  -1,
+                                  -1,
+                                  false,
+                                  -1,
+                                  0);
             return;
         }
 
         started_ = true;
         gi_.new_goal = true;
+        state2state_plan_from_rest_fail_count_ = 0;
+        recordDiagnosticEvent("INFO",
+                              "goal_accepted",
+                              fmt::format("projected=[{:.3f},{:.3f},{:.3f}];projection_distance={:.3f};goal_yaw={:.3f};had_goal={}",
+                                          gi_.goal_p.x(), gi_.goal_p.y(), gi_.goal_p.z(),
+                                          (click_point - gi_.goal_p).norm(),
+                                          gi_.goal_yaw,
+                                          static_cast<int>(had_goal)),
+                              -1,
+                              -1,
+                              false,
+                              -1,
+                              0);
     }
 
     void Fsm::ChangeState(const string &call_func, const MACHINE_STATE &new_state) {
         fmt::print(fg(fmt::color::green), " -- [Fsm]: [{}] change state from [{}] to [{}].\n", call_func,
                    MACHINE_STATE_STR[int(machine_state_)], MACHINE_STATE_STR[int(new_state)]);
+        recordDiagnosticEvent("INFO",
+                              "fsm_state_transition",
+                              fmt::format("caller={};from={};to={}",
+                                          call_func,
+                                          MACHINE_STATE_STR[int(machine_state_)],
+                                          MACHINE_STATE_STR[int(new_state)]));
         machine_state_ = new_state;
     }
 }

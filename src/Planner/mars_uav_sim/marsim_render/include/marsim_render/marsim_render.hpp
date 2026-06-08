@@ -164,6 +164,8 @@ namespace marsim {
             pcl::transformPointCloud(*local_map, *point_in_sensor, world2sensor);
         }
 
+        void input_dyn_clouds(pcl::PointCloud<pcl::PointXYZI> input_cloud);
+
 
     private:
         glm::mat4 projection{}, view{};
@@ -193,9 +195,6 @@ namespace marsim {
                                const Eigen::Quaternionf& camera_q,
                                const decimal_t& t_pattern_start,
                                pcl::PointCloud<PointType>::Ptr output_pointcloud);
-
-        void input_dyn_clouds(pcl::PointCloud<pcl::PointXYZI> input_cloud);
-
 
         void load_pcd_file(std::string file_name, pcl::PointCloud<PointType>& cloud_color_mesh);
 

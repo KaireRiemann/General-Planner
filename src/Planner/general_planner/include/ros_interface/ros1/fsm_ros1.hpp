@@ -61,6 +61,7 @@ namespace fsm {
         ros::Subscriber swarm_state_sub_;
         ros::Publisher cmd_pub, mpc_cmd_pub_, path_pub_;
         ros::Publisher swarm_traj_pub_, swarm_state_pub_;
+        ros::Publisher diagnostic_event_pub_;
         ros::Timer execution_timer_, replan_timer_, cmd_timer_;
         quadrotor_msgs::PositionCommand pid_cmd_;
         rog_map::ROGMapROS::Ptr map_ptr_;
@@ -70,9 +71,33 @@ namespace fsm {
         std::map<int, traj_opt::SwarmTrajectory> swarm_traj_buffer_;
         std::map<int, nav_msgs::Odometry> swarm_state_buffer_;
         unsigned int traj_seq_{0};
+        int last_cmd_backup_flag_{-1};
         ros::Time last_tracking_prediction_path_time_;
 
-        vector<quadrotor_msgs::PositionCommand> cmd_logs_;
+        struct CommandLogEntry {
+            quadrotor_msgs::PositionCommand cmd;
+            uint64_t replan_id{0};
+            unsigned int traj_seq{0};
+        };
+
+        vector<CommandLogEntry> cmd_logs_;
+
+        void appendCommandLog(const quadrotor_msgs::PositionCommand &cmd) {
+            CommandLogEntry entry;
+            entry.cmd = cmd;
+            entry.replan_id = active_replan_id_;
+            entry.traj_seq = traj_seq_;
+            cmd_logs_.push_back(entry);
+        }
+
+        void publishDiagnosticEvent(const DiagnosticEvent &event) override {
+            if (!cfg_.diagnostic_log_en || !diagnostic_event_pub_) {
+                return;
+            }
+            std_msgs::String msg;
+            msg.data = diagnosticEventToString(event);
+            diagnostic_event_pub_.publish(msg);
+        }
 
         void resetVisualizedPath() override {
             path.poses.clear();
@@ -102,6 +127,18 @@ namespace fsm {
             if (cfg_.swarm_enable && cfg_.swarm_broadcast_enable) {
                 swarm_traj_pub_.publish(cmd_traj);
             }
+            double duration = 0.0;
+            for (const auto &piece_duration: cmd_traj.time_pos) {
+                duration += piece_duration;
+            }
+            recordDiagnosticEvent("INFO",
+                                  "trajectory_published",
+                                  fmt::format("piece_num_pos={};duration={:.3f};debug_info={}",
+                                              cmd_traj.piece_num_pos,
+                                              duration,
+                                              cmd_traj.debug_info),
+                                  -1,
+                                  static_cast<int>(traj_seq_));
         }
 
         void getOneHeartBeatMsg(quadrotor_msgs::PolynomialTrajectory &heartbeat, bool &traj_finish) {
@@ -177,6 +214,8 @@ namespace fsm {
                 << ";des_clearance=" << cfg_.swarm_des_clearance
                 << ";task_mode=" << cfg_.task_mode_str
                 << ";task_phase=" << task_phase
+                << ";replan_id=" << active_replan_id_
+                << ";traj_seq=" << traj_seq_
                 << ";ellipsoid_optimizer=" << planner_ptr_->getEllipsoidOptimizerName()
                 << ";corridor_time_ms=" << (corridor_time >= 0.0 ? corridor_time * 1000.0 : -1.0)
                 << ";mvie_lbfgs_iterations=" << planner_ptr_->getLatestMvieLbfgsIterations()
@@ -351,6 +390,7 @@ namespace fsm {
             planner_ptr_->getOneCommandFromTraj(pvaj, yaw, yaw_dot, on_backup_traj, traj_finish);
             pos_cmd.header.stamp = ros::Time::now();
             pos_cmd.header.frame_id = "world";
+            pos_cmd.trajectory_id = traj_seq_;
             pos_cmd.position.x = pvaj(0, 0);
             pos_cmd.position.y = pvaj(1, 0);
             pos_cmd.position.z = pvaj(2, 0);
@@ -366,10 +406,23 @@ namespace fsm {
             pos_cmd.yaw = yaw;
             pos_cmd.yaw_dot = yaw_dot;
             pos_cmd.trajectory_flag = on_backup_traj ? 2 : 1;
+            pos_cmd.vel_norm = pvaj.col(1).norm();
+            pos_cmd.acc_norm = pvaj.col(2).norm();
             Vec3f rpy, omg;
             double aT;
             geometry_utils::convertFlatOutputToAttAndOmg(pvaj.col(0), pvaj.col(1), pvaj.col(2), pvaj.col(3), yaw,
                                                          yaw_dot, rpy, omg, aT);
+            if (!rpy.allFinite() || !omg.allFinite() || !std::isfinite(aT)) {
+                recordDiagnosticEvent("WARN",
+                                      "cmd_flat_output_invalid",
+                                      fmt::format("trajectory_id={}", traj_seq_),
+                                      -1,
+                                      static_cast<int>(traj_seq_),
+                                      on_backup_traj);
+                rpy.setZero();
+                omg.setZero();
+                aT = 0.0;
+            }
             pos_cmd.attitude.x = rpy(0);
             pos_cmd.attitude.y = rpy(1);
             pos_cmd.attitude.z = rpy(2);
@@ -378,27 +431,54 @@ namespace fsm {
             pos_cmd.angular_velocity.z = omg(2);
             pos_cmd.thrust.z = aT;
             latest_cmd = pos_cmd;
-            cmd_logs_.push_back(latest_cmd);
+            appendCommandLog(latest_cmd);
+            const int backup_flag = on_backup_traj ? 1 : 0;
+            if (last_cmd_backup_flag_ != backup_flag) {
+                last_cmd_backup_flag_ = backup_flag;
+                recordDiagnosticEvent(on_backup_traj ? "WARN" : "INFO",
+                                      on_backup_traj ? "cmd_enter_backup_traj" : "cmd_use_exp_traj",
+                                      fmt::format("traj_finish={};trajectory_id={}",
+                                                  static_cast<int>(traj_finish),
+                                                  pos_cmd.trajectory_id),
+                                      -1,
+                                      static_cast<int>(traj_seq_),
+                                      on_backup_traj);
+            }
         }
 
     public:
         FsmRos1() = default;
 
-        ~FsmRos1(){
-            ros::shutdown();
-            saveReplanLogToFile("general_latest_log");
-            exit(0);
+        ~FsmRos1() {
+            stop = true;
+            try {
+                execution_timer_.stop();
+                replan_timer_.stop();
+                cmd_timer_.stop();
+            } catch (const std::exception &e) {
+                fmt::print(stderr, " -- [Fsm] Failed to stop ROS timers: {}\n", e.what());
+            } catch (...) {
+                fmt::print(stderr, " -- [Fsm] Failed to stop ROS timers: unknown exception\n");
+            }
+            try {
+                saveReplanLogToFile("general_latest_log");
+            } catch (const std::exception &e) {
+                fmt::print(stderr, " -- [Fsm] Failed to save final replan log: {}\n", e.what());
+            } catch (...) {
+                fmt::print(stderr, " -- [Fsm] Failed to save final replan log: unknown exception\n");
+            }
         };
 
         typedef std::shared_ptr<FsmRos1> Ptr;
 
         void saveReplanLogToFile(const string &name = "") {
+            const auto replan_logs = snapshotReplanLogs();
             // run statistic
             double total_length{0.0};
             int total_replan_num{0};
             double average_compt_t{0.0};
             Vec3f cur_p{0, 0, 0};
-            for (auto rp: replan_logs_) {
+            for (auto rp: replan_logs) {
                 if (rp.getRetCode() > 0) {
                     if (cur_p.norm() < 1e-6) {
                         cur_p = rp.getRobotP();
@@ -424,16 +504,31 @@ namespace fsm {
                                          ? LOG_FILE_DIR(
                                                  "cmd_logs/" + BinaryFileHandler<int>::getCurrentTimeStr() + ".csv")
                                          : LOG_FILE_DIR("cmd_logs/" + name + ".csv");
-            BinaryFileHandler<vector<LogOneReplan>>::save(save_path, replan_logs_);
+            if (ensureLogParentDirectory(save_path)) {
+                BinaryFileHandler<vector<LogOneReplan>>::save(save_path, replan_logs);
+            } else {
+                fmt::print(stderr, " -- [Fsm] Failed to create replan log directory for {}\n", save_path);
+            }
+            saveDiagnosticLogToFile(name.empty() ? "" : name + "_events");
 
-            std::ofstream csv_writer;
-            csv_writer.open(csv_path, std::ios::out | std::ios::trunc);
+            if (!ensureLogParentDirectory(csv_path)) {
+                fmt::print(stderr, " -- [Fsm] Failed to create cmd log directory for {}\n", csv_path);
+                return;
+            }
+            std::ofstream csv_writer(csv_path, std::ios::out | std::ios::trunc);
+            if (!csv_writer.is_open()) {
+                fmt::print(stderr, " -- [Fsm] Failed to open cmd log file {}\n", csv_path);
+                return;
+            }
             csv_writer
-                    << "time,posi_x,posi_y,posi_z,vel_x,vel_y,vel_z,acc_x,acc_y,acc_z,jerk_x,jerk_y,jerk_z,yaw,yaw_rate,backup"
+                    << "time,replan_id,traj_seq,posi_x,posi_y,posi_z,vel_x,vel_y,vel_z,acc_x,acc_y,acc_z,jerk_x,jerk_y,jerk_z,yaw,yaw_rate,backup"
                     << std::endl;
             csv_writer<<std::fixed<<std::setprecision(15);
-            for (const auto &cmd: cmd_logs_) {
-                csv_writer << cmd.header.stamp.toSec() - system_start_time_ << "," << cmd.position.x << "," << cmd.position.y << ","
+            for (const auto &entry: cmd_logs_) {
+                const auto &cmd = entry.cmd;
+                csv_writer << cmd.header.stamp.toSec() - system_start_time_ << ","
+                           << entry.replan_id << "," << entry.traj_seq << ","
+                           << cmd.position.x << "," << cmd.position.y << ","
                            << cmd.position.z << ","
                            << cmd.velocity.x << "," << cmd.velocity.y << "," << cmd.velocity.z << ","
                            << cmd.acceleration.x << "," << cmd.acceleration.y << "," << cmd.acceleration.z << ","
@@ -486,7 +581,6 @@ namespace fsm {
             }
             fmt::print(" -- [Fsm] Cur vel: {}, delta_v: {}, max_delta_v: {}\n", pid_cmd_.vel_norm, delta_v,
                        max_delta_v);
-            cmd_logs_.push_back(latest_cmd);
             return true;
         }
 
@@ -782,6 +876,9 @@ namespace fsm {
             cmd_pub = nh_.advertise<quadrotor_msgs::PositionCommand>(cfg_.cmd_topic, 10);
             mpc_cmd_pub_ = nh_.advertise<quadrotor_msgs::PolynomialTrajectory>(cfg_.mpc_cmd_topic, 10);
             path_pub_ = nh_.advertise<nav_msgs::Path>("fsm/path", 100);
+            if (cfg_.diagnostic_log_en) {
+                diagnostic_event_pub_ = nh_.advertise<std_msgs::String>(cfg_.diagnostic_event_topic, 100);
+            }
 
             int cmd_cnt = 0;
 
@@ -920,6 +1017,19 @@ namespace fsm {
             write_time_ << endl;
             machine_state_ = INIT;
             system_start_time_ = ros_ptr_->getSimTime();
+            openDiagnosticLogFile(LOG_FILE_DIR("diagnostic_events/general_runtime.csv"));
+            recordDiagnosticEvent("INFO",
+                                  "fsm_initialized",
+                                  fmt::format("task_mode={};replan_rate={:.3f};cmd_topic={};mpc_cmd_topic={}",
+                                              cfg_.task_mode_str,
+                                              cfg_.replan_rate,
+                                              cfg_.cmd_topic,
+                                              cfg_.mpc_cmd_topic),
+                                  -1,
+                                  -1,
+                                  false,
+                                  -1,
+                                  0);
             if (cfg_.auto_start) {
                 started_ = true;
                 if (explorationMode()) {
@@ -954,6 +1064,14 @@ namespace fsm {
             cmd_pub.publish(pid_cmd_);
             if (traj_finish_) {
                 cout << GREEN << " -- [Fsm] Traj finish." << RESET << endl;
+                recordDiagnosticEvent("INFO",
+                                      "trajectory_finished",
+                                      fmt::format("trajectory_id={};close_to_goal={}",
+                                                  pid_cmd_.trajectory_id,
+                                                  static_cast<int>(closeToGoal(0.1))),
+                                      -1,
+                                      static_cast<int>(traj_seq_),
+                                      pid_cmd_.trajectory_flag == 2);
                 const bool tracking_perching_contact = trackingPerchingPerchingActive();
                 if (perchingMode() || tracking_perching_contact) {
                     {

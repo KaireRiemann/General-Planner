@@ -3,7 +3,7 @@
     <arg name="planner_config_path" default=""/>
     <arg name="rviz" default="true"/>
     <arg name="fpv_rviz" default="false"/>
-    <arg name="rviz_config" default="$(find perfect_drone_sim)/rviz/top_down.rviz"/>
+    <arg name="rviz_config" default="$(find perfect_drone_sim)/rviz/real_fly.rviz"/>
 
     <!--     click_demo_high_speed.launch -->
 

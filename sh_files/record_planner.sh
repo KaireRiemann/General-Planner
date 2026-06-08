@@ -22,10 +22,12 @@ mkdir -p "${BAG_DIR}"
 
 topics=(
   # Time, transforms, and ROS logs.
+  /clock
   /tf
   /tf_static
   /rosout
   /rosout_agg
+  /planning/diagnostics/events
 
   # Planner perception and state inputs.
   /cloud_registered
@@ -46,6 +48,8 @@ topics=(
   /tracking/target_prediction
   /perching/surface_odom
   /perching/surface_markers
+  /perfect_drone/dynamic_obstacle_markers
+  /perfect_drone/dynamic_obstacle_cloud
 
   # Executed and committed trajectory outputs.
   /planning/pos_cmd
