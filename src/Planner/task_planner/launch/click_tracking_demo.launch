@@ -2,7 +2,7 @@
     <arg name="target_sim_config" default="click.yaml"/>
     <arg name="target_planner_config" default="click_smooth_ros1.yaml"/>
     <arg name="tracker_sim_config" default="swarm_drone1.yaml"/>
-    <arg name="tracker_planner_config" default="tracking_tracker_drone1_ros1.yaml"/>
+    <arg name="tracker_planner_config" default="tracking.yaml"/>
     <arg name="rviz" default="true"/>
     <arg name="fpv_rviz" default="true"/>
     <arg name="monitor" default="true"/>

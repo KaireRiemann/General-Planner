@@ -1,11 +1,11 @@
 #############| For UAV simulation |#################################
-pcd_name: "forest.pcd"
+pcd_name: "big_field.pcd"
 mesh_resource: "package://perfect_drone_sim/meshes/yunque-M.dae"
 init_position:
-  x: 0
-  y: 0
+  x: 0.0
+  y: -0.5
   z: 1.5
-init_yaw: 1.5741
+init_yaw: 0.0
 
 #############|For LiDAR perception simulation |#################################
 is_360lidar: true
@@ -24,6 +24,3 @@ print_time_consumption: false
 #  };
 lidar_type: 2
 depth_image_en: false
-
-
-

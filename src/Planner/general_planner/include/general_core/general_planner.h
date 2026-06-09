@@ -123,18 +123,37 @@ namespace general_planner {
         int tracking_consecutive_keep_old_{0};
         int tracking_consecutive_reject_{0};
         double last_tracking_commit_wt_{-1.0};
+        std::string last_tracking_commit_reject_reason_;
+        std::size_t last_tracking_diag_guide_path_size_{0};
+        std::size_t last_tracking_diag_sfc_size_{0};
+        std::size_t last_tracking_diag_target_prediction_size_{0};
+        double last_tracking_diag_out_traj_duration_{0.0};
+        traj_opt::DynamicTargetStates last_tracking_frontend_prediction_;
+        vec_E<Vec3f> last_tracking_frontend_viewpoints_;
 
         struct TrackingTrajectoryActivity {
             bool valid{false};
             bool safe{false};
             bool active{false};
             bool target_moving{false};
+            bool target_vertical_moving{false};
 
             double remaining{0.0};
             double speed0{0.0};
+            double speed_xy{0.0};
+            double speed_z{0.0};
+            double speed_3d{0.0};
             double displacement{0.0};
+            double displacement_xy{0.0};
+            double displacement_z{0.0};
+            double displacement_3d{0.0};
             double progress{0.0};
+            double progress_xy{0.0};
+            double progress_3d{0.0};
             double expected_progress{0.0};
+            double target_speed_xy{0.0};
+            double target_speed_z{0.0};
+            double target_speed_3d{0.0};
             double tracking_error{0.0};
             double avg_tracking_error{0.0};
 
@@ -193,6 +212,10 @@ namespace general_planner {
                 CommittedTrajectorySafetyReport *report = nullptr);
 
         bool trackingPerchingPerchingActive() const;
+
+        bool trackingPerchingContactReached() const;
+
+        TrackingPerchingTransitionManager::Status trackingPerchingStatus() const;
 
         void markTrackingPerchingContact();
 
@@ -278,6 +301,11 @@ namespace general_planner {
 
         void setTrackingPerchingRequest(bool request);
 
+        RET_CODE TryCommitPerchingFromTracking(
+            const traj_opt::DynamicTargetStates &target_prediction,
+            const traj_opt::PerchingSurfaceState &surface,
+            RET_CODE tracking_ret);
+
         RET_CODE PlanPerchingFromRest(const traj_opt::PerchingSurfaceState &surface,
                                       const bool &new_task);
 
@@ -351,6 +379,11 @@ namespace general_planner {
 
         void refreshTrackingGuideTiming(traj_opt::TrackingProblem &problem) const;
         void refreshTrackingGuideEndpoint(traj_opt::TrackingProblem &problem) const;
+        bool findTrackingViewpointReference(
+            const traj_opt::DynamicTargetStates &target_prediction,
+            Vec3f &reference_viewpoint,
+            traj_opt::DynamicTargetState &reference_target) const;
+        void rememberTrackingViewpointReference(const traj_opt::TrackingProblem &problem);
 
         StatePVAJ makeTaskHeadState(const bool &from_rest);
 
@@ -415,6 +448,8 @@ namespace general_planner {
         bool candidateTrackingTrajectoryCommandable(
             const Trajectory &candidate_pos_traj,
             const traj_opt::DynamicTargetStates &target_prediction,
+            double candidate_eval_start_t = 0.0,
+            double target_eval_start_t = 0.0,
             std::string *reason = nullptr) const;
 
         bool keepOldTrackingTrajectoryIfActive(
@@ -423,6 +458,22 @@ namespace general_planner {
 
         bool trackingCandidateSafeForCommit(const Trajectory &candidate_pos_traj) const;
 
+        bool trackingSnapshotSatisfiesFovForKeepOld(
+            const Trajectory &pos_traj,
+            const Trajectory &yaw_traj,
+            double local_start_t,
+            const traj_opt::DynamicTargetStates &target_prediction,
+            std::string *reason = nullptr) const;
+
+        bool trackingTrajectorySatisfiesFov(const Trajectory &pos_traj,
+                                            const Trajectory &yaw_traj,
+                                            const traj_opt::DynamicTargetStates &target_prediction,
+                                            double start_t,
+                                            double horizon,
+                                            double dt,
+                                            double target_start_t,
+                                            std::string *reason = nullptr) const;
+
         void resetTrackingCommitCounters();
 
         double trackingViewpointErrorScore(const Vec3f &tracker,
@@ -430,7 +481,24 @@ namespace general_planner {
 
         bool trackingCommitPassesAntiRollback(const Trajectory &candidate_pos_traj,
                                               const traj_opt::DynamicTargetStates &target_prediction,
-                                              double commit_wt);
+                                              double commit_wt,
+                                              double candidate_eval_start_t = 0.0,
+                                              double target_eval_start_t = 0.0,
+                                              bool candidate_safe = true,
+                                              bool candidate_fov_ok = true,
+                                              int *worse_count_out = nullptr,
+                                              double *max_regression_out = nullptr,
+                                              std::string *reason = nullptr);
+
+        bool optimizeTrackingProblemWithRetries(
+            const traj_opt::TrackingProblem &normal_problem,
+            const traj_opt::DynamicTargetStates &active_target_prediction,
+            Trajectory &out_traj,
+            Trajectory &out_yaw_traj,
+            std::string *failure_reason);
+
+        bool applyTrackingNarrowPassageSoftDistance(traj_opt::TrackingProblem &problem,
+                                                    std::string *reason = nullptr) const;
 
         RET_CODE optimizeTrackingTask(const traj_opt::DynamicTargetStates &target_prediction,
                                       const bool &from_rest);

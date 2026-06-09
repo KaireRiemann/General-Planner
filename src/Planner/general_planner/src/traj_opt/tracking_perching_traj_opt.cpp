@@ -1669,7 +1669,9 @@ private:
       const double inv_K = 1.0 / static_cast<double>(samples_per_piece_);
       const double dt = T * inv_K;
       const int pos_base = i * PosTraj::COEFF_NUM;
+      const int yaw_base = i * YawTraj::COEFF_NUM;
       const auto pos_block = pos_coeffs.template block<PosTraj::COEFF_NUM, 3>(pos_base, 0);
+      const auto yaw_block = yaw_coeffs.template block<YawTraj::COEFF_NUM, 1>(yaw_base, 0);
 
       for (int k = 0; k <= samples_per_piece_; ++k)
       {
@@ -1734,6 +1736,55 @@ private:
                        ga_integral.dot(j) + gj_integral.dot(s)) *
                       alpha * common_weight;
         gdT_pos(i) += gt_integral * alpha * common_weight;
+      }
+
+      if (!problem_.dense_joint_sample_enable &&
+          problem_.weight_fov > 0.0 &&
+          problem_.joint_sample_dt > 0.0)
+      {
+        const double fov_sample_dt = std::max(0.01, problem_.joint_sample_dt);
+        const int fov_samples =
+            std::max(samples_per_piece_,
+                     static_cast<int>(std::ceil(T / fov_sample_dt)));
+        const double fov_inv_K = 1.0 / static_cast<double>(std::max(1, fov_samples));
+        const double fov_dt = T * fov_inv_K;
+        for (int k = 0; k <= fov_samples; ++k)
+        {
+          const double alpha = static_cast<double>(k) * fov_inv_K;
+          const double t_local = alpha * T;
+          const double t_global = seg_start_time + t_local;
+          const double trap_weight = (k == 0 || k == fov_samples) ? 0.5 : 1.0;
+          const double common_weight = trap_weight * fov_dt;
+
+          typename PosTraj::BasisRow bp, bv, ba, bj, bs;
+          PosTraj::computeBasisFunctions(t_local, bp, bv, ba, bj, bs);
+          Vec3f p = Vec3f::Zero();
+          Vec3f v = Vec3f::Zero();
+          p.transpose().noalias() = bp * pos_block;
+          v.transpose().noalias() = bv * pos_block;
+
+          typename YawTraj::BasisRow ybp, ybv, yba, ybj, ybs;
+          YawTraj::computeBasisFunctions(t_local, ybp, ybv, yba, ybj, ybs);
+          const double yaw = (ybp * yaw_block)(0, 0);
+          const double yaw_dot = (ybv * yaw_block)(0, 0);
+
+          Vec3f gp_fov = Vec3f::Zero();
+          double gyaw_fov = 0.0;
+          const double c_fov =
+              cost_manager_.evaluateCameraFovSample(t_global,
+                                                    p,
+                                                    yaw,
+                                                    gp_fov,
+                                                    gyaw_fov);
+          total_cost += c_fov * common_weight;
+          gdC_pos.template block<PosTraj::COEFF_NUM, 3>(pos_base, 0).noalias() +=
+              bp.transpose() * gp_fov.transpose() * common_weight;
+          gdC_yaw.template block<YawTraj::COEFF_NUM, 1>(yaw_base, 0).noalias() +=
+              ybp.transpose() * Eigen::Matrix<double, 1, 1>::Constant(gyaw_fov) * common_weight;
+          gdT_pos(i) += c_fov * trap_weight * fov_inv_K;
+          gdT_pos(i) += gp_fov.dot(v) * alpha * common_weight;
+          gdT_yaw(i) += gyaw_fov * yaw_dot * alpha * common_weight;
+        }
       }
       seg_start_time += T;
     }

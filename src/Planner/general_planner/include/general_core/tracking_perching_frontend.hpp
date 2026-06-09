@@ -1,6 +1,7 @@
 #pragma once
 
 #include <memory>
+#include <string>
 #include <vector>
 
 #include "path_search/astar.h"
@@ -19,6 +20,8 @@ public:
     {
         double tracking_distance{3.0};
         double distance_tolerance{0.8};
+        double distance_lower_tolerance{0.8};
+        double distance_upper_tolerance{0.8};
         double height_offset{0.8};
         double height_tolerance{0.6};
         double safe_distance{0.45};
@@ -44,6 +47,22 @@ public:
         bool partial_guide_enable{true};
         double partial_guide_min_duration{0.45};
         int partial_guide_min_samples{2};
+        bool fov_feasibility_enable{true};
+        bool yaw_rate_feasibility_enable{true};
+        double fov_horizontal_deg{90.0};
+        double fov_vertical_deg{60.0};
+        double fov_range{4.0};
+        double fov_range_margin{0.05};
+        double fov_front_margin{0.05};
+        double max_yaw_rate{3.14};
+        double yaw_rate_margin{0.10};
+        bool obstacle_recovery_enable{true};
+        int grid_neighbor_mode{26};
+        bool over_wall_enable{true};
+        double over_wall_max_climb{2.0};
+        bool side_pass_enable{true};
+        double side_pass_width{1.5};
+        bool reacquire_relax_yaw_rate{true};
         bool unknown_as_occupied{true};
         bool use_astar{true};
         bool use_visible_region{true};
@@ -56,7 +75,9 @@ public:
 
     bool buildProblem(const super_utils::StatePVAJ &head_pvaj,
                       const traj_opt::DynamicTargetStates &target_prediction,
-                      traj_opt::TrackingProblem &problem) const;
+                      traj_opt::TrackingProblem &problem,
+                      const super_utils::Vec3f *reference_viewpoint = nullptr,
+                      const traj_opt::DynamicTargetState *reference_target = nullptr) const;
 
 private:
     struct ViewpointCandidate
@@ -68,20 +89,38 @@ private:
     bool isViewpointVisible(const super_utils::Vec3f &viewpoint,
                             const super_utils::Vec3f &target) const;
     bool isViewpointSafe(const super_utils::Vec3f &viewpoint) const;
+    bool isViewpointFovFeasible(const super_utils::Vec3f &viewpoint,
+                                const super_utils::Vec3f &target,
+                                std::string *reason = nullptr) const;
+    bool isViewpointYawRateFeasible(
+        const super_utils::Vec3f &reference_viewpoint,
+        const traj_opt::DynamicTargetState &reference_target,
+        const super_utils::Vec3f &candidate,
+        const traj_opt::DynamicTargetState &target,
+        std::string *reason = nullptr) const;
     bool isGuideStartUsable(const super_utils::Vec3f &point) const;
     bool repairViewpointEndpoint(const super_utils::Vec3f &raw_viewpoint,
                                  const super_utils::Vec3f &target,
                                  super_utils::Vec3f &repaired_viewpoint) const;
     bool chooseVisibleViewpoint(const super_utils::Vec3f &seed,
                                 const traj_opt::DynamicTargetState &target,
-                                super_utils::Vec3f &viewpoint) const;
+                                super_utils::Vec3f &viewpoint,
+                                const super_utils::Vec3f *reference_viewpoint = nullptr,
+                                const traj_opt::DynamicTargetState *reference_target = nullptr,
+                                bool allow_large_bearing_change = true) const;
     bool collectVisibleViewpointCandidates(const super_utils::Vec3f &seed,
                                            const traj_opt::DynamicTargetState &target,
-                                           std::vector<ViewpointCandidate> &candidates) const;
+                                           std::vector<ViewpointCandidate> &candidates,
+                                           const super_utils::Vec3f *reference_viewpoint = nullptr,
+                                           const traj_opt::DynamicTargetState *reference_target = nullptr,
+                                           bool allow_large_bearing_change = true) const;
     bool chooseConnectedVisibleViewpoint(const super_utils::Vec3f &seed,
                                          const traj_opt::DynamicTargetState &target,
                                          super_utils::vec_E<super_utils::Vec3f> &path,
-                                         super_utils::Vec3f &viewpoint) const;
+                                         super_utils::Vec3f &viewpoint,
+                                         const super_utils::Vec3f *reference_viewpoint = nullptr,
+                                         const traj_opt::DynamicTargetState *reference_target = nullptr,
+                                         bool allow_large_bearing_change = true) const;
     bool computeVisibleRegion(const traj_opt::DynamicTargetState &target,
                               const super_utils::Vec3f &seed,
                               traj_opt::TrackingVisibleRegion &region) const;
@@ -96,21 +135,39 @@ private:
     bool searchVisibleViewpointOnGrid(const super_utils::Vec3f &start,
                                       const traj_opt::DynamicTargetState &target,
                                       super_utils::Vec3f &viewpoint,
-                                      super_utils::vec_E<super_utils::Vec3f> &path_to_viewpoint) const;
-    bool choosePropagatedViewpoint(const super_utils::Vec3f &last_viewpoint,
-                                   const traj_opt::DynamicTargetState &last_target,
+                                      super_utils::vec_E<super_utils::Vec3f> &path_to_viewpoint,
+                                      const super_utils::Vec3f *reference_viewpoint = nullptr,
+                                      const traj_opt::DynamicTargetState *reference_target = nullptr,
+                                      bool allow_large_bearing_change = true) const;
+    bool choosePropagatedViewpoint(const super_utils::Vec3f &reference_viewpoint,
+                                   const traj_opt::DynamicTargetState &reference_target,
+                                   const super_utils::Vec3f &connect_start,
                                    const traj_opt::DynamicTargetState &target,
+                                   bool reacquire_mode,
                                    super_utils::Vec3f &viewpoint,
                                    super_utils::vec_E<super_utils::Vec3f> &path_to_viewpoint) const;
     bool chooseRelaxedFallbackViewpoint(const super_utils::Vec3f &last_viewpoint,
                                         const traj_opt::DynamicTargetState &target,
                                         super_utils::Vec3f &viewpoint,
-                                        super_utils::vec_E<super_utils::Vec3f> &path_to_viewpoint) const;
+                                        super_utils::vec_E<super_utils::Vec3f> &path_to_viewpoint,
+                                        const super_utils::Vec3f *reference_viewpoint = nullptr,
+                                        const traj_opt::DynamicTargetState *reference_target = nullptr,
+                                        bool allow_large_bearing_change = true) const;
+    bool chooseObstacleRecoveryViewpoint(const super_utils::Vec3f &start,
+                                         const traj_opt::DynamicTargetState &target,
+                                         super_utils::Vec3f &viewpoint,
+                                         super_utils::vec_E<super_utils::Vec3f> &path_to_viewpoint,
+                                         const super_utils::Vec3f *reference_viewpoint = nullptr,
+                                         const traj_opt::DynamicTargetState *reference_target = nullptr,
+                                         bool allow_large_bearing_change = true) const;
     bool centerViewpointInVisibleRegion(const super_utils::Vec3f &start,
                                         const traj_opt::DynamicTargetState &target,
                                         super_utils::Vec3f &viewpoint,
                                         super_utils::vec_E<super_utils::Vec3f> &path_to_viewpoint,
-                                        traj_opt::TrackingVisibleRegion &region) const;
+                                        traj_opt::TrackingVisibleRegion &region,
+                                        const super_utils::Vec3f *reference_viewpoint = nullptr,
+                                        const traj_opt::DynamicTargetState *reference_target = nullptr,
+                                        bool allow_large_bearing_change = true) const;
     // Fail closed: blocked tracking guide segments must not append unsafe goals.
     bool appendPathSegment(const super_utils::Vec3f &start,
                            const super_utils::Vec3f &goal,

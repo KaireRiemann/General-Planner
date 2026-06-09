@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 
 #include <Eigen/Core>
 
@@ -11,6 +12,16 @@
 
 namespace cost_functional
 {
+
+struct TrackingLineOfSightOcclusionStatus
+{
+    bool evaluated{false};
+    double max_violation{0.0};
+    double min_clearance{std::numeric_limits<double>::infinity()};
+    double blocked_ratio{0.0};
+    double first_block_lambda{1.0};
+    double activation{0.0};
+};
 
 inline double accumulateTrackingDistancePenalty(const Eigen::Vector3d &position,
                                                 const Eigen::Vector3d &target_position,
@@ -251,6 +262,74 @@ inline double accumulateBallLineOfSightESDFPenalty(const MapT *map,
         cost += weight * penalty;
     }
     return cost;
+}
+
+template <typename MapT>
+inline TrackingLineOfSightOcclusionStatus evaluateBallLineOfSightOcclusionStatus(
+    const MapT *map,
+    const Eigen::Vector3d &position,
+    const Eigen::Vector3d &target_position,
+    const double base_clearance,
+    const double fov_radius_ratio,
+    const double activation_distance,
+    const int sample_num)
+{
+    TrackingLineOfSightOcclusionStatus status;
+    if (map == nullptr || sample_num <= 0)
+    {
+        return status;
+    }
+
+    const Eigen::Vector3d rel_pt = position - target_position;
+    const double view_dist = rel_pt.norm();
+    if (view_dist < 1.0e-6)
+    {
+        return status;
+    }
+
+    const int los_samples = std::max(1, sample_num);
+    const double ratio = std::max(0.0, fov_radius_ratio);
+    const double active_dist = std::max(1.0e-3, activation_distance);
+    int evaluated_count = 0;
+    int blocked_count = 0;
+    for (int k = 1; k <= los_samples; ++k)
+    {
+        const double lambda = static_cast<double>(k) / static_cast<double>(los_samples + 1);
+        const Eigen::Vector3d center = position + lambda * (target_position - position);
+        double dist = 0.0;
+        Eigen::Vector3d grad_dist = Eigen::Vector3d::Zero();
+        if (!map->evaluateESDF(center, dist, grad_dist))
+        {
+            continue;
+        }
+
+        ++evaluated_count;
+        const double radius = std::max(0.0, base_clearance) + ratio * lambda * view_dist;
+        const double clearance = dist - radius;
+        const double violation = -clearance;
+        status.min_clearance = std::min(status.min_clearance, clearance);
+        status.max_violation = std::max(status.max_violation, violation);
+        if (violation > 0.0)
+        {
+            ++blocked_count;
+            status.first_block_lambda = std::min(status.first_block_lambda, lambda);
+        }
+    }
+
+    if (evaluated_count <= 0)
+    {
+        return status;
+    }
+
+    status.evaluated = true;
+    status.blocked_ratio =
+        static_cast<double>(blocked_count) / static_cast<double>(evaluated_count);
+    status.activation =
+        std::clamp(std::max(status.max_violation, 0.0) / active_dist +
+                       0.5 * status.blocked_ratio,
+                   0.0,
+                   1.0);
+    return status;
 }
 
 inline double yawReferenceToTarget(const Eigen::Vector3d &position,

@@ -340,27 +340,122 @@ namespace general_planner {
                    max_vel <= std::max(0.0, velocity_epsilon);
         }
 
+        double trackingHardSafeDistance(const Config &cfg) {
+            return std::max(cfg.tracking_hard_safe_distance, cfg.robot_r + 0.02);
+        }
+
         Vec3f trackingTargetDirection(const traj_opt::DynamicTargetStates &prediction,
-                                      const double speed_threshold) {
+                                      const double speed_threshold,
+                                      const double vertical_threshold = 0.12,
+                                      const bool motion_3d_enable = false) {
             if (prediction.empty()) {
                 return Vec3f::UnitX();
             }
 
             Vec3f dir = prediction.front().velocity;
-            dir.z() = 0.0;
-            if (dir.norm() > speed_threshold) {
+            if (!motion_3d_enable) {
+                dir.z() = 0.0;
+            }
+            const double threshold =
+                    motion_3d_enable ? std::min(speed_threshold, vertical_threshold)
+                                     : speed_threshold;
+            if (dir.norm() > threshold) {
                 return dir.normalized();
             }
 
             if (prediction.size() >= 2) {
                 dir = prediction.back().position - prediction.front().position;
-                dir.z() = 0.0;
+                if (!motion_3d_enable) {
+                    dir.z() = 0.0;
+                }
                 if (dir.norm() > 1.0e-4) {
                     return dir.normalized();
                 }
             }
 
             return Vec3f::UnitX();
+        }
+
+        struct TrackingMotionMetrics {
+            double speed_xy{0.0};
+            double speed_z{0.0};
+            double speed_3d{0.0};
+            double displacement_xy{0.0};
+            double displacement_z{0.0};
+            double displacement_3d{0.0};
+            double progress_xy{0.0};
+            double progress_3d{0.0};
+            double target_speed_xy{0.0};
+            double target_speed_z{0.0};
+            double target_speed_3d{0.0};
+            bool target_vertical_moving{false};
+            bool target_moving{false};
+        };
+
+        TrackingMotionMetrics computeTrackingMotionMetrics(
+                const Trajectory &traj,
+                const traj_opt::DynamicTargetStates &target_prediction,
+                const Config &cfg,
+                const double candidate_eval_start_t,
+                const double target_eval_start_t,
+                const double horizon) {
+            TrackingMotionMetrics metrics;
+            if (traj.empty() || target_prediction.empty()) {
+                return metrics;
+            }
+            const double total = traj.getTotalDuration();
+            const double start_t = std::clamp(candidate_eval_start_t, 0.0, total);
+            const double target_start = std::max(0.0, target_eval_start_t);
+            const double eval_horizon =
+                    std::min({std::max(0.0, horizon),
+                              std::max(0.0, total - start_t),
+                              std::max(0.0, target_prediction.back().t - target_start)});
+            const double end_t = std::clamp(start_t + eval_horizon, 0.0, total);
+            const Vec3f p0 = traj.getPos(start_t);
+            const Vec3f p1 = traj.getPos(end_t);
+            const Vec3f v0 = traj.getVel(start_t);
+            if (p0.allFinite() && p1.allFinite()) {
+                const Vec3f dp = p1 - p0;
+                metrics.displacement_xy = dp.head<2>().norm();
+                metrics.displacement_z = std::abs(dp.z());
+                metrics.displacement_3d = dp.norm();
+                const Vec3f target_dir =
+                        trackingTargetDirection(target_prediction,
+                                                cfg.tracking_no_motion_target_speed_threshold,
+                                                cfg.tracking_vertical_motion_threshold,
+                                                cfg.tracking_motion_3d_enable);
+                metrics.progress_xy = dp.head<2>().dot(target_dir.head<2>());
+                metrics.progress_3d = dp.dot(target_dir);
+            }
+            if (v0.allFinite()) {
+                metrics.speed_xy = v0.head<2>().norm();
+                metrics.speed_z = std::abs(v0.z());
+                metrics.speed_3d = v0.norm();
+            }
+            const auto target0 = interpolateTargetPrediction(target_prediction, target_start);
+            metrics.target_speed_xy = target0.velocity.head<2>().norm();
+            metrics.target_speed_z = std::abs(target0.velocity.z());
+            metrics.target_speed_3d = target0.velocity.norm();
+            double target_span_3d = 0.0;
+            double target_span_z = 0.0;
+            if (target_prediction.size() >= 2) {
+                const auto target1 =
+                        interpolateTargetPrediction(target_prediction,
+                                                    std::min(target_prediction.back().t,
+                                                             target_start + eval_horizon));
+                const Vec3f target_dp = target1.position - target0.position;
+                target_span_3d = target_dp.norm();
+                target_span_z = std::abs(target_dp.z());
+            }
+            metrics.target_vertical_moving =
+                    metrics.target_speed_z > cfg.tracking_vertical_motion_threshold ||
+                    target_span_z > cfg.tracking_no_motion_min_displacement_z;
+            metrics.target_moving =
+                    metrics.target_speed_xy > cfg.tracking_no_motion_target_speed_threshold ||
+                    metrics.target_vertical_moving ||
+                    target_span_3d > std::max(cfg.tracking_no_motion_min_displacement,
+                                              cfg.tracking_no_motion_min_displacement_z);
+            return metrics;
         }
 
         double trackingDistanceError(const Vec3f &tracker,
@@ -374,6 +469,76 @@ namespace general_planner {
             const double h_err = std::abs(rel.head<2>().norm() - desired_distance);
             const double z_err = std::abs(rel.z() - desired_height);
             return h_err + 0.5 * z_err;
+        }
+
+        struct TrackingFovSampleStatus {
+            bool inside{false};
+            double h_violation{0.0};
+            double v_violation{0.0};
+            double range_violation{0.0};
+            double front_violation{0.0};
+            double distance{0.0};
+            double qx{0.0};
+        };
+
+        TrackingFovSampleStatus evaluateYawOnlyTrackingFov(
+                const Vec3f &tracker,
+                const Vec3f &target,
+                const double yaw,
+                const double horizontal_fov_deg,
+                const double vertical_fov_deg,
+                const double range,
+                const double range_margin,
+                const double front_margin) {
+            TrackingFovSampleStatus out;
+            if (!tracker.allFinite() || !target.allFinite() || !std::isfinite(yaw)) {
+                out.h_violation = std::numeric_limits<double>::infinity();
+                out.v_violation = std::numeric_limits<double>::infinity();
+                out.range_violation = std::numeric_limits<double>::infinity();
+                out.front_violation = std::numeric_limits<double>::infinity();
+                return out;
+            }
+
+            constexpr double kPi = 3.14159265358979323846;
+            constexpr double kDegToRad = kPi / 180.0;
+            const double half_h =
+                    std::clamp(0.5 * std::max(1.0, horizontal_fov_deg) * kDegToRad,
+                               kPi / 180.0,
+                               0.5 * kPi - 1.0e-3);
+            const double half_v =
+                    std::clamp(0.5 * std::max(1.0, vertical_fov_deg) * kDegToRad,
+                               kPi / 180.0,
+                               0.5 * kPi - 1.0e-3);
+            const double effective_range =
+                    range > 0.0 ? std::max(0.05, range - std::max(0.0, range_margin)) : -1.0;
+            const double min_forward = std::max(1.0e-3, front_margin);
+
+            const Vec3f rel = target - tracker;
+            const double c = std::cos(yaw);
+            const double sn = std::sin(yaw);
+            const Vec3f q(c * rel.x() + sn * rel.y(),
+                          -sn * rel.x() + c * rel.y(),
+                          rel.z());
+            out.qx = q.x();
+            out.distance = q.norm();
+
+            const double h_angle = q.x() > 1.0e-6
+                                       ? std::atan2(std::abs(q.y()), q.x())
+                                       : kPi;
+            const double v_angle = q.x() > 1.0e-6
+                                       ? std::atan2(std::abs(q.z()), q.x())
+                                       : kPi;
+            out.h_violation = h_angle - half_h;
+            out.v_violation = v_angle - half_v;
+            out.range_violation =
+                    effective_range > 0.0 ? out.distance - effective_range : 0.0;
+            out.front_violation = min_forward - q.x();
+            out.inside =
+                    out.h_violation <= 1.0e-6 &&
+                    out.v_violation <= 1.0e-6 &&
+                    out.range_violation <= 1.0e-6 &&
+                    out.front_violation <= 1.0e-6;
+            return out;
         }
     }
 
@@ -1506,10 +1671,18 @@ namespace general_planner {
                                                 const Trajectory &optimized_yaw_traj,
                                                 const traj_opt::DynamicTargetStates &target_prediction,
                                                 const std::string &traj_ns) {
+        if (trackingPerchingPerchingActive()) {
+            latest_replan.setRetCode(GENERAL_SUCCESS_NO_BACKUP);
+            last_tracking_commit_reject_reason_ = "perching owns committed trajectory";
+            ros_ptr_->warn(" -- [TrackingPerching] TRACKING_COMMIT_BLOCKED_PERCHING_ACTIVE reason=perching_owns_committed_trajectory");
+            return false;
+        }
         if (pos_traj.empty()) {
+            last_tracking_commit_reject_reason_ = "empty tracking trajectory";
             ros_ptr_->warn(" -- [GeneralPlanner] Tracking trajectory is empty, cannot commit.");
             return false;
         }
+        last_tracking_commit_reject_reason_.clear();
 
         const double commit_wt = ros_ptr_->getSimTime();
         bool has_old_cmd = false;
@@ -1528,15 +1701,70 @@ namespace general_planner {
         }
 
         auto keepOldFromSnapshot = [&](const std::string &reason) -> bool {
-            if (!has_old_cmd || old_pos_traj.empty()) {
+            const bool has_old_tracking =
+                    cfg_.tracking_runtime_manager_enable && tracking_runtime_manager_
+                        ? tracking_runtime_manager_->hasCommittedTracking()
+                        : has_old_cmd;
+            if (!has_old_cmd || !has_old_tracking || old_pos_traj.empty() || old_yaw_traj.empty()) {
+                if (cfg_.print_log) {
+                    ros_ptr_->warn(" -- [Tracking] TRACKING_KEEP_OLD_REJECTED_INACTIVE reason={}, activity_reason=no committed tracking snapshot",
+                                   reason);
+                }
                 return false;
             }
+
+            const double old_local_t =
+                    std::clamp(commit_wt - old_start_wt, 0.0, old_total_dur);
+            const auto activity =
+                    evaluateTrackingTrajectoryActivity(old_pos_traj,
+                                                       old_local_t,
+                                                       target_prediction,
+                                                       cfg_.tracking_keep_old_horizon,
+                                                       cfg_.tracking_keep_old_safety_dt);
+            if (!activity.valid || !activity.safe || !activity.active) {
+                if (cfg_.print_log) {
+                    ros_ptr_->warn(" -- [Tracking] TRACKING_KEEP_OLD_REJECTED_INACTIVE reason={}, activity_reason={}, old_local_t={:.3f}, old_remaining={:.3f}, old_speed0={:.3f}, old_displacement={:.3f}, old_progress={:.3f}, old_expected_progress={:.3f}, old_avg_tracking_error={:.3f}",
+                                   reason,
+                                   activity.reason,
+                                   old_local_t,
+                                   activity.remaining,
+                                   activity.speed0,
+                                   activity.displacement,
+                                   activity.progress,
+                                   activity.expected_progress,
+                                   activity.avg_tracking_error);
+                }
+                return false;
+            }
+
+            std::string old_fov_reason;
+            if (!trackingSnapshotSatisfiesFovForKeepOld(old_pos_traj,
+                                                        old_yaw_traj,
+                                                        old_local_t,
+                                                        target_prediction,
+                                                        &old_fov_reason)) {
+                if (cfg_.print_log) {
+                    ros_ptr_->warn(" -- [Tracking] TRACKING_KEEP_OLD_REJECTED_FOV reason={}, fov_reason={}, old_local_t={:.3f}, old_remaining={:.3f}",
+                                   reason,
+                                   old_fov_reason,
+                                   old_local_t,
+                                   activity.remaining);
+                }
+                return false;
+            }
+
             latest_replan.setExpTraj(old_pos_traj);
             latest_replan.setExpYawTraj(old_yaw_traj);
             latest_replan.setRetCode(GENERAL_SUCCESS_NO_BACKUP);
             if (cfg_.print_log) {
-                ros_ptr_->info(" -- [Tracking] TRACKING_KEEP_OLD_ACTIVE reason={}, keep_old_count={}, reject_count={}",
+                ros_ptr_->info(" -- [Tracking] TRACKING_KEEP_OLD_ACTIVE reason={}, old_remaining={:.3f}, old_speed0={:.3f}, old_displacement={:.3f}, old_progress={:.3f}, old_expected_progress={:.3f}, old_avg_tracking_error={:.3f}, keep_old_count={}, reject_count={}",
                                reason,
+                               activity.remaining,
+                               activity.speed0,
+                               activity.displacement,
+                               activity.progress,
+                               activity.expected_progress,
+                               activity.avg_tracking_error,
                                tracking_runtime_manager_ ? tracking_runtime_manager_->consecutiveKeepOld() : tracking_consecutive_keep_old_,
                                tracking_runtime_manager_ ? tracking_runtime_manager_->consecutiveReject() : tracking_consecutive_reject_);
             }
@@ -1561,20 +1789,28 @@ namespace general_planner {
                 [&](const TrackingRuntimeManager::Decision &decision,
                     const Trajectory &candidate,
                     const bool anti_rollback_pass,
+                    const double prefix_duration,
+                    const double runtime_eval_start,
+                    const int anti_rollback_worse_count,
+                    const double anti_rollback_max_regression,
+                    const std::string &candidate_safe_reason,
                     const std::string &tag) {
             if (!cfg_.print_log) {
                 return;
             }
             const double guard_h =
                     std::min(cfg_.tracking_no_motion_check_horizon,
-                             candidate.getTotalDuration());
-            const double candidate_disp =
-                    guard_h > 1.0e-6
-                        ? (candidate.getPos(guard_h) -
-                           candidate.getPos(0.0)).head<2>().norm()
-                        : 0.0;
-            const double candidate_speed0 =
-                    candidate.empty() ? 0.0 : candidate.getVel(0.0).head<2>().norm();
+                             std::max(0.0, candidate.getTotalDuration() -
+                                            std::clamp(runtime_eval_start,
+                                                       0.0,
+                                                       candidate.getTotalDuration())));
+            const TrackingMotionMetrics candidate_metrics =
+                    computeTrackingMotionMetrics(candidate,
+                                                 target_prediction,
+                                                 cfg_,
+                                                 runtime_eval_start,
+                                                 runtime_eval_start,
+                                                 guard_h);
             const char *log_name = "TRACKING_MANAGER_DECISION_REJECT";
             if (decision.type == TrackingRuntimeManager::DecisionType::COMMIT_CANDIDATE) {
                 log_name = "TRACKING_MANAGER_DECISION_COMMIT";
@@ -1584,47 +1820,109 @@ namespace general_planner {
             } else if (decision.type == TrackingRuntimeManager::DecisionType::KEEP_OLD) {
                 log_name = "TRACKING_MANAGER_DECISION_KEEP_OLD";
             }
-            ros_ptr_->info(" -- [Tracking] {} tag={}, decision={}, reason={}, candidate_safe={}, candidate_commandable={}, anti_rollback_pass={}, bypass_anti_rollback={}, candidate_duration={:.3f}, candidate_disp_0p35s={:.3f}, candidate_speed0={:.3f}, old_remaining={:.3f}, old_speed0={:.3f}, old_displacement={:.3f}, old_progress={:.3f}, old_expected_progress={:.3f}, old_avg_tracking_error={:.3f}, keep_old_count={}, reject_count={}",
+            ros_ptr_->info(" -- [Tracking] {} tag={}, decision={}, reason={}, guide_path.size()={}, problem.sfcs.size()={}, problem.target_prediction.size()={}, out_traj_duration={:.3f}, candidate_safe={}, candidate_safe_reason={}, candidate_commandable={}, anti_rollback_pass={}, anti_rollback_worse_count={}, anti_rollback_max_regression={:.3f}, bypass_anti_rollback={}, candidate_duration={:.3f}, prefix_duration={:.3f}, runtime_eval_start={:.3f}, candidate_disp_xy={:.3f}, candidate_disp_z={:.3f}, candidate_disp_3d={:.3f}, candidate_speed_xy={:.3f}, candidate_speed_z={:.3f}, candidate_speed_3d={:.3f}, target_speed_xy={:.3f}, target_speed_z={:.3f}, target_speed_3d={:.3f}, old_remaining={:.3f}, old_activity_reason={}, old_speed_xy={:.3f}, old_speed_z={:.3f}, old_speed_3d={:.3f}, old_disp_xy={:.3f}, old_disp_z={:.3f}, old_disp_3d={:.3f}, old_progress_xy={:.3f}, old_progress_3d={:.3f}, old_expected_progress={:.3f}, old_avg_tracking_error={:.3f}, keep_old_count={}, reject_count={}",
                            log_name,
                            tag,
                            decisionTypeName(decision.type),
                            decision.reason,
+                           last_tracking_diag_guide_path_size_,
+                           last_tracking_diag_sfc_size_,
+                           last_tracking_diag_target_prediction_size_,
+                           last_tracking_diag_out_traj_duration_,
                            decision.candidate_safe,
+                           candidate_safe_reason,
                            decision.candidate_commandable,
                            anti_rollback_pass,
+                           anti_rollback_worse_count,
+                           anti_rollback_max_regression,
                            decision.bypass_anti_rollback,
                            candidate.getTotalDuration(),
-                           candidate_disp,
-                           candidate_speed0,
+                           prefix_duration,
+                           runtime_eval_start,
+                           candidate_metrics.displacement_xy,
+                           candidate_metrics.displacement_z,
+                           candidate_metrics.displacement_3d,
+                           candidate_metrics.speed_xy,
+                           candidate_metrics.speed_z,
+                           candidate_metrics.speed_3d,
+                           candidate_metrics.target_speed_xy,
+                           candidate_metrics.target_speed_z,
+                           candidate_metrics.target_speed_3d,
                            decision.old_activity.remaining,
-                           decision.old_activity.speed0,
-                           decision.old_activity.displacement,
-                           decision.old_activity.progress,
+                           decision.old_activity.reason,
+                           decision.old_activity.speed_xy,
+                           decision.old_activity.speed_z,
+                           decision.old_activity.speed_3d,
+                           decision.old_activity.displacement_xy,
+                           decision.old_activity.displacement_z,
+                           decision.old_activity.displacement_3d,
+                           decision.old_activity.progress_xy,
+                           decision.old_activity.progress_3d,
                            decision.old_activity.expected_progress,
                            decision.old_activity.avg_tracking_error,
                            tracking_runtime_manager_ ? tracking_runtime_manager_->consecutiveKeepOld() : tracking_consecutive_keep_old_,
                            tracking_runtime_manager_ ? tracking_runtime_manager_->consecutiveReject() : tracking_consecutive_reject_);
             if (decision.candidate_safe && !decision.candidate_commandable) {
-                ros_ptr_->warn(" -- [Tracking] TRACKING_CANDIDATE_REJECTED_NO_MOTION reason={}, candidate_duration={:.3f}, candidate_disp_0p35s={:.3f}, candidate_speed0={:.3f}, old_remaining={:.3f}, old_speed0={:.3f}, old_displacement={:.3f}, old_progress={:.3f}, old_expected_progress={:.3f}, old_avg_tracking_error={:.3f}",
+                ros_ptr_->warn(" -- [Tracking] TRACKING_CANDIDATE_REJECTED_NO_MOTION reason={}, guide_path.size()={}, problem.sfcs.size()={}, problem.target_prediction.size()={}, out_traj_duration={:.3f}, candidate_duration={:.3f}, prefix_duration={:.3f}, runtime_eval_start={:.3f}, candidate_disp_xy={:.3f}, candidate_disp_z={:.3f}, candidate_disp_3d={:.3f}, candidate_speed_xy={:.3f}, candidate_speed_z={:.3f}, candidate_speed_3d={:.3f}, target_speed_z={:.3f}, old_remaining={:.3f}, old_activity_reason={}, old_speed_3d={:.3f}, old_disp_3d={:.3f}, old_progress_3d={:.3f}, old_expected_progress={:.3f}, old_avg_tracking_error={:.3f}",
                                decision.reason,
+                               last_tracking_diag_guide_path_size_,
+                               last_tracking_diag_sfc_size_,
+                               last_tracking_diag_target_prediction_size_,
+                               last_tracking_diag_out_traj_duration_,
                                candidate.getTotalDuration(),
-                               candidate_disp,
-                               candidate_speed0,
+                               prefix_duration,
+                               runtime_eval_start,
+                               candidate_metrics.displacement_xy,
+                               candidate_metrics.displacement_z,
+                               candidate_metrics.displacement_3d,
+                               candidate_metrics.speed_xy,
+                               candidate_metrics.speed_z,
+                               candidate_metrics.speed_3d,
+                               candidate_metrics.target_speed_z,
                                decision.old_activity.remaining,
-                               decision.old_activity.speed0,
-                               decision.old_activity.displacement,
-                               decision.old_activity.progress,
+                               decision.old_activity.reason,
+                               decision.old_activity.speed_3d,
+                               decision.old_activity.displacement_3d,
+                               decision.old_activity.progress_3d,
                                decision.old_activity.expected_progress,
                                decision.old_activity.avg_tracking_error);
             }
+            if (!decision.candidate_safe) {
+                ros_ptr_->warn(" -- [Tracking] TRACKING_CANDIDATE_REJECTED_UNSAFE reason={}, candidate_safe_reason={}, guide_path.size()={}, problem.sfcs.size()={}, problem.target_prediction.size()={}, out_traj_duration={:.3f}, candidate_duration={:.3f}, prefix_duration={:.3f}, runtime_eval_start={:.3f}, candidate_disp_xy={:.3f}, candidate_disp_z={:.3f}, candidate_disp_3d={:.3f}, old_remaining={:.3f}, old_activity_reason={}",
+                               decision.reason,
+                               candidate_safe_reason,
+                               last_tracking_diag_guide_path_size_,
+                               last_tracking_diag_sfc_size_,
+                               last_tracking_diag_target_prediction_size_,
+                               last_tracking_diag_out_traj_duration_,
+                               candidate.getTotalDuration(),
+                               prefix_duration,
+                               runtime_eval_start,
+                               candidate_metrics.displacement_xy,
+                               candidate_metrics.displacement_z,
+                               candidate_metrics.displacement_3d,
+                               decision.old_activity.remaining,
+                               decision.old_activity.reason);
+            }
             if (!anti_rollback_pass &&
                 decision.type == TrackingRuntimeManager::DecisionType::KEEP_OLD) {
-                ros_ptr_->warn(" -- [Tracking] TRACKING_CANDIDATE_REJECTED_ANTI_ROLLBACK reason={}, old_remaining={:.3f}, old_speed0={:.3f}, old_displacement={:.3f}, old_progress={:.3f}, old_expected_progress={:.3f}, old_avg_tracking_error={:.3f}",
+                ros_ptr_->warn(" -- [Tracking] TRACKING_CANDIDATE_REJECTED_ANTI_ROLLBACK reason={}, guide_path.size()={}, problem.sfcs.size()={}, problem.target_prediction.size()={}, out_traj_duration={:.3f}, prefix_duration={:.3f}, runtime_eval_start={:.3f}, worse_count={}, max_regression={:.3f}, candidate_disp_3d={:.3f}, candidate_progress_3d={:.3f}, old_remaining={:.3f}, old_activity_reason={}, old_speed_3d={:.3f}, old_disp_3d={:.3f}, old_progress_3d={:.3f}, old_expected_progress={:.3f}, old_avg_tracking_error={:.3f}",
                                decision.reason,
+                               last_tracking_diag_guide_path_size_,
+                               last_tracking_diag_sfc_size_,
+                               last_tracking_diag_target_prediction_size_,
+                               last_tracking_diag_out_traj_duration_,
+                               prefix_duration,
+                               runtime_eval_start,
+                               anti_rollback_worse_count,
+                               anti_rollback_max_regression,
+                               candidate_metrics.displacement_3d,
+                               candidate_metrics.progress_3d,
                                decision.old_activity.remaining,
-                               decision.old_activity.speed0,
-                               decision.old_activity.displacement,
-                               decision.old_activity.progress,
+                               decision.old_activity.reason,
+                               decision.old_activity.speed_3d,
+                               decision.old_activity.displacement_3d,
+                               decision.old_activity.progress_3d,
                                decision.old_activity.expected_progress,
                                decision.old_activity.avg_tracking_error);
             }
@@ -1632,11 +1930,30 @@ namespace general_planner {
 
         auto applyRuntimeDecision =
                 [&](const Trajectory &candidate,
-                    const std::string &tag) -> TrackingRuntimeManager::DecisionType {
+                    const std::string &tag,
+                    const double candidate_eval_start_t,
+                    const double target_eval_start_t) -> TrackingRuntimeManager::DecisionType {
             if (!cfg_.tracking_runtime_manager_enable || !tracking_runtime_manager_) {
-                return trackingCommitPassesAntiRollback(candidate, target_prediction, commit_wt)
-                           ? TrackingRuntimeManager::DecisionType::COMMIT_CANDIDATE
-                           : TrackingRuntimeManager::DecisionType::REJECT_AND_FAIL;
+                int worse_count = 0;
+                double max_regression = 0.0;
+                std::string anti_reason;
+                const bool pass =
+                        trackingCommitPassesAntiRollback(candidate,
+                                                         target_prediction,
+                                                         commit_wt,
+                                                         candidate_eval_start_t,
+                                                         target_eval_start_t,
+                                                         true,
+                                                         true,
+                                                         &worse_count,
+                                                         &max_regression,
+                                                         &anti_reason);
+                if (!pass) {
+                    last_tracking_commit_reject_reason_ =
+                            anti_reason.empty() ? "anti-rollback rejected candidate" : anti_reason;
+                }
+                return pass ? TrackingRuntimeManager::DecisionType::COMMIT_CANDIDATE
+                            : TrackingRuntimeManager::DecisionType::REJECT_AND_FAIL;
             }
 
             const bool has_old_tracking =
@@ -1656,11 +1973,21 @@ namespace general_planner {
                                      candidate.getTotalDuration()),
                             cfg_.tracking_keep_old_safety_dt,
                             &candidate_safe_reason);
+            int anti_rollback_worse_count = 0;
+            double anti_rollback_max_regression = 0.0;
+            std::string anti_rollback_reason;
             const bool anti_rollback_pass =
                     has_old_tracking
                         ? trackingCommitPassesAntiRollback(candidate,
                                                            target_prediction,
-                                                           commit_wt)
+                                                           commit_wt,
+                                                           candidate_eval_start_t,
+                                                           target_eval_start_t,
+                                                           candidate_safe,
+                                                           true,
+                                                           &anti_rollback_worse_count,
+                                                           &anti_rollback_max_regression,
+                                                           &anti_rollback_reason)
                         : true;
             auto decision =
                     tracking_runtime_manager_->decide(has_old_tracking ? &old_pos_traj : nullptr,
@@ -1668,64 +1995,82 @@ namespace general_planner {
                                                       candidate,
                                                       target_prediction,
                                                       candidate_safe,
-                                                      anti_rollback_pass);
+                                                      anti_rollback_pass,
+                                                      candidate_eval_start_t,
+                                                      target_eval_start_t);
             if (!candidate_safe && !candidate_safe_reason.empty()) {
                 decision.reason = decision.reason.empty()
                                       ? candidate_safe_reason
                                       : decision.reason + ": " + candidate_safe_reason;
             }
-            logRuntimeDecision(decision, candidate, anti_rollback_pass, tag);
+            if (!anti_rollback_pass && !anti_rollback_reason.empty()) {
+                decision.reason = decision.reason.empty()
+                                      ? anti_rollback_reason
+                                      : decision.reason + ": " + anti_rollback_reason;
+            }
+            logRuntimeDecision(decision,
+                               candidate,
+                               anti_rollback_pass,
+                               candidate_eval_start_t,
+                               candidate_eval_start_t,
+                               anti_rollback_worse_count,
+                               anti_rollback_max_regression,
+                               candidate_safe_reason,
+                               tag);
 
             switch (decision.type) {
                 case TrackingRuntimeManager::DecisionType::COMMIT_CANDIDATE:
                 case TrackingRuntimeManager::DecisionType::FORCE_COMMIT_CANDIDATE:
                     return decision.type;
                 case TrackingRuntimeManager::DecisionType::KEEP_OLD:
-                    tracking_runtime_manager_->onKeepOld();
                     if (keepOldFromSnapshot(decision.reason)) {
+                        tracking_runtime_manager_->onKeepOld();
                         return TrackingRuntimeManager::DecisionType::KEEP_OLD;
                     }
+                    if (decision.candidate_safe && decision.candidate_commandable) {
+                        if (cfg_.print_log) {
+                            ros_ptr_->warn(" -- [Tracking] TRACKING_FORCE_COMMIT_SAFE_RECOVERY reason=old_tracking_not_legally_keepable, original_decision={}, original_reason={}, prefix_duration={:.3f}, runtime_eval_start={:.3f}",
+                                           decisionTypeName(decision.type),
+                                           decision.reason,
+                                           candidate_eval_start_t,
+                                           candidate_eval_start_t);
+                        }
+                        return TrackingRuntimeManager::DecisionType::FORCE_COMMIT_CANDIDATE;
+                    }
+                    last_tracking_commit_reject_reason_ = decision.reason;
                     tracking_runtime_manager_->onRejected();
                     return TrackingRuntimeManager::DecisionType::REJECT_AND_FAIL;
                 case TrackingRuntimeManager::DecisionType::REJECT_AND_FAIL:
+                    last_tracking_commit_reject_reason_ = decision.reason;
                     tracking_runtime_manager_->onRejected();
                     return TrackingRuntimeManager::DecisionType::REJECT_AND_FAIL;
             }
+            last_tracking_commit_reject_reason_ = "runtime decision fell through";
             tracking_runtime_manager_->onRejected();
             return TrackingRuntimeManager::DecisionType::REJECT_AND_FAIL;
         };
 
         Trajectory yaw_traj = optimized_yaw_traj;
         if (yaw_traj.empty() && !buildTrackingTargetYawTrajectory(pos_traj, target_prediction, yaw_traj)) {
-            const auto decision = applyRuntimeDecision(pos_traj, "yaw_fallback");
-            if (decision == TrackingRuntimeManager::DecisionType::KEEP_OLD) {
+            last_tracking_commit_reject_reason_ = "yaw generation failed";
+            ros_ptr_->warn(" -- [Tracking] TRACKING_CANDIDATE_REJECTED_FOV reason=yaw_generation_failed");
+            if (keepOldFromSnapshot("tracking yaw generation failed")) {
+                if (cfg_.tracking_runtime_manager_enable && tracking_runtime_manager_) {
+                    tracking_runtime_manager_->onKeepOld();
+                }
                 return true;
             }
-            if (decision == TrackingRuntimeManager::DecisionType::REJECT_AND_FAIL) {
-                return false;
+            if (cfg_.tracking_runtime_manager_enable && tracking_runtime_manager_) {
+                tracking_runtime_manager_->onRejected();
             }
-            double terminal_yaw = target_prediction.empty() ? robot_state_.yaw : target_prediction.back().yaw;
-            if (!target_prediction.empty()) {
-                const Vec3f face_dir = target_prediction.back().position - pos_traj.getPos(pos_traj.getTotalDuration());
-                if (face_dir.head<2>().norm() > 1.0e-3) {
-                    terminal_yaw = std::atan2(face_dir.y(), face_dir.x());
-                }
-            }
-            ros_ptr_->warn(" -- [GeneralPlanner] Tracking target yaw generation failed, fallback to terminal yaw.");
-            const bool committed = commitTaskTrajectory(pos_traj, terminal_yaw, true, traj_ns);
-            if (committed) {
-                if (cfg_.tracking_runtime_manager_enable && tracking_runtime_manager_) {
-                    tracking_runtime_manager_->onCommitted();
-                }
-                resetTrackingCommitCounters();
-            }
-            return committed;
+            return false;
         }
 
         Trajectory committed_pos_traj = pos_traj;
         Trajectory committed_yaw_traj = yaw_traj;
         committed_pos_traj.start_WT = commit_wt;
         committed_yaw_traj.start_WT = commit_wt;
+        double stitched_prefix_duration = 0.0;
         if (has_old_cmd) {
             const double prefix_start_t = commit_wt - old_start_wt;
             const double prefix_end_t = prefix_start_t + std::max(0.0, cfg_.replan_forward_dt);
@@ -1747,6 +2092,7 @@ namespace general_planner {
                                                             prefix_yaw_traj)) {
                     committed_pos_traj = prefix_pos_traj + pos_traj;
                     committed_yaw_traj = prefix_yaw_traj + yaw_traj;
+                    stitched_prefix_duration = prefix_pos_traj.getTotalDuration();
                     committed_pos_traj.start_WT = commit_wt;
                     committed_yaw_traj.start_WT = commit_wt;
 
@@ -1773,7 +2119,65 @@ namespace general_planner {
         committed_pos_traj.start_WT = commit_wt;
         committed_yaw_traj.start_WT = commit_wt;
 
-        const auto runtime_decision = applyRuntimeDecision(committed_pos_traj, "final_commit");
+        const bool has_committed_tracking =
+                cfg_.tracking_runtime_manager_enable && tracking_runtime_manager_
+                    ? tracking_runtime_manager_->hasCommittedTracking()
+                    : has_old_cmd;
+        const bool should_check_fov =
+                cfg_.tracking_fov_commit_check_enable &&
+                (cfg_.tracking_fov_check_first_commit || has_committed_tracking);
+        if (should_check_fov) {
+            std::string fov_reject_reason;
+            const double fov_start_t = 0.0;
+            const double fov_horizon =
+                    std::min({std::max(0.0, cfg_.tracking_keep_old_horizon),
+                              committed_pos_traj.getTotalDuration(),
+                              target_prediction.empty() ? 0.0
+                                                        : std::max(0.0, target_prediction.back().t)});
+            if (!trackingTrajectorySatisfiesFov(committed_pos_traj,
+                                                committed_yaw_traj,
+                                                target_prediction,
+                                                fov_start_t,
+                                                fov_horizon,
+                                                cfg_.tracking_fov_check_dt,
+                                                0.0,
+                                                &fov_reject_reason)) {
+                if (cfg_.print_log) {
+                    ros_ptr_->warn(" -- [Tracking] TRACKING_CANDIDATE_REJECTED_FOV reason={}, start_t={:.3f}, horizon={:.3f}, prefix_duration={:.3f}, runtime_eval_start={:.3f}, guide_path.size()={}, problem.sfcs.size()={}, problem.target_prediction.size()={}, out_traj_duration={:.3f}",
+                                   fov_reject_reason,
+                                   fov_start_t,
+                                   fov_horizon,
+                                   stitched_prefix_duration,
+                                   stitched_prefix_duration,
+                                   last_tracking_diag_guide_path_size_,
+                                   last_tracking_diag_sfc_size_,
+                                   last_tracking_diag_target_prediction_size_,
+                                   last_tracking_diag_out_traj_duration_);
+                }
+                last_tracking_commit_reject_reason_ =
+                        "candidate FOV rejected: " + fov_reject_reason;
+                if (keepOldFromSnapshot("tracking candidate rejected by FOV: " + fov_reject_reason)) {
+                    if (cfg_.tracking_runtime_manager_enable && tracking_runtime_manager_) {
+                        tracking_runtime_manager_->onKeepOld();
+                    }
+                    return true;
+                }
+                if (cfg_.tracking_runtime_manager_enable && tracking_runtime_manager_) {
+                    tracking_runtime_manager_->onRejected();
+                }
+                return false;
+            }
+        }
+
+        const auto runtime_decision =
+                applyRuntimeDecision(committed_pos_traj,
+                                     "final_commit",
+                                     cfg_.tracking_anti_rollback_eval_after_prefix
+                                         ? stitched_prefix_duration
+                                         : 0.0,
+                                     cfg_.tracking_anti_rollback_eval_after_prefix
+                                         ? stitched_prefix_duration
+                                         : 0.0);
         if (runtime_decision == TrackingRuntimeManager::DecisionType::KEEP_OLD) {
             return true;
         }
@@ -1810,44 +2214,52 @@ namespace general_planner {
         if (cfg_.print_log) {
             const double guard_h =
                     std::min(cfg_.tracking_no_motion_check_horizon,
-                             committed_pos_traj.getTotalDuration());
-            const double candidate_disp =
-                    guard_h > 1.0e-6
-                        ? (committed_pos_traj.getPos(guard_h) -
-                           committed_pos_traj.getPos(0.0)).head<2>().norm()
-                        : 0.0;
-            const double speed0 = committed_pos_traj.getVel(0.0).head<2>().norm();
+                             std::max(0.0, committed_pos_traj.getTotalDuration() -
+                                            stitched_prefix_duration));
+            const TrackingMotionMetrics committed_metrics =
+                    computeTrackingMotionMetrics(committed_pos_traj,
+                                                 target_prediction,
+                                                 cfg_,
+                                                 stitched_prefix_duration,
+                                                 stitched_prefix_duration,
+                                                 guard_h);
             const double now_minus_start_wt = ros_ptr_->getSimTime() - committed_pos_traj.start_WT;
-            ros_ptr_->info(" -- [Tracking] TRACKING_CANDIDATE_COMMITTED candidate_duration={:.3f}, candidate_disp_0p35s={:.3f}, candidate_speed0={:.3f}, now_minus_start_WT={:.3f}, committed_total_duration={:.3f}",
+            ros_ptr_->info(" -- [Tracking] TRACKING_CANDIDATE_COMMITTED candidate_duration={:.3f}, prefix_duration={:.3f}, runtime_eval_start={:.3f}, candidate_disp_xy={:.3f}, candidate_disp_z={:.3f}, candidate_disp_3d={:.3f}, candidate_speed_xy={:.3f}, candidate_speed_z={:.3f}, candidate_speed_3d={:.3f}, target_speed_z={:.3f}, now_minus_start_WT={:.3f}, committed_total_duration={:.3f}",
                            committed_pos_traj.getTotalDuration(),
-                           candidate_disp,
-                           speed0,
+                           stitched_prefix_duration,
+                           stitched_prefix_duration,
+                           committed_metrics.displacement_xy,
+                           committed_metrics.displacement_z,
+                           committed_metrics.displacement_3d,
+                           committed_metrics.speed_xy,
+                           committed_metrics.speed_z,
+                           committed_metrics.speed_3d,
+                           committed_metrics.target_speed_z,
                            now_minus_start_wt,
                            committed_pos_traj.getTotalDuration());
 
-            const auto target0 = target_prediction.empty()
-                                     ? traj_opt::DynamicTargetState()
-                                     : target_prediction.front();
-            const bool target_moving =
-                    !target_prediction.empty() &&
-                    target0.velocity.head<2>().norm() >
-                    cfg_.tracking_no_motion_target_speed_threshold;
             const double short_h = std::min(0.15, committed_pos_traj.getTotalDuration());
-            const double short_disp =
-                    short_h > 1.0e-6
-                        ? (committed_pos_traj.getPos(short_h) -
-                           committed_pos_traj.getPos(0.0)).head<2>().norm()
-                        : 0.0;
-            if (target_moving &&
-                short_disp < cfg_.tracking_no_motion_min_displacement &&
-                speed0 < cfg_.tracking_keep_old_min_speed) {
-                ros_ptr_->warn(" -- [Tracking] TRACKING_COMMITTED_BUT_NO_MOTION start_WT={:.3f}, now={:.3f}, duration={:.3f}, now_minus_start_WT={:.3f}, speed={:.3f}, displacement={:.3f}",
+            const TrackingMotionMetrics short_metrics =
+                    computeTrackingMotionMetrics(committed_pos_traj,
+                                                 target_prediction,
+                                                 cfg_,
+                                                 stitched_prefix_duration,
+                                                 stitched_prefix_duration,
+                                                 short_h);
+            if (short_metrics.target_moving &&
+                short_metrics.displacement_3d < cfg_.tracking_no_motion_min_displacement &&
+                short_metrics.displacement_z < cfg_.tracking_no_motion_min_displacement_z &&
+                short_metrics.speed_3d < cfg_.tracking_keep_old_min_speed) {
+                ros_ptr_->warn(" -- [Tracking] TRACKING_COMMITTED_BUT_NO_MOTION start_WT={:.3f}, now={:.3f}, duration={:.3f}, prefix_duration={:.3f}, runtime_eval_start={:.3f}, now_minus_start_WT={:.3f}, speed_3d={:.3f}, displacement_3d={:.3f}, displacement_z={:.3f}",
                                committed_pos_traj.start_WT,
                                ros_ptr_->getSimTime(),
                                committed_pos_traj.getTotalDuration(),
+                               stitched_prefix_duration,
+                               stitched_prefix_duration,
                                now_minus_start_wt,
-                               speed0,
-                               short_disp);
+                               short_metrics.speed_3d,
+                               short_metrics.displacement_3d,
+                               short_metrics.displacement_z);
             }
             if (std::abs(now_minus_start_wt) > cfg_.tracking_commit_start_time_tolerance) {
                 ros_ptr_->warn(" -- [Tracking] TRACKING_COMMIT_START_TIME_OFFSET now_minus_start_WT={:.3f}, tolerance={:.3f}, start_WT={:.3f}, now={:.3f}",
@@ -1907,7 +2319,7 @@ namespace general_planner {
                 double dist = 0.0;
                 Vec3f grad = Vec3f::Zero();
                 if (map_manager_->evaluateESDF(pos, dist, grad) &&
-                    dist < cfg_.tracking_safe_distance) {
+                    dist < trackingHardSafeDistance(cfg_)) {
                     return false;
                 }
             }
@@ -1989,12 +2401,11 @@ namespace general_planner {
         const double eval_horizon = std::min(std::max(0.0, horizon), out.remaining);
         const double safe_dt = std::max(0.03, dt);
         const auto target0 = interpolateTargetPrediction(target_prediction, 0.0);
-        out.target_moving =
-                target0.velocity.head<2>().norm() >
-                cfg_.tracking_no_motion_target_speed_threshold;
         const Vec3f target_dir =
                 trackingTargetDirection(target_prediction,
-                                        cfg_.tracking_no_motion_target_speed_threshold);
+                                        cfg_.tracking_no_motion_target_speed_threshold,
+                                        cfg_.tracking_vertical_motion_threshold,
+                                        cfg_.tracking_motion_3d_enable);
 
         Vec3f last_p = traj.getPos(std::clamp(local_start_t, 0.0, total_dur));
         if (!last_p.allFinite()) {
@@ -2002,7 +2413,22 @@ namespace general_planner {
             return out;
         }
 
-        out.speed0 = traj.getVel(std::clamp(local_start_t, 0.0, total_dur)).head<2>().norm();
+        const TrackingMotionMetrics initial_metrics =
+                computeTrackingMotionMetrics(traj,
+                                             target_prediction,
+                                             cfg_,
+                                             local_start_t,
+                                             0.0,
+                                             eval_horizon);
+        out.target_moving = initial_metrics.target_moving;
+        out.target_vertical_moving = initial_metrics.target_vertical_moving;
+        out.speed_xy = initial_metrics.speed_xy;
+        out.speed_z = initial_metrics.speed_z;
+        out.speed_3d = initial_metrics.speed_3d;
+        out.speed0 = out.speed_xy;
+        out.target_speed_xy = initial_metrics.target_speed_xy;
+        out.target_speed_z = initial_metrics.target_speed_z;
+        out.target_speed_3d = initial_metrics.target_speed_3d;
         out.safe = true;
         double total_error = 0.0;
         int sample_count = 0;
@@ -2057,11 +2483,16 @@ namespace general_planner {
 
             if (s > 1.0e-6) {
                 const Vec3f dp = p - last_p;
-                out.displacement += dp.head<2>().norm();
-                out.progress += dp.head<2>().dot(target_dir.head<2>());
+                out.displacement_xy += dp.head<2>().norm();
+                out.displacement_z += std::abs(dp.z());
+                out.displacement_3d += dp.norm();
+                out.progress_xy += dp.head<2>().dot(target_dir.head<2>());
+                out.progress_3d += dp.dot(target_dir);
             }
             last_p = p;
         }
+        out.displacement = out.displacement_xy;
+        out.progress = out.progress_xy;
 
         out.avg_tracking_error =
                 sample_count > 0 ? total_error / static_cast<double>(sample_count) : 0.0;
@@ -2072,21 +2503,37 @@ namespace general_planner {
                                       cfg_.tracking_height_offset);
 
         if (out.target_moving) {
-            if (out.speed0 < cfg_.tracking_keep_old_min_speed) {
+            const bool use_3d_motion =
+                    cfg_.tracking_motion_3d_enable || out.target_vertical_moving;
+            const double active_speed =
+                    use_3d_motion ? out.speed_3d : out.speed_xy;
+            const double active_displacement =
+                    use_3d_motion ? out.displacement_3d : out.displacement_xy;
+            const double active_progress =
+                    use_3d_motion ? out.progress_3d : out.progress_xy;
+            const double target_speed =
+                    use_3d_motion ? out.target_speed_3d : out.target_speed_xy;
+            const double progress_ratio =
+                    use_3d_motion ? cfg_.tracking_keep_old_min_progress_3d_ratio
+                                  : cfg_.tracking_keep_old_min_progress_ratio;
+
+            if (active_speed < cfg_.tracking_keep_old_min_speed) {
                 out.reason = "speed too small";
                 return out;
             }
 
-            if (out.displacement < cfg_.tracking_keep_old_min_displacement) {
+            if (active_displacement < cfg_.tracking_keep_old_min_displacement &&
+                (!out.target_vertical_moving ||
+                 out.displacement_z < cfg_.tracking_no_motion_min_displacement_z)) {
                 out.reason = "displacement too small";
                 return out;
             }
 
             out.expected_progress =
-                    target0.velocity.head<2>().norm() *
+                    target_speed *
                     eval_horizon *
-                    cfg_.tracking_keep_old_min_progress_ratio;
-            if (out.progress < out.expected_progress) {
+                    progress_ratio;
+            if (active_progress < out.expected_progress) {
                 out.reason = "insufficient target-direction progress";
                 return out;
             }
@@ -2145,6 +2592,8 @@ namespace general_planner {
     bool GeneralPlanner::candidateTrackingTrajectoryCommandable(
             const Trajectory &candidate_pos_traj,
             const traj_opt::DynamicTargetStates &target_prediction,
+            const double candidate_eval_start_t,
+            const double target_eval_start_t,
             std::string *reason) const {
         if (!cfg_.tracking_no_motion_guard_enable) {
             return true;
@@ -2156,17 +2605,12 @@ namespace general_planner {
             return false;
         }
 
-        const auto target0 = target_prediction.front();
-        const bool target_moving =
-                target0.velocity.head<2>().norm() >
-                cfg_.tracking_no_motion_target_speed_threshold;
-        if (!target_moving) {
-            return true;
-        }
-
         const double h =
                 std::min(cfg_.tracking_no_motion_check_horizon,
-                         candidate_pos_traj.getTotalDuration());
+                         std::max(0.0, candidate_pos_traj.getTotalDuration() -
+                                        std::clamp(candidate_eval_start_t,
+                                                   0.0,
+                                                   candidate_pos_traj.getTotalDuration())));
         if (h < 1.0e-3) {
             if (reason) {
                 *reason = "candidate duration too short";
@@ -2174,9 +2618,11 @@ namespace general_planner {
             return false;
         }
 
-        const Vec3f p0 = candidate_pos_traj.getPos(0.0);
-        const Vec3f p1 = candidate_pos_traj.getPos(h);
-        const Vec3f v0 = candidate_pos_traj.getVel(0.0);
+        const double start_t =
+                std::clamp(candidate_eval_start_t, 0.0, candidate_pos_traj.getTotalDuration());
+        const Vec3f p0 = candidate_pos_traj.getPos(start_t);
+        const Vec3f p1 = candidate_pos_traj.getPos(start_t + h);
+        const Vec3f v0 = candidate_pos_traj.getVel(start_t);
         if (!p0.allFinite() || !p1.allFinite() || !v0.allFinite()) {
             if (reason) {
                 *reason = "candidate contains non-finite state";
@@ -2184,14 +2630,38 @@ namespace general_planner {
             return false;
         }
 
-        const double disp = (p1 - p0).head<2>().norm();
-        const double speed = v0.head<2>().norm();
-        if (disp < cfg_.tracking_no_motion_min_displacement &&
-            speed < cfg_.tracking_keep_old_min_speed) {
+        const TrackingMotionMetrics metrics =
+                computeTrackingMotionMetrics(candidate_pos_traj,
+                                             target_prediction,
+                                             cfg_,
+                                             start_t,
+                                             target_eval_start_t,
+                                             h);
+        if (!metrics.target_moving) {
+            return true;
+        }
+
+        const bool use_3d_motion =
+                cfg_.tracking_motion_3d_enable || metrics.target_vertical_moving;
+        const bool commandable =
+                use_3d_motion
+                    ? (metrics.displacement_3d >= cfg_.tracking_no_motion_min_displacement ||
+                       metrics.displacement_z >= cfg_.tracking_no_motion_min_displacement_z ||
+                       metrics.speed_3d >= cfg_.tracking_keep_old_min_speed)
+                    : (metrics.displacement_xy >= cfg_.tracking_no_motion_min_displacement ||
+                       metrics.speed_xy >= cfg_.tracking_keep_old_min_speed);
+        if (!commandable) {
             if (reason) {
-                *reason = fmt::format("candidate no-motion: disp={:.3f}, speed={:.3f}",
-                                      disp,
-                                      speed);
+                *reason = fmt::format("candidate no-motion: disp_xy={:.3f}, disp_z={:.3f}, disp_3d={:.3f}, speed_xy={:.3f}, speed_z={:.3f}, speed_3d={:.3f}, target_speed_xy={:.3f}, target_speed_z={:.3f}, target_speed_3d={:.3f}",
+                                      metrics.displacement_xy,
+                                      metrics.displacement_z,
+                                      metrics.displacement_3d,
+                                      metrics.speed_xy,
+                                      metrics.speed_z,
+                                      metrics.speed_3d,
+                                      metrics.target_speed_xy,
+                                      metrics.target_speed_z,
+                                      metrics.target_speed_3d);
             }
             return false;
         }
@@ -2251,6 +2721,24 @@ namespace general_planner {
                 return false;
             }
 
+            std::string old_fov_reason;
+            if (!trackingSnapshotSatisfiesFovForKeepOld(old_pos_traj,
+                                                        old_yaw_traj,
+                                                        old_local_t,
+                                                        target_prediction,
+                                                        &old_fov_reason)) {
+                if (cfg_.print_log) {
+                    ros_ptr_->warn(" -- [Tracking] TRACKING_KEEP_OLD_REJECTED_FOV reason={}, fov_reason={}, old_local_t={:.3f}, old_remaining={:.3f}, keep_old_count={}, reject_count={}",
+                                   reason,
+                                   old_fov_reason,
+                                   old_local_t,
+                                   activity.remaining,
+                                   tracking_runtime_manager_->consecutiveKeepOld(),
+                                   tracking_runtime_manager_->consecutiveReject());
+                }
+                return false;
+            }
+
             tracking_runtime_manager_->onKeepOld();
             latest_replan.setExpTraj(old_pos_traj);
             latest_replan.setExpYawTraj(old_yaw_traj);
@@ -2287,6 +2775,33 @@ namespace general_planner {
             return false;
         }
 
+        cmd_traj_info_.lock();
+        const Trajectory old_pos_traj = cmd_traj_info_.posTraj();
+        const Trajectory old_yaw_traj = cmd_traj_info_.yawTraj();
+        const double old_start_wt = cmd_traj_info_.getStartWallTime();
+        const double old_total_dur = cmd_traj_info_.getTotalDuration();
+        cmd_traj_info_.unlock();
+
+        const double old_local_t =
+                std::clamp(ros_ptr_->getSimTime() - old_start_wt,
+                           0.0,
+                           old_total_dur);
+        std::string old_fov_reason;
+        if (!trackingSnapshotSatisfiesFovForKeepOld(old_pos_traj,
+                                                    old_yaw_traj,
+                                                    old_local_t,
+                                                    target_prediction,
+                                                    &old_fov_reason)) {
+            if (cfg_.print_log) {
+                ros_ptr_->warn(" -- [Tracking] TRACKING_KEEP_OLD_REJECTED_FOV reason={}, fov_reason={}, old_local_t={:.3f}, old_remaining={:.3f}",
+                               reason,
+                               old_fov_reason,
+                               old_local_t,
+                               activity.remaining);
+            }
+            return false;
+        }
+
         ++tracking_consecutive_keep_old_;
         if (cfg_.print_log) {
             ros_ptr_->info(" -- [Tracking] TRACKING_KEEP_OLD_ACTIVE reason={}, keep_old_count={}, old_remaining={:.3f}, old_speed0={:.3f}, old_displacement={:.3f}, old_progress={:.3f}, old_expected_progress={:.3f}, old_avg_tracking_error={:.3f}",
@@ -2300,10 +2815,6 @@ namespace general_planner {
                            activity.avg_tracking_error);
         }
 
-        cmd_traj_info_.lock();
-        const Trajectory old_pos_traj = cmd_traj_info_.posTraj();
-        const Trajectory old_yaw_traj = cmd_traj_info_.yawTraj();
-        cmd_traj_info_.unlock();
         latest_replan.setExpTraj(old_pos_traj);
         latest_replan.setExpYawTraj(old_yaw_traj);
         latest_replan.setRetCode(GENERAL_SUCCESS_NO_BACKUP);
@@ -2323,6 +2834,145 @@ namespace general_planner {
                                                 cfg_.tracking_keep_old_safety_dt);
     }
 
+    bool GeneralPlanner::trackingSnapshotSatisfiesFovForKeepOld(
+            const Trajectory &pos_traj,
+            const Trajectory &yaw_traj,
+            const double local_start_t,
+            const traj_opt::DynamicTargetStates &target_prediction,
+            std::string *reason) const {
+        if (!cfg_.tracking_keep_old_requires_fov) {
+            return true;
+        }
+        if (pos_traj.empty() || yaw_traj.empty()) {
+            setFailureReason(reason, "old trajectory has empty position or yaw trajectory");
+            return false;
+        }
+
+        const double total = std::min(pos_traj.getTotalDuration(), yaw_traj.getTotalDuration());
+        const double begin = std::clamp(local_start_t, 0.0, total);
+        const double horizon =
+                std::min({std::max(0.0, cfg_.tracking_keep_old_horizon),
+                          std::max(0.0, total - begin),
+                          target_prediction.empty() ? 0.0
+                                                    : std::max(0.0, target_prediction.back().t)});
+        return trackingTrajectorySatisfiesFov(pos_traj,
+                                              yaw_traj,
+                                              target_prediction,
+                                              begin,
+                                              horizon,
+                                              cfg_.tracking_fov_check_dt,
+                                              0.0,
+                                              reason);
+    }
+
+    bool GeneralPlanner::trackingTrajectorySatisfiesFov(
+            const Trajectory &pos_traj,
+            const Trajectory &yaw_traj,
+            const traj_opt::DynamicTargetStates &target_prediction,
+            const double start_t,
+            const double horizon,
+            const double dt,
+            const double target_start_t,
+            std::string *reason) const {
+        if (!cfg_.tracking_fov_commit_check_enable) {
+            return true;
+        }
+        if (pos_traj.empty() || yaw_traj.empty() || target_prediction.empty()) {
+            setFailureReason(reason, "empty trajectory, yaw trajectory, or target prediction");
+            return false;
+        }
+
+        const double pos_total = pos_traj.getTotalDuration();
+        const double yaw_total = yaw_traj.getTotalDuration();
+        const double total = std::min(pos_total, yaw_total);
+        if (total <= 1.0e-6) {
+            setFailureReason(reason, "trajectory duration too short");
+            return false;
+        }
+
+        constexpr double kPi = 3.14159265358979323846;
+        constexpr double kDegToRad = kPi / 180.0;
+        const double range = cfg_.tracking_fov_range > 0.0
+                                 ? cfg_.tracking_fov_range
+                                 : cfg_.tracking_distance + cfg_.tracking_distance_tolerance;
+        const double begin = std::clamp(start_t, 0.0, total);
+        const double target_begin = std::max(0.0, target_start_t);
+        const double eval_horizon =
+                std::min({std::max(0.0, horizon),
+                          std::max(0.0, total - begin),
+                          std::max(0.0, target_prediction.back().t - target_begin)});
+        const double safe_dt = std::max(0.01, dt);
+        int sample_count = 0;
+        int violation_count = 0;
+        double max_h_violation = 0.0;
+        double max_v_violation = 0.0;
+        double max_range_violation = 0.0;
+        double max_front_violation = 0.0;
+
+        for (double s = 0.0; s <= eval_horizon + 1.0e-6; s += safe_dt) {
+            const double t = std::min(total, begin + s);
+            const Vec3f p = pos_traj.getPos(t);
+            StatePVAJ yaw_state;
+            if (!p.allFinite() ||
+                !yaw_traj.getState(std::min(t, yaw_total), yaw_state)) {
+                setFailureReason(reason, "non-finite FOV sample");
+                return false;
+            }
+
+            const double yaw = yaw_state(0, 0);
+            const Vec3f target =
+                    interpolateTargetPrediction(target_prediction, target_begin + s).position;
+            const auto fov =
+                    evaluateYawOnlyTrackingFov(p,
+                                               target,
+                                               yaw,
+                                               cfg_.tracking_fov_horizontal_deg,
+                                               cfg_.tracking_fov_vertical_deg,
+                                               range,
+                                               cfg_.tracking_fov_range_margin,
+                                               cfg_.tracking_fov_front_margin);
+            const bool violated = !fov.inside;
+            if (violated) {
+                ++violation_count;
+                max_h_violation = std::max(max_h_violation, fov.h_violation);
+                max_v_violation = std::max(max_v_violation, fov.v_violation);
+                max_range_violation = std::max(max_range_violation, fov.range_violation);
+                max_front_violation = std::max(max_front_violation, fov.front_violation);
+            }
+            ++sample_count;
+        }
+
+        const bool severe =
+                max_h_violation > 10.0 * kDegToRad ||
+                max_v_violation > 10.0 * kDegToRad ||
+                max_range_violation > 0.20 ||
+                max_front_violation > 0.2;
+        const bool persistent =
+                violation_count > std::max(1, sample_count / 4);
+        const bool range_only_grace =
+                cfg_.tracking_fov_range_grace_enable &&
+                max_range_violation > 0.0 &&
+                max_range_violation <= std::max(0.0, cfg_.tracking_fov_range_grace) &&
+                max_h_violation <= 1.0e-6 &&
+                max_v_violation <= 1.0e-6 &&
+                max_front_violation <= 1.0e-6;
+        if (violation_count > 0 &&
+            !range_only_grace &&
+            (cfg_.tracking_fov_check_strict || severe || persistent)) {
+            setFailureReason(reason,
+                             fmt::format("FOV violation samples={}/{}, max_h={:.1f}deg, max_v={:.1f}deg, max_range={:.2f}, max_front={:.2f}",
+                                         violation_count,
+                                         sample_count,
+                                         max_h_violation / kDegToRad,
+                                         max_v_violation / kDegToRad,
+                                         max_range_violation,
+                                         max_front_violation));
+            return false;
+        }
+
+        return true;
+    }
+
     void GeneralPlanner::resetTrackingCommitCounters() {
         tracking_consecutive_keep_old_ = 0;
         tracking_consecutive_reject_ = 0;
@@ -2340,11 +2990,25 @@ namespace general_planner {
     bool GeneralPlanner::trackingCommitPassesAntiRollback(
             const Trajectory &candidate_pos_traj,
             const traj_opt::DynamicTargetStates &target_prediction,
-            const double commit_wt) {
+            const double commit_wt,
+            const double candidate_eval_start_t,
+            const double target_eval_start_t,
+            const bool candidate_safe,
+            const bool candidate_fov_ok,
+            int *worse_count_out,
+            double *max_regression_out,
+            std::string *reason) {
+        if (worse_count_out != nullptr) {
+            *worse_count_out = 0;
+        }
+        if (max_regression_out != nullptr) {
+            *max_regression_out = 0.0;
+        }
         if (!cfg_.tracking_anti_rollback_enable) {
             return true;
         }
         if (candidate_pos_traj.empty() || target_prediction.empty()) {
+            setFailureReason(reason, "empty candidate or target prediction");
             return false;
         }
         if (cmd_traj_info_.empty()) {
@@ -2353,6 +3017,7 @@ namespace general_planner {
 
         cmd_traj_info_.lock();
         const Trajectory old_pos_traj = cmd_traj_info_.posTraj();
+        const Trajectory old_yaw_traj = cmd_traj_info_.yawTraj();
         const double old_start_wt = cmd_traj_info_.getStartWallTime();
         const double old_total_dur = cmd_traj_info_.getTotalDuration();
         cmd_traj_info_.unlock();
@@ -2363,11 +3028,14 @@ namespace general_planner {
         }
 
         const double dt = std::max(0.05, cfg_.tracking_anti_rollback_dt);
+        const double candidate_start =
+                std::clamp(candidate_eval_start_t, 0.0, candidate_pos_traj.getTotalDuration());
+        const double target_start = std::max(0.0, target_eval_start_t);
         const double horizon =
                 std::min({std::max(0.0, cfg_.tracking_anti_rollback_horizon),
                           std::max(0.0, old_total_dur - old_eval_t),
-                          candidate_pos_traj.getTotalDuration(),
-                          std::max(0.0, target_prediction.back().t)});
+                          std::max(0.0, candidate_pos_traj.getTotalDuration() - candidate_start),
+                          std::max(0.0, target_prediction.back().t - target_start)});
         if (horizon < dt + 1.0e-6) {
             return true;
         }
@@ -2378,23 +3046,32 @@ namespace general_planner {
         const double margin = std::max(0.0, cfg_.tracking_anti_rollback_margin);
         int worse_count = 0;
         double max_regression = 0.0;
+        double max_new_score = 0.0;
         for (double offset = dt; offset <= horizon + 1.0e-6; offset += dt) {
             const Vec3f old_pos =
                     old_pos_traj.getPos(std::clamp(old_eval_t + offset,
                                                    0.0,
                                                    old_pos_traj.getTotalDuration()));
             const Vec3f new_pos =
-                    candidate_pos_traj.getPos(std::clamp(offset,
+                    candidate_pos_traj.getPos(std::clamp(candidate_start + offset,
                                                          0.0,
                                                          candidate_pos_traj.getTotalDuration()));
-            const Vec3f target_pos = interpolateTargetPrediction(target_prediction, offset).position;
+            const Vec3f target_pos =
+                    interpolateTargetPrediction(target_prediction, target_start + offset).position;
             const double old_score = trackingViewpointErrorScore(old_pos, target_pos);
             const double new_score = trackingViewpointErrorScore(new_pos, target_pos);
+            max_new_score = std::max(max_new_score, new_score);
             const double regression = new_score - old_score;
             if (regression > margin) {
                 ++worse_count;
                 max_regression = std::max(max_regression, regression);
             }
+        }
+        if (worse_count_out != nullptr) {
+            *worse_count_out = worse_count;
+        }
+        if (max_regression_out != nullptr) {
+            *max_regression_out = max_regression;
         }
 
         if (worse_count >= 2 || max_regression > 2.0 * margin) {
@@ -2404,17 +3081,105 @@ namespace general_planner {
                                                        target_prediction,
                                                        cfg_.tracking_keep_old_horizon,
                                                        cfg_.tracking_keep_old_safety_dt);
+            std::string old_fov_reason;
+            const bool old_fov_ok =
+                    old_yaw_traj.empty()
+                        ? false
+                        : trackingSnapshotSatisfiesFovForKeepOld(old_pos_traj,
+                                                                 old_yaw_traj,
+                                                                 std::clamp(old_eval_t, 0.0, old_total_dur),
+                                                                 target_prediction,
+                                                                 &old_fov_reason);
+            const double grace_horizon =
+                    std::min({std::max(0.0, cfg_.tracking_detour_grace_horizon),
+                              std::max(0.0, candidate_pos_traj.getTotalDuration() - candidate_start),
+                              std::max(0.0, target_prediction.back().t - target_start)});
+            const TrackingMotionMetrics candidate_metrics =
+                    computeTrackingMotionMetrics(candidate_pos_traj,
+                                                 target_prediction,
+                                                 cfg_,
+                                                 candidate_start,
+                                                 target_start,
+                                                 grace_horizon);
+            const double min_positive_progress =
+                    std::max(0.02,
+                             candidate_metrics.target_speed_3d *
+                             grace_horizon *
+                             std::max(0.0, cfg_.tracking_keep_old_min_progress_3d_ratio));
+            const bool positive_3d_progress =
+                    candidate_metrics.progress_3d >= min_positive_progress ||
+                    candidate_metrics.displacement_3d >= cfg_.tracking_no_motion_min_displacement ||
+                    candidate_metrics.displacement_z >= cfg_.tracking_no_motion_min_displacement_z;
+            const bool old_unusable =
+                    !old_activity.active ||
+                    old_activity.remaining < cfg_.tracking_keep_old_min_remaining ||
+                    !old_fov_ok;
+            const double detour_error_limit =
+                    cfg_.tracking_detour_max_tracking_error_scale *
+                    std::max(0.1, cfg_.tracking_distance_tolerance);
+            if (cfg_.tracking_detour_grace_enable &&
+                candidate_safe &&
+                candidate_fov_ok &&
+                positive_3d_progress &&
+                old_unusable &&
+                max_new_score <= detour_error_limit) {
+                if (cfg_.print_log) {
+                    ros_ptr_->warn(" -- [Tracking] TRACKING_FORCE_COMMIT_SAFE_RECOVERY reason=detour_grace, worse_count={}, max_regression={:.3f}, max_new_error={:.3f}, error_limit={:.3f}, candidate_safe={}, candidate_fov_ok={}, candidate_disp_xy={:.3f}, candidate_disp_z={:.3f}, candidate_disp_3d={:.3f}, candidate_progress_3d={:.3f}, old_active={}, old_remaining={:.3f}, old_activity_reason={}, old_fov_ok={}, old_fov_reason={}, prefix_duration={:.3f}, target_eval_start={:.3f}",
+                                   worse_count,
+                                   max_regression,
+                                   max_new_score,
+                                   detour_error_limit,
+                                   candidate_safe,
+                                   candidate_fov_ok,
+                                   candidate_metrics.displacement_xy,
+                                   candidate_metrics.displacement_z,
+                                   candidate_metrics.displacement_3d,
+                                   candidate_metrics.progress_3d,
+                                   old_activity.active,
+                                   old_activity.remaining,
+                                   old_activity.reason,
+                                   old_fov_ok,
+                                   old_fov_reason,
+                                   candidate_start,
+                                   target_start);
+                }
+                return true;
+            }
+            setFailureReason(reason,
+                             fmt::format("anti-rollback regression: worse_count={}, max_regression={:.3f}, max_new_error={:.3f}, old_activity={}, old_fov_ok={}",
+                                         worse_count,
+                                         max_regression,
+                                         max_new_score,
+                                         old_activity.reason,
+                                         old_fov_ok));
             if (cfg_.print_log) {
-                ros_ptr_->warn(" -- [Tracking] TRACKING_CANDIDATE_REJECTED_ANTI_ROLLBACK reject_count={}, keep_old_count={}, worse_count={}, max_regression={:.3f}, horizon={:.2f}, old_remaining={:.3f}, old_speed0={:.3f}, old_displacement={:.3f}, old_progress={:.3f}, old_expected_progress={:.3f}, old_avg_tracking_error={:.3f}",
+                ros_ptr_->warn(" -- [Tracking] TRACKING_CANDIDATE_REJECTED_ANTI_ROLLBACK reject_count={}, keep_old_count={}, worse_count={}, max_regression={:.3f}, max_new_error={:.3f}, horizon={:.2f}, prefix_duration={:.3f}, target_eval_start={:.3f}, candidate_safe={}, candidate_fov_ok={}, candidate_disp_xy={:.3f}, candidate_disp_z={:.3f}, candidate_disp_3d={:.3f}, candidate_progress_3d={:.3f}, old_remaining={:.3f}, old_activity_reason={}, old_fov_ok={}, old_fov_reason={}, old_speed_xy={:.3f}, old_speed_z={:.3f}, old_speed_3d={:.3f}, old_disp_xy={:.3f}, old_disp_z={:.3f}, old_disp_3d={:.3f}, old_progress_xy={:.3f}, old_progress_3d={:.3f}, old_expected_progress={:.3f}, old_avg_tracking_error={:.3f}",
                                tracking_runtime_manager_ ? tracking_runtime_manager_->consecutiveReject() : tracking_consecutive_reject_,
                                tracking_runtime_manager_ ? tracking_runtime_manager_->consecutiveKeepOld() : tracking_consecutive_keep_old_,
                                worse_count,
                                max_regression,
+                               max_new_score,
                                horizon,
+                               candidate_start,
+                               target_start,
+                               candidate_safe,
+                               candidate_fov_ok,
+                               candidate_metrics.displacement_xy,
+                               candidate_metrics.displacement_z,
+                               candidate_metrics.displacement_3d,
+                               candidate_metrics.progress_3d,
                                old_activity.remaining,
-                               old_activity.speed0,
-                               old_activity.displacement,
-                               old_activity.progress,
+                               old_activity.reason,
+                               old_fov_ok,
+                               old_fov_reason,
+                               old_activity.speed_xy,
+                               old_activity.speed_z,
+                               old_activity.speed_3d,
+                               old_activity.displacement_xy,
+                               old_activity.displacement_z,
+                               old_activity.displacement_3d,
+                               old_activity.progress_xy,
+                               old_activity.progress_3d,
                                old_activity.expected_progress,
                                old_activity.avg_tracking_error);
             } else {
@@ -2568,6 +3333,59 @@ namespace general_planner {
             problem.tail_pvaj.col(1).setZero();
             problem.min_total_duration = std::max(0.6, problem.guide_t.back());
         }
+    }
+
+    bool GeneralPlanner::findTrackingViewpointReference(
+            const traj_opt::DynamicTargetStates &target_prediction,
+            Vec3f &reference_viewpoint,
+            traj_opt::DynamicTargetState &reference_target) const {
+        if (target_prediction.empty() ||
+            last_tracking_frontend_prediction_.empty() ||
+            last_tracking_frontend_viewpoints_.empty() ||
+            last_tracking_frontend_prediction_.size() != last_tracking_frontend_viewpoints_.size()) {
+            return false;
+        }
+
+        const Vec3f &target0 = target_prediction.front().position;
+        double best_score = std::numeric_limits<double>::infinity();
+        std::size_t best_idx = 0;
+        for (std::size_t i = 0; i < last_tracking_frontend_prediction_.size(); ++i) {
+            const auto &old_target = last_tracking_frontend_prediction_[i];
+            const auto &old_viewpoint = last_tracking_frontend_viewpoints_[i];
+            if (!old_target.position.allFinite() || !old_viewpoint.allFinite()) {
+                continue;
+            }
+            const double score = (old_target.position - target0).norm();
+            if (score < best_score) {
+                best_score = score;
+                best_idx = i;
+            }
+        }
+
+        const double max_match_dist =
+                std::max({1.0,
+                          cfg_.tracking_distance,
+                          cfg_.tracking_distance + cfg_.tracking_distance_upper_tolerance});
+        if (!std::isfinite(best_score) || best_score > max_match_dist) {
+            return false;
+        }
+
+        reference_viewpoint = last_tracking_frontend_viewpoints_[best_idx];
+        reference_target = last_tracking_frontend_prediction_[best_idx];
+        return trackingGuidePointSafe(reference_viewpoint);
+    }
+
+    void GeneralPlanner::rememberTrackingViewpointReference(
+            const traj_opt::TrackingProblem &problem) {
+        if (problem.target_prediction.empty() ||
+            problem.viewpoints.empty() ||
+            problem.target_prediction.size() != problem.viewpoints.size()) {
+            last_tracking_frontend_prediction_.clear();
+            last_tracking_frontend_viewpoints_.clear();
+            return;
+        }
+        last_tracking_frontend_prediction_ = problem.target_prediction;
+        last_tracking_frontend_viewpoints_ = problem.viewpoints;
     }
 
     bool GeneralPlanner::tryGenerateTrackingCorridor(const vec_Vec3f &guide_path,
@@ -3013,6 +3831,358 @@ namespace general_planner {
         return false;
     }
 
+    bool GeneralPlanner::applyTrackingNarrowPassageSoftDistance(
+            traj_opt::TrackingProblem &problem,
+            std::string *reason) const {
+        if (!cfg_.tracking_narrow_passage_enable ||
+            problem.guide_path.empty() ||
+            map_manager_ == nullptr ||
+            !map_manager_->ready() ||
+            !map_manager_->hasESDF()) {
+            return false;
+        }
+
+        double min_clearance = std::numeric_limits<double>::infinity();
+        for (const Vec3f &p : problem.guide_path) {
+            double dist = 0.0;
+            Vec3f grad = Vec3f::Zero();
+            if (p.allFinite() && map_manager_->evaluateESDF(p, dist, grad)) {
+                min_clearance = std::min(min_clearance, dist);
+            }
+        }
+        if (!std::isfinite(min_clearance) ||
+            min_clearance >= cfg_.tracking_narrow_passage_clearance_threshold) {
+            return false;
+        }
+
+        const double old_safe_distance = problem.safe_distance;
+        const double hard_distance = trackingHardSafeDistance(cfg_);
+        const double scaled_soft =
+                cfg_.tracking_safe_distance *
+                std::clamp(cfg_.tracking_narrow_passage_soft_safe_distance_scale, 0.1, 1.0);
+        problem.safe_distance = std::max(hard_distance, scaled_soft);
+        setFailureReason(reason,
+                         fmt::format("narrow_passage min_clearance={:.3f}, optimizer_safe_distance {:.3f}->{:.3f}, hard_safe_distance={:.3f}",
+                                     min_clearance,
+                                     old_safe_distance,
+                                     problem.safe_distance,
+                                     hard_distance));
+        return true;
+    }
+
+    bool GeneralPlanner::optimizeTrackingProblemWithRetries(
+            const traj_opt::TrackingProblem &normal_problem,
+            const traj_opt::DynamicTargetStates &active_target_prediction,
+            Trajectory &out_traj,
+            Trajectory &out_yaw_traj,
+            std::string *failure_reason) {
+        out_traj = Trajectory();
+        out_yaw_traj = Trajectory();
+        std::vector<std::string> attempt_failures;
+
+        auto shouldFovPostcheckOptimization = [&]() -> bool {
+            if (!cfg_.tracking_adaptive_occlusion_postcheck_enable ||
+                !cfg_.tracking_fov_commit_check_enable) {
+                return false;
+            }
+            const bool has_committed_tracking =
+                    cfg_.tracking_runtime_manager_enable && tracking_runtime_manager_
+                        ? tracking_runtime_manager_->hasCommittedTracking()
+                        : !cmd_traj_info_.empty();
+            return cfg_.tracking_fov_check_first_commit || has_committed_tracking;
+        };
+
+        auto candidatePassesOptimizationFovPostcheck =
+                [&](const Trajectory &candidate_pos,
+                    Trajectory &candidate_yaw,
+                    std::string *reject_reason) -> bool {
+            if (!shouldFovPostcheckOptimization()) {
+                return true;
+            }
+            if (candidate_pos.empty() || active_target_prediction.empty()) {
+                setFailureReason(reject_reason, "empty candidate or target prediction");
+                return false;
+            }
+            if (candidate_yaw.empty() &&
+                !buildTrackingTargetYawTrajectory(candidate_pos,
+                                                  active_target_prediction,
+                                                  candidate_yaw)) {
+                setFailureReason(reject_reason, "yaw generation failed for FOV postcheck");
+                return false;
+            }
+            const double fov_horizon =
+                    std::min({std::max(0.0, cfg_.tracking_keep_old_horizon),
+                              candidate_pos.getTotalDuration(),
+                              active_target_prediction.empty()
+                                  ? 0.0
+                                  : std::max(0.0, active_target_prediction.back().t)});
+            return trackingTrajectorySatisfiesFov(candidate_pos,
+                                                  candidate_yaw,
+                                                  active_target_prediction,
+                                                  0.0,
+                                                  fov_horizon,
+                                                  cfg_.tracking_fov_check_dt,
+                                                  0.0,
+                                                  reject_reason);
+        };
+
+        auto runOptimization = [&](const std::string &attempt_name,
+                                   traj_opt::TrackingProblem problem,
+                                   const bool recovery_attempt) -> bool {
+            std::string narrow_reason;
+            const bool narrow_adjusted = applyTrackingNarrowPassageSoftDistance(problem, &narrow_reason);
+            if (cfg_.print_log && narrow_adjusted) {
+                ros_ptr_->warn(" -- [Tracking] TRACKING_NARROW_PASSAGE_SOFT_CLEARANCE attempt={}, reason={}, guide_path.size()={}, problem.sfcs.size()={}, problem.target_prediction.size()={}",
+                               attempt_name,
+                               narrow_reason,
+                               problem.guide_path.size(),
+                               problem.sfcs.size(),
+                               problem.target_prediction.size());
+            }
+
+            Trajectory candidate_pos;
+            Trajectory candidate_yaw;
+            const bool ok = cfg_.tracking_use_snap
+                                ? traj_manager_->trackingSnap()->optimize(problem, candidate_pos, &candidate_yaw)
+                                : traj_manager_->trackingJerk()->optimize(problem, candidate_pos, &candidate_yaw);
+            if (ok && !candidate_pos.empty()) {
+                std::string fov_postcheck_reason;
+                if (!candidatePassesOptimizationFovPostcheck(candidate_pos,
+                                                             candidate_yaw,
+                                                             &fov_postcheck_reason)) {
+                    attempt_failures.emplace_back(
+                            fmt::format("{} rejected_by_fov_postcheck(reason={}, guide={}, sfc={}, target={}, duration={:.3f}, safe_distance={:.3f}, use_corridor={})",
+                                        attempt_name,
+                                        fov_postcheck_reason,
+                                        problem.guide_path.size(),
+                                        problem.sfcs.size(),
+                                        problem.target_prediction.size(),
+                                        candidate_pos.getTotalDuration(),
+                                        problem.safe_distance,
+                                        problem.use_corridor));
+                    ros_ptr_->warn(" -- [Tracking] TRACKING_OPT_RECOVERY_FAILED attempt={}, reason=fov_postcheck_failed:{}, guide_path.size()={}, problem.sfcs.size()={}, problem.target_prediction.size()={}, out_traj_duration={:.3f}, safe_distance={:.3f}, use_corridor={}, narrow_adjusted={}",
+                                   attempt_name,
+                                   fov_postcheck_reason,
+                                   problem.guide_path.size(),
+                                   problem.sfcs.size(),
+                                   problem.target_prediction.size(),
+                                   candidate_pos.getTotalDuration(),
+                                   problem.safe_distance,
+                                   problem.use_corridor,
+                                   narrow_adjusted);
+                    return false;
+                }
+                out_traj = candidate_pos;
+                out_yaw_traj = candidate_yaw;
+                if (recovery_attempt) {
+                    ros_ptr_->warn(" -- [Tracking] TRACKING_OPT_RECOVERY_SUCCESS attempt={}, guide_path.size()={}, problem.sfcs.size()={}, problem.target_prediction.size()={}, out_traj_duration={:.3f}, safe_distance={:.3f}, use_corridor={}, narrow_adjusted={}",
+                                   attempt_name,
+                                   problem.guide_path.size(),
+                                   problem.sfcs.size(),
+                                   problem.target_prediction.size(),
+                                   out_traj.getTotalDuration(),
+                                   problem.safe_distance,
+                                   problem.use_corridor,
+                                   narrow_adjusted);
+                }
+                return true;
+            }
+
+            attempt_failures.emplace_back(
+                    fmt::format("{} failed(ok={}, empty={}, guide={}, sfc={}, target={}, safe_distance={:.3f}, use_corridor={})",
+                                attempt_name,
+                                ok,
+                                candidate_pos.empty(),
+                                problem.guide_path.size(),
+                                problem.sfcs.size(),
+                                problem.target_prediction.size(),
+                                problem.safe_distance,
+                                problem.use_corridor));
+            if (recovery_attempt) {
+                ros_ptr_->warn(" -- [Tracking] TRACKING_OPT_RECOVERY_FAILED attempt={}, guide_path.size()={}, problem.sfcs.size()={}, problem.target_prediction.size()={}, out_traj_duration={:.3f}, safe_distance={:.3f}, use_corridor={}, narrow_adjusted={}",
+                               attempt_name,
+                               problem.guide_path.size(),
+                               problem.sfcs.size(),
+                               problem.target_prediction.size(),
+                               candidate_pos.empty() ? 0.0 : candidate_pos.getTotalDuration(),
+                               problem.safe_distance,
+                               problem.use_corridor,
+                               narrow_adjusted);
+            }
+            return false;
+        };
+
+        traj_opt::TrackingProblem normal = normal_problem;
+        normal.safe_distance = std::max(0.0, normal.safe_distance);
+        if (runOptimization("normal", normal, false)) {
+            return true;
+        }
+
+        if (!cfg_.tracking_recovery_enable) {
+            setFailureReason(failure_reason,
+                             attempt_failures.empty() ? "normal optimization failed"
+                                                      : attempt_failures.back());
+            return false;
+        }
+
+        auto truncateRecoveryProblem = [&](traj_opt::TrackingProblem &problem,
+                                           const double horizon) {
+            const double h = std::max(0.3, horizon);
+            if (!problem.target_prediction.empty() &&
+                problem.target_prediction.back().t > h) {
+                traj_opt::DynamicTargetStates truncated;
+                for (const auto &state : problem.target_prediction) {
+                    if (state.t <= h + 1.0e-6) {
+                        truncated.emplace_back(state);
+                    }
+                }
+                const auto horizon_state = interpolateTargetPrediction(problem.target_prediction, h);
+                if (truncated.empty() || std::abs(truncated.back().t - h) > 1.0e-4) {
+                    truncated.emplace_back(horizon_state);
+                }
+                problem.target_prediction = std::move(truncated);
+            }
+
+            if (problem.guide_path.size() >= 2 &&
+                problem.guide_t.size() == problem.guide_path.size() &&
+                problem.guide_t.back() > h) {
+                vec_Vec3f guide;
+                std::vector<double> guide_t;
+                guide.reserve(problem.guide_path.size());
+                guide_t.reserve(problem.guide_t.size());
+                appendGuideTimedUnique(problem.guide_path.front(), problem.guide_t.front(), guide, guide_t);
+                for (std::size_t i = 1; i < problem.guide_path.size(); ++i) {
+                    if (problem.guide_t[i] <= h + 1.0e-6) {
+                        appendGuideTimedUnique(problem.guide_path[i], problem.guide_t[i], guide, guide_t);
+                        continue;
+                    }
+                    const double t0 = problem.guide_t[i - 1];
+                    const double t1 = problem.guide_t[i];
+                    if (h > t0 + 1.0e-6 && t1 > t0 + 1.0e-6) {
+                        const double alpha = std::clamp((h - t0) / (t1 - t0), 0.0, 1.0);
+                        const Vec3f p = problem.guide_path[i - 1] +
+                                        alpha * (problem.guide_path[i] - problem.guide_path[i - 1]);
+                        appendGuideTimedUnique(p, h, guide, guide_t);
+                    }
+                    break;
+                }
+                if (guide.size() >= 2 && guide.size() == guide_t.size()) {
+                    problem.guide_path = std::move(guide);
+                    problem.guide_t = std::move(guide_t);
+                    refreshTrackingGuideEndpoint(problem);
+                }
+            }
+
+            if (!problem.target_prediction.empty()) {
+                problem.min_total_duration =
+                        std::max(0.6,
+                                 std::min(problem.min_total_duration,
+                                          problem.target_prediction.back().t));
+            }
+        };
+
+        traj_opt::TrackingProblem recovery = normal_problem;
+        truncateRecoveryProblem(recovery, cfg_.tracking_recovery_horizon);
+        recovery.distance_tolerance *= std::max(1.0, cfg_.tracking_recovery_distance_tolerance_scale);
+        recovery.height_tolerance *= std::max(1.0, cfg_.tracking_recovery_height_tolerance_scale);
+        recovery.od_h_lower =
+                std::max(0.05,
+                         recovery.tracking_distance - recovery.distance_tolerance);
+        recovery.od_h_upper =
+                std::max(recovery.od_h_lower + 0.05,
+                         recovery.tracking_distance + recovery.distance_tolerance);
+        recovery.od_v_lower = recovery.height_offset - recovery.height_tolerance;
+        recovery.od_v_upper = recovery.height_offset + recovery.height_tolerance;
+        recovery.min_total_duration =
+                std::max(0.6,
+                         recovery.min_total_duration *
+                         std::max(1.0, cfg_.tracking_recovery_time_scale));
+        if (!recovery.target_prediction.empty()) {
+            recovery.min_total_duration =
+                    std::max(recovery.min_total_duration,
+                             recovery.target_prediction.back().t);
+        }
+        recovery.weight_visible_region *=
+                std::clamp(cfg_.tracking_recovery_reduce_visible_region_weight, 0.0, 1.0);
+        recovery.weight_target_forward *=
+                std::clamp(cfg_.tracking_recovery_reduce_target_forward_weight, 0.0, 1.0);
+
+        if (runOptimization("recovery_relaxed", recovery, true)) {
+            return true;
+        }
+
+        auto applyAdaptiveOcclusionRecovery = [&](traj_opt::TrackingProblem &problem) {
+            problem.adaptive_occlusion_enable = true;
+            problem.weight_oe *=
+                    std::max(1.0, cfg_.tracking_adaptive_occlusion_recovery_oe_scale);
+            problem.weight_visibility = problem.weight_oe;
+            problem.weight_od_far *=
+                    std::max(1.0, cfg_.tracking_adaptive_occlusion_od_far_weight_scale);
+            problem.visibility_samples =
+                    std::max(problem.visibility_samples,
+                             std::max(7, 2 * cfg_.tracking_visibility_samples - 1));
+            if (problem.joint_sample_dt > 0.0) {
+                problem.joint_sample_dt =
+                        std::min(problem.joint_sample_dt,
+                                 std::max(0.02, cfg_.tracking_fov_check_dt));
+            }
+            const double adaptive_upper =
+                    std::max(problem.od_h_lower + 0.05,
+                             std::max(problem.adaptive_occlusion_min_horizontal_upper,
+                                      problem.tracking_distance *
+                                      std::clamp(problem.adaptive_occlusion_distance_upper_scale,
+                                                 0.1,
+                                                 1.0)));
+            problem.od_h_upper = std::min(problem.od_h_upper, adaptive_upper);
+            problem.weight_viewpoint_attractor *= 0.65;
+            problem.weight_visible_region *= 0.8;
+        };
+
+        traj_opt::TrackingProblem adaptive_recovery = recovery;
+        if (cfg_.tracking_adaptive_occlusion_enable) {
+            applyAdaptiveOcclusionRecovery(adaptive_recovery);
+            if (runOptimization("recovery_adaptive_occlusion", adaptive_recovery, true)) {
+                return true;
+            }
+        }
+
+        traj_opt::TrackingProblem obstacle_recovery =
+                cfg_.tracking_adaptive_occlusion_enable ? adaptive_recovery : recovery;
+        obstacle_recovery.safe_distance =
+                std::max(trackingHardSafeDistance(cfg_),
+                         cfg_.tracking_safe_distance *
+                         std::clamp(cfg_.tracking_narrow_passage_soft_safe_distance_scale, 0.1, 1.0));
+        if (runOptimization("recovery_narrow_corridor", obstacle_recovery, true)) {
+            return true;
+        }
+
+        if (cfg_.tracking_retry_without_corridor_enable && normal_problem.use_corridor) {
+            traj_opt::TrackingProblem no_corridor = obstacle_recovery;
+            no_corridor.use_corridor = false;
+            no_corridor.sfcs.clear();
+            if (runOptimization("recovery_without_corridor", no_corridor, true)) {
+                return true;
+            }
+        }
+
+        std::string joined;
+        for (const std::string &failure : attempt_failures) {
+            if (!joined.empty()) {
+                joined += "; ";
+            }
+            joined += failure;
+        }
+        setFailureReason(failure_reason,
+                         joined.empty() ? "all tracking optimization attempts failed" : joined);
+        ros_ptr_->warn(" -- [Tracking] TRACKING_OPT_FAILED reason={}, guide_path.size()={}, problem.sfcs.size()={}, problem.target_prediction.size()={}, out_traj_duration={:.3f}, prefix_duration=0.000, runtime_eval_start=0.000",
+                       failure_reason != nullptr ? *failure_reason : joined,
+                       normal_problem.guide_path.size(),
+                       normal_problem.sfcs.size(),
+                       normal_problem.target_prediction.size(),
+                       out_traj.empty() ? 0.0 : out_traj.getTotalDuration());
+        return false;
+    }
+
     RET_CODE GeneralPlanner::optimizeTrackingTask(const traj_opt::DynamicTargetStates &target_prediction,
                                                 const bool &from_rest) {
         if (target_prediction.empty()) {
@@ -3048,6 +4218,12 @@ namespace general_planner {
         frontend_cfg.tracking_distance = cfg_.tracking_distance;
         frontend_cfg.distance_tolerance = static_tracking ? static_distance_tolerance
                                                           : cfg_.tracking_distance_tolerance;
+        frontend_cfg.distance_lower_tolerance =
+                static_tracking ? static_distance_tolerance
+                                : cfg_.tracking_distance_lower_tolerance;
+        frontend_cfg.distance_upper_tolerance =
+                static_tracking ? static_distance_tolerance
+                                : cfg_.tracking_distance_upper_tolerance;
         frontend_cfg.height_offset = cfg_.tracking_height_offset;
         frontend_cfg.height_tolerance = static_tracking ? static_height_tolerance
                                                         : cfg_.tracking_height_tolerance;
@@ -3074,6 +4250,24 @@ namespace general_planner {
         frontend_cfg.partial_guide_enable = cfg_.tracking_frontend_partial_guide_enable;
         frontend_cfg.partial_guide_min_duration = cfg_.tracking_frontend_partial_min_duration;
         frontend_cfg.partial_guide_min_samples = cfg_.tracking_frontend_partial_min_samples;
+        frontend_cfg.fov_feasibility_enable = cfg_.tracking_frontend_fov_feasibility_enable;
+        frontend_cfg.yaw_rate_feasibility_enable = cfg_.tracking_frontend_yaw_rate_feasibility_enable;
+        frontend_cfg.fov_horizontal_deg = cfg_.tracking_fov_horizontal_deg;
+        frontend_cfg.fov_vertical_deg = cfg_.tracking_fov_vertical_deg;
+        frontend_cfg.fov_range = cfg_.tracking_fov_range > 0.0
+                                     ? cfg_.tracking_fov_range
+                                     : cfg_.tracking_distance + cfg_.tracking_distance_tolerance;
+        frontend_cfg.fov_range_margin = cfg_.tracking_frontend_fov_range_margin;
+        frontend_cfg.fov_front_margin = cfg_.tracking_fov_front_margin;
+        frontend_cfg.max_yaw_rate = cfg_.yaw_dot_max;
+        frontend_cfg.yaw_rate_margin = cfg_.tracking_frontend_yaw_rate_margin;
+        frontend_cfg.obstacle_recovery_enable = cfg_.tracking_frontend_obstacle_recovery_enable;
+        frontend_cfg.grid_neighbor_mode = cfg_.tracking_frontend_grid_neighbor_mode;
+        frontend_cfg.over_wall_enable = cfg_.tracking_frontend_over_wall_enable;
+        frontend_cfg.over_wall_max_climb = cfg_.tracking_frontend_over_wall_max_climb;
+        frontend_cfg.side_pass_enable = cfg_.tracking_frontend_side_pass_enable;
+        frontend_cfg.side_pass_width = cfg_.tracking_frontend_side_pass_width;
+        frontend_cfg.reacquire_relax_yaw_rate = cfg_.tracking_frontend_reacquire_relax_yaw_rate;
         frontend_cfg.unknown_as_occupied = cfg_.tracking_unknown_as_occupied;
         frontend_cfg.use_astar = cfg_.tracking_frontend_astar;
         frontend_cfg.use_visible_region = cfg_.tracking_use_visible_region;
@@ -3082,8 +4276,27 @@ namespace general_planner {
         traj_opt::TrackingProblem problem;
         TimeConsuming t_frontend("tracking_frontend", false);
         TrackingFrontend frontend(frontend_cfg, map_manager_, astar_ptr_);
-        if (!frontend.buildProblem(makeTaskHeadState(from_rest), target_prediction, problem)) {
+        Vec3f reference_viewpoint = Vec3f::Zero();
+        traj_opt::DynamicTargetState reference_target;
+        const bool has_viewpoint_reference =
+                findTrackingViewpointReference(target_prediction,
+                                               reference_viewpoint,
+                                               reference_target);
+        const StatePVAJ head_state = makeTaskHeadState(from_rest);
+        if (!frontend.buildProblem(head_state,
+                                   target_prediction,
+                                   problem,
+                                   has_viewpoint_reference ? &reference_viewpoint : nullptr,
+                                   has_viewpoint_reference ? &reference_target : nullptr)) {
             time_consuming_[EPX_TRAJ_FRONTEND] = t_frontend.stop();
+            last_tracking_diag_guide_path_size_ = problem.guide_path.size();
+            last_tracking_diag_sfc_size_ = problem.sfcs.size();
+            last_tracking_diag_target_prediction_size_ = problem.target_prediction.size();
+            last_tracking_diag_out_traj_duration_ = 0.0;
+            ros_ptr_->warn(" -- [Tracking] TRACKING_FRONTEND_FAILED guide_path.size()={}, problem.sfcs.size()={}, problem.target_prediction.size()={}, out_traj_duration=0.000, prefix_duration=0.000, runtime_eval_start=0.000, old_remaining=0.000, old_activity.reason=frontend_failed",
+                           problem.guide_path.size(),
+                           problem.sfcs.size(),
+                           problem.target_prediction.size());
             return failOrKeepOld("Tracking frontend failed.");
         }
         problem.static_tracking_mode = static_tracking;
@@ -3091,9 +4304,19 @@ namespace general_planner {
         time_consuming_[EPX_TRAJ_FRONTEND] = tracking_frontend_t;
 
         TimeConsuming t_tracking_sfc("tracking_sfc", false);
-        if (!buildTrackingGuideCorridor(problem)) {
+        std::string tracking_sfc_failure_reason;
+        if (!buildTrackingGuideCorridor(problem, &tracking_sfc_failure_reason)) {
             time_consuming_[EPX_TRAJ_FRONTEND] += t_tracking_sfc.stop();
-            return failOrKeepOld("Tracking SFC generation failed.");
+            last_tracking_diag_guide_path_size_ = problem.guide_path.size();
+            last_tracking_diag_sfc_size_ = problem.sfcs.size();
+            last_tracking_diag_target_prediction_size_ = problem.target_prediction.size();
+            last_tracking_diag_out_traj_duration_ = 0.0;
+            ros_ptr_->warn(" -- [Tracking] TRACKING_SFC_FAILED reason={}, guide_path.size()={}, problem.sfcs.size()={}, problem.target_prediction.size()={}, out_traj_duration=0.000, prefix_duration=0.000, runtime_eval_start=0.000",
+                           tracking_sfc_failure_reason,
+                           problem.guide_path.size(),
+                           problem.sfcs.size(),
+                           problem.target_prediction.size());
+            return failOrKeepOld("Tracking SFC generation failed: " + tracking_sfc_failure_reason);
         }
         time_consuming_[EPX_TRAJ_FRONTEND] += t_tracking_sfc.stop();
         latest_replan.setGuidePath(problem.guide_path);
@@ -3133,6 +4356,27 @@ namespace general_planner {
         problem.weight_tangent_velocity = cfg_.tracking_weight_tangent_velocity;
         problem.weight_viewpoint_attractor = cfg_.tracking_weight_viewpoint_attractor;
         problem.weight_visible_region = cfg_.tracking_weight_visible_region;
+        problem.weight_fov = cfg_.tracking_weight_fov;
+        problem.weight_target_forward = cfg_.tracking_weight_target_forward;
+        problem.adaptive_occlusion_enable = cfg_.tracking_adaptive_occlusion_enable;
+        problem.adaptive_occlusion_activation_distance = cfg_.tracking_adaptive_occlusion_activation_distance;
+        problem.adaptive_occlusion_max_weight_scale = cfg_.tracking_adaptive_occlusion_max_weight_scale;
+        problem.adaptive_occlusion_od_far_weight_scale = cfg_.tracking_adaptive_occlusion_od_far_weight_scale;
+        problem.adaptive_occlusion_distance_upper_scale = cfg_.tracking_adaptive_occlusion_distance_upper_scale;
+        problem.adaptive_occlusion_min_horizontal_upper = cfg_.tracking_adaptive_occlusion_min_horizontal_upper;
+        constexpr double kDegToRad = 3.14159265358979323846 / 180.0;
+        problem.fov_horizontal = std::max(1.0, cfg_.tracking_fov_horizontal_deg) * kDegToRad;
+        problem.fov_vertical = std::max(1.0, cfg_.tracking_fov_vertical_deg) * kDegToRad;
+        problem.fov_range = cfg_.tracking_fov_range > 0.0
+                                ? cfg_.tracking_fov_range
+                                : cfg_.tracking_distance + cfg_.tracking_distance_tolerance;
+        problem.fov_range_margin = cfg_.tracking_fov_range_margin;
+        problem.fov_front_margin = cfg_.tracking_fov_front_margin;
+        problem.target_front_margin = cfg_.tracking_target_front_margin;
+        problem.target_motion_speed_threshold =
+                std::max(0.0, cfg_.tracking_no_motion_target_speed_threshold);
+        problem.joint_sample_dt = cfg_.tracking_joint_sample_dt;
+        problem.dense_joint_sample_enable = cfg_.tracking_dense_joint_sample_enable;
         if (problem.reacquire_mode) {
             problem.weight_visible_region *= 0.25;
         }
@@ -3184,13 +4428,30 @@ namespace general_planner {
         Trajectory out_traj;
         Trajectory out_yaw_traj;
         TimeConsuming t_opt("tracking_opt", false);
-        const bool ok = cfg_.tracking_use_snap
-                            ? traj_manager_->trackingSnap()->optimize(problem, out_traj, &out_yaw_traj)
-                            : traj_manager_->trackingJerk()->optimize(problem, out_traj, &out_yaw_traj);
+        std::string tracking_opt_failure_reason;
+        const bool ok = optimizeTrackingProblemWithRetries(problem,
+                                                           active_target_prediction,
+                                                           out_traj,
+                                                           out_yaw_traj,
+                                                           &tracking_opt_failure_reason);
         time_consuming_[EXP_TRAJ_OPT] = t_opt.stop();
         if (!ok || out_traj.empty()) {
-            return failOrKeepOld("Tracking optimization failed.");
+            last_tracking_diag_guide_path_size_ = problem.guide_path.size();
+            last_tracking_diag_sfc_size_ = problem.sfcs.size();
+            last_tracking_diag_target_prediction_size_ = problem.target_prediction.size();
+            last_tracking_diag_out_traj_duration_ = out_traj.empty() ? 0.0 : out_traj.getTotalDuration();
+            ros_ptr_->warn(" -- [Tracking] TRACKING_OPT_FAILED reason={}, guide_path.size()={}, problem.sfcs.size()={}, problem.target_prediction.size()={}, out_traj_duration={:.3f}, prefix_duration=0.000, runtime_eval_start=0.000",
+                           tracking_opt_failure_reason,
+                           problem.guide_path.size(),
+                           problem.sfcs.size(),
+                           problem.target_prediction.size(),
+                           out_traj.empty() ? 0.0 : out_traj.getTotalDuration());
+            return failOrKeepOld("Tracking optimization failed: " + tracking_opt_failure_reason);
         }
+        last_tracking_diag_guide_path_size_ = problem.guide_path.size();
+        last_tracking_diag_sfc_size_ = problem.sfcs.size();
+        last_tracking_diag_target_prediction_size_ = problem.target_prediction.size();
+        last_tracking_diag_out_traj_duration_ = out_traj.getTotalDuration();
         if (out_traj.getTotalDuration() < cfg_.tracking_min_commit_duration) {
             return failOrKeepOld(fmt::format("Tracking trajectory too short ({:.3f}s < {:.3f}s).",
                                              out_traj.getTotalDuration(),
@@ -3200,18 +4461,25 @@ namespace general_planner {
         const double candidate_guard_h =
                 std::min(cfg_.tracking_no_motion_check_horizon,
                          out_traj.getTotalDuration());
-        const double candidate_disp =
-                candidate_guard_h > 1.0e-6
-                    ? (out_traj.getPos(candidate_guard_h) -
-                       out_traj.getPos(0.0)).head<2>().norm()
-                    : 0.0;
-        const double candidate_speed0 = out_traj.getVel(0.0).head<2>().norm();
+        const TrackingMotionMetrics candidate_metrics =
+                computeTrackingMotionMetrics(out_traj,
+                                             active_target_prediction,
+                                             cfg_,
+                                             0.0,
+                                             0.0,
+                                             candidate_guard_h);
         double old_remaining = 0.0;
         double old_speed0 = 0.0;
+        double old_speed_z = 0.0;
+        double old_speed_3d = 0.0;
         double old_displacement = 0.0;
+        double old_displacement_z = 0.0;
+        double old_displacement_3d = 0.0;
         double old_progress = 0.0;
+        double old_progress_3d = 0.0;
         double old_expected_progress = 0.0;
         double old_avg_tracking_error = 0.0;
+        std::string old_activity_reason = "none";
         if (cfg_.tracking_runtime_manager_enable &&
             tracking_runtime_manager_ &&
             tracking_runtime_manager_->hasCommittedTracking() &&
@@ -3235,29 +4503,55 @@ namespace general_planner {
                             cfg_.tracking_keep_old_safety_dt);
             old_remaining = old_activity.remaining;
             old_speed0 = old_activity.speed0;
+            old_speed_z = old_activity.speed_z;
+            old_speed_3d = old_activity.speed_3d;
             old_displacement = old_activity.displacement;
+            old_displacement_z = old_activity.displacement_z;
+            old_displacement_3d = old_activity.displacement_3d;
             old_progress = old_activity.progress;
+            old_progress_3d = old_activity.progress_3d;
             old_expected_progress = old_activity.expected_progress;
             old_avg_tracking_error = old_activity.avg_tracking_error;
+            old_activity_reason = old_activity.reason;
         } else if (!cfg_.tracking_runtime_manager_enable) {
             TrackingTrajectoryActivity old_activity;
             currentTrackingTrajectorySafeAndActive(active_target_prediction, &old_activity);
             old_remaining = old_activity.remaining;
             old_speed0 = old_activity.speed0;
+            old_speed_z = old_activity.speed_z;
+            old_speed_3d = old_activity.speed_3d;
             old_displacement = old_activity.displacement;
+            old_displacement_z = old_activity.displacement_z;
+            old_displacement_3d = old_activity.displacement_3d;
             old_progress = old_activity.progress;
+            old_progress_3d = old_activity.progress_3d;
             old_expected_progress = old_activity.expected_progress;
             old_avg_tracking_error = old_activity.avg_tracking_error;
+            old_activity_reason = old_activity.reason;
         }
         if (cfg_.print_log) {
-            ros_ptr_->info(" -- [Tracking] TRACKING_CANDIDATE_OPT_SUCCESS candidate_duration={:.3f}, candidate_disp_0p35s={:.3f}, candidate_speed0={:.3f}, old_remaining={:.3f}, old_speed0={:.3f}, old_displacement={:.3f}, old_progress={:.3f}, old_expected_progress={:.3f}, old_avg_tracking_error={:.3f}",
+            ros_ptr_->info(" -- [Tracking] TRACKING_CANDIDATE_OPT_SUCCESS guide_path.size()={}, problem.sfcs.size()={}, problem.target_prediction.size()={}, candidate_duration={:.3f}, prefix_duration=0.000, runtime_eval_start=0.000, candidate_disp_xy={:.3f}, candidate_disp_z={:.3f}, candidate_disp_3d={:.3f}, candidate_speed_xy={:.3f}, candidate_speed_z={:.3f}, candidate_speed_3d={:.3f}, target_speed_z={:.3f}, old_remaining={:.3f}, old_activity.reason={}, old_speed_xy={:.3f}, old_speed_z={:.3f}, old_speed_3d={:.3f}, old_displacement_xy={:.3f}, old_displacement_z={:.3f}, old_displacement_3d={:.3f}, old_progress_xy={:.3f}, old_progress_3d={:.3f}, old_expected_progress={:.3f}, old_avg_tracking_error={:.3f}",
+                           problem.guide_path.size(),
+                           problem.sfcs.size(),
+                           problem.target_prediction.size(),
                            out_traj.getTotalDuration(),
-                           candidate_disp,
-                           candidate_speed0,
+                           candidate_metrics.displacement_xy,
+                           candidate_metrics.displacement_z,
+                           candidate_metrics.displacement_3d,
+                           candidate_metrics.speed_xy,
+                           candidate_metrics.speed_z,
+                           candidate_metrics.speed_3d,
+                           candidate_metrics.target_speed_z,
                            old_remaining,
+                           old_activity_reason,
                            old_speed0,
+                           old_speed_z,
+                           old_speed_3d,
                            old_displacement,
+                           old_displacement_z,
+                           old_displacement_3d,
                            old_progress,
+                           old_progress_3d,
                            old_expected_progress,
                            old_avg_tracking_error);
         }
@@ -3266,19 +4560,29 @@ namespace general_planner {
         if (!cfg_.tracking_runtime_manager_enable &&
             !candidateTrackingTrajectoryCommandable(out_traj,
                                                     active_target_prediction,
+                                                    0.0,
+                                                    0.0,
                                                     &commandable_reject_reason)) {
             TrackingTrajectoryActivity old_activity;
             currentTrackingTrajectorySafeAndActive(active_target_prediction, &old_activity);
             if (cfg_.print_log) {
-                ros_ptr_->warn(" -- [Tracking] TRACKING_CANDIDATE_REJECTED_NO_MOTION reject_reason={}, candidate_duration={:.3f}, candidate_disp_0p35s={:.3f}, candidate_speed0={:.3f}, old_remaining={:.3f}, old_speed0={:.3f}, old_displacement={:.3f}, old_progress={:.3f}, old_expected_progress={:.3f}, old_avg_tracking_error={:.3f}",
+                ros_ptr_->warn(" -- [Tracking] TRACKING_CANDIDATE_REJECTED_NO_MOTION reject_reason={}, guide_path.size()={}, problem.sfcs.size()={}, problem.target_prediction.size()={}, candidate_duration={:.3f}, prefix_duration=0.000, runtime_eval_start=0.000, candidate_disp_xy={:.3f}, candidate_disp_z={:.3f}, candidate_disp_3d={:.3f}, candidate_speed_xy={:.3f}, candidate_speed_z={:.3f}, candidate_speed_3d={:.3f}, old_remaining={:.3f}, old_activity.reason={}, old_speed_3d={:.3f}, old_displacement_3d={:.3f}, old_progress_3d={:.3f}, old_expected_progress={:.3f}, old_avg_tracking_error={:.3f}",
                                commandable_reject_reason,
+                               problem.guide_path.size(),
+                               problem.sfcs.size(),
+                               problem.target_prediction.size(),
                                out_traj.getTotalDuration(),
-                               candidate_disp,
-                               candidate_speed0,
+                               candidate_metrics.displacement_xy,
+                               candidate_metrics.displacement_z,
+                               candidate_metrics.displacement_3d,
+                               candidate_metrics.speed_xy,
+                               candidate_metrics.speed_z,
+                               candidate_metrics.speed_3d,
                                old_activity.remaining,
-                               old_activity.speed0,
-                               old_activity.displacement,
-                               old_activity.progress,
+                               old_activity.reason,
+                               old_activity.speed_3d,
+                               old_activity.displacement_3d,
+                               old_activity.progress_3d,
                                old_activity.expected_progress,
                                old_activity.avg_tracking_error);
             }
@@ -3318,13 +4622,18 @@ namespace general_planner {
                                       out_yaw_traj,
                                       active_target_prediction,
                                       cfg_.tracking_use_snap ? "tracking_snap" : "tracking_jerk")) {
+            const std::string commit_reason =
+                    last_tracking_commit_reject_reason_.empty()
+                        ? "unknown"
+                        : last_tracking_commit_reject_reason_;
             if (keepOldTrackingTrajectoryIfActive(active_target_prediction,
-                                                  "tracking trajectory commit rejected")) {
+                                                  "tracking trajectory commit rejected: " + commit_reason)) {
                 return NO_NEED;
             }
-            ros_ptr_->warn(" -- [GeneralPlanner] Tracking trajectory commit rejected.");
+            ros_ptr_->warn(" -- [GeneralPlanner] Tracking trajectory commit rejected: reason={}.", commit_reason);
             return FAILED;
         }
+        rememberTrackingViewpointReference(problem);
         ros_ptr_->info(" -- [GeneralPlanner] Tracking task success: pieces={}, duration={}.",
                        out_traj.getPieceNum(), out_traj.getTotalDuration());
         return SUCCESS;
@@ -3894,6 +5203,18 @@ namespace general_planner {
         return SUCCESS;
     }
 
+    RET_CODE GeneralPlanner::TryCommitPerchingFromTracking(
+            const traj_opt::DynamicTargetStates &target_prediction,
+            const traj_opt::PerchingSurfaceState &surface,
+            const RET_CODE tracking_ret) {
+        TimeConsuming total_t("TryCommitPerchingFromTracking", false);
+        std::lock_guard<std::mutex> guard(replan_lock_);
+        const RET_CODE ret =
+                tryCommitPerchingFromTracking(target_prediction, surface, tracking_ret);
+        time_consuming_[TOTAL_REPLAN] += total_t.stop();
+        return ret;
+    }
+
     RET_CODE GeneralPlanner::PlanTrackingFromRest(const traj_opt::DynamicTargetStates &target_prediction,
                                                 const bool &new_task) {
         TimeConsuming total_t("PlanTrackingFromRest", false);
@@ -3915,7 +5236,8 @@ namespace general_planner {
         }
         if (new_task &&
             tracking_perching_manager_ &&
-            !tracking_perching_manager_->perchingRequested()) {
+            !tracking_perching_manager_->perchingRequested() &&
+            !trackingPerchingPerchingStatus(tracking_perching_manager_->status())) {
             tracking_perching_manager_->reset();
         }
 
@@ -3940,20 +5262,10 @@ namespace general_planner {
                  TrackingPerchingTransitionManager::Status::PERCHING_EXECUTING ||
              tracking_perching_manager_->status() ==
                  TrackingPerchingTransitionManager::Status::CONTACT_IMMINENT)) {
-            const bool contact_imminent =
-                    perching_runtime_manager_ &&
-                    perching_runtime_manager_->status() ==
-                        PerchingRuntimeManager::Status::CONTACT_IMMINENT;
-            if (!cfg_.perching_abort_to_tracking_enable || contact_imminent) {
-                latest_replan.setRetCode(GENERAL_SUCCESS_NO_BACKUP);
-                time_consuming_[TOTAL_REPLAN] = total_t.stop();
-                return SUCCESS;
-            }
-            ros_ptr_->warn(" -- [TrackingPerching] TRACKING_PERCHING_ABORT_TO_TRACKING reason=surface_unavailable_before_contact");
-            tracking_perching_manager_->onAbortToTracking();
-            if (perching_runtime_manager_) {
-                perching_runtime_manager_->reset();
-            }
+            latest_replan.setRetCode(GENERAL_SUCCESS_NO_BACKUP);
+            ros_ptr_->info(" -- [TrackingPerching] TRACKING_REPLAN_BLOCKED_PERCHING_ACTIVE reason=perching_owns_committed_trajectory");
+            time_consuming_[TOTAL_REPLAN] = total_t.stop();
+            return SUCCESS;
         }
         const Vec3f goal = target_prediction.empty() ? robot_state_.p : target_prediction.back().position;
         latest_replan.setGoal(goal, target_prediction.empty() ? NAN : target_prediction.back().yaw, robot_state_);
@@ -4418,6 +5730,18 @@ namespace general_planner {
     bool GeneralPlanner::trackingPerchingPerchingActive() const {
         return tracking_perching_manager_ &&
                trackingPerchingPerchingStatus(tracking_perching_manager_->status());
+    }
+
+    bool GeneralPlanner::trackingPerchingContactReached() const {
+        return tracking_perching_manager_ &&
+               tracking_perching_manager_->status() ==
+                   TrackingPerchingTransitionManager::Status::CONTACT;
+    }
+
+    TrackingPerchingTransitionManager::Status GeneralPlanner::trackingPerchingStatus() const {
+        return tracking_perching_manager_
+                   ? tracking_perching_manager_->status()
+                   : TrackingPerchingTransitionManager::Status::TRACKING_ONLY;
     }
 
     void GeneralPlanner::markTrackingPerchingContact() {

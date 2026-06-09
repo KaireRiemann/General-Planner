@@ -204,6 +204,10 @@ namespace fsm {
                 task_phase = "perching";
             } else if (explorationMode()) {
                 task_phase = "exploration";
+            } else if (trackingPerchingMode()) {
+                task_phase = trackingPerchingPerchingActive()
+                                 ? "tracking_perching_perching"
+                                 : "tracking_perching_tracking";
             } else if (trackingPerchingPerchingActive()) {
                 task_phase = "tracking_perching_perching";
             } else if (trackingMode()) {
@@ -947,7 +951,7 @@ namespace fsm {
                 goal_sub_ = nh_.subscribe(cfg_.click_goal_topic, 1, &FsmRos1::goalCallback, this);
                 cout << YELLOW << " -- [Fsm] CLICKGOAL ENABLE." << RESET << endl;
                 cmd_cnt++;
-            } else if (trackingMode()) {
+            } else if (trackingMode() || trackingPerchingMode()) {
                 tracking_target_sub_ = nh_.subscribe(cfg_.tracking_target_odom_topic, 10,
                                                      &FsmRos1::trackingTargetCallback, this);
                 if (cfg_.tracking_use_target_prediction_path && !cfg_.tracking_target_prediction_topic.empty()) {
@@ -957,7 +961,7 @@ namespace fsm {
                 }
                 cout << YELLOW << " -- [Fsm] TRACKING TASK ENABLE, target odom: "
                      << cfg_.tracking_target_odom_topic << RESET << endl;
-                if (cfg_.tracking_perching_enable) {
+                if (cfg_.tracking_perching_enable || trackingPerchingMode()) {
                     task_mode_sub_ = nh_.subscribe(cfg_.task_mode_topic, 10,
                                                    &FsmRos1::taskModeCallback, this);
                     perching_surface_sub_ = nh_.subscribe(cfg_.perching_surface_odom_topic, 10,

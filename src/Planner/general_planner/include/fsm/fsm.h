@@ -247,6 +247,8 @@ namespace fsm {
 
         bool trackingMode() const;
 
+        bool trackingPerchingMode() const;
+
         bool perchingMode() const;
 
         bool dynamicTakeoffMode() const;

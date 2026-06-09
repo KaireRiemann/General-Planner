@@ -14,17 +14,45 @@ namespace general_planner {
 
 class TrackingRuntimeManager {
 public:
+    struct MotionMetrics {
+        double speed_xy{0.0};
+        double speed_z{0.0};
+        double speed_3d{0.0};
+        double displacement_xy{0.0};
+        double displacement_z{0.0};
+        double displacement_3d{0.0};
+        double progress_xy{0.0};
+        double progress_3d{0.0};
+        double target_speed_xy{0.0};
+        double target_speed_z{0.0};
+        double target_speed_3d{0.0};
+        bool target_vertical_moving{false};
+        bool target_moving{false};
+    };
+
     struct Activity {
         bool valid{false};
         bool safe{false};
         bool active{false};
         bool target_moving{false};
+        bool target_vertical_moving{false};
 
         double remaining{0.0};
         double speed0{0.0};
+        double speed_xy{0.0};
+        double speed_z{0.0};
+        double speed_3d{0.0};
         double displacement{0.0};
+        double displacement_xy{0.0};
+        double displacement_z{0.0};
+        double displacement_3d{0.0};
         double progress{0.0};
+        double progress_xy{0.0};
+        double progress_3d{0.0};
         double expected_progress{0.0};
+        double target_speed_xy{0.0};
+        double target_speed_z{0.0};
+        double target_speed_3d{0.0};
         double tracking_error{0.0};
         double avg_tracking_error{0.0};
 
@@ -74,6 +102,8 @@ public:
 
     bool candidateCommandable(const geometry_utils::Trajectory &candidate,
                               const traj_opt::DynamicTargetStates &target_prediction,
+                              double candidate_eval_start_t = 0.0,
+                              double target_eval_start_t = 0.0,
                               std::string *reason = nullptr) const;
 
     bool trajectorySafe(const geometry_utils::Trajectory &traj,
@@ -87,7 +117,15 @@ public:
                     const geometry_utils::Trajectory &candidate,
                     const traj_opt::DynamicTargetStates &target_prediction,
                     bool candidate_safe,
-                    bool anti_rollback_pass);
+                    bool anti_rollback_pass,
+                    double candidate_eval_start_t = 0.0,
+                    double target_eval_start_t = 0.0);
+
+    MotionMetrics computeMotionMetrics(const geometry_utils::Trajectory &candidate,
+                                       const traj_opt::DynamicTargetStates &target_prediction,
+                                       double candidate_eval_start_t,
+                                       double target_eval_start_t,
+                                       double horizon) const;
 
     void onCommitted();
     void onKeepOld();
