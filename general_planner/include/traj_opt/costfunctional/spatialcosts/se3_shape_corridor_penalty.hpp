@@ -18,7 +18,7 @@ struct SE3ShapeConfig {
   double safe_margin{0.05};
   double weight{1.0e4};
   double smooth_eps{0.01};
-  bool use_numeric_shape_gradient{false};
+  bool use_numeric_shape_gradient{true};
 };
 
 namespace se3_shape_detail {

@@ -122,7 +122,16 @@ namespace fsm {
         double click_height{};
 
         bool click_yaw_en{};
-        string cmd_topic, mpc_cmd_topic, click_goal_topic;
+        string cmd_topic, mpc_cmd_topic, so3_cmd_topic, click_goal_topic;
+        bool publish_so3_cmd{true};
+        vector<double> so3_kR{0.0, 0.0, 0.0};
+        vector<double> so3_kOm{0.0, 0.0, 0.0};
+        double flatness_mass{1.0};
+        double flatness_dh{0.7};
+        double flatness_dv{0.8};
+        double flatness_grav{9.81};
+        double flatness_cp{0.01};
+        double flatness_v_eps{0.0001};
         string task_mode_str{"state2state"};
         TaskMode task_mode{TaskMode::STATE_TO_STATE};
         bool task_planner_en{false};
@@ -179,6 +188,22 @@ namespace fsm {
             loader.LoadParam("fsm/click_height", click_height, 1.5);
             loader.LoadParam("fsm/cmd_topic", cmd_topic, string("/planning/pos_cmd"));
             loader.LoadParam("fsm/mpc_cmd_topic", mpc_cmd_topic, string("/planning_cmd/mpc"));
+            loader.LoadParam("fsm/publish_so3_cmd", publish_so3_cmd, true);
+            loader.LoadParam("fsm/so3_cmd_topic", so3_cmd_topic, string("/planning/so3_cmd"));
+            loader.LoadParam("fsm/so3_kR", so3_kR, vector<double>{0.0, 0.0, 0.0});
+            loader.LoadParam("fsm/so3_kOm", so3_kOm, vector<double>{0.0, 0.0, 0.0});
+            loader.LoadParam("traj_opt/flatness/mass", flatness_mass, 1.0);
+            loader.LoadParam("traj_opt/flatness/dh", flatness_dh, 0.7);
+            loader.LoadParam("traj_opt/flatness/dv", flatness_dv, 0.8);
+            loader.LoadParam("traj_opt/flatness/grav", flatness_grav, 9.81);
+            loader.LoadParam("traj_opt/flatness/cp", flatness_cp, 0.01);
+            loader.LoadParam("traj_opt/flatness/v_eps", flatness_v_eps, 0.0001);
+            if (so3_kR.size() != 3) {
+                so3_kR = vector<double>{0.0, 0.0, 0.0};
+            }
+            if (so3_kOm.size() != 3) {
+                so3_kOm = vector<double>{0.0, 0.0, 0.0};
+            }
             loader.LoadParam("fsm/click_goal_topic", click_goal_topic, string("/planning/click_goal_topic"));
             loader.LoadParam("fsm/task_mode", task_mode_str, string("state2state"));
             task_mode_str = normalizeTaskMode(task_mode_str);

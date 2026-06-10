@@ -111,7 +111,7 @@ namespace general_planner {
         bool se3_yaw_heading_to_velocity{true};
         bool se3_use_corridor{true};
         bool se3_runtime_check_enable{true};
-        bool se3_use_numeric_shape_gradient{false};
+        bool se3_use_numeric_shape_gradient{true};
 
         bool exploration_enable{false};
         std::string exploration_frontend_type{"epic_original"};
@@ -623,7 +623,7 @@ namespace general_planner {
             loader.LoadParam("general_planner/se3_aggressive/runtime_check_enable",
                              se3_runtime_check_enable, true);
             loader.LoadParam("general_planner/se3_aggressive/use_numeric_shape_gradient",
-                             se3_use_numeric_shape_gradient, false);
+                             se3_use_numeric_shape_gradient, true);
             loader.LoadParam("general_planner/exploration_enable", exploration_enable, false);
             loader.LoadParam("general_planner/exploration/enable", exploration_enable, exploration_enable);
             loader.LoadParam("general_planner/exploration/frontend_type",
@@ -633,7 +633,7 @@ namespace general_planner {
             loader.LoadParam("general_planner/exploration/use_epic_frontend",
                              exploration_use_epic_frontend, true);
             loader.LoadParam("general_planner/exploration/update_rog_map",
-                             exploration_update_rog_map, !exploration_use_epic_frontend);
+                             exploration_update_rog_map, true);
             loader.LoadParam("general_planner/exploration/backup_traj_enable",
                              exploration_backup_traj_enable,
                              backup_traj_en && !exploration_use_epic_frontend);
@@ -939,11 +939,6 @@ namespace general_planner {
                 loader.LoadParam("general_planner/exploration/local_guide/backend",
                                  backend_name, backend_name);
                 exploration_local_guide_backend = mapBackendFromString(backend_name);
-            }
-            if (exploration_use_epic_frontend) {
-                astar_backend = MapBackend::EPIC_LIO;
-                corridor_backend = MapBackend::EPIC_LIO;
-                exploration_local_guide_backend = MapBackend::EPIC_LIO;
             }
             loader.LoadParam("general_planner/exploration/stuck/repeated_goal_threshold",
                              exploration_stuck_repeated_goal_threshold, 3);

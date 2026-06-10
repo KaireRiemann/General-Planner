@@ -33,7 +33,7 @@ general_planner:
   receding_dis: 4.0
   robot_r: 0.2
   frontend_astar_time_out: 0.2
-  over_wall_search_en: true
+  over_wall_search_en: false
   over_wall_max_climb: 3.0
   over_wall_height_step: 0.3
   over_wall_min_blocked_span: 0.8

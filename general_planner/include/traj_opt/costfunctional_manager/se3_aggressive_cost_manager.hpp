@@ -116,6 +116,25 @@ public:
   }
 
 private:
+  static double finiteDifferenceStep(double value) {
+    return 1.0e-5 * std::max(1.0, std::abs(value));
+  }
+
+  double bodyRateSquaredValue(const Eigen::Vector3d &velocity,
+                              const Eigen::Vector3d &acceleration,
+                              const Eigen::Vector3d &jerk,
+                              const Eigen::Vector3d &snap,
+                              double yaw,
+                              double yaw_rate) const {
+    return flatness_.bodyRateSquared(velocity,
+                                     acceleration,
+                                     jerk,
+                                     snap,
+                                     yaw,
+                                     yaw_rate,
+                                     cfg_->grav);
+  }
+
   double addVelocityCost(const Eigen::Vector3d &velocity,
                          Eigen::Vector3d &grad_velocity) const {
     const double weight = std::max(0.0, problem_->weight_vel);
@@ -176,9 +195,6 @@ private:
                          Eigen::Vector3d &grad_jerk,
                          double &grad_yaw,
                          double &grad_yaw_rate) const {
-    (void)grad_velocity;
-    (void)grad_acceleration;
-    (void)grad_yaw;
     const double weight = std::max(0.0, problem_->weight_body_rate);
     if (weight <= 0.0 || problem_->body_rate_max <= 0.0) {
       return 0.0;
@@ -189,33 +205,78 @@ private:
       return 0.0;
     }
 
-    const Eigen::Vector2d omega_xy(flat.omega.x(), flat.omega.y());
     const double violation =
-        omega_xy.squaredNorm() - problem_->body_rate_max * problem_->body_rate_max;
+        flat.omega.squaredNorm() - problem_->body_rate_max * problem_->body_rate_max;
     max_violation_(2) = std::max(max_violation_(2), violation);
     double penalty = 0.0;
     double d_penalty = 0.0;
-    if (!cost_functional::smoothedL1(violation, cfg_->smooth_eps, penalty, d_penalty)) {
-      return 0.0;
+    double cost = 0.0;
+    auto diff = [](double plus, double minus, double eps) {
+      if (!std::isfinite(plus) || !std::isfinite(minus)) {
+        return 0.0;
+      }
+      return (plus - minus) / (2.0 * eps);
+    };
+
+    if (cost_functional::smoothedL1(violation, cfg_->smooth_eps, penalty, d_penalty)) {
+      cost += weight * penalty;
+      const double grad_scale = weight * d_penalty;
+      for (int axis = 0; axis < 3; ++axis) {
+        Eigen::Vector3d d = Eigen::Vector3d::Zero();
+
+        double eps = finiteDifferenceStep(velocity(axis));
+        d(axis) = eps;
+        grad_velocity(axis) += grad_scale *
+            diff(bodyRateSquaredValue(velocity + d, acceleration, jerk, snap, yaw, yaw_rate),
+                 bodyRateSquaredValue(velocity - d, acceleration, jerk, snap, yaw, yaw_rate),
+                 eps);
+
+        eps = finiteDifferenceStep(acceleration(axis));
+        d.setZero();
+        d(axis) = eps;
+        grad_acceleration(axis) += grad_scale *
+            diff(bodyRateSquaredValue(velocity, acceleration + d, jerk, snap, yaw, yaw_rate),
+                 bodyRateSquaredValue(velocity, acceleration - d, jerk, snap, yaw, yaw_rate),
+                 eps);
+
+        eps = finiteDifferenceStep(jerk(axis));
+        d.setZero();
+        d(axis) = eps;
+        grad_jerk(axis) += grad_scale *
+            diff(bodyRateSquaredValue(velocity, acceleration, jerk + d, snap, yaw, yaw_rate),
+                 bodyRateSquaredValue(velocity, acceleration, jerk - d, snap, yaw, yaw_rate),
+                 eps);
+      }
+
+      if (problem_->use_yaw && std::isfinite(yaw)) {
+        const double eps = finiteDifferenceStep(yaw);
+        grad_yaw += grad_scale *
+            diff(bodyRateSquaredValue(velocity, acceleration, jerk, snap, yaw + eps, yaw_rate),
+                 bodyRateSquaredValue(velocity, acceleration, jerk, snap, yaw - eps, yaw_rate),
+                 eps);
+      }
+
+      if (problem_->use_yaw) {
+        const double eps = finiteDifferenceStep(yaw_rate);
+        grad_yaw_rate += grad_scale *
+            diff(bodyRateSquaredValue(velocity, acceleration, jerk, snap, yaw, yaw_rate + eps),
+                 bodyRateSquaredValue(velocity, acceleration, jerk, snap, yaw, yaw_rate - eps),
+                 eps);
+      }
     }
 
-    const Eigen::Vector2d grad_omega_xy = weight * d_penalty * 2.0 * omega_xy;
-    Eigen::Vector3d grad_b = Eigen::Vector3d::Zero();
-    grad_b.x() = grad_omega_xy.y();
-    grad_b.y() = -grad_omega_xy.x();
-    grad_jerk += flat.R * grad_b / std::max(1.0e-8, flat.thrust);
-
-    if (problem_->use_yaw) {
+    if (problem_->use_yaw && problem_->yaw_rate_max > 0.0) {
       const double yaw_violation =
           yaw_rate * yaw_rate - problem_->yaw_rate_max * problem_->yaw_rate_max;
+      max_violation_(2) = std::max(max_violation_(2), yaw_violation);
       double yaw_penalty = 0.0;
       double d_yaw_penalty = 0.0;
       if (cost_functional::smoothedL1(yaw_violation, cfg_->smooth_eps, yaw_penalty, d_yaw_penalty)) {
         grad_yaw_rate += weight * d_yaw_penalty * 2.0 * yaw_rate;
-        return weight * penalty + weight * yaw_penalty;
+        cost += weight * yaw_penalty;
       }
     }
-    return weight * penalty;
+    return cost;
   }
 
   const traj_opt::Config *cfg_{nullptr};

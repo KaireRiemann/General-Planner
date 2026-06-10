@@ -752,9 +752,7 @@ namespace general_planner {
                 active_exploration_guide_ && active_exploration_plan_.valid;
         const MapBackend start_backend =
                 exploration_backend_active
-                ? (cfg_.exploration_use_epic_frontend
-                   ? MapBackend::EPIC_LIO
-                   : cfg_.exploration_local_guide_backend)
+                ? cfg_.exploration_local_guide_backend
                 : MapBackend::ROG;
         Vec3f local_star_pt;
         if (!map_manager_->findNearestStateValid(robot_state_.p, start_backend, local_star_pt, 3.0, true)) {
@@ -1003,6 +1001,154 @@ namespace general_planner {
         return PlanExplorationOnce(new_task, false);
     }
 
+    RET_CODE GeneralPlanner::commitExplorationLocalTrajectory(
+            const exploration::ExplorationPlan &plan,
+            const bool from_rest,
+            const bool goal_switched) {
+        std::lock_guard<std::mutex> guard(replan_lock_);
+        latest_replan.reset();
+        robot_state_ = map_manager_ ? map_manager_->getRobotState() : rog_map::RobotState{};
+
+        if (!robot_state_.rcv) {
+            latest_replan.setGoal(plan.next_goal, plan.next_yaw, robot_state_);
+            latest_replan.setRetCode(GENERAL_RET_CODE::GENERAL_NO_ODOM);
+            ros_ptr_->warn(" -- [Exploration] Local commit failed: no odom.");
+            return FAILED;
+        }
+        if (!plan.valid || plan.guide_path.size() < 2U) {
+            latest_replan.setGoal(robot_state_.p, robot_state_.yaw, robot_state_);
+            latest_replan.setRetCode(GENERAL_RET_CODE::GENERAL_UNDEFINED);
+            ros_ptr_->warn(" -- [Exploration] Local commit failed: invalid EPIC guide.");
+            return FAILED;
+        }
+
+        gi_.goal_valid = true;
+        gi_.goal_p = plan.next_goal;
+        gi_.goal_yaw = plan.next_yaw;
+        gi_.new_goal = from_rest || goal_switched;
+        latest_replan.setGoal(plan.next_goal, plan.next_yaw, robot_state_);
+
+        {
+            vec_Vec3f viz_pts{plan.next_goal, robot_state_.p};
+            TimeConsuming t_viz("exploration goal path", false);
+            ros_ptr_->vizGoalPath(viz_pts);
+            time_consuming_[VISUALIZATION] += t_viz.stop();
+        }
+
+        if (from_rest) {
+            MapBackend start_backend = cfg_.exploration_local_guide_backend;
+            if (map_manager_ == nullptr || !map_manager_->ready(start_backend)) {
+                start_backend = cfg_.exploration_use_epic_frontend
+                                ? MapBackend::EPIC_LIO
+                                : cfg_.astar_backend;
+            }
+            Vec3f local_start_pt;
+            if (map_manager_ == nullptr ||
+                !map_manager_->findNearestStateValid(robot_state_.p,
+                                                     start_backend,
+                                                     local_start_pt,
+                                                     3.0,
+                                                     true)) {
+                latest_replan.setRetCode(GENERAL_RET_CODE::GENERAL_NO_START_POINT);
+                ros_ptr_->warn(" -- [Exploration] Local commit failed: no valid start point in {} backend.",
+                               mapBackendToString(start_backend));
+                return FAILED;
+            }
+            latest_replan.setLocalStartP(local_start_pt);
+            last_exp_traj_info_.setEmpty();
+            local_start_p_ = local_start_pt;
+        } else if (last_exp_traj_info_.empty()) {
+            latest_replan.setRetCode(GENERAL_RET_CODE::GENERAL_SUCCESS_NO_BACKUP);
+            ros_ptr_->info(" -- [Exploration] No committed exploration trajectory is available; request PlanFromRest.");
+            return NEW_TRAJ;
+        }
+
+        ExpTraj exp_traj_info;
+        {
+            TimeConsuming t_exp("exploration_generate_exp_traj", false);
+            const RET_CODE exp_ret_code =
+                    generateExpTrajFromGuidePath(plan, last_exp_traj_info_, exp_traj_info);
+            time_consuming_[GENERATE_EXP_TRAJ] = t_exp.stop();
+
+            if (exp_ret_code == FAILED) {
+                latest_replan.setRetCode(GENERAL_RET_CODE::GENERAL_UNDEFINED);
+                ros_ptr_->warn(" -- [Exploration] Generate guide-following local trajectory failed.");
+                return FAILED;
+            }
+            if (exp_ret_code == NEW_TRAJ || exp_ret_code == EMER) {
+                latest_replan.setRetCode(GENERAL_RET_CODE::GENERAL_UNDEFINED);
+                return exp_ret_code;
+            }
+            if (exp_ret_code == NO_NEED) {
+                latest_replan.setRetCode(GENERAL_RET_CODE::GENERAL_SUCCESS_NO_BACKUP);
+                return NO_NEED;
+            }
+        }
+
+        {
+            TimeConsuming t_viz("exploration yaw traj", false);
+            ros_ptr_->vizYawTraj(exp_traj_info.posTraj(), exp_traj_info.yawTraj());
+            time_consuming_[VISUALIZATION] += t_viz.stop();
+        }
+
+        const bool use_backup_for_this_plan =
+                cfg_.backup_traj_en && cfg_.exploration_backup_traj_enable;
+        if (!use_backup_for_this_plan) {
+            robot_on_backup_traj_ = false;
+            cmd_traj_info_.setTrajectory(exp_traj_info);
+            last_exp_traj_info_ = exp_traj_info;
+            gi_.new_goal = false;
+            {
+                TimeConsuming t_viz("exploration commit traj", false);
+                ros_ptr_->vizCommittedTraj(cmd_traj_info_.posTraj(), -1);
+                time_consuming_[VISUALIZATION] += t_viz.stop();
+            }
+            latest_replan.setRetCode(GENERAL_RET_CODE::GENERAL_SUCCESS_NO_BACKUP);
+            return SUCCESS;
+        }
+
+        BackupTraj back_traj_info;
+        back_traj_info.setEmpty();
+        {
+            TimeConsuming t_back("exploration_generate_backup_traj", false);
+            const RET_CODE back_ret_code = generateBackupTrajectory(exp_traj_info, back_traj_info);
+            time_consuming_[GENERATE_BACK_TRAJ] = t_back.stop();
+
+            if (back_ret_code == SUCCESS) {
+                cmd_traj_info_.setTrajectory(exp_traj_info, back_traj_info);
+                last_exp_traj_info_ = exp_traj_info;
+                robot_on_backup_traj_ = false;
+                gi_.new_goal = false;
+                {
+                    TimeConsuming t_viz("exploration commit backup traj", false);
+                    ros_ptr_->vizCommittedTraj(cmd_traj_info_.posTraj(),
+                                               cmd_traj_info_.getBackupTrajStartTT());
+                    time_consuming_[VISUALIZATION] += t_viz.stop();
+                }
+                latest_replan.setRetCode(GENERAL_RET_CODE::GENERAL_SUCCESS_WITH_BACKUP);
+                return SUCCESS;
+            }
+            if (back_ret_code == FINISH || back_ret_code == NO_NEED) {
+                cmd_traj_info_.setTrajectory(exp_traj_info);
+                last_exp_traj_info_ = exp_traj_info;
+                robot_on_backup_traj_ = false;
+                gi_.new_goal = false;
+                {
+                    TimeConsuming t_viz("exploration commit traj", false);
+                    ros_ptr_->vizCommittedTraj(cmd_traj_info_.posTraj(), -1);
+                    time_consuming_[VISUALIZATION] += t_viz.stop();
+                }
+                latest_replan.setRetCode(GENERAL_RET_CODE::GENERAL_SUCCESS_NO_BACKUP);
+                return SUCCESS;
+            }
+
+            latest_replan.setRetCode(GENERAL_RET_CODE::GENERAL_UNDEFINED);
+            ros_ptr_->warn(" -- [Exploration] Backup generation failed with {}.",
+                           RET_CODE_STR[back_ret_code]);
+            return FAILED;
+        }
+    }
+
     RET_CODE GeneralPlanner::PlanExplorationOnce(const bool &new_task,
                                                  const bool &from_rest) {
         exploration::ExplorationPlan plan;
@@ -1061,7 +1207,10 @@ namespace general_planner {
         const bool has_active_traj =
                 getExplorationCommittedTrajectoryActivity(now, traj_elapsed, traj_remaining);
         bool plan_from_rest = from_rest;
-        if (plan_from_rest && has_active_traj && !new_task) {
+        if (plan_from_rest &&
+            has_active_traj &&
+            !new_task &&
+            traj_remaining > min_remaining_for_replan) {
             plan_from_rest = false;
             if (cfg_.print_log) {
                 ros_ptr_->info(" -- [Exploration] Replan from current trajectory forward state instead of rest.");
@@ -1076,13 +1225,18 @@ namespace general_planner {
             return NEW_TRAJ;
         }
 
-        bool attempted_global_update = false;
-        exploration::ExplorationPlanningMode planning_mode =
-                exploration::ExplorationPlanningMode::FORCE_REFRESH_GLOBAL;
         const bool continue_active_target_after_local_segment =
                 previous_plan.valid &&
                 previous_plan.target_frontier_id >= 0 &&
                 !previous_target_reached;
+        const bool committed_objective_available =
+                cfg_.exploration_runtime_keep_active_target &&
+                continue_active_target_after_local_segment;
+        bool attempted_global_update = false;
+        exploration::ExplorationPlanningMode planning_mode =
+                committed_objective_available
+                ? exploration::ExplorationPlanningMode::FOLLOW_ACTIVE_TARGET
+                : exploration::ExplorationPlanningMode::FORCE_REFRESH_GLOBAL;
         if (!plan_from_rest && has_active_traj) {
             double collision_time = -1.0;
             const bool trajectory_unsafe =
@@ -1103,7 +1257,9 @@ namespace general_planner {
                                    truncated ? "truncated current command" : "could not truncate current command");
                     return NEW_TRAJ;
                 }
-                planning_mode = exploration::ExplorationPlanningMode::FORCE_REFRESH_GLOBAL;
+                planning_mode = committed_objective_available
+                                ? exploration::ExplorationPlanningMode::FOLLOW_ACTIVE_TARGET
+                                : exploration::ExplorationPlanningMode::FORCE_REFRESH_GLOBAL;
             } else {
                 const bool in_start_suppression_window =
                         traj_elapsed <
@@ -1118,28 +1274,25 @@ namespace general_planner {
                     return NO_NEED;
                 }
 
-                const double global_update_dt = policy.global_update_dt;
                 const bool near_traj_end =
                         traj_remaining <=
                         std::max(min_remaining_for_replan,
                                  policy.replan_time_before_traj_end);
-                const bool global_update_due =
-                        exploration_last_global_update_wt_ < 0.0 ||
-                        now - exploration_last_global_update_wt_ >= global_update_dt ||
-                        near_traj_end;
-                if (!global_update_due) {
+                if (!near_traj_end) {
                     std::lock_guard<std::mutex> guard(replan_lock_);
                     exploration_runtime_state_ = ExplorationRuntimeState::EXEC_LOCAL;
                     latest_replan.setGoal(robot.p, robot.yaw, robot);
                     latest_replan.setRetCode(GENERAL_RET_CODE::GENERAL_SUCCESS_NO_BACKUP);
                     return NO_NEED;
                 }
-                planning_mode = exploration::ExplorationPlanningMode::FORCE_REFRESH_GLOBAL;
+                planning_mode = committed_objective_available
+                                ? exploration::ExplorationPlanningMode::FOLLOW_ACTIVE_TARGET
+                                : exploration::ExplorationPlanningMode::FORCE_REFRESH_GLOBAL;
             }
         }
 
         if (plan_from_rest || !previous_plan.valid) {
-            planning_mode = continue_active_target_after_local_segment
+            planning_mode = committed_objective_available
                             ? exploration::ExplorationPlanningMode::FOLLOW_ACTIVE_TARGET
                             : exploration::ExplorationPlanningMode::FORCE_REFRESH_GLOBAL;
         }
@@ -1166,7 +1319,7 @@ namespace general_planner {
             cmd_traj_info_.unlock();
 
             if (!committed_pos_traj.empty() && committed_duration > 1.0e-3) {
-                const double eval_t = std::clamp(now - committed_start_wt + cfg_.replan_forward_dt,
+                const double eval_t = std::clamp(now - committed_start_wt + policy.replan_forward_dt,
                                                  0.0,
                                                  committed_duration);
                 StatePVAJ anchor_state;
@@ -1335,18 +1488,11 @@ namespace general_planner {
             std::lock_guard<std::mutex> guard(replan_lock_);
             latest_exploration_plan_ = plan;
             latest_exploration_goal_ = plan.goal;
-            active_exploration_plan_ = plan;
-            active_exploration_guide_ = plan.valid && plan.guide_path.size() >= 2U;
         }
 
-        const RET_CODE ret = plan_from_rest
-                             ? PlanFromRest(plan.next_goal, plan.next_yaw, true)
-                             : ReplanOnce(plan.next_goal, plan.next_yaw, goal_switched);
-        {
-            std::lock_guard<std::mutex> guard(replan_lock_);
-            active_exploration_guide_ = false;
-            active_exploration_plan_ = exploration::ExplorationPlan{};
-        }
+        const RET_CODE ret = commitExplorationLocalTrajectory(plan,
+                                                              plan_from_rest,
+                                                              goal_switched);
         if (!plan_from_rest && ret == FAILED && has_active_traj) {
             const double retry_now = ros_ptr_ ? ros_ptr_->getSimTime() : now;
             double retry_elapsed = 0.0;
@@ -1430,14 +1576,16 @@ namespace general_planner {
     GeneralPlanner::getExplorationRuntimePolicy() const {
         ExplorationRuntimePolicy policy;
         policy.global_update_dt = std::max(0.0, cfg_.exploration_runtime_global_update_dt);
-        policy.replan_forward_dt = std::max(0.0, cfg_.replan_forward_dt);
+        policy.replan_forward_dt =
+                std::max(std::max(0.0, cfg_.replan_forward_dt),
+                         std::max(0.0, cfg_.exploration_runtime_replan_time_before_traj_end));
         policy.min_remaining_for_replan =
                 std::max(0.02, policy.replan_forward_dt + 0.05);
         policy.replan_time_after_traj_start =
                 std::max(0.0, cfg_.exploration_runtime_replan_time_after_traj_start);
         policy.replan_time_before_traj_end =
                 std::max(std::max(0.0, cfg_.exploration_runtime_replan_time_before_traj_end),
-                         policy.min_remaining_for_replan + policy.global_update_dt + 0.05);
+                         policy.min_remaining_for_replan + 0.05);
         policy.stop_traj_time = std::max(0.05, cfg_.exploration_runtime_stop_traj_time);
         policy.collision_replan_time =
                 std::max(policy.stop_traj_time, cfg_.exploration_runtime_collision_replan_time);
@@ -5271,9 +5419,7 @@ namespace general_planner {
                 ? false
                 : cfg_.exploration_local_guide_astar_repair_enable;
         cfg.local_guide.unknown_as_occupied = cfg_.exploration_local_guide_unknown_as_occupied;
-        cfg.local_guide.backend = cfg_.exploration_use_epic_frontend
-                                  ? MapBackend::EPIC_LIO
-                                  : cfg_.exploration_local_guide_backend;
+        cfg.local_guide.backend = cfg_.exploration_local_guide_backend;
         if (cfg_.exploration_use_epic_frontend) {
             cfg.local_guide.safe_distance =
                     std::min(cfg.local_guide.safe_distance,
@@ -6142,11 +6288,18 @@ namespace general_planner {
             return false;
         }
         const MapBackend backend =
-                cfg_.exploration_use_epic_frontend ? MapBackend::EPIC_LIO
-                                                   : cfg_.corridor_backend;
+                cfg_.exploration_use_epic_frontend
+                ? cfg_.exploration_local_guide_backend
+                : cfg_.corridor_backend;
+        const MapBackend fallback_backend =
+                cfg_.exploration_use_epic_frontend ? MapBackend::EPIC_LIO : backend;
         if (!map_manager_->ready(backend)) {
-            return false;
+            if (fallback_backend == backend || !map_manager_->ready(fallback_backend)) {
+                return false;
+            }
         }
+        const MapBackend safety_backend =
+                map_manager_->ready(backend) ? backend : fallback_backend;
 
         Trajectory pos_traj;
         double start_wt = 0.0;
@@ -6187,9 +6340,9 @@ namespace general_planner {
 
         Vec3f last = pos_traj.getPos(local_t);
         const bool start_full_safe =
-                last.allFinite() && map_manager_->isStateSafe(last, safe_distance, backend);
+                last.allFinite() && map_manager_->isStateSafe(last, safe_distance, safety_backend);
         const bool start_relaxed_safe =
-                last.allFinite() && map_manager_->isStateSafe(last, start_safe_distance, backend);
+                last.allFinite() && map_manager_->isStateSafe(last, start_safe_distance, safety_backend);
         if (!start_full_safe && !start_relaxed_safe) {
             if (collision_time != nullptr) {
                 *collision_time = 0.0;
@@ -6208,25 +6361,25 @@ namespace general_planner {
                 return true;
             }
             if (waiting_for_full_clearance) {
-                if (!map_manager_->isStateSafe(sample, start_safe_distance, backend) ||
+                if (!map_manager_->isStateSafe(sample, start_safe_distance, safety_backend) ||
                     !map_manager_->isSegmentSafe(last,
                                                  sample,
                                                  start_safe_distance,
-                                                 backend,
+                                                 safety_backend,
                                                  line_step)) {
                     if (collision_time != nullptr) {
                         *collision_time = std::max(0.0, sample_t - local_t);
                     }
                     return true;
                 }
-                if (map_manager_->isStateSafe(sample, safe_distance, backend)) {
+                if (map_manager_->isStateSafe(sample, safe_distance, safety_backend)) {
                     waiting_for_full_clearance = false;
                 }
-            } else if (!map_manager_->isStateSafe(sample, safe_distance, backend) ||
+            } else if (!map_manager_->isStateSafe(sample, safe_distance, safety_backend) ||
                        !map_manager_->isSegmentSafe(last,
                                                     sample,
                                                     safe_distance,
-                                                    backend,
+                                                    safety_backend,
                                                     line_step)) {
                 if (collision_time != nullptr) {
                     *collision_time = std::max(0.0, sample_t - local_t);
@@ -6461,11 +6614,13 @@ namespace general_planner {
         const bool use_distance_field_exp_traj = use_plain_exp_traj || use_esdf_exp_traj;
         const bool use_exploration_backend =
                 active_exploration_guide_ && active_exploration_plan_.valid;
+        const double effective_replan_forward_dt =
+                use_exploration_backend
+                ? getExplorationRuntimePolicy().replan_forward_dt
+                : std::max(0.0, cfg_.replan_forward_dt);
         const MapBackend trajectory_backend =
                 use_exploration_backend
-                ? (cfg_.exploration_use_epic_frontend
-                   ? MapBackend::EPIC_LIO
-                   : cfg_.exploration_local_guide_backend)
+                ? cfg_.exploration_local_guide_backend
                 : MapBackend::ROG;
         double trajectory_safe_distance =
                 use_exploration_backend ? std::max(0.0, cfg_.exploration_local_guide_safe_distance) : 0.0;
@@ -6539,7 +6694,7 @@ namespace general_planner {
             last_exp_traj = last_exp_traj_info.posTraj();
 
             replan_process_start_TT = replan_process_start_WT - last_exp_traj.start_WT;
-            replan_state_TT = replan_process_start_TT + cfg_.replan_forward_dt;
+            replan_state_TT = replan_process_start_TT + effective_replan_forward_dt;
             /* 2.2) Perform collision check on last exp traj*/
             vector<TimePosPair> last_exp_traj_time_pos;
             vector<double> last_exp_traj_vel;
@@ -6678,7 +6833,7 @@ namespace general_planner {
                 split_dis = keep_short_prefix
                             ? std::min(cfg_.receding_dis,
                                        std::max(cfg_.resolution * 3.0,
-                                                cfg_.exp_traj_cfg.max_vel * cfg_.replan_forward_dt))
+                                                cfg_.exp_traj_cfg.max_vel * effective_replan_forward_dt))
                             : 0.0;
                 if (cfg_.print_log) {
                     ros_ptr_->info(" -- [Exploration] Prefix decision: keep={}, split_dis={:.3f}, goal_switched={}, whole_free={}, receding_dis={:.3f}, forward_dt={:.3f}.",
@@ -6687,7 +6842,7 @@ namespace general_planner {
                                    active_exploration_plan_.goal_switched,
                                    last_exp_traj_info.wholeTrajKnownFree(),
                                    cfg_.receding_dis,
-                                   cfg_.replan_forward_dt);
+                                   effective_replan_forward_dt);
                 }
             } else if (last_exp_traj_info.wholeTrajKnownFree() && !gi_.new_goal && cfg_.receding_dis > 0.0) {
                 split_dis = std::numeric_limits<double>::max();
@@ -7106,8 +7261,15 @@ namespace general_planner {
             return FAILED;
         }
         double replan_total_t = (ros_ptr_->getSimTime() - replan_process_start_WT);
-        if (replan_total_t > cfg_.replan_forward_dt) {
+        if (replan_total_t > effective_replan_forward_dt) {
             if (!planning_from_rest) {
+                if (use_exploration_backend && last_exp_traj_info.wholeTrajKnownFree()) {
+                    out_exp_traj_info = last_exp_traj_info;
+                    ros_ptr_->warn(" -- [Exploration] Continuous replan over forward window ({:.3f}s > {:.3f}s); keep current safe trajectory instead of committing stale splice.",
+                                   replan_total_t,
+                                   effective_replan_forward_dt);
+                    return NO_NEED;
+                }
                 ros_ptr_->warn(" -- [GeneralPlanner] Replan over time({})!!!! Return FAILED", replan_total_t);
                 return FAILED;
             }

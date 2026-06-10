@@ -45,28 +45,41 @@ public:
     }
 
     const Eigen::Vector3d z_b = u / thrust;
+    const Eigen::Vector3d z_b_dot =
+        (Eigen::Matrix3d::Identity() - z_b * z_b.transpose()) * jerk / thrust;
     Eigen::Vector3d x_c = Eigen::Vector3d::UnitX();
+    Eigen::Vector3d x_c_dot = Eigen::Vector3d::Zero();
     const bool yaw_enabled = use_yaw_ && std::isfinite(yaw);
     if (yaw_enabled) {
       x_c = Eigen::Vector3d(std::cos(yaw), std::sin(yaw), 0.0);
+      const double safe_yaw_rate = std::isfinite(yaw_rate) ? yaw_rate : 0.0;
+      x_c_dot = safe_yaw_rate * Eigen::Vector3d(-std::sin(yaw), std::cos(yaw), 0.0);
     } else if (heading_to_velocity_) {
       Eigen::Vector3d heading(vel.x(), vel.y(), 0.0);
-      if (heading.norm() > eps_) {
-        x_c = heading.normalized();
+      const double heading_norm = heading.norm();
+      if (heading_norm > eps_) {
+        x_c = heading / heading_norm;
+        const Eigen::Vector3d heading_dot(acc.x(), acc.y(), 0.0);
+        x_c_dot = (Eigen::Matrix3d::Identity() - x_c * x_c.transpose()) *
+                  heading_dot / heading_norm;
       }
     }
 
     Eigen::Vector3d y_b = z_b.cross(x_c);
-    if (y_b.norm() < eps_) {
+    double y_b_norm = y_b.norm();
+    if (y_b_norm < eps_) {
       Eigen::Vector3d fallback = std::abs(z_b.z()) < 0.9
                                      ? Eigen::Vector3d::UnitZ()
                                      : Eigen::Vector3d::UnitY();
       y_b = z_b.cross(fallback);
+      x_c = fallback;
+      x_c_dot.setZero();
+      y_b_norm = y_b.norm();
     }
-    if (y_b.norm() < eps_) {
+    if (y_b_norm < eps_) {
       return false;
     }
-    y_b.normalize();
+    y_b /= y_b_norm;
     const Eigen::Vector3d x_b = y_b.cross(z_b).normalized();
 
     out.R.col(0) = x_b;
@@ -76,7 +89,10 @@ public:
     out.thrust = thrust;
 
     const Eigen::Vector3d b = out.R.transpose() * jerk / thrust;
-    out.omega = Eigen::Vector3d(-b.y(), b.x(), yaw_enabled ? yaw_rate : 0.0);
+    const Eigen::Vector3d y_b_dot_raw = z_b_dot.cross(x_c) + z_b.cross(x_c_dot);
+    const Eigen::Vector3d y_b_dot =
+        (Eigen::Matrix3d::Identity() - y_b * y_b.transpose()) * y_b_dot_raw / y_b_norm;
+    out.omega = Eigen::Vector3d(-b.y(), b.x(), -x_b.dot(y_b_dot));
     out.valid = out.R.allFinite() && out.omega.allFinite() && std::isfinite(out.thrust);
     return out.valid;
   }

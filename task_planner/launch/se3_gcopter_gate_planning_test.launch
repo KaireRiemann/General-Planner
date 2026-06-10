@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<launch>
+  <include file="$(find task_planner)/launch/se3_planning.launch">
+    <arg name="rviz" value="false"/>
+    <arg name="monitor" value="true"/>
+    <arg name="monitor_required" value="true"/>
+    <arg name="monitor_duration" value="6.0"/>
+    <arg name="gate_count" value="3"/>
+    <arg name="gate_spacing" value="0.85"/>
+    <arg name="gate_pitch_deg_0" value="0.0"/>
+    <arg name="gate_pitch_deg_1" value="0.0"/>
+    <arg name="gate_pitch_deg_2" value="0.0"/>
+  </include>
+</launch>

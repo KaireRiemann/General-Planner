@@ -17,7 +17,6 @@ Panels:
         - /Frontend1/ExpSfc1/Namespaces1
         - /Frontend1/FreeSfc1
         - /Frontend1/FreeSfc1/Namespaces1
-        - /Backend1
         - /Backend1/BackupTraj1
         - /Backend1/BackupTraj1/Namespaces1
         - /Backend1/Path1
@@ -163,7 +162,7 @@ Visualization Manager:
           Color: 173; 127; 168
           Color Transformer: AxisColor
           Decay Time: 0
-          Enabled: true
+          Enabled: false
           Invert Rainbow: false
           Max Color: 255; 255; 255
           Min Color: 0; 0; 0
@@ -178,7 +177,7 @@ Visualization Manager:
           Unreliable: false
           Use Fixed Frame: true
           Use rainbow: true
-          Value: true
+          Value: false
         - Alpha: 1
           Autocompute Intensity Bounds: true
           Autocompute Value Bounds:
@@ -217,7 +216,7 @@ Visualization Manager:
           Channel Name: intensity
           Class: rviz/PointCloud2
           Color: 245; 121; 0
-          Color Transformer: FlatColor
+          Color Transformer: AxisColor
           Decay Time: 0
           Enabled: true
           Invert Rainbow: false
@@ -253,8 +252,7 @@ Visualization Manager:
           Marker Topic: /fsm_node/visualization/frontend_path
           Name: Astar
           Namespaces:
-            guide_path: true
-            guide_path_line: true
+            {}
           Queue Size: 100
           Value: true
         - Class: rviz/MarkerArray
@@ -262,8 +260,7 @@ Visualization Manager:
           Marker Topic: /fsm_node/visualization/goal
           Name: Goal
           Namespaces:
-            goal: true
-            goal_line: true
+            {}
           Queue Size: 100
           Value: true
         - Class: rviz/MarkerArray
@@ -299,8 +296,7 @@ Visualization Manager:
           Marker Topic: /fsm_node/visualization/exp_traj
           Name: ESDFTraj
           Namespaces:
-            plain_traj: true
-            plain_traj_waypoints: true
+            {}
           Queue Size: 100
           Value: true
         - Class: rviz/MarkerArray
@@ -368,7 +364,7 @@ Visualization Manager:
           Marker Topic: /fsm_node/visualization/yaw_traj
           Name: Yaw
           Namespaces:
-            yaw_traj: true
+            {}
           Queue Size: 100
           Value: true
       Enabled: true
@@ -406,6 +402,8 @@ Visualization Manager:
       Marker Topic: /fsm_node/rog_map/map_bound
       Name: MarkerArray
       Namespaces:
+        ESDF Map Text: true
+        ESDF Updating Range: true
         Local Map Origin: true
         Local Map Origin_text: true
         Local Map Range: true
@@ -541,9 +539,9 @@ Visualization Manager:
       Invert Z Axis: false
       Name: Current View
       Near Clip Distance: 0.009999999776482582
-      Pitch: 0.9174560904502869
+      Pitch: 0.7774562239646912
       Target Frame: world
-      Yaw: 4.7067952156066895
+      Yaw: 3.2667922973632812
     Saved: ~
 Window Geometry:
   Displays:

@@ -204,6 +204,11 @@ namespace fsm {
 
         bool explorationMode() const;
 
+        bool tickExplorationTask(const std::string &call_func);
+
+        void handleExplorationTaskResult(const general_planner::TaskTickResult &result,
+                                         const std::string &call_func);
+
         void setTaskModeFromString(const std::string &mode);
 
         void resetActiveTask();

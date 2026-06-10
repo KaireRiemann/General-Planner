@@ -129,7 +129,7 @@ bool SE3AggressiveManager::checkSample(double t,
     }
     return false;
   }
-  const double body_rate = flat.omega.head<2>().norm();
+  const double body_rate = flat.omega.norm();
   max_body_rate = std::max(max_body_rate, body_rate);
   if (body_rate > problem.body_rate_max + 1.0e-3) {
     if (reason != nullptr) {

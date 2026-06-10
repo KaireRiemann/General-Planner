@@ -118,6 +118,16 @@ namespace fsm {
         const auto result = active_task_->tick(buildTaskContext());
         logTaskTickResult(result);
         ret_code = result.legacy_ret;
+        if (explorationMode()) {
+            handleExplorationTaskResult(result, "ExplorationReplanTimer");
+            if (result.status != general_planner::TaskStatus::NOT_READY) {
+                planner_ptr_->getModuleTimeConsuming(log_module_time);
+                log_module_time[log_module_time.size() - 2] = replan_once_time.stop();
+                appendLatestReplanLog();
+                WriteTimeToLog();
+            }
+            return;
+        }
         if (result.status == general_planner::TaskStatus::NOT_READY) {
             return;
         }
@@ -207,6 +217,40 @@ namespace fsm {
             cout << std::fixed << std::setprecision(3);
             cout << GREEN << " -- [Fsm " << cur_t << "] Current state: " << MACHINE_STATE_STR[machine_state_]
                  << RESET << endl;
+        }
+
+        if (explorationMode()) {
+            switch (machine_state_) {
+                case INIT: {
+                    if ((!robot_state_.rcv || (ros_ptr_->getSimTime() - robot_state_.rcv_time) > 0.1)) {
+                        cout << YELLOW << " -- [Fsm] No odom." << RESET << endl;
+                        return;
+                    }
+                    ChangeState("ExplorationMainFsm", WAIT_GOAL);
+                    return;
+                }
+                case WAIT_GOAL:
+                case GENERATE_TRAJ: {
+                    if (!activeTaskReady()) {
+                        return;
+                    }
+                    if (task_new_) {
+                        resetVisualizedPath();
+                    }
+                    tickExplorationTask("ExplorationMainFsm");
+                    return;
+                }
+                case FOLLOW_TRAJ: {
+                    publishCurPoseToPath();
+                    return;
+                }
+                case EMER_STOP: {
+                    ChangeState("ExplorationMainFsm", WAIT_GOAL);
+                    return;
+                }
+                default:
+                    return;
+            }
         }
 
         switch (machine_state_) {
@@ -433,6 +477,91 @@ namespace fsm {
              << ", status=" << general_planner::taskStatusName(result.status)
              << ", legacy_ret=" << general_planner::legacyRetCodeName(result.legacy_ret)
              << ", reason=" << result.reason << endl;
+    }
+
+    bool Fsm::tickExplorationTask(const std::string &call_func) {
+        if (!explorationMode()) {
+            return false;
+        }
+        if (!activeTaskReady()) {
+            return true;
+        }
+        if (!active_task_) {
+            resetActiveTask();
+        }
+        if (!active_task_) {
+            return true;
+        }
+
+        const auto result = active_task_->tick(buildTaskContext());
+        logTaskTickResult(result);
+        handleExplorationTaskResult(result, call_func);
+        if (result.status != general_planner::TaskStatus::NOT_READY) {
+            appendLatestReplanLog();
+        }
+        return true;
+    }
+
+    void Fsm::handleExplorationTaskResult(const general_planner::TaskTickResult &result,
+                                          const std::string &call_func) {
+        const auto retcode = result.legacy_ret;
+        const auto remaining = [this]() {
+            return planner_ptr_ ? planner_ptr_->getCommittedTrajectoryRemainingDuration() : 0.0;
+        };
+        const auto keep_following_committed = [this, &call_func, &remaining](const bool publish) {
+            if (remaining() <= 1.0e-3) {
+                return;
+            }
+            if (publish) {
+                publishPolyTraj();
+            }
+            if (machine_state_ != FOLLOW_TRAJ) {
+                ChangeState(call_func, FOLLOW_TRAJ);
+            }
+        };
+
+        if (result.status == general_planner::TaskStatus::NOT_READY) {
+            return;
+        }
+        if (result.status == general_planner::TaskStatus::EMERGENCY ||
+            retcode == EMER) {
+            ChangeState(call_func, EMER_STOP);
+            return;
+        }
+        if (result.status == general_planner::TaskStatus::FINISHED ||
+            retcode == FINISH) {
+            gi_.new_goal = false;
+            task_new_ = false;
+            plan_from_rest_ = false;
+            finish_plan = true;
+            cout << GREEN << " -- [Fsm] Exploration finished." << RESET << endl;
+            ChangeState(call_func, WAIT_GOAL);
+            return;
+        }
+        if (retcode == SUCCESS) {
+            gi_.new_goal = false;
+            task_new_ = false;
+            plan_from_rest_ = false;
+            finish_plan = false;
+            keep_following_committed(true);
+            return;
+        }
+        if (result.status == general_planner::TaskStatus::KEEP_CURRENT ||
+            retcode == NO_NEED) {
+            plan_from_rest_ = false;
+            finish_plan = false;
+            keep_following_committed(machine_state_ != FOLLOW_TRAJ);
+            return;
+        }
+        if (retcode == NEW_TRAJ) {
+            plan_from_rest_ = false;
+            finish_plan = false;
+            keep_following_committed(false);
+            return;
+        }
+
+        finish_plan = false;
+        keep_following_committed(false);
     }
 
     bool Fsm::trackingExecutionState() const {

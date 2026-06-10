@@ -300,7 +300,7 @@ double SE3AggressiveTrajOpt::evaluateCurrentCost(const Eigen::VectorXd &x,
       SE3FlatnessOutput flat;
       if (flatness.forward(v, a, j, s, sample_yaw, sample_yaw_rate, cfg_.grav, flat)) {
         opt_vars_.max_body_rate =
-            std::max(opt_vars_.max_body_rate, flat.omega.head<2>().norm());
+            std::max(opt_vars_.max_body_rate, flat.omega.norm());
       }
     }
     seg_start += T;

@@ -260,7 +260,7 @@ rog_map:
   virtual_ceil_height: 5.5
   virtual_ground_height: -0.1
   load_pcd_en: true
-  pcd_name: "${CMAKE_ROOT_DIR}/../mars_uav_sim/perfect_drone_sim/pcd/big_field.pcd"
+  pcd_name: "${CMAKE_ROOT_DIR}/../mars_uav_sim/perfect_drone_sim/pcd/forest.pcd"
   map_sliding:
     enable: true
     threshold: 0.3

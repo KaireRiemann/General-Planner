@@ -1,0 +1,88 @@
+####### RViz gate-through demo parameters #######
+FrameId:                    'odom'
+TargetTopic:                '/move_base_simple/goal'
+
+GateMarkerTopic:            '/gate_planner/gate'
+MapBoxMarkerTopic:          '/gate_planner/map_box'
+CorridorMarkerTopic:        '/gate_planner/corridor'
+TrajectoryMarkerTopic:      '/gate_planner/trajectory_marker'
+TrajectoryPathTopic:        '/gate_planner/trajectory_path'
+PositionCommandTopic:       '/gate_planner/position_command'
+SO3CommandTopic:            '/gate_planner/so3_command'
+VehicleMarkerTopic:         '/gate_planner/vehicle'
+VehicleEllipsoidsTopic:     '/gate_planner/vehicle_ellipsoids'
+StartGoalMarkerTopic:       '/gate_planner/start_goal'
+UseHolePolygonCorridor:     false
+RequireHolePolygonCorridor: false
+HolePolygonTopic:           '/polygon_hole_step_viz/hole_polygon_cloud'
+HolePolygonMinVertices:     4
+UseHolePolygonTxtFile:      false
+HolePolygonTxtPath:         '/workspace/fast_calib_ws/src/FAST-Calib/output/hole_polygon_latest.txt'
+LockHolePolygonAfterFirstValid: true
+UseBodyLocalizationStart:   false
+FallbackToStartPosWhenNoBodyOdom: true
+BodyOdomTopic:              '/aft_mapped_to_init'
+AutoPlanWithMirroredGoal:   false
+MirrorGoalMode:             'plane'  # 'plane' or 'center'
+AutoReplanMinInterval:      1.0
+MinStartReplanShift:        0.05
+MinGoalReplanShift:         0.05
+MinHoleCenterReplanShift:   0.03
+MinHoleNormalReplanAngleDeg: 3.0
+AutoAlignMapBoxToStartGoal: true
+MapBoxAutoPadding:          [0.30, 0.30, 0.30]
+
+####### world and gate parameters #######
+# xmin, ymin, zmin, xmax, ymax, zmax
+MapBox:                     [-3.0, -2.0, -2.0, 3.0, 2.0, 2.40]
+
+# roll, pitch, yaw, x, y, z. The gate normal is its local +x axis.
+# Use gate_slit_roll_deg/gate_roll_deg to rotate the slit in the gate plane.
+# Use gate_yaw_deg only to change the approach direction in the world xy plane.
+GatePose:                   [0.0, 0.0, 0.0, 0.0, 0.0, 1.20]
+
+# Gate dimensions in meters. Local +x is the gate normal, width is local y,
+# length is local z.
+GateOuterWidth:             0.82
+GateOuterLength:            0.30
+GateInnerWidth:             0.64
+GateInnerLength:            0.22
+GateDepth:                  0.04
+GateDepthMargin:            0.02
+GateTunnelHalfDepth:        0.60
+
+StartPos:                   [-2.20, 0.00, 1.20]
+GoalZ:                      1.20
+UpdateStartAfterPlan:       false
+LoopReplay:                 true
+ReplayYaw:                  0.0
+PublishCommands:            true
+CommandRate:                100.0
+TrajectorySamples:          240
+
+####### SE3AggressiveCost/MinCO optimization parameters #######
+UavCollisionBoxWidth:       0.34
+UavCollisionBoxDepth:       0.34
+UavCollisionBoxHeight:      0.13
+SafeMargin:                 0.02
+WeightT:                    1.0
+LengthPerPiece:             0.60
+InitialSpeedFactor:         0.8
+MaxVelMag:                  3.0
+MaxBdrMag:                  6.0
+MaxTiltAngle:               1.20
+MinThrust:                  2.0
+MaxThrust:                  12.0
+VehicleMass:                0.61
+GravAcc:                    9.81
+HorizDrag:                  0.70
+VertDrag:                   0.80
+ParasDrag:                  0.01
+SpeedEps:                   0.0001
+# position, velocity, body-rate, tilt, thrust penalty weights
+ChiVec:                     [1.0e+6, 1.0e+6, 1.0e+4, 1.0e+4, 1.0e+5]
+SmoothingEps:               1.0e-2
+IntegralIntervs:            16
+RelCostTol:                 1.0e-5
+AppendedDuration:           1.0
+TrajVizWidth:               0.04

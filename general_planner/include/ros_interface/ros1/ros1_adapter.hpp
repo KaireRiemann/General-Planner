@@ -33,6 +33,9 @@
 #include "nav_msgs/Path.h"
 #include "data_structure/base/trajectory.h"
 #include "utils/header/color_text.hpp"
+#include <pcl/point_cloud.h>
+#include <pcl/point_types.h>
+#include <pcl_conversions/pcl_conversions.h>
 #include <algorithm>
 #include <array>
 #include <cmath>

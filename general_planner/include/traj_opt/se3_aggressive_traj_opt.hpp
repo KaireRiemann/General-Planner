@@ -54,7 +54,7 @@ struct SE3AggressiveProblem {
   double yaw_rate{0.0};
   bool use_corridor{true};
   bool runtime_check_enable{true};
-  bool use_numeric_shape_gradient{false};
+  bool use_numeric_shape_gradient{true};
 };
 
 class SE3AggressiveTrajOpt {

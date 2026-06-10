@@ -1,0 +1,183 @@
+<?xml version="1.0" encoding="utf-8"?>
+<launch>
+  <arg name="rviz" default="true"/>
+  <arg name="monitor" default="false"/>
+  <arg name="monitor_required" default="false"/>
+  <arg name="monitor_duration" default="10.0"/>
+
+  <arg name="frame_id" default="odom"/>
+  <arg name="gate_roll_deg" default="0.0"/>
+  <arg name="gate_slit_roll_deg" default="$(arg gate_roll_deg)"/>
+  <arg name="gate_pitch_deg" default="0.0"/>
+  <arg name="gate_yaw_deg" default="0.0"/>
+  <!-- <arg name="gate_roll_deg_0" default="$(arg gate_slit_roll_deg)"/>
+  <arg name="gate_roll_deg_1" default="$(arg gate_slit_roll_deg)"/>
+  <arg name="gate_roll_deg_2" default="$(arg gate_slit_roll_deg)"/> -->
+  <arg name="gate_roll_deg_0" default="0.0"/>
+  <arg name="gate_roll_deg_1" default="60.0"/>
+  <arg name="gate_roll_deg_2" default="-60.0"/>
+  <arg name="gate_pitch_deg_0" default="0.0"/>
+  <arg name="gate_pitch_deg_1" default="0.0"/>
+  <arg name="gate_pitch_deg_2" default="0"/>
+  <arg name="gate_yaw_deg_0" default="$(arg gate_yaw_deg)"/>
+  <arg name="gate_yaw_deg_1" default="$(arg gate_yaw_deg)"/>
+  <arg name="gate_yaw_deg_2" default="$(arg gate_yaw_deg)"/>
+  <arg name="gate_x" default="0.0"/>
+  <arg name="gate_y" default="0.0"/>
+  <arg name="gate_z" default="1.20"/>
+  <arg name="gate_outer_width" default="0.82"/>
+  <arg name="gate_outer_length" default="0.30"/>
+  <arg name="gate_inner_width" default="0.64"/>
+  <arg name="gate_inner_length" default="0.22"/>
+  <arg name="gate_depth" default="0.04"/>
+  <arg name="gate_depth_margin" default="0.02"/>
+  <arg name="gate_count" default="3"/>
+  <arg name="gate_spacing" default="0.85"/>
+
+  <arg name="uav_width_m" default="0.34"/>
+  <arg name="uav_depth_m" default="0.34"/>
+  <arg name="uav_height_m" default="0.13"/>
+  <arg name="safe_margin" default="0.02"/>
+  <arg name="start_x" default="-2.20"/>
+  <arg name="start_y" default="0.0"/>
+  <arg name="start_z" default="1.20"/>
+  <arg name="goal_z" default="1.20"/>
+
+  <arg name="publish_commands" default="true"/>
+  <arg name="position_command_topic" default="/gate_planner/position_command"/>
+  <arg name="so3_command_topic" default="/gate_planner/so3_command"/>
+  <arg name="command_rate" default="100.0"/>
+
+  <arg name="use_hole_polygon_corridor" default="false"/>
+  <arg name="require_hole_polygon_corridor" default="false"/>
+  <arg name="hole_polygon_topic" default="/polygon_hole_step_viz/hole_polygon_cloud"/>
+  <arg name="hole_polygon_min_vertices" default="4"/>
+  <arg name="use_hole_polygon_txt_file" default="false"/>
+  <arg name="hole_polygon_txt_path" default="/tmp/hole_polygon_latest.txt"/>
+  <arg name="lock_hole_polygon_after_first_valid" default="true"/>
+  <arg name="use_body_localization_start" default="false"/>
+  <arg name="fallback_to_start_pos_when_no_body_odom" default="true"/>
+  <arg name="body_odom_topic" default="/odom"/>
+  <arg name="auto_plan_with_mirrored_goal" default="true"/>
+  <arg name="mirror_goal_mode" default="plane"/>
+  <arg name="auto_replan_min_interval" default="1.0"/>
+  <arg name="min_start_replan_shift" default="0.05"/>
+  <arg name="min_goal_replan_shift" default="0.05"/>
+  <arg name="min_hole_center_replan_shift" default="0.03"/>
+  <arg name="min_hole_normal_replan_angle_deg" default="3.0"/>
+  <arg name="auto_align_mapbox_to_start_goal" default="true"/>
+  <arg name="mapbox_auto_pad_x" default="0.30"/>
+  <arg name="mapbox_auto_pad_y" default="0.30"/>
+  <arg name="mapbox_auto_pad_z" default="0.30"/>
+
+  <arg name="weight_t" default="1.0"/>
+  <arg name="length_per_piece" default="0.60"/>
+  <arg name="initial_speed_factor" default="0.8"/>
+  <arg name="max_vel" default="3.0"/>
+  <arg name="max_body_rate" default="6.0"/>
+  <arg name="max_tilt_angle" default="1.20"/>
+  <arg name="min_thrust_acc" default="2.0"/>
+  <arg name="max_thrust_acc" default="12.0"/>
+  <arg name="vehicle_mass" default="0.61"/>
+  <arg name="grav_acc" default="9.81"/>
+  <arg name="horiz_drag" default="0.70"/>
+  <arg name="vert_drag" default="0.80"/>
+  <arg name="paras_drag" default="0.01"/>
+  <arg name="speed_eps" default="0.0001"/>
+  <arg name="chi_pos" default="1.0e6"/>
+  <arg name="chi_vel" default="1.0e6"/>
+  <arg name="chi_body_rate" default="1.0e4"/>
+  <arg name="chi_tilt" default="1.0e4"/>
+  <arg name="chi_thrust" default="1.0e5"/>
+  <arg name="vehicle_ellipsoid_samples" default="24"/>
+  <arg name="vehicle_ellipsoid_alpha" default="0.26"/>
+
+  <node if="$(arg rviz)" name="rviz_se3_gcopter_gate_planning" pkg="rviz" type="rviz" output="screen"
+        args="-d $(find general_planner)/rviz/se3_planning.rviz -f $(arg frame_id)"/>
+
+  <node pkg="general_planner" type="se3_gcopter_gate_planning"
+        name="se3_gcopter_gate_planning_node" output="screen">
+    <rosparam file="$(find general_planner)/config/se3_planning.yaml" command="load"/>
+    <param name="FrameId" type="string" value="$(arg frame_id)"/>
+    <param name="GateRollDeg" type="double" value="$(arg gate_slit_roll_deg)"/>
+    <param name="GatePitchDeg" type="double" value="$(arg gate_pitch_deg)"/>
+    <param name="GateYawDeg" type="double" value="$(arg gate_yaw_deg)"/>
+    <rosparam param="GateRollDegs" subst_value="true">[$(arg gate_roll_deg_0), $(arg gate_roll_deg_1), $(arg gate_roll_deg_2)]</rosparam>
+    <rosparam param="GatePitchDegs" subst_value="true">[$(arg gate_pitch_deg_0), $(arg gate_pitch_deg_1), $(arg gate_pitch_deg_2)]</rosparam>
+    <rosparam param="GateYawDegs" subst_value="true">[$(arg gate_yaw_deg_0), $(arg gate_yaw_deg_1), $(arg gate_yaw_deg_2)]</rosparam>
+    <param name="GateX" type="double" value="$(arg gate_x)"/>
+    <param name="GateY" type="double" value="$(arg gate_y)"/>
+    <param name="GateZ" type="double" value="$(arg gate_z)"/>
+    <param name="GateOuterWidth" type="double" value="$(arg gate_outer_width)"/>
+    <param name="GateOuterLength" type="double" value="$(arg gate_outer_length)"/>
+    <param name="GateInnerWidth" type="double" value="$(arg gate_inner_width)"/>
+    <param name="GateInnerLength" type="double" value="$(arg gate_inner_length)"/>
+    <param name="GateDepth" type="double" value="$(arg gate_depth)"/>
+    <param name="GateDepthMargin" type="double" value="$(arg gate_depth_margin)"/>
+    <param name="GateCount" type="int" value="$(arg gate_count)"/>
+    <param name="GateSpacing" type="double" value="$(arg gate_spacing)"/>
+    <param name="UavCollisionBoxWidth" type="double" value="$(arg uav_width_m)"/>
+    <param name="UavCollisionBoxDepth" type="double" value="$(arg uav_depth_m)"/>
+    <param name="UavCollisionBoxHeight" type="double" value="$(arg uav_height_m)"/>
+    <param name="SafeMargin" type="double" value="$(arg safe_margin)"/>
+    <param name="StartX" type="double" value="$(arg start_x)"/>
+    <param name="StartY" type="double" value="$(arg start_y)"/>
+    <param name="StartZ" type="double" value="$(arg start_z)"/>
+    <param name="GoalZ" type="double" value="$(arg goal_z)"/>
+    <param name="PublishCommands" type="bool" value="$(arg publish_commands)"/>
+    <param name="PositionCommandTopic" type="string" value="$(arg position_command_topic)"/>
+    <param name="SO3CommandTopic" type="string" value="$(arg so3_command_topic)"/>
+    <param name="CommandRate" type="double" value="$(arg command_rate)"/>
+
+    <param name="UseHolePolygonCorridor" type="bool" value="$(arg use_hole_polygon_corridor)"/>
+    <param name="RequireHolePolygonCorridor" type="bool" value="$(arg require_hole_polygon_corridor)"/>
+    <param name="HolePolygonTopic" type="string" value="$(arg hole_polygon_topic)"/>
+    <param name="HolePolygonMinVertices" type="int" value="$(arg hole_polygon_min_vertices)"/>
+    <param name="UseHolePolygonTxtFile" type="bool" value="$(arg use_hole_polygon_txt_file)"/>
+    <param name="HolePolygonTxtPath" type="string" value="$(arg hole_polygon_txt_path)"/>
+    <param name="LockHolePolygonAfterFirstValid" type="bool" value="$(arg lock_hole_polygon_after_first_valid)"/>
+    <param name="UseBodyLocalizationStart" type="bool" value="$(arg use_body_localization_start)"/>
+    <param name="FallbackToStartPosWhenNoBodyOdom" type="bool" value="$(arg fallback_to_start_pos_when_no_body_odom)"/>
+    <param name="BodyOdomTopic" type="string" value="$(arg body_odom_topic)"/>
+    <param name="AutoPlanWithMirroredGoal" type="bool" value="$(arg auto_plan_with_mirrored_goal)"/>
+    <param name="MirrorGoalMode" type="string" value="$(arg mirror_goal_mode)"/>
+    <param name="AutoReplanMinInterval" type="double" value="$(arg auto_replan_min_interval)"/>
+    <param name="MinStartReplanShift" type="double" value="$(arg min_start_replan_shift)"/>
+    <param name="MinGoalReplanShift" type="double" value="$(arg min_goal_replan_shift)"/>
+    <param name="MinHoleCenterReplanShift" type="double" value="$(arg min_hole_center_replan_shift)"/>
+    <param name="MinHoleNormalReplanAngleDeg" type="double" value="$(arg min_hole_normal_replan_angle_deg)"/>
+    <param name="AutoAlignMapBoxToStartGoal" type="bool" value="$(arg auto_align_mapbox_to_start_goal)"/>
+    <param name="MapBoxAutoPadX" type="double" value="$(arg mapbox_auto_pad_x)"/>
+    <param name="MapBoxAutoPadY" type="double" value="$(arg mapbox_auto_pad_y)"/>
+    <param name="MapBoxAutoPadZ" type="double" value="$(arg mapbox_auto_pad_z)"/>
+
+    <param name="WeightT" type="double" value="$(arg weight_t)"/>
+    <param name="LengthPerPiece" type="double" value="$(arg length_per_piece)"/>
+    <param name="InitialSpeedFactor" type="double" value="$(arg initial_speed_factor)"/>
+    <param name="MaxVelMag" type="double" value="$(arg max_vel)"/>
+    <param name="MaxBdrMag" type="double" value="$(arg max_body_rate)"/>
+    <param name="MaxTiltAngle" type="double" value="$(arg max_tilt_angle)"/>
+    <param name="MinThrust" type="double" value="$(arg min_thrust_acc)"/>
+    <param name="MaxThrust" type="double" value="$(arg max_thrust_acc)"/>
+    <param name="VehicleMass" type="double" value="$(arg vehicle_mass)"/>
+    <param name="GravAcc" type="double" value="$(arg grav_acc)"/>
+    <param name="HorizDrag" type="double" value="$(arg horiz_drag)"/>
+    <param name="VertDrag" type="double" value="$(arg vert_drag)"/>
+    <param name="ParasDrag" type="double" value="$(arg paras_drag)"/>
+    <param name="SpeedEps" type="double" value="$(arg speed_eps)"/>
+    <rosparam param="ChiVec" subst_value="true">[$(arg chi_pos), $(arg chi_vel), $(arg chi_body_rate), $(arg chi_tilt), $(arg chi_thrust)]</rosparam>
+    <param name="VehicleEllipsoidsTopic" type="string" value="/gate_planner/vehicle_ellipsoids"/>
+    <param name="VehicleEllipsoidSamples" type="int" value="$(arg vehicle_ellipsoid_samples)"/>
+    <param name="VehicleEllipsoidAlpha" type="double" value="$(arg vehicle_ellipsoid_alpha)"/>
+  </node>
+
+  <node if="$(arg monitor)" pkg="general_planner" type="se3_so3_command_monitor.py"
+        name="se3_gcopter_gate_command_monitor" output="screen" required="$(arg monitor_required)">
+    <param name="require_traj" type="bool" value="false"/>
+    <param name="pos_topic" type="string" value="$(arg position_command_topic)"/>
+    <param name="so3_topic" type="string" value="$(arg so3_command_topic)"/>
+    <param name="run_duration" type="double" value="$(arg monitor_duration)"/>
+    <param name="first_traj_timeout" type="double" value="0.0"/>
+    <param name="fail_fast" type="bool" value="true"/>
+  </node>
+</launch>

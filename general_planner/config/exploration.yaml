@@ -61,11 +61,11 @@ general_planner:
     frontend_type: "epic_original"
     use_epic_frontend: true
     cloud_frame: "WORLD"
-    update_rog_map: false
+    update_rog_map: true
     backup_traj_enable: false
     backend_fallback_enable: false
-    astar_backend: "epic_lio"
-    corridor_backend: "epic_lio"
+    astar_backend: "hybrid"
+    corridor_backend: "hybrid"
     tsp_dir: "/tmp/general_planner_tsp"
     print_log: true
     epic_lio:
@@ -213,7 +213,7 @@ general_planner:
       stop_traj_time: 0.2
       collision_replan_time: 0.5
     local_guide:
-      backend: "epic_lio"
+      backend: "hybrid"
       shortcut_enable: true
       astar_repair_enable: true
       unknown_as_occupied: false

@@ -16,17 +16,15 @@ public:
 private:
     enum Stage {
         WAIT_OBSERVATION = 0,
-        UPDATE_GLOBAL = 1,
-        PLAN_LOCAL = 2,
-        EXEC_LOCAL = 3,
-        RECOVER = 4,
-        FINISH = 5
+        PLAN_LOCAL = 1,
+        EXEC_LOCAL = 2,
+        RECOVER = 3,
+        FINISH = 4
     };
 
     GeneralPlanner::Ptr planner_;
     bool from_rest_{true};
     bool new_task_consumed_{false};
-    double last_global_update_wt_{-1.0};
 
     static const char *stageName(int stage);
     void changeStage(Stage next);

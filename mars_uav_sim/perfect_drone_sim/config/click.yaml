@@ -1,5 +1,5 @@
 #############| For UAV simulation |#################################
-pcd_name: "big_field.pcd"
+pcd_name: "forest.pcd"
 mesh_resource: "package://perfect_drone_sim/meshes/yunque-M.dae"
 init_position:
   x: 0.0

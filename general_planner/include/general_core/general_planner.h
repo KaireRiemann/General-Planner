@@ -401,6 +401,10 @@ namespace general_planner {
                                               ExpTraj &last_exp_traj_info,
                                               ExpTraj &out_exp_traj_info);
 
+        RET_CODE commitExplorationLocalTrajectory(const exploration::ExplorationPlan &plan,
+                                                  bool from_rest,
+                                                  bool goal_switched);
+
         /* For Backup traj generation */
         RET_CODE generateBackupTrajectory(ExpTraj &ref_exp_traj, BackupTraj &back_traj_info);
 

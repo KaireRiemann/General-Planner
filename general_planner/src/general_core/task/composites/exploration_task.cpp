@@ -19,7 +19,6 @@ TaskTickResult ExplorationTask::tick(const TaskContext &ctx) {
     if (ctx.new_task && !new_task_consumed_) {
         planner_->resetExplorationTaskRuntime(false);
         from_rest_ = true;
-        last_global_update_wt_ = -1.0;
         new_task_consumed_ = true;
         changeStage(WAIT_OBSERVATION);
     }
@@ -34,45 +33,6 @@ TaskTickResult ExplorationTask::tick(const TaskContext &ctx) {
                                       super_utils::NO_NEED,
                                       "waiting for first exploration cloud observation");
                 }
-                exploration::ExplorationGoal warmed_goal;
-                changeStage(planner_->getLatestExplorationGoal(warmed_goal)
-                            ? PLAN_LOCAL
-                            : UPDATE_GLOBAL);
-                continue;
-            }
-
-            case UPDATE_GLOBAL: {
-                const auto update = planner_->refreshExplorationGlobalPlan();
-                last_global_update_wt_ = ctx.now;
-                if (!update.ready) {
-                    changeStage(WAIT_OBSERVATION);
-                    return makeResult(TaskStatus::NOT_READY,
-                                      super_utils::NO_NEED,
-                                      update.reason.empty()
-                                      ? "exploration frontend not ready"
-                                      : update.reason);
-                }
-                if (update.finished) {
-                    changeStage(FINISH);
-                    return makeResult(TaskStatus::FINISHED,
-                                      super_utils::FINISH,
-                                      update.reason.empty()
-                                      ? "exploration finished"
-                                      : update.reason);
-                }
-                if (!update.updated) {
-                    exploration::ExplorationGoal warmed_goal;
-                    if (planner_->getLatestExplorationGoal(warmed_goal)) {
-                        changeStage(PLAN_LOCAL);
-                        continue;
-                    }
-                    changeStage(UPDATE_GLOBAL);
-                    return makeResult(TaskStatus::RUNNING,
-                                      super_utils::NO_NEED,
-                                      update.reason.empty()
-                                      ? "waiting for reachable exploration guide"
-                                      : update.reason);
-                }
                 changeStage(PLAN_LOCAL);
                 continue;
             }
@@ -81,7 +41,12 @@ TaskTickResult ExplorationTask::tick(const TaskContext &ctx) {
                 const RET_CODE ret = from_rest_
                                      ? planner_->PlanExplorationFromRest(false)
                                      : planner_->ReplanExplorationOnce(false);
-                return handlePlanResult(ret, ctx);
+                auto result = handlePlanResult(ret, ctx);
+                if (result.legacy_ret == super_utils::NEW_TRAJ &&
+                    result.status == TaskStatus::RUNNING) {
+                    continue;
+                }
+                return result;
             }
 
             case EXEC_LOCAL: {
@@ -104,11 +69,12 @@ TaskTickResult ExplorationTask::tick(const TaskContext &ctx) {
                                 planner_->truncateActiveExplorationTrajectory(policy.stop_traj_time);
                         from_rest_ = true;
                         changeStage(RECOVER);
+                        if (truncated) {
+                            continue;
+                        }
                         return makeResult(TaskStatus::RUNNING,
-                                          super_utils::NEW_TRAJ,
-                                          truncated
-                                          ? "active exploration trajectory truncated for safety"
-                                          : "active exploration trajectory unsafe; request recovery plan");
+                                          super_utils::NO_NEED,
+                                          "active exploration trajectory unsafe; waiting for recovery plan");
                     }
                     changeStage(PLAN_LOCAL);
                     continue;
@@ -121,6 +87,16 @@ TaskTickResult ExplorationTask::tick(const TaskContext &ctx) {
                     return makeResult(TaskStatus::KEEP_CURRENT,
                                       super_utils::NO_NEED,
                                       "executing local exploration segment");
+                }
+
+                const bool near_segment_end =
+                        exec.traj_remaining <=
+                        std::max(policy.min_remaining_for_replan,
+                                 policy.replan_time_before_traj_end);
+                if (!near_segment_end) {
+                    return makeResult(TaskStatus::KEEP_CURRENT,
+                                      super_utils::NO_NEED,
+                                      "executing committed exploration objective");
                 }
 
                 changeStage(PLAN_LOCAL);
@@ -156,7 +132,6 @@ void ExplorationTask::reset() {
     CompositeTask::reset();
     from_rest_ = true;
     new_task_consumed_ = false;
-    last_global_update_wt_ = -1.0;
 }
 
 std::string ExplorationTask::name() const {
@@ -167,8 +142,6 @@ const char *ExplorationTask::stageName(const int stage) {
     switch (stage) {
         case WAIT_OBSERVATION:
             return "WAIT_OBSERVATION";
-        case UPDATE_GLOBAL:
-            return "UPDATE_GLOBAL";
         case PLAN_LOCAL:
             return "PLAN_LOCAL";
         case EXEC_LOCAL:
@@ -240,7 +213,7 @@ TaskTickResult ExplorationTask::handlePlanResult(const RET_CODE ret,
                               "exploration keeps current local trajectory");
         }
         from_rest_ = true;
-        changeStage(UPDATE_GLOBAL);
+        changeStage(PLAN_LOCAL);
         return makeResult(TaskStatus::RUNNING,
                           super_utils::NO_NEED,
                           "waiting for reachable exploration guide");

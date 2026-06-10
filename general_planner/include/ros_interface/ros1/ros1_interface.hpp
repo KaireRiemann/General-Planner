@@ -27,6 +27,7 @@
 #define SRC_ROS1_VISUALIZER_HPP
 
 #include "ros_interface/ros1/ros1_adapter.hpp"
+#include <rog_map/rog_map_core/config.hpp>
 
 
 namespace ros_interface {

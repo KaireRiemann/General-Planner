@@ -62,6 +62,8 @@ include_directories(
 add_message_files(
         FILES
         PositionCommand.msg
+        AuxCommand.msg
+        SO3Command.msg
         MpcPositionCommand.msg
         PolynomialTrajectory.msg
         TrakingPerformance.msg
@@ -81,5 +83,4 @@ catkin_package(
         #DEPENDS system_lib
         CATKIN_DEPENDS message_runtime
 )
-
 
