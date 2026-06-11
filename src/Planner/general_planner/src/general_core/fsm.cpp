@@ -148,6 +148,7 @@ namespace fsm {
     Fsm::~Fsm() {
         write_time_.close();
         diagnostic_event_log_.close();
+        tracking_diagnostic_event_log_.close();
     }
 
     void Fsm::WriteTimeToLog() {
@@ -164,6 +165,10 @@ namespace fsm {
     std::pair<std::size_t, int> Fsm::appendLatestReplanLog() {
         LogOneReplan log = planner_ptr_->getLatestReplanLog();
         std::lock_guard<std::mutex> lock(replan_logs_mutex_);
+        if (useTrackingLogStream()) {
+            tracking_replan_logs_.push_back(std::move(log));
+            return {tracking_replan_logs_.size() - 1U, tracking_replan_logs_.back().getRetCode()};
+        }
         replan_logs_.push_back(std::move(log));
         return {replan_logs_.size() - 1U, replan_logs_.back().getRetCode()};
     }
@@ -171,6 +176,11 @@ namespace fsm {
     vector<LogOneReplan> Fsm::snapshotReplanLogs() const {
         std::lock_guard<std::mutex> lock(replan_logs_mutex_);
         return replan_logs_;
+    }
+
+    vector<LogOneReplan> Fsm::snapshotTrackingReplanLogs() const {
+        std::lock_guard<std::mutex> lock(replan_logs_mutex_);
+        return tracking_replan_logs_;
     }
 
     void Fsm::openDiagnosticLogFile(const std::string &path) {
@@ -189,9 +199,30 @@ namespace fsm {
         }
     }
 
+    void Fsm::openTrackingDiagnosticLogFile(const std::string &path) {
+        if (!cfg_.diagnostic_log_en) {
+            return;
+        }
+        boost::system::error_code ec;
+        const boost::filesystem::path log_path(path);
+        const boost::filesystem::path parent = log_path.parent_path();
+        if (!parent.empty()) {
+            boost::filesystem::create_directories(parent, ec);
+        }
+        tracking_diagnostic_event_log_.open(path, std::ios::out | std::ios::trunc);
+        if (tracking_diagnostic_event_log_.is_open()) {
+            writeDiagnosticCsvHeader(tracking_diagnostic_event_log_);
+        }
+    }
+
     vector<Fsm::DiagnosticEvent> Fsm::snapshotDiagnosticEvents() const {
         std::lock_guard<std::mutex> lock(diagnostic_events_mutex_);
         return diagnostic_events_;
+    }
+
+    vector<Fsm::DiagnosticEvent> Fsm::snapshotTrackingDiagnosticEvents() const {
+        std::lock_guard<std::mutex> lock(diagnostic_events_mutex_);
+        return tracking_diagnostic_events_;
     }
 
     std::string Fsm::diagnosticEventToString(const DiagnosticEvent &event) const {
@@ -265,16 +296,69 @@ namespace fsm {
             }
         }
 
+        const bool tracking_log_stream = useTrackingLogStream();
         {
             std::lock_guard<std::mutex> lock(diagnostic_events_mutex_);
-            diagnostic_events_.push_back(diagnostic_event);
-            if (diagnostic_event_log_.is_open()) {
-                writeDiagnosticCsvRow(diagnostic_event_log_, diagnostic_event, system_start_time_);
-                diagnostic_event_log_.flush();
+            if (tracking_log_stream) {
+                tracking_diagnostic_events_.push_back(diagnostic_event);
+                if (tracking_diagnostic_event_log_.is_open()) {
+                    writeDiagnosticCsvRow(tracking_diagnostic_event_log_, diagnostic_event, system_start_time_);
+                    tracking_diagnostic_event_log_.flush();
+                }
+            } else {
+                diagnostic_events_.push_back(diagnostic_event);
+                if (diagnostic_event_log_.is_open()) {
+                    writeDiagnosticCsvRow(diagnostic_event_log_, diagnostic_event, system_start_time_);
+                    diagnostic_event_log_.flush();
+                }
             }
         }
 
         publishDiagnosticEvent(diagnostic_event);
+    }
+
+    void Fsm::recordTrackingReplanContext(const std::string &event,
+                                          const int ret_code,
+                                          const bool prediction_static,
+                                          const std::size_t input_prediction_size,
+                                          const int replan_log_id) {
+        if (!planner_ptr_) {
+            return;
+        }
+        const auto diag = planner_ptr_->getLatestTrackingDiagnosticSnapshot();
+        recordDiagnosticEvent(ret_code == FAILED || ret_code == OPT_FAILED ? "WARN" : "INFO",
+                              event,
+                              fmt::format("ret={};phase={};reason={};input_prediction.size()={};prediction_static={};guide_path.size()={};sfc.size()={};problem.target_prediction.size()={};out_traj_duration={:.3f};keep_old_count={};reject_count={};runtime_manager_enabled={};has_committed_tracking={};committed_remaining={:.3f};runtime_reset={};runtime_preserved={};runtime_reason={};last_commit_wt={:.3f};last_commit_reject_reason={};last_commit_reject_detail={}",
+                                          retCodeName(ret_code),
+                                          diag.phase,
+                                          diag.reason,
+                                          input_prediction_size,
+                                          static_cast<int>(prediction_static),
+                                          diag.guide_path_size,
+                                          diag.sfc_size,
+                                          diag.target_prediction_size,
+                                          diag.out_traj_duration,
+                                          diag.consecutive_keep_old,
+                                          diag.consecutive_reject,
+                                          static_cast<int>(diag.runtime_manager_enabled),
+                                          static_cast<int>(diag.has_committed_tracking),
+                                          diag.committed_remaining,
+                                          static_cast<int>(diag.runtime_reset),
+                                          static_cast<int>(diag.runtime_preserved),
+                                          diag.runtime_reason.empty()
+                                              ? "none"
+                                              : diag.runtime_reason,
+                                          diag.last_commit_wt,
+                                          diag.last_commit_reject_reason.empty()
+                                              ? "none"
+                                              : diag.last_commit_reject_reason,
+                                          diag.last_commit_reject_detail.empty()
+                                              ? "none"
+                                              : diag.last_commit_reject_detail),
+                              ret_code,
+                              -1,
+                              false,
+                              replan_log_id);
     }
 
     void Fsm::saveDiagnosticLogToFile(const std::string &name) {
@@ -286,6 +370,34 @@ namespace fsm {
                                      ? LOG_FILE_DIR("diagnostic_events/" +
                                                     BinaryFileHandler<int>::getCurrentTimeStr() + ".csv")
                                      : LOG_FILE_DIR("diagnostic_events/" + name + ".csv");
+        boost::system::error_code ec;
+        const boost::filesystem::path log_path(csv_path);
+        const boost::filesystem::path parent = log_path.parent_path();
+        if (!parent.empty()) {
+            boost::filesystem::create_directories(parent, ec);
+        }
+        std::ofstream csv_writer(csv_path, std::ios::out | std::ios::trunc);
+        if (!csv_writer.is_open()) {
+            return;
+        }
+        writeDiagnosticCsvHeader(csv_writer);
+        for (const auto &event: diagnostic_events) {
+            writeDiagnosticCsvRow(csv_writer, event, system_start_time_);
+        }
+    }
+
+    void Fsm::saveTrackingDiagnosticLogToFile(const std::string &name) {
+        if (!cfg_.diagnostic_log_en) {
+            return;
+        }
+        const auto diagnostic_events = snapshotTrackingDiagnosticEvents();
+        if (diagnostic_events.empty()) {
+            return;
+        }
+        const std::string csv_path = name.empty()
+                                     ? LOG_FILE_DIR("tracking_diagnostic_events/" +
+                                                    BinaryFileHandler<int>::getCurrentTimeStr() + ".csv")
+                                     : LOG_FILE_DIR("tracking_diagnostic_events/" + name + ".csv");
         boost::system::error_code ec;
         const boost::filesystem::path log_path(csv_path);
         const boost::filesystem::path parent = log_path.parent_path();
@@ -315,11 +427,12 @@ namespace fsm {
         return boost::filesystem::create_directories(parent, ec);
     }
 
+    bool Fsm::useTrackingLogStream() const {
+        return trackingMode() || trackingPerchingMode();
+    }
+
     void Fsm::callReplanOnce() {
-        std::unique_lock<std::mutex> tick_lock(fsm_tick_mutex_, std::try_to_lock);
-        if (!tick_lock.owns_lock()) {
-            return;
-        }
+        std::unique_lock<std::mutex> tick_lock(fsm_tick_mutex_);
         if (stop) {
             return;
         }
@@ -356,14 +469,22 @@ namespace fsm {
 
         RET_CODE ret_code = FAILED;
         bool replan_tracking_static = false;
+        std::size_t replan_tracking_input_prediction_size = 0;
         if (state2stateMode()) {
             planner_ptr_->getMapManager()->getNearestInfCellNot(GridType::OCCUPIED, gi_.goal_p, gi_.goal_p, 3.0);
             ret_code = planner_ptr_->ReplanOnce(gi_.goal_p, gi_.goal_yaw, gi_.new_goal);
         } else if (trackingMode() || trackingPerchingMode()) {
             traj_opt::DynamicTargetStates prediction;
             if (!getTrackingTargetPrediction(prediction)) {
+                recordDiagnosticEvent("WARN",
+                                      "tracking_prediction_unavailable",
+                                      fmt::format("tracking_target_rcv_time={:.3f};timeout={:.3f}",
+                                                  tracking_target_rcv_time_,
+                                                  cfg_.task_timeout),
+                                      FAILED);
                 return;
             }
+            replan_tracking_input_prediction_size = prediction.size();
             replan_tracking_static = trackingPredictionStatic(prediction);
             traj_opt::PerchingSurfaceState surface;
             const bool has_perching_surface = getPerchingSurface(surface);
@@ -372,6 +493,12 @@ namespace fsm {
                     (trackingPerchingMode() && !has_perching_surface);
             if (can_skip_static_tracking &&
                 shouldSkipStaticTrackingReplan(prediction)) {
+                recordDiagnosticEvent("INFO",
+                                      "tracking_static_hold_skip_replan",
+                                      fmt::format("prediction.size()={};prediction_static=1;remaining_traj_s={:.3f}",
+                                                  prediction.size(),
+                                                  planner_ptr_->getCommittedTrajectoryRemainingDuration()),
+                                      NO_NEED);
                 if (machine_state_ != HOLD_TRACKING) {
                     ChangeState("StaticTrackingHold", HOLD_TRACKING);
                 }
@@ -424,6 +551,20 @@ namespace fsm {
 
         if (ret_code == EMER) {
             ChangeState("ReplanTimerCallback", EMER_STOP);
+        } else if (ret_code == FAILED && (trackingMode() || trackingPerchingMode())) {
+            {
+                std::lock_guard<std::mutex> lock(task_mutex_);
+                task_new_ = true;
+            }
+            finish_plan = false;
+            plan_from_rest_ = false;
+            recordDiagnosticEvent("WARN",
+                                  "tracking_reacquire_requested",
+                                  fmt::format("reason=replan_failed;prediction_static={};input_prediction.size()={}",
+                                              static_cast<int>(replan_tracking_static),
+                                              replan_tracking_input_prediction_size),
+                                  ret_code);
+            ChangeState("TrackingReplanFailed", GENERATE_TRAJ);
         } else if (ret_code == FAILED &&
                    state2stateMode() &&
                    perception_replan_trigger &&
@@ -474,6 +615,13 @@ namespace fsm {
                               -1,
                               false,
                               static_cast<int>(log_id.first));
+        if (trackingMode() || trackingPerchingMode()) {
+            recordTrackingReplanContext("tracking_replan_context",
+                                        log_id.second,
+                                        replan_tracking_static,
+                                        replan_tracking_input_prediction_size,
+                                        static_cast<int>(log_id.first));
+        }
         if (perception_replan_trigger) {
             perception_replan_requested_ = false;
             perception_replan_emergency_ = false;
@@ -631,6 +779,7 @@ namespace fsm {
                 break;
             }
             case GENERATE_TRAJ: {
+                active_replan_id_ = next_replan_id_++;
                 if (state2stateMode() && closeToGoal(0.1)) {
                     recordDiagnosticEvent("INFO",
                                           "goal_reached_without_plan",
@@ -648,17 +797,27 @@ namespace fsm {
                 }
                 int retcode = FAILED;
                 bool planned_tracking_static = false;
+                std::size_t plan_tracking_input_prediction_size = 0;
                 if (state2stateMode()) {
-                    active_replan_id_ = next_replan_id_++;
                     recordDiagnosticEvent("INFO",
                                           "plan_from_rest_start",
                                           fmt::format("new_goal={}", static_cast<int>(gi_.new_goal)));
                     retcode = planner_ptr_->PlanFromRest(gi_.goal_p, gi_.goal_yaw, gi_.new_goal);
                 } else if (trackingMode() || trackingPerchingMode()) {
+                    recordDiagnosticEvent("INFO",
+                                          "plan_from_rest_start",
+                                          fmt::format("task_new={}", static_cast<int>(task_new_)));
                     traj_opt::DynamicTargetStates prediction;
                     if (!getTrackingTargetPrediction(prediction)) {
+                        recordDiagnosticEvent("WARN",
+                                              "tracking_prediction_unavailable",
+                                              fmt::format("tracking_target_rcv_time={:.3f};timeout={:.3f}",
+                                                          tracking_target_rcv_time_,
+                                                          cfg_.task_timeout),
+                                              FAILED);
                         return;
                     }
+                    plan_tracking_input_prediction_size = prediction.size();
                     planned_tracking_static = trackingPredictionStatic(prediction);
                     retcode = planner_ptr_->PlanTrackingFromRest(prediction, task_new_);
                     if (trackingPerchingMode()) {
@@ -705,8 +864,17 @@ namespace fsm {
                                                       retCodeName(retcode),
                                                       static_cast<int>(planner_ptr_->goalValid())),
                                           retcode);
+                } else if (trackingMode() || trackingPerchingMode()) {
+                    recordDiagnosticEvent(retcode == FAILED || retcode == OPT_FAILED ? "WARN" : "INFO",
+                                          "plan_from_rest_result",
+                                          fmt::format("ret={};prediction_static={};input_prediction.size()={}",
+                                                      retCodeName(retcode),
+                                                      static_cast<int>(planned_tracking_static),
+                                                      plan_tracking_input_prediction_size),
+                                          retcode);
                 }
                 if (retcode == NO_NEED && (trackingMode() || trackingPerchingMode())) {
+                    resetTrackingPlanFromRestFailureState();
                     plan_from_rest_ = true;
                     finish_plan = false;
                     publishPolyTraj();
@@ -724,6 +892,8 @@ namespace fsm {
                     task_new_ = false;
                     if (state2stateMode()) {
                         state2state_plan_from_rest_fail_count_ = 0;
+                    } else if (trackingMode() || trackingPerchingMode()) {
+                        resetTrackingPlanFromRestFailureState();
                     }
                     plan_from_rest_ = true;
                     finish_plan = false;
@@ -777,21 +947,30 @@ namespace fsm {
                             }
                             state2state_plan_from_rest_fail_count_ = 0;
                         }
+                    } else if (trackingMode() || trackingPerchingMode()) {
+                        handleTrackingPlanFromRestFailure(retcode,
+                                                          planned_tracking_static,
+                                                          plan_tracking_input_prediction_size);
                     } else {
                         cout << YELLOW << " -- [Fsm] PlanFromRest failed, try replan." << RESET << endl;
                     }
                     // ros::Duration(0.1).sleep();
                 }
                 const auto log_id = appendLatestReplanLog();
-                if (state2stateMode()) {
-                    const bool replan_warn = log_id.second == FAILED || log_id.second == OPT_FAILED;
-                    recordDiagnosticEvent(replan_warn ? "WARN" : "INFO",
-                                          "replan_log_saved",
-                                          fmt::format("ret={}", retCodeName(log_id.second)),
-                                          log_id.second,
-                                          -1,
-                                          false,
-                                          static_cast<int>(log_id.first));
+                const bool replan_warn = log_id.second == FAILED || log_id.second == OPT_FAILED;
+                recordDiagnosticEvent(replan_warn ? "WARN" : "INFO",
+                                      "replan_log_saved",
+                                      fmt::format("ret={}", retCodeName(log_id.second)),
+                                      log_id.second,
+                                      -1,
+                                      false,
+                                      static_cast<int>(log_id.first));
+                if (trackingMode() || trackingPerchingMode()) {
+                    recordTrackingReplanContext("tracking_plan_from_rest_context",
+                                                log_id.second,
+                                                planned_tracking_static,
+                                                plan_tracking_input_prediction_size,
+                                                static_cast<int>(log_id.first));
                 }
                 break;
             }
@@ -974,6 +1153,107 @@ namespace fsm {
         return true;
     }
 
+    void Fsm::resetTrackingPlanFromRestFailureState() {
+        tracking_plan_from_rest_fail_count_ = 0;
+        tracking_plan_from_rest_backoff_until_ = -1.0;
+        last_tracking_plan_from_rest_backoff_log_time_ = -1.0;
+    }
+
+    bool Fsm::trackingPlanFromRestBackoffActive() {
+        if (tracking_plan_from_rest_backoff_until_ < 0.0) {
+            return false;
+        }
+        const double now = ros_ptr_->getSimTime();
+        if (now + 1.0e-6 >= tracking_plan_from_rest_backoff_until_) {
+            tracking_plan_from_rest_backoff_until_ = -1.0;
+            last_tracking_plan_from_rest_backoff_log_time_ = -1.0;
+            return false;
+        }
+
+        if (last_tracking_plan_from_rest_backoff_log_time_ < 0.0 ||
+            now - last_tracking_plan_from_rest_backoff_log_time_ >= 1.0) {
+            last_tracking_plan_from_rest_backoff_log_time_ = now;
+            recordDiagnosticEvent("INFO",
+                                  "tracking_plan_from_rest_backoff_wait",
+                                  fmt::format("remaining={:.3f};consecutive_failures={}",
+                                              tracking_plan_from_rest_backoff_until_ - now,
+                                              tracking_plan_from_rest_fail_count_));
+        }
+        return true;
+    }
+
+    void Fsm::handleTrackingPlanFromRestFailure(const int retcode,
+                                                const bool prediction_static,
+                                                const std::size_t input_prediction_size) {
+        ++tracking_plan_from_rest_fail_count_;
+
+        const auto diag = planner_ptr_->getLatestTrackingDiagnosticSnapshot();
+        const int failure_limit = cfg_.tracking_plan_from_rest_max_failures;
+        const bool failure_limit_reached =
+                failure_limit > 0 && tracking_plan_from_rest_fail_count_ >= failure_limit;
+        const bool no_committed_tracking =
+                !diag.has_committed_tracking || diag.committed_remaining <= 1.0e-3;
+        const bool static_no_committed_limit =
+                prediction_static && no_committed_tracking && failure_limit_reached;
+
+        double backoff = std::max(0.0, cfg_.tracking_plan_from_rest_failure_backoff);
+        if (static_no_committed_limit) {
+            backoff = std::max(backoff, std::max(0.0, cfg_.tracking_plan_from_rest_limited_backoff));
+        }
+        const double now = ros_ptr_->getSimTime();
+        tracking_plan_from_rest_backoff_until_ = backoff > 1.0e-6 ? now + backoff : -1.0;
+        last_tracking_plan_from_rest_backoff_log_time_ = -1.0;
+
+        cout << YELLOW << " -- [Fsm] Tracking PlanFromRest failed, backoff "
+             << std::fixed << std::setprecision(2) << backoff
+             << "s. consecutive_failures=" << tracking_plan_from_rest_fail_count_;
+        if (failure_limit > 0) {
+            cout << "/" << failure_limit;
+        }
+        cout << RESET << endl;
+
+        recordDiagnosticEvent(static_no_committed_limit ? "ERROR" : "WARN",
+                              static_no_committed_limit
+                                  ? "tracking_plan_from_rest_failure_limit_reached"
+                                  : "tracking_plan_from_rest_consecutive_failure",
+                              fmt::format("count={};limit={};prediction_static={};input_prediction.size()={};"
+                                          "has_committed_tracking={};committed_remaining={:.3f};"
+                                          "backoff={:.3f};static_finish_on_limit={};"
+                                          "diag_phase={};diag_reason={}",
+                                          tracking_plan_from_rest_fail_count_,
+                                          failure_limit,
+                                          static_cast<int>(prediction_static),
+                                          input_prediction_size,
+                                          static_cast<int>(diag.has_committed_tracking),
+                                          diag.committed_remaining,
+                                          backoff,
+                                          static_cast<int>(cfg_.tracking_static_finish_on_plan_failure),
+                                          diag.phase,
+                                          diag.reason),
+                              retcode);
+
+        if (static_no_committed_limit && cfg_.tracking_static_finish_on_plan_failure) {
+            {
+                std::lock_guard<std::mutex> lock(task_mutex_);
+                task_new_ = false;
+            }
+            gi_.new_goal = false;
+            plan_from_rest_ = false;
+            finish_plan = true;
+            tracking_plan_from_rest_backoff_until_ = -1.0;
+            recordDiagnosticEvent("ERROR",
+                                  "tracking_static_plan_from_rest_finished_after_limit",
+                                  fmt::format("count={};prediction_static=1;has_committed_tracking=0",
+                                              tracking_plan_from_rest_fail_count_),
+                                  retcode);
+            tracking_plan_from_rest_fail_count_ = 0;
+            ChangeState("TrackingPlanFromRestFailureLimit", WAIT_GOAL);
+            return;
+        }
+
+        ChangeState("TrackingPlanFromRestBackoff", WAIT_GOAL);
+    }
+
     bool Fsm::activeTaskReady() {
         if (state2stateMode()) {
             return gi_.new_goal;
@@ -982,9 +1262,21 @@ namespace fsm {
             if (trackingPerchingPerchingActive()) {
                 return false;
             }
+            if (finish_plan && !task_new_) {
+                return false;
+            }
+            if (trackingPlanFromRestBackoffActive()) {
+                return false;
+            }
             return trackingTaskReady();
         }
         if (trackingPerchingMode()) {
+            if (finish_plan && !task_new_) {
+                return false;
+            }
+            if (trackingPlanFromRestBackoffActive()) {
+                return false;
+            }
             return !perching_contact_reached_ &&
                    planner_ptr_ &&
                    !planner_ptr_->trackingPerchingContactReached() &&
@@ -1022,6 +1314,46 @@ namespace fsm {
             return false;
         }
         return activeTaskReady();
+    }
+
+    bool Fsm::markTrackingFinishedIfStaticTarget() {
+        if (!trackingMode() && !trackingPerchingMode()) {
+            return false;
+        }
+
+        traj_opt::DynamicTargetStates prediction;
+        double target_age = 0.0;
+        {
+            std::lock_guard<std::mutex> lock(task_mutex_);
+            if (tracking_target_prediction_.empty() || tracking_target_rcv_time_ < 0.0) {
+                return false;
+            }
+            const double now = ros_ptr_->getSimTime();
+            target_age = now - tracking_target_rcv_time_;
+            if (target_age > cfg_.task_timeout) {
+                return false;
+            }
+            prediction = tracking_target_prediction_;
+        }
+
+        if (!trackingPredictionStatic(prediction)) {
+            return false;
+        }
+
+        {
+            std::lock_guard<std::mutex> lock(task_mutex_);
+            task_new_ = false;
+        }
+        gi_.new_goal = false;
+        finish_plan = true;
+        resetTrackingPlanFromRestFailureState();
+        recordDiagnosticEvent("INFO",
+                              "tracking_static_target_finished",
+                              fmt::format("prediction.size()={};target_age={:.3f};block_replan_until_target_changes=1",
+                                          prediction.size(),
+                                          target_age),
+                              FINISH);
+        return true;
     }
 
     void Fsm::logStaticTrackingReplanDecision(const std::string &reason) {
@@ -1194,17 +1526,39 @@ namespace fsm {
         }
         const traj_opt::DynamicTargetStates filtered_prediction = filterStaticTrackingPrediction(prediction);
         bool changed = true;
+        bool reacquired_after_timeout = false;
+        double stale_duration = 0.0;
         {
             std::lock_guard<std::mutex> lock(task_mutex_);
-            changed = trackingPredictionChanged(tracking_target_prediction_, filtered_prediction);
+            const double now = ros_ptr_->getSimTime();
+            const bool had_previous_prediction =
+                    !tracking_target_prediction_.empty() && tracking_target_rcv_time_ >= 0.0;
+            stale_duration = had_previous_prediction ? now - tracking_target_rcv_time_ : 0.0;
+            reacquired_after_timeout =
+                    had_previous_prediction && stale_duration > std::max(0.0, cfg_.task_timeout);
+            changed = reacquired_after_timeout ||
+                      trackingPredictionChanged(tracking_target_prediction_, filtered_prediction);
             tracking_target_prediction_ = filtered_prediction;
-            tracking_target_rcv_time_ = ros_ptr_->getSimTime();
+            tracking_target_rcv_time_ = now;
             task_new_ = task_new_ || changed;
         }
         gi_.goal_p = filtered_prediction.back().position;
         gi_.goal_yaw = filtered_prediction.back().yaw;
         gi_.new_goal = gi_.new_goal || changed;
+        if (changed) {
+            finish_plan = false;
+            resetTrackingPlanFromRestFailureState();
+        }
         started_ = true;
+        if (reacquired_after_timeout) {
+            finish_plan = false;
+            recordDiagnosticEvent("INFO",
+                                  "tracking_target_reacquired",
+                                  fmt::format("stale_duration={:.3f};timeout={:.3f};prediction.size()={};force_task_new=1",
+                                              stale_duration,
+                                              cfg_.task_timeout,
+                                              filtered_prediction.size()));
+        }
     }
 
     void Fsm::setPerchingSurface(const traj_opt::PerchingSurfaceState &surface) {

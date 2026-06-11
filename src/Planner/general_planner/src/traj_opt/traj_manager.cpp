@@ -3969,12 +3969,14 @@ PlainTrajOpt::ValidationReport PlainTrajOpt::validateTrajectoryDetailed(const Tr
     }
   };
 
-  if (cfg_.penna_vel > 0.0 && report.max_vel > 1.5 * cfg_.max_vel)
+  constexpr double kPlainHardVelRejectRatio = 1.5;
+  constexpr double kPlainHardAccRejectRatio = 2.1;
+  if (cfg_.penna_vel > 0.0 && report.max_vel > kPlainHardVelRejectRatio * cfg_.max_vel)
   {
     fillDynamicFailureState("MAX_VEL", false);
     return report;
   }
-  if (cfg_.penna_acc > 0.0 && report.max_acc > 1.5 * cfg_.max_acc)
+  if (cfg_.penna_acc > 0.0 && report.max_acc > kPlainHardAccRejectRatio * cfg_.max_acc)
   {
     fillDynamicFailureState("MAX_ACC", true);
     return report;

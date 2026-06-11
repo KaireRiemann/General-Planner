@@ -25,6 +25,10 @@ fsm:
   tracking_static_safety_check_horizon: 1.5
   tracking_static_safety_check_dt: 0.12
   tracking_static_replan_log_period: 1.0
+  tracking_plan_from_rest_max_failures: 4
+  tracking_plan_from_rest_failure_backoff: 0.5
+  tracking_plan_from_rest_limited_backoff: 2.0
+  tracking_static_finish_on_plan_failure: false
   task_timeout: 1.0
   replan_rate: 15.0
   cmd_topic: "/planning/pos_cmd"
@@ -93,6 +97,8 @@ general_planner:
     anti_rollback_margin: 0.45
     keep_old_horizon: 0.6
     keep_old_safety_dt: 0.08
+    keep_old_short_safety_grace_enable: true
+    keep_old_short_safety_grace_horizon: 0.20
     keep_old_min_remaining: 0.45
     keep_old_min_speed: 0.15
     keep_old_min_displacement: 0.04
@@ -159,6 +165,8 @@ general_planner:
     fov_check_dt: 0.03
     fov_range_grace_enable: true
     fov_range_grace: 0.9
+    fov_keep_old_angular_grace_deg: 5.0
+    fov_keep_old_violation_ratio_grace: 0.25
     fov_range_margin: 0.05
     fov_front_margin: 0.05
     fov_check_first_commit: true

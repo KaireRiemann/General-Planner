@@ -124,10 +124,16 @@ namespace general_planner {
         int tracking_consecutive_reject_{0};
         double last_tracking_commit_wt_{-1.0};
         std::string last_tracking_commit_reject_reason_;
+        std::string last_tracking_commit_reject_detail_;
+        std::string last_tracking_diag_phase_{"none"};
+        std::string last_tracking_diag_reason_{"none"};
         std::size_t last_tracking_diag_guide_path_size_{0};
         std::size_t last_tracking_diag_sfc_size_{0};
         std::size_t last_tracking_diag_target_prediction_size_{0};
         double last_tracking_diag_out_traj_duration_{0.0};
+        bool last_tracking_runtime_reset_{false};
+        bool last_tracking_runtime_preserved_{false};
+        std::string last_tracking_runtime_reason_{"none"};
         traj_opt::DynamicTargetStates last_tracking_frontend_prediction_;
         vec_E<Vec3f> last_tracking_frontend_viewpoints_;
 
@@ -172,6 +178,26 @@ namespace general_planner {
             int grid_type{static_cast<int>(rog_map::GridType::KNOWN_FREE)};
             int hit_count{0};
             std::string reason;
+        };
+
+        struct TrackingDiagnosticSnapshot {
+            std::string phase{"none"};
+            std::string reason{"none"};
+            std::size_t guide_path_size{0};
+            std::size_t sfc_size{0};
+            std::size_t target_prediction_size{0};
+            double out_traj_duration{0.0};
+            int consecutive_keep_old{0};
+            int consecutive_reject{0};
+            double last_commit_wt{-1.0};
+            std::string last_commit_reject_reason;
+            std::string last_commit_reject_detail;
+            bool runtime_manager_enabled{false};
+            bool has_committed_tracking{false};
+            double committed_remaining{0.0};
+            bool runtime_reset{false};
+            bool runtime_preserved{false};
+            std::string runtime_reason{"none"};
         };
 
         EIGEN_MAKE_ALIGNED_OPERATOR_NEW
@@ -268,6 +294,8 @@ namespace general_planner {
         double getLatestCorridorTime() const {
             return cg_ptr_ ? cg_ptr_->getCiriComputationTime() : -1.0;
         }
+
+        TrackingDiagnosticSnapshot getLatestTrackingDiagnosticSnapshot();
 
         int getLatestMvieLbfgsIterations() const {
             return cg_ptr_ ? cg_ptr_->getCiriMvieLbfgsIterations() : 0;
@@ -399,7 +427,8 @@ namespace general_planner {
         bool commitTrackingTrajectory(const Trajectory &pos_traj,
                                       const Trajectory &yaw_traj,
                                       const traj_opt::DynamicTargetStates &target_prediction,
-                                      const std::string &traj_ns);
+                                      const std::string &traj_ns,
+                                      bool allow_reacquire_fov_relax = false);
 
         bool buildPerchingYawTrajectory(const Trajectory &pos_traj,
                                         const traj_opt::PerchingSurfaceState &surface,
@@ -456,7 +485,16 @@ namespace general_planner {
             const traj_opt::DynamicTargetStates &target_prediction,
             const std::string &reason);
 
-        bool trackingCandidateSafeForCommit(const Trajectory &candidate_pos_traj) const;
+        bool trackingCandidateSafeForCommit(const Trajectory &candidate_pos_traj,
+                                            std::string *reason = nullptr,
+                                            std::string *detail = nullptr) const;
+
+        bool trackingTrajectorySafeForHorizonDetailed(const Trajectory &traj,
+                                                      double start_t,
+                                                      double horizon,
+                                                      double dt,
+                                                      std::string *reason = nullptr,
+                                                      std::string *detail = nullptr) const;
 
         bool trackingSnapshotSatisfiesFovForKeepOld(
             const Trajectory &pos_traj,
@@ -472,9 +510,33 @@ namespace general_planner {
                                             double horizon,
                                             double dt,
                                             double target_start_t,
-                                            std::string *reason = nullptr) const;
+                                            std::string *reason = nullptr,
+                                            bool allow_keep_old_grace = false,
+                                            bool allow_reacquire_range_grace = false) const;
 
         void resetTrackingCommitCounters();
+
+        void resetTrackingRuntimeDecision(const std::string &reason = "none");
+
+        void maybeResetTrackingRuntimeForReplan(bool new_task,
+                                                const std::string &context);
+
+        void clearTrackingCommitRejectInfo();
+
+        void setTrackingCommitRejectInfo(const std::string &reason,
+                                         const std::string &detail = "");
+
+        void setTrackingDiagnostic(const std::string &phase,
+                                   const std::string &reason,
+                                   std::size_t guide_path_size = 0,
+                                   std::size_t sfc_size = 0,
+                                   std::size_t target_prediction_size = 0,
+                                   double out_traj_duration = 0.0);
+
+        void setTrackingDiagnostic(const std::string &phase,
+                                   const std::string &reason,
+                                   const traj_opt::TrackingProblem &problem,
+                                   double out_traj_duration = 0.0);
 
         double trackingViewpointErrorScore(const Vec3f &tracker,
                                            const Vec3f &target) const;
@@ -495,6 +557,8 @@ namespace general_planner {
             const traj_opt::DynamicTargetStates &active_target_prediction,
             Trajectory &out_traj,
             Trajectory &out_yaw_traj,
+            traj_opt::DynamicTargetStates *accepted_target_prediction,
+            bool *accepted_reacquire_fov_relax,
             std::string *failure_reason);
 
         bool applyTrackingNarrowPassageSoftDistance(traj_opt::TrackingProblem &problem,

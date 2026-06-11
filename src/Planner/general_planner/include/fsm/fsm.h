@@ -187,14 +187,20 @@ namespace fsm {
 
     protected:
         vector<LogOneReplan> replan_logs_;
+        vector<LogOneReplan> tracking_replan_logs_;
         vector<DiagnosticEvent> diagnostic_events_;
+        vector<DiagnosticEvent> tracking_diagnostic_events_;
         mutable std::mutex fsm_tick_mutex_;
         mutable std::mutex replan_logs_mutex_;
         mutable std::mutex diagnostic_events_mutex_;
         std::ofstream diagnostic_event_log_;
+        std::ofstream tracking_diagnostic_event_log_;
         uint64_t next_replan_id_{1};
         uint64_t active_replan_id_{0};
         int state2state_plan_from_rest_fail_count_{0};
+        int tracking_plan_from_rest_fail_count_{0};
+        double tracking_plan_from_rest_backoff_until_{-1.0};
+        double last_tracking_plan_from_rest_backoff_log_time_{-1.0};
         bool perception_replan_requested_{false};
         bool perception_replan_emergency_{false};
         double last_perception_replan_request_time_{-1.0};
@@ -212,6 +218,8 @@ namespace fsm {
 
         vector<LogOneReplan> snapshotReplanLogs() const;
 
+        vector<LogOneReplan> snapshotTrackingReplanLogs() const;
+
         void recordDiagnosticEvent(const std::string &level,
                                    const std::string &event,
                                    const std::string &detail = "",
@@ -221,15 +229,29 @@ namespace fsm {
                                    int replan_log_id = -1,
                                    uint64_t replan_id_override = std::numeric_limits<uint64_t>::max());
 
+        void recordTrackingReplanContext(const std::string &event,
+                                         int ret_code,
+                                         bool prediction_static,
+                                         std::size_t input_prediction_size,
+                                         int replan_log_id = -1);
+
         vector<DiagnosticEvent> snapshotDiagnosticEvents() const;
+
+        vector<DiagnosticEvent> snapshotTrackingDiagnosticEvents() const;
 
         void openDiagnosticLogFile(const std::string &path);
 
+        void openTrackingDiagnosticLogFile(const std::string &path);
+
         void saveDiagnosticLogToFile(const std::string &name = "");
+
+        void saveTrackingDiagnosticLogToFile(const std::string &name = "");
 
         std::string diagnosticEventToString(const DiagnosticEvent &event) const;
 
         bool ensureLogParentDirectory(const std::string &path) const;
+
+        bool useTrackingLogStream() const;
 
         virtual void publishDiagnosticEvent(const DiagnosticEvent &event) {}
 
@@ -267,9 +289,19 @@ namespace fsm {
 
         bool shouldGenerateAfterTrajFinish();
 
+        void resetTrackingPlanFromRestFailureState();
+
+        bool trackingPlanFromRestBackoffActive();
+
+        void handleTrackingPlanFromRestFailure(int retcode,
+                                               bool prediction_static,
+                                               std::size_t input_prediction_size);
+
         bool trackingExecutionState() const;
 
         bool trackingPerchingPerchingActive() const;
+
+        bool markTrackingFinishedIfStaticTarget();
 
         void logStaticTrackingReplanDecision(const std::string &reason);
 

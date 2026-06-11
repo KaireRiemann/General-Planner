@@ -81,13 +81,18 @@ namespace fsm {
         };
 
         vector<CommandLogEntry> cmd_logs_;
+        vector<CommandLogEntry> tracking_cmd_logs_;
 
         void appendCommandLog(const quadrotor_msgs::PositionCommand &cmd) {
             CommandLogEntry entry;
             entry.cmd = cmd;
             entry.replan_id = active_replan_id_;
             entry.traj_seq = traj_seq_;
-            cmd_logs_.push_back(entry);
+            if (useTrackingLogStream()) {
+                tracking_cmd_logs_.push_back(entry);
+            } else {
+                cmd_logs_.push_back(entry);
+            }
         }
 
         void publishDiagnosticEvent(const DiagnosticEvent &event) override {
@@ -476,71 +481,123 @@ namespace fsm {
         typedef std::shared_ptr<FsmRos1> Ptr;
 
         void saveReplanLogToFile(const string &name = "") {
-            const auto replan_logs = snapshotReplanLogs();
-            // run statistic
-            double total_length{0.0};
-            int total_replan_num{0};
-            double average_compt_t{0.0};
-            Vec3f cur_p{0, 0, 0};
-            for (auto rp: replan_logs) {
-                if (rp.getRetCode() > 0) {
-                    if (cur_p.norm() < 1e-6) {
-                        cur_p = rp.getRobotP();
-                    } else {
-                        total_length += (rp.getRobotP() - cur_p).norm();
-                        cur_p = rp.getRobotP();
-                    }
-                    total_replan_num++;
-                    average_compt_t += rp.getTotalCompT();
+            const auto makeBaseName = [&](const bool tracking_stream) -> std::string {
+                if (name.empty()) {
+                    return BinaryFileHandler<int>::getCurrentTimeStr();
                 }
-            }
+                if (!tracking_stream) {
+                    return name;
+                }
+                if (name == "general_latest_log") {
+                    return "tracking_latest_log";
+                }
+                return "tracking_" + name;
+            };
 
+            const auto saveCommandCsv =
+                    [&](const std::string &csv_path,
+                        const vector<CommandLogEntry> &cmd_logs) {
+                if (cmd_logs.empty()) {
+                    return;
+                }
+                if (!ensureLogParentDirectory(csv_path)) {
+                    fmt::print(stderr, " -- [Fsm] Failed to create cmd log directory for {}\n", csv_path);
+                    return;
+                }
+                std::ofstream csv_writer(csv_path, std::ios::out | std::ios::trunc);
+                if (!csv_writer.is_open()) {
+                    fmt::print(stderr, " -- [Fsm] Failed to open cmd log file {}\n", csv_path);
+                    return;
+                }
+                csv_writer
+                        << "time,replan_id,traj_seq,posi_x,posi_y,posi_z,vel_x,vel_y,vel_z,acc_x,acc_y,acc_z,jerk_x,jerk_y,jerk_z,yaw,yaw_rate,backup"
+                        << std::endl;
+                csv_writer << std::fixed << std::setprecision(15);
+                for (const auto &entry: cmd_logs) {
+                    const auto &cmd = entry.cmd;
+                    csv_writer << cmd.header.stamp.toSec() - system_start_time_ << ","
+                               << entry.replan_id << "," << entry.traj_seq << ","
+                               << cmd.position.x << "," << cmd.position.y << ","
+                               << cmd.position.z << ","
+                               << cmd.velocity.x << "," << cmd.velocity.y << "," << cmd.velocity.z << ","
+                               << cmd.acceleration.x << "," << cmd.acceleration.y << "," << cmd.acceleration.z << ","
+                               << cmd.jerk.x << "," << cmd.jerk.y << "," << cmd.jerk.z << ","
+                               << cmd.yaw << "," << cmd.yaw_dot << "," << static_cast<int>(cmd.trajectory_flag)
+                               << std::endl;
+                }
+            };
 
-            fmt::print("Total replan num: {}, total length: {}, average computation time: {} ms\n",
-                       total_replan_num, total_length, average_compt_t / (total_replan_num==0?1:total_replan_num) * 1000);
+            const auto saveStream =
+                    [&](const std::string &stream_name,
+                        const bool tracking_stream,
+                        const vector<LogOneReplan> &replan_logs,
+                        const vector<CommandLogEntry> &cmd_logs,
+                        const bool has_diagnostic_events) {
+                if (replan_logs.empty() && cmd_logs.empty() && !has_diagnostic_events) {
+                    return;
+                }
 
+                double total_length{0.0};
+                int total_replan_num{0};
+                double average_compt_t{0.0};
+                Vec3f cur_p{0, 0, 0};
+                for (auto rp: replan_logs) {
+                    if (rp.getRetCode() > 0) {
+                        if (cur_p.norm() < 1e-6) {
+                            cur_p = rp.getRobotP();
+                        } else {
+                            total_length += (rp.getRobotP() - cur_p).norm();
+                            cur_p = rp.getRobotP();
+                        }
+                        total_replan_num++;
+                        average_compt_t += rp.getTotalCompT();
+                    }
+                }
+                fmt::print("[{}] Total replan num: {}, total length: {}, average computation time: {} ms\n",
+                           stream_name,
+                           total_replan_num,
+                           total_length,
+                           average_compt_t / (total_replan_num == 0 ? 1 : total_replan_num) * 1000);
 
-            const std::string save_path = name.empty()
-                                          ? LOG_FILE_DIR(
-                                                  "replan_logs/" + BinaryFileHandler<int>::getCurrentTimeStr() + ".bin")
-                                          : LOG_FILE_DIR("replan_logs/" + name + ".bin");
-            const std::string csv_path = name.empty()
-                                         ? LOG_FILE_DIR(
-                                                 "cmd_logs/" + BinaryFileHandler<int>::getCurrentTimeStr() + ".csv")
-                                         : LOG_FILE_DIR("cmd_logs/" + name + ".csv");
-            if (ensureLogParentDirectory(save_path)) {
-                BinaryFileHandler<vector<LogOneReplan>>::save(save_path, replan_logs);
-            } else {
-                fmt::print(stderr, " -- [Fsm] Failed to create replan log directory for {}\n", save_path);
-            }
-            saveDiagnosticLogToFile(name.empty() ? "" : name + "_events");
+                const std::string base_name = makeBaseName(tracking_stream);
+                const std::string replan_dir =
+                        tracking_stream ? "tracking_replan_logs/" : "replan_logs/";
+                const std::string cmd_dir =
+                        tracking_stream ? "tracking_cmd_logs/" : "cmd_logs/";
+                const std::string save_path = LOG_FILE_DIR(replan_dir + base_name + ".bin");
+                const std::string csv_path = LOG_FILE_DIR(cmd_dir + base_name + ".csv");
 
-            if (!ensureLogParentDirectory(csv_path)) {
-                fmt::print(stderr, " -- [Fsm] Failed to create cmd log directory for {}\n", csv_path);
-                return;
-            }
-            std::ofstream csv_writer(csv_path, std::ios::out | std::ios::trunc);
-            if (!csv_writer.is_open()) {
-                fmt::print(stderr, " -- [Fsm] Failed to open cmd log file {}\n", csv_path);
-                return;
-            }
-            csv_writer
-                    << "time,replan_id,traj_seq,posi_x,posi_y,posi_z,vel_x,vel_y,vel_z,acc_x,acc_y,acc_z,jerk_x,jerk_y,jerk_z,yaw,yaw_rate,backup"
-                    << std::endl;
-            csv_writer<<std::fixed<<std::setprecision(15);
-            for (const auto &entry: cmd_logs_) {
-                const auto &cmd = entry.cmd;
-                csv_writer << cmd.header.stamp.toSec() - system_start_time_ << ","
-                           << entry.replan_id << "," << entry.traj_seq << ","
-                           << cmd.position.x << "," << cmd.position.y << ","
-                           << cmd.position.z << ","
-                           << cmd.velocity.x << "," << cmd.velocity.y << "," << cmd.velocity.z << ","
-                           << cmd.acceleration.x << "," << cmd.acceleration.y << "," << cmd.acceleration.z << ","
-                           << cmd.jerk.x << "," << cmd.jerk.y << "," << cmd.jerk.z << ","
-                           << cmd.yaw << "," << cmd.yaw_dot << "," << static_cast<int>(cmd.trajectory_flag)
-                           << std::endl;
-            }
-            csv_writer.close();
+                if (!replan_logs.empty()) {
+                    if (ensureLogParentDirectory(save_path)) {
+                        BinaryFileHandler<vector<LogOneReplan>>::save(save_path, replan_logs);
+                    } else {
+                        fmt::print(stderr, " -- [Fsm] Failed to create replan log directory for {}\n", save_path);
+                    }
+                }
+
+                if (tracking_stream) {
+                    saveTrackingDiagnosticLogToFile(name.empty() ? "" : base_name + "_events");
+                } else {
+                    saveDiagnosticLogToFile(name.empty() ? "" : base_name + "_events");
+                }
+                saveCommandCsv(csv_path, cmd_logs);
+            };
+
+            const auto general_replan_logs = snapshotReplanLogs();
+            const auto tracking_replan_logs = snapshotTrackingReplanLogs();
+            const bool has_general_diagnostics = !snapshotDiagnosticEvents().empty();
+            const bool has_tracking_diagnostics = !snapshotTrackingDiagnosticEvents().empty();
+
+            saveStream("general",
+                       false,
+                       general_replan_logs,
+                       cmd_logs_,
+                       has_general_diagnostics);
+            saveStream("tracking",
+                       true,
+                       tracking_replan_logs,
+                       tracking_cmd_logs_,
+                       has_tracking_diagnostics);
         }
 
         bool getPoseFromTraj(super_utils::Pose &pose) {
@@ -1016,7 +1073,9 @@ namespace fsm {
                 }
             }
 
-            write_time_.open(DEBUG_FILE_DIR("time_consuming.csv"), std::ios::out | std::ios::trunc);
+            const std::string time_log_file =
+                    useTrackingLogStream() ? "tracking_time_consuming.csv" : "time_consuming.csv";
+            write_time_.open(DEBUG_FILE_DIR(time_log_file), std::ios::out | std::ios::trunc);
             log_module_time.resize(9);
             for (int i = 0; i < 9; i++) {
                 write_time_ << log_time_str[i];
@@ -1028,6 +1087,7 @@ namespace fsm {
             machine_state_ = INIT;
             system_start_time_ = ros_ptr_->getSimTime();
             openDiagnosticLogFile(LOG_FILE_DIR("diagnostic_events/general_runtime.csv"));
+            openTrackingDiagnosticLogFile(LOG_FILE_DIR("tracking_diagnostic_events/tracking_runtime.csv"));
             recordDiagnosticEvent("INFO",
                                   "fsm_initialized",
                                   fmt::format("task_mode={};replan_rate={:.3f};perception_replan_check_en={};perception_replan_check_rate={:.3f};cmd_topic={};mpc_cmd_topic={}",
@@ -1067,7 +1127,6 @@ namespace fsm {
                 return;
             }
 
-
             quadrotor_msgs::PolynomialTrajectory heartbeat;
             getOneHeartBeatMsg(heartbeat, traj_finish_);
             getOnePositionCommand(pid_cmd_, traj_finish_);
@@ -1098,6 +1157,7 @@ namespace fsm {
                     }
                     cout << GREEN << " -- [Perching] PERCHING_CONTACT" << RESET << endl;
                 }
+                markTrackingFinishedIfStaticTarget();
                 if (shouldGenerateAfterTrajFinish()) {
                     ChangeState("PubCmdCallback", GENERATE_TRAJ);
                 } else {

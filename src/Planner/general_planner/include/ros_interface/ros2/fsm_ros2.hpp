@@ -392,10 +392,11 @@ namespace fsm {
             cmd_pub_->publish(pid_cmd_);
             if (traj_finish_) {
                 cout << GREEN << " -- [Fsm] Traj finish." << RESET << endl;
-                if (closeToGoal(0.1)) {
-                    ChangeState("PubCmdCallback", WAIT_GOAL);
-                } else {
+                markTrackingFinishedIfStaticTarget();
+                if (shouldGenerateAfterTrajFinish()) {
                     ChangeState("PubCmdCallback", GENERATE_TRAJ);
+                } else {
+                    ChangeState("PubCmdCallback", WAIT_GOAL);
                 }
             }
         }

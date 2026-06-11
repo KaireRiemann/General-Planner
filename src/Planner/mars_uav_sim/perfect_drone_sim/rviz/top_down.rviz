@@ -196,7 +196,7 @@ Visualization Manager:
           Channel Name: intensity
           Class: rviz/PointCloud2
           Color: 85; 255; 255
-          Color Transformer: FlatColor
+          Color Transformer: AxisColor
           Decay Time: 0
           Enabled: true
           Invert Rainbow: false
@@ -224,7 +224,7 @@ Visualization Manager:
           Channel Name: intensity
           Class: rviz/PointCloud2
           Color: 170; 255; 255
-          Color Transformer: FlatColor
+          Color Transformer: AxisColor
           Decay Time: 0
           Enabled: true
           Invert Rainbow: false
@@ -260,8 +260,7 @@ Visualization Manager:
           Marker Topic: /fsm_node/visualization/frontend_path
           Name: Astar
           Namespaces:
-            guide_path: true
-            guide_path_line: true
+            {}
           Queue Size: 100
           Value: true
         - Class: rviz/MarkerArray
@@ -269,8 +268,7 @@ Visualization Manager:
           Marker Topic: /fsm_node/visualization/goal
           Name: Goal
           Namespaces:
-            goal: true
-            goal_line: true
+            {}
           Queue Size: 100
           Value: true
         - Class: rviz/MarkerArray
@@ -306,8 +304,7 @@ Visualization Manager:
           Marker Topic: /fsm_node/visualization/exp_traj
           Name: ExpTraj
           Namespaces:
-            exp_traj: true
-            exp_traj_waypoints: true
+            {}
           Queue Size: 100
           Value: true
         - Class: rviz/MarkerArray
@@ -315,9 +312,7 @@ Visualization Manager:
           Marker Topic: /fsm_node/visualization/backup_traj
           Name: BackupTraj
           Namespaces:
-            backup_traj: true
-            backup_traj_start: true
-            backup_traj_waypoints: true
+            {}
           Queue Size: 100
           Value: true
         - Class: rviz/MarkerArray
@@ -377,7 +372,7 @@ Visualization Manager:
           Marker Topic: /fsm_node/visualization/yaw_traj
           Name: Yaw
           Namespaces:
-            yaw_traj: true
+            {}
           Queue Size: 100
           Value: true
       Enabled: true
@@ -526,7 +521,7 @@ Visualization Manager:
   Views:
     Current:
       Class: rviz/XYOrbit
-      Distance: 109.80298614501953
+      Distance: 96.62662506103516
       Enable Stereo Rendering:
         Stereo Eye Separation: 0.05999999865889549
         Stereo Focal Distance: 1
@@ -534,17 +529,17 @@ Visualization Manager:
         Value: false
       Field of View: 0.7853981852531433
       Focal Point:
-        X: 28.621835708618164
-        Y: 9.451530456542969
-        Z: -7.454986189259216e-06
+        X: 0.9125194549560547
+        Y: 5.523154258728027
+        Z: -1.5084380720509216e-05
       Focal Shape Fixed Size: false
       Focal Shape Size: 0.05000000074505806
       Invert Z Axis: false
       Name: Current View
       Near Clip Distance: 0.009999999776482582
-      Pitch: 1.2747962474822998
+      Pitch: 0.8597966432571411
       Target Frame: world
-      Yaw: 1.556788444519043
+      Yaw: 3.0117909908294678
     Saved: ~
 Window Geometry:
   Displays:

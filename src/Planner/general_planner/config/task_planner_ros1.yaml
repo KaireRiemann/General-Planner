@@ -75,7 +75,7 @@ general_planner:
     anti_rollback_dt: 0.25
     anti_rollback_margin: 0.35
     keep_old_horizon: 1.0
-    keep_old_safety_dt: 0.10
+    keep_old_safety_dt: 0.05
     candidate_angle_step: 0.3926990817
     candidate_radius_num: 3
     visibility_samples: 5

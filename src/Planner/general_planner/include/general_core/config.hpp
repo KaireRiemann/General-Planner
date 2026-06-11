@@ -142,7 +142,9 @@ namespace general_planner {
         double tracking_anti_rollback_dt{0.25};
         double tracking_anti_rollback_margin{0.35};
         double tracking_keep_old_horizon{1.0};
-        double tracking_keep_old_safety_dt{0.10};
+        double tracking_keep_old_safety_dt{0.05};
+        bool tracking_keep_old_short_safety_grace_enable{true};
+        double tracking_keep_old_short_safety_grace_horizon{0.25};
         double tracking_keep_old_min_remaining{0.45};
         double tracking_keep_old_min_speed{0.15};
         double tracking_keep_old_min_displacement{0.04};
@@ -172,6 +174,20 @@ namespace general_planner {
         double tracking_recovery_time_scale{1.4};
         double tracking_recovery_reduce_visible_region_weight{0.3};
         double tracking_recovery_reduce_target_forward_weight{0.5};
+        bool tracking_reacquire_recovery_enable{true};
+        double tracking_reacquire_recovery_horizon{0.8};
+        bool tracking_reacquire_transit_enable{true};
+        double tracking_reacquire_transit_horizon_scale{0.6};
+        double tracking_reacquire_transit_max_horizon{2.5};
+        double tracking_reacquire_visible_region_weight_scale{0.0};
+        bool tracking_reacquire_fov_relax_enable{true};
+        bool tracking_reacquire_fov_deferred_strict_enable{true};
+        double tracking_reacquire_fov_entry_distance{6.0};
+        double tracking_reacquire_min_progress_distance{0.5};
+        double tracking_reacquire_min_progress_ratio{0.10};
+        double tracking_reacquire_fov_range_grace{8.0};
+        double tracking_reacquire_fov_angular_grace_deg{8.0};
+        bool tracking_optimizer_commit_safety_precheck_enable{true};
         bool tracking_retry_without_corridor_enable{true};
         bool tracking_fallback_relax_enable{true};
         double tracking_fallback_distance_tolerance_scale{1.6};
@@ -209,6 +225,8 @@ namespace general_planner {
         double tracking_fov_check_dt{0.03};
         bool tracking_fov_range_grace_enable{true};
         double tracking_fov_range_grace{0.9};
+        double tracking_fov_keep_old_angular_grace_deg{5.0};
+        double tracking_fov_keep_old_violation_ratio_grace{0.25};
         double tracking_fov_range_margin{0.05};
         double tracking_fov_front_margin{0.05};
         bool tracking_fov_check_first_commit{true};
@@ -479,7 +497,11 @@ namespace general_planner {
             loader.LoadParam("general_planner/tracking/anti_rollback_margin",
                              tracking_anti_rollback_margin, 0.35);
             loader.LoadParam("general_planner/tracking/keep_old_horizon", tracking_keep_old_horizon, 1.0);
-            loader.LoadParam("general_planner/tracking/keep_old_safety_dt", tracking_keep_old_safety_dt, 0.10);
+            loader.LoadParam("general_planner/tracking/keep_old_safety_dt", tracking_keep_old_safety_dt, 0.05);
+            loader.LoadParam("general_planner/tracking/keep_old_short_safety_grace_enable",
+                             tracking_keep_old_short_safety_grace_enable, true);
+            loader.LoadParam("general_planner/tracking/keep_old_short_safety_grace_horizon",
+                             tracking_keep_old_short_safety_grace_horizon, 0.25);
             loader.LoadParam("general_planner/tracking/keep_old_min_remaining",
                              tracking_keep_old_min_remaining, 0.45);
             loader.LoadParam("general_planner/tracking/keep_old_min_speed",
@@ -535,6 +557,34 @@ namespace general_planner {
                              tracking_recovery_reduce_visible_region_weight, 0.3);
             loader.LoadParam("general_planner/tracking/recovery_reduce_target_forward_weight",
                              tracking_recovery_reduce_target_forward_weight, 0.5);
+            loader.LoadParam("general_planner/tracking/reacquire_recovery_enable",
+                             tracking_reacquire_recovery_enable, true);
+            loader.LoadParam("general_planner/tracking/reacquire_recovery_horizon",
+                             tracking_reacquire_recovery_horizon, 0.8);
+            loader.LoadParam("general_planner/tracking/reacquire_transit_enable",
+                             tracking_reacquire_transit_enable, true);
+            loader.LoadParam("general_planner/tracking/reacquire_transit_horizon_scale",
+                             tracking_reacquire_transit_horizon_scale, 0.6);
+            loader.LoadParam("general_planner/tracking/reacquire_transit_max_horizon",
+                             tracking_reacquire_transit_max_horizon, 2.5);
+            loader.LoadParam("general_planner/tracking/reacquire_visible_region_weight_scale",
+                             tracking_reacquire_visible_region_weight_scale, 0.0);
+            loader.LoadParam("general_planner/tracking/reacquire_fov_relax_enable",
+                             tracking_reacquire_fov_relax_enable, true);
+            loader.LoadParam("general_planner/tracking/reacquire_fov_deferred_strict_enable",
+                             tracking_reacquire_fov_deferred_strict_enable, true);
+            loader.LoadParam("general_planner/tracking/reacquire_fov_entry_distance",
+                             tracking_reacquire_fov_entry_distance, 6.0);
+            loader.LoadParam("general_planner/tracking/reacquire_min_progress_distance",
+                             tracking_reacquire_min_progress_distance, 0.5);
+            loader.LoadParam("general_planner/tracking/reacquire_min_progress_ratio",
+                             tracking_reacquire_min_progress_ratio, 0.10);
+            loader.LoadParam("general_planner/tracking/reacquire_fov_range_grace",
+                             tracking_reacquire_fov_range_grace, 8.0);
+            loader.LoadParam("general_planner/tracking/reacquire_fov_angular_grace_deg",
+                             tracking_reacquire_fov_angular_grace_deg, 8.0);
+            loader.LoadParam("general_planner/tracking/optimizer_commit_safety_precheck_enable",
+                             tracking_optimizer_commit_safety_precheck_enable, true);
             loader.LoadParam("general_planner/tracking/retry_without_corridor_enable",
                              tracking_retry_without_corridor_enable, true);
             loader.LoadParam("general_planner/tracking/fallback_relax_enable",
@@ -594,6 +644,10 @@ namespace general_planner {
                              tracking_fov_range_grace_enable, true);
             loader.LoadParam("general_planner/tracking/fov_range_grace",
                              tracking_fov_range_grace, 0.9);
+            loader.LoadParam("general_planner/tracking/fov_keep_old_angular_grace_deg",
+                             tracking_fov_keep_old_angular_grace_deg, 5.0);
+            loader.LoadParam("general_planner/tracking/fov_keep_old_violation_ratio_grace",
+                             tracking_fov_keep_old_violation_ratio_grace, 0.25);
             loader.LoadParam("general_planner/tracking/fov_range_margin",
                              tracking_fov_range_margin, 0.05);
             loader.LoadParam("general_planner/tracking/fov_front_margin",

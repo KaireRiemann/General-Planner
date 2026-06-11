@@ -134,6 +134,10 @@ namespace fsm {
         double tracking_static_safety_check_horizon{1.5};
         double tracking_static_safety_check_dt{0.12};
         double tracking_static_replan_log_period{1.0};
+        int tracking_plan_from_rest_max_failures{4};
+        double tracking_plan_from_rest_failure_backoff{0.5};
+        double tracking_plan_from_rest_limited_backoff{2.0};
+        bool tracking_static_finish_on_plan_failure{false};
         bool perception_replan_check_en{false};
         double perception_replan_check_rate{30.0};
         double perception_replan_check_horizon{2.0};
@@ -204,6 +208,18 @@ namespace fsm {
             loader.LoadParam("fsm/tracking_static_safety_check_horizon", tracking_static_safety_check_horizon, 1.5);
             loader.LoadParam("fsm/tracking_static_safety_check_dt", tracking_static_safety_check_dt, 0.12);
             loader.LoadParam("fsm/tracking_static_replan_log_period", tracking_static_replan_log_period, 1.0);
+            loader.LoadParam("fsm/tracking_plan_from_rest_max_failures",
+                             tracking_plan_from_rest_max_failures,
+                             4);
+            loader.LoadParam("fsm/tracking_plan_from_rest_failure_backoff",
+                             tracking_plan_from_rest_failure_backoff,
+                             0.5);
+            loader.LoadParam("fsm/tracking_plan_from_rest_limited_backoff",
+                             tracking_plan_from_rest_limited_backoff,
+                             2.0);
+            loader.LoadParam("fsm/tracking_static_finish_on_plan_failure",
+                             tracking_static_finish_on_plan_failure,
+                             false);
             loader.LoadParam("fsm/perception_replan_check_en", perception_replan_check_en, false);
             loader.LoadParam("fsm/perception_replan_check_rate", perception_replan_check_rate, 30.0);
             loader.LoadParam("fsm/perception_replan_check_horizon", perception_replan_check_horizon, 2.0);

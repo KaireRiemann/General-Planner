@@ -105,6 +105,12 @@ namespace general_planner::checker {
         pos_options.max_acc = cfg.exp_traj_cfg.max_acc;
         pos_options.max_jerk = cfg.exp_traj_cfg.max_jerk;
         pos_options.sample_dt = std::max(0.02, cfg.sample_traj_dt);
+        if (cfg.plain_traj_en && cfg.plain_traj_cfg.max_acc > 0.0) {
+            constexpr double kPlainCommitAccRejectRatio = 2.1;
+            pos_options.max_acc = cfg.plain_traj_cfg.max_acc *
+                                  kPlainCommitAccRejectRatio /
+                                  pos_options.limit_margin;
+        }
         auto pos_result = checkTrajectory(pos, pos_options);
         if (pos_result.rejected()) {
             return pos_result;

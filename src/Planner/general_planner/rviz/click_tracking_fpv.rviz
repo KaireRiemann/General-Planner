@@ -4,11 +4,7 @@ Panels:
     Name: Displays
     Property Tree Widget:
       Expanded:
-        - /Robots1
         - /Robots1/TrackerExecutedPath1
-        - /TrackerMap1
-        - /TrackerMap1/InflatedOcc1
-        - /TrackerPlanner1
       Splitter Ratio: 0.5
     Tree Height: 775
   - Class: rviz/Views
@@ -221,7 +217,7 @@ Visualization Manager:
           Color: 80; 170; 255
           Color Transformer: FlatColor
           Decay Time: 0
-          Enabled: true
+          Enabled: false
           Invert Rainbow: false
           Max Color: 255; 255; 255
           Min Color: 0; 0; 0
@@ -236,7 +232,7 @@ Visualization Manager:
           Unreliable: false
           Use Fixed Frame: true
           Use rainbow: true
-          Value: true
+          Value: false
         - Alpha: 1
           Autocompute Intensity Bounds: true
           Autocompute Value Bounds:
@@ -268,7 +264,7 @@ Visualization Manager:
         - Alpha: 0.20000000298023224
           Autocompute Intensity Bounds: true
           Autocompute Value Bounds:
-            Max Value: 1.899999976158142
+            Max Value: 3.700000047683716
             Min Value: 0.30000001192092896
             Value: true
           Axis: Z
@@ -388,24 +384,21 @@ Visualization Manager:
           Queue Size: 100
           Value: true
         - Class: rviz/MarkerArray
-          Enabled: true
+          Enabled: false
           Marker Topic: /drone_1/fsm_node/visualization/exp_sfc
           Name: ExpSfc
           Namespaces:
-            exp_sfc edge: true
-            exp_sfc line: true
-            exp_sfc mesh: true
-            exp_sfc pt: true
+            {}
           Queue Size: 100
-          Value: true
+          Value: false
         - Class: rviz/MarkerArray
-          Enabled: true
+          Enabled: false
           Marker Topic: /drone_1/fsm_node/visualization/backup_sfc
           Name: BackupSfc
           Namespaces:
             {}
           Queue Size: 100
-          Value: true
+          Value: false
         - Class: rviz/MarkerArray
           Enabled: true
           Marker Topic: /drone_1/fsm_node/visualization/exp_traj
@@ -441,13 +434,14 @@ Visualization Manager:
           Queue Size: 100
           Value: false
         - Class: rviz/MarkerArray
-          Enabled: false
+          Enabled: true
           Marker Topic: /drone_1/fsm_node/visualization/tracking_fov
           Name: TrackerFov
           Namespaces:
-            {}
+            tracking_fov_edges: true
+            tracking_fov_nodes: true
           Queue Size: 100
-          Value: false
+          Value: true
         - Class: rviz/MarkerArray
           Enabled: true
           Marker Topic: /drone_1/fsm_node/visualization/astar_debug
@@ -491,7 +485,7 @@ Visualization Manager:
       Invert Z Axis: false
       Name: Current View
       Near Clip Distance: 0.009999999776482582
-      Pitch: 0.7799989581108093
+      Pitch: 0.7749989628791809
       Target Frame: drone_1/base_link
       Yaw: 2.9450087547302246
     Saved: ~
