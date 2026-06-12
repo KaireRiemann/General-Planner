@@ -22,12 +22,14 @@
 */
 
 #include <general_core/general_planner.h>
+#include <checker/state2state_checker.hpp>
+#include <checker/trajectory_checker.hpp>
 #include <algorithm>
 #include <cmath>
 #include <exception>
+#include <stdexcept>
 #include <limits>
 #include <memory>
-#include <stdexcept>
 #include <super_utils/scope_timer.hpp>
 #include <utils/optimization/polynomial_interpolation.h>
 #include <fmt/color.h>
@@ -41,6 +43,66 @@ namespace general_planner {
             if (out != nullptr) {
                 *out = reason;
             }
+        }
+
+        bool backupTrajectoryPlanningEnabled(const Config &cfg) {
+            return cfg.backup_traj_en && !cfg.esdf_traj_en && !cfg.plain_traj_en;
+        }
+
+        void logCheckResult(const ros_interface::RosInterface::Ptr &ros_ptr,
+                            const std::string &context,
+                            const checker::CheckResult &result) {
+            if (result.severity == checker::Severity::OK || ros_ptr == nullptr) {
+                return;
+            }
+            const std::string msg = fmt::format(" -- [Checker] {} [{}]: {}",
+                                                context,
+                                                result.code,
+                                                result.message);
+            if (result.severity == checker::Severity::WARN) {
+                ros_ptr->warn(msg);
+            } else {
+                ros_ptr->error(msg);
+            }
+        }
+
+        bool rejectOnCheckFailure(const ros_interface::RosInterface::Ptr &ros_ptr,
+                                  const std::string &context,
+                                  const checker::CheckResult &result) {
+            logCheckResult(ros_ptr, context, result);
+            return result.rejected();
+        }
+
+        void warnHighSpeedMargin(const ros_interface::RosInterface::Ptr &ros_ptr,
+                                 const Config &cfg,
+                                 const double speed,
+                                 const std::string &context) {
+            const auto result = checker::checkHighSpeedSafetyMargin(
+                    speed,
+                    cfg.exp_traj_cfg.max_acc,
+                    cfg.replan_forward_dt,
+                    cfg.sensing_horizon,
+                    cfg.safe_corridor_line_max_length,
+                    cfg.robot_r);
+            if (result.severity == checker::Severity::WARN) {
+                logCheckResult(ros_ptr, context, result);
+            }
+        }
+
+        void makeHoldCommandFromRobotState(const rog_map::RobotState &robot_state,
+                                           StatePVAJ &pvaj,
+                                           double &yaw,
+                                           double &yaw_dot,
+                                           bool &on_backup_traj,
+                                           bool &traj_finish) {
+            pvaj.setZero();
+            if (robot_state.rcv && robot_state.p.allFinite()) {
+                pvaj.col(0) = robot_state.p;
+            }
+            yaw = std::isfinite(robot_state.yaw) ? robot_state.yaw : 0.0;
+            yaw_dot = 0.0;
+            on_backup_traj = false;
+            traj_finish = true;
         }
 
         bool trackingPerchingPerchingStatus(
@@ -127,6 +189,35 @@ namespace general_planner {
             return !prefix_yaw.empty();
         }
 
+        bool buildYawBrakeTrajectory(const Vec4f &yaw_state,
+                                     const double duration,
+                                     const double start_wt,
+                                     Trajectory &yaw_traj) {
+            if (!yaw_state.allFinite() ||
+                !std::isfinite(duration) ||
+                duration <= 1.0e-5 ||
+                !std::isfinite(start_wt)) {
+                return false;
+            }
+
+            Eigen::Matrix<double, 1, 2> init_state;
+            Eigen::Matrix<double, 1, 2> goal_state;
+            const double yaw0 = yaw_state(0);
+            const double yaw_rate0 = yaw_state(1);
+            init_state << yaw0, yaw_rate0;
+            goal_state << yaw0 + 0.5 * yaw_rate0 * duration, 0.0;
+
+            Eigen::Matrix<double, 1, -1> waypoints(1, 0);
+            VecDf times(1);
+            times(0) = duration;
+            yaw_traj = poly_interpo::minimumAccInterpolation<1>(init_state,
+                                                                goal_state,
+                                                                waypoints,
+                                                                times);
+            yaw_traj.start_WT = start_wt;
+            return !yaw_traj.empty();
+        }
+
         bool extractYawPrefixForStitching(const Trajectory &tracking_yaw,
                                           const double prefix_start,
                                           const double prefix_duration,
@@ -209,6 +300,32 @@ namespace general_planner {
             }
         }
 
+        Vec3f interpolatePointOnTimedGuide(const vec_Vec3f &path,
+                                           const std::vector<double> &path_t,
+                                           const double query_t) {
+            if (path.empty()) {
+                return Vec3f::Zero();
+            }
+            if (path_t.size() != path.size()) {
+                return path.back();
+            }
+            if (path.size() == 1 || query_t <= path_t.front()) {
+                return path.front();
+            }
+            if (query_t >= path_t.back()) {
+                return path.back();
+            }
+            const auto it = std::lower_bound(path_t.begin(), path_t.end(), query_t);
+            const std::size_t right = static_cast<std::size_t>(std::distance(path_t.begin(), it));
+            if (right == 0 || right >= path.size()) {
+                return path.back();
+            }
+            const std::size_t left = right - 1;
+            const double dt = std::max(1.0e-9, path_t[right] - path_t[left]);
+            const double alpha = std::clamp((query_t - path_t[left]) / dt, 0.0, 1.0);
+            return path[left] + alpha * (path[right] - path[left]);
+        }
+
         double interpolateSegmentStamp(const std::vector<double> &times,
                                        const int left_id,
                                        const double alpha,
@@ -232,10 +349,6 @@ namespace general_planner {
                                                   }));
         }
 
-        double trackingHardSafeDistance(const Config &cfg) {
-            return std::max(cfg.tracking_hard_safe_distance, cfg.robot_r + 0.02);
-        }
-
         bool staticTargetPrediction(const traj_opt::DynamicTargetStates &prediction,
                                     const double position_epsilon,
                                     const double velocity_epsilon) {
@@ -251,6 +364,35 @@ namespace general_planner {
             }
             return max_span <= std::max(0.0, position_epsilon) &&
                    max_vel <= std::max(0.0, velocity_epsilon);
+        }
+
+        double trackingHardSafeDistance(const Config &cfg) {
+            return std::max(cfg.tracking_hard_safe_distance, cfg.robot_r + 0.02);
+        }
+
+        const char *gridTypeName(const rog_map::GridType type) {
+            switch (type) {
+                case rog_map::GridType::UNKNOWN:
+                    return "UNKNOWN";
+                case rog_map::GridType::OCCUPIED:
+                    return "OCCUPIED";
+                case rog_map::GridType::KNOWN_FREE:
+                    return "KNOWN_FREE";
+                case rog_map::GridType::OUT_OF_MAP:
+                    return "OUT_OF_MAP";
+                case rog_map::GridType::UNDEFINED:
+                    return "UNDEFINED";
+                case rog_map::GridType::FRONTIER:
+                    return "FRONTIER";
+            }
+            return "UNKNOWN_GRID_TYPE";
+        }
+
+        std::string formatVec3Compact(const Vec3f &v) {
+            if (!v.allFinite()) {
+                return "[nan,nan,nan]";
+            }
+            return fmt::format("[{:.3f},{:.3f},{:.3f}]", v.x(), v.y(), v.z());
         }
 
         Vec3f trackingTargetDirection(const traj_opt::DynamicTargetStates &prediction,
@@ -459,6 +601,12 @@ namespace general_planner {
                 map_manager_(std::make_shared<MapManager>(map_ptr)),
                 ros_ptr_(ros_ptr) {
 
+        const auto config_check = checker::checkState2StateConfig(cfg_);
+        logCheckResult(ros_ptr_, "state2state config", config_check);
+        if (config_check.rejected()) {
+            throw std::invalid_argument("state2state config invalid: " + config_check.code +
+                                        " " + config_check.message);
+        }
         ros_ptr_->setResolution(cfg_.resolution);
         ros_ptr_->setVisualizationEn(cfg_.visualization_en);
         tracking_runtime_manager_ = std::make_unique<TrackingRuntimeManager>(cfg_, map_manager_);
@@ -490,10 +638,7 @@ namespace general_planner {
         traj_manager_->setSwarmTrajectories(swarm_trajs_);
 
         const auto rog_map_cfg = map_manager_->getMapConfig();
-        astar_ptr_ = std::make_shared<path_search::Astar>(cfg_path,
-                                                          ros_ptr_,
-                                                          map_manager_,
-                                                          cfg_.astar_backend);
+        astar_ptr_ = std::make_shared<path_search::Astar>(cfg_path, ros_ptr_, map_manager_);
         if (traj_manager_->plain()) {
             traj_manager_->plain()->setLocalAstar(astar_ptr_);
         }
@@ -503,19 +648,9 @@ namespace general_planner {
                 std::make_unique<traj_opt::DynamicTakeoffSnapTrajOpt>(cfg_.esdf_traj_cfg, ros_ptr_);
         takeoff_optimizer_->setMapManager(map_manager_);
         takeoff_optimizer_->setSafeDistance(cfg_.esdf_safe_distance);
-        map_manager_->enableGlobalExplorationMap(makeGlobalExplorationMapConfig());
-        map_manager_->enableGlobalPointCloudMap(makeGlobalPointCloudMapConfig());
-        map_manager_->enableGlobalRegionGrid(makeGlobalRegionGridConfig());
-        exploration_manager_ = std::make_unique<exploration::EpicExplorationManager>(
-                makeExplorationConfig(), map_manager_, astar_ptr_, ros_ptr_);
-        if (cfg_.exploration_enable &&
-            cfg_.exploration_use_epic_frontend &&
-            !map_manager_->hasEpicLioMap()) {
-            const std::string reason =
-                    "exploration/use_epic_frontend=true requires an initialized EPIC LIO map";
-            ros_ptr_->error(" -- [GeneralPlanner] {}.", reason);
-            throw std::runtime_error(reason);
-        }
+        exploration_frontend_ = std::make_unique<ExplorationFrontend>(
+                makeExplorationFrontendConfig(), map_manager_, astar_ptr_);
+        exploration_runtime_manager_ = std::make_unique<ExplorationRuntimeManager>(cfg_);
         const auto ellipsoid_optimizer_config =
                 optimization_utils::EllipsoidOptimizer::makeConfig(cfg_.ellipsoid_optimizer,
                                                                    cfg_.ellipsoid_optimizer_fallback);
@@ -526,8 +661,7 @@ namespace general_planner {
                                                       cfg_.robot_r,
                                                       cfg_.obs_skip_num,
                                                       cfg_.iris_iter_num,
-                                                      ellipsoid_optimizer_config,
-                                                      cfg_.corridor_backend);
+                                                      ellipsoid_optimizer_config);
         cg_ptr_->SetLineNeighborList(cfg_.seed_line_neighbour);
         se3_aggressive_manager_ =
                 std::make_unique<SE3AggressiveManager>(cfg_, ros_ptr_, map_manager_, astar_ptr_, cg_ptr_);
@@ -727,6 +861,19 @@ namespace general_planner {
                                const bool &new_goal) {
         std::lock_guard<std::mutex> guard(replan_lock_);
         latest_replan.reset();
+        const auto input_check = checker::checkState2StateInput(goal_p,
+                                                                goal_yaw,
+                                                                robot_state_,
+                                                                map_manager_,
+                                                                ros_ptr_->getSimTime());
+        if (rejectOnCheckFailure(ros_ptr_, "PlanFromRest input", input_check)) {
+            latest_replan.setGoal(goal_p, goal_yaw, robot_state_);
+            latest_replan.setRetCode(input_check.code == "MAP_NOT_READY"
+                                     ? GENERAL_RET_CODE::GENERAL_MAP_NOT_READY
+                                     : GENERAL_RET_CODE::GENERAL_UNDEFINED);
+            return FAILED;
+        }
+        warnHighSpeedMargin(ros_ptr_, cfg_, robot_state_.v.norm(), "PlanFromRest high-speed margin");
         if (robot_state_.rcv == false) {
             latest_replan.setGoal(goal_p, goal_yaw, robot_state_);
             ros_ptr_->warn(" -- [GeneralPlanner] in [PlanFromRest]: No odom, force return.");
@@ -748,14 +895,8 @@ namespace general_planner {
 
 
         /// 1) First, shift the start_point to free space.
-        const bool exploration_backend_active =
-                active_exploration_guide_ && active_exploration_plan_.valid;
-        const MapBackend start_backend =
-                exploration_backend_active
-                ? cfg_.exploration_local_guide_backend
-                : MapBackend::ROG;
         Vec3f local_star_pt;
-        if (!map_manager_->findNearestStateValid(robot_state_.p, start_backend, local_star_pt, 3.0, true)) {
+        if (!map_manager_->getNearestInfCellNot(GridType::OCCUPIED, robot_state_.p, local_star_pt, 3.0)) {
             ros_ptr_->error(
                     " -- [GeneralPlanner] in [PlanFromRest] Local start point is deeply occupied, which should not happened.");
             latest_replan.setRetCode(GENERAL_RET_CODE::GENERAL_NO_START_POINT);
@@ -764,10 +905,10 @@ namespace general_planner {
         latest_replan.setLocalStartP(local_star_pt);
 
         /// 2) Generate Exp traj
-        ExpTraj exp_traj_info;
-        BackupTraj back_traj_info;
-        last_exp_traj_info_.setEmpty();
-        local_start_p_ = local_star_pt;
+	        ExpTraj exp_traj_info;
+	        BackupTraj back_traj_info;
+	        last_exp_traj_info_.setEmpty();
+	        local_start_p_ = local_star_pt;
         RET_CODE exp_ret_code = generateExpTraj(last_exp_traj_info_, exp_traj_info);
         //GenerateRestToRestExpTraj(local_star_pt, exp_traj_info);
         if (exp_ret_code == FAILED) {
@@ -778,12 +919,14 @@ namespace general_planner {
             ros_ptr_->info(" -- [GeneralPlanner] in [PlanFromRest] GenerateExpTrajectory SUCCESS.");
         }
 
-        const bool use_backup_for_this_plan =
-                cfg_.backup_traj_en &&
-                (!exploration_backend_active || cfg_.exploration_backup_traj_enable);
-        if (!use_backup_for_this_plan) {
-            robot_on_backup_traj_ = false;
-            cmd_traj_info_.setTrajectory(exp_traj_info);
+        if (!backupTrajectoryPlanningEnabled(cfg_)) {
+            if (rejectOnCheckFailure(ros_ptr_,
+                                     "PlanFromRest exp commit",
+                                     checker::checkExpTrajectory(exp_traj_info, cfg_, "plan_from_rest_exp"))) {
+                return FAILED;
+	            }
+	            robot_on_backup_traj_ = false;
+	            cmd_traj_info_.setTrajectory(exp_traj_info);
             last_exp_traj_info_ = exp_traj_info;
             gi_.new_goal = false;
             {
@@ -803,10 +946,21 @@ namespace general_planner {
                 ros_ptr_->info(" -- [GeneralPlanner] in [PlanFromRest] generateBackupTrajectory SUCCESS.");
             }
 
-            cmd_traj_info_.setTrajectory(exp_traj_info, back_traj_info);
-            last_exp_traj_info_ = exp_traj_info;
-            robot_on_backup_traj_ = false;
-            gi_.new_goal = false;
+            if (rejectOnCheckFailure(ros_ptr_,
+                                     "PlanFromRest exp+backup commit",
+                                     checker::checkExpBackupCommit(exp_traj_info,
+                                                                   back_traj_info,
+                                                                   cfg_,
+                                                                   "plan_from_rest_exp_backup"))) {
+                return FAILED;
+	            }
+	            if (!cmd_traj_info_.setTrajectory(exp_traj_info, back_traj_info)) {
+	                ros_ptr_->error(" -- [Checker] PlanFromRest commit failed: CmdTraj rejected exp+backup trajectory.");
+	                return FAILED;
+	            }
+	            last_exp_traj_info_ = exp_traj_info;
+	            robot_on_backup_traj_ = false;
+	            gi_.new_goal = false;
 
             // For visualization
             {
@@ -820,8 +974,13 @@ namespace general_planner {
         } else if (back_ret_code == FINISH || back_ret_code == NO_NEED) {
             if (cfg_.print_log) {
                 ros_ptr_->info(" -- [GeneralPlanner] in [PlanFromRest] generateBackupTrajectory Finish or NO_NEED.");
+	            }
+	            robot_on_backup_traj_ = false;
+	            if (rejectOnCheckFailure(ros_ptr_,
+                                     "PlanFromRest exp commit",
+                                     checker::checkExpTrajectory(exp_traj_info, cfg_, "plan_from_rest_exp"))) {
+                return FAILED;
             }
-            robot_on_backup_traj_ = false;
             cmd_traj_info_.setTrajectory(exp_traj_info);
             last_exp_traj_info_ = exp_traj_info;
             gi_.new_goal = false;
@@ -847,6 +1006,21 @@ namespace general_planner {
                              const bool &new_goal) {
         TimeConsuming replan_total_t("ReplanOnce", false);
         std::lock_guard<std::mutex> guard(replan_lock_);
+
+        const auto input_check = checker::checkState2StateInput(goal_p,
+                                                                goal_yaw,
+                                                                robot_state_,
+                                                                map_manager_,
+                                                                ros_ptr_->getSimTime());
+        if (rejectOnCheckFailure(ros_ptr_, "ReplanOnce input", input_check)) {
+            latest_replan.reset();
+            latest_replan.setGoal(goal_p, goal_yaw, robot_state_);
+            latest_replan.setRetCode(input_check.code == "MAP_NOT_READY"
+                                     ? GENERAL_RET_CODE::GENERAL_MAP_NOT_READY
+                                     : GENERAL_RET_CODE::GENERAL_UNDEFINED);
+            return FAILED;
+        }
+        warnHighSpeedMargin(ros_ptr_, cfg_, robot_state_.v.norm(), "ReplanOnce high-speed margin");
 
         gi_.goal_valid = true;
         gi_.goal_p = goal_p;
@@ -896,15 +1070,14 @@ namespace general_planner {
             time_consuming_[VISUALIZATION] += t_viz.stop();
         }
 
-
-        const bool exploration_backend_active =
-                active_exploration_guide_ && active_exploration_plan_.valid;
-        const bool use_backup_for_this_plan =
-                cfg_.backup_traj_en &&
-                (!exploration_backend_active || cfg_.exploration_backup_traj_enable);
-        if (!use_backup_for_this_plan) {
-            robot_on_backup_traj_ = false;
-            cmd_traj_info_.setTrajectory(exp_traj_info);
+        if (!backupTrajectoryPlanningEnabled(cfg_)) {
+            if (rejectOnCheckFailure(ros_ptr_,
+                                     "ReplanOnce exp commit",
+                                     checker::checkExpTrajectory(exp_traj_info, cfg_, "replan_exp"))) {
+                return FAILED;
+	            }
+	            robot_on_backup_traj_ = false;
+	            cmd_traj_info_.setTrajectory(exp_traj_info);
             last_exp_traj_info_ = exp_traj_info;
             gi_.new_goal = false;
             {
@@ -936,10 +1109,21 @@ namespace general_planner {
         }
 
         if (back_ret_code == SUCCESS) {
-            cmd_traj_info_.setTrajectory(exp_traj_info, back_traj_info);
-            last_exp_traj_info_ = exp_traj_info;
-            robot_on_backup_traj_ = false;
-            gi_.new_goal = false;
+            if (rejectOnCheckFailure(ros_ptr_,
+                                     "ReplanOnce exp+backup commit",
+                                     checker::checkExpBackupCommit(exp_traj_info,
+                                                                   back_traj_info,
+                                                                   cfg_,
+                                                                   "replan_exp_backup"))) {
+                return FAILED;
+	            }
+	            if (!cmd_traj_info_.setTrajectory(exp_traj_info, back_traj_info)) {
+	                ros_ptr_->error(" -- [Checker] ReplanOnce commit failed: CmdTraj rejected exp+backup trajectory.");
+	                return FAILED;
+	            }
+	            last_exp_traj_info_ = exp_traj_info;
+	            robot_on_backup_traj_ = false;
+	            gi_.new_goal = false;
 
             {
                 // For visualization
@@ -953,9 +1137,9 @@ namespace general_planner {
                 ros_ptr_->info(" -- [GeneralPlanner] in [ReplanOnce]: Replan a new back traj success, all replan success.");
             return SUCCESS;
         } else if (back_ret_code == NO_NEED) {
-            // 这次生成backup轨迹的点没有意义,
-            robot_on_backup_traj_ = false;
-            last_exp_traj_info_ = exp_traj_info;
+	            // 这次生成backup轨迹的点没有意义,
+	            robot_on_backup_traj_ = false;
+	            last_exp_traj_info_ = exp_traj_info;
             gi_.new_goal = false;
 
 
@@ -972,10 +1156,15 @@ namespace general_planner {
             return SUCCESS;
         } else if (back_ret_code == FINISH) {
             // Which means the exp traj is all in known free, no need for backup traj
-            cmd_traj_info_.setTrajectory(exp_traj_info);
-            last_exp_traj_info_ = exp_traj_info;
-            robot_on_backup_traj_ = false;
-            gi_.new_goal = false;
+            if (rejectOnCheckFailure(ros_ptr_,
+                                     "ReplanOnce exp commit",
+                                     checker::checkExpTrajectory(exp_traj_info, cfg_, "replan_exp"))) {
+                return FAILED;
+            }
+	            cmd_traj_info_.setTrajectory(exp_traj_info);
+	            last_exp_traj_info_ = exp_traj_info;
+	            robot_on_backup_traj_ = false;
+	            gi_.new_goal = false;
 
             {
                 TimeConsuming t_viz("tviz", false);
@@ -994,722 +1183,190 @@ namespace general_planner {
     }
 
     RET_CODE GeneralPlanner::PlanExplorationFromRest(const bool &new_task) {
-        return PlanExplorationOnce(new_task, true);
-    }
-
-    RET_CODE GeneralPlanner::ReplanExplorationOnce(const bool &new_task) {
-        return PlanExplorationOnce(new_task, false);
-    }
-
-    RET_CODE GeneralPlanner::commitExplorationLocalTrajectory(
-            const exploration::ExplorationPlan &plan,
-            const bool from_rest,
-            const bool goal_switched) {
-        std::lock_guard<std::mutex> guard(replan_lock_);
-        latest_replan.reset();
-        robot_state_ = map_manager_ ? map_manager_->getRobotState() : rog_map::RobotState{};
-
-        if (!robot_state_.rcv) {
-            latest_replan.setGoal(plan.next_goal, plan.next_yaw, robot_state_);
-            latest_replan.setRetCode(GENERAL_RET_CODE::GENERAL_NO_ODOM);
-            ros_ptr_->warn(" -- [Exploration] Local commit failed: no odom.");
-            return FAILED;
-        }
-        if (!plan.valid || plan.guide_path.size() < 2U) {
-            latest_replan.setGoal(robot_state_.p, robot_state_.yaw, robot_state_);
-            latest_replan.setRetCode(GENERAL_RET_CODE::GENERAL_UNDEFINED);
-            ros_ptr_->warn(" -- [Exploration] Local commit failed: invalid EPIC guide.");
-            return FAILED;
-        }
-
-        gi_.goal_valid = true;
-        gi_.goal_p = plan.next_goal;
-        gi_.goal_yaw = plan.next_yaw;
-        gi_.new_goal = from_rest || goal_switched;
-        latest_replan.setGoal(plan.next_goal, plan.next_yaw, robot_state_);
-
-        {
-            vec_Vec3f viz_pts{plan.next_goal, robot_state_.p};
-            TimeConsuming t_viz("exploration goal path", false);
-            ros_ptr_->vizGoalPath(viz_pts);
-            time_consuming_[VISUALIZATION] += t_viz.stop();
-        }
-
-        if (from_rest) {
-            MapBackend start_backend = cfg_.exploration_local_guide_backend;
-            if (map_manager_ == nullptr || !map_manager_->ready(start_backend)) {
-                start_backend = cfg_.exploration_use_epic_frontend
-                                ? MapBackend::EPIC_LIO
-                                : cfg_.astar_backend;
-            }
-            Vec3f local_start_pt;
-            if (map_manager_ == nullptr ||
-                !map_manager_->findNearestStateValid(robot_state_.p,
-                                                     start_backend,
-                                                     local_start_pt,
-                                                     3.0,
-                                                     true)) {
-                latest_replan.setRetCode(GENERAL_RET_CODE::GENERAL_NO_START_POINT);
-                ros_ptr_->warn(" -- [Exploration] Local commit failed: no valid start point in {} backend.",
-                               mapBackendToString(start_backend));
-                return FAILED;
-            }
-            latest_replan.setLocalStartP(local_start_pt);
-            last_exp_traj_info_.setEmpty();
-            local_start_p_ = local_start_pt;
-        } else if (last_exp_traj_info_.empty()) {
-            latest_replan.setRetCode(GENERAL_RET_CODE::GENERAL_SUCCESS_NO_BACKUP);
-            ros_ptr_->info(" -- [Exploration] No committed exploration trajectory is available; request PlanFromRest.");
-            return NEW_TRAJ;
-        }
-
-        ExpTraj exp_traj_info;
-        {
-            TimeConsuming t_exp("exploration_generate_exp_traj", false);
-            const RET_CODE exp_ret_code =
-                    generateExpTrajFromGuidePath(plan, last_exp_traj_info_, exp_traj_info);
-            time_consuming_[GENERATE_EXP_TRAJ] = t_exp.stop();
-
-            if (exp_ret_code == FAILED) {
-                latest_replan.setRetCode(GENERAL_RET_CODE::GENERAL_UNDEFINED);
-                ros_ptr_->warn(" -- [Exploration] Generate guide-following local trajectory failed.");
-                return FAILED;
-            }
-            if (exp_ret_code == NEW_TRAJ || exp_ret_code == EMER) {
-                latest_replan.setRetCode(GENERAL_RET_CODE::GENERAL_UNDEFINED);
-                return exp_ret_code;
-            }
-            if (exp_ret_code == NO_NEED) {
-                latest_replan.setRetCode(GENERAL_RET_CODE::GENERAL_SUCCESS_NO_BACKUP);
-                return NO_NEED;
-            }
-        }
-
-        {
-            TimeConsuming t_viz("exploration yaw traj", false);
-            ros_ptr_->vizYawTraj(exp_traj_info.posTraj(), exp_traj_info.yawTraj());
-            time_consuming_[VISUALIZATION] += t_viz.stop();
-        }
-
-        const bool use_backup_for_this_plan =
-                cfg_.backup_traj_en && cfg_.exploration_backup_traj_enable;
-        if (!use_backup_for_this_plan) {
-            robot_on_backup_traj_ = false;
-            cmd_traj_info_.setTrajectory(exp_traj_info);
-            last_exp_traj_info_ = exp_traj_info;
-            gi_.new_goal = false;
-            {
-                TimeConsuming t_viz("exploration commit traj", false);
-                ros_ptr_->vizCommittedTraj(cmd_traj_info_.posTraj(), -1);
-                time_consuming_[VISUALIZATION] += t_viz.stop();
-            }
-            latest_replan.setRetCode(GENERAL_RET_CODE::GENERAL_SUCCESS_NO_BACKUP);
-            return SUCCESS;
-        }
-
-        BackupTraj back_traj_info;
-        back_traj_info.setEmpty();
-        {
-            TimeConsuming t_back("exploration_generate_backup_traj", false);
-            const RET_CODE back_ret_code = generateBackupTrajectory(exp_traj_info, back_traj_info);
-            time_consuming_[GENERATE_BACK_TRAJ] = t_back.stop();
-
-            if (back_ret_code == SUCCESS) {
-                cmd_traj_info_.setTrajectory(exp_traj_info, back_traj_info);
-                last_exp_traj_info_ = exp_traj_info;
-                robot_on_backup_traj_ = false;
-                gi_.new_goal = false;
-                {
-                    TimeConsuming t_viz("exploration commit backup traj", false);
-                    ros_ptr_->vizCommittedTraj(cmd_traj_info_.posTraj(),
-                                               cmd_traj_info_.getBackupTrajStartTT());
-                    time_consuming_[VISUALIZATION] += t_viz.stop();
-                }
-                latest_replan.setRetCode(GENERAL_RET_CODE::GENERAL_SUCCESS_WITH_BACKUP);
-                return SUCCESS;
-            }
-            if (back_ret_code == FINISH || back_ret_code == NO_NEED) {
-                cmd_traj_info_.setTrajectory(exp_traj_info);
-                last_exp_traj_info_ = exp_traj_info;
-                robot_on_backup_traj_ = false;
-                gi_.new_goal = false;
-                {
-                    TimeConsuming t_viz("exploration commit traj", false);
-                    ros_ptr_->vizCommittedTraj(cmd_traj_info_.posTraj(), -1);
-                    time_consuming_[VISUALIZATION] += t_viz.stop();
-                }
-                latest_replan.setRetCode(GENERAL_RET_CODE::GENERAL_SUCCESS_NO_BACKUP);
-                return SUCCESS;
-            }
-
-            latest_replan.setRetCode(GENERAL_RET_CODE::GENERAL_UNDEFINED);
-            ros_ptr_->warn(" -- [Exploration] Backup generation failed with {}.",
-                           RET_CODE_STR[back_ret_code]);
-            return FAILED;
-        }
-    }
-
-    RET_CODE GeneralPlanner::PlanExplorationOnce(const bool &new_task,
-                                                 const bool &from_rest) {
-        exploration::ExplorationPlan plan;
-        exploration::ExplorationPlan previous_plan;
-        rog_map::RobotState robot;
-        const double now = ros_ptr_ ? ros_ptr_->getSimTime() : 0.0;
-        const auto policy = getExplorationRuntimePolicy();
-        const double min_remaining_for_replan = policy.min_remaining_for_replan;
+        TimeConsuming total_t("PlanExplorationFromRest", false);
+        ExplorationGoal goal;
         {
             std::lock_guard<std::mutex> guard(replan_lock_);
             latest_replan.reset();
-            robot_state_ = map_manager_->getRobotState();
-            robot = robot_state_;
-            if (!robot.rcv) {
+            if (!robot_state_.rcv) {
                 latest_replan.setRetCode(GENERAL_RET_CODE::GENERAL_NO_ODOM);
-                ros_ptr_->warn(" -- [Exploration] PlanOnce failed: no odom.");
+                ros_ptr_->warn(" -- [Exploration] PlanFromRest failed: no odom.");
                 return FAILED;
             }
-            if (exploration_manager_ == nullptr) {
+            if (map_manager_ == nullptr || !map_manager_->ready()) {
+                latest_replan.setRetCode(GENERAL_RET_CODE::GENERAL_MAP_NOT_READY);
+                ros_ptr_->warn(" -- [Exploration] PlanFromRest failed: map is not ready.");
+                return FAILED;
+            }
+            if (exploration_frontend_ == nullptr) {
                 latest_replan.setRetCode(GENERAL_RET_CODE::GENERAL_UNDEFINED);
-                ros_ptr_->warn(" -- [Exploration] PlanOnce failed: manager is not initialized.");
+                ros_ptr_->warn(" -- [Exploration] PlanFromRest failed: frontend is not initialized.");
+                return FAILED;
+            }
+            if (exploration_runtime_manager_ == nullptr) {
+                latest_replan.setRetCode(GENERAL_RET_CODE::GENERAL_UNDEFINED);
+                ros_ptr_->warn(" -- [Exploration] PlanFromRest failed: runtime manager is not initialized.");
                 return FAILED;
             }
             if (new_task) {
-                exploration_manager_->reset();
-                latest_exploration_goal_ = exploration::ExplorationGoal{};
-                latest_exploration_plan_ = exploration::ExplorationPlan{};
-                active_exploration_guide_ = false;
-                active_exploration_plan_ = exploration::ExplorationPlan{};
-                resetExplorationRuntimeState(true);
+                exploration_frontend_->reset();
+                exploration_runtime_manager_->reset();
             }
-            previous_plan = latest_exploration_plan_;
-        }
+            exploration_runtime_manager_->onSelectingGoal();
 
-        const bool previous_target_reached =
-                previous_plan.valid &&
-                previous_plan.target_frontier_id >= 0 &&
-                previous_plan.final_goal.allFinite() &&
-                (robot.p - previous_plan.final_goal).norm() <=
-                std::max(0.3, cfg_.exploration_runtime_final_goal_radius);
-        if (previous_target_reached) {
-            exploration_manager_->onGoalReached(previous_plan.goal,
-                                               ros_ptr_ ? ros_ptr_->getSimTime() : 0.0);
-        }
-
-        if (!exploration_manager_->hasObservation()) {
-            std::lock_guard<std::mutex> guard(replan_lock_);
-            exploration_runtime_state_ = ExplorationRuntimeState::WAIT_OBSERVATION;
-            latest_replan.setGoal(robot.p, robot.yaw, robot);
-            latest_replan.setRetCode(GENERAL_RET_CODE::GENERAL_SUCCESS_NO_BACKUP);
-            return NO_NEED;
-        }
-
-        double traj_elapsed = 0.0;
-        double traj_remaining = 0.0;
-        const bool has_active_traj =
-                getExplorationCommittedTrajectoryActivity(now, traj_elapsed, traj_remaining);
-        bool plan_from_rest = from_rest;
-        if (plan_from_rest &&
-            has_active_traj &&
-            !new_task &&
-            traj_remaining > min_remaining_for_replan) {
-            plan_from_rest = false;
-            if (cfg_.print_log) {
-                ros_ptr_->info(" -- [Exploration] Replan from current trajectory forward state instead of rest.");
-            }
-        }
-        if (!plan_from_rest && (!has_active_traj || traj_remaining <= min_remaining_for_replan)) {
-            std::lock_guard<std::mutex> guard(replan_lock_);
-            exploration_runtime_state_ = ExplorationRuntimeState::PLAN_LOCAL;
-            latest_replan.setGoal(robot.p, robot.yaw, robot);
-            latest_replan.setRetCode(GENERAL_RET_CODE::GENERAL_SUCCESS_NO_BACKUP);
-            ros_ptr_->info(" -- [Exploration] Current local trajectory ended before replanning, request PlanFromRest.");
-            return NEW_TRAJ;
-        }
-
-        const bool continue_active_target_after_local_segment =
-                previous_plan.valid &&
-                previous_plan.target_frontier_id >= 0 &&
-                !previous_target_reached;
-        const bool committed_objective_available =
-                cfg_.exploration_runtime_keep_active_target &&
-                continue_active_target_after_local_segment;
-        bool attempted_global_update = false;
-        exploration::ExplorationPlanningMode planning_mode =
-                committed_objective_available
-                ? exploration::ExplorationPlanningMode::FOLLOW_ACTIVE_TARGET
-                : exploration::ExplorationPlanningMode::FORCE_REFRESH_GLOBAL;
-        if (!plan_from_rest && has_active_traj) {
-            double collision_time = -1.0;
-            const bool trajectory_unsafe =
-                    currentExplorationTrajectoryUnsafe(now, &collision_time);
-            if (trajectory_unsafe) {
-                const double stop_time = policy.stop_traj_time;
-                const double immediate_collision_time = policy.collision_replan_time;
-                if (collision_time >= 0.0 && collision_time <= immediate_collision_time) {
-                    const bool truncated = truncateExplorationCommittedTrajectory(stop_time);
-                    {
-                        std::lock_guard<std::mutex> guard(replan_lock_);
-                        exploration_runtime_state_ = ExplorationRuntimeState::RECOVER;
-                        latest_replan.setGoal(robot.p, robot.yaw, robot);
-                        latest_replan.setRetCode(GENERAL_RET_CODE::GENERAL_SUCCESS_NO_BACKUP);
-                    }
-                    ros_ptr_->warn(" -- [Exploration] Active trajectory becomes unsafe in {:.2f}s, {} and request PlanFromRest.",
-                                   collision_time,
-                                   truncated ? "truncated current command" : "could not truncate current command");
-                    return NEW_TRAJ;
-                }
-                planning_mode = committed_objective_available
-                                ? exploration::ExplorationPlanningMode::FOLLOW_ACTIVE_TARGET
-                                : exploration::ExplorationPlanningMode::FORCE_REFRESH_GLOBAL;
-            } else {
-                const bool in_start_suppression_window =
-                        traj_elapsed <
-                        policy.replan_time_after_traj_start &&
-                        traj_remaining >
-                        policy.replan_time_before_traj_end;
-                if (in_start_suppression_window) {
-                    std::lock_guard<std::mutex> guard(replan_lock_);
-                    exploration_runtime_state_ = ExplorationRuntimeState::EXEC_LOCAL;
-                    latest_replan.setGoal(robot.p, robot.yaw, robot);
-                    latest_replan.setRetCode(GENERAL_RET_CODE::GENERAL_SUCCESS_NO_BACKUP);
-                    return NO_NEED;
-                }
-
-                const bool near_traj_end =
-                        traj_remaining <=
-                        std::max(min_remaining_for_replan,
-                                 policy.replan_time_before_traj_end);
-                if (!near_traj_end) {
-                    std::lock_guard<std::mutex> guard(replan_lock_);
-                    exploration_runtime_state_ = ExplorationRuntimeState::EXEC_LOCAL;
-                    latest_replan.setGoal(robot.p, robot.yaw, robot);
-                    latest_replan.setRetCode(GENERAL_RET_CODE::GENERAL_SUCCESS_NO_BACKUP);
-                    return NO_NEED;
-                }
-                planning_mode = committed_objective_available
-                                ? exploration::ExplorationPlanningMode::FOLLOW_ACTIVE_TARGET
-                                : exploration::ExplorationPlanningMode::FORCE_REFRESH_GLOBAL;
-            }
-        }
-
-        if (plan_from_rest || !previous_plan.valid) {
-            planning_mode = committed_objective_available
-                            ? exploration::ExplorationPlanningMode::FOLLOW_ACTIVE_TARGET
-                            : exploration::ExplorationPlanningMode::FORCE_REFRESH_GLOBAL;
-        }
-        if (!cfg_.exploration_runtime_keep_active_target &&
-            planning_mode == exploration::ExplorationPlanningMode::FOLLOW_ACTIVE_TARGET) {
-            planning_mode = exploration::ExplorationPlanningMode::FORCE_REFRESH_GLOBAL;
-        }
-
-        Vec3f guide_anchor = robot.p;
-        double guide_anchor_yaw = robot.yaw;
-        bool guide_anchor_valid = false;
-        if (!plan_from_rest && has_active_traj) {
-            Trajectory committed_pos_traj;
-            Trajectory committed_yaw_traj;
-            double committed_start_wt = 0.0;
-            double committed_duration = 0.0;
-            cmd_traj_info_.lock();
-            if (!cmd_traj_info_.empty() && !cmd_traj_info_.posTraj().empty()) {
-                committed_pos_traj = cmd_traj_info_.posTraj();
-                committed_yaw_traj = cmd_traj_info_.yawTraj();
-                committed_start_wt = cmd_traj_info_.getStartWallTime();
-                committed_duration = cmd_traj_info_.getTotalDuration();
-            }
-            cmd_traj_info_.unlock();
-
-            if (!committed_pos_traj.empty() && committed_duration > 1.0e-3) {
-                const double eval_t = std::clamp(now - committed_start_wt + policy.replan_forward_dt,
-                                                 0.0,
-                                                 committed_duration);
-                StatePVAJ anchor_state;
-                if (committed_pos_traj.getState(eval_t, anchor_state) &&
-                    anchor_state.col(0).allFinite()) {
-                    guide_anchor = anchor_state.col(0);
-                    guide_anchor_valid = true;
-                    if (!committed_yaw_traj.empty()) {
-                        const double yaw_t = std::clamp(eval_t,
-                                                        0.0,
-                                                        committed_yaw_traj.getTotalDuration());
-                        const Vec3f yaw_vec = committed_yaw_traj.getPos(yaw_t);
-                        if (std::isfinite(yaw_vec[0])) {
-                            guide_anchor_yaw = yaw_vec[0];
-                        }
-                    }
-                }
-            }
-        }
-
-        {
-            std::lock_guard<std::mutex> guard(replan_lock_);
-            exploration_runtime_state_ =
-                    planning_mode == exploration::ExplorationPlanningMode::FOLLOW_ACTIVE_TARGET
-                    ? ExplorationRuntimeState::PLAN_LOCAL
-                    : ExplorationRuntimeState::UPDATE_GLOBAL;
-        }
-
-        bool planned = exploration_manager_->planOnce(robot,
-                                                      robot.yaw,
-                                                      plan,
-                                                      planning_mode,
-                                                      guide_anchor_valid ? &guide_anchor : nullptr,
-                                                      guide_anchor_yaw);
-        attempted_global_update =
-                planning_mode != exploration::ExplorationPlanningMode::FOLLOW_ACTIVE_TARGET;
-        if (!planned &&
-            planning_mode == exploration::ExplorationPlanningMode::FOLLOW_ACTIVE_TARGET &&
-            exploration::explorationPlanStatusRecoverable(plan.status)) {
-            ros_ptr_->warn(" -- [Exploration] Active target guide failed [{}]: {}, refresh global tour.",
-                           exploration::explorationPlanStatusName(plan.status),
-                           plan.reason);
-            plan = exploration::ExplorationPlan{};
-            planning_mode = exploration::ExplorationPlanningMode::FORCE_REFRESH_GLOBAL;
-            planned = exploration_manager_->planOnce(robot,
-                                                     robot.yaw,
-                                                     plan,
-                                                     planning_mode,
-                                                     guide_anchor_valid ? &guide_anchor : nullptr,
-                                                     guide_anchor_yaw);
-            attempted_global_update = true;
-        }
-        if (attempted_global_update) {
-            exploration_last_global_update_wt_ = now;
-        }
-
-        if (!planned) {
-            const bool recoverable_status =
-                    exploration::explorationPlanStatusRecoverable(plan.status);
-            {
-                std::lock_guard<std::mutex> guard(replan_lock_);
-                latest_replan.setGoal(robot.p, robot.yaw, robot);
-                latest_exploration_plan_ = plan;
-                latest_exploration_goal_ = plan.goal;
-                if (plan.status == exploration::ExplorationPlanStatus::TRUE_FINISHED &&
-                    plan.no_frontier &&
-                    exploration_manager_->isExplorationFinished()) {
-                    exploration_runtime_state_ = ExplorationRuntimeState::FINISH;
-                    latest_replan.setRetCode(GENERAL_RET_CODE::GENERAL_SUCCESS_NO_BACKUP);
-                    ros_ptr_->info(" -- [Exploration] Exploration finished: {}.", plan.reason);
+            const StatePVAJ head_state = makeTaskHeadState(true);
+            if (!exploration_frontend_->planNextGoal(head_state, robot_state_.yaw, goal)) {
+                latest_replan.setGoal(robot_state_.p, robot_state_.yaw, robot_state_);
+                if (exploration_frontend_->isExplorationFinished()) {
+                    exploration_runtime_manager_->onFinished(goal);
+                    latest_replan.setRetCode(GENERAL_RET_CODE::GENERAL_EXPLORATION_FINISH);
+                    ros_ptr_->info(" -- [Exploration] Exploration finished: {}.", goal.reason);
+                    time_consuming_[TOTAL_REPLAN] = total_t.stop();
                     return FINISH;
                 }
-                exploration_runtime_state_ =
-                        recoverable_status
-                        ? (has_active_traj ? ExplorationRuntimeState::EXEC_LOCAL
-                                           : ExplorationRuntimeState::UPDATE_GLOBAL)
-                        : (has_active_traj ? ExplorationRuntimeState::EXEC_LOCAL
-                                           : ExplorationRuntimeState::RECOVER);
-                latest_replan.setRetCode(
-                        recoverable_status
-                        ? GENERAL_RET_CODE::GENERAL_SUCCESS_NO_BACKUP
-                        : GENERAL_RET_CODE::GENERAL_UNDEFINED);
+                exploration_runtime_manager_->onTemporaryFailure(goal);
+                latest_replan.setRetCode(GENERAL_RET_CODE::GENERAL_UNDEFINED);
+                ros_ptr_->warn(" -- [Exploration] Failed to select goal: {}.", goal.reason);
+                time_consuming_[TOTAL_REPLAN] = total_t.stop();
+                return FAILED;
             }
-            if (recoverable_status) {
-                if (plan.status == exploration::ExplorationPlanStatus::LOCAL_GUIDE_FAILED &&
-                    plan.target_frontier_id >= 0) {
-                    exploration_manager_->onLocalSegmentFailed(
-                            plan,
-                            plan.reason,
-                            ros_ptr_ ? ros_ptr_->getSimTime() : 0.0);
-                }
-                ros_ptr_->warn(" -- [Exploration] Recoverable planning state [{}]: {}. Keep exploration task active.",
-                               exploration::explorationPlanStatusName(plan.status),
-                               plan.reason);
-                return NO_NEED;
-            }
-            ros_ptr_->warn(" -- [Exploration] Failed to select exploration guide [{}]: {}.",
-                           exploration::explorationPlanStatusName(plan.status),
-                           plan.reason);
-            return tryCommitExplorationBackupFallback(plan.reason);
+            exploration_runtime_manager_->onGoalSelected(goal);
         }
 
-        const double target_switch_distance =
-                std::max(std::max(0.3, cfg_.exploration_route_replan_distance_threshold),
-                         cfg_.planning_horizon * 0.3);
-        const bool final_goals_valid =
-                previous_plan.final_goal.allFinite() &&
-                plan.final_goal.allFinite();
-        const double final_goal_delta =
-                final_goals_valid
-                ? (plan.final_goal - previous_plan.final_goal).norm()
-                : std::numeric_limits<double>::infinity();
-        const bool same_physical_target =
-                final_goals_valid && final_goal_delta <= target_switch_distance;
-        const bool frontier_switched =
-                !same_physical_target &&
-                (previous_plan.target_frontier_id >= 0 ||
-                 plan.target_frontier_id >= 0) &&
-                previous_plan.target_frontier_id != plan.target_frontier_id;
-        const bool viewpoint_switched =
-                !same_physical_target &&
-                previous_plan.target_viewpoint_id >= 0 &&
-                plan.target_viewpoint_id >= 0 &&
-                previous_plan.target_viewpoint_id != plan.target_viewpoint_id;
-        const bool final_goal_switched =
-                final_goals_valid && final_goal_delta > target_switch_distance;
-        const bool goal_switched =
-                plan_from_rest ||
-                !previous_plan.valid ||
-                previous_plan.goal.type != plan.goal.type ||
-                previous_plan.safe_start_recovery != plan.safe_start_recovery ||
-                frontier_switched ||
-                viewpoint_switched ||
-                final_goal_switched;
-        plan.goal_switched = goal_switched;
-        if (cfg_.print_log) {
-            std::string switch_reason = "continuous_target";
-            if (plan_from_rest) {
-                switch_reason = "plan_from_rest";
-            } else if (!previous_plan.valid) {
-                switch_reason = "no_previous_plan";
-            } else if (previous_plan.goal.type != plan.goal.type) {
-                switch_reason = "goal_type";
-            } else if (previous_plan.safe_start_recovery != plan.safe_start_recovery) {
-                switch_reason = "safe_start_recovery";
-            } else if (frontier_switched) {
-                switch_reason = "frontier_id";
-            } else if (viewpoint_switched) {
-                switch_reason = "viewpoint_id";
-            } else if (final_goal_switched) {
-                switch_reason = "physical_goal";
-            }
-            ros_ptr_->info(" -- [Exploration] Target continuity: switched={}, reason={}, same_physical={}, goal_delta={:.3f}, threshold={:.3f}, prev_frontier={}, new_frontier={}, prev_viewpoint={}, new_viewpoint={}.",
-                           goal_switched,
-                           switch_reason,
-                           same_physical_target,
-                           final_goals_valid ? final_goal_delta : -1.0,
-                           target_switch_distance,
-                           previous_plan.target_frontier_id,
-                           plan.target_frontier_id,
-                           previous_plan.target_viewpoint_id,
-                           plan.target_viewpoint_id);
-        }
-
+        const RET_CODE ret = PlanFromRest(goal.position, goal.yaw, true);
         {
             std::lock_guard<std::mutex> guard(replan_lock_);
-            latest_exploration_plan_ = plan;
-            latest_exploration_goal_ = plan.goal;
-        }
-
-        const RET_CODE ret = commitExplorationLocalTrajectory(plan,
-                                                              plan_from_rest,
-                                                              goal_switched);
-        if (!plan_from_rest && ret == FAILED && has_active_traj) {
-            const double retry_now = ros_ptr_ ? ros_ptr_->getSimTime() : now;
-            double retry_elapsed = 0.0;
-            double retry_remaining = 0.0;
-            const bool still_active =
-                    getExplorationCommittedTrajectoryActivity(retry_now,
-                                                              retry_elapsed,
-                                                              retry_remaining);
-            double retry_collision_time = -1.0;
-            const bool retry_unsafe =
-                    still_active &&
-                    currentExplorationTrajectoryUnsafe(retry_now, &retry_collision_time);
-            if (still_active &&
-                retry_remaining > min_remaining_for_replan &&
-                !retry_unsafe) {
-                {
-                    std::lock_guard<std::mutex> guard(replan_lock_);
-                    exploration_runtime_state_ = ExplorationRuntimeState::EXEC_LOCAL;
-                    latest_replan.setGoal(robot.p, robot.yaw, robot);
-                    latest_replan.setRetCode(GENERAL_RET_CODE::GENERAL_SUCCESS_NO_BACKUP);
+            if (exploration_runtime_manager_ != nullptr) {
+                if (ret == SUCCESS || ret == FINISH || ret == NO_NEED) {
+                    exploration_runtime_manager_->onCommitted(goal);
+                } else {
+                    exploration_runtime_manager_->onTemporaryFailure(goal);
                 }
-                ros_ptr_->warn(" -- [Exploration] Continuous replan failed, keep current safe trajectory and retry. remaining={:.3f}s.",
-                               retry_remaining);
-                return NO_NEED;
             }
         }
-        if (ret == FAILED || ret == EMER) {
-            plan.status = exploration::ExplorationPlanStatus::BACKEND_FAILED;
-            plan.failure_type = exploration::ExplorationFailureType::BACKEND_FAILED;
-            {
-                std::lock_guard<std::mutex> guard(replan_lock_);
-                exploration_runtime_state_ = ExplorationRuntimeState::RECOVER;
-            }
-            const bool robot_at_final =
-                    plan.local_goal_is_final &&
-                    (robot.p - plan.final_goal).norm() <=
-                    std::max(0.3, cfg_.exploration_runtime_final_goal_radius);
-            if (robot_at_final) {
-                exploration_manager_->onGoalFailed(plan.goal, RET_CODE_STR[ret],
-                                                   ros_ptr_ ? ros_ptr_->getSimTime() : 0.0);
-            } else {
-                exploration_manager_->onLocalSegmentFailed(plan, RET_CODE_STR[ret],
-                                                           ros_ptr_ ? ros_ptr_->getSimTime() : 0.0);
-            }
-            const RET_CODE fallback_ret = tryCommitExplorationBackupFallback(RET_CODE_STR[ret]);
-            if (fallback_ret == SUCCESS) {
-                std::lock_guard<std::mutex> guard(replan_lock_);
-                exploration_runtime_state_ = ExplorationRuntimeState::EXEC_LOCAL;
-                exploration_has_committed_local_traj_ = true;
-            }
-            if (!plan_from_rest && fallback_ret == NO_NEED) {
-                ros_ptr_->info(" -- [Exploration] Replan fallback has no trajectory to commit, request PlanFromRest.");
-                return NEW_TRAJ;
-            }
-            return fallback_ret;
-        }
-        if (ret == SUCCESS) {
-            exploration_manager_->onLocalSegmentCommitted(plan,
-                                                          ros_ptr_ ? ros_ptr_->getSimTime() : 0.0);
-            std::lock_guard<std::mutex> guard(replan_lock_);
-            exploration_runtime_state_ = ExplorationRuntimeState::EXEC_LOCAL;
-            exploration_last_local_commit_wt_ = now;
-            exploration_has_committed_local_traj_ = true;
-        } else if (ret == NO_NEED) {
-            std::lock_guard<std::mutex> guard(replan_lock_);
-            exploration_runtime_state_ =
-                    has_active_traj ? ExplorationRuntimeState::EXEC_LOCAL
-                                    : ExplorationRuntimeState::PLAN_LOCAL;
-        }
-        if (!plan_from_rest && (ret == SUCCESS || ret == NO_NEED)) {
-            const double remaining = getCommittedTrajectoryRemainingDuration();
-            if (remaining <= min_remaining_for_replan) {
-                ros_ptr_->info(" -- [Exploration] Current local trajectory ended, request PlanFromRest for next guide.");
-                return NEW_TRAJ;
-            }
-        }
+        time_consuming_[TOTAL_REPLAN] = total_t.stop();
         return ret;
     }
 
-    GeneralPlanner::ExplorationRuntimePolicy
-    GeneralPlanner::getExplorationRuntimePolicy() const {
-        ExplorationRuntimePolicy policy;
-        policy.global_update_dt = std::max(0.0, cfg_.exploration_runtime_global_update_dt);
-        policy.replan_forward_dt =
-                std::max(std::max(0.0, cfg_.replan_forward_dt),
-                         std::max(0.0, cfg_.exploration_runtime_replan_time_before_traj_end));
-        policy.min_remaining_for_replan =
-                std::max(0.02, policy.replan_forward_dt + 0.05);
-        policy.replan_time_after_traj_start =
-                std::max(0.0, cfg_.exploration_runtime_replan_time_after_traj_start);
-        policy.replan_time_before_traj_end =
-                std::max(std::max(0.0, cfg_.exploration_runtime_replan_time_before_traj_end),
-                         policy.min_remaining_for_replan + 0.05);
-        policy.stop_traj_time = std::max(0.05, cfg_.exploration_runtime_stop_traj_time);
-        policy.collision_replan_time =
-                std::max(policy.stop_traj_time, cfg_.exploration_runtime_collision_replan_time);
-        return policy;
-    }
-
-    GeneralPlanner::ExplorationExecutionStatus
-    GeneralPlanner::getExplorationExecutionStatus(const double now) {
-        ExplorationExecutionStatus status;
-        status.has_observation = explorationObservationReady();
-        status.has_active_trajectory =
-                getExplorationCommittedTrajectoryActivity(now,
-                                                          status.traj_elapsed,
-                                                          status.traj_remaining);
-        if (status.has_active_trajectory) {
-            status.trajectory_unsafe =
-                    currentExplorationTrajectoryUnsafe(now, &status.collision_time);
-        }
-        return status;
-    }
-
-    GeneralPlanner::ExplorationFrontendUpdateResult
-    GeneralPlanner::refreshExplorationGlobalPlan() {
-        ExplorationFrontendUpdateResult result;
-        const double now = ros_ptr_ ? ros_ptr_->getSimTime() : 0.0;
-        if (exploration_manager_ == nullptr) {
-            result.reason = "exploration manager is not initialized";
-            return result;
-        }
-
-        robot_state_ = map_manager_ ? map_manager_->getRobotState() : rog_map::RobotState{};
-        const rog_map::RobotState robot = robot_state_;
-        if (!robot.rcv) {
-            result.reason = "no odom";
-            std::lock_guard<std::mutex> guard(replan_lock_);
-            exploration_runtime_state_ = ExplorationRuntimeState::WAIT_OBSERVATION;
-            latest_replan.setRetCode(GENERAL_RET_CODE::GENERAL_NO_ODOM);
-            return result;
-        }
-        if (!exploration_manager_->hasObservation()) {
-            result.reason = "waiting for first exploration cloud observation";
-            std::lock_guard<std::mutex> guard(replan_lock_);
-            exploration_runtime_state_ = ExplorationRuntimeState::WAIT_OBSERVATION;
-            latest_replan.setGoal(robot.p, robot.yaw, robot);
-            latest_replan.setRetCode(GENERAL_RET_CODE::GENERAL_SUCCESS_NO_BACKUP);
-            return result;
-        }
-
+    RET_CODE GeneralPlanner::ReplanExplorationOnce(const bool &new_task) {
+        TimeConsuming total_t("ReplanExplorationOnce", false);
+        ExplorationGoal selected_goal;
+        bool goal_switched = new_task;
+        bool selected_goal_ready = false;
         {
             std::lock_guard<std::mutex> guard(replan_lock_);
-            exploration_runtime_state_ = ExplorationRuntimeState::UPDATE_GLOBAL;
-        }
-
-        exploration::ExplorationPlan plan;
-        const bool ok = exploration_manager_->refreshGlobalPlan(robot, robot.yaw, plan);
-        const bool finished =
-                !ok &&
-                plan.status == exploration::ExplorationPlanStatus::TRUE_FINISHED &&
-                plan.no_frontier &&
-                exploration_manager_->isExplorationFinished();
-        const bool recoverable =
-                !ok && exploration::explorationPlanStatusRecoverable(plan.status);
-
-        {
-            std::lock_guard<std::mutex> guard(replan_lock_);
-            exploration_last_global_update_wt_ = now;
-            if (ok || finished) {
-                latest_exploration_plan_ = plan;
+            latest_replan.reset();
+            if (!robot_state_.rcv) {
+                latest_replan.setRetCode(GENERAL_RET_CODE::GENERAL_NO_ODOM);
+                ros_ptr_->warn(" -- [Exploration] Replan failed: no odom.");
+                return FAILED;
             }
-            latest_exploration_goal_ = plan.goal;
-            latest_replan.setGoal(robot.p, robot.yaw, robot);
-            latest_replan.setRetCode((ok || recoverable)
-                                     ? GENERAL_RET_CODE::GENERAL_SUCCESS_NO_BACKUP
-                                     : GENERAL_RET_CODE::GENERAL_UNDEFINED);
-            if (ok) {
-                exploration_runtime_state_ = ExplorationRuntimeState::PLAN_LOCAL;
-            } else if (finished) {
-                exploration_runtime_state_ = ExplorationRuntimeState::FINISH;
+            if (map_manager_ == nullptr || !map_manager_->ready()) {
+                latest_replan.setRetCode(GENERAL_RET_CODE::GENERAL_MAP_NOT_READY);
+                ros_ptr_->warn(" -- [Exploration] Replan failed: map is not ready.");
+                return FAILED;
+            }
+            if (exploration_frontend_ == nullptr) {
+                latest_replan.setRetCode(GENERAL_RET_CODE::GENERAL_UNDEFINED);
+                ros_ptr_->warn(" -- [Exploration] Replan failed: frontend is not initialized.");
+                return FAILED;
+            }
+            if (exploration_runtime_manager_ == nullptr) {
+                latest_replan.setRetCode(GENERAL_RET_CODE::GENERAL_UNDEFINED);
+                ros_ptr_->warn(" -- [Exploration] Replan failed: runtime manager is not initialized.");
+                return FAILED;
+            }
+            if (new_task) {
+                exploration_frontend_->reset();
+                exploration_runtime_manager_->reset();
+            }
+            exploration_runtime_manager_->onSelectingGoal();
+
+            const double remaining = getCommittedTrajectoryRemainingDuration();
+            ExplorationGoal candidate;
+            const StatePVAJ head_state = makeTaskHeadState(false);
+            if (!exploration_frontend_->planNextGoal(head_state, robot_state_.yaw, candidate)) {
+                latest_replan.setGoal(robot_state_.p, robot_state_.yaw, robot_state_);
+                if (exploration_frontend_->isExplorationFinished()) {
+                    exploration_runtime_manager_->onFinished(candidate);
+                    latest_replan.setRetCode(GENERAL_RET_CODE::GENERAL_EXPLORATION_FINISH);
+                    ros_ptr_->info(" -- [Exploration] Exploration finished: {}.", candidate.reason);
+                    time_consuming_[TOTAL_REPLAN] = total_t.stop();
+                    return FINISH;
+                }
+                if (exploration_runtime_manager_->shouldReuseLatestGoal(robot_state_.p, remaining, new_task) &&
+                    exploration_runtime_manager_->getLatestGoal(selected_goal)) {
+                    goal_switched = false;
+                    selected_goal_ready = true;
+                    exploration_runtime_manager_->onKeepCurrentGoal();
+                    if (cfg_.exploration_print_log) {
+                        ros_ptr_->info(" -- [Exploration] Reuse current goal after temporary frontend failure: reason={}, remaining={:.3f}.",
+                                       candidate.reason,
+                                       remaining);
+                    }
+                } else {
+                    exploration_runtime_manager_->onTemporaryFailure(candidate);
+                    latest_replan.setRetCode(GENERAL_RET_CODE::GENERAL_UNDEFINED);
+                    ros_ptr_->warn(" -- [Exploration] Failed to select replan goal: {}.", candidate.reason);
+                    time_consuming_[TOTAL_REPLAN] = total_t.stop();
+                    return FAILED;
+                }
+            } else {
+                if (exploration_runtime_manager_->shouldKeepCurrentGoal(candidate, robot_state_.p, remaining, new_task) &&
+                    exploration_runtime_manager_->getLatestGoal(selected_goal)) {
+                    goal_switched = false;
+                    exploration_runtime_manager_->onKeepCurrentGoal();
+                    if (cfg_.exploration_print_log) {
+                        ros_ptr_->info(" -- [Exploration] Keep current goal: remaining={:.3f}, current_score={:.3f}, candidate_score={:.3f}.",
+                                       remaining,
+                                       selected_goal.score,
+                                       candidate.score);
+                    }
+                } else {
+                    selected_goal = candidate;
+                    goal_switched = true;
+                    exploration_runtime_manager_->onGoalSelected(candidate);
+                }
+                selected_goal_ready = true;
             }
         }
 
-        result.ready = true;
-        result.updated = ok;
-        result.finished = finished;
-        result.no_frontier = plan.no_frontier;
-        result.plan = plan;
-        result.reason = ok ? "global tour refreshed" : plan.reason;
-        return result;
-    }
-
-    void GeneralPlanner::resetExplorationTaskRuntime(const bool hard_reset) {
-        std::lock_guard<std::mutex> guard(replan_lock_);
-        if (hard_reset && exploration_manager_ != nullptr) {
-            exploration_manager_->reset();
+        if (!selected_goal_ready) {
+            return FAILED;
         }
-        if (hard_reset) {
-            latest_exploration_goal_ = exploration::ExplorationGoal{};
-            latest_exploration_plan_ = exploration::ExplorationPlan{};
+        const RET_CODE ret = ReplanOnce(selected_goal.position, selected_goal.yaw, goal_switched);
+        {
+            std::lock_guard<std::mutex> guard(replan_lock_);
+            if (exploration_runtime_manager_ != nullptr) {
+                if (ret == SUCCESS || ret == FINISH || ret == NO_NEED) {
+                    exploration_runtime_manager_->onCommitted(selected_goal);
+                } else {
+                    exploration_runtime_manager_->onTemporaryFailure(selected_goal);
+                }
+            }
         }
-        active_exploration_plan_ = exploration::ExplorationPlan{};
-        active_exploration_guide_ = false;
-        resetExplorationRuntimeState(hard_reset);
+        time_consuming_[TOTAL_REPLAN] = total_t.stop();
+        return ret;
     }
 
-    bool GeneralPlanner::truncateActiveExplorationTrajectory(const double stop_time) {
-        return truncateExplorationCommittedTrajectory(stop_time);
-    }
-
-    bool GeneralPlanner::getLatestExplorationGoal(exploration::ExplorationGoal &goal) const {
+    bool GeneralPlanner::getLatestExplorationGoal(ExplorationGoal &goal) const {
         std::lock_guard<std::mutex> guard(replan_lock_);
-        goal = latest_exploration_goal_;
-        return latest_exploration_goal_.valid;
+        return exploration_runtime_manager_ != nullptr &&
+               exploration_runtime_manager_->getLatestGoal(goal);
     }
 
     RET_CODE GeneralPlanner::PlanSE3AggressiveFromRest(const Vec3f &goal_p,
                                                        double goal_yaw,
                                                        bool new_task) {
         (void)new_task;
+        TimeConsuming total_t("PlanSE3AggressiveFromRest", false);
         std::lock_guard<std::mutex> guard(replan_lock_);
         latest_replan.reset();
         if (!robot_state_.rcv) {
             latest_replan.setGoal(goal_p, goal_yaw, robot_state_);
             latest_replan.setRetCode(GENERAL_RET_CODE::GENERAL_NO_ODOM);
             ros_ptr_->warn(" -- [SE3Aggressive] PlanFromRest failed: no odom.");
+            time_consuming_[TOTAL_REPLAN] = total_t.stop();
             return FAILED;
         }
         gi_.goal_valid = true;
@@ -1721,6 +1378,7 @@ namespace general_planner {
         const RET_CODE ret = optimizeSE3AggressiveTask(goal_p, goal_yaw, true);
         latest_replan.setRetCode((ret == SUCCESS || ret == FINISH) ? GENERAL_RET_CODE::GENERAL_SUCCESS_NO_BACKUP
                                                                    : GENERAL_RET_CODE::GENERAL_UNDEFINED);
+        time_consuming_[TOTAL_REPLAN] = total_t.stop();
         return ret;
     }
 
@@ -1728,12 +1386,14 @@ namespace general_planner {
                                                      double goal_yaw,
                                                      bool new_task) {
         (void)new_task;
+        TimeConsuming total_t("ReplanSE3AggressiveOnce", false);
         std::lock_guard<std::mutex> guard(replan_lock_);
         latest_replan.reset();
         if (!robot_state_.rcv) {
             latest_replan.setGoal(goal_p, goal_yaw, robot_state_);
             latest_replan.setRetCode(GENERAL_RET_CODE::GENERAL_NO_ODOM);
             ros_ptr_->warn(" -- [SE3Aggressive] Replan failed: no odom.");
+            time_consuming_[TOTAL_REPLAN] = total_t.stop();
             return FAILED;
         }
         gi_.goal_valid = true;
@@ -1745,6 +1405,7 @@ namespace general_planner {
         const RET_CODE ret = optimizeSE3AggressiveTask(goal_p, goal_yaw, false);
         latest_replan.setRetCode((ret == SUCCESS || ret == FINISH) ? GENERAL_RET_CODE::GENERAL_SUCCESS_NO_BACKUP
                                                                    : GENERAL_RET_CODE::GENERAL_UNDEFINED);
+        time_consuming_[TOTAL_REPLAN] = total_t.stop();
         return ret;
     }
 
@@ -1849,7 +1510,7 @@ namespace general_planner {
                                                        const std::string &traj_ns) {
         static bool warning_printed = false;
         if (!warning_printed) {
-            ros_ptr_->warn("SE3 aggressive trajectory requires flatness-aware controller for reliable execution.");
+            ros_ptr_->warn(" -- [SE3Aggressive] SE3 trajectory requires a flatness-aware controller for reliable execution.");
             warning_printed = true;
         }
         const bool fix_terminal_yaw = cfg_.se3_use_yaw && std::isfinite(gi_.goal_yaw);
@@ -2175,19 +1836,22 @@ namespace general_planner {
     bool GeneralPlanner::commitTrackingTrajectory(const Trajectory &pos_traj,
                                                 const Trajectory &optimized_yaw_traj,
                                                 const traj_opt::DynamicTargetStates &target_prediction,
-                                                const std::string &traj_ns) {
+                                                const std::string &traj_ns,
+                                                const bool allow_reacquire_fov_relax) {
         if (trackingPerchingPerchingActive()) {
             latest_replan.setRetCode(GENERAL_SUCCESS_NO_BACKUP);
-            last_tracking_commit_reject_reason_ = "perching owns committed trajectory";
+            setTrackingCommitRejectInfo("perching owns committed trajectory",
+                                        "failure=perching_owns_committed_trajectory");
             ros_ptr_->warn(" -- [TrackingPerching] TRACKING_COMMIT_BLOCKED_PERCHING_ACTIVE reason=perching_owns_committed_trajectory");
             return false;
         }
         if (pos_traj.empty()) {
-            last_tracking_commit_reject_reason_ = "empty tracking trajectory";
+            setTrackingCommitRejectInfo("empty tracking trajectory",
+                                        "failure=empty_tracking_trajectory");
             ros_ptr_->warn(" -- [GeneralPlanner] Tracking trajectory is empty, cannot commit.");
             return false;
         }
-        last_tracking_commit_reject_reason_.clear();
+        clearTrackingCommitRejectInfo();
 
         const double commit_wt = ros_ptr_->getSimTime();
         bool has_old_cmd = false;
@@ -2294,6 +1958,7 @@ namespace general_planner {
                 [&](const TrackingRuntimeManager::Decision &decision,
                     const Trajectory &candidate,
                     const bool anti_rollback_pass,
+                    const bool candidate_fov_ok,
                     const double prefix_duration,
                     const double runtime_eval_start,
                     const int anti_rollback_worse_count,
@@ -2325,7 +1990,7 @@ namespace general_planner {
             } else if (decision.type == TrackingRuntimeManager::DecisionType::KEEP_OLD) {
                 log_name = "TRACKING_MANAGER_DECISION_KEEP_OLD";
             }
-            ros_ptr_->info(" -- [Tracking] {} tag={}, decision={}, reason={}, guide_path.size()={}, problem.sfcs.size()={}, problem.target_prediction.size()={}, out_traj_duration={:.3f}, candidate_safe={}, candidate_safe_reason={}, candidate_commandable={}, anti_rollback_pass={}, anti_rollback_worse_count={}, anti_rollback_max_regression={:.3f}, bypass_anti_rollback={}, candidate_duration={:.3f}, prefix_duration={:.3f}, runtime_eval_start={:.3f}, candidate_disp_xy={:.3f}, candidate_disp_z={:.3f}, candidate_disp_3d={:.3f}, candidate_speed_xy={:.3f}, candidate_speed_z={:.3f}, candidate_speed_3d={:.3f}, target_speed_xy={:.3f}, target_speed_z={:.3f}, target_speed_3d={:.3f}, old_remaining={:.3f}, old_activity_reason={}, old_speed_xy={:.3f}, old_speed_z={:.3f}, old_speed_3d={:.3f}, old_disp_xy={:.3f}, old_disp_z={:.3f}, old_disp_3d={:.3f}, old_progress_xy={:.3f}, old_progress_3d={:.3f}, old_expected_progress={:.3f}, old_avg_tracking_error={:.3f}, keep_old_count={}, reject_count={}",
+            ros_ptr_->info(" -- [Tracking] {} tag={}, decision={}, reason={}, guide_path.size()={}, problem.sfcs.size()={}, problem.target_prediction.size()={}, out_traj_duration={:.3f}, candidate_safe={}, candidate_safe_reason={}, candidate_commandable={}, candidate_fov_ok={}, anti_rollback_pass={}, anti_rollback_worse_count={}, anti_rollback_max_regression={:.3f}, bypass_anti_rollback={}, candidate_duration={:.3f}, prefix_duration={:.3f}, runtime_eval_start={:.3f}, candidate_disp_xy={:.3f}, candidate_disp_z={:.3f}, candidate_disp_3d={:.3f}, candidate_speed_xy={:.3f}, candidate_speed_z={:.3f}, candidate_speed_3d={:.3f}, target_speed_xy={:.3f}, target_speed_z={:.3f}, target_speed_3d={:.3f}, old_remaining={:.3f}, old_activity_reason={}, old_speed_xy={:.3f}, old_speed_z={:.3f}, old_speed_3d={:.3f}, old_disp_xy={:.3f}, old_disp_z={:.3f}, old_disp_3d={:.3f}, old_progress_xy={:.3f}, old_progress_3d={:.3f}, old_expected_progress={:.3f}, old_avg_tracking_error={:.3f}, keep_old_count={}, reject_count={}",
                            log_name,
                            tag,
                            decisionTypeName(decision.type),
@@ -2337,6 +2002,7 @@ namespace general_planner {
                            decision.candidate_safe,
                            candidate_safe_reason,
                            decision.candidate_commandable,
+                           candidate_fov_ok,
                            anti_rollback_pass,
                            anti_rollback_worse_count,
                            anti_rollback_max_regression,
@@ -2411,7 +2077,7 @@ namespace general_planner {
             }
             if (!anti_rollback_pass &&
                 decision.type == TrackingRuntimeManager::DecisionType::KEEP_OLD) {
-                ros_ptr_->warn(" -- [Tracking] TRACKING_CANDIDATE_REJECTED_ANTI_ROLLBACK reason={}, guide_path.size()={}, problem.sfcs.size()={}, problem.target_prediction.size()={}, out_traj_duration={:.3f}, prefix_duration={:.3f}, runtime_eval_start={:.3f}, worse_count={}, max_regression={:.3f}, candidate_disp_3d={:.3f}, candidate_progress_3d={:.3f}, old_remaining={:.3f}, old_activity_reason={}, old_speed_3d={:.3f}, old_disp_3d={:.3f}, old_progress_3d={:.3f}, old_expected_progress={:.3f}, old_avg_tracking_error={:.3f}",
+                ros_ptr_->warn(" -- [Tracking] TRACKING_CANDIDATE_REJECTED_ANTI_ROLLBACK reason={}, guide_path.size()={}, problem.sfcs.size()={}, problem.target_prediction.size()={}, out_traj_duration={:.3f}, prefix_duration={:.3f}, runtime_eval_start={:.3f}, candidate_fov_ok={}, worse_count={}, max_regression={:.3f}, candidate_disp_3d={:.3f}, candidate_progress_3d={:.3f}, old_remaining={:.3f}, old_activity_reason={}, old_speed_3d={:.3f}, old_disp_3d={:.3f}, old_progress_3d={:.3f}, old_expected_progress={:.3f}, old_avg_tracking_error={:.3f}",
                                decision.reason,
                                last_tracking_diag_guide_path_size_,
                                last_tracking_diag_sfc_size_,
@@ -2419,6 +2085,7 @@ namespace general_planner {
                                last_tracking_diag_out_traj_duration_,
                                prefix_duration,
                                runtime_eval_start,
+                               candidate_fov_ok,
                                anti_rollback_worse_count,
                                anti_rollback_max_regression,
                                candidate_metrics.displacement_3d,
@@ -2437,7 +2104,8 @@ namespace general_planner {
                 [&](const Trajectory &candidate,
                     const std::string &tag,
                     const double candidate_eval_start_t,
-                    const double target_eval_start_t) -> TrackingRuntimeManager::DecisionType {
+                    const double target_eval_start_t,
+                    const bool candidate_fov_ok) -> TrackingRuntimeManager::DecisionType {
             if (!cfg_.tracking_runtime_manager_enable || !tracking_runtime_manager_) {
                 int worse_count = 0;
                 double max_regression = 0.0;
@@ -2449,13 +2117,21 @@ namespace general_planner {
                                                          candidate_eval_start_t,
                                                          target_eval_start_t,
                                                          true,
-                                                         true,
+                                                         candidate_fov_ok,
                                                          &worse_count,
                                                          &max_regression,
                                                          &anti_reason);
                 if (!pass) {
-                    last_tracking_commit_reject_reason_ =
-                            anti_reason.empty() ? "anti-rollback rejected candidate" : anti_reason;
+                    setTrackingCommitRejectInfo(
+                            anti_reason.empty() ? "anti-rollback rejected candidate" : anti_reason,
+                            fmt::format(
+                                    "decision=REJECT_AND_FAIL|failure=anti_rollback|anti_rollback_pass=0|anti_rollback_reason={}|worse_count={}|max_regression={:.3f}|candidate_eval_start_t={:.3f}|target_eval_start_t={:.3f}|candidate_duration={:.3f}",
+                                    anti_reason.empty() ? "none" : anti_reason,
+                                    worse_count,
+                                    max_regression,
+                                    candidate_eval_start_t,
+                                    target_eval_start_t,
+                                    candidate.getTotalDuration()));
                 }
                 return pass ? TrackingRuntimeManager::DecisionType::COMMIT_CANDIDATE
                             : TrackingRuntimeManager::DecisionType::REJECT_AND_FAIL;
@@ -2470,14 +2146,21 @@ namespace general_planner {
                         ? std::clamp(commit_wt - old_start_wt, 0.0, old_total_dur)
                         : 0.0;
             std::string candidate_safe_reason;
+            std::string candidate_safe_detail;
+            const double candidate_total = candidate.getTotalDuration();
+            const double candidate_safety_start =
+                    std::clamp(candidate_eval_start_t, 0.0, candidate_total);
+            const double candidate_safety_horizon =
+                    std::min(cfg_.tracking_keep_old_horizon,
+                             std::max(0.0, candidate_total - candidate_safety_start));
             const bool candidate_safe =
-                    tracking_runtime_manager_->trajectorySafe(
+                    trackingTrajectorySafeForHorizonDetailed(
                             candidate,
-                            0.0,
-                            std::min(cfg_.tracking_keep_old_horizon,
-                                     candidate.getTotalDuration()),
+                            candidate_safety_start,
+                            candidate_safety_horizon,
                             cfg_.tracking_keep_old_safety_dt,
-                            &candidate_safe_reason);
+                            &candidate_safe_reason,
+                            &candidate_safe_detail);
             int anti_rollback_worse_count = 0;
             double anti_rollback_max_regression = 0.0;
             std::string anti_rollback_reason;
@@ -2489,7 +2172,7 @@ namespace general_planner {
                                                            candidate_eval_start_t,
                                                            target_eval_start_t,
                                                            candidate_safe,
-                                                           true,
+                                                           candidate_fov_ok,
                                                            &anti_rollback_worse_count,
                                                            &anti_rollback_max_regression,
                                                            &anti_rollback_reason)
@@ -2513,9 +2196,31 @@ namespace general_planner {
                                       ? anti_rollback_reason
                                       : decision.reason + ": " + anti_rollback_reason;
             }
+            const std::string runtime_decision_detail = fmt::format(
+                    "tag={}|decision={}|has_old_tracking={}|candidate_safe={}|candidate_commandable={}|candidate_fov_ok={}|bypass_anti_rollback={}|candidate_safe_reason={}|candidate_safe_detail={}|anti_rollback_pass={}|anti_rollback_reason={}|anti_rollback_worse_count={}|anti_rollback_max_regression={:.3f}|candidate_eval_start_t={:.3f}|target_eval_start_t={:.3f}|candidate_duration={:.3f}|candidate_safety_start={:.3f}|candidate_safety_horizon={:.3f}|old_local_t={:.3f}",
+                    tag,
+                    decisionTypeName(decision.type),
+                    static_cast<int>(has_old_tracking),
+                    static_cast<int>(candidate_safe),
+                    static_cast<int>(decision.candidate_commandable),
+                    static_cast<int>(candidate_fov_ok),
+                    static_cast<int>(decision.bypass_anti_rollback),
+                    candidate_safe_reason.empty() ? "none" : candidate_safe_reason,
+                    candidate_safe_detail.empty() ? "none" : candidate_safe_detail,
+                    static_cast<int>(anti_rollback_pass),
+                    anti_rollback_reason.empty() ? "none" : anti_rollback_reason,
+                    anti_rollback_worse_count,
+                    anti_rollback_max_regression,
+                    candidate_eval_start_t,
+                    target_eval_start_t,
+                    candidate.getTotalDuration(),
+                    candidate_safety_start,
+                    candidate_safety_horizon,
+                    old_local_t);
             logRuntimeDecision(decision,
                                candidate,
                                anti_rollback_pass,
+                               candidate_fov_ok,
                                candidate_eval_start_t,
                                candidate_eval_start_t,
                                anti_rollback_worse_count,
@@ -2542,22 +2247,26 @@ namespace general_planner {
                         }
                         return TrackingRuntimeManager::DecisionType::FORCE_COMMIT_CANDIDATE;
                     }
-                    last_tracking_commit_reject_reason_ = decision.reason;
+                    setTrackingCommitRejectInfo(decision.reason, runtime_decision_detail);
                     tracking_runtime_manager_->onRejected();
                     return TrackingRuntimeManager::DecisionType::REJECT_AND_FAIL;
                 case TrackingRuntimeManager::DecisionType::REJECT_AND_FAIL:
-                    last_tracking_commit_reject_reason_ = decision.reason;
+                    setTrackingCommitRejectInfo(decision.reason, runtime_decision_detail);
                     tracking_runtime_manager_->onRejected();
                     return TrackingRuntimeManager::DecisionType::REJECT_AND_FAIL;
             }
-            last_tracking_commit_reject_reason_ = "runtime decision fell through";
+            setTrackingCommitRejectInfo("runtime decision fell through", runtime_decision_detail);
             tracking_runtime_manager_->onRejected();
             return TrackingRuntimeManager::DecisionType::REJECT_AND_FAIL;
         };
 
         Trajectory yaw_traj = optimized_yaw_traj;
         if (yaw_traj.empty() && !buildTrackingTargetYawTrajectory(pos_traj, target_prediction, yaw_traj)) {
-            last_tracking_commit_reject_reason_ = "yaw generation failed";
+            setTrackingCommitRejectInfo(
+                    "yaw generation failed",
+                    fmt::format("failure=yaw_generation_failed|candidate_duration={:.3f}|target_prediction_size={}",
+                                pos_traj.getTotalDuration(),
+                                target_prediction.size()));
             ros_ptr_->warn(" -- [Tracking] TRACKING_CANDIDATE_REJECTED_FOV reason=yaw_generation_failed");
             if (keepOldFromSnapshot("tracking yaw generation failed")) {
                 if (cfg_.tracking_runtime_manager_enable && tracking_runtime_manager_) {
@@ -2631,6 +2340,7 @@ namespace general_planner {
         const bool should_check_fov =
                 cfg_.tracking_fov_commit_check_enable &&
                 (cfg_.tracking_fov_check_first_commit || has_committed_tracking);
+        bool candidate_fov_ok_for_commit = true;
         if (should_check_fov) {
             std::string fov_reject_reason;
             const double fov_start_t = 0.0;
@@ -2646,31 +2356,97 @@ namespace general_planner {
                                                 fov_horizon,
                                                 cfg_.tracking_fov_check_dt,
                                                 0.0,
-                                                &fov_reject_reason)) {
-                if (cfg_.print_log) {
-                    ros_ptr_->warn(" -- [Tracking] TRACKING_CANDIDATE_REJECTED_FOV reason={}, start_t={:.3f}, horizon={:.3f}, prefix_duration={:.3f}, runtime_eval_start={:.3f}, guide_path.size()={}, problem.sfcs.size()={}, problem.target_prediction.size()={}, out_traj_duration={:.3f}",
-                                   fov_reject_reason,
-                                   fov_start_t,
-                                   fov_horizon,
-                                   stitched_prefix_duration,
-                                   stitched_prefix_duration,
-                                   last_tracking_diag_guide_path_size_,
-                                   last_tracking_diag_sfc_size_,
-                                   last_tracking_diag_target_prediction_size_,
-                                   last_tracking_diag_out_traj_duration_);
-                }
-                last_tracking_commit_reject_reason_ =
-                        "candidate FOV rejected: " + fov_reject_reason;
-                if (keepOldFromSnapshot("tracking candidate rejected by FOV: " + fov_reject_reason)) {
-                    if (cfg_.tracking_runtime_manager_enable && tracking_runtime_manager_) {
-                        tracking_runtime_manager_->onKeepOld();
+                                                &fov_reject_reason,
+                                                false,
+                                                allow_reacquire_fov_relax)) {
+                Trajectory target_yaw_traj;
+                std::string rebuilt_yaw_fov_reason;
+                const bool rebuilt_yaw_generated =
+                        buildTrackingTargetYawTrajectory(committed_pos_traj,
+                                                         target_prediction,
+                                                         target_yaw_traj);
+                const bool rebuilt_yaw_ok =
+                        rebuilt_yaw_generated &&
+                        trackingTrajectorySatisfiesFov(committed_pos_traj,
+                                                       target_yaw_traj,
+                                                       target_prediction,
+                                                       fov_start_t,
+                                                       fov_horizon,
+                                                       cfg_.tracking_fov_check_dt,
+                                                       0.0,
+                                                       &rebuilt_yaw_fov_reason,
+                                                       false,
+                                                       allow_reacquire_fov_relax);
+                if (rebuilt_yaw_ok) {
+                    committed_yaw_traj = target_yaw_traj;
+                    committed_yaw_traj.start_WT = commit_wt;
+                    if (cfg_.print_log) {
+                        ros_ptr_->warn(" -- [Tracking] TRACKING_CANDIDATE_YAW_REBUILT_FOR_FOV reason={}, horizon={:.3f}, reacquire_fov_relax={}",
+                                       fov_reject_reason,
+                                       fov_horizon,
+                                       allow_reacquire_fov_relax);
                     }
-                    return true;
+                } else if (allow_reacquire_fov_relax) {
+                    candidate_fov_ok_for_commit = false;
+                    if (rebuilt_yaw_generated && !target_yaw_traj.empty()) {
+                        committed_yaw_traj = target_yaw_traj;
+                        committed_yaw_traj.start_WT = commit_wt;
+                    }
+                    if (cfg_.print_log) {
+                        ros_ptr_->warn(" -- [Tracking] TRACKING_CANDIDATE_FOV_DEGRADED_ACCEPT reason={}, target_yaw_fallback={}, start_t={:.3f}, horizon={:.3f}, prefix_duration={:.3f}, runtime_eval_start={:.3f}, guide_path.size()={}, problem.sfcs.size()={}, problem.target_prediction.size()={}, out_traj_duration={:.3f}",
+                                       fov_reject_reason,
+                                       rebuilt_yaw_generated
+                                           ? (rebuilt_yaw_fov_reason.empty()
+                                                  ? "failed_without_reason"
+                                                  : rebuilt_yaw_fov_reason)
+                                           : "generation_failed",
+                                       fov_start_t,
+                                       fov_horizon,
+                                       stitched_prefix_duration,
+                                       stitched_prefix_duration,
+                                       last_tracking_diag_guide_path_size_,
+                                       last_tracking_diag_sfc_size_,
+                                       last_tracking_diag_target_prediction_size_,
+                                       last_tracking_diag_out_traj_duration_);
+                    }
+                } else {
+                    if (cfg_.print_log) {
+                        ros_ptr_->warn(" -- [Tracking] TRACKING_CANDIDATE_REJECTED_FOV reason={}, start_t={:.3f}, horizon={:.3f}, prefix_duration={:.3f}, runtime_eval_start={:.3f}, reacquire_fov_relax={}, guide_path.size()={}, problem.sfcs.size()={}, problem.target_prediction.size()={}, out_traj_duration={:.3f}",
+                                       fov_reject_reason,
+                                       fov_start_t,
+                                       fov_horizon,
+                                       stitched_prefix_duration,
+                                       stitched_prefix_duration,
+                                       allow_reacquire_fov_relax,
+                                       last_tracking_diag_guide_path_size_,
+                                       last_tracking_diag_sfc_size_,
+                                       last_tracking_diag_target_prediction_size_,
+                                       last_tracking_diag_out_traj_duration_);
+                    }
+                    setTrackingCommitRejectInfo(
+                            "candidate FOV rejected: " + fov_reject_reason +
+                            "; target_yaw_fallback=" +
+                            (rebuilt_yaw_fov_reason.empty() ? "failed" : rebuilt_yaw_fov_reason),
+                            fmt::format(
+                                    "failure=fov_rejected|fov_start_t={:.3f}|fov_horizon={:.3f}|prefix_duration={:.3f}|reacquire_fov_relax={}|candidate_duration={:.3f}|target_prediction_size={}|target_yaw_fallback_reason={}",
+                                    fov_start_t,
+                                    fov_horizon,
+                                    stitched_prefix_duration,
+                                    static_cast<int>(allow_reacquire_fov_relax),
+                                    committed_pos_traj.getTotalDuration(),
+                                    target_prediction.size(),
+                                    rebuilt_yaw_fov_reason.empty() ? "failed" : rebuilt_yaw_fov_reason));
+                    if (keepOldFromSnapshot("tracking candidate rejected by FOV: " + fov_reject_reason)) {
+                        if (cfg_.tracking_runtime_manager_enable && tracking_runtime_manager_) {
+                            tracking_runtime_manager_->onKeepOld();
+                        }
+                        return true;
+                    }
+                    if (cfg_.tracking_runtime_manager_enable && tracking_runtime_manager_) {
+                        tracking_runtime_manager_->onRejected();
+                    }
+                    return false;
                 }
-                if (cfg_.tracking_runtime_manager_enable && tracking_runtime_manager_) {
-                    tracking_runtime_manager_->onRejected();
-                }
-                return false;
             }
         }
 
@@ -2682,7 +2458,8 @@ namespace general_planner {
                                          : 0.0,
                                      cfg_.tracking_anti_rollback_eval_after_prefix
                                          ? stitched_prefix_duration
-                                         : 0.0);
+                                         : 0.0,
+                                     candidate_fov_ok_for_commit);
         if (runtime_decision == TrackingRuntimeManager::DecisionType::KEEP_OLD) {
             return true;
         }
@@ -3177,9 +2954,121 @@ namespace general_planner {
     bool GeneralPlanner::keepOldTrackingTrajectoryIfActive(
             const traj_opt::DynamicTargetStates &target_prediction,
             const std::string &reason) {
+        auto keepOldReason = [this](const std::string &status) {
+            return fmt::format("{};trigger_phase={};trigger_reason={}",
+                               status,
+                               last_tracking_diag_phase_,
+                               last_tracking_diag_reason_);
+        };
+        auto tryShortSafetyGrace =
+                [&](const Trajectory &old_pos_traj,
+                    const Trajectory &old_yaw_traj,
+                    const double old_local_t,
+                    const auto &activity,
+                    const bool runtime_managed) -> bool {
+            if (!cfg_.tracking_keep_old_short_safety_grace_enable ||
+                old_pos_traj.empty() ||
+                target_prediction.empty()) {
+                return false;
+            }
+            if (activity.remaining < cfg_.tracking_keep_old_min_remaining) {
+                return false;
+            }
+            const int consecutive_keep_old =
+                    runtime_managed && tracking_runtime_manager_
+                        ? tracking_runtime_manager_->consecutiveKeepOld()
+                        : tracking_consecutive_keep_old_;
+            if (cfg_.tracking_max_consecutive_keep_old > 0 &&
+                consecutive_keep_old >= cfg_.tracking_max_consecutive_keep_old) {
+                return false;
+            }
+
+            const double grace_horizon =
+                    std::min({std::max(0.0, cfg_.tracking_keep_old_short_safety_grace_horizon),
+                              std::max(0.0, activity.remaining),
+                              std::max(0.0, old_pos_traj.getTotalDuration() - old_local_t),
+                              std::max(0.0, target_prediction.back().t)});
+            if (grace_horizon < 1.0e-3) {
+                return false;
+            }
+            if (!trackingTrajectorySafeForHorizon(old_pos_traj,
+                                                  old_local_t,
+                                                  grace_horizon,
+                                                  cfg_.tracking_keep_old_safety_dt)) {
+                return false;
+            }
+
+            std::string old_fov_reason;
+            const bool old_fov_ok =
+                    !cfg_.tracking_keep_old_requires_fov ||
+                    (!old_yaw_traj.empty() &&
+                     trackingTrajectorySatisfiesFov(old_pos_traj,
+                                                    old_yaw_traj,
+                                                    target_prediction,
+                                                    old_local_t,
+                                                    grace_horizon,
+                                                    cfg_.tracking_fov_check_dt,
+                                                    0.0,
+                                                    &old_fov_reason,
+                                                    true));
+            const bool fov_degraded_grace =
+                    !old_fov_ok &&
+                    cfg_.tracking_reacquire_fov_relax_enable;
+            if (!old_fov_ok && !fov_degraded_grace) {
+                return false;
+            }
+
+            if (runtime_managed && tracking_runtime_manager_) {
+                tracking_runtime_manager_->onKeepOld();
+            } else {
+                ++tracking_consecutive_keep_old_;
+            }
+            setTrackingDiagnostic("keep_old",
+                                  keepOldReason(fmt::format("{}:{};grace_horizon={:.3f};old_fov_ok={};old_fov_reason={}",
+                                                            fov_degraded_grace
+                                                                ? "short_safety_grace_fov_degraded"
+                                                                : "short_safety_grace",
+                                                            activity.reason,
+                                                            grace_horizon,
+                                                            static_cast<int>(old_fov_ok),
+                                                            old_fov_reason.empty() ? "none" : old_fov_reason)),
+                                  last_tracking_diag_guide_path_size_,
+                                  last_tracking_diag_sfc_size_,
+                                  target_prediction.size(),
+                                  old_pos_traj.getTotalDuration());
+            latest_replan.setExpTraj(old_pos_traj);
+            latest_replan.setExpYawTraj(old_yaw_traj);
+            latest_replan.setRetCode(GENERAL_SUCCESS_NO_BACKUP);
+            if (cfg_.print_log) {
+                ros_ptr_->warn(" -- [Tracking] {} reason={}, activity_reason={}, grace_horizon={:.3f}, old_remaining={:.3f}, old_fov_ok={}, old_fov_reason={}, keep_old_count={}, reject_count={}",
+                               fov_degraded_grace
+                                   ? "TRACKING_KEEP_OLD_SHORT_SAFETY_GRACE_FOV_DEGRADED"
+                                   : "TRACKING_KEEP_OLD_SHORT_SAFETY_GRACE",
+                               reason,
+                               activity.reason,
+                               grace_horizon,
+                               activity.remaining,
+                               old_fov_ok,
+                               old_fov_reason.empty() ? "none" : old_fov_reason,
+                               runtime_managed && tracking_runtime_manager_
+                                   ? tracking_runtime_manager_->consecutiveKeepOld()
+                                   : tracking_consecutive_keep_old_,
+                               runtime_managed && tracking_runtime_manager_
+                                   ? tracking_runtime_manager_->consecutiveReject()
+                                   : tracking_consecutive_reject_);
+            }
+            return true;
+        };
+
         if (cfg_.tracking_runtime_manager_enable && tracking_runtime_manager_) {
             if (cmd_traj_info_.empty() ||
                 !tracking_runtime_manager_->hasCommittedTracking()) {
+                setTrackingDiagnostic("keep_old",
+                                      keepOldReason("inactive:no_committed_tracking_trajectory"),
+                                      last_tracking_diag_guide_path_size_,
+                                      last_tracking_diag_sfc_size_,
+                                      target_prediction.size(),
+                                      last_tracking_diag_out_traj_duration_);
                 if (cfg_.print_log) {
                     ros_ptr_->warn(" -- [Tracking] TRACKING_KEEP_OLD_INACTIVE reason={}, activity_reason=no committed tracking trajectory, keep_old_count={}, reject_count={}",
                                    reason,
@@ -3210,6 +3099,19 @@ namespace general_planner {
                                                                  cfg_.tracking_keep_old_horizon,
                                                                  cfg_.tracking_keep_old_safety_dt);
             if (!activity.active) {
+                if (tryShortSafetyGrace(old_pos_traj,
+                                        old_yaw_traj,
+                                        old_local_t,
+                                        activity,
+                                        true)) {
+                    return true;
+                }
+                setTrackingDiagnostic("keep_old",
+                                      keepOldReason("inactive:" + activity.reason),
+                                      last_tracking_diag_guide_path_size_,
+                                      last_tracking_diag_sfc_size_,
+                                      target_prediction.size(),
+                                      last_tracking_diag_out_traj_duration_);
                 if (cfg_.print_log) {
                     ros_ptr_->warn(" -- [Tracking] TRACKING_KEEP_OLD_INACTIVE reason={}, activity_reason={}, old_remaining={:.3f}, old_speed0={:.3f}, old_displacement={:.3f}, old_progress={:.3f}, old_expected_progress={:.3f}, old_avg_tracking_error={:.3f}, keep_old_count={}, reject_count={}",
                                    reason,
@@ -3232,6 +3134,19 @@ namespace general_planner {
                                                         old_local_t,
                                                         target_prediction,
                                                         &old_fov_reason)) {
+                if (tryShortSafetyGrace(old_pos_traj,
+                                        old_yaw_traj,
+                                        old_local_t,
+                                        activity,
+                                        true)) {
+                    return true;
+                }
+                setTrackingDiagnostic("keep_old",
+                                      keepOldReason("fov_rejected:" + old_fov_reason),
+                                      last_tracking_diag_guide_path_size_,
+                                      last_tracking_diag_sfc_size_,
+                                      target_prediction.size(),
+                                      last_tracking_diag_out_traj_duration_);
                 if (cfg_.print_log) {
                     ros_ptr_->warn(" -- [Tracking] TRACKING_KEEP_OLD_REJECTED_FOV reason={}, fov_reason={}, old_local_t={:.3f}, old_remaining={:.3f}, keep_old_count={}, reject_count={}",
                                    reason,
@@ -3245,6 +3160,12 @@ namespace general_planner {
             }
 
             tracking_runtime_manager_->onKeepOld();
+            setTrackingDiagnostic("keep_old",
+                                  keepOldReason("active:" + reason),
+                                  last_tracking_diag_guide_path_size_,
+                                  last_tracking_diag_sfc_size_,
+                                  target_prediction.size(),
+                                  old_pos_traj.getTotalDuration());
             latest_replan.setExpTraj(old_pos_traj);
             latest_replan.setExpYawTraj(old_yaw_traj);
             latest_replan.setRetCode(GENERAL_SUCCESS_NO_BACKUP);
@@ -3266,6 +3187,31 @@ namespace general_planner {
         TrackingTrajectoryActivity activity;
         const bool active = currentTrackingTrajectorySafeAndActive(target_prediction, &activity);
         if (!active) {
+            if (!cmd_traj_info_.empty()) {
+                cmd_traj_info_.lock();
+                const Trajectory old_pos_traj = cmd_traj_info_.posTraj();
+                const Trajectory old_yaw_traj = cmd_traj_info_.yawTraj();
+                const double old_start_wt = cmd_traj_info_.getStartWallTime();
+                const double old_total_dur = cmd_traj_info_.getTotalDuration();
+                cmd_traj_info_.unlock();
+                const double old_local_t =
+                        std::clamp(ros_ptr_->getSimTime() - old_start_wt,
+                                   0.0,
+                                   old_total_dur);
+                if (tryShortSafetyGrace(old_pos_traj,
+                                        old_yaw_traj,
+                                        old_local_t,
+                                        activity,
+                                        false)) {
+                    return true;
+                }
+            }
+            setTrackingDiagnostic("keep_old",
+                                  keepOldReason("inactive:" + activity.reason),
+                                  last_tracking_diag_guide_path_size_,
+                                  last_tracking_diag_sfc_size_,
+                                  target_prediction.size(),
+                                  last_tracking_diag_out_traj_duration_);
             if (cfg_.print_log) {
                 ros_ptr_->warn(" -- [Tracking] TRACKING_KEEP_OLD_REJECTED_INACTIVE reason={}, activity_reason={}, old_remaining={:.3f}, old_speed0={:.3f}, old_displacement={:.3f}, old_progress={:.3f}, old_expected_progress={:.3f}, old_avg_tracking_error={:.3f}",
                                reason,
@@ -3297,6 +3243,19 @@ namespace general_planner {
                                                     old_local_t,
                                                     target_prediction,
                                                     &old_fov_reason)) {
+            if (tryShortSafetyGrace(old_pos_traj,
+                                    old_yaw_traj,
+                                    old_local_t,
+                                    activity,
+                                    false)) {
+                return true;
+            }
+            setTrackingDiagnostic("keep_old",
+                                  keepOldReason("fov_rejected:" + old_fov_reason),
+                                  last_tracking_diag_guide_path_size_,
+                                  last_tracking_diag_sfc_size_,
+                                  target_prediction.size(),
+                                  last_tracking_diag_out_traj_duration_);
             if (cfg_.print_log) {
                 ros_ptr_->warn(" -- [Tracking] TRACKING_KEEP_OLD_REJECTED_FOV reason={}, fov_reason={}, old_local_t={:.3f}, old_remaining={:.3f}",
                                reason,
@@ -3308,6 +3267,12 @@ namespace general_planner {
         }
 
         ++tracking_consecutive_keep_old_;
+        setTrackingDiagnostic("keep_old",
+                              keepOldReason("active:" + reason),
+                              last_tracking_diag_guide_path_size_,
+                              last_tracking_diag_sfc_size_,
+                              target_prediction.size(),
+                              old_pos_traj.getTotalDuration());
         if (cfg_.print_log) {
             ros_ptr_->info(" -- [Tracking] TRACKING_KEEP_OLD_ACTIVE reason={}, keep_old_count={}, old_remaining={:.3f}, old_speed0={:.3f}, old_displacement={:.3f}, old_progress={:.3f}, old_expected_progress={:.3f}, old_avg_tracking_error={:.3f}",
                            reason,
@@ -3326,17 +3291,197 @@ namespace general_planner {
         return true;
     }
 
-    bool GeneralPlanner::trackingCandidateSafeForCommit(const Trajectory &candidate_pos_traj) const {
+    bool GeneralPlanner::trackingTrajectorySafeForHorizonDetailed(
+            const Trajectory &traj,
+            const double start_t,
+            const double horizon,
+            const double dt,
+            std::string *reason,
+            std::string *detail) const {
+        setFailureReason(reason, "");
+        setFailureReason(detail, "");
+
+        const auto set_reject =
+                [&](const std::string &reject_reason,
+                    const double sample_dt,
+                    const double eval_t,
+                    const Vec3f &pos,
+                    const Vec3f &prev,
+                    const rog_map::GridType grid_type,
+                    const bool inside_local_map,
+                    const bool line_free,
+                    const double esdf_dist) -> bool {
+            setFailureReason(reason, reject_reason);
+            if (detail != nullptr) {
+                *detail = fmt::format(
+                        "check_start_t={:.3f}|check_horizon={:.3f}|sample_dt={:.3f}|fail_offset={:.3f}|fail_t={:.3f}|pos={}|prev={}|segment_len={:.3f}|inside_local_map={}|grid={}|unknown_as_occupied={}|esdf_dist={:.3f}|line_free={}",
+                        start_t,
+                        horizon,
+                        sample_dt,
+                        eval_t - start_t,
+                        eval_t,
+                        formatVec3Compact(pos),
+                        formatVec3Compact(prev),
+                        (pos - prev).norm(),
+                        static_cast<int>(inside_local_map),
+                        gridTypeName(grid_type),
+                        static_cast<int>(cfg_.tracking_unknown_as_occupied),
+                        esdf_dist,
+                        static_cast<int>(line_free));
+            }
+            return false;
+        };
+
+        if (traj.empty()) {
+            setFailureReason(reason, "empty trajectory");
+            if (detail != nullptr) {
+                *detail = fmt::format("check_start_t={:.3f}|check_horizon={:.3f}|failure=empty_trajectory",
+                                      start_t,
+                                      horizon);
+            }
+            return false;
+        }
+        if (horizon <= 1.0e-6) {
+            return true;
+        }
+        const double total_dur = traj.getTotalDuration();
+        if (!std::isfinite(start_t) ||
+            start_t < -1.0e-6 ||
+            start_t + horizon > total_dur + 1.0e-6) {
+            setFailureReason(reason, "invalid safety horizon");
+            if (detail != nullptr) {
+                *detail = fmt::format(
+                        "check_start_t={:.3f}|check_horizon={:.3f}|total_duration={:.3f}|failure=invalid_safety_horizon",
+                        start_t,
+                        horizon,
+                        total_dur);
+            }
+            return false;
+        }
+        if (map_manager_ == nullptr || !map_manager_->ready()) {
+            return true;
+        }
+
+        const double safe_dt = std::max(0.05, dt);
+        Vec3f last = traj.getPos(std::clamp(start_t, 0.0, total_dur));
+        if (!last.allFinite()) {
+            setFailureReason(reason, "non-finite initial point");
+            if (detail != nullptr) {
+                *detail = fmt::format(
+                        "check_start_t={:.3f}|check_horizon={:.3f}|sample_dt={:.3f}|failure=non_finite_initial_point|pos={}",
+                        start_t,
+                        horizon,
+                        safe_dt,
+                        formatVec3Compact(last));
+            }
+            return false;
+        }
+
+        for (double offset = 0.0; offset <= horizon + 1.0e-6; offset += safe_dt) {
+            const double t = std::clamp(start_t + offset, 0.0, total_dur);
+            const Vec3f pos = traj.getPos(t);
+            if (!pos.allFinite()) {
+                return set_reject("non-finite sample",
+                                  safe_dt,
+                                  t,
+                                  pos,
+                                  last,
+                                  rog_map::GridType::UNDEFINED,
+                                  true,
+                                  true,
+                                  std::numeric_limits<double>::quiet_NaN());
+            }
+            if (!map_manager_->insideLocalMap(pos)) {
+                return set_reject("outside local map",
+                                  safe_dt,
+                                  t,
+                                  pos,
+                                  last,
+                                  rog_map::GridType::OUT_OF_MAP,
+                                  false,
+                                  true,
+                                  std::numeric_limits<double>::quiet_NaN());
+            }
+
+            const auto grid_type = map_manager_->getInfGridType(pos);
+            if (grid_type == rog_map::GridType::OCCUPIED ||
+                grid_type == rog_map::GridType::OUT_OF_MAP) {
+                return set_reject("occupied or out-of-map",
+                                  safe_dt,
+                                  t,
+                                  pos,
+                                  last,
+                                  grid_type,
+                                  true,
+                                  true,
+                                  std::numeric_limits<double>::quiet_NaN());
+            }
+            if (cfg_.tracking_unknown_as_occupied &&
+                (grid_type == rog_map::GridType::UNKNOWN ||
+                 grid_type == rog_map::GridType::UNDEFINED ||
+                 grid_type == rog_map::GridType::FRONTIER)) {
+                return set_reject("unknown treated as occupied",
+                                  safe_dt,
+                                  t,
+                                  pos,
+                                  last,
+                                  grid_type,
+                                  true,
+                                  true,
+                                  std::numeric_limits<double>::quiet_NaN());
+            }
+
+            double esdf_dist = std::numeric_limits<double>::quiet_NaN();
+            if (map_manager_->hasESDF()) {
+                Vec3f grad = Vec3f::Zero();
+                if (map_manager_->evaluateESDF(pos, esdf_dist, grad) &&
+                    esdf_dist < trackingHardSafeDistance(cfg_)) {
+                    return set_reject("inside tracking hard safe distance",
+                                      safe_dt,
+                                      t,
+                                      pos,
+                                      last,
+                                      grid_type,
+                                      true,
+                                      true,
+                                      esdf_dist);
+                }
+            }
+
+            if ((pos - last).norm() > 1.0e-4 &&
+                !map_manager_->isLineFree(last, pos, true, cfg_.tracking_unknown_as_occupied)) {
+                return set_reject("segment not line-free",
+                                  safe_dt,
+                                  t,
+                                  pos,
+                                  last,
+                                  grid_type,
+                                  true,
+                                  false,
+                                  esdf_dist);
+            }
+            last = pos;
+        }
+        return true;
+    }
+
+    bool GeneralPlanner::trackingCandidateSafeForCommit(const Trajectory &candidate_pos_traj,
+                                                        std::string *reason,
+                                                        std::string *detail) const {
         if (candidate_pos_traj.empty()) {
+            setFailureReason(reason, "empty trajectory");
+            setFailureReason(detail, "failure=empty_trajectory");
             return false;
         }
         const double horizon =
                 std::min(std::max(0.0, cfg_.tracking_keep_old_horizon),
                          candidate_pos_traj.getTotalDuration());
-        return trackingTrajectorySafeForHorizon(candidate_pos_traj,
-                                                0.0,
-                                                horizon,
-                                                cfg_.tracking_keep_old_safety_dt);
+        return trackingTrajectorySafeForHorizonDetailed(candidate_pos_traj,
+                                                        0.0,
+                                                        horizon,
+                                                        cfg_.tracking_keep_old_safety_dt,
+                                                        reason,
+                                                        detail);
     }
 
     bool GeneralPlanner::trackingSnapshotSatisfiesFovForKeepOld(
@@ -3367,7 +3512,8 @@ namespace general_planner {
                                               horizon,
                                               cfg_.tracking_fov_check_dt,
                                               0.0,
-                                              reason);
+                                              reason,
+                                              true);
     }
 
     bool GeneralPlanner::trackingTrajectorySatisfiesFov(
@@ -3378,7 +3524,9 @@ namespace general_planner {
             const double horizon,
             const double dt,
             const double target_start_t,
-            std::string *reason) const {
+            std::string *reason,
+            const bool allow_keep_old_grace,
+            const bool allow_reacquire_range_grace) const {
         if (!cfg_.tracking_fov_commit_check_enable) {
             return true;
         }
@@ -3407,12 +3555,35 @@ namespace general_planner {
                           std::max(0.0, total - begin),
                           std::max(0.0, target_prediction.back().t - target_begin)});
         const double safe_dt = std::max(0.01, dt);
-        int sample_count = 0;
-        int violation_count = 0;
-        double max_h_violation = 0.0;
-        double max_v_violation = 0.0;
-        double max_range_violation = 0.0;
-        double max_front_violation = 0.0;
+        const double reacquire_entry_distance =
+                std::max({range,
+                          std::max(0.0, cfg_.tracking_reacquire_distance),
+                          std::max(0.0, cfg_.tracking_reacquire_fov_entry_distance)});
+        const bool deferred_reacquire_strict =
+                allow_reacquire_range_grace &&
+                cfg_.tracking_reacquire_fov_relax_enable &&
+                cfg_.tracking_reacquire_fov_deferred_strict_enable;
+        const double reacquire_angular_grace_rad =
+                std::max(0.0, cfg_.tracking_reacquire_fov_angular_grace_deg) * kDegToRad;
+
+        int total_sample_count = 0;
+        int total_violation_count = 0;
+        double total_max_h_violation = 0.0;
+        double total_max_v_violation = 0.0;
+        double total_max_range_violation = 0.0;
+        double total_max_front_violation = 0.0;
+        double initial_distance = std::numeric_limits<double>::infinity();
+        double best_distance = std::numeric_limits<double>::infinity();
+        double final_distance = std::numeric_limits<double>::infinity();
+
+        int strict_sample_count = 0;
+        int strict_violation_count = 0;
+        double strict_max_h_violation = 0.0;
+        double strict_max_v_violation = 0.0;
+        double strict_max_range_violation = 0.0;
+        double strict_max_front_violation = 0.0;
+        bool strict_phase_started = !deferred_reacquire_strict;
+        double strict_phase_start_t = begin;
 
         for (double s = 0.0; s <= eval_horizon + 1.0e-6; s += safe_dt) {
             const double t = std::min(total, begin + s);
@@ -3437,15 +3608,129 @@ namespace general_planner {
                                                cfg_.tracking_fov_range_margin,
                                                cfg_.tracking_fov_front_margin);
             const bool violated = !fov.inside;
-            if (violated) {
-                ++violation_count;
-                max_h_violation = std::max(max_h_violation, fov.h_violation);
-                max_v_violation = std::max(max_v_violation, fov.v_violation);
-                max_range_violation = std::max(max_range_violation, fov.range_violation);
-                max_front_violation = std::max(max_front_violation, fov.front_violation);
+            if (total_sample_count == 0) {
+                initial_distance = fov.distance;
             }
-            ++sample_count;
+            best_distance = std::min(best_distance, fov.distance);
+            final_distance = fov.distance;
+            if (violated) {
+                ++total_violation_count;
+                total_max_h_violation = std::max(total_max_h_violation, fov.h_violation);
+                total_max_v_violation = std::max(total_max_v_violation, fov.v_violation);
+                total_max_range_violation = std::max(total_max_range_violation, fov.range_violation);
+                total_max_front_violation = std::max(total_max_front_violation, fov.front_violation);
+            }
+            ++total_sample_count;
+
+            if (deferred_reacquire_strict && !strict_phase_started) {
+                if (fov.distance > reacquire_entry_distance + 1.0e-6) {
+                    continue;
+                }
+                strict_phase_started = true;
+                strict_phase_start_t = t;
+            }
+
+            ++strict_sample_count;
+            if (violated) {
+                ++strict_violation_count;
+                strict_max_h_violation = std::max(strict_max_h_violation, fov.h_violation);
+                strict_max_v_violation = std::max(strict_max_v_violation, fov.v_violation);
+                strict_max_range_violation = std::max(strict_max_range_violation, fov.range_violation);
+                strict_max_front_violation = std::max(strict_max_front_violation, fov.front_violation);
+            }
         }
+
+        if (deferred_reacquire_strict && strict_sample_count == 0) {
+            const double required_progress =
+                    std::max(std::max(0.0, cfg_.tracking_reacquire_min_progress_distance),
+                             std::max(0.0, cfg_.tracking_reacquire_min_progress_ratio) *
+                             std::max(0.0, initial_distance - reacquire_entry_distance));
+            const bool progress_ok =
+                    std::isfinite(initial_distance) &&
+                    std::isfinite(best_distance) &&
+                    std::isfinite(final_distance) &&
+                    initial_distance > reacquire_entry_distance + 1.0e-6 &&
+                    best_distance <= initial_distance - required_progress &&
+                    final_distance <= initial_distance - required_progress;
+            const bool orientation_ok =
+                    total_max_h_violation <= reacquire_angular_grace_rad &&
+                    total_max_v_violation <= reacquire_angular_grace_rad &&
+                    total_max_front_violation <= 1.0e-6;
+            const Vec3f transit_start = pos_traj.getPos(begin);
+            const Vec3f transit_end = pos_traj.getPos(std::min(total, begin + eval_horizon));
+            const Vec3f target_start = interpolateTargetPrediction(target_prediction, target_begin).position;
+            Vec3f chase_dir = target_start - transit_start;
+            if (!cfg_.tracking_motion_3d_enable) {
+                chase_dir.z() = 0.0;
+            }
+            const bool chase_dir_valid = chase_dir.allFinite() && chase_dir.norm() > 1.0e-4;
+            const Vec3f transit_dp = transit_end - transit_start;
+            const double chase_progress =
+                    chase_dir_valid && transit_dp.allFinite()
+                        ? transit_dp.dot(chase_dir.normalized())
+                        : 0.0;
+            const TrackingMotionMetrics transit_metrics =
+                    computeTrackingMotionMetrics(pos_traj,
+                                                 target_prediction,
+                                                 cfg_,
+                                                 begin,
+                                                 target_begin,
+                                                 eval_horizon);
+            const bool use_3d_motion =
+                    cfg_.tracking_motion_3d_enable || transit_metrics.target_vertical_moving;
+            const double transit_displacement =
+                    use_3d_motion ? transit_metrics.displacement_3d
+                                  : transit_metrics.displacement_xy;
+            const double transit_speed =
+                    use_3d_motion ? transit_metrics.speed_3d
+                                  : transit_metrics.speed_xy;
+            const double transit_target_speed =
+                    use_3d_motion ? transit_metrics.target_speed_3d
+                                  : transit_metrics.target_speed_xy;
+            const double required_chase_progress =
+                    std::max({0.15,
+                              std::max(0.0, cfg_.tracking_keep_old_min_progress_3d_ratio) *
+                                      transit_target_speed * eval_horizon,
+                              std::max(0.0, cfg_.tracking_no_motion_min_displacement)});
+            const bool chase_progress_ok =
+                    cfg_.tracking_detour_grace_enable &&
+                    chase_dir_valid &&
+                    std::isfinite(chase_progress) &&
+                    chase_progress >= required_chase_progress &&
+                    transit_displacement >= std::max(0.0, cfg_.tracking_no_motion_min_displacement) &&
+                    transit_speed >= std::max(0.0, cfg_.tracking_keep_old_min_speed);
+            if ((progress_ok || chase_progress_ok) && orientation_ok) {
+                return true;
+            }
+            setFailureReason(reason,
+                             fmt::format("reacquire transit without FOV entry: init_dist={:.2f}, best_dist={:.2f}, final_dist={:.2f}, entry_dist={:.2f}, required_progress={:.2f}, chase_progress={:.2f}, required_chase_progress={:.2f}, transit_disp={:.2f}, transit_speed={:.2f}, max_h={:.1f}deg, max_v={:.1f}deg, max_front={:.2f}",
+                                         initial_distance,
+                                         best_distance,
+                                         final_distance,
+                                         reacquire_entry_distance,
+                                         required_progress,
+                                         chase_progress,
+                                         required_chase_progress,
+                                         transit_displacement,
+                                         transit_speed,
+                                         total_max_h_violation / kDegToRad,
+                                         total_max_v_violation / kDegToRad,
+                                         total_max_front_violation));
+            return false;
+        }
+
+        const int sample_count =
+                deferred_reacquire_strict ? strict_sample_count : total_sample_count;
+        const int violation_count =
+                deferred_reacquire_strict ? strict_violation_count : total_violation_count;
+        const double max_h_violation =
+                deferred_reacquire_strict ? strict_max_h_violation : total_max_h_violation;
+        const double max_v_violation =
+                deferred_reacquire_strict ? strict_max_v_violation : total_max_v_violation;
+        const double max_range_violation =
+                deferred_reacquire_strict ? strict_max_range_violation : total_max_range_violation;
+        const double max_front_violation =
+                deferred_reacquire_strict ? strict_max_front_violation : total_max_front_violation;
 
         const bool severe =
                 max_h_violation > 10.0 * kDegToRad ||
@@ -3461,17 +3746,53 @@ namespace general_planner {
                 max_h_violation <= 1.0e-6 &&
                 max_v_violation <= 1.0e-6 &&
                 max_front_violation <= 1.0e-6;
+        const double keep_old_angular_grace_rad =
+                std::max(0.0, cfg_.tracking_fov_keep_old_angular_grace_deg) * kDegToRad;
+        const double keep_old_violation_ratio =
+                std::clamp(cfg_.tracking_fov_keep_old_violation_ratio_grace, 0.0, 1.0);
+        const int keep_old_violation_limit =
+                std::max(1, static_cast<int>(std::ceil(sample_count * keep_old_violation_ratio)));
+        const bool keep_old_angular_grace_ok =
+                allow_keep_old_grace &&
+                violation_count <= keep_old_violation_limit &&
+                max_h_violation <= keep_old_angular_grace_rad &&
+                max_v_violation <= keep_old_angular_grace_rad &&
+                max_range_violation <= 1.0e-6 &&
+                max_front_violation <= 1.0e-6;
+        const bool reacquire_range_grace_ok =
+                allow_reacquire_range_grace &&
+                cfg_.tracking_reacquire_fov_relax_enable &&
+                max_range_violation > 0.0 &&
+                max_range_violation <= std::max(0.0, cfg_.tracking_reacquire_fov_range_grace) &&
+                max_h_violation <= reacquire_angular_grace_rad &&
+                max_v_violation <= reacquire_angular_grace_rad &&
+                max_front_violation <= 1.0e-6;
         if (violation_count > 0 &&
             !range_only_grace &&
+            !keep_old_angular_grace_ok &&
+            !reacquire_range_grace_ok &&
             (cfg_.tracking_fov_check_strict || severe || persistent)) {
-            setFailureReason(reason,
-                             fmt::format("FOV violation samples={}/{}, max_h={:.1f}deg, max_v={:.1f}deg, max_range={:.2f}, max_front={:.2f}",
-                                         violation_count,
-                                         sample_count,
-                                         max_h_violation / kDegToRad,
-                                         max_v_violation / kDegToRad,
-                                         max_range_violation,
-                                         max_front_violation));
+            if (deferred_reacquire_strict) {
+                setFailureReason(reason,
+                                 fmt::format("FOV violation samples={}/{}, max_h={:.1f}deg, max_v={:.1f}deg, max_range={:.2f}, max_front={:.2f}, strict_start_t={:.2f}, entry_dist={:.2f}",
+                                             violation_count,
+                                             sample_count,
+                                             max_h_violation / kDegToRad,
+                                             max_v_violation / kDegToRad,
+                                             max_range_violation,
+                                             max_front_violation,
+                                             strict_phase_start_t,
+                                             reacquire_entry_distance));
+            } else {
+                setFailureReason(reason,
+                                 fmt::format("FOV violation samples={}/{}, max_h={:.1f}deg, max_v={:.1f}deg, max_range={:.2f}, max_front={:.2f}",
+                                             violation_count,
+                                             sample_count,
+                                             max_h_violation / kDegToRad,
+                                             max_v_violation / kDegToRad,
+                                             max_range_violation,
+                                             max_front_violation));
+            }
             return false;
         }
 
@@ -3482,6 +3803,170 @@ namespace general_planner {
         tracking_consecutive_keep_old_ = 0;
         tracking_consecutive_reject_ = 0;
         last_tracking_commit_wt_ = ros_ptr_ ? ros_ptr_->getSimTime() : -1.0;
+    }
+
+    void GeneralPlanner::resetTrackingRuntimeDecision(const std::string &reason) {
+        last_tracking_runtime_reset_ = false;
+        last_tracking_runtime_preserved_ = false;
+        last_tracking_runtime_reason_ = reason;
+    }
+
+    void GeneralPlanner::maybeResetTrackingRuntimeForReplan(
+            const bool new_task,
+            const std::string &context) {
+        resetTrackingRuntimeDecision(new_task ? "new_task_runtime_check" : "not_new_task");
+        if (!cfg_.tracking_runtime_manager_enable || !tracking_runtime_manager_) {
+            last_tracking_runtime_reason_ = context + ":runtime_manager_disabled";
+            return;
+        }
+        if (!new_task) {
+            last_tracking_runtime_reason_ = context + ":not_new_task";
+            return;
+        }
+
+        const double committed_remaining = getCommittedTrajectoryRemainingDuration();
+        const bool has_committed_tracking =
+                tracking_runtime_manager_->hasCommittedTracking();
+        if (has_committed_tracking && committed_remaining > 1.0e-3) {
+            last_tracking_runtime_preserved_ = true;
+            last_tracking_runtime_reason_ =
+                    fmt::format("{}:prediction_update_preserve_committed,remaining={:.3f},has_committed_tracking=1",
+                                context,
+                                committed_remaining);
+            if (cfg_.print_log) {
+                ros_ptr_->info(" -- [Tracking] TRACKING_RUNTIME_PRESERVED reason={}",
+                               last_tracking_runtime_reason_);
+            }
+            return;
+        }
+
+        tracking_runtime_manager_->reset();
+        last_tracking_runtime_reset_ = true;
+        last_tracking_runtime_reason_ =
+                fmt::format("{}:hard_reset_no_committed_tracking,remaining={:.3f},has_committed_tracking={}",
+                            context,
+                            committed_remaining,
+                            static_cast<int>(has_committed_tracking));
+        if (cfg_.print_log) {
+            ros_ptr_->warn(" -- [Tracking] TRACKING_RUNTIME_RESET reason={}",
+                           last_tracking_runtime_reason_);
+        }
+    }
+
+    void GeneralPlanner::clearTrackingCommitRejectInfo() {
+        last_tracking_commit_reject_reason_.clear();
+        last_tracking_commit_reject_detail_.clear();
+    }
+
+    void GeneralPlanner::setTrackingCommitRejectInfo(const std::string &reason,
+                                                     const std::string &detail) {
+        last_tracking_commit_reject_reason_ = reason;
+        last_tracking_commit_reject_detail_ = detail;
+    }
+
+    void GeneralPlanner::setTrackingDiagnostic(const std::string &phase,
+                                               const std::string &reason,
+                                               const std::size_t guide_path_size,
+                                               const std::size_t sfc_size,
+                                               const std::size_t target_prediction_size,
+                                               const double out_traj_duration) {
+        last_tracking_diag_phase_ = phase;
+        last_tracking_diag_reason_ = reason;
+        last_tracking_diag_guide_path_size_ = guide_path_size;
+        last_tracking_diag_sfc_size_ = sfc_size;
+        last_tracking_diag_target_prediction_size_ = target_prediction_size;
+        last_tracking_diag_out_traj_duration_ = out_traj_duration;
+    }
+
+    void GeneralPlanner::setTrackingDiagnostic(const std::string &phase,
+                                               const std::string &reason,
+                                               const traj_opt::TrackingProblem &problem,
+                                               const double out_traj_duration) {
+        setTrackingDiagnostic(phase,
+                              reason,
+                              problem.guide_path.size(),
+                              problem.sfcs.size(),
+                              problem.target_prediction.size(),
+                              out_traj_duration);
+    }
+
+    GeneralPlanner::TrackingDiagnosticSnapshot
+    GeneralPlanner::getLatestTrackingDiagnosticSnapshot() {
+        TrackingDiagnosticSnapshot snapshot;
+        snapshot.phase = last_tracking_diag_phase_;
+        snapshot.reason = last_tracking_diag_reason_;
+        snapshot.guide_path_size = last_tracking_diag_guide_path_size_;
+        snapshot.sfc_size = last_tracking_diag_sfc_size_;
+        snapshot.target_prediction_size = last_tracking_diag_target_prediction_size_;
+        snapshot.out_traj_duration = last_tracking_diag_out_traj_duration_;
+        snapshot.consecutive_keep_old =
+                tracking_runtime_manager_ ? tracking_runtime_manager_->consecutiveKeepOld()
+                                          : tracking_consecutive_keep_old_;
+        snapshot.consecutive_reject =
+                tracking_runtime_manager_ ? tracking_runtime_manager_->consecutiveReject()
+                                          : tracking_consecutive_reject_;
+        snapshot.last_commit_wt = last_tracking_commit_wt_;
+        snapshot.last_commit_reject_reason = last_tracking_commit_reject_reason_;
+        snapshot.last_commit_reject_detail = last_tracking_commit_reject_detail_;
+        snapshot.runtime_manager_enabled = cfg_.tracking_runtime_manager_enable &&
+                                           static_cast<bool>(tracking_runtime_manager_);
+        snapshot.has_committed_tracking =
+                tracking_runtime_manager_ ? tracking_runtime_manager_->hasCommittedTracking()
+                                          : !cmd_traj_info_.empty();
+        snapshot.committed_remaining = getCommittedTrajectoryRemainingDuration();
+        snapshot.runtime_reset = last_tracking_runtime_reset_;
+        snapshot.runtime_preserved = last_tracking_runtime_preserved_;
+        snapshot.runtime_reason = last_tracking_runtime_reason_;
+        return snapshot;
+    }
+
+    std::string GeneralPlanner::getTrackingConfigSummary() const {
+        return fmt::format("tracking_distance={:.3f};distance_tolerance={:.3f};"
+                           "distance_lower_tolerance={:.3f};distance_upper_tolerance={:.3f};"
+                           "height_offset={:.3f};height_tolerance={:.3f};safe_distance={:.3f};"
+                           "hard_safe_distance={:.3f};fov_h_deg={:.3f};fov_v_deg={:.3f};"
+                           "fov_range={:.3f};fov_check_strict={};fov_commit_check_enable={};"
+                           "frontend_fov_feasibility_enable={};runtime_manager_enable={};"
+                           "keep_old_horizon={:.3f};keep_old_safety_dt={:.3f};"
+                           "keep_old_requires_fov={};short_safety_grace_enable={};"
+                           "anti_rollback_enable={};reacquire_distance={:.3f};"
+                           "reacquire_min_progress_distance={:.3f};reacquire_min_progress_ratio={:.3f};"
+                           "reacquire_fov_relax_enable={};reacquire_fov_deferred_strict_enable={};"
+                           "optimizer_commit_safety_precheck_enable={};"
+                           "detour_grace_enable={};detour_grace_horizon={:.3f};"
+                           "frontend_astar={};use_visible_region={};max_vel={:.3f};max_acc={:.3f}",
+                           cfg_.tracking_distance,
+                           cfg_.tracking_distance_tolerance,
+                           cfg_.tracking_distance_lower_tolerance,
+                           cfg_.tracking_distance_upper_tolerance,
+                           cfg_.tracking_height_offset,
+                           cfg_.tracking_height_tolerance,
+                           cfg_.tracking_safe_distance,
+                           cfg_.tracking_hard_safe_distance,
+                           cfg_.tracking_fov_horizontal_deg,
+                           cfg_.tracking_fov_vertical_deg,
+                           cfg_.tracking_fov_range,
+                           static_cast<int>(cfg_.tracking_fov_check_strict),
+                           static_cast<int>(cfg_.tracking_fov_commit_check_enable),
+                           static_cast<int>(cfg_.tracking_frontend_fov_feasibility_enable),
+                           static_cast<int>(cfg_.tracking_runtime_manager_enable),
+                           cfg_.tracking_keep_old_horizon,
+                           cfg_.tracking_keep_old_safety_dt,
+                           static_cast<int>(cfg_.tracking_keep_old_requires_fov),
+                           static_cast<int>(cfg_.tracking_keep_old_short_safety_grace_enable),
+                           static_cast<int>(cfg_.tracking_anti_rollback_enable),
+                           cfg_.tracking_reacquire_distance,
+                           cfg_.tracking_reacquire_min_progress_distance,
+                           cfg_.tracking_reacquire_min_progress_ratio,
+                           static_cast<int>(cfg_.tracking_reacquire_fov_relax_enable),
+                           static_cast<int>(cfg_.tracking_reacquire_fov_deferred_strict_enable),
+                           static_cast<int>(cfg_.tracking_optimizer_commit_safety_precheck_enable),
+                           static_cast<int>(cfg_.tracking_detour_grace_enable),
+                           cfg_.tracking_detour_grace_horizon,
+                           static_cast<int>(cfg_.tracking_frontend_astar),
+                           static_cast<int>(cfg_.tracking_use_visible_region),
+                           cfg_.exp_traj_cfg.max_vel,
+                           cfg_.exp_traj_cfg.max_acc);
     }
 
     double GeneralPlanner::trackingViewpointErrorScore(const Vec3f &tracker,
@@ -4144,7 +4629,133 @@ namespace general_planner {
             return false;
         }
 
-        const double match_tol = std::max(1.0e-3, 0.25 * cfg_.resolution);
+        auto applyViewpointTruncation =
+                [&](const vec_Vec3f &prefix,
+                    const std::vector<double> &prefix_t,
+                    const std::size_t keep_count) {
+                    problem.guide_path = prefix;
+                    problem.guide_t = prefix_t;
+                    problem.viewpoints.resize(keep_count);
+                    problem.target_sample_times.resize(keep_count);
+                    problem.target_prediction.resize(keep_count);
+                    if (problem.visible_regions.size() > keep_count) {
+                        problem.visible_regions.resize(keep_count);
+                    }
+                    refreshTrackingGuideEndpoint(problem);
+                };
+
+        auto applyTimeAlignedTruncation =
+                [&](const vec_Vec3f &prefix,
+                    const std::vector<double> &prefix_t) -> bool {
+                    if (prefix.size() < 2 ||
+                        prefix_t.size() != prefix.size() ||
+                        problem.target_prediction.empty()) {
+                        return false;
+                    }
+                    const double end_t = prefix_t.back();
+                    if (!std::isfinite(end_t)) {
+                        return false;
+                    }
+
+                    traj_opt::DynamicTargetStates truncated_target_prediction;
+                    std::vector<double> truncated_target_sample_times;
+                    vec_Vec3f truncated_viewpoints;
+                    super_utils::vec_E<traj_opt::TrackingVisibleRegion> truncated_visible_regions;
+
+                    auto appendTimedTrackingSample =
+                            [&](const double sample_t,
+                                const traj_opt::DynamicTargetState &state,
+                                const traj_opt::TrackingVisibleRegion *source_region) {
+                                if (!std::isfinite(sample_t)) {
+                                    return;
+                                }
+                                const Vec3f viewpoint =
+                                        interpolatePointOnTimedGuide(prefix, prefix_t, sample_t);
+                                truncated_target_prediction.emplace_back(state);
+                                truncated_target_prediction.back().t = sample_t;
+                                truncated_target_sample_times.emplace_back(sample_t);
+                                truncated_viewpoints.emplace_back(viewpoint);
+                                if (!problem.visible_regions.empty()) {
+                                    traj_opt::TrackingVisibleRegion region;
+                                    if (source_region != nullptr) {
+                                        region = *source_region;
+                                    } else {
+                                        region.valid = false;
+                                        region.confidence = 0.0;
+                                        region.theta = 0.0;
+                                    }
+                                    region.t = sample_t;
+                                    region.target_position = state.position;
+                                    region.visible_point = viewpoint;
+                                    truncated_visible_regions.emplace_back(region);
+                                }
+                            };
+
+                    const bool has_explicit_sample_times =
+                            problem.target_sample_times.size() == problem.target_prediction.size();
+                    for (std::size_t i = 0; i < problem.target_prediction.size(); ++i) {
+                        const double sample_t =
+                                has_explicit_sample_times
+                                    ? problem.target_sample_times[i]
+                                    : problem.target_prediction[i].t;
+                        if (sample_t <= end_t + 1.0e-6) {
+                            const traj_opt::TrackingVisibleRegion *source_region =
+                                    i < problem.visible_regions.size()
+                                        ? &problem.visible_regions[i]
+                                        : nullptr;
+                            appendTimedTrackingSample(sample_t,
+                                                      problem.target_prediction[i],
+                                                      source_region);
+                        }
+                    }
+
+                    if (truncated_target_prediction.empty()) {
+                        const double first_t =
+                                has_explicit_sample_times
+                                    ? problem.target_sample_times.front()
+                                    : problem.target_prediction.front().t;
+                        appendTimedTrackingSample(std::min(first_t, end_t),
+                                                  problem.target_prediction.front(),
+                                                  problem.visible_regions.empty()
+                                                      ? nullptr
+                                                      : &problem.visible_regions.front());
+                    }
+
+                    if (truncated_target_prediction.empty() ||
+                        truncated_viewpoints.size() != truncated_target_prediction.size() ||
+                        truncated_target_sample_times.size() != truncated_target_prediction.size()) {
+                        return false;
+                    }
+
+                    if (end_t > truncated_target_sample_times.back() + 1.0e-4) {
+                        const auto horizon_state =
+                                interpolateTargetPrediction(problem.target_prediction, end_t);
+                        appendTimedTrackingSample(end_t, horizon_state, nullptr);
+                    }
+
+                    if (truncated_target_prediction.empty() ||
+                        truncated_viewpoints.size() != truncated_target_prediction.size() ||
+                        truncated_target_sample_times.size() != truncated_target_prediction.size()) {
+                        return false;
+                    }
+
+                    problem.guide_path = prefix;
+                    problem.guide_t = prefix_t;
+                    problem.target_prediction = std::move(truncated_target_prediction);
+                    problem.target_sample_times = std::move(truncated_target_sample_times);
+                    problem.viewpoints = std::move(truncated_viewpoints);
+                    if (!problem.visible_regions.empty()) {
+                        problem.visible_regions = std::move(truncated_visible_regions);
+                    } else {
+                        problem.visible_regions.clear();
+                    }
+                    refreshTrackingGuideEndpoint(problem);
+                    return true;
+                };
+
+        const double match_tol = std::max({0.05,
+                                           1.5 * std::max(1.0e-3, cfg_.resolution),
+                                           0.25 * std::max(0.2, cfg_.corridor_line_max_length)});
         std::string last_prefix_reason;
         for (int view_id = static_cast<int>(problem.viewpoints.size()) - 1; view_id >= 0; --view_id) {
             const Vec3f &viewpoint = problem.viewpoints[static_cast<std::size_t>(view_id)];
@@ -4176,26 +4787,52 @@ namespace general_planner {
                 continue;
             }
 
-            problem.guide_path = std::move(prefix);
-            problem.guide_t = std::move(prefix_t);
             const std::size_t keep_count = static_cast<std::size_t>(view_id + 1);
-            problem.viewpoints.resize(keep_count);
-            problem.target_sample_times.resize(keep_count);
-            problem.target_prediction.resize(keep_count);
-            if (problem.visible_regions.size() > keep_count) {
-                problem.visible_regions.resize(keep_count);
-            }
-            refreshTrackingGuideEndpoint(problem);
+            applyViewpointTruncation(prefix, prefix_t, keep_count);
             if (cfg_.print_log) {
                 ros_ptr_->warn(" -- [GeneralPlanner] Tracking guide truncated to safe local SFC endpoint, kept {} target samples.",
                                keep_count);
             }
             return true;
         }
-        setFailureReason(failure_reason,
-                         last_prefix_reason.empty()
-                             ? "truncate_no_safe_prefix_found"
-                             : last_prefix_reason);
+
+        std::string last_time_prefix_reason;
+        for (int end_id = static_cast<int>(candidate_guide.size()) - 1; end_id >= 1; --end_id) {
+            vec_Vec3f prefix(candidate_guide.begin(), candidate_guide.begin() + end_id + 1);
+            std::vector<double> prefix_t(candidate_guide_t.begin(), candidate_guide_t.begin() + end_id + 1);
+            std::string prefix_reason;
+            if (!tryGenerateTrackingCorridor(prefix, sfcs, &prefix_reason)) {
+                last_time_prefix_reason =
+                        fmt::format("time_prefix_sfc_failed(end_id={}, reason={})",
+                                    end_id,
+                                    prefix_reason);
+                continue;
+            }
+            if (!applyTimeAlignedTruncation(prefix, prefix_t)) {
+                last_time_prefix_reason =
+                        fmt::format("time_prefix_apply_failed(end_id={}, end_t={:.3f})",
+                                    end_id,
+                                    prefix_t.empty() ? 0.0 : prefix_t.back());
+                continue;
+            }
+            if (cfg_.print_log) {
+                ros_ptr_->warn(" -- [GeneralPlanner] Tracking guide truncated by timed prefix fallback, kept {} target samples.",
+                               problem.target_prediction.size());
+            }
+            return true;
+        }
+
+        if (!last_prefix_reason.empty() && !last_time_prefix_reason.empty()) {
+            setFailureReason(failure_reason,
+                             last_prefix_reason + "; " + last_time_prefix_reason);
+        } else {
+            setFailureReason(failure_reason,
+                             !last_prefix_reason.empty()
+                                 ? last_prefix_reason
+                                 : (!last_time_prefix_reason.empty()
+                                        ? last_time_prefix_reason
+                                        : "truncate_no_safe_prefix_found"));
+        }
         return false;
     }
 
@@ -4263,6 +4900,21 @@ namespace general_planner {
             return true;
         }
 
+        std::string truncate_original_reason;
+        if (!problem.guide_path.empty() &&
+            truncateTrackingProblemForCorridor(problem,
+                                               problem.guide_path,
+                                               problem.guide_t,
+                                               sfcs,
+                                               &truncate_original_reason)) {
+            problem.sfcs = std::move(sfcs);
+            problem.use_corridor = true;
+            if (cfg_.print_log) {
+                ros_ptr_->warn(" -- [GeneralPlanner] Tracking SFC fallback accepted truncated original guide prefix.");
+            }
+            return true;
+        }
+
         vec_Vec3f astar_repaired;
         std::vector<double> astar_repaired_t;
         std::string astar_reason;
@@ -4275,7 +4927,20 @@ namespace general_planner {
         vec_Vec3f dense_astar_repaired;
         std::vector<double> dense_astar_repaired_t;
         std::string dense_astar_reason;
+        std::string truncate_repaired_reason;
         if (full_astar_repair) {
+            if (truncateTrackingProblemForCorridor(problem,
+                                                  astar_repaired,
+                                                  astar_repaired_t,
+                                                  sfcs,
+                                                  &truncate_repaired_reason)) {
+                problem.sfcs = std::move(sfcs);
+                problem.use_corridor = true;
+                if (cfg_.print_log) {
+                    ros_ptr_->warn(" -- [GeneralPlanner] Tracking SFC fallback accepted truncated A* repaired guide prefix.");
+                }
+                return true;
+            }
             const bool dense_astar_ok =
                     densifyTrackingGuideForCorridor(astar_repaired,
                                                     astar_repaired_t,
@@ -4325,11 +4990,13 @@ namespace general_planner {
         problem.sfcs.clear();
         problem.use_corridor = false;
         setFailureReason(failure_reason,
-                         fmt::format("guide_size={}, target_samples={}, dense={}, astar={}, dense_astar={}, truncate_astar={}, truncate_dense={}",
+                         fmt::format("guide_size={}, target_samples={}, dense={}, truncate_original={}, astar={}, truncate_repaired={}, dense_astar={}, truncate_astar={}, truncate_dense={}",
                                      problem.guide_path.size(),
                                      problem.target_prediction.size(),
                                      dense_reason.empty() ? "ok-but-unused" : dense_reason,
+                                     truncate_original_reason.empty() ? "not_attempted_or_failed" : truncate_original_reason,
                                      full_astar_repair ? "ok" : astar_reason,
+                                     truncate_repaired_reason.empty() ? "not_attempted_or_failed" : truncate_repaired_reason,
                                      dense_astar_reason.empty() ? "not_attempted_or_ok" : dense_astar_reason,
                                      truncate_astar_reason.empty() ? "not_attempted" : truncate_astar_reason,
                                      truncate_dense_reason.empty() ? "not_attempted" : truncate_dense_reason));
@@ -4380,9 +5047,17 @@ namespace general_planner {
             const traj_opt::DynamicTargetStates &active_target_prediction,
             Trajectory &out_traj,
             Trajectory &out_yaw_traj,
+            traj_opt::DynamicTargetStates *accepted_target_prediction,
+            bool *accepted_reacquire_fov_relax,
             std::string *failure_reason) {
         out_traj = Trajectory();
         out_yaw_traj = Trajectory();
+        if (accepted_target_prediction != nullptr) {
+            *accepted_target_prediction = active_target_prediction;
+        }
+        if (accepted_reacquire_fov_relax != nullptr) {
+            *accepted_reacquire_fov_relax = false;
+        }
         std::vector<std::string> attempt_failures;
 
         auto shouldFovPostcheckOptimization = [&]() -> bool {
@@ -4400,17 +5075,19 @@ namespace general_planner {
         auto candidatePassesOptimizationFovPostcheck =
                 [&](const Trajectory &candidate_pos,
                     Trajectory &candidate_yaw,
+                    const traj_opt::DynamicTargetStates &check_target_prediction,
+                    const bool allow_reacquire_fov_relax,
                     std::string *reject_reason) -> bool {
             if (!shouldFovPostcheckOptimization()) {
                 return true;
             }
-            if (candidate_pos.empty() || active_target_prediction.empty()) {
+            if (candidate_pos.empty() || check_target_prediction.empty()) {
                 setFailureReason(reject_reason, "empty candidate or target prediction");
                 return false;
             }
             if (candidate_yaw.empty() &&
                 !buildTrackingTargetYawTrajectory(candidate_pos,
-                                                  active_target_prediction,
+                                                  check_target_prediction,
                                                   candidate_yaw)) {
                 setFailureReason(reject_reason, "yaw generation failed for FOV postcheck");
                 return false;
@@ -4418,17 +5095,194 @@ namespace general_planner {
             const double fov_horizon =
                     std::min({std::max(0.0, cfg_.tracking_keep_old_horizon),
                               candidate_pos.getTotalDuration(),
-                              active_target_prediction.empty()
+                              check_target_prediction.empty()
                                   ? 0.0
-                                  : std::max(0.0, active_target_prediction.back().t)});
-            return trackingTrajectorySatisfiesFov(candidate_pos,
-                                                  candidate_yaw,
-                                                  active_target_prediction,
-                                                  0.0,
-                                                  fov_horizon,
-                                                  cfg_.tracking_fov_check_dt,
-                                                  0.0,
-                                                  reject_reason);
+                                  : std::max(0.0, check_target_prediction.back().t)});
+            std::string optimized_yaw_reason;
+            if (trackingTrajectorySatisfiesFov(candidate_pos,
+                                               candidate_yaw,
+                                               check_target_prediction,
+                                               0.0,
+                                               fov_horizon,
+                                               cfg_.tracking_fov_check_dt,
+                                               0.0,
+                                               &optimized_yaw_reason,
+                                               false,
+                                               allow_reacquire_fov_relax)) {
+                return true;
+            }
+
+            Trajectory target_yaw_traj;
+            std::string target_yaw_reason;
+            const bool target_yaw_generated =
+                    buildTrackingTargetYawTrajectory(candidate_pos,
+                                                     check_target_prediction,
+                                                     target_yaw_traj);
+            if (target_yaw_generated &&
+                trackingTrajectorySatisfiesFov(candidate_pos,
+                                               target_yaw_traj,
+                                               check_target_prediction,
+                                               0.0,
+                                               fov_horizon,
+                                               cfg_.tracking_fov_check_dt,
+                                               0.0,
+                                               &target_yaw_reason,
+                                               false,
+                                               allow_reacquire_fov_relax)) {
+                candidate_yaw = target_yaw_traj;
+                if (cfg_.print_log) {
+                    ros_ptr_->warn(" -- [Tracking] TRACKING_OPT_YAW_REBUILT_FOR_FOV reason={}, horizon={:.3f}, reacquire_fov_relax={}",
+                                   optimized_yaw_reason,
+                                   fov_horizon,
+                                   allow_reacquire_fov_relax);
+                }
+                return true;
+            }
+
+            if (allow_reacquire_fov_relax) {
+                if (target_yaw_generated && !target_yaw_traj.empty()) {
+                    candidate_yaw = target_yaw_traj;
+                }
+                const std::string fallback_reason =
+                        target_yaw_generated
+                            ? (target_yaw_reason.empty()
+                                   ? "failed_without_reason"
+                                   : target_yaw_reason)
+                            : "generation_failed";
+                setFailureReason(reject_reason,
+                                 optimized_yaw_reason +
+                                 "; target_yaw_fallback=" +
+                                 fallback_reason +
+                                 "; degraded_fov_accepted=1");
+                if (cfg_.print_log) {
+                    ros_ptr_->warn(" -- [Tracking] TRACKING_OPT_FOV_DEGRADED_ACCEPT reason={}, target_yaw_fallback={}, horizon={:.3f}, reacquire_fov_relax={}",
+                                   optimized_yaw_reason,
+                                   fallback_reason,
+                                   fov_horizon,
+                                   allow_reacquire_fov_relax);
+                }
+                return true;
+            }
+
+            setFailureReason(reject_reason,
+                             optimized_yaw_reason +
+                             "; target_yaw_fallback=" +
+                             (target_yaw_generated
+                                  ? (target_yaw_reason.empty()
+                                         ? "failed_without_reason"
+                                         : target_yaw_reason)
+                                  : "generation_failed"));
+            return false;
+        };
+
+        auto hasCommittedTrackingSnapshot = [&]() -> bool {
+            if (cfg_.tracking_runtime_manager_enable && tracking_runtime_manager_) {
+                return tracking_runtime_manager_->hasCommittedTracking() && !cmd_traj_info_.empty();
+            }
+            return !cmd_traj_info_.empty();
+        };
+
+        auto candidatePassesOptimizationCommitSafety =
+                [&](const Trajectory &candidate_pos,
+                    std::string *reject_reason) -> bool {
+            if (!cfg_.tracking_optimizer_commit_safety_precheck_enable) {
+                return true;
+            }
+            if (candidate_pos.empty()) {
+                setFailureReason(reject_reason, "empty candidate trajectory");
+                return false;
+            }
+
+            Trajectory committed_candidate = candidate_pos;
+            const double commit_wt = ros_ptr_->getSimTime();
+            double stitched_prefix_duration = 0.0;
+            if (!cmd_traj_info_.empty()) {
+                cmd_traj_info_.lock();
+                const Trajectory old_pos_traj = cmd_traj_info_.posTraj();
+                const double old_start_wt = cmd_traj_info_.getStartWallTime();
+                const double old_total_dur = cmd_traj_info_.getTotalDuration();
+                cmd_traj_info_.unlock();
+
+                const double prefix_start_t = commit_wt - old_start_wt;
+                const double prefix_end_t =
+                        prefix_start_t + std::max(0.0, cfg_.replan_forward_dt);
+                const bool prefix_window_valid =
+                        !old_pos_traj.empty() &&
+                        prefix_start_t >= 0.0 &&
+                        prefix_end_t > prefix_start_t + 1.0e-4 &&
+                        prefix_end_t <= old_total_dur + 1.0e-6;
+                if (prefix_window_valid) {
+                    Trajectory prefix_pos_traj;
+                    if (old_pos_traj.getPartialTrajectoryByTime(prefix_start_t,
+                                                                std::min(prefix_end_t, old_total_dur),
+                                                                prefix_pos_traj)) {
+                        committed_candidate = prefix_pos_traj + candidate_pos;
+                        stitched_prefix_duration = prefix_pos_traj.getTotalDuration();
+                        committed_candidate.start_WT = commit_wt;
+                    }
+                }
+            }
+
+            const double safety_start =
+                    cfg_.tracking_anti_rollback_eval_after_prefix
+                        ? stitched_prefix_duration
+                        : 0.0;
+            const double safety_horizon =
+                    std::min(std::max(0.0, cfg_.tracking_keep_old_horizon),
+                             std::max(0.0,
+                                      committed_candidate.getTotalDuration() -
+                                      std::clamp(safety_start,
+                                                 0.0,
+                                                 committed_candidate.getTotalDuration())));
+            std::string safety_reason;
+            std::string safety_detail;
+            if (!trackingTrajectorySafeForHorizonDetailed(committed_candidate,
+                                                          safety_start,
+                                                          safety_horizon,
+                                                          cfg_.tracking_keep_old_safety_dt,
+                                                          &safety_reason,
+                                                          &safety_detail)) {
+                setFailureReason(reject_reason,
+                                 fmt::format(
+                                         "{}; commit_candidate_duration={:.3f}; stitched_prefix_duration={:.3f}; safety_start={:.3f}; safety_horizon={:.3f}; {}",
+                                         safety_reason.empty() ? "commit safety precheck failed"
+                                                               : safety_reason,
+                                         committed_candidate.getTotalDuration(),
+                                         stitched_prefix_duration,
+                                         safety_start,
+                                         safety_horizon,
+                                         safety_detail.empty() ? "detail=none"
+                                                               : safety_detail));
+                return false;
+            }
+            return true;
+        };
+
+        auto estimateReacquireTransitHorizon =
+                [&](const traj_opt::TrackingProblem &problem) -> double {
+            const double base_h =
+                    std::max(0.3, cfg_.tracking_reacquire_recovery_horizon);
+            if (problem.target_prediction.empty()) {
+                return base_h;
+            }
+            const double initial_horizontal_dist =
+                    (problem.head_pvaj.col(0) - problem.target_prediction.front().position)
+                            .head<2>()
+                            .norm();
+            const double reacquire_band =
+                    std::max(problem.tracking_distance + problem.distance_tolerance,
+                             cfg_.tracking_reacquire_distance);
+            const double gap = std::max(0.0, initial_horizontal_dist - reacquire_band);
+            if (gap <= 1.0e-6) {
+                return base_h;
+            }
+            const double speed_cap =
+                    std::max(0.8, cfg_.esdf_traj_cfg.max_vel);
+            const double scaled_h =
+                    gap * std::max(0.1, cfg_.tracking_reacquire_transit_horizon_scale) / speed_cap;
+            return std::clamp(std::max(base_h, scaled_h),
+                              base_h,
+                              std::max(base_h, cfg_.tracking_reacquire_transit_max_horizon));
         };
 
         auto runOptimization = [&](const std::string &attempt_name,
@@ -4451,9 +5305,29 @@ namespace general_planner {
                                 ? traj_manager_->trackingSnap()->optimize(problem, candidate_pos, &candidate_yaw)
                                 : traj_manager_->trackingJerk()->optimize(problem, candidate_pos, &candidate_yaw);
             if (ok && !candidate_pos.empty()) {
+                const traj_opt::DynamicTargetStates &check_target_prediction =
+                        problem.target_prediction.empty()
+                            ? active_target_prediction
+                            : problem.target_prediction;
+                const double initial_horizontal_dist =
+                        check_target_prediction.empty()
+                            ? 0.0
+                            : (problem.head_pvaj.col(0) - check_target_prediction.front().position)
+                                      .head<2>()
+                                      .norm();
+                const bool recovery_like_reacquire =
+                        recovery_attempt &&
+                        (initial_horizontal_dist >
+                                 problem.tracking_distance + problem.distance_tolerance ||
+                         !hasCommittedTrackingSnapshot());
+                const bool allow_reacquire_fov_relax =
+                        (problem.reacquire_mode || recovery_like_reacquire) &&
+                        cfg_.tracking_reacquire_fov_relax_enable;
                 std::string fov_postcheck_reason;
                 if (!candidatePassesOptimizationFovPostcheck(candidate_pos,
                                                              candidate_yaw,
+                                                             check_target_prediction,
+                                                             allow_reacquire_fov_relax,
                                                              &fov_postcheck_reason)) {
                     attempt_failures.emplace_back(
                             fmt::format("{} rejected_by_fov_postcheck(reason={}, guide={}, sfc={}, target={}, duration={:.3f}, safe_distance={:.3f}, use_corridor={})",
@@ -4477,8 +5351,41 @@ namespace general_planner {
                                    narrow_adjusted);
                     return false;
                 }
+                std::string commit_safety_precheck_reason;
+                if (!candidatePassesOptimizationCommitSafety(candidate_pos,
+                                                             &commit_safety_precheck_reason)) {
+                    attempt_failures.emplace_back(
+                            fmt::format("{} rejected_by_commit_safety_precheck(reason={}, guide={}, sfc={}, target={}, duration={:.3f}, safe_distance={:.3f}, use_corridor={})",
+                                        attempt_name,
+                                        commit_safety_precheck_reason,
+                                        problem.guide_path.size(),
+                                        problem.sfcs.size(),
+                                        problem.target_prediction.size(),
+                                        candidate_pos.getTotalDuration(),
+                                        problem.safe_distance,
+                                        problem.use_corridor));
+                    if (recovery_attempt) {
+                        ros_ptr_->warn(" -- [Tracking] TRACKING_OPT_RECOVERY_FAILED attempt={}, reason=commit_safety_precheck_failed:{}, guide_path.size()={}, problem.sfcs.size()={}, problem.target_prediction.size()={}, out_traj_duration={:.3f}, safe_distance={:.3f}, use_corridor={}, narrow_adjusted={}",
+                                       attempt_name,
+                                       commit_safety_precheck_reason,
+                                       problem.guide_path.size(),
+                                       problem.sfcs.size(),
+                                       problem.target_prediction.size(),
+                                       candidate_pos.getTotalDuration(),
+                                       problem.safe_distance,
+                                       problem.use_corridor,
+                                       narrow_adjusted);
+                    }
+                    return false;
+                }
                 out_traj = candidate_pos;
                 out_yaw_traj = candidate_yaw;
+                if (accepted_target_prediction != nullptr) {
+                    *accepted_target_prediction = check_target_prediction;
+                }
+                if (accepted_reacquire_fov_relax != nullptr) {
+                    *accepted_reacquire_fov_relax = allow_reacquire_fov_relax;
+                }
                 if (recovery_attempt) {
                     ros_ptr_->warn(" -- [Tracking] TRACKING_OPT_RECOVERY_SUCCESS attempt={}, guide_path.size()={}, problem.sfcs.size()={}, problem.target_prediction.size()={}, out_traj_duration={:.3f}, safe_distance={:.3f}, use_corridor={}, narrow_adjusted={}",
                                    attempt_name,
@@ -4670,6 +5577,57 @@ namespace general_planner {
             }
         }
 
+        if (cfg_.tracking_reacquire_recovery_enable) {
+            traj_opt::TrackingProblem reacquire_recovery = obstacle_recovery;
+            reacquire_recovery.reacquire_mode = true;
+            const double dynamic_reacquire_horizon =
+                    estimateReacquireTransitHorizon(reacquire_recovery);
+            truncateRecoveryProblem(reacquire_recovery, dynamic_reacquire_horizon);
+            const double visible_scale =
+                    std::clamp(cfg_.tracking_reacquire_visible_region_weight_scale, 0.0, 1.0);
+            reacquire_recovery.weight_visible_region *= visible_scale;
+            if (visible_scale <= 1.0e-6) {
+                reacquire_recovery.use_visible_region = false;
+            }
+            if (runOptimization("recovery_reacquire_short", reacquire_recovery, true)) {
+                return true;
+            }
+
+            if (cfg_.tracking_reacquire_transit_enable) {
+                traj_opt::TrackingProblem reacquire_transit = reacquire_recovery;
+                reacquire_transit.use_corridor = false;
+                reacquire_transit.sfcs.clear();
+                reacquire_transit.use_visible_region = false;
+                reacquire_transit.weight_visible_region = 0.0;
+                reacquire_transit.weight_target_forward *= 0.35;
+                reacquire_transit.weight_viewpoint_attractor *= 1.35;
+                reacquire_transit.distance_tolerance *= 1.35;
+                reacquire_transit.height_tolerance *= 1.35;
+                reacquire_transit.od_h_lower =
+                        std::max(0.05,
+                                 reacquire_transit.tracking_distance -
+                                         reacquire_transit.distance_tolerance);
+                reacquire_transit.od_h_upper =
+                        std::max(reacquire_transit.od_h_lower + 0.05,
+                                 reacquire_transit.tracking_distance +
+                                         reacquire_transit.distance_tolerance);
+                reacquire_transit.od_v_lower =
+                        reacquire_transit.height_offset -
+                        reacquire_transit.height_tolerance;
+                reacquire_transit.od_v_upper =
+                        reacquire_transit.height_offset +
+                        reacquire_transit.height_tolerance;
+                reacquire_transit.min_total_duration =
+                        std::max(reacquire_transit.min_total_duration,
+                                 dynamic_reacquire_horizon);
+                if (runOptimization("recovery_reacquire_transit",
+                                    reacquire_transit,
+                                    true)) {
+                    return true;
+                }
+            }
+        }
+
         std::string joined;
         for (const std::string &failure : attempt_failures) {
             if (!joined.empty()) {
@@ -4691,6 +5649,12 @@ namespace general_planner {
     RET_CODE GeneralPlanner::optimizeTrackingTask(const traj_opt::DynamicTargetStates &target_prediction,
                                                 const bool &from_rest) {
         if (target_prediction.empty()) {
+            setTrackingDiagnostic("input",
+                                  "empty_target_prediction",
+                                  0,
+                                  0,
+                                  0,
+                                  0.0);
             ros_ptr_->warn(" -- [GeneralPlanner] Tracking task has no target prediction.");
             return FAILED;
         }
@@ -4780,6 +5744,36 @@ namespace general_planner {
 
         traj_opt::TrackingProblem problem;
         TimeConsuming t_frontend("tracking_frontend", false);
+        const StatePVAJ head_state = makeTaskHeadState(from_rest);
+        const bool has_committed_tracking_for_frontend =
+                cfg_.tracking_runtime_manager_enable && tracking_runtime_manager_
+                    ? tracking_runtime_manager_->hasCommittedTracking()
+                    : !cmd_traj_info_.empty();
+        const double initial_target_distance =
+                (head_state.col(0) - target_prediction.front().position).head<2>().norm();
+        const double frontend_fov_range =
+                cfg_.tracking_fov_range > 0.0
+                    ? cfg_.tracking_fov_range
+                    : cfg_.tracking_distance + cfg_.tracking_distance_tolerance;
+        const double frontend_reacquire_entry_distance =
+                std::max({frontend_fov_range,
+                          std::max(0.0, cfg_.tracking_reacquire_distance),
+                          std::max(0.0, cfg_.tracking_reacquire_fov_entry_distance)});
+        const bool frontend_reacquire_mode =
+                cfg_.tracking_reacquire_fov_relax_enable &&
+                (from_rest ||
+                 !has_committed_tracking_for_frontend ||
+                 initial_target_distance > frontend_reacquire_entry_distance);
+        if (frontend_reacquire_mode && frontend_cfg.fov_feasibility_enable) {
+            frontend_cfg.fov_feasibility_enable = false;
+            if (cfg_.print_log) {
+                ros_ptr_->warn(" -- [Tracking] TRACKING_FRONTEND_FOV_FEASIBILITY_DISABLED reason=reacquire_or_uncommitted, from_rest={}, has_committed_tracking={}, initial_dist={:.3f}, entry_dist={:.3f}",
+                               from_rest,
+                               has_committed_tracking_for_frontend,
+                               initial_target_distance,
+                               frontend_reacquire_entry_distance);
+            }
+        }
         TrackingFrontend frontend(frontend_cfg, map_manager_, astar_ptr_);
         Vec3f reference_viewpoint = Vec3f::Zero();
         traj_opt::DynamicTargetState reference_target;
@@ -4787,17 +5781,16 @@ namespace general_planner {
                 findTrackingViewpointReference(target_prediction,
                                                reference_viewpoint,
                                                reference_target);
-        const StatePVAJ head_state = makeTaskHeadState(from_rest);
         if (!frontend.buildProblem(head_state,
                                    target_prediction,
                                    problem,
                                    has_viewpoint_reference ? &reference_viewpoint : nullptr,
                                    has_viewpoint_reference ? &reference_target : nullptr)) {
             time_consuming_[EPX_TRAJ_FRONTEND] = t_frontend.stop();
-            last_tracking_diag_guide_path_size_ = problem.guide_path.size();
-            last_tracking_diag_sfc_size_ = problem.sfcs.size();
-            last_tracking_diag_target_prediction_size_ = problem.target_prediction.size();
-            last_tracking_diag_out_traj_duration_ = 0.0;
+            setTrackingDiagnostic("frontend",
+                                  "frontend_failed",
+                                  problem,
+                                  0.0);
             ros_ptr_->warn(" -- [Tracking] TRACKING_FRONTEND_FAILED guide_path.size()={}, problem.sfcs.size()={}, problem.target_prediction.size()={}, out_traj_duration=0.000, prefix_duration=0.000, runtime_eval_start=0.000, old_remaining=0.000, old_activity.reason=frontend_failed",
                            problem.guide_path.size(),
                            problem.sfcs.size(),
@@ -4812,10 +5805,10 @@ namespace general_planner {
         std::string tracking_sfc_failure_reason;
         if (!buildTrackingGuideCorridor(problem, &tracking_sfc_failure_reason)) {
             time_consuming_[EPX_TRAJ_FRONTEND] += t_tracking_sfc.stop();
-            last_tracking_diag_guide_path_size_ = problem.guide_path.size();
-            last_tracking_diag_sfc_size_ = problem.sfcs.size();
-            last_tracking_diag_target_prediction_size_ = problem.target_prediction.size();
-            last_tracking_diag_out_traj_duration_ = 0.0;
+            setTrackingDiagnostic("sfc",
+                                  tracking_sfc_failure_reason,
+                                  problem,
+                                  0.0);
             ros_ptr_->warn(" -- [Tracking] TRACKING_SFC_FAILED reason={}, guide_path.size()={}, problem.sfcs.size()={}, problem.target_prediction.size()={}, out_traj_duration=0.000, prefix_duration=0.000, runtime_eval_start=0.000",
                            tracking_sfc_failure_reason,
                            problem.guide_path.size(),
@@ -4932,32 +5925,44 @@ namespace general_planner {
 
         Trajectory out_traj;
         Trajectory out_yaw_traj;
+        traj_opt::DynamicTargetStates accepted_target_prediction = active_target_prediction;
+        bool accepted_reacquire_fov_relax = false;
         TimeConsuming t_opt("tracking_opt", false);
         std::string tracking_opt_failure_reason;
         const bool ok = optimizeTrackingProblemWithRetries(problem,
                                                            active_target_prediction,
                                                            out_traj,
                                                            out_yaw_traj,
+                                                           &accepted_target_prediction,
+                                                           &accepted_reacquire_fov_relax,
                                                            &tracking_opt_failure_reason);
         time_consuming_[EXP_TRAJ_OPT] = t_opt.stop();
         if (!ok || out_traj.empty()) {
-            last_tracking_diag_guide_path_size_ = problem.guide_path.size();
-            last_tracking_diag_sfc_size_ = problem.sfcs.size();
-            last_tracking_diag_target_prediction_size_ = problem.target_prediction.size();
-            last_tracking_diag_out_traj_duration_ = out_traj.empty() ? 0.0 : out_traj.getTotalDuration();
+            setTrackingDiagnostic("optimizer",
+                                  tracking_opt_failure_reason,
+                                  problem,
+                                  out_traj.empty() ? 0.0 : out_traj.getTotalDuration());
             ros_ptr_->warn(" -- [Tracking] TRACKING_OPT_FAILED reason={}, guide_path.size()={}, problem.sfcs.size()={}, problem.target_prediction.size()={}, out_traj_duration={:.3f}, prefix_duration=0.000, runtime_eval_start=0.000",
                            tracking_opt_failure_reason,
                            problem.guide_path.size(),
                            problem.sfcs.size(),
                            problem.target_prediction.size(),
                            out_traj.empty() ? 0.0 : out_traj.getTotalDuration());
-            return failOrKeepOld("Tracking optimization failed: " + tracking_opt_failure_reason);
+            const std::string failure_message =
+                    "Tracking optimization failed: " + tracking_opt_failure_reason;
+            return failOrKeepOld(failure_message);
         }
-        last_tracking_diag_guide_path_size_ = problem.guide_path.size();
-        last_tracking_diag_sfc_size_ = problem.sfcs.size();
-        last_tracking_diag_target_prediction_size_ = problem.target_prediction.size();
-        last_tracking_diag_out_traj_duration_ = out_traj.getTotalDuration();
+        setTrackingDiagnostic("candidate",
+                              "optimizer_success",
+                              problem,
+                              out_traj.getTotalDuration());
         if (out_traj.getTotalDuration() < cfg_.tracking_min_commit_duration) {
+            setTrackingDiagnostic("commit_guard",
+                                  fmt::format("trajectory_too_short:{:.3f}<{}",
+                                              out_traj.getTotalDuration(),
+                                              cfg_.tracking_min_commit_duration),
+                                  problem,
+                                  out_traj.getTotalDuration());
             return failOrKeepOld(fmt::format("Tracking trajectory too short ({:.3f}s < {:.3f}s).",
                                              out_traj.getTotalDuration(),
                                              cfg_.tracking_min_commit_duration));
@@ -4968,7 +5973,7 @@ namespace general_planner {
                          out_traj.getTotalDuration());
         const TrackingMotionMetrics candidate_metrics =
                 computeTrackingMotionMetrics(out_traj,
-                                             active_target_prediction,
+                                             accepted_target_prediction,
                                              cfg_,
                                              0.0,
                                              0.0,
@@ -5003,7 +6008,7 @@ namespace general_planner {
                             std::clamp(ros_ptr_->getSimTime() - old_start_wt,
                                        0.0,
                                        old_total_dur),
-                            active_target_prediction,
+                            accepted_target_prediction,
                             cfg_.tracking_keep_old_horizon,
                             cfg_.tracking_keep_old_safety_dt);
             old_remaining = old_activity.remaining;
@@ -5020,7 +6025,7 @@ namespace general_planner {
             old_activity_reason = old_activity.reason;
         } else if (!cfg_.tracking_runtime_manager_enable) {
             TrackingTrajectoryActivity old_activity;
-            currentTrackingTrajectorySafeAndActive(active_target_prediction, &old_activity);
+            currentTrackingTrajectorySafeAndActive(accepted_target_prediction, &old_activity);
             old_remaining = old_activity.remaining;
             old_speed0 = old_activity.speed0;
             old_speed_z = old_activity.speed_z;
@@ -5064,12 +6069,12 @@ namespace general_planner {
         std::string commandable_reject_reason;
         if (!cfg_.tracking_runtime_manager_enable &&
             !candidateTrackingTrajectoryCommandable(out_traj,
-                                                    active_target_prediction,
+                                                    accepted_target_prediction,
                                                     0.0,
                                                     0.0,
                                                     &commandable_reject_reason)) {
             TrackingTrajectoryActivity old_activity;
-            currentTrackingTrajectorySafeAndActive(active_target_prediction, &old_activity);
+            currentTrackingTrajectorySafeAndActive(accepted_target_prediction, &old_activity);
             if (cfg_.print_log) {
                 ros_ptr_->warn(" -- [Tracking] TRACKING_CANDIDATE_REJECTED_NO_MOTION reject_reason={}, guide_path.size()={}, problem.sfcs.size()={}, problem.target_prediction.size()={}, candidate_duration={:.3f}, prefix_duration=0.000, runtime_eval_start=0.000, candidate_disp_xy={:.3f}, candidate_disp_z={:.3f}, candidate_disp_3d={:.3f}, candidate_speed_xy={:.3f}, candidate_speed_z={:.3f}, candidate_speed_3d={:.3f}, old_remaining={:.3f}, old_activity.reason={}, old_speed_3d={:.3f}, old_displacement_3d={:.3f}, old_progress_3d={:.3f}, old_expected_progress={:.3f}, old_avg_tracking_error={:.3f}",
                                commandable_reject_reason,
@@ -5098,14 +6103,36 @@ namespace general_planner {
                 return NO_NEED;
             }
 
+            std::string candidate_safe_reason;
+            std::string candidate_safe_detail;
+            const bool candidate_safe_for_commit =
+                    trackingCandidateSafeForCommit(out_traj,
+                                                  &candidate_safe_reason,
+                                                  &candidate_safe_detail);
             if (old_activity.valid &&
                 !old_activity.safe &&
-                trackingCandidateSafeForCommit(out_traj)) {
+                candidate_safe_for_commit) {
                 if (cfg_.print_log) {
                     ros_ptr_->warn(" -- [Tracking] no-motion guard allows safe candidate because old trajectory is unsafe. old_reason={}",
                                    old_activity.reason);
                 }
             } else {
+                setTrackingCommitRejectInfo(
+                        "candidate rejected by no-motion guard: " + commandable_reject_reason,
+                        fmt::format(
+                                "failure=no_motion_guard|candidate_safe_for_commit={}|candidate_safe_reason={}|candidate_safe_detail={}|old_activity_valid={}|old_activity_safe={}|old_activity_active={}|old_activity_reason={}|candidate_duration={:.3f}",
+                                static_cast<int>(candidate_safe_for_commit),
+                                candidate_safe_reason.empty() ? "none" : candidate_safe_reason,
+                                candidate_safe_detail.empty() ? "none" : candidate_safe_detail,
+                                static_cast<int>(old_activity.valid),
+                                static_cast<int>(old_activity.safe),
+                                static_cast<int>(old_activity.active),
+                                old_activity.reason.empty() ? "none" : old_activity.reason,
+                                out_traj.getTotalDuration()));
+                setTrackingDiagnostic("commit_guard",
+                                      "candidate_rejected_no_motion:" + commandable_reject_reason,
+                                      problem,
+                                      out_traj.getTotalDuration());
                 return FAILED;
             }
         }
@@ -5125,12 +6152,17 @@ namespace general_planner {
 
         if (!commitTrackingTrajectory(out_traj,
                                       out_yaw_traj,
-                                      active_target_prediction,
-                                      cfg_.tracking_use_snap ? "tracking_snap" : "tracking_jerk")) {
+                                      accepted_target_prediction,
+                                      cfg_.tracking_use_snap ? "tracking_snap" : "tracking_jerk",
+                                      accepted_reacquire_fov_relax)) {
             const std::string commit_reason =
                     last_tracking_commit_reject_reason_.empty()
                         ? "unknown"
                         : last_tracking_commit_reject_reason_;
+            setTrackingDiagnostic("commit",
+                                  commit_reason,
+                                  problem,
+                                  out_traj.getTotalDuration());
             if (keepOldTrackingTrajectoryIfActive(active_target_prediction,
                                                   "tracking trajectory commit rejected: " + commit_reason)) {
                 return NO_NEED;
@@ -5139,6 +6171,10 @@ namespace general_planner {
             return FAILED;
         }
         rememberTrackingViewpointReference(problem);
+        setTrackingDiagnostic("success",
+                              "candidate_committed",
+                              problem,
+                              out_traj.getTotalDuration());
         ros_ptr_->info(" -- [GeneralPlanner] Tracking task success: pieces={}, duration={}.",
                        out_traj.getPieceNum(), out_traj.getTotalDuration());
         return SUCCESS;
@@ -5232,263 +6268,33 @@ namespace general_planner {
         return frontend_cfg;
     }
 
-    exploration::EpicExplorationManager::Config GeneralPlanner::makeExplorationConfig() const {
-        exploration::EpicExplorationManager::Config cfg;
-        cfg.enable = cfg_.exploration_enable;
-        cfg.use_epic_frontend = cfg_.exploration_use_epic_frontend;
-        cfg.print_log = cfg_.exploration_print_log;
-        cfg.publish_lio_map = cfg_.exploration_epic_lio_publish_map;
-        cfg.publish_lio_map_period = cfg_.exploration_epic_lio_publish_map_period;
-        cfg.lio_self_filter_radius = cfg_.exploration_epic_lio_self_filter_radius;
-        cfg.lidar_perception.lidar_pitch_deg = cfg_.exploration_lidar_pitch_deg;
-        cfg.lidar_perception.fov_up_deg = cfg_.exploration_lidar_fov_up_deg;
-        cfg.lidar_perception.fov_down_deg = cfg_.exploration_lidar_fov_down_deg;
-        cfg.lidar_perception.viewpoint_fov_up_deg = cfg_.exploration_lidar_viewpoint_fov_up_deg;
-        cfg.lidar_perception.viewpoint_fov_down_deg = cfg_.exploration_lidar_viewpoint_fov_down_deg;
-        cfg.lidar_perception.max_ray_length = cfg_.exploration_lidar_max_ray_length;
-
-        cfg.observation_map.enable = cfg_.exploration_enable;
-        cfg.observation_map.resolution = cfg_.exploration_observation_resolution;
-        cfg.observation_map.min_observation_distance = cfg_.exploration_observation_min_distance;
-        cfg.observation_map.well_observed_distance = cfg_.exploration_observation_well_distance;
-        cfg.observation_map.max_observation_distance = cfg_.exploration_observation_max_distance;
-        cfg.observation_map.good_observation_force_trust_length =
-                cfg_.exploration_observation_good_force_trust_length;
-        cfg.observation_map.good_observation_trust_length =
-                cfg_.exploration_observation_good_trust_length;
-        cfg.observation_map.good_observation_direction_score =
-                cfg_.exploration_observation_good_direction_score;
-        cfg.observation_map.cloud_downsample_step = cfg_.exploration_observation_cloud_downsample_step;
-        cfg.observation_map.max_points_per_update = cfg_.exploration_observation_max_points_per_update;
-        cfg.observation_map.frontier_cluster_radius = cfg_.exploration_observation_frontier_cluster_radius;
-        cfg.observation_map.frontier_normal_similarity = cfg_.exploration_observation_frontier_normal_similarity;
-        cfg.observation_map.min_frontier_cluster_size = cfg_.exploration_observation_min_frontier_cluster_size;
-        cfg.observation_map.frontier_cluster_min_radius =
-                cfg_.exploration_frontier_cluster_min_radius;
-        cfg.observation_map.frontier_cluster_min_size =
-                cfg_.exploration_frontier_cluster_min_size;
-        cfg.observation_map.frontier_cluster_max_size =
-                cfg_.exploration_frontier_cluster_max_size;
-        cfg.observation_map.frontier_cluster_direction_radius =
-                cfg_.exploration_frontier_cluster_direction_radius;
-        cfg.observation_map.frontier_cluster_minimum_point_num =
-                cfg_.exploration_frontier_cluster_minimum_point_num;
-        if (cfg_.exploration_observation_bbox_min.size() == 3) {
-            cfg.observation_map.bbox_min_x = cfg_.exploration_observation_bbox_min[0];
-            cfg.observation_map.bbox_min_y = cfg_.exploration_observation_bbox_min[1];
-            cfg.observation_map.bbox_min_z = cfg_.exploration_observation_bbox_min[2];
-        }
-        if (cfg_.exploration_observation_bbox_max.size() == 3) {
-            cfg.observation_map.bbox_max_x = cfg_.exploration_observation_bbox_max[0];
-            cfg.observation_map.bbox_max_y = cfg_.exploration_observation_bbox_max[1];
-            cfg.observation_map.bbox_max_z = cfg_.exploration_observation_bbox_max[2];
-        }
-
-        cfg.frontier_database.association_distance = cfg_.exploration_frontier_association_distance;
-        cfg.frontier_database.bbox_overlap_min_ratio = cfg_.exploration_frontier_bbox_overlap_min_ratio;
-        cfg.frontier_database.max_failed_count = cfg_.exploration_frontier_max_failed_count;
-        cfg.frontier_database.max_selected_count_without_gain =
-                cfg_.exploration_frontier_max_selected_count_without_gain;
-        cfg.frontier_database.blacklist_time = cfg_.exploration_frontier_blacklist_time;
-        cfg.frontier_database.covered_gain_threshold = cfg_.exploration_frontier_covered_gain_threshold;
-        cfg.frontier_database.missing_frontier_timeout = cfg_.exploration_frontier_missing_timeout;
-        cfg.frontier_database.dormant_time = cfg_.exploration_frontier_dormant_time;
-        cfg.frontier_database.visited_viewpoint_radius =
-                cfg_.exploration_frontier_visited_viewpoint_radius;
-        cfg.frontier_database.visited_viewpoint_penalty =
-                cfg_.exploration_frontier_visited_viewpoint_penalty;
-        cfg.frontier_database.max_visited_viewpoints =
-                cfg_.exploration_frontier_max_visited_viewpoints;
-
-        cfg.viewpoint_manager.min_distance = cfg_.exploration_viewpoint_min_distance;
-        cfg.viewpoint_manager.max_distance = cfg_.exploration_viewpoint_max_distance;
-        cfg.viewpoint_manager.radius_samples = cfg_.exploration_viewpoint_radius_samples;
-        cfg.viewpoint_manager.yaw_samples = cfg_.exploration_viewpoint_yaw_samples;
-        cfg.viewpoint_manager.height_samples = cfg_.exploration_viewpoint_height_samples;
-        cfg.viewpoint_manager.height_step = cfg_.exploration_viewpoint_height_step;
-        cfg.viewpoint_manager.sample_pillar_min_height =
-                cfg_.exploration_viewpoint_sample_pillar_min_height;
-        cfg.viewpoint_manager.sample_pillar_max_height =
-                cfg_.exploration_viewpoint_sample_pillar_max_height;
-        cfg.viewpoint_manager.sample_pillar_min_radius =
-                cfg_.exploration_viewpoint_sample_pillar_min_radius;
-        cfg.viewpoint_manager.sample_pillar_max_radius =
-                cfg_.exploration_viewpoint_sample_pillar_max_radius;
-        cfg.viewpoint_manager.sample_pillar_height_layer_num =
-                cfg_.exploration_viewpoint_sample_pillar_height_layer_num;
-        cfg.viewpoint_manager.sample_pillar_radius_layer_num =
-                cfg_.exploration_viewpoint_sample_pillar_radius_layer_num;
-        cfg.viewpoint_manager.sample_pillar_circle_sample_num =
-                cfg_.exploration_viewpoint_sample_pillar_circle_sample_num;
-        cfg.viewpoint_manager.local_tsp_size =
-                cfg_.exploration_viewpoint_local_tsp_size;
-        cfg.viewpoint_manager.safe_distance = cfg_.exploration_viewpoint_safe_distance;
-        cfg.viewpoint_manager.sensor_range = cfg_.exploration_viewpoint_sensor_range;
-        cfg.viewpoint_manager.horizontal_fov_deg = cfg_.exploration_viewpoint_horizontal_fov_deg;
-        cfg.viewpoint_manager.vertical_fov_deg = cfg_.exploration_viewpoint_vertical_fov_deg;
-        cfg.viewpoint_manager.normal_dot_min = cfg_.exploration_viewpoint_normal_dot_min;
-        cfg.viewpoint_manager.max_cells_per_gain_eval = cfg_.exploration_viewpoint_max_cells_per_gain_eval;
-        cfg.viewpoint_manager.line_of_sight_step = cfg_.exploration_viewpoint_line_of_sight_step;
-        cfg.viewpoint_manager.min_gain = cfg_.exploration_viewpoint_min_gain;
-        cfg.viewpoint_manager.use_local_map_safety = cfg_.exploration_viewpoint_use_local_map_safety;
-        cfg.viewpoint_manager.cluster_by_visibility_sphere =
-                cfg_.exploration_viewpoint_cluster_by_visibility_sphere;
-        cfg.viewpoint_manager.use_topo_reachability_filter =
-                cfg_.exploration_viewpoint_use_topo_reachability_filter;
-        cfg.viewpoint_manager.max_viewpoint_clusters = cfg_.exploration_viewpoint_max_clusters;
-        cfg.viewpoint_manager.viewpoint_cluster_connectivity_scale =
-                cfg_.exploration_viewpoint_cluster_connectivity_scale;
-        cfg.viewpoint_manager.topo_reachability_timeout =
-                cfg_.exploration_viewpoint_topo_reachability_timeout;
-        cfg.viewpoint_manager.epic_yaw_bins = cfg_.exploration_viewpoint_epic_yaw_bins;
-
-        cfg.topo_graph.history_node_min_distance = cfg_.exploration_topo_history_node_min_distance;
-        cfg.topo_graph.connect_radius = cfg_.exploration_topo_connect_radius;
-        cfg.topo_graph.local_edge_astar_timeout = cfg_.exploration_topo_local_edge_astar_timeout;
-        cfg.topo_graph.global_edge_max_length = cfg_.exploration_topo_global_edge_max_length;
-        cfg.topo_graph.max_history_nodes = cfg_.exploration_topo_max_history_nodes;
-        cfg.topo_graph.use_local_astar_for_edges = cfg_.exploration_topo_use_local_astar_for_edges;
-        cfg.topo_graph.use_global_line_free_for_edges = cfg_.exploration_topo_use_global_line_free_for_edges;
-        cfg.topo_graph.global_line_safe_distance = cfg_.exploration_topo_global_line_safe_distance;
-        cfg.topo_graph.global_line_step = cfg_.exploration_topo_global_line_step;
-        cfg.topo_graph.use_parallel_bubble_astar_for_edges =
-                cfg_.exploration_topo_use_parallel_bubble_astar_for_edges;
-        cfg.topo_graph.bubble_astar_resolution = cfg_.exploration_topo_bubble_astar_resolution;
-        cfg.topo_graph.bubble_astar_safe_distance = cfg_.exploration_topo_bubble_astar_safe_distance;
-        cfg.topo_graph.bubble_astar_max_nodes = cfg_.exploration_topo_bubble_astar_max_nodes;
-        cfg.topo_graph.use_epic_region_bubble_graph =
-                cfg_.exploration_topo_use_epic_region_bubble_graph;
-        cfg.topo_graph.region_size_xy = cfg_.exploration_topo_region_size_xy;
-        cfg.topo_graph.region_size_z = cfg_.exploration_topo_region_size_z;
-        cfg.topo_graph.min_subregion_size_xy = cfg_.exploration_topo_min_subregion_size_xy;
-        cfg.topo_graph.min_subregion_size_z = cfg_.exploration_topo_min_subregion_size_z;
-        cfg.topo_graph.bubble_min_radius = cfg_.exploration_topo_bubble_min_radius;
-        cfg.topo_graph.frontier_bubble_min_radius = cfg_.exploration_topo_frontier_bubble_min_radius;
-        cfg.topo_graph.cube_discrete_size = cfg_.exploration_topo_cube_discrete_size;
-        cfg.topo_graph.max_update_region_num = cfg_.exploration_topo_max_update_region_num;
-        cfg.topo_graph.neighbor_mode = cfg_.exploration_topo_neighbor_mode;
-        cfg.topo_graph.edge_search_padding_scale = cfg_.exploration_topo_edge_search_padding_scale;
-        cfg.topo_graph.edge_safe_distance = cfg_.exploration_topo_edge_safe_distance;
-        cfg.topo_graph.max_edges_per_node = cfg_.exploration_topo_max_edges_per_node;
-        cfg.topo_graph.max_region_edges_per_node = cfg_.exploration_topo_max_region_edges_per_node;
-        cfg.topo_graph.max_frontier_edges_per_node = cfg_.exploration_topo_max_frontier_edges_per_node;
-        cfg.topo_graph.max_history_edges_per_node = cfg_.exploration_topo_max_history_edges_per_node;
-        cfg.topo_graph.max_candidate_neighbors = cfg_.exploration_topo_max_candidate_neighbors;
-        cfg.topo_graph.bbox_min = super_utils::Vec3f(cfg.observation_map.bbox_min_x,
-                                                     cfg.observation_map.bbox_min_y,
-                                                     cfg.observation_map.bbox_min_z);
-        cfg.topo_graph.bbox_max = super_utils::Vec3f(cfg.observation_map.bbox_max_x,
-                                                     cfg.observation_map.bbox_max_y,
-                                                     cfg.observation_map.bbox_max_z);
-
-        cfg.global_guidance.enable = cfg_.exploration_global_guidance_enable;
-        cfg.global_guidance.max_frontiers_in_tour = cfg_.exploration_global_guidance_max_frontiers_in_tour;
-        cfg.global_guidance.weight_path_cost = cfg_.exploration_global_guidance_weight_path_cost;
-        cfg.global_guidance.weight_gain = cfg_.exploration_global_guidance_weight_gain;
-        cfg.global_guidance.weight_revisit = cfg_.exploration_global_guidance_weight_revisit;
-        cfg.global_guidance.use_two_opt = cfg_.exploration_global_guidance_use_two_opt;
-        cfg.global_guidance.keep_current_target = cfg_.exploration_global_guidance_keep_current_target;
-        cfg.global_guidance.use_lkh = cfg_.exploration_global_guidance_use_lkh;
-        cfg.global_guidance.tsp_dir = cfg_.exploration_global_guidance_tsp_dir;
-        cfg.global_guidance.tsp_problem_name = cfg_.exploration_global_guidance_tsp_problem_name;
-        cfg.global_guidance.lkh_executable = cfg_.exploration_global_guidance_lkh_executable;
-        cfg.global_guidance.lkh_cost_scale = cfg_.exploration_global_guidance_lkh_cost_scale;
-
-        cfg.route_waypoint_lookahead = cfg_.exploration_route_waypoint_lookahead;
-        cfg.route_waypoint_min_distance = cfg_.exploration_route_waypoint_min_distance;
-        cfg.route_waypoint_max_distance = cfg_.exploration_route_waypoint_max_distance;
-        cfg.local_goal_safe_distance = cfg_.exploration_local_goal_safe_distance;
-        cfg.route_replan_distance_threshold = cfg_.exploration_route_replan_distance_threshold;
-        cfg.use_local_map_goal_safety = cfg_.exploration_global_route_use_local_map_safety;
-        cfg.final_goal_radius = cfg_.exploration_runtime_final_goal_radius;
-        cfg.route_progress_min = cfg_.exploration_runtime_route_progress_min;
-        cfg.max_local_segment_fail_count = cfg_.exploration_runtime_max_local_segment_fail_count;
-        cfg.keep_active_target = cfg_.exploration_runtime_keep_active_target;
-        cfg.switch_score_ratio = cfg_.exploration_runtime_switch_score_ratio;
-        cfg.local_guide.local_goal_lookahead = cfg_.exploration_local_guide_lookahead;
-        cfg.local_guide.local_goal_min_distance = cfg_.exploration_local_guide_min_distance;
-        cfg.local_guide.final_goal_radius = cfg_.exploration_runtime_final_goal_radius;
-        cfg.local_guide.planning_horizon = cfg_.exploration_local_guide_planning_horizon;
-        cfg.local_guide.max_segment_length = cfg_.exploration_local_guide_max_segment_length;
-        cfg.local_guide.safe_distance = cfg_.exploration_local_guide_safe_distance;
-        cfg.local_guide.start_safe_distance = cfg_.exploration_local_guide_start_safe_distance;
-        cfg.local_guide.line_step = cfg_.exploration_local_guide_line_step;
-        cfg.local_guide.shortcut_enable = cfg_.exploration_local_guide_shortcut_enable;
-        cfg.local_guide.astar_repair_enable =
-                cfg_.exploration_use_epic_frontend
-                ? false
-                : cfg_.exploration_local_guide_astar_repair_enable;
-        cfg.local_guide.unknown_as_occupied = cfg_.exploration_local_guide_unknown_as_occupied;
-        cfg.local_guide.backend = cfg_.exploration_local_guide_backend;
-        if (cfg_.exploration_use_epic_frontend) {
-            cfg.local_guide.safe_distance =
-                    std::min(cfg.local_guide.safe_distance,
-                             std::max(0.05, cfg.local_goal_safe_distance));
-        }
-        cfg.local_guide.start_safe_distance =
-                std::min(std::max(0.0, cfg.local_guide.start_safe_distance),
-                         std::max(0.0, cfg.local_guide.safe_distance));
-        cfg.repeated_goal_threshold = cfg_.exploration_stuck_repeated_goal_threshold;
-        cfg.repeated_goal_distance = cfg_.exploration_stuck_repeated_goal_distance;
-        cfg.min_robot_displacement = cfg_.exploration_stuck_min_robot_displacement;
-        cfg.min_explored_volume_gain = cfg_.exploration_stuck_min_explored_volume_gain;
-        return cfg;
-    }
-
-    GlobalExplorationMapConfig GeneralPlanner::makeGlobalExplorationMapConfig() const {
-        GlobalExplorationMapConfig map_cfg;
-        map_cfg.enable = cfg_.exploration_enable && cfg_.global_exploration_map_enable;
-        map_cfg.resolution = cfg_.global_exploration_map_resolution;
-        map_cfg.raycast_step = cfg_.global_exploration_map_raycast_step;
-        map_cfg.max_range = cfg_.global_exploration_map_max_range;
-        map_cfg.min_range = cfg_.global_exploration_map_min_range;
-        if (cfg_.global_exploration_map_bbox_min.size() == 3) {
-            map_cfg.bbox_min = Eigen::Vector3d(cfg_.global_exploration_map_bbox_min[0],
-                                               cfg_.global_exploration_map_bbox_min[1],
-                                               cfg_.global_exploration_map_bbox_min[2]);
-        }
-        if (cfg_.global_exploration_map_bbox_max.size() == 3) {
-            map_cfg.bbox_max = Eigen::Vector3d(cfg_.global_exploration_map_bbox_max[0],
-                                               cfg_.global_exploration_map_bbox_max[1],
-                                               cfg_.global_exploration_map_bbox_max[2]);
-        }
-        map_cfg.occupied_hit_threshold = cfg_.global_exploration_map_occupied_hit_threshold;
-        map_cfg.free_miss_threshold = cfg_.global_exploration_map_free_miss_threshold;
-        map_cfg.update_min_interval = cfg_.global_exploration_map_update_min_interval;
-        map_cfg.cloud_downsample_step = cfg_.global_exploration_map_cloud_downsample_step;
-        map_cfg.max_points_per_update = cfg_.global_exploration_map_max_points_per_update;
-        return map_cfg;
-    }
-
-    GlobalPointCloudMapConfig GeneralPlanner::makeGlobalPointCloudMapConfig() const {
-        GlobalPointCloudMapConfig map_cfg;
-        map_cfg.enable = cfg_.exploration_enable &&
-                         cfg_.global_pointcloud_map_enable &&
-                         !cfg_.exploration_use_epic_frontend;
-        map_cfg.voxel_size = cfg_.global_pointcloud_map_voxel_size;
-        map_cfg.save_path = cfg_.global_pointcloud_map_save_path;
-        map_cfg.crop_enable = cfg_.global_pointcloud_map_crop_enable;
-        if (cfg_.global_pointcloud_map_crop_min.size() == 3) {
-            map_cfg.crop_min = Eigen::Vector3d(cfg_.global_pointcloud_map_crop_min[0],
-                                               cfg_.global_pointcloud_map_crop_min[1],
-                                               cfg_.global_pointcloud_map_crop_min[2]);
-        }
-        if (cfg_.global_pointcloud_map_crop_max.size() == 3) {
-            map_cfg.crop_max = Eigen::Vector3d(cfg_.global_pointcloud_map_crop_max[0],
-                                               cfg_.global_pointcloud_map_crop_max[1],
-                                               cfg_.global_pointcloud_map_crop_max[2]);
-        }
-        return map_cfg;
-    }
-
-    GlobalRegionGridConfig GeneralPlanner::makeGlobalRegionGridConfig() const {
-        GlobalRegionGridConfig grid_cfg;
-        grid_cfg.enable = cfg_.exploration_enable && cfg_.global_region_grid_enable;
-        grid_cfg.region_size_xy = cfg_.global_region_grid_region_size_xy;
-        grid_cfg.region_size_z = cfg_.global_region_grid_region_size_z;
-        grid_cfg.min_frontier_count = cfg_.global_region_grid_min_frontier_count;
-        grid_cfg.explored_ratio_threshold = cfg_.global_region_grid_explored_ratio_threshold;
-        return grid_cfg;
+    ExplorationFrontend::Config GeneralPlanner::makeExplorationFrontendConfig() const {
+        ExplorationFrontend::Config frontend_cfg;
+        frontend_cfg.enable = cfg_.exploration_enable;
+        frontend_cfg.print_log = cfg_.exploration_print_log;
+        frontend_cfg.map_resolution = std::max(0.2, cfg_.resolution);
+        frontend_cfg.frontier_search_radius = cfg_.exploration_frontier_search_radius;
+        frontend_cfg.frontier_cluster_radius = cfg_.exploration_frontier_cluster_radius;
+        frontend_cfg.min_frontier_cluster_size = cfg_.exploration_min_frontier_cluster_size;
+        frontend_cfg.viewpoint_min_distance = cfg_.exploration_viewpoint_min_distance;
+        frontend_cfg.viewpoint_max_distance = cfg_.exploration_viewpoint_max_distance;
+        frontend_cfg.viewpoint_height_offset = cfg_.exploration_viewpoint_height_offset;
+        frontend_cfg.viewpoint_safe_distance = cfg_.exploration_viewpoint_safe_distance;
+        frontend_cfg.viewpoint_yaw_sample_num = cfg_.exploration_viewpoint_yaw_sample_num;
+        frontend_cfg.viewpoint_radius_sample_num = cfg_.exploration_viewpoint_radius_sample_num;
+        frontend_cfg.max_candidate_num = cfg_.exploration_max_candidate_num;
+        frontend_cfg.weight_travel = cfg_.exploration_weight_travel;
+        frontend_cfg.weight_yaw = cfg_.exploration_weight_yaw;
+        frontend_cfg.weight_curvature = cfg_.exploration_weight_curvature;
+        frontend_cfg.weight_info_gain = cfg_.exploration_weight_info_gain;
+        frontend_cfg.weight_unknown_risk = cfg_.exploration_weight_unknown_risk;
+        frontend_cfg.min_information_gain = cfg_.exploration_min_information_gain;
+        frontend_cfg.goal_switch_min_score_improvement = cfg_.exploration_goal_switch_min_score_improvement;
+        frontend_cfg.goal_reached_distance = cfg_.exploration_goal_reached_distance;
+        frontend_cfg.unknown_as_occupied_for_motion = cfg_.exploration_unknown_as_occupied_for_motion;
+        frontend_cfg.require_line_free_to_frontier = cfg_.exploration_require_line_free_to_frontier;
+        frontend_cfg.use_astar_cost = cfg_.exploration_use_astar_cost;
+        return frontend_cfg;
     }
 
     RET_CODE GeneralPlanner::optimizePerchingTask(const traj_opt::PerchingSurfaceState &surface,
@@ -5955,8 +6761,20 @@ namespace general_planner {
         TimeConsuming total_t("PlanTrackingFromRest", false);
         std::lock_guard<std::mutex> guard(replan_lock_);
         latest_replan.reset();
+        setTrackingDiagnostic("plan_from_rest",
+                              "start",
+                              0,
+                              0,
+                              target_prediction.size(),
+                              0.0);
         if (!robot_state_.rcv) {
             latest_replan.setRetCode(GENERAL_RET_CODE::GENERAL_NO_ODOM);
+            setTrackingDiagnostic("input",
+                                  "no_odom",
+                                  0,
+                                  0,
+                                  target_prediction.size(),
+                                  0.0);
             ros_ptr_->warn(" -- [GeneralPlanner] in [PlanTrackingFromRest]: No odom, force return.");
             return FAILED;
         }
@@ -5966,9 +6784,7 @@ namespace general_planner {
         gi_.goal_yaw = target_prediction.empty() ? NAN : target_prediction.back().yaw;
         gi_.new_goal = new_task;
         last_exp_traj_info_.setEmpty();
-        if (cfg_.tracking_runtime_manager_enable && tracking_runtime_manager_) {
-            tracking_runtime_manager_->reset();
-        }
+        maybeResetTrackingRuntimeForReplan(new_task, "tracking_plan_from_rest");
         if (new_task &&
             tracking_perching_manager_ &&
             !tracking_perching_manager_->perchingRequested() &&
@@ -5986,8 +6802,20 @@ namespace general_planner {
         TimeConsuming total_t("ReplanTrackingOnce", false);
         std::lock_guard<std::mutex> guard(replan_lock_);
         latest_replan.reset();
+        setTrackingDiagnostic("replan",
+                              "start",
+                              0,
+                              0,
+                              target_prediction.size(),
+                              0.0);
         if (!robot_state_.rcv) {
             latest_replan.setRetCode(GENERAL_RET_CODE::GENERAL_NO_ODOM);
+            setTrackingDiagnostic("input",
+                                  "no_odom",
+                                  0,
+                                  0,
+                                  target_prediction.size(),
+                                  0.0);
             return FAILED;
         }
         if (tracking_perching_manager_ &&
@@ -5998,6 +6826,12 @@ namespace general_planner {
              tracking_perching_manager_->status() ==
                  TrackingPerchingTransitionManager::Status::CONTACT_IMMINENT)) {
             latest_replan.setRetCode(GENERAL_SUCCESS_NO_BACKUP);
+            setTrackingDiagnostic("tracking_perching",
+                                  "perching_owns_committed_trajectory",
+                                  0,
+                                  0,
+                                  target_prediction.size(),
+                                  0.0);
             ros_ptr_->info(" -- [TrackingPerching] TRACKING_REPLAN_BLOCKED_PERCHING_ACTIVE reason=perching_owns_committed_trajectory");
             time_consuming_[TOTAL_REPLAN] = total_t.stop();
             return SUCCESS;
@@ -6007,9 +6841,7 @@ namespace general_planner {
         gi_.goal_p = goal;
         gi_.goal_yaw = target_prediction.empty() ? NAN : target_prediction.back().yaw;
         gi_.new_goal = new_task;
-        if (new_task && cfg_.tracking_runtime_manager_enable && tracking_runtime_manager_) {
-            tracking_runtime_manager_->reset();
-        }
+        maybeResetTrackingRuntimeForReplan(new_task, "tracking_replan");
 
         const RET_CODE ret = optimizeTrackingTask(target_prediction, false);
         time_consuming_[TOTAL_REPLAN] = total_t.stop();
@@ -6023,8 +6855,20 @@ namespace general_planner {
         TimeConsuming total_t("ReplanTrackingOnceTrackingPerching", false);
         std::lock_guard<std::mutex> guard(replan_lock_);
         latest_replan.reset();
+        setTrackingDiagnostic("replan",
+                              "start",
+                              0,
+                              0,
+                              target_prediction.size(),
+                              0.0);
         if (!robot_state_.rcv) {
             latest_replan.setRetCode(GENERAL_RET_CODE::GENERAL_NO_ODOM);
+            setTrackingDiagnostic("input",
+                                  "no_odom",
+                                  0,
+                                  0,
+                                  target_prediction.size(),
+                                  0.0);
             return FAILED;
         }
         latest_replan.setGoal(target_prediction.empty() ? surface.position : target_prediction.back().position,
@@ -6046,9 +6890,7 @@ namespace general_planner {
             return ret;
         }
 
-        if (new_task && cfg_.tracking_runtime_manager_enable && tracking_runtime_manager_) {
-            tracking_runtime_manager_->reset();
-        }
+        maybeResetTrackingRuntimeForReplan(new_task, "tracking_perching_replan");
 
         const RET_CODE tracking_ret = optimizeTrackingTask(target_prediction, false);
         const RET_CODE ret = tryCommitPerchingFromTracking(target_prediction, surface, tracking_ret);
@@ -6228,214 +7070,238 @@ namespace general_planner {
         return std::max(0.0, remaining);
     }
 
-    const char *GeneralPlanner::explorationRuntimeStateName(
-            const ExplorationRuntimeState state) {
-        switch (state) {
-            case ExplorationRuntimeState::WAIT_OBSERVATION:
-                return "WAIT_OBSERVATION";
-            case ExplorationRuntimeState::UPDATE_GLOBAL:
-                return "UPDATE_GLOBAL";
-            case ExplorationRuntimeState::PLAN_LOCAL:
-                return "PLAN_LOCAL";
-            case ExplorationRuntimeState::EXEC_LOCAL:
-                return "EXEC_LOCAL";
-            case ExplorationRuntimeState::RECOVER:
-                return "RECOVER";
-            case ExplorationRuntimeState::FINISH:
-                return "FINISH";
-            default:
-                return "UNKNOWN";
-        }
-    }
+    bool GeneralPlanner::checkPositionTrajectorySafety(
+            const Trajectory &traj,
+            const double now_wt,
+            const double horizon,
+            const double dt,
+            const int consecutive_hits,
+            const bool unknown_as_occupied,
+            CommittedTrajectorySafetyReport *report) const {
+        CommittedTrajectorySafetyReport local_report;
+        local_report.safe = true;
+        local_report.valid = false;
 
-    void GeneralPlanner::resetExplorationRuntimeState(const bool hard_reset) {
-        exploration_runtime_state_ = ExplorationRuntimeState::WAIT_OBSERVATION;
-        exploration_last_global_update_wt_ = -1.0;
-        exploration_last_local_commit_wt_ = -1.0;
-        exploration_last_runtime_log_wt_ = -1.0;
-        if (hard_reset) {
-            exploration_has_committed_local_traj_ = false;
-        }
-    }
-
-    bool GeneralPlanner::getExplorationCommittedTrajectoryActivity(const double now,
-                                                                   double &elapsed,
-                                                                   double &remaining) {
-        elapsed = 0.0;
-        remaining = 0.0;
-        cmd_traj_info_.lock();
-        if (cmd_traj_info_.empty() || cmd_traj_info_.posTraj().empty()) {
-            cmd_traj_info_.unlock();
-            return false;
-        }
-        const double start_wt = cmd_traj_info_.getStartWallTime();
-        const double total_dur = cmd_traj_info_.getTotalDuration();
-        cmd_traj_info_.unlock();
-
-        elapsed = std::max(0.0, now - start_wt);
-        remaining = std::max(0.0, total_dur - elapsed);
-        const double min_remaining =
-                std::max(0.02, 0.5 * cfg_.replan_forward_dt);
-        return total_dur > min_remaining && remaining > min_remaining;
-    }
-
-    bool GeneralPlanner::currentExplorationTrajectoryUnsafe(const double now,
-                                                            double *collision_time) {
-        if (collision_time != nullptr) {
-            *collision_time = -1.0;
-        }
-        if (map_manager_ == nullptr) {
-            return false;
-        }
-        const MapBackend backend =
-                cfg_.exploration_use_epic_frontend
-                ? cfg_.exploration_local_guide_backend
-                : cfg_.corridor_backend;
-        const MapBackend fallback_backend =
-                cfg_.exploration_use_epic_frontend ? MapBackend::EPIC_LIO : backend;
-        if (!map_manager_->ready(backend)) {
-            if (fallback_backend == backend || !map_manager_->ready(fallback_backend)) {
-                return false;
+        const auto fill_report = [&]() {
+            if (report != nullptr) {
+                *report = local_report;
             }
-        }
-        const MapBackend safety_backend =
-                map_manager_->ready(backend) ? backend : fallback_backend;
+        };
 
-        Trajectory pos_traj;
-        double start_wt = 0.0;
-        double total_dur = 0.0;
-        cmd_traj_info_.lock();
-        if (cmd_traj_info_.empty() || cmd_traj_info_.posTraj().empty()) {
-            cmd_traj_info_.unlock();
-            return false;
-        }
-        pos_traj = cmd_traj_info_.posTraj();
-        start_wt = cmd_traj_info_.getStartWallTime();
-        total_dur = cmd_traj_info_.getTotalDuration();
-        cmd_traj_info_.unlock();
-
-        if (total_dur <= 1.0e-3 || pos_traj.empty()) {
-            return false;
-        }
-        const double local_t = std::max(0.0, now - start_wt);
-        if (local_t >= total_dur) {
-            return false;
-        }
-        const double horizon = std::max(
-                cfg_.exploration_runtime_safety_check_dt,
-                cfg_.exploration_runtime_safety_check_horizon);
-        const double end_t = std::min(total_dur, local_t + horizon);
-        const double dt = std::max(0.02, cfg_.exploration_runtime_safety_check_dt);
-        double safe_distance =
-                std::max(0.0, cfg_.exploration_local_guide_safe_distance);
-        if (cfg_.exploration_use_epic_frontend) {
-            safe_distance = std::min(safe_distance,
-                                     std::max(0.05, cfg_.exploration_local_goal_safe_distance));
-        }
-        const double start_safe_distance =
-                std::min(safe_distance,
-                         std::max(0.0, cfg_.exploration_local_guide_start_safe_distance));
-        const double line_step =
-                std::max(1.0e-3, cfg_.exploration_local_guide_line_step);
-
-        Vec3f last = pos_traj.getPos(local_t);
-        const bool start_full_safe =
-                last.allFinite() && map_manager_->isStateSafe(last, safe_distance, safety_backend);
-        const bool start_relaxed_safe =
-                last.allFinite() && map_manager_->isStateSafe(last, start_safe_distance, safety_backend);
-        if (!start_full_safe && !start_relaxed_safe) {
-            if (collision_time != nullptr) {
-                *collision_time = 0.0;
-            }
+        if (map_manager_ == nullptr || !map_manager_->ready()) {
+            local_report.reason = "map_not_ready";
+            fill_report();
             return true;
         }
 
-        bool waiting_for_full_clearance = !start_full_safe;
-        for (double t = local_t + dt; t <= end_t + 1.0e-6; t += dt) {
-            const double sample_t = std::min(t, end_t);
-            const Vec3f sample = pos_traj.getPos(sample_t);
-            if (!sample.allFinite()) {
-                if (collision_time != nullptr) {
-                    *collision_time = std::max(0.0, sample_t - local_t);
-                }
-                return true;
-            }
-            if (waiting_for_full_clearance) {
-                if (!map_manager_->isStateSafe(sample, start_safe_distance, safety_backend) ||
-                    !map_manager_->isSegmentSafe(last,
-                                                 sample,
-                                                 start_safe_distance,
-                                                 safety_backend,
-                                                 line_step)) {
-                    if (collision_time != nullptr) {
-                        *collision_time = std::max(0.0, sample_t - local_t);
-                    }
-                    return true;
-                }
-                if (map_manager_->isStateSafe(sample, safe_distance, safety_backend)) {
-                    waiting_for_full_clearance = false;
-                }
-            } else if (!map_manager_->isStateSafe(sample, safe_distance, safety_backend) ||
-                       !map_manager_->isSegmentSafe(last,
-                                                    sample,
-                                                    safe_distance,
-                                                    safety_backend,
-                                                    line_step)) {
-                if (collision_time != nullptr) {
-                    *collision_time = std::max(0.0, sample_t - local_t);
-                }
-                return true;
-            }
-            last = sample;
-            if (sample_t >= end_t) {
-                break;
-            }
+        if (traj.empty()) {
+            local_report.safe = false;
+            local_report.reason = "empty_trajectory";
+            fill_report();
+            return false;
         }
-        return false;
+
+        const double total_duration = traj.getTotalDuration();
+        if (!std::isfinite(total_duration) || total_duration <= 1.0e-6 ||
+            !std::isfinite(traj.start_WT)) {
+            local_report.safe = false;
+            local_report.reason = "invalid_trajectory_time";
+            fill_report();
+            return false;
+        }
+
+        const double current_t = std::clamp(now_wt - traj.start_WT, 0.0, total_duration);
+        const double remaining = std::max(0.0, total_duration - current_t);
+        local_report.valid = true;
+        local_report.check_start_t = current_t;
+        local_report.check_horizon = horizon > 0.0 ? std::min(horizon, remaining) : remaining;
+
+        if (remaining <= 1.0e-3 || local_report.check_horizon <= 1.0e-3) {
+            local_report.reason = "trajectory_finished_or_horizon_empty";
+            fill_report();
+            return true;
+        }
+
+        const double sample_dt = std::max(0.02, dt);
+        const int required_hits = std::max(1, consecutive_hits);
+        Vec3f last_pos = traj.getPos(current_t);
+        if (!last_pos.allFinite()) {
+            local_report.safe = false;
+            local_report.reason = "invalid_start_position";
+            local_report.collision_t = current_t;
+            local_report.time_to_collision = 0.0;
+            fill_report();
+            return false;
+        }
+
+        int hit_streak = 0;
+        double streak_start_t = current_t;
+        Vec3f streak_start_pos = last_pos;
+        rog_map::GridType streak_grid = rog_map::GridType::KNOWN_FREE;
+        std::string streak_reason;
+
+        const auto unsafe_grid = [unknown_as_occupied](const rog_map::GridType grid_type) {
+            return grid_type == rog_map::GridType::OCCUPIED ||
+                   grid_type == rog_map::GridType::OUT_OF_MAP ||
+                   (unknown_as_occupied && grid_type == rog_map::GridType::UNKNOWN);
+        };
+
+        for (double offset = 0.0;
+             offset <= local_report.check_horizon + 1.0e-6;
+             offset += sample_dt) {
+            const double t = std::min(total_duration, current_t + offset);
+            const Vec3f pos = traj.getPos(t);
+            bool unsafe = false;
+            rog_map::GridType grid_type = rog_map::GridType::KNOWN_FREE;
+            std::string reason;
+
+            if (!pos.allFinite()) {
+                unsafe = true;
+                reason = "invalid_sample_position";
+            } else if (!map_manager_->insideLocalMap(pos)) {
+                unsafe = true;
+                grid_type = rog_map::GridType::OUT_OF_MAP;
+                reason = "out_of_local_map";
+            } else {
+                grid_type = map_manager_->getInfGridType(pos);
+                if (unsafe_grid(grid_type)) {
+                    unsafe = true;
+                    if (grid_type == rog_map::GridType::OCCUPIED) {
+                        reason = "occupied_inflated_cell";
+                    } else if (grid_type == rog_map::GridType::UNKNOWN) {
+                        reason = "unknown_inflated_cell";
+                    } else {
+                        reason = "out_of_map_cell";
+                    }
+                }
+                if (!unsafe &&
+                    (pos - last_pos).norm() > 1.0e-4 &&
+                    !map_manager_->isLineFree(last_pos, pos, true, unknown_as_occupied)) {
+                    unsafe = true;
+                    reason = "line_collision";
+                }
+            }
+
+            if (unsafe) {
+                if (hit_streak == 0) {
+                    streak_start_t = t;
+                    streak_start_pos = pos;
+                    streak_grid = grid_type;
+                    streak_reason = reason;
+                }
+                ++hit_streak;
+                if (hit_streak >= required_hits) {
+                    local_report.safe = false;
+                    local_report.collision_t = streak_start_t;
+                    local_report.time_to_collision = std::max(0.0, streak_start_t - current_t);
+                    local_report.collision_pos = streak_start_pos;
+                    local_report.grid_type = static_cast<int>(streak_grid);
+                    local_report.hit_count = hit_streak;
+                    local_report.reason = streak_reason;
+                    fill_report();
+                    return false;
+                }
+            } else {
+                hit_streak = 0;
+            }
+
+            last_pos = pos;
+        }
+
+        local_report.reason = "safe";
+        fill_report();
+        return true;
     }
 
-    bool GeneralPlanner::truncateExplorationCommittedTrajectory(const double stop_time) {
-        if (stop_time <= 0.0) {
-            return false;
-        }
-
-        const double now = ros_ptr_ ? ros_ptr_->getSimTime() : 0.0;
-        double start_wt = 0.0;
-        double total_dur = 0.0;
+    bool GeneralPlanner::checkCommittedPositionTrajectorySafety(
+            const double horizon,
+            const double dt,
+            const int consecutive_hits,
+            const bool unknown_as_occupied,
+            CommittedTrajectorySafetyReport *report) {
         cmd_traj_info_.lock();
-        if (cmd_traj_info_.empty() || cmd_traj_info_.posTraj().empty()) {
-            cmd_traj_info_.unlock();
-            return false;
-        }
-        start_wt = cmd_traj_info_.getStartWallTime();
-        total_dur = cmd_traj_info_.getTotalDuration();
+        const Trajectory traj = cmd_traj_info_.posTraj();
+        const bool backup_available = cmd_traj_info_.backupTrajAvilibale();
+        const double backup_start_t = cmd_traj_info_.getBackupTrajStartTT();
         cmd_traj_info_.unlock();
+        const double now_wt = ros_ptr_->getSimTime();
+        double effective_horizon = horizon;
+        if (backup_available && !traj.empty() && std::isfinite(backup_start_t)) {
+            const double current_t = std::clamp(now_wt - traj.start_WT,
+                                                0.0,
+                                                traj.getTotalDuration());
+            if (current_t >= backup_start_t - 1.0e-3) {
+                if (report != nullptr) {
+                    report->valid = true;
+                    report->safe = true;
+                    report->check_start_t = current_t;
+                    report->check_horizon = 0.0;
+                    report->reason = "on_backup_trajectory";
+                }
+                return true;
+            }
+            effective_horizon = std::min(effective_horizon,
+                                         std::max(0.0, backup_start_t - current_t));
+            if (effective_horizon <= 1.0e-3) {
+                if (report != nullptr) {
+                    report->valid = true;
+                    report->safe = true;
+                    report->check_start_t = current_t;
+                    report->check_horizon = 0.0;
+                    report->reason = "backup_boundary_reached";
+                }
+                return true;
+            }
+        }
+        return checkPositionTrajectorySafety(traj,
+                                             now_wt,
+                                             effective_horizon,
+                                             dt,
+                                             consecutive_hits,
+                                             unknown_as_occupied,
+                                             report);
+    }
 
-        const double local_t = std::max(0.0, now - start_wt);
-        const double end_t = std::min(total_dur, local_t + stop_time);
-        if (end_t <= 1.0e-3 || end_t >= total_dur - 1.0e-4) {
+    bool GeneralPlanner::state2stateCurrentTrajectorySafeForNoNeed(
+            const Trajectory &traj,
+            const double start_t) const {
+        if (traj.empty()) {
             return false;
         }
-        if (!cmd_traj_info_.truncateByTrajectoryTime(end_t)) {
-            return false;
+        const double total_duration = traj.getTotalDuration();
+        if (!std::isfinite(total_duration) || start_t >= total_duration) {
+            return true;
         }
-
-        robot_on_backup_traj_ = false;
-        Trajectory viz_traj;
-        double backup_start = -1.0;
-        cmd_traj_info_.lock();
-        viz_traj = cmd_traj_info_.posTraj();
-        if (cmd_traj_info_.backupTrajAvilibale()) {
-            backup_start = cmd_traj_info_.getBackupTrajStartTT();
+        CommittedTrajectorySafetyReport report;
+        const double now_wt = traj.start_WT + std::clamp(start_t, 0.0, total_duration);
+        double horizon = std::max(0.0, total_duration - start_t);
+        const double backup_start_t = cmd_traj_info_.getBackupTrajStartTT();
+        if (std::isfinite(backup_start_t) && backup_start_t > 0.0 && backup_start_t < total_duration) {
+            if (start_t >= backup_start_t - 1.0e-3) {
+                return false;
+            }
+            horizon = std::min(horizon, std::max(0.0, backup_start_t - start_t));
+            if (horizon <= 1.0e-3) {
+                return false;
+            }
         }
-        cmd_traj_info_.unlock();
-
-        if (ros_ptr_) {
-            TimeConsuming t_viz("exploration_truncate_viz", false);
-            ros_ptr_->vizCommittedTraj(viz_traj, backup_start);
-            time_consuming_[VISUALIZATION] += t_viz.stop();
+        const double dt = std::max(cfg_.sample_traj_dt, cfg_.resolution);
+        const bool safe = checkPositionTrajectorySafety(traj,
+                                                        now_wt,
+                                                        horizon,
+                                                        dt,
+                                                        1,
+                                                        false,
+                                                        &report);
+        if (!safe && cfg_.print_log) {
+            ros_ptr_->warn(" -- [GeneralPlanner] Dynamic safety guard blocks NO_NEED: reason={}, ttc={:.3f}, pos=({:.2f},{:.2f},{:.2f}).",
+                           report.reason,
+                           report.time_to_collision,
+                           report.collision_pos.x(),
+                           report.collision_pos.y(),
+                           report.collision_pos.z());
         }
-        return true;
+        return safe;
     }
 
     bool GeneralPlanner::trackingPerchingPerchingActive() const {
@@ -6469,14 +7335,28 @@ namespace general_planner {
                                              bool &on_backup_traj,
                                              bool &traj_finish) {
         cmd_traj_info_.lock();
-        const double &cur_t = ros_ptr_->getSimTime();
-        const double &cmd_start_WT = cmd_traj_info_.getStartWallTime();
+        if (cmd_traj_info_.empty()) {
+            cmd_traj_info_.unlock();
+            ros_ptr_->warn(" -- [Checker] getOneCommandFromTraj called with empty committed trajectory.");
+            makeHoldCommandFromRobotState(robot_state_, pvaj, yaw, yaw_dot, on_backup_traj, traj_finish);
+            return;
+        }
+        const double cur_t = ros_ptr_->getSimTime();
+        const double cmd_start_WT = cmd_traj_info_.getStartWallTime();
 //        const bool &backup_avilibale = cmd_traj_info_.backupTrajAvilibale();
 //        const double &backup_start_TT = cmd_traj_info_.getBackupTrajStartTT();
-        const double &total_dur = cmd_traj_info_.getTotalDuration();
+        const double total_dur = cmd_traj_info_.getTotalDuration();
+        if (!std::isfinite(cur_t) || !std::isfinite(cmd_start_WT) ||
+            !std::isfinite(total_dur) || total_dur <= 1.0e-6) {
+            cmd_traj_info_.unlock();
+            ros_ptr_->warn(" -- [Checker] getOneCommandFromTraj has invalid timing: cur_t={}, start_WT={}, duration={}.",
+                           cur_t, cmd_start_WT, total_dur);
+            makeHoldCommandFromRobotState(robot_state_, pvaj, yaw, yaw_dot, on_backup_traj, traj_finish);
+            return;
+        }
 
         traj_finish = (cur_t - cmd_start_WT) > total_dur;
-        const double &eval_t = traj_finish ? total_dur : (cur_t - cmd_start_WT);
+        const double eval_t = traj_finish ? total_dur : std::clamp(cur_t - cmd_start_WT, 0.0, total_dur);
 
 //        bool last_round_robot_on_backup_traj = robot_on_backup_traj_;
         robot_on_backup_traj_ = cmd_traj_info_.isTTOnBackupTraj(eval_t);
@@ -6500,6 +7380,13 @@ namespace general_planner {
         if (isnan(yaw_dot)) {
             yaw_dot = 0;
         }
+        if (checker::checkStateFinite(pvaj, "cmd_pvaj").rejected() ||
+            !std::isfinite(yaw) || !std::isfinite(yaw_dot)) {
+            cmd_traj_info_.unlock();
+            ros_ptr_->warn(" -- [Checker] getOneCommandFromTraj sampled invalid command at eval_t={}.", eval_t);
+            makeHoldCommandFromRobotState(robot_state_, pvaj, yaw, yaw_dot, on_backup_traj, traj_finish);
+            return;
+        }
         if (takeoff_runtime_manager_ && active_takeoff_problem_valid_) {
             takeoff_runtime_manager_->updateStatusByPosition(pvaj.col(0),
                                                              active_takeoff_problem_);
@@ -6521,65 +7408,6 @@ namespace general_planner {
     void GeneralPlanner::getModuleTimeConsuming(vector<double> &time) {
         time = time_consuming_;
         std::fill(time_consuming_.begin(), time_consuming_.end(), 0);
-    }
-
-    RET_CODE GeneralPlanner::generateExpTrajFromGuidePath(const exploration::ExplorationPlan &plan,
-                                                          ExpTraj &last_exp_traj_info,
-                                                          ExpTraj &out_exp_traj_info) {
-        active_exploration_plan_ = plan;
-        active_exploration_guide_ = plan.valid && plan.guide_path.size() >= 2U;
-        const RET_CODE ret = generateExpTraj(last_exp_traj_info, out_exp_traj_info);
-        active_exploration_guide_ = false;
-        active_exploration_plan_ = exploration::ExplorationPlan{};
-        return ret;
-    }
-
-    RET_CODE GeneralPlanner::tryCommitExplorationBackupFallback(const std::string &reason) {
-        std::lock_guard<std::mutex> guard(replan_lock_);
-        if (!cfg_.exploration_backend_fallback_enable) {
-            if (last_exp_traj_info_.empty()) {
-                latest_replan.setRetCode(GENERAL_RET_CODE::GENERAL_SUCCESS_NO_BACKUP);
-                ros_ptr_->warn(" -- [Exploration] Planning failed ({}), backup fallback disabled and no trajectory is active; keep exploration task waiting for a repaired guide.",
-                               reason);
-                return NO_NEED;
-            }
-            latest_replan.setRetCode(GENERAL_RET_CODE::GENERAL_SUCCESS_NO_BACKUP);
-            ros_ptr_->warn(" -- [Exploration] Planning failed ({}), backup fallback disabled; keep current trajectory and retry exploration frontend.",
-                           reason);
-            return NO_NEED;
-        }
-        if (last_exp_traj_info_.empty()) {
-            ros_ptr_->warn(" -- [Exploration] Planning failed ({}), no previous exp traj for backup fallback.",
-                           reason);
-            return FAILED;
-        }
-
-        ros_ptr_->warn(" -- [Exploration] Planning failed ({}), trying backup trajectory fallback.",
-                       reason);
-        BackupTraj back_traj_info;
-        const RET_CODE back_ret_code = generateBackupTrajectory(last_exp_traj_info_, back_traj_info);
-        if (back_ret_code == SUCCESS) {
-            if (!cmd_traj_info_.setTrajectory(last_exp_traj_info_, back_traj_info)) {
-                ros_ptr_->warn(" -- [Exploration] Backup fallback generated but commit failed.");
-                return FAILED;
-            }
-            robot_on_backup_traj_ = false;
-            latest_replan.setRetCode(GENERAL_SUCCESS_WITH_BACKUP);
-            TimeConsuming t_viz("exploration_backup_fallback_viz", false);
-            ros_ptr_->vizCommittedTraj(cmd_traj_info_.posTraj(), cmd_traj_info_.getBackupTrajStartTT());
-            time_consuming_[VISUALIZATION] += t_viz.stop();
-            return SUCCESS;
-        }
-        if (back_ret_code == NO_NEED || back_ret_code == FINISH) {
-            ros_ptr_->warn(" -- [Exploration] Backup fallback not needed ({}); keep current trajectory.",
-                           RET_CODE_STR[back_ret_code]);
-            latest_replan.setRetCode(GENERAL_SUCCESS_NO_BACKUP);
-            return NO_NEED;
-        }
-
-        ros_ptr_->warn(" -- [Exploration] Backup fallback failed with {}.",
-                       RET_CODE_STR[back_ret_code]);
-        return FAILED;
     }
 
 
@@ -6612,73 +7440,6 @@ namespace general_planner {
         const bool use_plain_exp_traj = cfg_.plain_traj_en;
         const bool use_esdf_exp_traj = cfg_.esdf_traj_en && !use_plain_exp_traj;
         const bool use_distance_field_exp_traj = use_plain_exp_traj || use_esdf_exp_traj;
-        const bool use_exploration_backend =
-                active_exploration_guide_ && active_exploration_plan_.valid;
-        const double effective_replan_forward_dt =
-                use_exploration_backend
-                ? getExplorationRuntimePolicy().replan_forward_dt
-                : std::max(0.0, cfg_.replan_forward_dt);
-        const MapBackend trajectory_backend =
-                use_exploration_backend
-                ? cfg_.exploration_local_guide_backend
-                : MapBackend::ROG;
-        double trajectory_safe_distance =
-                use_exploration_backend ? std::max(0.0, cfg_.exploration_local_guide_safe_distance) : 0.0;
-        if (use_exploration_backend && cfg_.exploration_use_epic_frontend) {
-            trajectory_safe_distance = std::min(
-                    trajectory_safe_distance,
-                    std::max(0.05, cfg_.exploration_local_goal_safe_distance));
-        }
-        const double trajectory_start_safe_distance =
-                use_exploration_backend
-                ? std::min(trajectory_safe_distance,
-                           std::max(0.0, cfg_.exploration_local_guide_start_safe_distance))
-                : 0.0;
-        const double trajectory_line_step =
-                use_exploration_backend ? std::max(1.0e-3, cfg_.exploration_local_guide_line_step)
-                                        : std::max(1.0e-3, cfg_.resolution);
-        auto trajectoryPointUsableWithDistance = [&](const Vec3f &point,
-                                                     const bool unknown_as_occupied,
-                                                     const double safe_distance) {
-            if (!point.allFinite()) {
-                return false;
-            }
-            const auto grid_type = map_manager_->getPolicyGridType(point, trajectory_backend, true);
-            if (grid_type == rog_map::GridType::OCCUPIED ||
-                grid_type == rog_map::GridType::OUT_OF_MAP) {
-                return false;
-            }
-            if (unknown_as_occupied && grid_type == rog_map::GridType::UNKNOWN) {
-                return false;
-            }
-            if (safe_distance > 0.0 &&
-                !map_manager_->isStateSafe(point, safe_distance, trajectory_backend)) {
-                return false;
-            }
-            return true;
-        };
-        auto trajectoryPointUsable = [&](const Vec3f &point,
-                                         const bool unknown_as_occupied) {
-            return trajectoryPointUsableWithDistance(point,
-                                                     unknown_as_occupied,
-                                                     trajectory_safe_distance);
-        };
-        auto trajectorySegmentUsableWithDistance = [&](const Vec3f &a,
-                                                       const Vec3f &b,
-                                                       const double safe_distance) {
-            if (!trajectoryPointUsableWithDistance(a, false, safe_distance) ||
-                !trajectoryPointUsableWithDistance(b, false, safe_distance)) {
-                return false;
-            }
-            return map_manager_->isSegmentSafe(a,
-                                               b,
-                                               safe_distance,
-                                               trajectory_backend,
-                                               trajectory_line_step);
-        };
-        auto trajectorySegmentUsable = [&](const Vec3f &a, const Vec3f &b) {
-            return trajectorySegmentUsableWithDistance(a, b, trajectory_safe_distance);
-        };
 
         /* 2) Check last exp traj */
         if (planning_from_rest) {
@@ -6694,7 +7455,7 @@ namespace general_planner {
             last_exp_traj = last_exp_traj_info.posTraj();
 
             replan_process_start_TT = replan_process_start_WT - last_exp_traj.start_WT;
-            replan_state_TT = replan_process_start_TT + effective_replan_forward_dt;
+            replan_state_TT = replan_process_start_TT + cfg_.replan_forward_dt;
             /* 2.2) Perform collision check on last exp traj*/
             vector<TimePosPair> last_exp_traj_time_pos;
             vector<double> last_exp_traj_vel;
@@ -6736,7 +7497,10 @@ namespace general_planner {
                 }
 
                 /// 1) Check a series of early termination conditions.
-                if (!gi_.new_goal && last_exp_traj_info.getSFCSize() == 1 && last_exp_traj_info.connectedToGoal()) {
+                if (!gi_.new_goal &&
+                    last_exp_traj_info.getSFCSize() == 1 &&
+                    last_exp_traj_info.connectedToGoal() &&
+                    state2stateCurrentTrajectorySafeForNoNeed(guide_pos_traj, replan_state_TT)) {
                     if (cfg_.print_log) {
                         ros_ptr_->warn(
                                 " -- [GeneralPlanner] Replan, last exp have only one corridor and connected to goal return NONEED.");
@@ -6754,7 +7518,8 @@ namespace general_planner {
                 }
 
                 if (!gi_.new_goal &&
-                    (gi_.goal_p - last_exp_traj.getPos(replan_state_TT)).norm() < cfg_.resolution * 3) {
+                    (gi_.goal_p - last_exp_traj.getPos(replan_state_TT)).norm() < cfg_.resolution * 3 &&
+                    state2stateCurrentTrajectorySafeForNoNeed(guide_pos_traj, replan_state_TT)) {
                     // Return if the traj close to goal
                     out_exp_traj_info = last_exp_traj_info;
                     out_exp_traj_info.setGoalConnectedFlag(true);
@@ -6794,7 +7559,9 @@ namespace general_planner {
                     continue;
                 }
 
-                if (!trajectoryPointUsable(temp_pt, false)) {
+                rog_map::GridType temp_grid = map_manager_->getInfGridType(temp_pt);
+
+                if (temp_grid == rog_map::GridType::OCCUPIED || temp_grid == rog_map::GridType::OUT_OF_MAP) {
                     last_exp_traj_info.setWholeTrajKnownFreeFlag(false);
                     break;
                 }
@@ -6825,26 +7592,7 @@ namespace general_planner {
             // *    If the whole trajectory if free,  the whole trajectory should be receding and if not, or a new goal
             // *    is given, we should only receiding a small distance and replan new trajectory ASAP
             double split_dis = cfg_.receding_dis;
-            if (use_exploration_backend) {
-                const bool keep_short_prefix =
-                        !active_exploration_plan_.goal_switched &&
-                        last_exp_traj_info.wholeTrajKnownFree() &&
-                        cfg_.receding_dis > 0.0;
-                split_dis = keep_short_prefix
-                            ? std::min(cfg_.receding_dis,
-                                       std::max(cfg_.resolution * 3.0,
-                                                cfg_.exp_traj_cfg.max_vel * effective_replan_forward_dt))
-                            : 0.0;
-                if (cfg_.print_log) {
-                    ros_ptr_->info(" -- [Exploration] Prefix decision: keep={}, split_dis={:.3f}, goal_switched={}, whole_free={}, receding_dis={:.3f}, forward_dt={:.3f}.",
-                                   keep_short_prefix,
-                                   split_dis,
-                                   active_exploration_plan_.goal_switched,
-                                   last_exp_traj_info.wholeTrajKnownFree(),
-                                   cfg_.receding_dis,
-                                   effective_replan_forward_dt);
-                }
-            } else if (last_exp_traj_info.wholeTrajKnownFree() && !gi_.new_goal && cfg_.receding_dis > 0.0) {
+            if (last_exp_traj_info.wholeTrajKnownFree() && !gi_.new_goal && cfg_.receding_dis > 0.0) {
                 split_dis = std::numeric_limits<double>::max();
             }
 
@@ -6868,7 +7616,7 @@ namespace general_planner {
             } else {
                 temp_pt = last_exp_traj_time_pos.back().second;
                 // * 8) Pop all evaluated pts after the sampled point.
-                while (!trajectoryPointUsable(temp_pt, false) ||
+                while (map_manager_->isOccupiedInflate(temp_pt) ||
                        (temp_pt - pos_init_state.col(0)).norm() > split_dis) {
                     last_exp_traj_time_pos.pop_back();
                     last_exp_traj_vel.pop_back();
@@ -6909,151 +7657,8 @@ namespace general_planner {
             guide_stamp.insert(guide_stamp.begin(), 0.0);
         }
 
-        const bool use_exploration_guide =
-                use_exploration_backend &&
-                active_exploration_plan_.guide_path.size() >= 2U;
-        auto appendExplorationGuideSuffix = [&]() {
-            if (!use_exploration_guide || guide_path.empty() || guide_stamp.empty()) {
-                return false;
-            }
-            const auto &frontend_path = active_exploration_plan_.guide_path;
-            const Vec3f base = guide_path.back();
-            struct GuideProjection {
-                bool valid{false};
-                std::size_t segment_id{0U};
-                double segment_t{0.0};
-                double distance_sq{std::numeric_limits<double>::infinity()};
-                Vec3f point{Vec3f::Zero()};
-            };
-            GuideProjection projection;
-            for (std::size_t i = 0; i + 1U < frontend_path.size(); ++i) {
-                const Vec3f a = frontend_path[i];
-                const Vec3f b = frontend_path[i + 1U];
-                const Vec3f ab = b - a;
-                const double len_sq = ab.squaredNorm();
-                double t = 0.0;
-                Vec3f projected = a;
-                if (len_sq > 1.0e-8) {
-                    t = std::clamp((base - a).dot(ab) / len_sq, 0.0, 1.0);
-                    projected = a + t * ab;
-                }
-                const double distance_sq = (projected - base).squaredNorm();
-                if (!projection.valid || distance_sq < projection.distance_sq) {
-                    projection.valid = true;
-                    projection.segment_id = i;
-                    projection.segment_t = t;
-                    projection.distance_sq = distance_sq;
-                    projection.point = projected;
-                }
-            }
-            if (!projection.valid) {
-                projection.valid = true;
-                projection.segment_id = 0U;
-                projection.segment_t = 0.0;
-                projection.distance_sq = (frontend_path.front() - base).squaredNorm();
-                projection.point = frontend_path.front();
-            }
-            double remaining_horizon = std::max(0.0, temp_horizon);
-            double stamp = guide_stamp.back();
-            Vec3f last = base;
-            std::size_t appended = 0U;
-            bool guide_waiting_for_full_clearance =
-                    use_exploration_backend &&
-                    !trajectoryPointUsable(last, false) &&
-                    trajectoryPointUsableWithDistance(last,
-                                                      false,
-                                                      trajectory_start_safe_distance);
-            const double max_segment_len = std::max(cfg_.resolution * 2.0,
-                                                    0.8 * cfg_.corridor_line_max_length);
-            auto appendLimited = [&](const Vec3f &point) {
-                if (!point.allFinite()) {
-                    return true;
-                }
-                const Vec3f delta = point - last;
-                const double dist = delta.norm();
-                if (dist < std::max(1.0e-4, cfg_.resolution * 0.1)) {
-                    return true;
-                }
-                Vec3f out = point;
-                double use_dist = dist;
-                bool keep_going = true;
-                if (use_dist > remaining_horizon) {
-                    if (remaining_horizon < std::max(cfg_.resolution * 2.0, 0.2)) {
-                        return false;
-                    }
-                    out = last + delta / dist * remaining_horizon;
-                    use_dist = remaining_horizon;
-                    keep_going = false;
-                }
-                const Vec3f segment_start = last;
-                const int segment_num = std::max(1,
-                                                 static_cast<int>(std::ceil(use_dist / max_segment_len)));
-                for (int seg_id = 1; seg_id <= segment_num; ++seg_id) {
-                    const double ratio = static_cast<double>(seg_id) / static_cast<double>(segment_num);
-                    const Vec3f seg_point = segment_start + (out - segment_start) * ratio;
-                    const double seg_dist = (seg_point - last).norm();
-                    if (seg_dist < std::max(1.0e-4, cfg_.resolution * 0.1)) {
-                        continue;
-                    }
-                    if (use_exploration_backend) {
-                        bool segment_usable = false;
-                        if (guide_waiting_for_full_clearance) {
-                            segment_usable =
-                                    trajectorySegmentUsableWithDistance(last,
-                                                                        seg_point,
-                                                                        trajectory_start_safe_distance);
-                            if (segment_usable && trajectoryPointUsable(seg_point, false)) {
-                                guide_waiting_for_full_clearance = false;
-                            }
-                        } else {
-                            segment_usable = trajectorySegmentUsable(last, seg_point);
-                        }
-                        if (!segment_usable) {
-                            return false;
-                        }
-                    }
-                    stamp += std::max(0.05, seg_dist / std::max(1.0e-3, cfg_.exp_traj_cfg.max_vel));
-                    guide_path.emplace_back(seg_point);
-                    guide_stamp.emplace_back(stamp);
-                    last = seg_point;
-                    ++appended;
-                }
-                remaining_horizon -= use_dist;
-                return keep_going;
-            };
-
-            if (projection.valid && !appendLimited(projection.point)) {
-                return appended > 0U;
-            }
-            const std::size_t start_id =
-                    projection.valid ? std::min(projection.segment_id + 1U,
-                                                frontend_path.size())
-                                     : 0U;
-            for (std::size_t i = start_id; i < frontend_path.size(); ++i) {
-                if (!appendLimited(frontend_path[i])) {
-                    break;
-                }
-            }
-            if (appended > 0U && cfg_.print_log) {
-                ros_ptr_->info(" -- [Exploration] Use EPIC guide path for local trajectory: input_size={}, appended={}, attach_dis={:.3f}, endpoint=[{:.3f} {:.3f} {:.3f}].",
-                               frontend_path.size(),
-                               appended,
-                               std::sqrt(std::max(0.0, projection.distance_sq)),
-                               guide_path.back().x(),
-                               guide_path.back().y(),
-                               guide_path.back().z());
-            }
-            return appended > 0U;
-        };
-
         // if need a geometry path
         if (temp_horizon > cfg_.resolution * 2) {
-            bool appended_exploration_guide = appendExplorationGuideSuffix();
-            if (!appended_exploration_guide) {
-                if (use_exploration_guide) {
-                    ros_ptr_->warn(" -- [Exploration] EPIC guide path could not extend local guide; reject point-to-point fallback and request frontend repair.");
-                    return FAILED;
-                }
             /// start point TT + exp_traj start_WT
 //            double path_search_start_point_WT = guide_stamp.back() + guide_pos_traj.start_WT;
             // if the goal is close to the last point of the guide path, just add the goal to the guide path
@@ -7147,7 +7752,6 @@ namespace general_planner {
                     }
                 }
             }
-            }
 	        }
 
             if (!prepareESDFGuideEndpoint(guide_path, guide_stamp)) {
@@ -7157,6 +7761,16 @@ namespace general_planner {
 
 	        const bool connected_goal = (guide_path.back().head(2) - gi_.goal_p.head(2)).norm() < cfg_.resolution * 2;
 	        out_exp_traj_info.setGoalConnectedFlag(connected_goal);
+
+        if (rejectOnCheckFailure(ros_ptr_,
+                                 "generateExpTraj guide",
+                                 checker::checkGuidePath(guide_path,
+                                                         guide_stamp,
+                                                         cfg_.resolution,
+                                                         "state2state_exp"))) {
+            return FAILED;
+        }
+        latest_replan.setGuidePath(guide_path);
 
         sfc.clear();
         {
@@ -7207,10 +7821,10 @@ namespace general_planner {
         traj_manager_->setSwarmCurrentWallTime(replan_process_start_WT);
         if (use_esdf_exp_traj) {
             temp_ret = traj_manager_->esdf()->optimize(pos_init_state,
-                                                pos_fina_state,
-                                                guide_path,
-                                                guide_stamp,
-                                                out_traj);
+                                                       pos_fina_state,
+                                                       guide_path,
+                                                       guide_stamp,
+                                                       out_traj);
             if (!temp_ret) {
                 if (!planning_from_rest && last_exp_traj_info.wholeTrajKnownFree()) {
                     out_exp_traj_info = last_exp_traj_info;
@@ -7224,10 +7838,10 @@ namespace general_planner {
             }
         } else if (use_plain_exp_traj) {
             temp_ret = traj_manager_->plain()->optimize(pos_init_state,
-                                                 pos_fina_state,
-                                                 guide_path,
-                                                 guide_stamp,
-                                                 out_traj);
+                                                        pos_fina_state,
+                                                        guide_path,
+                                                        guide_stamp,
+                                                        out_traj);
             if (!temp_ret) {
                 if (!planning_from_rest && last_exp_traj_info.wholeTrajKnownFree()) {
                     out_exp_traj_info = last_exp_traj_info;
@@ -7241,15 +7855,23 @@ namespace general_planner {
             }
         } else {
             temp_ret = traj_manager_->exp()->optimize(pos_init_state,
-                                               pos_fina_state,
-                                               guide_path,
-                                               guide_stamp,
-                                               sfc,
-                                               out_traj);
+                                                      pos_fina_state,
+                                                      guide_path,
+                                                      guide_stamp,
+                                                      sfc,
+                                                      out_traj);
         }
         time_consuming_[EXP_TRAJ_OPT] = t_exp_opt.stop();
-        if (use_esdf_exp_traj || use_plain_exp_traj) {
-            latest_replan.setExpCondition(VecDf(), vec_Vec3f(), pos_init_state, pos_fina_state, sfc);
+        if (use_esdf_exp_traj) {
+            VecDf init_ts;
+            vec_Vec3f init_ps;
+            traj_manager_->esdf()->getInitValue(init_ts, init_ps);
+            latest_replan.setExpCondition(init_ts, init_ps, pos_init_state, pos_fina_state, sfc);
+        } else if (use_plain_exp_traj) {
+            VecDf init_ts;
+            vec_Vec3f init_ps;
+            traj_manager_->plain()->getInitValue(init_ts, init_ps);
+            latest_replan.setExpCondition(init_ts, init_ps, pos_init_state, pos_fina_state, sfc);
         } else {
             VecDf init_ts;
             vec_Vec3f init_ps;
@@ -7261,15 +7883,8 @@ namespace general_planner {
             return FAILED;
         }
         double replan_total_t = (ros_ptr_->getSimTime() - replan_process_start_WT);
-        if (replan_total_t > effective_replan_forward_dt) {
+        if (replan_total_t > cfg_.replan_forward_dt) {
             if (!planning_from_rest) {
-                if (use_exploration_backend && last_exp_traj_info.wholeTrajKnownFree()) {
-                    out_exp_traj_info = last_exp_traj_info;
-                    ros_ptr_->warn(" -- [Exploration] Continuous replan over forward window ({:.3f}s > {:.3f}s); keep current safe trajectory instead of committing stale splice.",
-                                   replan_total_t,
-                                   effective_replan_forward_dt);
-                    return NO_NEED;
-                }
                 ros_ptr_->warn(" -- [GeneralPlanner] Replan over time({})!!!! Return FAILED", replan_total_t);
                 return FAILED;
             }
@@ -7308,14 +7923,7 @@ namespace general_planner {
 
 
         bool free_end{true};
-        const bool fix_exploration_terminal_yaw =
-                !use_exploration_guide ||
-                !active_exploration_plan_.valid ||
-                active_exploration_plan_.local_goal_is_final;
-        if (cfg_.goal_yaw_en &&
-            !isnan(gi_.goal_yaw) &&
-            connected_goal &&
-            fix_exploration_terminal_yaw) {
+        if (cfg_.goal_yaw_en && !isnan(gi_.goal_yaw) && connected_goal) {
             free_end = false;
             fina_yaw[0] = gi_.goal_yaw;
         }
@@ -7343,6 +7951,15 @@ namespace general_planner {
         out_exp_traj_info.setTrajectory(new_traj_WT, temp_exp_traj, temp_yaw_traj, on_backup_start_TT,
                                         on_backup_end_TT);
 
+        if (rejectOnCheckFailure(ros_ptr_,
+                                 "generateExpTraj output",
+                                 checker::checkExpTrajectory(out_exp_traj_info,
+                                                             cfg_,
+                                                             "state2state_exp_output"))) {
+            out_exp_traj_info.setEmpty();
+            return FAILED;
+        }
+
         latest_replan.setExpYawTraj(temp_yaw_traj);
         latest_replan.setExpTraj(temp_exp_traj);
 
@@ -7354,6 +7971,15 @@ namespace general_planner {
         back_traj_info.setRobotPos(robot_state_.p);
         drone_state_mutex_.unlock();
         TimeConsuming t_back_frontend("t_back_frontend", false);
+
+        if (rejectOnCheckFailure(ros_ptr_,
+                                 "generateBackupTrajectory input exp",
+                                 checker::checkExpTrajectory(ref_exp_traj,
+                                                             cfg_,
+                                                             "backup_ref_exp"))) {
+            back_traj_info.setEmpty();
+            return FAILED;
+        }
 
         if (!cfg_.backup_traj_en || cfg_.esdf_traj_en || cfg_.plain_traj_en) {
             back_traj_info.setEmpty();
@@ -7403,6 +8029,12 @@ namespace general_planner {
                 all_traj_visible = false;
                 break;
             }
+        }
+
+        if (eval_ps.empty()) {
+            ros_ptr_->warn(" -- [Checker] generateBackupTrajectory has no sampled exp point, return NO_NEED.");
+            back_traj_info.setEmpty();
+            return NO_NEED;
         }
 
         if (all_traj_visible) {
@@ -7504,14 +8136,21 @@ namespace general_planner {
                 eval_t += cfg_.sample_traj_dt;
                 continue;
             }
-            temp_vel = ref_exp_traj.getVel(out_t);
+            temp_vel = ref_exp_traj.getVel(eval_t);
             double v_norm = temp_vel.norm();
             min_stop_dis.push_back(v_norm * v_norm / 2.0 / cfg_.exp_traj_cfg.max_acc);
             eval_ps.emplace_back(eval_t, cur_pos);
             last_pos = cur_pos;
             eval_t += cfg_.sample_traj_dt;
         }
-        eval_ps.pop_back();
+        if (!eval_ps.empty()) {
+            eval_ps.pop_back();
+        }
+        if (eval_ps.empty()) {
+            ros_ptr_->warn(" -- [Checker] generateBackupTrajectory backup seed samples are empty after trimming.");
+            back_traj_info.setEmpty();
+            return NO_NEED;
+        }
         seed_point = eval_ps.back().second;
         seed_point_t = eval_ps.back().first;
 
@@ -7520,6 +8159,13 @@ namespace general_planner {
         double t0 = ros_ptr_->getSimTime() -
                     ref_exp_traj.getStartWallTime() + 0.01;
         double te = seed_point_t;
+        if (!std::isfinite(t0) || !std::isfinite(te) || t0 < -1.0e-6 || te <= t0 + 1.0e-6 ||
+            te > ref_exp_traj.getTotalDuration() + 1.0e-6) {
+            ros_ptr_->warn(" -- [Checker] generateBackupTrajectory invalid backup time window: t0={}, te={}, exp_dur={}.",
+                           t0, te, ref_exp_traj.getTotalDuration());
+            back_traj_info.setEmpty();
+            return NO_NEED;
+        }
         //            cout << "t0: " << t0 << endl;
         //            cout << "te: " << te << endl;
         //            cout << "exp_traj_dur: " << ref_exp_traj.optimized_exp_traj.getTotalDuration() << endl;
@@ -7531,46 +8177,35 @@ namespace general_planner {
         TimeConsuming t_back_opt("t_back_opt", false);
         double opt_ts = heu_ts;
         Trajectory temp_pos_traj;
-        auto sfc0 = back_traj_info.getSFC();
         bool temp_ret = traj_manager_->backup()->optimize(ref_exp_traj.posTraj(),
-                                                 t0,
-                                                 te,
-                                                 heu_ts,
-                                                 heu_p,
-                                                 heu_dur,
-                                                 back_traj_info.getSFC(),
-                                                 temp_pos_traj,
-                                                 opt_ts);
+                                                          t0,
+                                                          te,
+                                                          heu_ts,
+                                                          heu_p,
+                                                          heu_dur,
+                                                          back_traj_info.getSFC(),
+                                                          temp_pos_traj,
+                                                          opt_ts);
         time_consuming_[BACK_TRAJ_OPT] = t_back_opt.stop();
 
-        {
-            double init_ts;
-            VecDf init_times;
-            vec_Vec3f init_ps;
-            traj_manager_->backup()->getInitValue(init_ts, init_times, init_ps);
-            latest_replan.setBackupCondition(init_ts, init_times, init_ps,
-                                             t0, te,
-                                             back_traj_info.getSFC());
-            Trajectory traj;
-            double out_ts;
-            traj_manager_->backup()->optimize(ref_exp_traj.posTraj(),
-                                     t0,
-                                     te,
-                                     init_ts,
-                                     sfc0,
-                                     init_times,
-                                     init_ps,
-                                     traj,
-                                     out_ts
-            );
-
-        }
+        double init_ts;
+        VecDf init_times;
+        vec_Vec3f init_ps;
+        traj_manager_->backup()->getInitValue(init_ts, init_times, init_ps);
+        latest_replan.setBackupCondition(init_ts, init_times, init_ps,
+                                         t0, te,
+                                         back_traj_info.getSFC());
 
         if (!temp_ret) {
             ros_ptr_->warn(" -- [GeneralPlanner] OptimizationBakTrajInPolytopes failed, force return");
             back_traj_info.setEmpty();
             return OPT_FAILED;
         } else {
+            if (!std::isfinite(opt_ts) || opt_ts < t0 - 1.0e-6 || opt_ts > te + 1.0e-6) {
+                ros_ptr_->error(" -- [Checker] generateBackupTrajectory invalid opt_ts={}, t0={}, te={}.",
+                                opt_ts, t0, te);
+                return OPT_FAILED;
+            }
             Vec4f yaw_init_vec = ref_exp_traj.getYawState(opt_ts).row(0);
             Vec4f yaw_goal{0, 0, 0, 0};
             bool free_end{true};
@@ -7607,8 +8242,43 @@ namespace general_planner {
             }
 
             back_traj_info.setTrajectory(new_ts_WT, opt_ts, temp_pos_traj, temp_yaw_traj);
-            latest_replan.setBackupTraj(temp_pos_traj);
-            latest_replan.setBackupYawTraj(temp_yaw_traj);
+            const auto backup_check = checker::checkBackupTrajectory(back_traj_info,
+                                                                     cfg_,
+                                                                     "state2state_backup_output");
+            if (backup_check.rejected()) {
+                const bool yaw_rate_limited =
+                        backup_check.code.find("YAW_RATE_LIMIT") != std::string::npos;
+                if (yaw_rate_limited) {
+                    Trajectory yaw_brake_traj;
+                    if (buildYawBrakeTrajectory(yaw_init_vec,
+                                                temp_pos_traj.getTotalDuration(),
+                                                new_ts_WT,
+                                                yaw_brake_traj)) {
+                        back_traj_info.setTrajectory(new_ts_WT, opt_ts, temp_pos_traj, yaw_brake_traj);
+                        const auto yaw_brake_check = checker::checkBackupTrajectory(
+                                back_traj_info,
+                                cfg_,
+                                "state2state_backup_yaw_brake_output");
+	                        if (!yaw_brake_check.rejected()) {
+	                            ros_ptr_->warn(" -- [GeneralPlanner] Normal backup yaw rejected [{}], use yaw-brake fallback.",
+	                                           backup_check.code);
+	                            latest_replan.setBackupTraj(temp_pos_traj);
+	                            latest_replan.setBackupYawTraj(yaw_brake_traj);
+	                            return SUCCESS;
+                        }
+                        logCheckResult(ros_ptr_,
+                                       "generateBackupTrajectory yaw-brake output",
+                                       yaw_brake_check);
+                    } else {
+                        ros_ptr_->warn(" -- [GeneralPlanner] Failed to build yaw-brake fallback for backup trajectory.");
+                    }
+                }
+                logCheckResult(ros_ptr_, "generateBackupTrajectory output", backup_check);
+	                back_traj_info.setEmpty();
+	                return OPT_FAILED;
+	            }
+	            latest_replan.setBackupTraj(temp_pos_traj);
+	            latest_replan.setBackupYawTraj(temp_yaw_traj);
             return SUCCESS;
         }
         ros_ptr_->warn(" -- [GeneralPlanner] Cannot find backup traj start point.");
@@ -7664,9 +8334,8 @@ namespace general_planner {
 
         // 1) check and shift pts
         // 		For start point, must be collision free
-        const MapBackend path_backend = cfg_.astar_backend;
         rog_map::GridType start_type;
-        start_type = map_manager_->getPolicyGridType(start_pt, path_backend, false);
+        start_type = map_manager_->getGridType(start_pt);
 
         /// If the start_pt is obstacle in prob map, just shift it to the nearest free point.
         if (start_type == rog_map::GridType::OCCUPIED ||
@@ -7702,9 +8371,9 @@ namespace general_planner {
         double temp_plannning_horizon = searching_horizon;
         //            int start_id = getNearestFurtherGoalPoint(goal_waypoints, start_pt);
 
-        const bool goal_inside_local_map = map_manager_->isInMap(goal, path_backend);
+        const bool goal_inside_local_map = map_manager_->insideLocalMap(goal);
         const rog_map::GridType goal_inf_type =
-                goal_inside_local_map ? map_manager_->getPolicyGridType(goal, path_backend, true) : OUT_OF_MAP;
+                goal_inside_local_map ? map_manager_->getInfGridType(goal) : OUT_OF_MAP;
         const bool hidden_unknown_goal = cfg_.unknown_goal_reveal_en &&
                                          goal_inside_local_map &&
                                          goal_inf_type == UNKNOWN;
@@ -7753,10 +8422,10 @@ namespace general_planner {
         }
 
         auto pointUsable = [&](const Vec3f &point) {
-            if (!point.allFinite() || !map_manager_->isInMap(point, path_backend)) {
+            if (!point.allFinite() || !map_manager_->insideLocalMap(point)) {
                 return false;
             }
-            const rog_map::GridType inf_type = map_manager_->getPolicyGridType(point, path_backend, true);
+            const rog_map::GridType inf_type = map_manager_->getInfGridType(point);
             if (inf_type == OCCUPIED || inf_type == OUT_OF_MAP) {
                 return false;
             }
@@ -7766,7 +8435,7 @@ namespace general_planner {
         auto lineUsable = [&](const Vec3f &a, const Vec3f &b) {
             return pointUsable(a) &&
                    pointUsable(b) &&
-                   map_manager_->isLineFree(a, b, path_backend, true, unknown_as_occupied_for_frontend);
+                   map_manager_->isLineFree(a, b, true, unknown_as_occupied_for_frontend);
         };
 
         auto blockedSpanOnDirectLine = [&]() {

@@ -81,7 +81,17 @@ std::pair<std::string, std::string> getLatestBinFile(const std::string& director
 int main(int argc, char** argv) {
     ros::init(argc, argv, "fsm_node");
     ros::NodeHandle nh("~");
-    const std::string directory = LOG_FILE_DIR("replan_logs/");
+    std::string log_subdir = "replan_logs/";
+    if (argc > 1) {
+        log_subdir = argv[1];
+        if (log_subdir == "tracking") {
+            log_subdir = "tracking_replan_logs/";
+        } else if (!log_subdir.empty() && log_subdir.back() != '/') {
+            log_subdir += "/";
+        }
+    }
+    const std::string directory = LOG_FILE_DIR(log_subdir);
+    std::cout << "Reading replan log directory: " << directory << std::endl;
     auto [latestFile, latestTime] = getLatestBinFile(directory);
 
     if (!latestFile.empty()) {

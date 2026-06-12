@@ -38,7 +38,6 @@ namespace backward {
 
 using namespace fsm;
 using namespace std;
-FsmRos1::Ptr fsm_ptr;
 
 #include <ros/console.h>
 #include <ros/ros.h>
@@ -64,8 +63,8 @@ int main(int argc, char **argv) {
         cfg_path = dft_cfg_path;
         cout << " -- [Fsm-Test] Load default config: " << cfg_path << endl;
     }
-    
-    fsm_ptr = make_shared<FsmRos1>();
+
+    auto fsm_ptr = make_shared<FsmRos1>();
     fsm_ptr->init(nh, cfg_path);
 
     /* Publisher and subcriber */
@@ -73,5 +72,7 @@ int main(int argc, char **argv) {
     spinner.start();
     ros::Duration(1.0).sleep();
     ros::waitForShutdown();
+    spinner.stop();
+    fsm_ptr.reset();
     return 0;
 }

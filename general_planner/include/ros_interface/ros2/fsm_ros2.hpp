@@ -220,10 +220,21 @@ namespace fsm {
                                          ? LOG_FILE_DIR(
                                                  "cmd_logs/" + BinaryFileHandler<int>::getCurrentTimeStr() + ".csv")
                                          : LOG_FILE_DIR("cmd_logs/" + name + ".csv");
-            BinaryFileHandler<vector<LogOneReplan>>::save(save_path, replan_logs);
+            if (ensureLogParentDirectory(save_path)) {
+                BinaryFileHandler<vector<LogOneReplan>>::save(save_path, replan_logs);
+            } else {
+                fmt::print(stderr, " -- [Fsm] Failed to create replan log directory for {}\n", save_path);
+            }
 
-            std::ofstream csv_writer;
-            csv_writer.open(csv_path, std::ios::out | std::ios::trunc);
+            if (!ensureLogParentDirectory(csv_path)) {
+                fmt::print(stderr, " -- [Fsm] Failed to create cmd log directory for {}\n", csv_path);
+                return;
+            }
+            std::ofstream csv_writer(csv_path, std::ios::out | std::ios::trunc);
+            if (!csv_writer.is_open()) {
+                fmt::print(stderr, " -- [Fsm] Failed to open cmd log file {}\n", csv_path);
+                return;
+            }
             csv_writer
                     << "time,posi_x,posi_y,posi_z,vel_x,vel_y,vel_z,acc_x,acc_y,acc_z,jerk_x,jerk_y,jerk_z,yaw,yaw_rate,backup"
                     << std::endl;
@@ -381,10 +392,11 @@ namespace fsm {
             cmd_pub_->publish(pid_cmd_);
             if (traj_finish_) {
                 cout << GREEN << " -- [Fsm] Traj finish." << RESET << endl;
-                if (closeToGoal(0.1)) {
-                    ChangeState("PubCmdCallback", WAIT_GOAL);
-                } else {
+                markTrackingFinishedIfStaticTarget();
+                if (shouldGenerateAfterTrajFinish()) {
                     ChangeState("PubCmdCallback", GENERATE_TRAJ);
+                } else {
+                    ChangeState("PubCmdCallback", WAIT_GOAL);
                 }
             }
         }

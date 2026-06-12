@@ -17,9 +17,7 @@ Panels:
         - /Frontend1/ExpSfc1/Namespaces1
         - /Frontend1/FreeSfc1
         - /Frontend1/FreeSfc1/Namespaces1
-        - /Backend1/BackupTraj1
         - /Backend1/BackupTraj1/Namespaces1
-        - /Backend1/Path1
         - /TrajOpt1/BackUp1
         - /TrajOpt1/BackUp1/Namespaces1
         - /TrajOpt1/Exp1
@@ -539,9 +537,9 @@ Visualization Manager:
       Invert Z Axis: false
       Name: Current View
       Near Clip Distance: 0.009999999776482582
-      Pitch: 0.7774562239646912
+      Pitch: 1.11245596408844
       Target Frame: world
-      Yaw: 3.2667922973632812
+      Yaw: 3.106793165206909
     Saved: ~
 Window Geometry:
   Displays:

@@ -33,9 +33,8 @@ namespace general_planner {
                                          const double seed_line_max_dis, const double min_overlap_threshold,
                                          const double virtual_groud_height, const double virtual_ceil_height,
                                          const double robot_r, const int box_search_skip_num, const int iris_iter_num,
-                                         const optimization_utils::EllipsoidOptimizerConfig &ellipsoid_optimizer_config,
-                                         const MapBackend backend)
-            : ros_ptr_(ros_ptr), map_manager_(map_manager), backend_(backend) {
+                                         const optimization_utils::EllipsoidOptimizerConfig &ellipsoid_optimizer_config)
+            : ros_ptr_(ros_ptr), map_manager_(map_manager) {
         ciri_ = std::make_shared<CIRI>(ros_ptr_);
         ciri_->setupParams(robot_r, iris_iter_num, ellipsoid_optimizer_config);
         bound_dis_ = bound_dis;
@@ -65,12 +64,8 @@ namespace general_planner {
         if (path.empty()) {
             return false;
         }
-        if (map_manager_ == nullptr) {
-            return false;
-        }
 
         vector<Line> seed_lines;
-        const int path_size = static_cast<int>(path.size());
         int first_id, second_id;
         Polytope overlap;
         Vec3f interior_pt;
@@ -80,12 +75,8 @@ namespace general_planner {
         int cnt_loop = 0;
         first_id = 0;
 
-        while(first_id < path_size && !map_manager_->isStateValid(path[first_id], backend_)) {
+        while(first_id < path.size() && map_manager_->isOccupiedInflate(path[first_id])) {
             first_id++;
-        }
-
-        if (first_id >= path_size) {
-            return false;
         }
 
         if(first_id!=0){
@@ -97,13 +88,10 @@ namespace general_planner {
 
         while (cnt_loop++ < max_loop) {
             second_id = first_id;
-            for (int j = first_id + 1; j < path_size; j++) {
+            for (int j = first_id + 1; j < path.size(); j++) {
                 bool reach_segment = false;
-                if (!map_manager_->isLineFree(path[first_id],
-                                              path[j],
-                                              backend_,
-                                              seed_line_max_length_,
-                                              line_seed_neighbor_list)) {
+                if (!map_manager_->isLineFree(path[first_id], path[j], seed_line_max_length_,
+                                          line_seed_neighbor_list)) {
                     reach_segment = true;
                 }
                 if (reach_segment) {
@@ -116,7 +104,7 @@ namespace general_planner {
                 second_id = j;
             }
 
-            if (second_id == first_id && second_id + 1 < path_size) {
+            if (second_id == first_id && second_id + 1 < path.size()) {
                 second_id += 1;
             }
 
@@ -187,7 +175,7 @@ namespace general_planner {
             }
 
             sfcs.push_back(temp_poly);
-            if (second_id == path_size - 1) {
+            if (second_id == path.size() - 1) {
                 break;
             }
             first_id = second_id;
@@ -222,7 +210,8 @@ namespace general_planner {
         vec_E<Vec3f> pc;
         getSeedBBox(pt, pt, box_min, box_max);
         // TODO the box did not consider the robot_r
-        map_manager_->getObstaclePointsInBox(box_min, box_max, backend_, pc);
+        map_manager_->boundBoxByLocalMap(box_min, box_max);
+        map_manager_->boxSearch(box_min, box_max, OCCUPIED, pc);
         box_min.z() += robot_r_;
         box_max.z() -= robot_r_;
         MatD4f planes;
@@ -318,7 +307,8 @@ namespace general_planner {
         Eigen::Vector3d box_max, box_min;
         vec_E<Vec3f> pc, pts{line.first, line.second};
         getSeedBBox(line.first, line.second, box_min, box_max);
-        map_manager_->getObstaclePointsInBox(box_min, box_max, backend_, pc);
+        map_manager_->boundBoxByLocalMap(box_min, box_max);
+        map_manager_->boxSearch(box_min, box_max, OCCUPIED, pc);
         box_min.z() += robot_r_;
         box_max.z() -= robot_r_;
         MatD4f planes;

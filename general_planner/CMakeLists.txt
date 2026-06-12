@@ -32,24 +32,17 @@ find_package(catkin REQUIRED COMPONENTS
         visualization_msgs
         message_filters
         rog_map
-        map_manager
         yaml-cpp
         tf
-        lidar_map
-        pointcloud_topo
-        path_searching
-        frontier_manager
-        lkh_tsp_solver
 )
 find_package(yaml-cpp REQUIRED)
 find_package(Boost REQUIRED COMPONENTS system filesystem regex iostreams)
 find_package(Eigen3 REQUIRED)
 find_package(PCL REQUIRED)
-find_package(OpenCV REQUIRED)
 catkin_package(
         INCLUDE_DIRS
         LIBRARIES general_planner_core
-        CATKIN_DEPENDS roscpp rospy std_msgs rog_map map_manager lidar_map pointcloud_topo path_searching frontier_manager lkh_tsp_solver
+        CATKIN_DEPENDS roscpp rospy std_msgs
         #  DEPENDS system_lib
 )
 
@@ -60,14 +53,12 @@ include_directories(
         ${catkin_INCLUDE_DIRS}
         ${Eigen3_INCLUDE_DIRS}
         ${PCL_INCLUDE_DIRS}
-        ${OpenCV_INCLUDE_DIRS}
 )
 
 
 set(THIRD_PARTY
         ${catkin_LIBRARIES}
         ${PCL_LIBRARIES}
-        ${OpenCV_LIBS}
         ${Boost_LIBRARIES}
         #        general_planner
         yaml-cpp
@@ -77,6 +68,7 @@ set(THIRD_PARTY
 file(GLOB_RECURSE srcs CONFIGURE_DEPENDS src/*.cpp include/*.h include/*.hpp)
 list(FILTER srcs EXCLUDE REGEX ".*/src/traj_opt/exp_traj_optimizer_s4\\.cpp$")
 list(FILTER srcs EXCLUDE REGEX ".*/src/traj_opt/backup_traj_optimizer_s4\\.cpp$")
+list(FILTER srcs EXCLUDE REGEX ".*/src/traj_opt/yaw_traj_opt\\.cpp$")
 list(FILTER srcs EXCLUDE REGEX ".*/src/utils/minco\\.cpp$")
 list(APPEND srcs ${CMAKE_CURRENT_SOURCE_DIR}/src/general_core/tracking_runtime_manager.cpp)
 list(APPEND srcs ${CMAKE_CURRENT_SOURCE_DIR}/src/general_core/perching_runtime_manager.cpp)
@@ -114,7 +106,6 @@ target_link_libraries(read_replan_log
         general_planner_core        -lncurses
         ${THIRD_PARTY}
 )
-
 
 add_executable(traj_opt_tuning
         Apps/traj_opt_tuning.cpp
@@ -158,8 +149,7 @@ add_dependencies(se3_gcopter_gate_planning
         ${catkin_EXPORTED_TARGETS}
 )
 target_link_libraries(se3_gcopter_gate_planning
-        general_planner_core
-        ${THIRD_PARTY}
+        general_planner_core        ${THIRD_PARTY}
 )
 
 add_executable(tracking_target_relay

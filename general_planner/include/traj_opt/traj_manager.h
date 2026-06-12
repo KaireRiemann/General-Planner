@@ -21,7 +21,7 @@
 #include <data_structure/base/polytope.h>
 #include <data_structure/base/trajectory.h>
 #include <ros_interface/ros_interface.hpp>
-#include <map_manager/map_manager.hpp>
+#include <general_core/map_manager.hpp>
 #include <utils/header/type_utils.hpp>
 #include <utils/optimization/lbfgs.h>
 
@@ -110,11 +110,22 @@ public:
   void setSwarmTrajectories(const SwarmTrajectoriesConstPtr &trajectories);
   void setSwarmCurrentWallTime(double wall_time);
 
-  bool optimize(const StatePVAJ &headPVAJ,
-                const StatePVAJ &tailPVAJ,
-                const vec_E<Vec3f> &guide_path,
-                const std::vector<double> &guide_t,
-                Trajectory &out_traj);
+	  bool optimize(const StatePVAJ &headPVAJ,
+	                const StatePVAJ &tailPVAJ,
+	                const vec_E<Vec3f> &guide_path,
+	                const std::vector<double> &guide_t,
+	                Trajectory &out_traj);
+
+	  void getInitValue(VecDf &ts, vec_Vec3f &ps) const
+	  {
+	    ts = opt_vars_.times;
+	    ps.clear();
+	    ps.reserve(static_cast<std::size_t>(opt_vars_.points.cols()));
+	    for (int i = 0; i < opt_vars_.points.cols(); ++i)
+	    {
+	      ps.emplace_back(opt_vars_.points.col(i));
+	    }
+	  }
 
 private:
   struct OptimizationVariables
@@ -205,11 +216,22 @@ public:
   void setSwarmTrajectories(const SwarmTrajectoriesConstPtr &trajectories);
   void setSwarmCurrentWallTime(double wall_time);
 
-  bool optimize(const StatePVAJ &headPVAJ,
-                const StatePVAJ &tailPVAJ,
-                const vec_E<Vec3f> &guide_path,
-                const std::vector<double> &guide_t,
-                Trajectory &out_traj);
+	  bool optimize(const StatePVAJ &headPVAJ,
+	                const StatePVAJ &tailPVAJ,
+	                const vec_E<Vec3f> &guide_path,
+	                const std::vector<double> &guide_t,
+	                Trajectory &out_traj);
+
+	  void getInitValue(VecDf &ts, vec_Vec3f &ps) const
+	  {
+	    ts = opt_vars_.times;
+	    ps.clear();
+	    ps.reserve(static_cast<std::size_t>(opt_vars_.points.cols()));
+	    for (int i = 0; i < opt_vars_.points.cols(); ++i)
+	    {
+	      ps.emplace_back(opt_vars_.points.col(i));
+	    }
+	  }
 
 private:
   struct OptimizationVariables

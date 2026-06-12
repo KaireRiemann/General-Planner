@@ -26,7 +26,7 @@
 
 #include "Eigen/Dense"
 #include "vector"
-#include "map_manager/map_manager.hpp"
+#include "general_core/map_manager.hpp"
 #include "queue"
 #include "path_search/config.hpp"
 #include "utils/header/type_utils.hpp"
@@ -78,7 +78,6 @@ namespace path_search {
     class Astar {
 
         general_planner::MapManager::Ptr map_manager_;
-        general_planner::MapBackend backend_{general_planner::MapBackend::ROG};
         ros_interface::RosInterface::Ptr ros_ptr_;
 
         PathSearchConfig cfg_;
@@ -138,8 +137,7 @@ namespace path_search {
 
         Astar(const std::string & cfg_path,
               const ros_interface::RosInterface::Ptr &ros_ptr,
-              const general_planner::MapManager::Ptr &map_manager,
-              general_planner::MapBackend backend = general_planner::MapBackend::ROG);
+              const general_planner::MapManager::Ptr &map_manager);
 
         ~Astar() {};
 

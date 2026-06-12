@@ -46,7 +46,6 @@ namespace fsm {
         EXPLORATION = 3,
         DYNAMIC_TAKEOFF = 4,
         TRACKING_PERCHING = 5,
-        FULL_CYCLE = 6,
         SE3_AGGRESSIVE = 7
     };
 
@@ -60,8 +59,13 @@ namespace fsm {
         if (mode == "track" || mode == "tracking") {
             return "tracking";
         }
-        if (mode == "explore" || mode == "exploration") {
-            return "exploration";
+        if (mode == "tracking_perching" || mode == "tracking-perching" ||
+            mode == "track_perch" || mode == "track-perch") {
+            return "tracking_perching";
+        }
+        if (mode == "se3" || mode == "se3_aggressive" ||
+            mode == "aggressive" || mode == "racing") {
+            return "se3_aggressive";
         }
         if (mode == "perch" || mode == "perching") {
             return "perching";
@@ -70,17 +74,8 @@ namespace fsm {
             mode == "dynamic-takeoff" || mode == "unperching") {
             return "dynamic_takeoff";
         }
-        if (mode == "se3" || mode == "se3_aggressive" ||
-            mode == "aggressive" || mode == "racing") {
-            return "se3_aggressive";
-        }
-        if (mode == "tracking_perching" || mode == "tracking-perching" ||
-            mode == "track_perch" || mode == "track-perch") {
-            return "tracking_perching";
-        }
-        if (mode == "full_cycle" || mode == "takeoff_tracking_perching" ||
-            mode == "takeoff-tracking-perching") {
-            return "full_cycle";
+        if (mode == "explore" || mode == "exploration") {
+            return "exploration";
         }
         return "state2state";
     }
@@ -90,23 +85,20 @@ namespace fsm {
         if (normalized == "tracking") {
             return TaskMode::TRACKING;
         }
+        if (normalized == "tracking_perching") {
+            return TaskMode::TRACKING_PERCHING;
+        }
+        if (normalized == "se3_aggressive") {
+            return TaskMode::SE3_AGGRESSIVE;
+        }
         if (normalized == "perching") {
             return TaskMode::PERCHING;
-        }
-        if (normalized == "exploration") {
-            return TaskMode::EXPLORATION;
         }
         if (normalized == "dynamic_takeoff") {
             return TaskMode::DYNAMIC_TAKEOFF;
         }
-        if (normalized == "tracking_perching") {
-            return TaskMode::TRACKING_PERCHING;
-        }
-        if (normalized == "full_cycle") {
-            return TaskMode::FULL_CYCLE;
-        }
-        if (normalized == "se3_aggressive") {
-            return TaskMode::SE3_AGGRESSIVE;
+        if (normalized == "exploration") {
+            return TaskMode::EXPLORATION;
         }
         return TaskMode::STATE_TO_STATE;
     }
@@ -123,7 +115,7 @@ namespace fsm {
 
         bool click_yaw_en{};
         string cmd_topic, mpc_cmd_topic, so3_cmd_topic, click_goal_topic;
-        bool publish_so3_cmd{true};
+        bool publish_so3_cmd{false};
         vector<double> so3_kR{0.0, 0.0, 0.0};
         vector<double> so3_kOm{0.0, 0.0, 0.0};
         double flatness_mass{1.0};
@@ -135,12 +127,7 @@ namespace fsm {
         string task_mode_str{"state2state"};
         TaskMode task_mode{TaskMode::STATE_TO_STATE};
         bool task_planner_en{false};
-        bool exploration_enable{false};
-        string exploration_cloud_frame{"WORLD"};
         string task_mode_topic{"/planning/task_mode"};
-        string exploration_waypoints_topic{"/waypoint_generator/waypoints"};
-        string exploration_start_trigger_topic{"/traj_start_trigger"};
-        string exploration_goal_trigger_topic{"/move_base_simple/goal"};
         string tracking_target_odom_topic{"/tracking/target_odom"};
         string tracking_target_prediction_topic{"/tracking/target_prediction"};
         bool tracking_use_target_prediction_path{true};
@@ -164,8 +151,25 @@ namespace fsm {
         double tracking_static_safety_check_horizon{1.5};
         double tracking_static_safety_check_dt{0.12};
         double tracking_static_replan_log_period{1.0};
+        int tracking_plan_from_rest_max_failures{4};
+        double tracking_plan_from_rest_failure_backoff{0.5};
+        double tracking_plan_from_rest_limited_backoff{2.0};
+        bool tracking_static_finish_on_plan_failure{false};
+        bool perception_replan_check_en{false};
+        double perception_replan_check_rate{30.0};
+        double perception_replan_check_horizon{2.0};
+        double perception_replan_check_dt{0.08};
+        double perception_replan_min_interval{0.08};
+        int perception_replan_consecutive_hits{2};
+        bool perception_replan_unknown_as_occupied{false};
+        double perception_replan_emergency_horizon{0.45};
+        double perception_replan_log_period{0.5};
         double task_timeout{0.6};
+        int state2state_plan_from_rest_max_failures{0};
+        bool state2state_clear_goal_on_plan_failure{false};
         double yaw_dot_max{};
+        bool diagnostic_log_en{true};
+        string diagnostic_event_topic{"/planning/diagnostics/events"};
         bool swarm_enable{false};
         int swarm_drone_id{-1};
         double swarm_des_clearance{0.75};
@@ -188,7 +192,7 @@ namespace fsm {
             loader.LoadParam("fsm/click_height", click_height, 1.5);
             loader.LoadParam("fsm/cmd_topic", cmd_topic, string("/planning/pos_cmd"));
             loader.LoadParam("fsm/mpc_cmd_topic", mpc_cmd_topic, string("/planning_cmd/mpc"));
-            loader.LoadParam("fsm/publish_so3_cmd", publish_so3_cmd, true);
+            loader.LoadParam("fsm/publish_so3_cmd", publish_so3_cmd, false);
             loader.LoadParam("fsm/so3_cmd_topic", so3_cmd_topic, string("/planning/so3_cmd"));
             loader.LoadParam("fsm/so3_kR", so3_kR, vector<double>{0.0, 0.0, 0.0});
             loader.LoadParam("fsm/so3_kOm", so3_kOm, vector<double>{0.0, 0.0, 0.0});
@@ -209,17 +213,7 @@ namespace fsm {
             task_mode_str = normalizeTaskMode(task_mode_str);
             task_mode = taskModeFromString(task_mode_str);
             loader.LoadParam("fsm/task_planner_en", task_planner_en, false);
-            loader.LoadParam("general_planner/exploration_enable", exploration_enable, false);
-            loader.LoadParam("general_planner/exploration/enable", exploration_enable, exploration_enable);
-            loader.LoadParam("general_planner/exploration/cloud_frame",
-                             exploration_cloud_frame, string("WORLD"));
             loader.LoadParam("fsm/task_mode_topic", task_mode_topic, string("/planning/task_mode"));
-            loader.LoadParam("fsm/exploration_waypoints_topic", exploration_waypoints_topic,
-                             string("/waypoint_generator/waypoints"));
-            loader.LoadParam("fsm/exploration_start_trigger_topic", exploration_start_trigger_topic,
-                             string("/traj_start_trigger"));
-            loader.LoadParam("fsm/exploration_goal_trigger_topic", exploration_goal_trigger_topic,
-                             string("/move_base_simple/goal"));
             loader.LoadParam("fsm/tracking_target_odom_topic", tracking_target_odom_topic,
                              string("/tracking/target_odom"));
             loader.LoadParam("fsm/tracking_target_prediction_topic", tracking_target_prediction_topic,
@@ -247,7 +241,37 @@ namespace fsm {
             loader.LoadParam("fsm/tracking_static_safety_check_horizon", tracking_static_safety_check_horizon, 1.5);
             loader.LoadParam("fsm/tracking_static_safety_check_dt", tracking_static_safety_check_dt, 0.12);
             loader.LoadParam("fsm/tracking_static_replan_log_period", tracking_static_replan_log_period, 1.0);
+            loader.LoadParam("fsm/tracking_plan_from_rest_max_failures",
+                             tracking_plan_from_rest_max_failures,
+                             4);
+            loader.LoadParam("fsm/tracking_plan_from_rest_failure_backoff",
+                             tracking_plan_from_rest_failure_backoff,
+                             0.5);
+            loader.LoadParam("fsm/tracking_plan_from_rest_limited_backoff",
+                             tracking_plan_from_rest_limited_backoff,
+                             2.0);
+            loader.LoadParam("fsm/tracking_static_finish_on_plan_failure",
+                             tracking_static_finish_on_plan_failure,
+                             false);
+            loader.LoadParam("fsm/perception_replan_check_en", perception_replan_check_en, false);
+            loader.LoadParam("fsm/perception_replan_check_rate", perception_replan_check_rate, 30.0);
+            loader.LoadParam("fsm/perception_replan_check_horizon", perception_replan_check_horizon, 2.0);
+            loader.LoadParam("fsm/perception_replan_check_dt", perception_replan_check_dt, 0.08);
+            loader.LoadParam("fsm/perception_replan_min_interval", perception_replan_min_interval, 0.08);
+            loader.LoadParam("fsm/perception_replan_consecutive_hits", perception_replan_consecutive_hits, 2);
+            loader.LoadParam("fsm/perception_replan_unknown_as_occupied", perception_replan_unknown_as_occupied, false);
+            loader.LoadParam("fsm/perception_replan_emergency_horizon", perception_replan_emergency_horizon, 0.45);
+            loader.LoadParam("fsm/perception_replan_log_period", perception_replan_log_period, 0.5);
             loader.LoadParam("fsm/task_timeout", task_timeout, 0.6);
+            loader.LoadParam("fsm/state2state_plan_from_rest_max_failures",
+                             state2state_plan_from_rest_max_failures,
+                             0);
+            loader.LoadParam("fsm/state2state_clear_goal_on_plan_failure",
+                             state2state_clear_goal_on_plan_failure,
+                             false);
+            loader.LoadParam("fsm/diagnostic_log_en", diagnostic_log_en, true);
+            loader.LoadParam("fsm/diagnostic_event_topic", diagnostic_event_topic,
+                             string("/planning/diagnostics/events"));
             loader.LoadParam("general_planner/swarm/enable", swarm_enable, false);
             loader.LoadParam("general_planner/swarm/drone_id", swarm_drone_id, -1);
             loader.LoadParam("general_planner/swarm/des_clearance", swarm_des_clearance, 0.75);

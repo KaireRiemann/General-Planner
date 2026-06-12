@@ -264,7 +264,7 @@ Visualization Manager:
         - Alpha: 0.20000000298023224
           Autocompute Intensity Bounds: true
           Autocompute Value Bounds:
-            Max Value: 3.9000000953674316
+            Max Value: 3.700000047683716
             Min Value: 0.30000001192092896
             Value: true
           Axis: Z
@@ -392,13 +392,13 @@ Visualization Manager:
           Queue Size: 100
           Value: false
         - Class: rviz/MarkerArray
-          Enabled: true
+          Enabled: false
           Marker Topic: /drone_1/fsm_node/visualization/backup_sfc
           Name: BackupSfc
           Namespaces:
             {}
           Queue Size: 100
-          Value: true
+          Value: false
         - Class: rviz/MarkerArray
           Enabled: true
           Marker Topic: /drone_1/fsm_node/visualization/exp_traj
@@ -469,7 +469,7 @@ Visualization Manager:
   Views:
     Current:
       Class: rviz/ThirdPersonFollower
-      Distance: 33.17333984375
+      Distance: 10.680925369262695
       Enable Stereo Rendering:
         Stereo Eye Separation: 0.05999999865889549
         Stereo Focal Distance: 1
@@ -485,9 +485,9 @@ Visualization Manager:
       Invert Z Axis: false
       Name: Current View
       Near Clip Distance: 0.009999999776482582
-      Pitch: 1.1149988174438477
+      Pitch: 0.7749989628791809
       Target Frame: drone_1/base_link
-      Yaw: 2.830008029937744
+      Yaw: 2.9450087547302246
     Saved: ~
 Window Geometry:
   Displays:

@@ -10,6 +10,7 @@ Panels:
         - /Sensing1/GlobalCloud1/Autocompute Value Bounds1
         - /Sensing1/LocalCloud1/Autocompute Value Bounds1
         - /Sensing1/Occ1/Autocompute Value Bounds1
+        - /Frontend1/ExpSfc1
         - /Frontend1/ExpSfc1/Namespaces1
         - /Frontend1/FreeSfc1
         - /Frontend1/FreeSfc1/Namespaces1
@@ -329,13 +330,13 @@ Visualization Manager:
           Queue Size: 100
           Value: false
         - Class: rviz/MarkerArray
-          Enabled: false
+          Enabled: true
           Marker Topic: /fsm_node/visualization/exp_sfc
           Name: ExpSfc
           Namespaces:
             {}
           Queue Size: 100
-          Value: false
+          Value: true
         - Class: rviz/MarkerArray
           Enabled: true
           Marker Topic: /fsm_node/visualization/backup_sfc
@@ -353,10 +354,8 @@ Visualization Manager:
           Marker Topic: /fsm_node/visualization/exp_traj
           Name: ExpTraj
           Namespaces:
-            tracking_jerk: true
-            tracking_jerk_waypoints: true
-            tracking_to_perching: true
-            tracking_to_perching_waypoints: true
+            perching: true
+            perching_waypoints: true
           Queue Size: 100
           Value: true
         - Class: rviz/MarkerArray
@@ -473,14 +472,6 @@ Visualization Manager:
         perching_surface: true
       Queue Size: 100
       Value: true
-    - Class: rviz/MarkerArray
-      Enabled: true
-      Marker Topic: /tracking_perching_platform_source/visualization/tracking_fov
-      Name: FOV
-      Namespaces:
-        {}
-      Queue Size: 100
-      Value: true
   Enabled: true
   Global Options:
     Background Color: 255; 255; 255
@@ -498,7 +489,7 @@ Visualization Manager:
   Views:
     Current:
       Class: rviz/ThirdPersonFollower
-      Distance: 10.308900833129883
+      Distance: 7.444878101348877
       Enable Stereo Rendering:
         Stereo Eye Separation: 0.05999999865889549
         Stereo Focal Distance: 1
@@ -506,17 +497,17 @@ Visualization Manager:
         Value: false
       Field of View: 1.0471975803375244
       Focal Point:
-        X: -4.845868110656738
-        Y: -1.2883400917053223
-        Z: 2.384185791015625e-06
+        X: -0.226293683052063
+        Y: -2.4884209632873535
+        Z: -2.384185791015625e-07
       Focal Shape Fixed Size: true
       Focal Shape Size: 0.05000000074505806
       Invert Z Axis: false
       Name: Current View
       Near Clip Distance: 0.009999999776482582
-      Pitch: 0.7649977803230286
+      Pitch: 0.9949986338615417
       Target Frame: perfect_drone
-      Yaw: 4.368180274963379
+      Yaw: 4.463185787200928
     Saved:
       - Class: rviz/ThirdPersonFollower
         Distance: 3

@@ -52,7 +52,7 @@ traj_opt:
     print_optimizer_log: false
 
   boundary:
-    max_vel: 5.0
+    max_vel: 6.0
     max_acc: 8.0
     max_jerk: 120.0
     max_omg: 2.5
@@ -130,7 +130,7 @@ astar:
 
 rog_map:
   resolution: 0.1
-  inflation_resolution: 0.1
+  inflation_resolution: 0.2
   inflation_step: 2
   unk_inflation_en: false
   unk_inflation_step: 1

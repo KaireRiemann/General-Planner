@@ -15,7 +15,6 @@
 #include "perfect_drone_sim/config.hpp"
 #include "tf2_ros/transform_broadcaster.h"
 
-#include <cmath>
 
 typedef Eigen::Matrix<double, 3, 1> Vec3;
 typedef Eigen::Matrix<double, 3, 3> Mat33;
@@ -155,9 +154,7 @@ namespace perfect_drone {
         void publishPC() {
             pcl::PointCloud<marsim::PointType>::Ptr local_map(new pcl::PointCloud<marsim::PointType>);
             const auto cur_t = this->get_clock()->now().seconds();
-            const Eigen::Quaterniond lidar_q =
-                    q_ * Eigen::AngleAxisd(cfg_.lidar_pitch * M_PI / 180.0, Vec3::UnitY());
-            render_ptr_->renderOnceInWorld(position_.cast<float>(), lidar_q.cast<float>(), cur_t, local_map);
+            render_ptr_->renderOnceInWorld(position_.cast<float>(), q_.cast<float>(), cur_t, local_map);
             sensor_msgs::msg::PointCloud2 pc_msg;
             pcl::toROSMsg(*local_map, pc_msg);
             pc_msg.header.frame_id = "world";

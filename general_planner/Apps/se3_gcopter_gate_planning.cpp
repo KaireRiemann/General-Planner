@@ -8,6 +8,11 @@
 #include <visualization_msgs/Marker.h>
 #include <visualization_msgs/MarkerArray.h>
 
+#include <pcl/point_cloud.h>
+#include <pcl/point_types.h>
+#include <pcl_conversions/pcl_conversions.h>
+#include <rog_map/rog_map.h>
+
 #include <quadrotor_msgs/PositionCommand.h>
 #include <quadrotor_msgs/SO3Command.h>
 

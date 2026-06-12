@@ -1,6 +1,6 @@
 <launch>
     <arg name="sim_config" default="click.yaml"/>
-    <arg name="planner_config" default="click_highspeed_ros1.yaml"/>
+    <arg name="planner_config" default="click_real_highspeed.yaml"/>
     <arg name="planner_config_path" default=""/>
     <arg name="rviz" default="true"/>
     <arg name="fpv_rviz" default="true"/>

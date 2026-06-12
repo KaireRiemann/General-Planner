@@ -1,8 +1,6 @@
-#include <algorithm>
 #include <utility>
 
 #include "marsim_render/marsim_render.hpp"
-#include <pcl/conversions.h>
 
 namespace marsim {
     using namespace std::chrono;
@@ -401,37 +399,9 @@ namespace marsim {
     }
 
     void MarsimRender::load_pcd_file(std::string file_name, pcl::PointCloud<PointType>& cloud_color_mesh) {
-        pcl::PCLPointCloud2 raw_cloud;
-        int status = pcl::io::loadPCDFile(file_name, raw_cloud);
+        int status = pcl::io::loadPCDFile<PointType>(file_name, cloud_color_mesh);
         if (status == -1) {
             cout << "can't read file." << endl;
-            return;
-        }
-
-        const bool has_intensity = std::any_of(raw_cloud.fields.begin(), raw_cloud.fields.end(),
-                                               [](const pcl::PCLPointField &field) {
-                                                   return field.name == "intensity";
-                                               });
-        if (has_intensity) {
-            pcl::fromPCLPointCloud2(raw_cloud, cloud_color_mesh);
-            return;
-        }
-
-        pcl::PointCloud<pcl::PointXYZ> xyz_cloud;
-        pcl::fromPCLPointCloud2(raw_cloud, xyz_cloud);
-        cloud_color_mesh.clear();
-        cloud_color_mesh.header = xyz_cloud.header;
-        cloud_color_mesh.width = xyz_cloud.width;
-        cloud_color_mesh.height = xyz_cloud.height;
-        cloud_color_mesh.is_dense = xyz_cloud.is_dense;
-        cloud_color_mesh.points.reserve(xyz_cloud.points.size());
-        for (const auto &xyz : xyz_cloud.points) {
-            PointType point;
-            point.x = xyz.x;
-            point.y = xyz.y;
-            point.z = xyz.z;
-            point.intensity = 0.0F;
-            cloud_color_mesh.points.push_back(point);
         }
     }
 

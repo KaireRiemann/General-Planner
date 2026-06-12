@@ -1,6 +1,6 @@
 <launch>
     <arg name="sim_config" default="tracking_perching_tracking.yaml"/>
-    <arg name="planner_config" default="tracking.yaml"/>
+    <arg name="planner_config" default="tracking_perching_tracking_ros1.yaml"/>
     <arg name="task_config" default="tracking_task_planner.yaml"/>
     <arg name="rviz" default="true"/>
     <arg name="marsim" default="true"/>

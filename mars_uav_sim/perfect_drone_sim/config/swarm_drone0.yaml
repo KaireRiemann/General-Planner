@@ -1,5 +1,5 @@
 #############| For swarm UAV simulation |#################################
-pcd_name: "big_field.pcd"
+pcd_name: "forest.pcd"
 mesh_resource: "package://perfect_drone_sim/meshes/yunque-M.dae"
 cmd_topic: "/drone_0/planning/pos_cmd"
 odom_topic: "/drone_0/lidar_slam/odom"

@@ -25,8 +25,6 @@
 #ifndef CMD_TRAJ_H
 #define CMD_TRAJ_H
 
-#include <algorithm>
-
 #include <data_structure/exp_traj.h>
 #include <data_structure/backup_traj.h>
 #include <data_structure/base/trajectory.h>
@@ -119,50 +117,6 @@ namespace general_planner {
             backup_traj_start_TT_ = 99999999;
             flag_backup_traj_avilibale_ = false;
             checkFirstPartBackupTraj(exp_traj);
-        }
-
-        bool truncateByTrajectoryTime(const double &end_t) {
-            LOCK_G
-            if (flag_empty_ || pos_traj_.empty() || yaw_traj_.empty()) {
-                return false;
-            }
-
-            const double total_dur = pos_traj_.getTotalDuration();
-            if (total_dur <= 1.0e-3 || end_t <= 1.0e-3) {
-                return false;
-            }
-
-            const double clipped_end_t = std::min(end_t, total_dur);
-            if (clipped_end_t >= total_dur - 1.0e-4) {
-                return true;
-            }
-            if (yaw_traj_.getTotalDuration() + 1.0e-4 < clipped_end_t) {
-                return false;
-            }
-
-            Trajectory truncated_pos, truncated_yaw;
-            if (!pos_traj_.getPartialTrajectoryByTime(0.0, clipped_end_t, truncated_pos) ||
-                !yaw_traj_.getPartialTrajectoryByTime(0.0, clipped_end_t, truncated_yaw)) {
-                return false;
-            }
-
-            pos_traj_ = truncated_pos;
-            yaw_traj_ = truncated_yaw;
-            start_WT_ = pos_traj_.start_WT;
-            if (flag_backup_traj_avilibale_ && backup_traj_start_TT_ >= clipped_end_t) {
-                flag_backup_traj_avilibale_ = false;
-                backup_traj_start_TT_ = 99999999;
-            }
-            if (first_part_exp_has_backup_traj_) {
-                if (on_backup_start_TT_ >= clipped_end_t) {
-                    first_part_exp_has_backup_traj_ = false;
-                    on_backup_start_TT_ = -1.0;
-                    on_backup_end_TT_ = -1.0;
-                } else {
-                    on_backup_end_TT_ = std::min(on_backup_end_TT_, clipped_end_t);
-                }
-            }
-            return true;
         }
 
         bool isTTOnBackupTraj(const double & checkTT) const {

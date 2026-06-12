@@ -25,7 +25,7 @@
 
 #include <iostream>
 #include <fstream>
-#include <cmath>
+#include <limits>
 #include <memory>
 #include "Eigen/Eigen"
 
@@ -40,9 +40,11 @@
 #include "traj_opt/traj_manager.h"
 #include "path_search/astar.h"
 #include "rog_map/rog_map.h"
-#include "map_manager/map_manager.hpp"
+#include "general_core/map_manager.hpp"
 #include "general_core/corridor_generator.h"
 #include "general_core/fov_checker.h"
+#include "general_core/exploration_frontend.hpp"
+#include "general_core/exploration_runtime_manager.hpp"
 #include "general_core/tracking_perching_frontend.hpp"
 #include "general_core/tracking_runtime_manager.hpp"
 #include "general_core/perching_runtime_manager.hpp"
@@ -51,7 +53,6 @@
 #include "general_core/tracking_perching_transition_manager.hpp"
 #include "general_core/tracking_to_perching_initializer.hpp"
 #include "general_core/se3_aggressive_manager.hpp"
-#include "exploration/epic_exploration_manager.hpp"
 
 #include "general_core/general_ret_code.hpp"
 #include "utils/header/fmt_eigen.hpp"
@@ -103,9 +104,10 @@ namespace general_planner {
 
         FOVChecker::Ptr fov_checker_;
 
-        CmdTraj cmd_traj_info_;
-        ExpTraj last_exp_traj_info_;
-        std::unique_ptr<TrackingRuntimeManager> tracking_runtime_manager_;
+	        CmdTraj cmd_traj_info_;
+	        ExpTraj last_exp_traj_info_;
+
+	        std::unique_ptr<TrackingRuntimeManager> tracking_runtime_manager_;
         std::unique_ptr<PerchingRuntimeManager> perching_runtime_manager_;
         std::unique_ptr<TakeoffFrontend> takeoff_frontend_;
         std::unique_ptr<TakeoffRuntimeManager> takeoff_runtime_manager_;
@@ -115,24 +117,8 @@ namespace general_planner {
         std::unique_ptr<TrackingPerchingTransitionManager> tracking_perching_manager_;
         std::unique_ptr<TrackingToPerchingInitializer> tracking_to_perching_initializer_;
         std::unique_ptr<SE3AggressiveManager> se3_aggressive_manager_;
-        std::unique_ptr<exploration::EpicExplorationManager> exploration_manager_;
-        exploration::ExplorationGoal latest_exploration_goal_;
-        exploration::ExplorationPlan latest_exploration_plan_;
-        exploration::ExplorationPlan active_exploration_plan_;
-        bool active_exploration_guide_{false};
-        enum class ExplorationRuntimeState {
-            WAIT_OBSERVATION,
-            UPDATE_GLOBAL,
-            PLAN_LOCAL,
-            EXEC_LOCAL,
-            RECOVER,
-            FINISH
-        };
-        ExplorationRuntimeState exploration_runtime_state_{ExplorationRuntimeState::WAIT_OBSERVATION};
-        double exploration_last_global_update_wt_{-1.0};
-        double exploration_last_local_commit_wt_{-1.0};
-        double exploration_last_runtime_log_wt_{-1.0};
-        bool exploration_has_committed_local_traj_{false};
+        std::unique_ptr<ExplorationFrontend> exploration_frontend_;
+        std::unique_ptr<ExplorationRuntimeManager> exploration_runtime_manager_;
 
         vector<double> time_consuming_;
 
@@ -140,10 +126,16 @@ namespace general_planner {
         int tracking_consecutive_reject_{0};
         double last_tracking_commit_wt_{-1.0};
         std::string last_tracking_commit_reject_reason_;
+        std::string last_tracking_commit_reject_detail_;
+        std::string last_tracking_diag_phase_{"none"};
+        std::string last_tracking_diag_reason_{"none"};
         std::size_t last_tracking_diag_guide_path_size_{0};
         std::size_t last_tracking_diag_sfc_size_{0};
         std::size_t last_tracking_diag_target_prediction_size_{0};
         double last_tracking_diag_out_traj_duration_{0.0};
+        bool last_tracking_runtime_reset_{false};
+        bool last_tracking_runtime_preserved_{false};
+        std::string last_tracking_runtime_reason_{"none"};
         traj_opt::DynamicTargetStates last_tracking_frontend_prediction_;
         vec_E<Vec3f> last_tracking_frontend_viewpoints_;
 
@@ -177,6 +169,39 @@ namespace general_planner {
         };
 
     public:
+        struct CommittedTrajectorySafetyReport {
+            bool valid{false};
+            bool safe{true};
+            double check_start_t{0.0};
+            double check_horizon{0.0};
+            double collision_t{0.0};
+            double time_to_collision{std::numeric_limits<double>::infinity()};
+            Vec3f collision_pos{Vec3f::Zero()};
+            int grid_type{static_cast<int>(rog_map::GridType::KNOWN_FREE)};
+            int hit_count{0};
+            std::string reason;
+        };
+
+        struct TrackingDiagnosticSnapshot {
+            std::string phase{"none"};
+            std::string reason{"none"};
+            std::size_t guide_path_size{0};
+            std::size_t sfc_size{0};
+            std::size_t target_prediction_size{0};
+            double out_traj_duration{0.0};
+            int consecutive_keep_old{0};
+            int consecutive_reject{0};
+            double last_commit_wt{-1.0};
+            std::string last_commit_reject_reason;
+            std::string last_commit_reject_detail;
+            bool runtime_manager_enabled{false};
+            bool has_committed_tracking{false};
+            double committed_remaining{0.0};
+            bool runtime_reset{false};
+            bool runtime_preserved{false};
+            std::string runtime_reason{"none"};
+        };
+
         EIGEN_MAKE_ALIGNED_OPERATOR_NEW
 
         explicit GeneralPlanner(const std::string &cfg_path,
@@ -206,6 +231,13 @@ namespace general_planner {
         Trajectory getCommittedYawTrajectory();
 
         double getCommittedTrajectoryRemainingDuration();
+
+        bool checkCommittedPositionTrajectorySafety(
+                double horizon,
+                double dt,
+                int consecutive_hits,
+                bool unknown_as_occupied,
+                CommittedTrajectorySafetyReport *report = nullptr);
 
         bool trackingPerchingPerchingActive() const;
 
@@ -265,6 +297,10 @@ namespace general_planner {
             return cg_ptr_ ? cg_ptr_->getCiriComputationTime() : -1.0;
         }
 
+        TrackingDiagnosticSnapshot getLatestTrackingDiagnosticSnapshot();
+
+        std::string getTrackingConfigSummary() const;
+
         int getLatestMvieLbfgsIterations() const {
             return cg_ptr_ ? cg_ptr_->getCiriMvieLbfgsIterations() : 0;
         }
@@ -318,72 +354,7 @@ namespace general_planner {
 
         RET_CODE ReplanExplorationOnce(const bool &new_task);
 
-        RET_CODE PlanExplorationOnce(const bool &new_task,
-                                     const bool &from_rest);
-
-        struct ExplorationRuntimePolicy {
-            double global_update_dt{0.2};
-            double replan_time_after_traj_start{0.5};
-            double replan_time_before_traj_end{0.5};
-            double replan_forward_dt{0.2};
-            double min_remaining_for_replan{0.25};
-            double stop_traj_time{0.2};
-            double collision_replan_time{0.5};
-        };
-
-        struct ExplorationExecutionStatus {
-            bool has_observation{false};
-            bool has_active_trajectory{false};
-            bool trajectory_unsafe{false};
-            double traj_elapsed{0.0};
-            double traj_remaining{0.0};
-            double collision_time{-1.0};
-        };
-
-        struct ExplorationFrontendUpdateResult {
-            bool ready{false};
-            bool updated{false};
-            bool finished{false};
-            bool no_frontier{false};
-            exploration::ExplorationPlan plan;
-            std::string reason;
-        };
-
-        ExplorationRuntimePolicy getExplorationRuntimePolicy() const;
-
-        ExplorationExecutionStatus getExplorationExecutionStatus(double now);
-
-        ExplorationFrontendUpdateResult refreshExplorationGlobalPlan();
-
-        void resetExplorationTaskRuntime(bool hard_reset);
-
-        bool truncateActiveExplorationTrajectory(double stop_time);
-
-        bool getLatestExplorationGoal(exploration::ExplorationGoal &goal) const;
-
-        bool explorationObservationReady() const {
-            return exploration_manager_ != nullptr && exploration_manager_->hasObservation();
-        }
-
-        double latestExplorationObservationStamp() const {
-            return exploration_manager_ != nullptr ? exploration_manager_->lastObservationStamp() : -1.0;
-        }
-
-        bool globalExplorationMapReady() const {
-            return map_manager_ != nullptr && map_manager_->globalExplorationMapReady();
-        }
-
-        int globalFrontierCount() const {
-            return map_manager_ != nullptr ? map_manager_->globalFrontierCount() : 0;
-        }
-
-        double globalExploredVolume() const {
-            return map_manager_ != nullptr ? map_manager_->globalExploredVolume() : 0.0;
-        }
-
-        int globalPointCloudSize() const {
-            return map_manager_ != nullptr ? map_manager_->globalPointCloudSize() : 0;
-        }
+        bool getLatestExplorationGoal(ExplorationGoal &goal) const;
 
         RET_CODE PlanSE3AggressiveFromRest(const Vec3f &goal_p,
                                            double goal_yaw,
@@ -397,31 +368,8 @@ namespace general_planner {
         RET_CODE generateExpTraj(ExpTraj &last_exp_traj_info,
                                  ExpTraj &out_exp_traj_info);
 
-        RET_CODE generateExpTrajFromGuidePath(const exploration::ExplorationPlan &plan,
-                                              ExpTraj &last_exp_traj_info,
-                                              ExpTraj &out_exp_traj_info);
-
-        RET_CODE commitExplorationLocalTrajectory(const exploration::ExplorationPlan &plan,
-                                                  bool from_rest,
-                                                  bool goal_switched);
-
         /* For Backup traj generation */
         RET_CODE generateBackupTrajectory(ExpTraj &ref_exp_traj, BackupTraj &back_traj_info);
-
-        RET_CODE tryCommitExplorationBackupFallback(const std::string &reason);
-
-        void resetExplorationRuntimeState(bool hard_reset);
-
-        static const char *explorationRuntimeStateName(ExplorationRuntimeState state);
-
-        bool getExplorationCommittedTrajectoryActivity(double now,
-                                                       double &elapsed,
-                                                       double &remaining);
-
-        bool currentExplorationTrajectoryUnsafe(double now,
-                                                double *collision_time = nullptr);
-
-        bool truncateExplorationCommittedTrajectory(double stop_time);
 
         int getNearestFurtherGoalPoint(const vec_E<Vec3f> &goals, const Vec3f &start_pt);
 
@@ -431,6 +379,17 @@ namespace general_planner {
 
         bool prepareESDFGuideEndpoint(vec_Vec3f &guide_path,
                                       std::vector<double> &guide_stamp);
+
+        bool checkPositionTrajectorySafety(const Trajectory &traj,
+                                           double now_wt,
+                                           double horizon,
+                                           double dt,
+                                           int consecutive_hits,
+                                           bool unknown_as_occupied,
+                                           CommittedTrajectorySafetyReport *report) const;
+
+        bool state2stateCurrentTrajectorySafeForNoNeed(const Trajectory &traj,
+                                                       double start_t) const;
 
         bool buildTrackingGuideCorridor(traj_opt::TrackingProblem &problem,
                                         std::string *failure_reason = nullptr);
@@ -480,7 +439,8 @@ namespace general_planner {
         bool commitTrackingTrajectory(const Trajectory &pos_traj,
                                       const Trajectory &yaw_traj,
                                       const traj_opt::DynamicTargetStates &target_prediction,
-                                      const std::string &traj_ns);
+                                      const std::string &traj_ns,
+                                      bool allow_reacquire_fov_relax = false);
 
         bool buildPerchingYawTrajectory(const Trajectory &pos_traj,
                                         const traj_opt::PerchingSurfaceState &surface,
@@ -537,7 +497,16 @@ namespace general_planner {
             const traj_opt::DynamicTargetStates &target_prediction,
             const std::string &reason);
 
-        bool trackingCandidateSafeForCommit(const Trajectory &candidate_pos_traj) const;
+        bool trackingCandidateSafeForCommit(const Trajectory &candidate_pos_traj,
+                                            std::string *reason = nullptr,
+                                            std::string *detail = nullptr) const;
+
+        bool trackingTrajectorySafeForHorizonDetailed(const Trajectory &traj,
+                                                      double start_t,
+                                                      double horizon,
+                                                      double dt,
+                                                      std::string *reason = nullptr,
+                                                      std::string *detail = nullptr) const;
 
         bool trackingSnapshotSatisfiesFovForKeepOld(
             const Trajectory &pos_traj,
@@ -553,9 +522,33 @@ namespace general_planner {
                                             double horizon,
                                             double dt,
                                             double target_start_t,
-                                            std::string *reason = nullptr) const;
+                                            std::string *reason = nullptr,
+                                            bool allow_keep_old_grace = false,
+                                            bool allow_reacquire_range_grace = false) const;
 
         void resetTrackingCommitCounters();
+
+        void resetTrackingRuntimeDecision(const std::string &reason = "none");
+
+        void maybeResetTrackingRuntimeForReplan(bool new_task,
+                                                const std::string &context);
+
+        void clearTrackingCommitRejectInfo();
+
+        void setTrackingCommitRejectInfo(const std::string &reason,
+                                         const std::string &detail = "");
+
+        void setTrackingDiagnostic(const std::string &phase,
+                                   const std::string &reason,
+                                   std::size_t guide_path_size = 0,
+                                   std::size_t sfc_size = 0,
+                                   std::size_t target_prediction_size = 0,
+                                   double out_traj_duration = 0.0);
+
+        void setTrackingDiagnostic(const std::string &phase,
+                                   const std::string &reason,
+                                   const traj_opt::TrackingProblem &problem,
+                                   double out_traj_duration = 0.0);
 
         double trackingViewpointErrorScore(const Vec3f &tracker,
                                            const Vec3f &target) const;
@@ -576,6 +569,8 @@ namespace general_planner {
             const traj_opt::DynamicTargetStates &active_target_prediction,
             Trajectory &out_traj,
             Trajectory &out_yaw_traj,
+            traj_opt::DynamicTargetStates *accepted_target_prediction,
+            bool *accepted_reacquire_fov_relax,
             std::string *failure_reason);
 
         bool applyTrackingNarrowPassageSoftDistance(traj_opt::TrackingProblem &problem,
@@ -601,13 +596,7 @@ namespace general_planner {
 
         TakeoffFrontend::Config makeTakeoffFrontendConfig() const;
 
-        exploration::EpicExplorationManager::Config makeExplorationConfig() const;
-
-        GlobalExplorationMapConfig makeGlobalExplorationMapConfig() const;
-
-        GlobalPointCloudMapConfig makeGlobalPointCloudMapConfig() const;
-
-        GlobalRegionGridConfig makeGlobalRegionGridConfig() const;
+        ExplorationFrontend::Config makeExplorationFrontendConfig() const;
 
         RET_CODE tryCommitPerchingFromTracking(
             const traj_opt::DynamicTargetStates &target_prediction,
@@ -642,77 +631,8 @@ namespace general_planner {
             return ave_t;
         }
 
-        void updateROGMap(const rog_map::PointCloud &cloud, const super_utils::Pose &pose) {
-            updateExplorationMaps(cloud, pose, CloudFrame::WORLD);
-        }
-
-        void updateROGMapWithGlobal(const rog_map::PointCloud &cloud,
-                                    const super_utils::Pose &pose,
-                                    CloudFrame frame) {
-            updateExplorationMaps(cloud, pose, frame);
-        }
-
-        void updateExplorationMaps(const rog_map::PointCloud &cloud,
-                                   const super_utils::Pose &pose,
-                                   CloudFrame frame) {
-            const double stamp = ros_ptr_ ? ros_ptr_->getSimTime() : 0.0;
-            rog_map::RobotState robot = map_manager_->getRobotState();
-            updateExplorationMapsWithRobot(cloud, pose, frame, robot, stamp);
-        }
-
-        void updateExplorationMapsWithRobot(const rog_map::PointCloud &cloud,
-                                            const super_utils::Pose &pose,
-                                            CloudFrame frame,
-                                            rog_map::RobotState robot,
-                                            double stamp) {
-            if (stamp <= 0.0) {
-                stamp = ros_ptr_ ? ros_ptr_->getSimTime() : 0.0;
-            }
-            const bool use_epic_exploration_maps =
-                    cfg_.exploration_enable && cfg_.exploration_use_epic_frontend;
-            const bool update_rog_map =
-                    !use_epic_exploration_maps || cfg_.exploration_update_rog_map;
-            if (update_rog_map) {
-                map_manager_->updateMapWithGlobal(cloud, pose, frame, stamp, true);
-            }
-            if (exploration_manager_ != nullptr) {
-                if (!robot.rcv) {
-                    robot.rcv = true;
-                    robot.p = pose.first;
-                    robot.q = pose.second;
-                    robot.v.setZero();
-                    robot.a.setZero();
-                    robot.j.setZero();
-                    robot.yaw = std::atan2(2.0 * (pose.second.w() * pose.second.z() +
-                                                   pose.second.x() * pose.second.y()),
-                                                       1.0 - 2.0 * (pose.second.y() * pose.second.y() +
-                                                                    pose.second.z() * pose.second.z()));
-                }
-                robot.rcv_time = stamp;
-                map_manager_->updateEpicLioMap(cloud, pose, frame, robot);
-                exploration_manager_->onCloudOdom(cloud, pose, frame, robot, stamp);
-            }
-        }
-
-        void updateGlobalMapOnly(const rog_map::PointCloud &cloud,
-                                 const super_utils::Pose &pose,
-                                 CloudFrame frame) {
-            const double stamp = ros_ptr_ ? ros_ptr_->getSimTime() : 0.0;
-            map_manager_->updateGlobalMapsOnly(cloud, pose, frame, stamp);
-            if (exploration_manager_ != nullptr) {
-                auto robot = map_manager_->getRobotState();
-                if (!robot.rcv) {
-                    robot.rcv = true;
-                    robot.p = pose.first;
-                    robot.q = pose.second;
-                    robot.v.setZero();
-                    robot.a.setZero();
-                    robot.j.setZero();
-                }
-                robot.rcv_time = stamp;
-                map_manager_->updateEpicLioMap(cloud, pose, frame, robot);
-                exploration_manager_->onCloudOdom(cloud, pose, frame, robot, stamp);
-            }
+        void updateROGMap(const rog_map::PointCloud &cloud, const super_utils::Pose &pose) const {
+            map_manager_->updateMap(cloud, pose);
         }
 
         LogOneReplan getLatestReplanLog() {

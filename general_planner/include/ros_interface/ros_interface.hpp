@@ -31,7 +31,6 @@
 #include <fmt/color.h>
 #include <data_structure/base/trajectory.h>
 #include <data_structure/base/polytope.h>
-#include <exploration/exploration_types.hpp>
 #include <general_core/general_ret_code.hpp>
 
 #define TINYCOLORMAP_WITH_EIGEN
@@ -117,18 +116,6 @@ namespace ros_interface{
                                     const double &horizontal_fov_deg,
                                     const double &vertical_fov_deg,
                                     const double &range) {}
-
-        virtual void vizExplorationFrontierClusters(
-                const std::vector<general_planner::exploration::FrontierRecord> &frontiers) {}
-
-        virtual void vizExplorationTopoGraph(
-                const std::vector<general_planner::exploration::ExplorationTopoNode> &nodes,
-                const std::vector<general_planner::exploration::ExplorationTopoEdge> &edges) {}
-
-        virtual void vizExplorationViewpoints(
-                const std::vector<general_planner::exploration::ExplorationViewpoint> &viewpoints) {}
-
-        virtual void vizExplorationGlobalTour(const vec_Vec3f &tour) {}
 
         /*For Astar debug ==================================*/
         virtual void vizAstarBoundingBox(const Vec3f & bbox_min, const Vec3f & bbox_max) = 0;

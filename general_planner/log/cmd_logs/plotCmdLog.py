@@ -1,251 +1,272 @@
-#!/usr/bin/env python3
-
-import argparse
-import glob
-import os
-
+import pandas as pd
 import matplotlib.pyplot as plt
+import os
+import glob
 import numpy as np
 
+# 获取当前目录下最新的 CSV 文件
+def get_latest_csv():
+    # 匹配所有 CSV 文件
+    csv_files = glob.glob("*.csv")
+    if not csv_files:
+        raise FileNotFoundError("No CSV files found in the current directory.")
 
-VECTOR_COLUMNS = {
-    "Position": ("posi_x", "posi_y", "posi_z"),
-    "Velocity": ("vel_x", "vel_y", "vel_z"),
-    "Acceleration": ("acc_x", "acc_y", "acc_z"),
-    "Jerk": ("jerk_x", "jerk_y", "jerk_z"),
+    # 找到修改时间最新的文件
+    latest_file = max(csv_files, key=os.path.getmtime)
+    return latest_file
+
+# 移除全为 0 的前几行
+def remove_zero_rows(data):
+    # 保留非全零行
+    data = data.loc[~(data == 0).all(axis=1)]
+    return data
+
+# 计算范数并找到最大差值的位置
+def find_max_diff_index(data_x, data_y, data_z):
+    # 计算每一行的范数
+    norms = np.sqrt(data_x**2 + data_y**2 + data_z**2)
+    # 计算相邻范数的差值
+    diff = np.abs(np.diff(norms))
+    # 找到最大差值的索引
+    max_diff_index = np.argmax(diff)
+    return max_diff_index, norms
+
+# 获取最新的 CSV 文件路径
+latest_csv = get_latest_csv()
+print(f"Using latest CSV file: {latest_csv}")
+
+# 读取 CSV 文件
+data = pd.read_csv(latest_csv)
+
+# 去掉前几行全为 0 的行
+data = remove_zero_rows(data)
+
+# 提取所需数据
+time = data["time"]
+
+# 提取位置、速度、加速度、jerk 数据
+posi_x, posi_y, posi_z = data["posi_x"], data["posi_y"], data["posi_z"]
+vel_x, vel_y, vel_z = data["vel_x"], data["vel_y"], data["vel_z"]
+acc_x, acc_y, acc_z = data["acc_x"], data["acc_y"], data["acc_z"]
+jerk_x, jerk_y, jerk_z = data["jerk_x"], data["jerk_y"], data["jerk_z"]
+yaw, yaw_rate = data["yaw"], data["yaw_rate"]
+# 计算每种数据的范数并找到最大差值的位置
+posi_max_diff_idx, posi_norms = find_max_diff_index(posi_x, posi_y, posi_z)
+vel_max_diff_idx, vel_norms = find_max_diff_index(vel_x, vel_y, vel_z)
+acc_max_diff_idx, acc_norms = find_max_diff_index(acc_x, acc_y, acc_z)
+jerk_max_diff_idx, jerk_norms = find_max_diff_index(jerk_x, jerk_y, jerk_z)
+
+# 找到 'backup' 列为 2 对应的 'time' 值
+backup_times = data.loc[data['backup'] == 2, 'time']
+# compute the ration of backup
+print("Ratio of backup: ", len(backup_times) / len(data))
+
+#
+print("Average Vel. Norm: ", np.mean(vel_norms))
+
+# 定义统一的绘图风格
+plot_style = {
+    "linestyle": "--",   # 点划线
+    "linewidth": 1.5,    # 线宽
+    "marker": "o",       # 圆点标记
+    "markersize": 4      # 标记点大小
 }
 
 
-def get_latest_csv(search_dir):
-    csv_files = glob.glob(os.path.join(search_dir, "*.csv"))
+
+# 创建 3x2 多图
+fig, axs = plt.subplots(3, 2, figsize=(12, 15), sharex=True)
+
+# 绘制位置数据
+axs[0, 0].plot(time, posi_norms, label="Position Norm", color="blue", **plot_style)
+axs[0, 0].axvline(time[posi_max_diff_idx], color="red", linestyle="-", label="Max Norm Diff")
+axs[0, 0].set_title("Position Norm")
+axs[0, 0].set_ylabel("Norm")
+axs[0, 0].legend()
+axs[0, 0].grid(True)
+
+
+# 绘制速度数据
+axs[0, 1].plot(time, vel_norms, label="Velocity Norm", color="green", **plot_style)
+axs[0, 1].axvline(time[vel_max_diff_idx], color="red", linestyle="-", label="Max Norm Diff")
+axs[0, 1].set_title("Velocity Norm")
+axs[0, 1].set_ylabel("Norm")
+axs[0, 1].legend()
+axs[0, 1].grid(True)
+
+# 绘制加速度数据
+axs[1, 0].plot(time, acc_norms, label="Acceleration Norm", color="orange", **plot_style)
+axs[1, 0].axvline(time[acc_max_diff_idx], color="red", linestyle="-", label="Max Norm Diff")
+axs[1, 0].set_title("Acceleration Norm")
+axs[1, 0].set_ylabel("Norm")
+axs[1, 0].legend()
+axs[1, 0].grid(True)
+
+# 绘制 jerk 数据
+axs[1, 1].plot(time, jerk_norms, label="Jerk Norm", color="purple", **plot_style)
+axs[1, 1].axvline(time[jerk_max_diff_idx], color="red", linestyle="-", label="Max Norm Diff")
+axs[1, 1].set_title("Jerk Norm")
+axs[1, 1].set_ylabel("Norm")
+axs[1, 1].legend()
+axs[1, 1].grid(True)
+
+
+# 绘制范数差最大点的时间标记
+axs[2, 0].text(0.1, 0.5, f"Position Max Diff Time: {time[posi_max_diff_idx]:.2f}s", fontsize=10)
+axs[2, 0].text(0.1, 0.4, f"Velocity Max Diff Time: {time[vel_max_diff_idx]:.2f}s", fontsize=10)
+axs[2, 0].text(0.1, 0.3, f"Acceleration Max Diff Time: {time[acc_max_diff_idx]:.2f}s", fontsize=10)
+axs[2, 0].text(0.1, 0.2, f"Jerk Max Diff Time: {time[jerk_max_diff_idx]:.2f}s", fontsize=10)
+
+axs[2, 0].axis('off')
+axs[2, 1].axis('off')
+
+
+
+# 调整布局
+plt.tight_layout()
+
+import pandas as pd
+import matplotlib.pyplot as plt
+import os
+import glob
+import numpy as np
+
+# 获取当前目录下最新的 CSV 文件
+def get_latest_csv():
+    # 匹配所有 CSV 文件
+    csv_files = glob.glob("*.csv")
     if not csv_files:
-        raise FileNotFoundError(f"No CSV files found in {search_dir}")
-    return max(csv_files, key=os.path.getmtime)
+        raise FileNotFoundError("No CSV files found in the current directory.")
 
+    # 找到修改时间最新的文件
+    latest_file = max(csv_files, key=os.path.getmtime)
+    return latest_file
 
-def load_csv(csv_path):
-    data = np.genfromtxt(csv_path, delimiter=",", names=True, dtype=float, encoding=None)
-    data = np.atleast_1d(data)
-    columns = data.dtype.names
-    if columns is None:
-        raise ValueError(f"{csv_path} has no CSV header")
-
-    matrix = np.column_stack([data[name] for name in columns])
-    data = data[~np.all(matrix == 0.0, axis=1)]
-    if len(data) == 0:
-        raise ValueError(f"{csv_path} has no non-zero rows")
+# 移除全为 0 的前几行
+def remove_zero_rows(data):
+    # 保留非全零行
+    data = data.loc[~(data == 0).all(axis=1)]
     return data
 
+# 计算范数并找到最大差值的位置
+def find_max_diff_index(data_x, data_y, data_z):
+    # 计算每一行的范数
+    norms = np.sqrt(data_x**2 + data_y**2 + data_z**2)
+    # 计算相邻范数的差值
+    diff = np.diff(norms)
+    # 找到最大差值的索引
+    max_diff_index = np.argmax(np.abs(diff))
+    return max_diff_index, norms, diff
 
-def vec(data, columns):
-    return np.column_stack([data[name] for name in columns])
+# 获取最新的 CSV 文件路径
+latest_csv = get_latest_csv()
+print(f"Using latest CSV file: {latest_csv}")
 
+# 读取 CSV 文件
+data = pd.read_csv(latest_csv)
 
-def norm_and_diff(values):
-    norms = np.linalg.norm(values, axis=1)
-    diffs = np.diff(norms)
-    if len(diffs) == 0:
-        return norms, diffs, 0
-    return norms, diffs, int(np.argmax(np.abs(diffs)))
+# 去掉前几行全为 0 的行
+data = remove_zero_rows(data)
 
+# 提取所需数据
+time = data["time"]
+posi_x, posi_y, posi_z = data["posi_x"], data["posi_y"], data["posi_z"]
 
-def print_basic_summary(data, csv_path):
-    time = data["time"]
-    backup = data["backup"].astype(int)
-    vel_norm = np.linalg.norm(vec(data, VECTOR_COLUMNS["Velocity"]), axis=1)
+# 计算 position norm 和差分
+posi_max_diff_idx, posi_norms, posi_diffs = find_max_diff_index(posi_x, posi_y, posi_z)
 
-    print(f"Using CSV file: {os.path.basename(csv_path)}")
-    print(f"Rows: {len(data)}")
-    if len(time) > 1:
-        dt = np.diff(time)
-        print(f"Time range: {time[0]:.6f}s -> {time[-1]:.6f}s, duration {time[-1] - time[0]:.6f}s")
-        print(
-            "dt: "
-            f"mean={np.mean(dt):.6f}s, median={np.median(dt):.6f}s, "
-            f"min={np.min(dt):.6f}s, max={np.max(dt):.6f}s"
-        )
-    print(f"Ratio of backup: {np.mean(backup == 2):.6f}")
-    print(f"Average Vel. Norm: {np.mean(vel_norm):.6f}")
+# 定义统一的绘图风格
+plot_style = {
+    "linestyle": "--",   # 点划线
+    "linewidth": 1.5,    # 线宽
+    "marker": "o",       # 圆点标记
+    "markersize": 4      # 标记点大小
+}
 
+# 创建 2x1 子图布局
+fig, axs = plt.subplots(2, 1, figsize=(10, 10), sharex=True)
 
-def print_norm_summary(data):
-    time = data["time"]
-    print("\nNorm jumps:")
-    for label, columns in VECTOR_COLUMNS.items():
-        values = vec(data, columns)
-        norms, diffs, idx = norm_and_diff(values)
-        max_idx = int(np.argmax(norms))
-        print(
-            f"{label:12s} max={norms[max_idx]:.6f} at t={time[max_idx]:.6f}s; "
-            f"max_norm_diff={abs(diffs[idx]) if len(diffs) else 0.0:.6f} "
-            f"at t={time[min(idx + 1, len(time) - 1)]:.6f}s"
-        )
+# 绘制 position norm 曲线
+axs[0].plot(time, posi_norms, label="Position Norm", color="blue", **plot_style)
+axs[0].axvline(time[posi_max_diff_idx], color="red", linestyle="-", label="Max Norm Diff")
+axs[0].set_title("Position Norm")
+axs[0].set_ylabel("Norm")
+axs[0].legend()
+axs[0].grid(True)
 
+# 绘制 position norm 的差分曲线
+axs[1].plot(time[1:], posi_diffs, label="Position Norm Difference", color="green", **plot_style)
+axs[1].axvline(time[posi_max_diff_idx + 1], color="red", linestyle="-", label="Max Difference")
+axs[1].set_title("Position Norm Difference")
+axs[1].set_xlabel("Time (s)")
+axs[1].set_ylabel("Norm Difference")
+axs[1].legend()
+axs[1].grid(True)
 
-def print_consistency_summary(data):
-    time = data["time"]
-    if len(time) < 2:
-        return
+# 调整布局
+plt.tight_layout()
 
-    dt = np.diff(time)
-    pos = vec(data, VECTOR_COLUMNS["Position"])
-    vel = vec(data, VECTOR_COLUMNS["Velocity"])
-    acc = vec(data, VECTOR_COLUMNS["Acceleration"])
-    jerk = vec(data, VECTOR_COLUMNS["Jerk"])
-    yaw = data["yaw"]
-    yaw_rate = data["yaw_rate"]
+# 定义统一的绘图风格
+plot_style = {
+    "linestyle": "--",   # 点划线
+    "linewidth": 1.5,    # 线宽
+    "marker": "o",       # 圆点标记
+    "markersize": 4      # 标记点大小
+}
 
-    pos_fd = np.diff(pos, axis=0) / dt[:, None]
-    vel_mid = 0.5 * (vel[:-1] + vel[1:])
-    pos_res = np.linalg.norm(pos_fd - vel_mid, axis=1)
+# 创建 5x1 多图
+fig, axs = plt.subplots(5, 1, figsize=(12, 15), sharex=True)
 
-    vel_fd = np.diff(vel, axis=0) / dt[:, None]
-    acc_mid = 0.5 * (acc[:-1] + acc[1:])
-    vel_res = np.linalg.norm(vel_fd - acc_mid, axis=1)
+# 绘制位置数据
+axs[0].plot(time, posi_x, label="Position X", color="red", **plot_style)
+axs[0].plot(time, posi_y, label="Position Y", color="green", **plot_style)
+axs[0].plot(time, posi_z, label="Position Z", color="blue", **plot_style)
+axs[0].set_title("Position (X, Y, Z)")
+axs[0].set_ylabel("Position")
+axs[0].legend()
+axs[0].grid(True)
 
-    acc_fd = np.diff(acc, axis=0) / dt[:, None]
-    jerk_mid = 0.5 * (jerk[:-1] + jerk[1:])
-    acc_res = np.linalg.norm(acc_fd - jerk_mid, axis=1)
+# 绘制速度数据
+axs[1].plot(time, vel_x, label="Velocity X", color="red", **plot_style)
+axs[1].plot(time, vel_y, label="Velocity Y", color="green", **plot_style)
+axs[1].plot(time, vel_z, label="Velocity Z", color="blue", **plot_style)
+axs[1].set_title("Velocity (X, Y, Z)")
+axs[1].set_ylabel("Velocity")
+axs[1].legend()
+axs[1].grid(True)
 
-    yaw_fd = np.diff(yaw) / dt
-    yaw_rate_mid = 0.5 * (yaw_rate[:-1] + yaw_rate[1:])
-    yaw_res = np.abs(yaw_fd - yaw_rate_mid)
+# 绘制加速度数据
+axs[2].plot(time, acc_x, label="Acceleration X", color="red", **plot_style)
+axs[2].plot(time, acc_y, label="Acceleration Y", color="green", **plot_style)
+axs[2].plot(time, acc_z, label="Acceleration Z", color="blue", **plot_style)
+axs[2].set_title("Acceleration (X, Y, Z)")
+axs[2].set_ylabel("Acceleration")
+axs[2].legend()
+axs[2].grid(True)
 
-    print("\nFinite-difference consistency:")
-    for label, residual in (
-        ("position-vs-velocity", pos_res),
-        ("velocity-vs-acc", vel_res),
-        ("acc-vs-jerk", acc_res),
-        ("yaw-vs-yaw_rate", yaw_res),
-    ):
-        idx = int(np.argmax(residual))
-        print(
-            f"{label:20s} median={np.median(residual):.6f}, "
-            f"p95={np.percentile(residual, 95):.6f}, "
-            f"max={residual[idx]:.6f} at {time[idx]:.6f}s -> {time[idx + 1]:.6f}s"
-        )
+# 绘制 jerk 数据
+axs[3].plot(time, jerk_x, label="Jerk X", color="red", **plot_style)
+axs[3].plot(time, jerk_y, label="Jerk Y", color="green", **plot_style)
+axs[3].plot(time, jerk_z, label="Jerk Z", color="blue", **plot_style)
+axs[3].set_title("Jerk (X, Y, Z)")
+axs[3].set_ylabel("Jerk")
+axs[3].legend()
+axs[3].grid(True)
 
-    print("\nTop position command discontinuities:")
-    top_count = min(10, len(pos_res))
-    for idx in np.argsort(pos_res)[-top_count:][::-1]:
-        fd_speed = np.linalg.norm(pos_fd[idx])
-        cmd_speed = np.linalg.norm(vel_mid[idx])
-        delta = pos[idx + 1] - pos[idx]
-        print(
-            f"idx {idx:4d}->{idx + 1:<4d} "
-            f"t {time[idx]:.6f}->{time[idx + 1]:.6f}s "
-            f"pos_delta=[{delta[0]: .4f}, {delta[1]: .4f}, {delta[2]: .4f}] "
-            f"fd_speed={fd_speed:.3f}m/s cmd_speed={cmd_speed:.3f}m/s "
-            f"residual={pos_res[idx]:.3f}"
-        )
+# 绘制 yaw 和 yaw_rate 数据
+axs[4].plot(time, yaw, label="Yaw", color="purple", **plot_style)
+axs[4].plot(time, yaw_rate, label="Yaw Rate", color="brown", **plot_style)
+axs[4].set_title("Yaw and Yaw Rate")
+axs[4].set_xlabel("Time (s)")
+axs[4].set_ylabel("Angle / Rate")
+axs[4].legend()
+axs[4].grid(True)
 
+for ax in axs:
+    for t in backup_times:
+        ax.axvline(x=t, color='orange', alpha=0.3)
 
-def plot_norms(data):
-    time = data["time"]
-    plot_style = {
-        "linestyle": "-",
-        "linewidth": 1.2,
-    }
-
-    fig, axs = plt.subplots(3, 2, figsize=(12, 12), sharex=True)
-    axes = axs.ravel()
-
-    for axis, (label, columns) in zip(axes[:4], VECTOR_COLUMNS.items()):
-        values = vec(data, columns)
-        norms, diffs, idx = norm_and_diff(values)
-        axis.plot(time, norms, label=f"{label} Norm", **plot_style)
-        if len(diffs):
-            axis.axvline(time[idx + 1], color="red", linestyle="--", label="Max Norm Diff")
-        axis.set_title(f"{label} Norm")
-        axis.set_ylabel("Norm")
-        axis.grid(True)
-        axis.legend()
-
-    if len(time) > 1:
-        pos = vec(data, VECTOR_COLUMNS["Position"])
-        vel = vec(data, VECTOR_COLUMNS["Velocity"])
-        dt = np.diff(time)
-        pos_fd = np.diff(pos, axis=0) / dt[:, None]
-        vel_mid = 0.5 * (vel[:-1] + vel[1:])
-        pos_res = np.linalg.norm(pos_fd - vel_mid, axis=1)
-        max_idx = int(np.argmax(pos_res))
-        axes[4].plot(time[1:], pos_res, label="|diff(position)/dt - velocity|", **plot_style)
-        axes[4].axvline(time[max_idx + 1], color="red", linestyle="--", label="Max Position Jump")
-        axes[4].set_title("Position/Velocity Consistency")
-        axes[4].set_ylabel("m/s")
-        axes[4].grid(True)
-        axes[4].legend()
-
-    backup_times = time[data["backup"].astype(int) == 2]
-    for axis in axes[:5]:
-        for backup_time in backup_times:
-            axis.axvline(backup_time, color="orange", alpha=0.25)
-
-    axes[5].axis("off")
-    if len(time) > 1:
-        axes[5].text(0.05, 0.80, f"Rows: {len(data)}", transform=axes[5].transAxes)
-        axes[5].text(0.05, 0.68, f"Duration: {time[-1] - time[0]:.3f}s", transform=axes[5].transAxes)
-        axes[5].text(0.05, 0.56, f"Backup ratio: {np.mean(data['backup'].astype(int) == 2):.3f}", transform=axes[5].transAxes)
-
-    axes[4].set_xlabel("Time (s)")
-    plt.tight_layout()
-
-
-def plot_components(data):
-    time = data["time"]
-    plot_style = {
-        "linestyle": "-",
-        "linewidth": 1.1,
-    }
-
-    fig, axs = plt.subplots(5, 1, figsize=(12, 14), sharex=True)
-    for axis, (label, columns) in zip(axs[:4], VECTOR_COLUMNS.items()):
-        values = vec(data, columns)
-        axis.plot(time, values[:, 0], label=f"{label} X", color="red", **plot_style)
-        axis.plot(time, values[:, 1], label=f"{label} Y", color="green", **plot_style)
-        axis.plot(time, values[:, 2], label=f"{label} Z", color="blue", **plot_style)
-        axis.set_title(f"{label} Components")
-        axis.grid(True)
-        axis.legend()
-
-    axs[4].plot(time, data["yaw"], label="Yaw", color="purple", **plot_style)
-    axs[4].plot(time, data["yaw_rate"], label="Yaw Rate", color="brown", **plot_style)
-    axs[4].set_title("Yaw and Yaw Rate")
-    axs[4].set_xlabel("Time (s)")
-    axs[4].grid(True)
-    axs[4].legend()
-
-    backup_times = time[data["backup"].astype(int) == 2]
-    for axis in axs:
-        for backup_time in backup_times:
-            axis.axvline(backup_time, color="orange", alpha=0.25)
-
-    plt.tight_layout()
-
-
-def main():
-    parser = argparse.ArgumentParser(description="Plot and diagnose General-Planner command CSV logs.")
-    parser.add_argument("csv", nargs="?", help="CSV file to read. Defaults to the newest CSV beside this script.")
-    parser.add_argument("--no-plot", action="store_true", help="Only print diagnostics.")
-    args = parser.parse_args()
-
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    csv_path = args.csv
-    if csv_path is None:
-        csv_path = get_latest_csv(script_dir)
-    elif not os.path.isabs(csv_path):
-        csv_path = os.path.abspath(csv_path)
-
-    data = load_csv(csv_path)
-    print_basic_summary(data, csv_path)
-    print_norm_summary(data)
-    print_consistency_summary(data)
-
-    if not args.no_plot:
-        plot_norms(data)
-        plot_components(data)
-        plt.show()
-
-
-if __name__ == "__main__":
-    main()
+# 调整布局
+plt.tight_layout()
+# 显示图形
+plt.show()

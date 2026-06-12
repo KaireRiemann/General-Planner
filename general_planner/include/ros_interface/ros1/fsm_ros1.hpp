@@ -31,36 +31,21 @@
 
 #include "ros/ros.h"
 #include "geometry_msgs/PoseStamped.h"
-#include "message_filters/subscriber.h"
-#include "message_filters/sync_policies/approximate_time.h"
-#include "message_filters/synchronizer.h"
 #include "nav_msgs/Path.h"
 #include "nav_msgs/Odometry.h"
 #include "quadrotor_msgs/PositionCommand.h"
 #include "quadrotor_msgs/PolynomialTrajectory.h"
 #include "quadrotor_msgs/SO3Command.h"
-#include "sensor_msgs/PointCloud2.h"
-#include "std_msgs/Header.h"
 #include "std_msgs/String.h"
 #include "utils/geometry/quadrotor_flatness.hpp"
 
-#include <boost/bind/bind.hpp>
-
-#include <pcl/point_cloud.h>
-#include <pcl/point_types.h>
-#include <pcl_conversions/pcl_conversions.h>
-
 #include <algorithm>
 #include <array>
-#include <cctype>
 #include <cmath>
 #include <exception>
 #include <functional>
-#include <iomanip>
 #include <limits>
 #include <map>
-#include <memory>
-#include <mutex>
 #include <queue>
 #include <sstream>
 #include <utility>
@@ -74,20 +59,12 @@ namespace fsm {
         ros::Subscriber tracking_target_sub_;
         ros::Subscriber tracking_prediction_sub_;
         ros::Subscriber perching_surface_sub_;
-        ros::Subscriber exploration_cloud_sub_;
-        using ExplorationCloudOdomSyncPolicy =
-                message_filters::sync_policies::ApproximateTime<sensor_msgs::PointCloud2, nav_msgs::Odometry>;
-        std::unique_ptr<message_filters::Subscriber<sensor_msgs::PointCloud2>> exploration_cloud_filter_sub_;
-        std::unique_ptr<message_filters::Subscriber<nav_msgs::Odometry>> exploration_odom_filter_sub_;
-        std::unique_ptr<message_filters::Synchronizer<ExplorationCloudOdomSyncPolicy>> exploration_cloud_odom_sync_;
-        ros::Subscriber exploration_waypoints_trigger_sub_;
-        ros::Subscriber exploration_start_trigger_sub_;
-        ros::Subscriber exploration_goal_trigger_sub_;
         ros::Subscriber swarm_broadcast_traj_sub_;
         ros::Subscriber swarm_state_sub_;
         ros::Publisher cmd_pub, so3_cmd_pub_, mpc_cmd_pub_, path_pub_;
         ros::Publisher swarm_traj_pub_, swarm_state_pub_;
-        ros::Timer execution_timer_, replan_timer_, cmd_timer_, exploration_frontend_timer_;
+        ros::Publisher diagnostic_event_pub_;
+        ros::Timer execution_timer_, replan_timer_, cmd_timer_, perception_safety_timer_;
         quadrotor_msgs::PositionCommand pid_cmd_;
         rog_map::ROGMapROS::Ptr map_ptr_;
         quadrotor_msgs::PositionCommand latest_cmd;
@@ -96,27 +73,37 @@ namespace fsm {
         std::map<int, traj_opt::SwarmTrajectory> swarm_traj_buffer_;
         std::map<int, nav_msgs::Odometry> swarm_state_buffer_;
         unsigned int traj_seq_{0};
+        int last_cmd_backup_flag_{-1};
         ros::Time last_tracking_prediction_path_time_;
-        bool exploration_cloud_seen_{false};
-        double last_exploration_cloud_wait_log_{-1.0};
-        double last_exploration_frontend_wait_log_{-1.0};
-        double last_exploration_frontend_update_log_{-1.0};
-        std::mutex exploration_frontend_mutex_;
 
-        vector<quadrotor_msgs::PositionCommand> cmd_logs_;
+        struct CommandLogEntry {
+            quadrotor_msgs::PositionCommand cmd;
+            uint64_t replan_id{0};
+            unsigned int traj_seq{0};
+        };
 
-        static general_planner::CloudFrame parseExplorationCloudFrame(std::string frame) {
-            std::transform(frame.begin(), frame.end(), frame.begin(),
-                           [](unsigned char c) {
-                               return static_cast<char>(std::toupper(c));
-                           });
-            if (frame == "LIDAR" || frame == "SENSOR") {
-                return general_planner::CloudFrame::LIDAR;
+        vector<CommandLogEntry> cmd_logs_;
+        vector<CommandLogEntry> tracking_cmd_logs_;
+
+        void appendCommandLog(const quadrotor_msgs::PositionCommand &cmd) {
+            CommandLogEntry entry;
+            entry.cmd = cmd;
+            entry.replan_id = active_replan_id_;
+            entry.traj_seq = traj_seq_;
+            if (useTrackingLogStream()) {
+                tracking_cmd_logs_.push_back(entry);
+            } else {
+                cmd_logs_.push_back(entry);
             }
-            if (frame == "BODY") {
-                return general_planner::CloudFrame::BODY;
+        }
+
+        void publishDiagnosticEvent(const DiagnosticEvent &event) override {
+            if (!cfg_.diagnostic_log_en || !diagnostic_event_pub_) {
+                return;
             }
-            return general_planner::CloudFrame::WORLD;
+            std_msgs::String msg;
+            msg.data = diagnosticEventToString(event);
+            diagnostic_event_pub_.publish(msg);
         }
 
         void resetVisualizedPath() override {
@@ -147,6 +134,18 @@ namespace fsm {
             if (cfg_.swarm_enable && cfg_.swarm_broadcast_enable) {
                 swarm_traj_pub_.publish(cmd_traj);
             }
+            double duration = 0.0;
+            for (const auto &piece_duration: cmd_traj.time_pos) {
+                duration += piece_duration;
+            }
+            recordDiagnosticEvent("INFO",
+                                  "trajectory_published",
+                                  fmt::format("piece_num_pos={};duration={:.3f};debug_info={}",
+                                              cmd_traj.piece_num_pos,
+                                              duration,
+                                              cmd_traj.debug_info),
+                                  -1,
+                                  static_cast<int>(traj_seq_));
         }
 
         void getOneHeartBeatMsg(quadrotor_msgs::PolynomialTrajectory &heartbeat, bool &traj_finish) {
@@ -210,20 +209,14 @@ namespace fsm {
             const char *task_phase = "state_to_state";
             if (perchingMode()) {
                 task_phase = "perching";
-            } else if (dynamicTakeoffMode()) {
-                task_phase = "dynamic_takeoff";
+            } else if (explorationMode()) {
+                task_phase = "exploration";
+            } else if (se3AggressiveMode()) {
+                task_phase = "se3_aggressive";
             } else if (trackingPerchingMode()) {
                 task_phase = trackingPerchingPerchingActive()
                                  ? "tracking_perching_perching"
                                  : "tracking_perching_tracking";
-            } else if (fullCycleMode()) {
-                task_phase = trackingPerchingPerchingActive()
-                                 ? "full_cycle_perching"
-                                 : "full_cycle";
-            } else if (se3AggressiveMode()) {
-                task_phase = "se3_aggressive";
-            } else if (explorationMode()) {
-                task_phase = "exploration";
             } else if (trackingPerchingPerchingActive()) {
                 task_phase = "tracking_perching_perching";
             } else if (trackingMode()) {
@@ -234,6 +227,8 @@ namespace fsm {
                 << ";des_clearance=" << cfg_.swarm_des_clearance
                 << ";task_mode=" << cfg_.task_mode_str
                 << ";task_phase=" << task_phase
+                << ";replan_id=" << active_replan_id_
+                << ";traj_seq=" << traj_seq_
                 << ";ellipsoid_optimizer=" << planner_ptr_->getEllipsoidOptimizerName()
                 << ";corridor_time_ms=" << (corridor_time >= 0.0 ? corridor_time * 1000.0 : -1.0)
                 << ";mvie_lbfgs_iterations=" << planner_ptr_->getLatestMvieLbfgsIterations()
@@ -412,13 +407,19 @@ namespace fsm {
 
             const Eigen::Vector3d vel(pos_cmd.velocity.x, pos_cmd.velocity.y, pos_cmd.velocity.z);
             const Eigen::Vector3d acc(pos_cmd.acceleration.x, pos_cmd.acceleration.y, pos_cmd.acceleration.z);
-            const Eigen::Vector3d jer(pos_cmd.jerk.x, pos_cmd.jerk.y, pos_cmd.jerk.z);
+            const Eigen::Vector3d jerk(pos_cmd.jerk.x, pos_cmd.jerk.y, pos_cmd.jerk.z);
 
             double thrust = 0.0;
             Eigen::Vector4d quat_vec = Eigen::Vector4d::Zero();
             Eigen::Vector3d body_rate = Eigen::Vector3d::Zero();
-            flatmap.forward(vel, acc, jer, pos_cmd.yaw, pos_cmd.yaw_dot,
-                            thrust, quat_vec, body_rate);
+            flatmap.forward(vel,
+                            acc,
+                            jerk,
+                            pos_cmd.yaw,
+                            pos_cmd.yaw_dot,
+                            thrust,
+                            quat_vec,
+                            body_rate);
             if (!std::isfinite(thrust) || !quat_vec.allFinite()) {
                 return false;
             }
@@ -463,6 +464,7 @@ namespace fsm {
             planner_ptr_->getOneCommandFromTraj(pvaj, yaw, yaw_dot, on_backup_traj, traj_finish);
             pos_cmd.header.stamp = ros::Time::now();
             pos_cmd.header.frame_id = "world";
+            pos_cmd.trajectory_id = traj_seq_;
             pos_cmd.position.x = pvaj(0, 0);
             pos_cmd.position.y = pvaj(1, 0);
             pos_cmd.position.z = pvaj(2, 0);
@@ -477,12 +479,24 @@ namespace fsm {
             pos_cmd.jerk.z = pvaj(2, 3);
             pos_cmd.yaw = yaw;
             pos_cmd.yaw_dot = yaw_dot;
-            pos_cmd.trajectory_id = traj_seq_;
             pos_cmd.trajectory_flag = on_backup_traj ? 2 : 1;
+            pos_cmd.vel_norm = pvaj.col(1).norm();
+            pos_cmd.acc_norm = pvaj.col(2).norm();
             Vec3f rpy, omg;
             double aT;
             geometry_utils::convertFlatOutputToAttAndOmg(pvaj.col(0), pvaj.col(1), pvaj.col(2), pvaj.col(3), yaw,
                                                          yaw_dot, rpy, omg, aT);
+            if (!rpy.allFinite() || !omg.allFinite() || !std::isfinite(aT)) {
+                recordDiagnosticEvent("WARN",
+                                      "cmd_flat_output_invalid",
+                                      fmt::format("trajectory_id={}", traj_seq_),
+                                      -1,
+                                      static_cast<int>(traj_seq_),
+                                      on_backup_traj);
+                rpy.setZero();
+                omg.setZero();
+                aT = 0.0;
+            }
             pos_cmd.attitude.x = rpy(0);
             pos_cmd.attitude.y = rpy(1);
             pos_cmd.attitude.z = rpy(2);
@@ -491,71 +505,164 @@ namespace fsm {
             pos_cmd.angular_velocity.z = omg(2);
             pos_cmd.thrust.z = aT;
             latest_cmd = pos_cmd;
-            cmd_logs_.push_back(latest_cmd);
+            appendCommandLog(latest_cmd);
+            const int backup_flag = on_backup_traj ? 1 : 0;
+            if (last_cmd_backup_flag_ != backup_flag) {
+                last_cmd_backup_flag_ = backup_flag;
+                recordDiagnosticEvent(on_backup_traj ? "WARN" : "INFO",
+                                      on_backup_traj ? "cmd_enter_backup_traj" : "cmd_use_exp_traj",
+                                      fmt::format("traj_finish={};trajectory_id={}",
+                                                  static_cast<int>(traj_finish),
+                                                  pos_cmd.trajectory_id),
+                                      -1,
+                                      static_cast<int>(traj_seq_),
+                                      on_backup_traj);
+            }
         }
 
     public:
         FsmRos1() = default;
 
-        ~FsmRos1(){
-            ros::shutdown();
-            saveReplanLogToFile("general_latest_log");
-            exit(0);
+        ~FsmRos1() {
+            stop = true;
+            try {
+                execution_timer_.stop();
+                replan_timer_.stop();
+                cmd_timer_.stop();
+            } catch (const std::exception &e) {
+                fmt::print(stderr, " -- [Fsm] Failed to stop ROS timers: {}\n", e.what());
+            } catch (...) {
+                fmt::print(stderr, " -- [Fsm] Failed to stop ROS timers: unknown exception\n");
+            }
+            try {
+                saveReplanLogToFile("general_latest_log");
+            } catch (const std::exception &e) {
+                fmt::print(stderr, " -- [Fsm] Failed to save final replan log: {}\n", e.what());
+            } catch (...) {
+                fmt::print(stderr, " -- [Fsm] Failed to save final replan log: unknown exception\n");
+            }
         };
 
         typedef std::shared_ptr<FsmRos1> Ptr;
 
         void saveReplanLogToFile(const string &name = "") {
-            const auto replan_logs = snapshotReplanLogs();
-            // run statistic
-            double total_length{0.0};
-            int total_replan_num{0};
-            double average_compt_t{0.0};
-            Vec3f cur_p{0, 0, 0};
-            for (auto rp: replan_logs) {
-                if (rp.getRetCode() > 0) {
-                    if (cur_p.norm() < 1e-6) {
-                        cur_p = rp.getRobotP();
-                    } else {
-                        total_length += (rp.getRobotP() - cur_p).norm();
-                        cur_p = rp.getRobotP();
-                    }
-                    total_replan_num++;
-                    average_compt_t += rp.getTotalCompT();
+            const auto makeBaseName = [&](const bool tracking_stream) -> std::string {
+                if (name.empty()) {
+                    return BinaryFileHandler<int>::getCurrentTimeStr();
                 }
-            }
+                if (!tracking_stream) {
+                    return name;
+                }
+                if (name == "general_latest_log") {
+                    return "tracking_latest_log";
+                }
+                return "tracking_" + name;
+            };
 
+            const auto saveCommandCsv =
+                    [&](const std::string &csv_path,
+                        const vector<CommandLogEntry> &cmd_logs) {
+                if (cmd_logs.empty()) {
+                    return;
+                }
+                if (!ensureLogParentDirectory(csv_path)) {
+                    fmt::print(stderr, " -- [Fsm] Failed to create cmd log directory for {}\n", csv_path);
+                    return;
+                }
+                std::ofstream csv_writer(csv_path, std::ios::out | std::ios::trunc);
+                if (!csv_writer.is_open()) {
+                    fmt::print(stderr, " -- [Fsm] Failed to open cmd log file {}\n", csv_path);
+                    return;
+                }
+                csv_writer
+                        << "time,replan_id,traj_seq,posi_x,posi_y,posi_z,vel_x,vel_y,vel_z,acc_x,acc_y,acc_z,jerk_x,jerk_y,jerk_z,yaw,yaw_rate,backup"
+                        << std::endl;
+                csv_writer << std::fixed << std::setprecision(15);
+                for (const auto &entry: cmd_logs) {
+                    const auto &cmd = entry.cmd;
+                    csv_writer << cmd.header.stamp.toSec() - system_start_time_ << ","
+                               << entry.replan_id << "," << entry.traj_seq << ","
+                               << cmd.position.x << "," << cmd.position.y << ","
+                               << cmd.position.z << ","
+                               << cmd.velocity.x << "," << cmd.velocity.y << "," << cmd.velocity.z << ","
+                               << cmd.acceleration.x << "," << cmd.acceleration.y << "," << cmd.acceleration.z << ","
+                               << cmd.jerk.x << "," << cmd.jerk.y << "," << cmd.jerk.z << ","
+                               << cmd.yaw << "," << cmd.yaw_dot << "," << static_cast<int>(cmd.trajectory_flag)
+                               << std::endl;
+                }
+            };
 
-            fmt::print("Total replan num: {}, total length: {}, average computation time: {} ms\n",
-                       total_replan_num, total_length, average_compt_t / (total_replan_num==0?1:total_replan_num) * 1000);
+            const auto saveStream =
+                    [&](const std::string &stream_name,
+                        const bool tracking_stream,
+                        const vector<LogOneReplan> &replan_logs,
+                        const vector<CommandLogEntry> &cmd_logs,
+                        const bool has_diagnostic_events) {
+                if (replan_logs.empty() && cmd_logs.empty() && !has_diagnostic_events) {
+                    return;
+                }
 
+                double total_length{0.0};
+                int total_replan_num{0};
+                double average_compt_t{0.0};
+                Vec3f cur_p{0, 0, 0};
+                for (auto rp: replan_logs) {
+                    if (rp.getRetCode() > 0) {
+                        if (cur_p.norm() < 1e-6) {
+                            cur_p = rp.getRobotP();
+                        } else {
+                            total_length += (rp.getRobotP() - cur_p).norm();
+                            cur_p = rp.getRobotP();
+                        }
+                        total_replan_num++;
+                        average_compt_t += rp.getTotalCompT();
+                    }
+                }
+                fmt::print("[{}] Total replan num: {}, total length: {}, average computation time: {} ms\n",
+                           stream_name,
+                           total_replan_num,
+                           total_length,
+                           average_compt_t / (total_replan_num == 0 ? 1 : total_replan_num) * 1000);
 
-            const std::string save_path = name.empty()
-                                          ? LOG_FILE_DIR(
-                                                  "replan_logs/" + BinaryFileHandler<int>::getCurrentTimeStr() + ".bin")
-                                          : LOG_FILE_DIR("replan_logs/" + name + ".bin");
-            const std::string csv_path = name.empty()
-                                         ? LOG_FILE_DIR(
-                                                 "cmd_logs/" + BinaryFileHandler<int>::getCurrentTimeStr() + ".csv")
-                                         : LOG_FILE_DIR("cmd_logs/" + name + ".csv");
-            BinaryFileHandler<vector<LogOneReplan>>::save(save_path, replan_logs);
+                const std::string base_name = makeBaseName(tracking_stream);
+                const std::string replan_dir =
+                        tracking_stream ? "tracking_replan_logs/" : "replan_logs/";
+                const std::string cmd_dir =
+                        tracking_stream ? "tracking_cmd_logs/" : "cmd_logs/";
+                const std::string save_path = LOG_FILE_DIR(replan_dir + base_name + ".bin");
+                const std::string csv_path = LOG_FILE_DIR(cmd_dir + base_name + ".csv");
 
-            std::ofstream csv_writer;
-            csv_writer.open(csv_path, std::ios::out | std::ios::trunc);
-            csv_writer
-                    << "time,posi_x,posi_y,posi_z,vel_x,vel_y,vel_z,acc_x,acc_y,acc_z,jerk_x,jerk_y,jerk_z,yaw,yaw_rate,backup"
-                    << std::endl;
-            csv_writer<<std::fixed<<std::setprecision(15);
-            for (const auto &cmd: cmd_logs_) {
-                csv_writer << cmd.header.stamp.toSec() - system_start_time_ << "," << cmd.position.x << "," << cmd.position.y << ","
-                           << cmd.position.z << ","
-                           << cmd.velocity.x << "," << cmd.velocity.y << "," << cmd.velocity.z << ","
-                           << cmd.acceleration.x << "," << cmd.acceleration.y << "," << cmd.acceleration.z << ","
-                           << cmd.jerk.x << "," << cmd.jerk.y << "," << cmd.jerk.z << ","
-                           << cmd.yaw << "," << cmd.yaw_dot << "," << static_cast<int>(cmd.trajectory_flag)
-                           << std::endl;
-            }
-            csv_writer.close();
+                if (!replan_logs.empty()) {
+                    if (ensureLogParentDirectory(save_path)) {
+                        BinaryFileHandler<vector<LogOneReplan>>::save(save_path, replan_logs);
+                    } else {
+                        fmt::print(stderr, " -- [Fsm] Failed to create replan log directory for {}\n", save_path);
+                    }
+                }
+
+                if (tracking_stream) {
+                    saveTrackingDiagnosticLogToFile(name.empty() ? "" : base_name + "_events");
+                } else {
+                    saveDiagnosticLogToFile(name.empty() ? "" : base_name + "_events");
+                }
+                saveCommandCsv(csv_path, cmd_logs);
+            };
+
+            const auto general_replan_logs = snapshotReplanLogs();
+            const auto tracking_replan_logs = snapshotTrackingReplanLogs();
+            const bool has_general_diagnostics = !snapshotDiagnosticEvents().empty();
+            const bool has_tracking_diagnostics = !snapshotTrackingDiagnosticEvents().empty();
+
+            saveStream("general",
+                       false,
+                       general_replan_logs,
+                       cmd_logs_,
+                       has_general_diagnostics);
+            saveStream("tracking",
+                       true,
+                       tracking_replan_logs,
+                       tracking_cmd_logs_,
+                       has_tracking_diagnostics);
         }
 
         bool getPoseFromTraj(super_utils::Pose &pose) {
@@ -565,9 +672,7 @@ namespace fsm {
             }
             getOnePositionCommand(pid_cmd_, traj_finish_);
             if (traj_finish_) {
-                if (!explorationMode()) {
-                    cout << GREEN << " -- [Fsm] Traj finish." << RESET << endl;
-                }
+                cout << GREEN << " -- [Fsm] Traj finish." << RESET << endl;
                 const bool tracking_perching_contact = trackingPerchingPerchingActive();
                 if (perchingMode() || tracking_perching_contact) {
                     {
@@ -581,11 +686,6 @@ namespace fsm {
                         planner_ptr_->markTrackingPerchingContact();
                     }
                     cout << GREEN << " -- [Perching] PERCHING_CONTACT" << RESET << endl;
-                }
-                if (explorationMode()) {
-                    pose.first = Vec3f{pid_cmd_.position.x, pid_cmd_.position.y, pid_cmd_.position.z};
-                    pose.second = eulerToQuaternion(pid_cmd_.attitude.x, pid_cmd_.attitude.y, pid_cmd_.attitude.z);
-                    return true;
                 }
                 if (shouldGenerateAfterTrajFinish()) {
                     ChangeState("getPoseFromTraj", GENERATE_TRAJ);
@@ -607,7 +707,6 @@ namespace fsm {
             }
             fmt::print(" -- [Fsm] Cur vel: {}, delta_v: {}, max_delta_v: {}\n", pid_cmd_.vel_norm, delta_v,
                        max_delta_v);
-            cmd_logs_.push_back(latest_cmd);
             return true;
         }
 
@@ -797,11 +896,25 @@ namespace fsm {
             const double pose_yaw = yawFromMsgQuat(msg->pose.pose.orientation);
 
             traj_opt::DynamicTargetStates prediction;
+            bool used_kinodynamic_prediction = false;
             if (!cfg_.tracking_prediction_use_kinodynamic ||
-                !buildKinodynamicTrackingPrediction(p, v, pose_yaw, prediction)) {
+                !(used_kinodynamic_prediction =
+                          buildKinodynamicTrackingPrediction(p, v, pose_yaw, prediction))) {
                 buildConstantVelocityTrackingPrediction(p, v, pose_yaw, prediction);
             }
             setTrackingTargetPrediction(prediction);
+            traj_opt::DynamicTargetStates accepted_prediction;
+            if (getTrackingTargetPrediction(accepted_prediction)) {
+                const double source_stamp = msg->header.stamp.isZero()
+                                            ? -1.0
+                                            : msg->header.stamp.toSec();
+                recordTrackingTargetInput(used_kinodynamic_prediction
+                                              ? "target_odom_kinodynamic"
+                                              : "target_odom_constant_velocity",
+                                          accepted_prediction,
+                                          source_stamp,
+                                          prediction.size());
+            }
         }
 
         static Vec3f poseMsgPosition(const geometry_msgs::PoseStamped &pose) {
@@ -812,6 +925,15 @@ namespace fsm {
 
         void trackingPredictionPathCallback(const nav_msgs::PathConstPtr &msg) {
             if (!cfg_.tracking_use_target_prediction_path || msg->poses.size() < 2) {
+                if (useTrackingLogStream()) {
+                    recordDiagnosticEvent("WARN",
+                                          "tracking_target_input_rejected",
+                                          fmt::format("source=target_prediction_path;reason={};raw_samples={}",
+                                                      cfg_.tracking_use_target_prediction_path
+                                                          ? "insufficient_path_samples"
+                                                          : "prediction_path_disabled",
+                                                      msg->poses.size()));
+                }
                 return;
             }
 
@@ -857,6 +979,19 @@ namespace fsm {
 
             last_tracking_prediction_path_time_ = ros::Time::now();
             setTrackingTargetPrediction(prediction);
+            traj_opt::DynamicTargetStates accepted_prediction;
+            if (getTrackingTargetPrediction(accepted_prediction)) {
+                double source_stamp = msg->header.stamp.isZero()
+                                      ? -1.0
+                                      : msg->header.stamp.toSec();
+                if (source_stamp < 0.0 && !msg->poses.front().header.stamp.isZero()) {
+                    source_stamp = msg->poses.front().header.stamp.toSec();
+                }
+                recordTrackingTargetInput("target_prediction_path",
+                                          accepted_prediction,
+                                          source_stamp,
+                                          msg->poses.size());
+            }
         }
 
         void perchingSurfaceCallback(const nav_msgs::OdometryConstPtr &msg) {
@@ -892,202 +1027,6 @@ namespace fsm {
             setTaskModeFromString(msg->data);
         }
 
-        void explorationWaypointsTriggerCallback(const nav_msgs::PathConstPtr &msg) {
-            if (!msg || msg->poses.empty()) {
-                return;
-            }
-            if (msg->poses.front().pose.position.z < -0.1) {
-                return;
-            }
-            std::lock_guard<std::mutex> lock(exploration_frontend_mutex_);
-            if (triggerExploration(cfg_.exploration_waypoints_topic)) {
-                exploration_frontend_timer_.stop();
-            }
-        }
-
-        void explorationPoseTriggerCallback(const geometry_msgs::PoseStampedConstPtr &msg,
-                                            const std::string &source) {
-            if (!msg) {
-                return;
-            }
-            if (msg->pose.position.z < -0.1) {
-                return;
-            }
-            std::lock_guard<std::mutex> lock(exploration_frontend_mutex_);
-            if (triggerExploration(source)) {
-                exploration_frontend_timer_.stop();
-            }
-        }
-
-        void explorationFrontendTimerCallback(const ros::TimerEvent &event) {
-            (void)event;
-            if (!explorationMode() || !cfg_.exploration_enable || !planner_ptr_) {
-                return;
-            }
-            if (started_ && !finish_plan) {
-                return;
-            }
-            std::unique_lock<std::mutex> lock(exploration_frontend_mutex_, std::try_to_lock);
-            if (!lock.owns_lock()) {
-                return;
-            }
-            const double now = ros_ptr_ ? ros_ptr_->getSimTime() : ros::Time::now().toSec();
-            rog_map::RobotState robot;
-            planner_ptr_->getRobotState(robot);
-            if (!robot.rcv || now - robot.rcv_time > 0.2) {
-                return;
-            }
-            if (!planner_ptr_->explorationObservationReady()) {
-                if (last_exploration_frontend_wait_log_ < 0.0 ||
-                    now - last_exploration_frontend_wait_log_ > 1.0) {
-                    cout << YELLOW << " -- [Fsm] Exploration frontend warmup waits for first cloud."
-                         << RESET << endl;
-                    last_exploration_frontend_wait_log_ = now;
-                }
-                return;
-            }
-
-            const auto update = planner_ptr_->refreshExplorationGlobalPlan();
-            if (!update.ready) {
-                if (last_exploration_frontend_wait_log_ < 0.0 ||
-                    now - last_exploration_frontend_wait_log_ > 1.0) {
-                    cout << YELLOW << " -- [Fsm] Exploration frontend warmup waits: "
-                         << update.reason << RESET << endl;
-                    last_exploration_frontend_wait_log_ = now;
-                }
-                return;
-            }
-            if (update.updated &&
-                (last_exploration_frontend_update_log_ < 0.0 ||
-                 now - last_exploration_frontend_update_log_ > 1.0)) {
-                cout << GREEN << " -- [Fsm] Exploration frontend warmup updated global tour."
-                     << RESET << endl;
-                last_exploration_frontend_update_log_ = now;
-            }
-        }
-
-        static bool pointCloudHasField(const sensor_msgs::PointCloud2 &msg,
-                                       const std::string &field_name) {
-            return std::any_of(msg.fields.begin(), msg.fields.end(),
-                               [&](const sensor_msgs::PointField &field) {
-                                   return field.name == field_name;
-                               });
-        }
-
-        static void convertExplorationCloud(const sensor_msgs::PointCloud2 &msg,
-                                            rog_map::PointCloud &cloud) {
-            if (pointCloudHasField(msg, "intensity")) {
-                pcl::fromROSMsg(msg, cloud);
-                return;
-            }
-
-            pcl::PointCloud<pcl::PointXYZ> xyz_cloud;
-            pcl::fromROSMsg(msg, xyz_cloud);
-            cloud.clear();
-            cloud.header = xyz_cloud.header;
-            cloud.width = xyz_cloud.width;
-            cloud.height = xyz_cloud.height;
-            cloud.is_dense = xyz_cloud.is_dense;
-            cloud.points.reserve(xyz_cloud.points.size());
-            for (const auto &xyz : xyz_cloud.points) {
-                rog_map::PclPoint point;
-                point.x = xyz.x;
-                point.y = xyz.y;
-                point.z = xyz.z;
-                point.intensity = 0.0F;
-                cloud.points.push_back(point);
-            }
-        }
-
-        static double messageStampOrFallback(const std_msgs::Header &header,
-                                             const double fallback) {
-            const double stamp = header.stamp.toSec();
-            return stamp > 0.0 ? stamp : fallback;
-        }
-
-        static rog_map::RobotState robotStateFromOdom(const nav_msgs::Odometry &odom,
-                                                      const double stamp) {
-            rog_map::RobotState robot;
-            robot.rcv = true;
-            robot.rcv_time = messageStampOrFallback(odom.header, stamp);
-            robot.p = super_utils::Vec3f(odom.pose.pose.position.x,
-                                         odom.pose.pose.position.y,
-                                         odom.pose.pose.position.z);
-            robot.v = super_utils::Vec3f(odom.twist.twist.linear.x,
-                                         odom.twist.twist.linear.y,
-                                         odom.twist.twist.linear.z);
-            robot.a.setZero();
-            robot.j.setZero();
-            robot.q = super_utils::Quatf(odom.pose.pose.orientation.w,
-                                         odom.pose.pose.orientation.x,
-                                         odom.pose.pose.orientation.y,
-                                         odom.pose.pose.orientation.z);
-            robot.q.normalize();
-            robot.yaw = std::atan2(2.0 * (robot.q.w() * robot.q.z() +
-                                          robot.q.x() * robot.q.y()),
-                                   1.0 - 2.0 * (robot.q.y() * robot.q.y() +
-                                                robot.q.z() * robot.q.z()));
-            return robot;
-        }
-
-        void feedExplorationCloud(const sensor_msgs::PointCloud2ConstPtr &msg,
-                                  rog_map::RobotState robot,
-                                  const char *source) {
-            if (!planner_ptr_) {
-                return;
-            }
-            if (!robot.rcv) {
-                const double now = ros_ptr_ ? ros_ptr_->getSimTime() : msg->header.stamp.toSec();
-                if (last_exploration_cloud_wait_log_ < 0.0 ||
-                    now - last_exploration_cloud_wait_log_ > 1.0) {
-                    cout << YELLOW << " -- [Fsm] Drop exploration cloud before odom is ready: topic_stamp="
-                         << std::fixed << std::setprecision(3) << msg->header.stamp.toSec()
-                         << RESET << endl;
-                    last_exploration_cloud_wait_log_ = now;
-                }
-                return;
-            }
-            const double stamp = messageStampOrFallback(msg->header, robot.rcv_time);
-            robot.rcv_time = stamp;
-            rog_map::PointCloud cloud;
-            convertExplorationCloud(*msg, cloud);
-            if (!exploration_cloud_seen_) {
-                cout << GREEN << " -- [Fsm] First exploration cloud received: msg_points="
-                     << static_cast<std::size_t>(msg->width) * static_cast<std::size_t>(msg->height)
-                     << ", converted_points=" << cloud.size()
-                     << ", stamp=" << std::fixed << std::setprecision(3) << msg->header.stamp.toSec()
-                     << ", source=" << source
-                     << RESET << endl;
-                exploration_cloud_seen_ = true;
-            }
-            if (cloud.empty()) {
-                const double now = ros_ptr_ ? ros_ptr_->getSimTime() : msg->header.stamp.toSec();
-                if (last_exploration_cloud_wait_log_ < 0.0 ||
-                    now - last_exploration_cloud_wait_log_ > 1.0) {
-                    cout << YELLOW << " -- [Fsm] Drop empty exploration cloud after conversion." << RESET << endl;
-                    last_exploration_cloud_wait_log_ = now;
-                }
-                return;
-            }
-            const super_utils::Pose pose = std::make_pair(robot.p, robot.q);
-            planner_ptr_->updateExplorationMapsWithRobot(
-                    cloud, pose, parseExplorationCloudFrame(cfg_.exploration_cloud_frame), robot, stamp);
-        }
-
-        void explorationCloudCallback(const sensor_msgs::PointCloud2ConstPtr &msg) {
-            rog_map::RobotState robot;
-            if (planner_ptr_) {
-                planner_ptr_->getRobotState(robot);
-            }
-            feedExplorationCloud(msg, robot, "latest_odom");
-        }
-
-        void explorationCloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr &msg,
-                                          const nav_msgs::OdometryConstPtr &odom) {
-            const double stamp = messageStampOrFallback(msg->header, odom->header.stamp.toSec());
-            feedExplorationCloud(msg, robotStateFromOdom(*odom, stamp), "synced_cloud_odom");
-        }
-
         void init(const ros::NodeHandle &nh, const std::string &cfg_path) {
             // 初始化参数读取
             nh_ = nh;
@@ -1096,42 +1035,14 @@ namespace fsm {
             // 初始化Planner
             ros_ptr_ = std::make_shared<ros_interface::Ros1Interface>(nh_);
             planner_ptr_ = std::make_shared<GeneralPlanner>(cfg_path, ros_ptr_, map_ptr_);
-            resetActiveTask();
             cmd_pub = nh_.advertise<quadrotor_msgs::PositionCommand>(cfg_.cmd_topic, 10);
             if (cfg_.publish_so3_cmd) {
                 so3_cmd_pub_ = nh_.advertise<quadrotor_msgs::SO3Command>(cfg_.so3_cmd_topic, 10);
             }
             mpc_cmd_pub_ = nh_.advertise<quadrotor_msgs::PolynomialTrajectory>(cfg_.mpc_cmd_topic, 10);
             path_pub_ = nh_.advertise<nav_msgs::Path>("fsm/path", 100);
-
-            if (cfg_.exploration_enable) {
-                const auto map_cfg = map_ptr_->getMapConfig();
-                if (!map_cfg.odom_topic.empty()) {
-                    exploration_cloud_filter_sub_ =
-                            std::make_unique<message_filters::Subscriber<sensor_msgs::PointCloud2>>(
-                                    nh_, map_cfg.cloud_topic, 1);
-                    exploration_odom_filter_sub_ =
-                            std::make_unique<message_filters::Subscriber<nav_msgs::Odometry>>(
-                                    nh_, map_cfg.odom_topic, 5);
-                    exploration_cloud_odom_sync_ =
-                            std::make_unique<message_filters::Synchronizer<ExplorationCloudOdomSyncPolicy>>(
-                                    ExplorationCloudOdomSyncPolicy(10),
-                                    *exploration_cloud_filter_sub_,
-                                    *exploration_odom_filter_sub_);
-                    exploration_cloud_odom_sync_->registerCallback(
-                            boost::bind(&FsmRos1::explorationCloudOdomCallback,
-                                        this,
-                                        boost::placeholders::_1,
-                                        boost::placeholders::_2));
-                } else {
-                    exploration_cloud_sub_ = nh_.subscribe(map_cfg.cloud_topic, 1,
-                                                           &FsmRos1::explorationCloudCallback, this);
-                }
-                cout << YELLOW << " -- [Fsm] EXPLORATION MAP FEED: cloud "
-                     << map_cfg.cloud_topic << ", odom "
-                     << (map_cfg.odom_topic.empty() ? std::string("<latest-state fallback>") : map_cfg.odom_topic)
-                     << ", frame "
-                     << cfg_.exploration_cloud_frame << RESET << endl;
+            if (cfg_.diagnostic_log_en) {
+                diagnostic_event_pub_ = nh_.advertise<std_msgs::String>(cfg_.diagnostic_event_topic, 100);
             }
 
             int cmd_cnt = 0;
@@ -1201,12 +1112,7 @@ namespace fsm {
                 goal_sub_ = nh_.subscribe(cfg_.click_goal_topic, 1, &FsmRos1::goalCallback, this);
                 cout << YELLOW << " -- [Fsm] CLICKGOAL ENABLE." << RESET << endl;
                 cmd_cnt++;
-            } else if (explorationMode()) {
-                task_mode_sub_ = nh_.subscribe(cfg_.task_mode_topic, 10,
-                                               &FsmRos1::taskModeCallback, this);
-                cout << YELLOW << " -- [Fsm] EXPLORATION TASK ENABLE." << RESET << endl;
-                cmd_cnt++;
-            } else if (trackingMode()) {
+            } else if (trackingMode() || trackingPerchingMode()) {
                 tracking_target_sub_ = nh_.subscribe(cfg_.tracking_target_odom_topic, 10,
                                                      &FsmRos1::trackingTargetCallback, this);
                 if (cfg_.tracking_use_target_prediction_path && !cfg_.tracking_target_prediction_topic.empty()) {
@@ -1216,7 +1122,7 @@ namespace fsm {
                 }
                 cout << YELLOW << " -- [Fsm] TRACKING TASK ENABLE, target odom: "
                      << cfg_.tracking_target_odom_topic << RESET << endl;
-                if (cfg_.tracking_perching_enable) {
+                if (cfg_.tracking_perching_enable || trackingPerchingMode()) {
                     task_mode_sub_ = nh_.subscribe(cfg_.task_mode_topic, 10,
                                                    &FsmRos1::taskModeCallback, this);
                     perching_surface_sub_ = nh_.subscribe(cfg_.perching_surface_odom_topic, 10,
@@ -1229,38 +1135,6 @@ namespace fsm {
                     cout << YELLOW << " -- [Fsm] TRACKING PREDICTION PATH: "
                          << cfg_.tracking_target_prediction_topic << RESET << endl;
                 }
-                cmd_cnt++;
-            } else if (trackingPerchingMode()) {
-                task_mode_sub_ = nh_.subscribe(cfg_.task_mode_topic, 10,
-                                               &FsmRos1::taskModeCallback, this);
-                tracking_target_sub_ = nh_.subscribe(cfg_.tracking_target_odom_topic, 10,
-                                                     &FsmRos1::trackingTargetCallback, this);
-                if (cfg_.tracking_use_target_prediction_path && !cfg_.tracking_target_prediction_topic.empty()) {
-                    tracking_prediction_sub_ =
-                        nh_.subscribe(cfg_.tracking_target_prediction_topic, 10,
-                                      &FsmRos1::trackingPredictionPathCallback, this);
-                }
-                perching_surface_sub_ = nh_.subscribe(cfg_.perching_surface_odom_topic, 10,
-                                                      &FsmRos1::perchingSurfaceCallback, this);
-                cout << YELLOW << " -- [Fsm] TRACKING_PERCHING TASK ENABLE, target odom: "
-                     << cfg_.tracking_target_odom_topic << ", surface odom: "
-                     << cfg_.perching_surface_odom_topic << RESET << endl;
-                cmd_cnt++;
-            } else if (fullCycleMode()) {
-                task_mode_sub_ = nh_.subscribe(cfg_.task_mode_topic, 10,
-                                               &FsmRos1::taskModeCallback, this);
-                tracking_target_sub_ = nh_.subscribe(cfg_.tracking_target_odom_topic, 10,
-                                                     &FsmRos1::trackingTargetCallback, this);
-                if (cfg_.tracking_use_target_prediction_path && !cfg_.tracking_target_prediction_topic.empty()) {
-                    tracking_prediction_sub_ =
-                        nh_.subscribe(cfg_.tracking_target_prediction_topic, 10,
-                                      &FsmRos1::trackingPredictionPathCallback, this);
-                }
-                perching_surface_sub_ = nh_.subscribe(cfg_.perching_surface_odom_topic, 10,
-                                                      &FsmRos1::perchingSurfaceCallback, this);
-                cout << YELLOW << " -- [Fsm] FULL_CYCLE TASK ENABLE, target odom: "
-                     << cfg_.tracking_target_odom_topic << ", surface odom: "
-                     << cfg_.perching_surface_odom_topic << RESET << endl;
                 cmd_cnt++;
             } else if (perchingMode()) {
                 task_mode_sub_ = nh_.subscribe(cfg_.task_mode_topic, 10,
@@ -1280,6 +1154,9 @@ namespace fsm {
                      << cfg_.perching_surface_odom_topic
                      << ", mode switch topic: " << cfg_.task_mode_topic << RESET << endl;
                 cmd_cnt++;
+            } else if (explorationMode()) {
+                cout << YELLOW << " -- [Fsm] EXPLORATION TASK ENABLE." << RESET << endl;
+                cmd_cnt++;
             }
 
             if (cmd_cnt != 1) {
@@ -1287,73 +1164,22 @@ namespace fsm {
                 exit(0);
             }
 
-            if (explorationMode()) {
-                if (cfg_.click_goal_en &&
-                    !cfg_.click_goal_topic.empty() &&
-                    cfg_.click_goal_topic != cfg_.exploration_start_trigger_topic &&
-                    cfg_.click_goal_topic != cfg_.exploration_goal_trigger_topic) {
-                    goal_sub_ =
-                            nh_.subscribe<geometry_msgs::PoseStamped>(
-                                    cfg_.click_goal_topic, 1,
-                                    [this](const geometry_msgs::PoseStampedConstPtr &msg) {
-                                        this->explorationPoseTriggerCallback(
-                                                msg, this->cfg_.click_goal_topic);
-                                    });
-                    cout << YELLOW << " -- [Fsm] EXPLORATION CLICK GOAL TRIGGER: "
-                         << cfg_.click_goal_topic << RESET << endl;
-                }
-                if (!cfg_.exploration_waypoints_topic.empty()) {
-                    exploration_waypoints_trigger_sub_ =
-                            nh_.subscribe(cfg_.exploration_waypoints_topic, 1,
-                                          &FsmRos1::explorationWaypointsTriggerCallback, this);
-                    cout << YELLOW << " -- [Fsm] EXPLORATION WAYPOINT TRIGGER: "
-                         << cfg_.exploration_waypoints_topic << RESET << endl;
-                }
-                if (!cfg_.exploration_start_trigger_topic.empty()) {
-                    exploration_start_trigger_sub_ =
-                            nh_.subscribe<geometry_msgs::PoseStamped>(
-                                    cfg_.exploration_start_trigger_topic, 1,
-                                    [this](const geometry_msgs::PoseStampedConstPtr &msg) {
-                                        this->explorationPoseTriggerCallback(
-                                                msg, this->cfg_.exploration_start_trigger_topic);
-                                    });
-                    cout << YELLOW << " -- [Fsm] EXPLORATION START TRIGGER: "
-                         << cfg_.exploration_start_trigger_topic << RESET << endl;
-                }
-                if (!cfg_.exploration_goal_trigger_topic.empty()) {
-                    exploration_goal_trigger_sub_ =
-                            nh_.subscribe<geometry_msgs::PoseStamped>(
-                                    cfg_.exploration_goal_trigger_topic, 1,
-                                    [this](const geometry_msgs::PoseStampedConstPtr &msg) {
-                                        this->explorationPoseTriggerCallback(
-                                                msg, this->cfg_.exploration_goal_trigger_topic);
-                                    });
-                    cout << YELLOW << " -- [Fsm] EXPLORATION GOAL TRIGGER: "
-                         << cfg_.exploration_goal_trigger_topic << RESET << endl;
-                }
-            }
-
             if (cfg_.timer_en) {
                 execution_timer_ = nh_.createTimer(ros::Duration(0.01), &FsmRos1::mainFsmTimerCallback, this); // 100Hz
                 cmd_timer_ = nh_.createTimer(ros::Duration(0.01), &FsmRos1::pubCmdTimerCallback, this); // 100Hz
                 replan_timer_ = nh_.createTimer(ros::Duration(1.0 / cfg_.replan_rate), &FsmRos1::replanTimerCallback,
                                                 this); // 10Hz
-                if (explorationMode() && cfg_.exploration_enable && planner_ptr_) {
-                    const auto policy = planner_ptr_->getExplorationRuntimePolicy();
-                    const double warmup_dt = policy.global_update_dt > 1.0e-3
-                                             ? policy.global_update_dt
-                                             : 0.2;
-                    exploration_frontend_timer_ =
-                            nh_.createTimer(ros::Duration(std::max(0.05, warmup_dt)),
-                                            &FsmRos1::explorationFrontendTimerCallback,
-                                            this);
-                    cout << YELLOW << " -- [Fsm] EXPLORATION FRONTEND WARMUP TIMER: "
-                         << std::fixed << std::setprecision(2)
-                         << std::max(0.05, warmup_dt) << " s" << RESET << endl;
+                if (cfg_.perception_replan_check_en && cfg_.perception_replan_check_rate > 1.0e-3) {
+                    perception_safety_timer_ = nh_.createTimer(
+                            ros::Duration(1.0 / cfg_.perception_replan_check_rate),
+                            &FsmRos1::perceptionSafetyTimerCallback,
+                            this);
                 }
             }
 
-            write_time_.open(DEBUG_FILE_DIR("time_consuming.csv"), std::ios::out | std::ios::trunc);
+            const std::string time_log_file =
+                    useTrackingLogStream() ? "tracking_time_consuming.csv" : "time_consuming.csv";
+            write_time_.open(DEBUG_FILE_DIR(time_log_file), std::ios::out | std::ios::trunc);
             log_module_time.resize(9);
             for (int i = 0; i < 9; i++) {
                 write_time_ << log_time_str[i];
@@ -1364,8 +1190,50 @@ namespace fsm {
             write_time_ << endl;
             machine_state_ = INIT;
             system_start_time_ = ros_ptr_->getSimTime();
+            openDiagnosticLogFile(LOG_FILE_DIR("diagnostic_events/general_runtime.csv"));
+            openTrackingDiagnosticLogFile(LOG_FILE_DIR("tracking_diagnostic_events/tracking_runtime.csv"));
+            recordDiagnosticEvent("INFO",
+                                  "fsm_initialized",
+                                  fmt::format("task_mode={};replan_rate={:.3f};perception_replan_check_en={};perception_replan_check_rate={:.3f};cmd_topic={};mpc_cmd_topic={}",
+                                              cfg_.task_mode_str,
+                                              cfg_.replan_rate,
+                                              static_cast<int>(cfg_.perception_replan_check_en),
+                                              cfg_.perception_replan_check_rate,
+                                              cfg_.cmd_topic,
+                                              cfg_.mpc_cmd_topic),
+                                  -1,
+                                  -1,
+                                  false,
+                                  -1,
+                                  0);
+            if (useTrackingLogStream()) {
+                recordDiagnosticEvent("INFO",
+                                      "tracking_config_snapshot",
+                                      fmt::format("target_odom_topic={};target_prediction_topic={};use_prediction_path={};"
+                                                  "prediction_horizon={:.3f};prediction_dt={:.3f};prediction_kinodynamic={};"
+                                                  "task_timeout={:.3f};cmd_topic={};mpc_cmd_topic={};planner_config={}",
+                                                  cfg_.tracking_target_odom_topic,
+                                                  cfg_.tracking_target_prediction_topic,
+                                                  static_cast<int>(cfg_.tracking_use_target_prediction_path),
+                                                  cfg_.tracking_prediction_horizon,
+                                                  cfg_.tracking_prediction_dt,
+                                                  static_cast<int>(cfg_.tracking_prediction_use_kinodynamic),
+                                                  cfg_.task_timeout,
+                                                  cfg_.cmd_topic,
+                                                  cfg_.mpc_cmd_topic,
+                                                  planner_ptr_ ? planner_ptr_->getTrackingConfigSummary()
+                                                               : "planner_missing"),
+                                      -1,
+                                      -1,
+                                      false,
+                                      -1,
+                                      0);
+            }
             if (cfg_.auto_start) {
                 started_ = true;
+                if (explorationMode()) {
+                    task_new_ = true;
+                }
                 cout << YELLOW << " -- [Fsm] AUTO START ENABLE." << RESET << endl;
             }
 
@@ -1386,7 +1254,6 @@ namespace fsm {
                 return;
             }
 
-
             quadrotor_msgs::PolynomialTrajectory heartbeat;
             getOneHeartBeatMsg(heartbeat, traj_finish_);
             getOnePositionCommand(pid_cmd_, traj_finish_);
@@ -1400,9 +1267,15 @@ namespace fsm {
                 }
             }
             if (traj_finish_) {
-                if (!explorationMode()) {
-                    cout << GREEN << " -- [Fsm] Traj finish." << RESET << endl;
-                }
+                cout << GREEN << " -- [Fsm] Traj finish." << RESET << endl;
+                recordDiagnosticEvent("INFO",
+                                      "trajectory_finished",
+                                      fmt::format("trajectory_id={};close_to_goal={}",
+                                                  pid_cmd_.trajectory_id,
+                                                  static_cast<int>(closeToGoal(0.1))),
+                                      -1,
+                                      static_cast<int>(traj_seq_),
+                                      pid_cmd_.trajectory_flag == 2);
                 const bool tracking_perching_contact = trackingPerchingPerchingActive();
                 if (perchingMode() || tracking_perching_contact) {
                     {
@@ -1417,9 +1290,7 @@ namespace fsm {
                     }
                     cout << GREEN << " -- [Perching] PERCHING_CONTACT" << RESET << endl;
                 }
-                if (explorationMode()) {
-                    return;
-                }
+                markTrackingFinishedIfStaticTarget();
                 if (shouldGenerateAfterTrajFinish()) {
                     ChangeState("PubCmdCallback", GENERATE_TRAJ);
                 } else {
@@ -1430,6 +1301,10 @@ namespace fsm {
 
         void replanTimerCallback(const ros::TimerEvent &event) {
             callReplanOnce();
+        }
+
+        void perceptionSafetyTimerCallback(const ros::TimerEvent &event) {
+            callPerceptionSafetyCheckOnce();
         }
 
         void mainFsmTimerCallback(const ros::TimerEvent &event) {

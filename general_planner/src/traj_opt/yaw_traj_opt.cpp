@@ -139,7 +139,7 @@ namespace traj_opt {
         if (free_start) {
             Vec3f pt_i = pos_traj.getPos(0);
 
-            double t_g = std::min(0.5, pos_traj_dur);
+            double t_g = pos_traj_dur > 0.5 > 0 ? 0.5 : pos_traj_dur;
             Vec3f pt_g = pos_traj.getPos(t_g);
             Vec3f dir = pt_g - pt_i;
             while (dir.norm() < 0.5 && t_g < pos_traj_dur) {

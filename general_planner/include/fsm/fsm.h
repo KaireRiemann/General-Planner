@@ -28,13 +28,12 @@
 #include <memory>
 #include <fstream>
 #include <mutex>
+#include <cstdint>
+#include <limits>
 #include <fmt/color.h>
 #include <cereal/archives/binary_file_handler.hpp>
 #include <fsm/config.hpp>
 #include <general_core/general_planner.h>
-#include <general_core/task/task_context.hpp>
-#include <general_core/task/task_factory.hpp>
-#include <general_core/task/task_primitive.hpp>
 
 
 #ifndef LOG_FILE_DIR
@@ -57,7 +56,6 @@ namespace fsm {
         // map, checker, planner
         general_planner::GeneralPlanner::Ptr planner_ptr_;
         ros_interface::RosInterface::Ptr ros_ptr_;
-        std::unique_ptr<general_planner::TaskPrimitive> active_task_;
 
         std::ofstream write_time_;
         vector<double> log_module_time;
@@ -68,6 +66,29 @@ namespace fsm {
         // params
         bool started_{false}, plan_from_rest_{false};
 
+    public:
+        struct DiagnosticEvent {
+            double stamp{0.0};
+            uint64_t replan_id{0};
+            int replan_log_id{-1};
+            std::string level;
+            std::string event;
+            std::string task_mode;
+            std::string machine_state;
+            std::string detail;
+            Vec3f goal_p{Vec3f::Zero()};
+            double goal_yaw{std::numeric_limits<double>::quiet_NaN()};
+            Vec3f robot_p{Vec3f::Zero()};
+            Vec3f robot_v{Vec3f::Zero()};
+            bool robot_state_received{false};
+            int traj_seq{-1};
+            int ret_code{-1};
+            double total_replan_time_ms{0.0};
+            double remaining_traj_s{0.0};
+            bool on_backup{false};
+        };
+
+    protected:
         struct GoalInfo {
             bool new_goal{false};
             Vec3f goal_p{Vec3f::Zero()};
@@ -120,7 +141,7 @@ namespace fsm {
         ~Fsm();
 
         void updateROGMap(const rog_map::PointCloud &cloud, const super_utils::Pose &pose) {
-            planner_ptr_->updateROGMapWithGlobal(cloud, pose, general_planner::CloudFrame::WORLD);
+            planner_ptr_->updateROGMap(cloud, pose);
         }
 
         void callPlanOnce(const Vec3f &goal) {
@@ -166,11 +187,35 @@ namespace fsm {
 
     protected:
         vector<LogOneReplan> replan_logs_;
+        vector<LogOneReplan> tracking_replan_logs_;
+        vector<DiagnosticEvent> diagnostic_events_;
+        vector<DiagnosticEvent> tracking_diagnostic_events_;
         mutable std::mutex fsm_tick_mutex_;
         mutable std::mutex replan_logs_mutex_;
+        mutable std::mutex diagnostic_events_mutex_;
+        std::ofstream diagnostic_event_log_;
+        std::ofstream tracking_diagnostic_event_log_;
+        uint64_t next_replan_id_{1};
+        uint64_t active_replan_id_{0};
+        int state2state_plan_from_rest_fail_count_{0};
+        int tracking_plan_from_rest_fail_count_{0};
+        double tracking_plan_from_rest_backoff_until_{-1.0};
+        double last_tracking_plan_from_rest_backoff_log_time_{-1.0};
+        bool perception_replan_requested_{false};
+        bool perception_replan_emergency_{false};
+        double last_perception_replan_request_time_{-1.0};
+        double last_perception_replan_log_time_{-1.0};
+        general_planner::GeneralPlanner::CommittedTrajectorySafetyReport perception_replan_report_;
+        uint64_t tracking_target_input_seq_{0};
+        double last_tracking_target_log_time_{-1.0};
+        std::string last_tracking_target_log_source_;
+        std::size_t last_tracking_target_log_size_{0};
+        Vec3f last_tracking_target_log_front_{Vec3f::Zero()};
+        Vec3f last_tracking_target_log_back_{Vec3f::Zero()};
+        bool last_tracking_target_log_static_{false};
         /* Callback functions */
         bool finish_plan = false;
-        double system_start_time_;
+        double system_start_time_{0.0};
 
         bool traj_finish_{false};
 
@@ -180,7 +225,51 @@ namespace fsm {
 
         vector<LogOneReplan> snapshotReplanLogs() const;
 
+        vector<LogOneReplan> snapshotTrackingReplanLogs() const;
+
+        void recordDiagnosticEvent(const std::string &level,
+                                   const std::string &event,
+                                   const std::string &detail = "",
+                                   int ret_code = -1,
+                                   int traj_seq = -1,
+                                   bool on_backup = false,
+                                   int replan_log_id = -1,
+                                   uint64_t replan_id_override = std::numeric_limits<uint64_t>::max());
+
+        void recordTrackingReplanContext(const std::string &event,
+                                         int ret_code,
+                                         bool prediction_static,
+                                         std::size_t input_prediction_size,
+                                         int replan_log_id = -1);
+
+        void recordTrackingTargetInput(const std::string &source,
+                                       const traj_opt::DynamicTargetStates &prediction,
+                                       double source_stamp = -1.0,
+                                       std::size_t raw_sample_count = 0);
+
+        vector<DiagnosticEvent> snapshotDiagnosticEvents() const;
+
+        vector<DiagnosticEvent> snapshotTrackingDiagnosticEvents() const;
+
+        void openDiagnosticLogFile(const std::string &path);
+
+        void openTrackingDiagnosticLogFile(const std::string &path);
+
+        void saveDiagnosticLogToFile(const std::string &name = "");
+
+        void saveTrackingDiagnosticLogToFile(const std::string &name = "");
+
+        std::string diagnosticEventToString(const DiagnosticEvent &event) const;
+
+        bool ensureLogParentDirectory(const std::string &path) const;
+
+        bool useTrackingLogStream() const;
+
+        virtual void publishDiagnosticEvent(const DiagnosticEvent &event) {}
+
         void callReplanOnce();
+
+        void callPerceptionSafetyCheckOnce();
 
         void callMainFsmOnce();
 
@@ -192,30 +281,17 @@ namespace fsm {
 
         bool trackingMode() const;
 
+        bool trackingPerchingMode() const;
+
         bool perchingMode() const;
 
         bool dynamicTakeoffMode() const;
 
-        bool se3AggressiveMode() const;
-
-        bool trackingPerchingMode() const;
-
-        bool fullCycleMode() const;
-
         bool explorationMode() const;
 
-        bool tickExplorationTask(const std::string &call_func);
-
-        void handleExplorationTaskResult(const general_planner::TaskTickResult &result,
-                                         const std::string &call_func);
+        bool se3AggressiveMode() const;
 
         void setTaskModeFromString(const std::string &mode);
-
-        void resetActiveTask();
-
-        general_planner::TaskContext buildTaskContext();
-
-        void logTaskTickResult(const general_planner::TaskTickResult &result) const;
 
         bool trackingTaskReady();
 
@@ -225,13 +301,21 @@ namespace fsm {
 
         bool activeTaskReady();
 
-        bool triggerExploration(const std::string &source);
-
         bool shouldGenerateAfterTrajFinish();
+
+        void resetTrackingPlanFromRestFailureState();
+
+        bool trackingPlanFromRestBackoffActive();
+
+        void handleTrackingPlanFromRestFailure(int retcode,
+                                               bool prediction_static,
+                                               std::size_t input_prediction_size);
 
         bool trackingExecutionState() const;
 
         bool trackingPerchingPerchingActive() const;
+
+        bool markTrackingFinishedIfStaticTarget();
 
         void logStaticTrackingReplanDecision(const std::string &reason);
 

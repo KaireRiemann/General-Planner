@@ -1,6 +1,6 @@
 #pragma once
 
-#include "map_manager/map_manager.hpp"
+#include "general_core/map_manager.hpp"
 #include "traj_opt/costfunctional/spatialcosts/acceleration_bound_penalty.hpp"
 #include "traj_opt/costfunctional/spatialcosts/angular_rate_bound_penalty.hpp"
 #include "traj_opt/costfunctional/spatialcosts/esdf_distance_penalty.hpp"

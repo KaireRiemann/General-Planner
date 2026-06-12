@@ -1,0 +1,177 @@
+<launch>
+    <arg name="sim_config" default="random_map_dynamic.yaml"/>
+    <arg name="planner_config" default="click_smooth_dynamic_ros1.yaml"/>
+    <arg name="planner_config_path" default=""/>
+    <arg name="manual_goal_topic" default="/goal"/>
+    <arg name="rviz" default="true"/>
+    <arg name="fpv_rviz" default="false"/>
+    <arg name="top_down_rviz_config" default="$(find perfect_drone_sim)/rviz/benchmark.rviz"/>
+    <arg name="fpv_rviz_config" default="$(find perfect_drone_sim)/rviz/fpv.rviz"/>
+
+    <arg name="dynamic_marker_topic" default="/perfect_drone/dynamic_obstacle_markers"/>
+    <arg name="dynamic_cloud_topic" default="/perfect_drone/dynamic_obstacle_cloud"/>
+    <arg name="dynamic_cloud_en" default="true"/>
+    <arg name="dynamic_cloud_resolution" default="0.20"/>
+    <arg name="dynamic_rate" default="15.0"/>
+    <arg name="dynamic_start_after" default="0.0"/>
+
+    <node pkg="perfect_drone_sim" type="perfect_drone"
+          name="perfect_drone" output="log" clear_params="true">
+        <param name="config_name" value="$(arg sim_config)" type="string"/>
+        <param name="dynamic_cloud_en" value="$(arg dynamic_cloud_en)" type="bool"/>
+        <param name="dynamic_cloud_topic" value="$(arg dynamic_cloud_topic)" type="string"/>
+    </node>
+
+    <node pkg="perfect_drone_sim" type="moving_obstacle_markers.py"
+          name="moving_obstacle_markers" output="screen" clear_params="true">
+        <param name="marker_topic" value="$(arg dynamic_marker_topic)" type="string"/>
+        <param name="publish_cloud" value="$(arg dynamic_cloud_en)" type="bool"/>
+        <param name="cloud_topic" value="$(arg dynamic_cloud_topic)" type="string"/>
+        <param name="cloud_resolution" value="$(arg dynamic_cloud_resolution)" type="double"/>
+        <param name="rate" value="$(arg dynamic_rate)" type="double"/>
+        <param name="start_after" value="$(arg dynamic_start_after)" type="double"/>
+        <rosparam param="boxes">
+            - name: crossing_near
+              center: [0.0, -42.0, 1.6]
+              size: [1.0, 1.0, 1.5]
+              amplitude: [2.0, 0.0, 0.0]
+              period: 12.0
+              phase: 0.0
+              color: [1.0, 0.18, 0.08, 0.68]
+            - name: crossing_mid
+              center: [2.0, -32.0, 1.7]
+              size: [1.2, 0.8, 1.6]
+              amplitude: [-2.2, 0.0, 0.0]
+              period: 15.0
+              phase: 1.57
+              color: [0.05, 0.55, 1.0, 0.68]
+            - name: drifting_far
+              center: [-1.0, -22.0, 1.8]
+              size: [0.9, 1.3, 1.7]
+              amplitude: [1.4, 1.0, 0.0]
+              period: 18.0
+              phase: 3.14
+              color: [0.1, 0.85, 0.25, 0.68]
+            - name: gate_low
+              center: [-2.5, -46.0, 1.4]
+              size: [0.8, 0.8, 1.2]
+              amplitude: [0.0, 1.8, 0.0]
+              period: 16.0
+              phase: 0.6
+              color: [1.0, 0.72, 0.05, 0.68]
+            - name: gate_high
+              center: [2.8, -38.0, 2.0]
+              size: [0.9, 0.9, 1.3]
+              amplitude: [-1.6, 0.8, 0.0]
+              period: 19.0
+              phase: 2.1
+              color: [0.75, 0.2, 1.0, 0.68]
+            - name: side_sweeper_left
+              center: [-3.0, -28.0, 1.6]
+              size: [1.1, 0.7, 1.4]
+              amplitude: [1.2, 0.0, 0.25]
+              period: 14.0
+              phase: 1.2
+              color: [0.0, 0.85, 0.85, 0.68]
+            - name: side_sweeper_right
+              center: [3.0, -18.0, 1.7]
+              size: [1.1, 0.7, 1.4]
+              amplitude: [-1.2, 0.5, 0.0]
+              period: 17.0
+              phase: 2.8
+              color: [0.95, 0.35, 0.55, 0.68]
+            - name: slow_crossing
+              center: [0.0, -12.0, 1.6]
+              size: [1.3, 0.9, 1.5]
+              amplitude: [2.5, 0.0, 0.0]
+              period: 24.0
+              phase: 0.4
+              color: [0.45, 0.9, 0.15, 0.68]
+            - name: diagonal_mid
+              center: [-1.5, -36.0, 2.1]
+              size: [0.8, 1.2, 1.0]
+              amplitude: [1.0, 1.2, 0.0]
+              period: 21.0
+              phase: 1.9
+              color: [0.2, 0.35, 1.0, 0.68]
+            - name: hover_pulse
+              center: [1.5, -25.0, 1.3]
+              size: [0.9, 0.9, 1.1]
+              amplitude: [0.8, -0.8, 0.2]
+              period: 13.0
+              phase: 2.5
+              color: [1.0, 0.45, 0.0, 0.68]
+            - name: rear_crossing_early
+              center: [-0.8, 4.0, 1.6]
+              size: [1.1, 0.9, 1.5]
+              amplitude: [2.0, 0.0, 0.0]
+              period: 20.0
+              phase: 0.9
+              color: [0.1, 0.65, 1.0, 0.68]
+            - name: rear_gate_low
+              center: [2.4, 10.0, 1.4]
+              size: [0.9, 0.8, 1.2]
+              amplitude: [0.0, 1.6, 0.0]
+              period: 18.0
+              phase: 1.4
+              color: [1.0, 0.6, 0.1, 0.68]
+            - name: rear_diagonal_sweeper
+              center: [-2.2, 16.0, 1.9]
+              size: [0.9, 1.2, 1.4]
+              amplitude: [1.6, -1.0, 0.0]
+              period: 24.0
+              phase: 2.4
+              color: [0.55, 0.25, 1.0, 0.68]
+            - name: rear_side_sweeper_left
+              center: [-3.0, 23.0, 1.6]
+              size: [1.0, 0.7, 1.4]
+              amplitude: [1.4, 0.0, 0.2]
+              period: 17.0
+              phase: 0.3
+              color: [0.0, 0.9, 0.7, 0.68]
+            - name: rear_side_sweeper_right
+              center: [3.0, 29.0, 1.7]
+              size: [1.0, 0.8, 1.4]
+              amplitude: [-1.5, 0.6, 0.0]
+              period: 21.0
+              phase: 2.0
+              color: [0.95, 0.3, 0.55, 0.68]
+            - name: rear_slow_crossing
+              center: [0.4, 35.0, 1.6]
+              size: [1.3, 0.9, 1.5]
+              amplitude: [2.4, 0.0, 0.0]
+              period: 28.0
+              phase: 1.1
+              color: [0.45, 0.9, 0.15, 0.68]
+            - name: rear_gate_high
+              center: [-2.6, 41.0, 2.0]
+              size: [0.9, 0.9, 1.3]
+              amplitude: [1.5, -0.8, 0.0]
+              period: 23.0
+              phase: 2.7
+              color: [0.75, 0.2, 1.0, 0.68]
+            - name: rear_final_crossing
+              center: [1.2, 46.0, 1.5]
+              size: [1.0, 1.0, 1.3]
+              amplitude: [-1.8, 0.0, 0.15]
+              period: 26.0
+              phase: 0.5
+              color: [1.0, 0.2, 0.15, 0.68]
+        </rosparam>
+    </node>
+
+    <node pkg="general_planner" name="fsm_node" type="fsm_node" output="screen" clear_params="true">
+        <param if="$(eval arg('planner_config_path') != '')" name="config_path" value="$(arg planner_config_path)" type="string"/>
+        <param unless="$(eval arg('planner_config_path') != '')" name="config_name" value="$(arg planner_config)" type="string"/>
+    </node>
+
+    <node if="$(arg rviz)" pkg="rviz" type="rviz" name="top_down"
+          args="-d $(arg top_down_rviz_config)" output="log">
+        <remap from="goal" to="$(arg manual_goal_topic)"/>
+    </node>
+
+    <node if="$(arg fpv_rviz)" pkg="rviz" type="rviz" name="fpv"
+          args="-d $(arg fpv_rviz_config)" output="log">
+        <remap from="goal" to="$(arg manual_goal_topic)"/>
+    </node>
+</launch>

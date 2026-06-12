@@ -1,0 +1,319 @@
+fsm:
+  task_mode: "tracking"
+  click_goal_en: false
+  click_goal_topic: "/drone_1/goal"
+  click_height: 1.5
+  click_yaw_en: true
+  tracking_target_odom_topic: "/tracking/target_odom"
+  tracking_target_prediction_topic: "/tracking/target_prediction"
+  tracking_use_target_prediction_path: true
+  tracking_prediction_horizon: 4.0
+  tracking_prediction_dt: 0.25
+  tracking_prediction_use_kinodynamic: true
+  tracking_prediction_accel: 3.0
+  tracking_prediction_vmax: 4.0
+  tracking_prediction_rho_accel: 1.0
+  tracking_prediction_max_time: 0.03
+  tracking_static_position_epsilon: 0.05
+  tracking_static_velocity_epsilon: 0.05
+  tracking_static_yaw_epsilon: 0.05
+  tracking_static_replan_remaining_time: 0.8
+  tracking_static_task_position_epsilon: 0.12
+  tracking_static_task_velocity_epsilon: 0.10
+  tracking_static_prediction_filter_velocity_epsilon: 0.08
+  tracking_static_safety_check_horizon: 1.5
+  tracking_static_safety_check_dt: 0.12
+  tracking_static_replan_log_period: 1.0
+  tracking_plan_from_rest_max_failures: 4
+  tracking_plan_from_rest_failure_backoff: 0.5
+  tracking_plan_from_rest_limited_backoff: 2.0
+  tracking_static_finish_on_plan_failure: false
+  task_timeout: 1.0
+  replan_rate: 15.0
+  cmd_topic: "/drone_1/planning/pos_cmd"
+  mpc_cmd_topic: "/drone_1/planning_cmd/poly_traj"
+  timer_en: true
+
+general_planner:
+  backup_traj_en: false
+  esdf_traj_en: true
+  esdf_safe_distance: 0.65
+  detailed_log_en: false
+  visualization_en: true
+  use_fov_cut: false
+  print_log: false
+  visual_process: false
+  frontend_in_known_free: false
+  goal_yaw_en: true
+  goal_vel_en: false
+  corridor_bound_dis: 1.0
+  corridor_line_max_length: 1.2
+  safe_corridor_line_max_length: 5.0
+  iris_iter_num: 2
+  ellipsoid_optimizer: classic
+  ellipsoid_optimizer_fallback: false
+  obs_skip_num: 2
+  replan_forward_dt: 0.1
+  planning_horizon: 9.0
+  sensing_horizon: -1
+  receding_dis: 4.0
+  robot_r: 0.2
+  yaw_dot_max: 3.0
+  yaw_mode: 1
+  mpc_horizon: 15
+  tracking:
+    distance: 2.2
+    distance_tolerance: 0.8
+    height_offset: 0.7
+    height_tolerance: 0.6
+    safe_distance: 0.35
+    hard_safe_distance: 0.22
+    narrow_passage_enable: true
+    narrow_passage_clearance_threshold: 0.38
+    narrow_passage_soft_safe_distance_scale: 0.65
+    visibility_safe_distance: 0.25
+    visibility_cone_ratio: 0.12
+    visibility_angle_clearance: 0.0872664626
+    adaptive_occlusion_enable: true
+    adaptive_occlusion_activation_distance: 0.25
+    adaptive_occlusion_max_weight_scale: 12.0
+    adaptive_occlusion_recovery_oe_scale: 8.0
+    adaptive_occlusion_od_far_weight_scale: 4.0
+    adaptive_occlusion_distance_upper_scale: 0.65
+    adaptive_occlusion_min_horizontal_upper: 0.85
+    adaptive_occlusion_postcheck_enable: true
+    reacquire_distance: 6.0
+    min_commit_duration: 0.8
+    low_speed_velocity_threshold: 0.25
+    angular_hysteresis: 0.35
+    anti_rollback_enable: true
+    anti_rollback_horizon: 1.0
+    anti_rollback_dt: 0.25
+    anti_rollback_margin: 0.35
+    keep_old_horizon: 1.0
+    keep_old_safety_dt: 0.05
+    keep_old_short_safety_grace_enable: true
+    keep_old_short_safety_grace_horizon: 0.25
+    keep_old_min_remaining: 0.45
+    keep_old_min_speed: 0.15
+    keep_old_min_displacement: 0.04
+    keep_old_min_progress_ratio: 0.10
+    keep_old_min_progress_3d_ratio: 0.08
+    keep_old_max_tracking_error_scale: 1.25
+    max_consecutive_keep_old: 2
+    no_motion_guard_enable: true
+    no_motion_check_horizon: 0.35
+    no_motion_min_displacement: 0.04
+    no_motion_min_displacement_z: 0.04
+    no_motion_target_speed_threshold: 0.25
+    motion_3d_enable: true
+    vertical_motion_threshold: 0.12
+    detour_grace_enable: true
+    detour_grace_horizon: 1.2
+    detour_max_tracking_error_scale: 2.5
+    anti_rollback_eval_after_prefix: true
+    recovery_enable: true
+    recovery_horizon: 1.5
+    recovery_distance_tolerance_scale: 1.8
+    recovery_height_tolerance_scale: 1.8
+    recovery_time_scale: 1.4
+    recovery_reduce_visible_region_weight: 0.3
+    recovery_reduce_target_forward_weight: 0.5
+    reacquire_recovery_enable: true
+    reacquire_recovery_horizon: 0.8
+    reacquire_transit_enable: true
+    reacquire_transit_horizon_scale: 0.6
+    reacquire_transit_max_horizon: 2.5
+    reacquire_visible_region_weight_scale: 0.0
+    reacquire_fov_relax_enable: true
+    reacquire_fov_deferred_strict_enable: true
+    reacquire_fov_entry_distance: 6.0
+    reacquire_min_progress_distance: 0.5
+    reacquire_min_progress_ratio: 0.10
+    reacquire_fov_range_grace: 8.0
+    reacquire_fov_angular_grace_deg: 8.0
+    optimizer_commit_safety_precheck_enable: true
+    retry_without_corridor_enable: true
+    candidate_angle_step: 0.3926990817
+    candidate_radius_num: 3
+    visibility_samples: 5
+    fallback_relax_enable: true
+    fallback_distance_tolerance_scale: 1.6
+    fallback_height_tolerance_scale: 1.5
+    fallback_candidate_radius_extra: 2
+    fallback_candidate_angle_step_scale: 0.5
+    fallback_search_horizon_scale: 1.3
+    weight_od_near: 35.0
+    weight_od_far: 5.0
+    weight_od_vertical: 8.0
+    weight_oa: 5.0
+    weight_oe: 1.0
+    weight_relative_velocity: 1.0
+    weight_tangent_velocity: 5.0
+    weight_viewpoint_attractor: 25.0
+    weight_visible_region: 3.0
+    weight_fov: 80.0
+    weight_target_forward: 60.0
+    static_distance_tolerance_scale: 0.35
+    static_height_tolerance_scale: 0.5
+    static_tangent_weight_scale: 3.0
+    static_tail_speed_epsilon: 0.08
+    fov_horizontal_deg: 90.0
+    fov_vertical_deg: 60.0
+    fov_range: 4.0
+    target_front_margin: 0.05
+    fov_commit_check_enable: true
+    fov_check_strict: true
+    fov_check_dt: 0.03
+    fov_range_grace_enable: true
+    fov_range_grace: 0.9
+    fov_keep_old_angular_grace_deg: 5.0
+    fov_keep_old_violation_ratio_grace: 0.25
+    fov_range_margin: 0.05
+    fov_front_margin: 0.05
+    fov_check_first_commit: true
+    keep_old_requires_fov: true
+    frontend_fov_feasibility_enable: true
+    frontend_yaw_rate_feasibility_enable: true
+    frontend_fov_range_margin: 0.05
+    frontend_yaw_rate_margin: 0.10
+    frontend_obstacle_recovery_enable: true
+    frontend_grid_neighbor_mode: 26
+    frontend_over_wall_enable: true
+    frontend_over_wall_max_climb: 2.0
+    frontend_side_pass_enable: true
+    frontend_side_pass_width: 1.5
+    frontend_reacquire_relax_yaw_rate: true
+    joint_sample_dt: 0.05
+    dense_joint_sample_enable: true
+    unknown_as_occupied: false
+    use_visible_region: true
+    frontend_astar: true
+    use_snap: false
+
+traj_opt:
+  switch:
+    save_log_en: true
+    print_optimizer_log: false
+
+  boundary:
+    max_vel: 7.0
+    max_acc: 8.0
+    max_jerk: 120.0
+    max_omg: 2.5
+    max_acc_thr: 20.0
+    min_acc_thr: 6.0
+    penna_margin: 0.05
+
+  exp_traj:
+    pos_constraint_type: 1
+    energy_cost_type: 4
+    block_energy_cost: false
+    opt_accuracy: 5.0e-6
+    scale_factor: 1.0
+    integral_reso: 15
+    smooth_eps: 0.01
+    penna_t: 12000.0
+    penna_pos: 5.0e+6
+    penna_vel: 5.0e+5
+    penna_acc: 5.0e+5
+    penna_jerk: -5.0e+5
+    penna_attract: 1.0e+3
+    penna_omg: 5.0e+5
+    penna_thr: 1.0e+5
+
+  backup_traj:
+    uniform_time_en: true
+    pos_constraint_type: 1
+    piece_num: 2
+    energy_cost_type: 4
+    block_energy_cost: true
+    opt_accuracy: 1.0e-6
+    scale_factor: 1.0
+    integral_reso: 12
+    smooth_eps: 0.01
+    penna_t: 1200.0
+    penna_ts: 1.0e+5
+    penna_pos: 1.0e+6
+    penna_vel: 1.0e+5
+    penna_acc: 1.0e+5
+    penna_jerk: -1.0e+5
+    penna_omg: 1.0e+5
+    penna_thr: 1.0e+5
+
+  esdf_traj:
+    block_energy_cost: false
+    opt_accuracy: 5.0e-6
+    integral_reso: 16
+    smooth_eps: 0.01
+    penna_t: 12.0
+    penna_pos: 500.0
+    penna_vel: 500.0
+    penna_acc: 500.0
+    penna_jerk: 500.0
+    penna_attract: 100.0
+    penna_omg: 0.0
+    penna_thr: 0.0
+
+  flatness:
+    mass: 1.64
+    dh: 0.35
+    dv: 0.35
+    cp: 0.001
+    v_eps: 0.0001
+    grav: 9.81
+
+astar:
+  map_voxel_num: [500, 500, 100]
+  visual_process: false
+  allow_diag: true
+  heu_type: 2
+  debug_visualization_en: false
+
+rog_map:
+  resolution: 0.1
+  inflation_resolution: 0.2
+  inflation_step: 2
+  unk_inflation_en: false
+  unk_inflation_step: 1
+  map_size: [50, 50, 6]
+  fix_map_origin: [0, 0, 1.5]
+  frontier_extraction_en: false
+  virtual_ceil_height: 5.5
+  virtual_ground_height: -0.1
+  load_pcd_en: true
+  pcd_name: "${CMAKE_ROOT_DIR}/../mars_uav_sim/perfect_drone_sim/pcd/big_field.pcd"
+  map_sliding:
+    enable: true
+    threshold: 0.3
+  esdf:
+    enable: true
+    resolution: 0.2
+    local_update_box: [16, 16, 4]
+  ros_callback:
+    enable: true
+    cloud_topic: "/drone_1/cloud_registered"
+    odom_topic: "/drone_1/lidar_slam/odom"
+    odom_timeout: 2.0
+  visualization:
+    enable: true
+    use_dynamic_reconfigure: false
+    time_rate: 2
+    frame_rate: 0
+    range: [15, 15, 4]
+    frame_id: "world"
+    pub_unknown_map_en: false
+  intensity_thresh: -10
+  point_filt_num: 1
+  raycasting:
+    enable: false
+    batch_update_size: 1
+    local_update_box: [16, 16, 5]
+    ray_range: [0.5, 100]
+    p_min: 0.12
+    p_miss: 0.49
+    p_free: 0.499
+    p_occ: 0.85
+    p_hit: 0.9
+    p_max: 0.98
+    unk_thresh: 1.0

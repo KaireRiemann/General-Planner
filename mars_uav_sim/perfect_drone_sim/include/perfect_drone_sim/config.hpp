@@ -25,13 +25,14 @@ namespace perfect_drone {
         std::string pose_topic{"/lidar_slam/pose"};
         std::string local_pc_topic{"/cloud_registered"};
         std::string global_pc_topic{"/global_pc"};
+        std::string dynamic_cloud_topic{"/perfect_drone/dynamic_obstacle_cloud"};
         std::string robot_frame_id{"perfect_drone"};
         Eigen::Vector3d init_pos;
         double init_roll{0.0};
         double init_pitch{0.0};
         double init_yaw{0.0};
-        double lidar_pitch{0.0};
         double sensing_rate;
+        bool dynamic_cloud_en{false};
 
         Config() = default;
 
@@ -44,6 +45,8 @@ namespace perfect_drone {
             loader.LoadParam("pose_topic", pose_topic, std::string("/lidar_slam/pose"));
             loader.LoadParam("local_pc_topic", local_pc_topic, std::string("/cloud_registered"));
             loader.LoadParam("global_pc_topic", global_pc_topic, std::string("/global_pc"));
+            loader.LoadParam("dynamic_cloud_topic", dynamic_cloud_topic,
+                             std::string("/perfect_drone/dynamic_obstacle_cloud"));
             loader.LoadParam("robot_frame_id", robot_frame_id, std::string("perfect_drone"));
             loader.LoadParam("init_position/x", init_pos.x(), 0.0);
             loader.LoadParam("init_position/y", init_pos.y(), 0.0);
@@ -51,8 +54,8 @@ namespace perfect_drone {
             loader.LoadParam("init_roll", init_roll, 0.0);
             loader.LoadParam("init_pitch", init_pitch, 0.0);
             loader.LoadParam("init_yaw", init_yaw, 0.0);
-            loader.LoadParam("lidar_pitch", lidar_pitch, 0.0);
             loader.LoadParam("sensing_rate", sensing_rate, 10.0);
+            loader.LoadParam("dynamic_cloud_en", dynamic_cloud_en, false);
         }
     };
 }

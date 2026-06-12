@@ -1380,9 +1380,8 @@ void YawTrajOpt::getYawWaypointAllocation(const Vec4f &init_state,
       t1 = std::min(pos_traj_duration, t0 + 0.2);
     }
 
-    Vec3f pt_i = pos_traj.getPos(t0);
+    const Vec3f pt_i = pos_traj.getPos(t0);
     const Vec3f pt_g = pos_traj.getPos(t1);
-
     const Vec3f dir = pt_g - pt_i;
     if (std::hypot(dir.x(), dir.y()) > kMinHeadingDisplacement)
     {
@@ -3970,12 +3969,14 @@ PlainTrajOpt::ValidationReport PlainTrajOpt::validateTrajectoryDetailed(const Tr
     }
   };
 
-  if (cfg_.penna_vel > 0.0 && report.max_vel > 1.5 * cfg_.max_vel)
+  constexpr double kPlainHardVelRejectRatio = 1.5;
+  constexpr double kPlainHardAccRejectRatio = 2.1;
+  if (cfg_.penna_vel > 0.0 && report.max_vel > kPlainHardVelRejectRatio * cfg_.max_vel)
   {
     fillDynamicFailureState("MAX_VEL", false);
     return report;
   }
-  if (cfg_.penna_acc > 0.0 && report.max_acc > 1.5 * cfg_.max_acc)
+  if (cfg_.penna_acc > 0.0 && report.max_acc > kPlainHardAccRejectRatio * cfg_.max_acc)
   {
     fillDynamicFailureState("MAX_ACC", true);
     return report;
