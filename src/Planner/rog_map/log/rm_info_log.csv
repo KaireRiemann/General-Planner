@@ -2,7 +2,7 @@
 	map_size_d: 50.1 50.1  6.1
 	resolution: 0.1
 	map_size_i: 501 501  61
-	local_update_box_size: 16.1 16.1  5.1
+	local_update_box_size: 100.1 100.1   5.1
 	p_min: 0.12
 	p_max: 0.98
 	p_hit: 0.9

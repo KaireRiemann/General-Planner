@@ -536,9 +536,11 @@ namespace fsm {
         RET_CODE ret_code = FAILED;
         bool replan_tracking_static = false;
         std::size_t replan_tracking_input_prediction_size = 0;
-        if (state2stateMode()) {
+        if (state2stateMode() || se3AggressiveMode()) {
             planner_ptr_->getMapManager()->getNearestInfCellNot(GridType::OCCUPIED, gi_.goal_p, gi_.goal_p, 3.0);
-            ret_code = planner_ptr_->ReplanOnce(gi_.goal_p, gi_.goal_yaw, gi_.new_goal);
+            ret_code = se3AggressiveMode()
+                       ? planner_ptr_->ReplanSE3AggressiveOnce(gi_.goal_p, gi_.goal_yaw, gi_.new_goal)
+                       : planner_ptr_->ReplanOnce(gi_.goal_p, gi_.goal_yaw, gi_.new_goal);
         } else if (trackingMode() || trackingPerchingMode()) {
             traj_opt::DynamicTargetStates prediction;
             if (!getTrackingTargetPrediction(prediction)) {
@@ -625,7 +627,7 @@ namespace fsm {
                                               replan_tracking_input_prediction_size),
                                   ret_code);
         } else if (ret_code == FAILED &&
-                   state2stateMode() &&
+                   (state2stateMode() || se3AggressiveMode()) &&
                    perception_replan_trigger &&
                    perception_replan_emergency) {
             recordDiagnosticEvent("WARN",
@@ -689,7 +691,7 @@ namespace fsm {
     }
 
     void Fsm::callPerceptionSafetyCheckOnce() {
-        if (!cfg_.perception_replan_check_en || !state2stateMode()) {
+        if (!cfg_.perception_replan_check_en || !(state2stateMode() || se3AggressiveMode())) {
             return;
         }
 
@@ -842,7 +844,7 @@ namespace fsm {
             }
             case GENERATE_TRAJ: {
                 active_replan_id_ = next_replan_id_++;
-                if (state2stateMode() && closeToGoal(0.1)) {
+                if ((state2stateMode() || se3AggressiveMode()) && closeToGoal(0.1)) {
                     recordDiagnosticEvent("INFO",
                                           "goal_reached_without_plan",
                                           "distance_below_threshold=0.1",
@@ -860,11 +862,13 @@ namespace fsm {
                 int retcode = FAILED;
                 bool planned_tracking_static = false;
                 std::size_t plan_tracking_input_prediction_size = 0;
-                if (state2stateMode()) {
+                if (state2stateMode() || se3AggressiveMode()) {
                     recordDiagnosticEvent("INFO",
                                           "plan_from_rest_start",
                                           fmt::format("new_goal={}", static_cast<int>(gi_.new_goal)));
-                    retcode = planner_ptr_->PlanFromRest(gi_.goal_p, gi_.goal_yaw, gi_.new_goal);
+                    retcode = se3AggressiveMode()
+                              ? planner_ptr_->PlanSE3AggressiveFromRest(gi_.goal_p, gi_.goal_yaw, gi_.new_goal)
+                              : planner_ptr_->PlanFromRest(gi_.goal_p, gi_.goal_yaw, gi_.new_goal);
                 } else if (trackingMode() || trackingPerchingMode()) {
                     recordDiagnosticEvent("INFO",
                                           "plan_from_rest_start",
@@ -907,7 +911,7 @@ namespace fsm {
                 } else if (explorationMode()) {
                     retcode = planner_ptr_->PlanExplorationFromRest(task_new_);
                 }
-                if (state2stateMode() && !planner_ptr_->goalValid()) {
+                if ((state2stateMode() || se3AggressiveMode()) && !planner_ptr_->goalValid()) {
                     cout << YELLOW << " -- [Fsm] Goal is invalid, skip this goal." << RESET << endl;
                     recordDiagnosticEvent("WARN",
                                           "plan_from_rest_result",
@@ -919,7 +923,7 @@ namespace fsm {
                     ChangeState("MainFsmCallback", WAIT_GOAL);
                     return;
                 }
-                if (state2stateMode()) {
+                if (state2stateMode() || se3AggressiveMode()) {
                     recordDiagnosticEvent(retcode == FAILED ? "WARN" : "INFO",
                                           "plan_from_rest_result",
                                           fmt::format("ret={};goal_valid={}",
@@ -952,7 +956,7 @@ namespace fsm {
                 } else if (retcode == SUCCESS || retcode == FINISH) {
                     gi_.new_goal = false;
                     task_new_ = false;
-                    if (state2stateMode()) {
+                    if (state2stateMode() || se3AggressiveMode()) {
                         state2state_plan_from_rest_fail_count_ = 0;
                     } else if (trackingMode() || trackingPerchingMode()) {
                         resetTrackingPlanFromRestFailureState();
@@ -970,7 +974,7 @@ namespace fsm {
                                     ? STATIC_TRACKING
                                     : FOLLOW_TRAJ);
                 } else {
-                    if (state2stateMode()) {
+                    if (state2stateMode() || se3AggressiveMode()) {
                         ++state2state_plan_from_rest_fail_count_;
                         const int failure_limit = cfg_.state2state_plan_from_rest_max_failures;
                         cout << YELLOW << " -- [Fsm] PlanFromRest failed, try replan. consecutive_failures="
@@ -1084,6 +1088,10 @@ namespace fsm {
 
     bool Fsm::explorationMode() const {
         return cfg_.task_mode == TaskMode::EXPLORATION;
+    }
+
+    bool Fsm::se3AggressiveMode() const {
+        return cfg_.task_mode == TaskMode::SE3_AGGRESSIVE;
     }
 
     bool Fsm::trackingExecutionState() const {
@@ -1291,7 +1299,7 @@ namespace fsm {
     }
 
     bool Fsm::activeTaskReady() {
-        if (state2stateMode()) {
+        if (state2stateMode() || se3AggressiveMode()) {
             return gi_.new_goal;
         }
         if (trackingMode()) {
@@ -1319,7 +1327,7 @@ namespace fsm {
     }
 
     bool Fsm::shouldGenerateAfterTrajFinish() {
-        if (state2stateMode()) {
+        if (state2stateMode() || se3AggressiveMode()) {
             return !closeToGoal(0.1);
         }
         if (explorationMode()) {

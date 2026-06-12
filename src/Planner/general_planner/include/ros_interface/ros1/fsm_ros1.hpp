@@ -35,7 +35,9 @@
 #include "nav_msgs/Odometry.h"
 #include "quadrotor_msgs/PositionCommand.h"
 #include "quadrotor_msgs/PolynomialTrajectory.h"
+#include "quadrotor_msgs/SO3Command.h"
 #include "std_msgs/String.h"
+#include "utils/geometry/quadrotor_flatness.hpp"
 
 #include <algorithm>
 #include <array>
@@ -59,7 +61,7 @@ namespace fsm {
         ros::Subscriber perching_surface_sub_;
         ros::Subscriber swarm_broadcast_traj_sub_;
         ros::Subscriber swarm_state_sub_;
-        ros::Publisher cmd_pub, mpc_cmd_pub_, path_pub_;
+        ros::Publisher cmd_pub, so3_cmd_pub_, mpc_cmd_pub_, path_pub_;
         ros::Publisher swarm_traj_pub_, swarm_state_pub_;
         ros::Publisher diagnostic_event_pub_;
         ros::Timer execution_timer_, replan_timer_, cmd_timer_, perception_safety_timer_;
@@ -209,6 +211,8 @@ namespace fsm {
                 task_phase = "perching";
             } else if (explorationMode()) {
                 task_phase = "exploration";
+            } else if (se3AggressiveMode()) {
+                task_phase = "se3_aggressive";
             } else if (trackingPerchingMode()) {
                 task_phase = trackingPerchingPerchingActive()
                                  ? "tracking_perching_perching"
@@ -389,6 +393,67 @@ namespace fsm {
             state.twist.twist.linear.y = robot_state_.v.y();
             state.twist.twist.linear.z = robot_state_.v.z();
             swarm_state_pub_.publish(state);
+        }
+
+        bool getOneSO3Command(const quadrotor_msgs::PositionCommand &pos_cmd,
+                              quadrotor_msgs::SO3Command &so3_cmd) const {
+            flatness::FlatnessMap flatmap;
+            flatmap.reset(cfg_.flatness_mass,
+                          cfg_.flatness_grav,
+                          cfg_.flatness_dh,
+                          cfg_.flatness_dv,
+                          cfg_.flatness_cp,
+                          cfg_.flatness_v_eps);
+
+            const Eigen::Vector3d vel(pos_cmd.velocity.x, pos_cmd.velocity.y, pos_cmd.velocity.z);
+            const Eigen::Vector3d acc(pos_cmd.acceleration.x, pos_cmd.acceleration.y, pos_cmd.acceleration.z);
+            const Eigen::Vector3d jerk(pos_cmd.jerk.x, pos_cmd.jerk.y, pos_cmd.jerk.z);
+
+            double thrust = 0.0;
+            Eigen::Vector4d quat_vec = Eigen::Vector4d::Zero();
+            Eigen::Vector3d body_rate = Eigen::Vector3d::Zero();
+            flatmap.forward(vel,
+                            acc,
+                            jerk,
+                            pos_cmd.yaw,
+                            pos_cmd.yaw_dot,
+                            thrust,
+                            quat_vec,
+                            body_rate);
+            if (!std::isfinite(thrust) || !quat_vec.allFinite()) {
+                return false;
+            }
+
+            Eigen::Quaterniond quat(quat_vec(0), quat_vec(1), quat_vec(2), quat_vec(3));
+            if (!std::isfinite(quat.norm()) || quat.norm() < 1.0e-9) {
+                return false;
+            }
+            quat.normalize();
+
+            const Eigen::Vector3d force = quat * Eigen::Vector3d::UnitZ() * thrust;
+            if (!force.allFinite()) {
+                return false;
+            }
+
+            so3_cmd.header = pos_cmd.header;
+            so3_cmd.force.x = force.x();
+            so3_cmd.force.y = force.y();
+            so3_cmd.force.z = force.z();
+            so3_cmd.orientation.x = quat.x();
+            so3_cmd.orientation.y = quat.y();
+            so3_cmd.orientation.z = quat.z();
+            so3_cmd.orientation.w = quat.w();
+            for (int i = 0; i < 3; ++i) {
+                so3_cmd.kR[i] = cfg_.so3_kR[static_cast<std::size_t>(i)];
+                so3_cmd.kOm[i] = cfg_.so3_kOm[static_cast<std::size_t>(i)];
+            }
+            so3_cmd.aux.current_yaw = pos_cmd.yaw;
+            so3_cmd.aux.kf_correction = 0.0;
+            so3_cmd.aux.angle_corrections[0] = 0.0;
+            so3_cmd.aux.angle_corrections[1] = 0.0;
+            so3_cmd.aux.enable_motors = true;
+            so3_cmd.aux.use_external_yaw = false;
+            return true;
         }
 
         void getOnePositionCommand(quadrotor_msgs::PositionCommand &pos_cmd, bool &traj_finish) {
@@ -971,6 +1036,9 @@ namespace fsm {
             ros_ptr_ = std::make_shared<ros_interface::Ros1Interface>(nh_);
             planner_ptr_ = std::make_shared<GeneralPlanner>(cfg_path, ros_ptr_, map_ptr_);
             cmd_pub = nh_.advertise<quadrotor_msgs::PositionCommand>(cfg_.cmd_topic, 10);
+            if (cfg_.publish_so3_cmd) {
+                so3_cmd_pub_ = nh_.advertise<quadrotor_msgs::SO3Command>(cfg_.so3_cmd_topic, 10);
+            }
             mpc_cmd_pub_ = nh_.advertise<quadrotor_msgs::PolynomialTrajectory>(cfg_.mpc_cmd_topic, 10);
             path_pub_ = nh_.advertise<nav_msgs::Path>("fsm/path", 100);
             if (cfg_.diagnostic_log_en) {
@@ -1040,7 +1108,7 @@ namespace fsm {
                          << cfg_.tracking_target_prediction_topic << RESET << endl;
                 }
                 cmd_cnt++;
-            } else if (state2stateMode() && cfg_.click_goal_en) {
+            } else if ((state2stateMode() || se3AggressiveMode()) && cfg_.click_goal_en) {
                 goal_sub_ = nh_.subscribe(cfg_.click_goal_topic, 1, &FsmRos1::goalCallback, this);
                 cout << YELLOW << " -- [Fsm] CLICKGOAL ENABLE." << RESET << endl;
                 cmd_cnt++;
@@ -1192,6 +1260,12 @@ namespace fsm {
             publishSwarmState();
             mpc_cmd_pub_.publish(heartbeat);
             cmd_pub.publish(pid_cmd_);
+            if (cfg_.publish_so3_cmd) {
+                quadrotor_msgs::SO3Command so3_cmd;
+                if (getOneSO3Command(pid_cmd_, so3_cmd)) {
+                    so3_cmd_pub_.publish(so3_cmd);
+                }
+            }
             if (traj_finish_) {
                 cout << GREEN << " -- [Fsm] Traj finish." << RESET << endl;
                 recordDiagnosticEvent("INFO",

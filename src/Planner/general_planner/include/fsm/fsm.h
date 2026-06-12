@@ -289,6 +289,8 @@ namespace fsm {
 
         bool explorationMode() const;
 
+        bool se3AggressiveMode() const;
+
         void setTaskModeFromString(const std::string &mode);
 
         bool trackingTaskReady();

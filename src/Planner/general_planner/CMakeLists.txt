@@ -141,6 +141,17 @@ target_link_libraries(task_target_source
         general_planner_core        ${THIRD_PARTY}
 )
 
+add_executable(se3_gcopter_gate_planning
+        Apps/se3_gcopter_gate_planning.cpp
+)
+add_dependencies(se3_gcopter_gate_planning
+        ${${PROJECT_NAME}_EXPORTED_TARGETS}
+        ${catkin_EXPORTED_TARGETS}
+)
+target_link_libraries(se3_gcopter_gate_planning
+        general_planner_core        ${THIRD_PARTY}
+)
+
 add_executable(tracking_target_relay
         Apps/tracking_target_relay.cpp
 )
@@ -166,5 +177,6 @@ target_link_libraries(tracking_sim_monitor
 catkin_install_python(PROGRAMS
         scripts/click_state2state_benchmark.py
         scripts/corridor_benchmark.py
+        scripts/se3_so3_command_monitor.py
         DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )

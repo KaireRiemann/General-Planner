@@ -86,6 +86,30 @@ namespace general_planner {
         // Yaw mode: 1 heading to velocity, 2 heading to goal
         int yaw_mode = YAW_TO_VEL;
 
+        bool se3_aggressive_enable{true};
+        int se3_piece_num{4};
+        double se3_reference_speed{3.0};
+        double se3_min_duration{0.5};
+        double se3_max_duration{8.0};
+        double se3_horiz_half_len{0.35};
+        double se3_vert_half_len{0.12};
+        double se3_safe_margin{0.05};
+        double se3_max_vel{8.0};
+        double se3_thrust_acc_min{4.0};
+        double se3_thrust_acc_max{20.0};
+        double se3_body_rate_max{5.0};
+        double se3_yaw_rate_max{3.0};
+        double se3_weight_time{10.0};
+        double se3_weight_corridor{1.0e4};
+        double se3_weight_vel{1.0e3};
+        double se3_weight_thrust{1.0e3};
+        double se3_weight_body_rate{1.0e3};
+        bool se3_use_yaw{false};
+        bool se3_yaw_heading_to_velocity{true};
+        bool se3_use_corridor{true};
+        bool se3_runtime_check_enable{true};
+        bool se3_use_numeric_shape_gradient{true};
+
         bool exploration_enable{false};
         bool exploration_print_log{true};
         double exploration_frontier_search_radius{12.0};
@@ -400,6 +424,32 @@ namespace general_planner {
             loader.LoadParam("general_planner/yaw_mode", yaw_mode, 1);
             loader.LoadParam("general_planner/mpc_horizon", mpc_horizon, 1);
             loader.LoadParam("general_planner/yaw_dot_max", yaw_dot_max, 3.14);
+            loader.LoadParam("general_planner/se3_aggressive/enable", se3_aggressive_enable, true);
+            loader.LoadParam("general_planner/se3_aggressive/piece_num", se3_piece_num, 4);
+            loader.LoadParam("general_planner/se3_aggressive/reference_speed", se3_reference_speed, 3.0);
+            loader.LoadParam("general_planner/se3_aggressive/min_duration", se3_min_duration, 0.5);
+            loader.LoadParam("general_planner/se3_aggressive/max_duration", se3_max_duration, 8.0);
+            loader.LoadParam("general_planner/se3_aggressive/horiz_half_len", se3_horiz_half_len, 0.35);
+            loader.LoadParam("general_planner/se3_aggressive/vert_half_len", se3_vert_half_len, 0.12);
+            loader.LoadParam("general_planner/se3_aggressive/safe_margin", se3_safe_margin, 0.05);
+            loader.LoadParam("general_planner/se3_aggressive/max_vel", se3_max_vel, 8.0);
+            loader.LoadParam("general_planner/se3_aggressive/thrust_acc_min", se3_thrust_acc_min, 4.0);
+            loader.LoadParam("general_planner/se3_aggressive/thrust_acc_max", se3_thrust_acc_max, 20.0);
+            loader.LoadParam("general_planner/se3_aggressive/body_rate_max", se3_body_rate_max, 5.0);
+            loader.LoadParam("general_planner/se3_aggressive/yaw_rate_max", se3_yaw_rate_max, 3.0);
+            loader.LoadParam("general_planner/se3_aggressive/weight_time", se3_weight_time, 10.0);
+            loader.LoadParam("general_planner/se3_aggressive/weight_corridor", se3_weight_corridor, 1.0e4);
+            loader.LoadParam("general_planner/se3_aggressive/weight_vel", se3_weight_vel, 1.0e3);
+            loader.LoadParam("general_planner/se3_aggressive/weight_thrust", se3_weight_thrust, 1.0e3);
+            loader.LoadParam("general_planner/se3_aggressive/weight_body_rate", se3_weight_body_rate, 1.0e3);
+            loader.LoadParam("general_planner/se3_aggressive/use_yaw", se3_use_yaw, false);
+            loader.LoadParam("general_planner/se3_aggressive/yaw_heading_to_velocity",
+                             se3_yaw_heading_to_velocity, true);
+            loader.LoadParam("general_planner/se3_aggressive/use_corridor", se3_use_corridor, true);
+            loader.LoadParam("general_planner/se3_aggressive/runtime_check_enable",
+                             se3_runtime_check_enable, true);
+            loader.LoadParam("general_planner/se3_aggressive/use_numeric_shape_gradient",
+                             se3_use_numeric_shape_gradient, true);
             loader.LoadParam("general_planner/exploration_enable", exploration_enable, false);
             loader.LoadParam("general_planner/exploration_frontier_search_radius",
                              exploration_frontier_search_radius, 12.0);

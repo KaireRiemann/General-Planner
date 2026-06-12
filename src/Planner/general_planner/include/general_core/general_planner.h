@@ -52,6 +52,7 @@
 #include "general_core/takeoff_runtime_manager.hpp"
 #include "general_core/tracking_perching_transition_manager.hpp"
 #include "general_core/tracking_to_perching_initializer.hpp"
+#include "general_core/se3_aggressive_manager.hpp"
 
 #include "general_core/general_ret_code.hpp"
 #include "utils/header/fmt_eigen.hpp"
@@ -115,6 +116,7 @@ namespace general_planner {
         bool active_takeoff_problem_valid_{false};
         std::unique_ptr<TrackingPerchingTransitionManager> tracking_perching_manager_;
         std::unique_ptr<TrackingToPerchingInitializer> tracking_to_perching_initializer_;
+        std::unique_ptr<SE3AggressiveManager> se3_aggressive_manager_;
         std::unique_ptr<ExplorationFrontend> exploration_frontend_;
         std::unique_ptr<ExplorationRuntimeManager> exploration_runtime_manager_;
 
@@ -354,6 +356,14 @@ namespace general_planner {
 
         bool getLatestExplorationGoal(ExplorationGoal &goal) const;
 
+        RET_CODE PlanSE3AggressiveFromRest(const Vec3f &goal_p,
+                                           double goal_yaw,
+                                           bool new_task);
+
+        RET_CODE ReplanSE3AggressiveOnce(const Vec3f &goal_p,
+                                         double goal_yaw,
+                                         bool new_task);
+
     private:
         RET_CODE generateExpTraj(ExpTraj &last_exp_traj_info,
                                  ExpTraj &out_exp_traj_info);
@@ -574,6 +584,13 @@ namespace general_planner {
 
         RET_CODE optimizeDynamicTakeoffTask(const traj_opt::PerchingSurfaceState &surface,
                                             const bool &from_rest);
+
+        RET_CODE optimizeSE3AggressiveTask(const Vec3f &goal_p,
+                                           double goal_yaw,
+                                           const bool &from_rest);
+
+        bool commitSE3AggressiveTrajectory(const Trajectory &pos_traj,
+                                           const std::string &traj_ns);
 
         PerchingFrontend::Config makePerchingFrontendConfig() const;
 
