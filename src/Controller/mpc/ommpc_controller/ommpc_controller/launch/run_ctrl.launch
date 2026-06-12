@@ -1,0 +1,12 @@
+<launch>
+  <node pkg="ommpc_controller" type="ommpc_controller_node" name="mpc_ctrl" output="screen">
+    <remap from="~odom" to="/ekf/ekf_odom" />
+    <remap from="~imu" to="/mavros/imu/data" />
+    <remap from="~traj" to="/planning_cmd/poly_traj" />
+    <remap from="~pos_cmd" to="/planning/pos_cmd" />
+    <remap from="~takeoff_land" to="/px4ctrl/takeoff_land" />
+    <remap from="~tracking_performance" to="/mpc/tracking_performance" />
+
+    <rosparam command="load" file="$(find ommpc_controller)/config/params.yaml" />
+  </node>
+</launch>

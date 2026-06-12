@@ -1,0 +1,57 @@
+control_frequency: 100.0
+enu_frame: true
+vel_in_body: false
+auto_start_command: true
+use_pos_cmd_fallback: true
+enable_thrust_estimation: true
+min_thrust_signal: 0.04
+max_thrust_signal: 0.90
+
+msg_timeout:
+  odom: 0.5
+  imu: 0.5
+  pos_cmd: 0.2
+
+auto_takeoff_land:
+  enable: true
+  enable_auto_arm: true
+  takeoff_height: 0.8
+  takeoff_land_speed: 0.2
+  motors_spinup_time: 2.0
+  trigger_delay: 1.0
+  reach_tolerance: 0.08
+  max_takeoff_velocity: 0.2
+  auto_trigger_after_takeoff: true
+  land_descent_height: 3.0
+  land_detect_velocity: 0.12
+  land_detect_keep_time: 0.8
+
+ref_txt:
+  enable: false
+  time_step: 0.01
+  ref_filename: "/traj/circle.txt"
+
+hover_percentage: 0.5
+use_fix_yaw: false
+use_trajectory_ending_pos: true
+
+MPC_params:
+  step_T: 0.01
+
+  Q_pos_xy: 1000.0
+  Q_pos_z: 800.0
+  Q_attitude_rp: 40.0
+  Q_attitude_yaw: 40.0
+  Q_velocity: 20.0
+
+  R_thrust: 0.5
+  R_pitchroll: 1.2
+  R_yaw: 0.6
+
+  state_cost_exponential: 0.5
+  input_cost_exponential: 0.5
+
+  max_bodyrate_xy: 6.0
+  max_bodyrate_z: 4.0
+  min_thrust: 1.0
+  max_thrust: 30.0
