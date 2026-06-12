@@ -297,6 +297,8 @@ namespace general_planner {
 
         TrackingDiagnosticSnapshot getLatestTrackingDiagnosticSnapshot();
 
+        std::string getTrackingConfigSummary() const;
+
         int getLatestMvieLbfgsIterations() const {
             return cg_ptr_ ? cg_ptr_->getCiriMvieLbfgsIterations() : 0;
         }

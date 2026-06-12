@@ -206,6 +206,13 @@ namespace fsm {
         double last_perception_replan_request_time_{-1.0};
         double last_perception_replan_log_time_{-1.0};
         general_planner::GeneralPlanner::CommittedTrajectorySafetyReport perception_replan_report_;
+        uint64_t tracking_target_input_seq_{0};
+        double last_tracking_target_log_time_{-1.0};
+        std::string last_tracking_target_log_source_;
+        std::size_t last_tracking_target_log_size_{0};
+        Vec3f last_tracking_target_log_front_{Vec3f::Zero()};
+        Vec3f last_tracking_target_log_back_{Vec3f::Zero()};
+        bool last_tracking_target_log_static_{false};
         /* Callback functions */
         bool finish_plan = false;
         double system_start_time_{0.0};
@@ -234,6 +241,11 @@ namespace fsm {
                                          bool prediction_static,
                                          std::size_t input_prediction_size,
                                          int replan_log_id = -1);
+
+        void recordTrackingTargetInput(const std::string &source,
+                                       const traj_opt::DynamicTargetStates &prediction,
+                                       double source_stamp = -1.0,
+                                       std::size_t raw_sample_count = 0);
 
         vector<DiagnosticEvent> snapshotDiagnosticEvents() const;
 

@@ -1843,6 +1843,7 @@ namespace general_planner {
                 [&](const TrackingRuntimeManager::Decision &decision,
                     const Trajectory &candidate,
                     const bool anti_rollback_pass,
+                    const bool candidate_fov_ok,
                     const double prefix_duration,
                     const double runtime_eval_start,
                     const int anti_rollback_worse_count,
@@ -1874,7 +1875,7 @@ namespace general_planner {
             } else if (decision.type == TrackingRuntimeManager::DecisionType::KEEP_OLD) {
                 log_name = "TRACKING_MANAGER_DECISION_KEEP_OLD";
             }
-            ros_ptr_->info(" -- [Tracking] {} tag={}, decision={}, reason={}, guide_path.size()={}, problem.sfcs.size()={}, problem.target_prediction.size()={}, out_traj_duration={:.3f}, candidate_safe={}, candidate_safe_reason={}, candidate_commandable={}, anti_rollback_pass={}, anti_rollback_worse_count={}, anti_rollback_max_regression={:.3f}, bypass_anti_rollback={}, candidate_duration={:.3f}, prefix_duration={:.3f}, runtime_eval_start={:.3f}, candidate_disp_xy={:.3f}, candidate_disp_z={:.3f}, candidate_disp_3d={:.3f}, candidate_speed_xy={:.3f}, candidate_speed_z={:.3f}, candidate_speed_3d={:.3f}, target_speed_xy={:.3f}, target_speed_z={:.3f}, target_speed_3d={:.3f}, old_remaining={:.3f}, old_activity_reason={}, old_speed_xy={:.3f}, old_speed_z={:.3f}, old_speed_3d={:.3f}, old_disp_xy={:.3f}, old_disp_z={:.3f}, old_disp_3d={:.3f}, old_progress_xy={:.3f}, old_progress_3d={:.3f}, old_expected_progress={:.3f}, old_avg_tracking_error={:.3f}, keep_old_count={}, reject_count={}",
+            ros_ptr_->info(" -- [Tracking] {} tag={}, decision={}, reason={}, guide_path.size()={}, problem.sfcs.size()={}, problem.target_prediction.size()={}, out_traj_duration={:.3f}, candidate_safe={}, candidate_safe_reason={}, candidate_commandable={}, candidate_fov_ok={}, anti_rollback_pass={}, anti_rollback_worse_count={}, anti_rollback_max_regression={:.3f}, bypass_anti_rollback={}, candidate_duration={:.3f}, prefix_duration={:.3f}, runtime_eval_start={:.3f}, candidate_disp_xy={:.3f}, candidate_disp_z={:.3f}, candidate_disp_3d={:.3f}, candidate_speed_xy={:.3f}, candidate_speed_z={:.3f}, candidate_speed_3d={:.3f}, target_speed_xy={:.3f}, target_speed_z={:.3f}, target_speed_3d={:.3f}, old_remaining={:.3f}, old_activity_reason={}, old_speed_xy={:.3f}, old_speed_z={:.3f}, old_speed_3d={:.3f}, old_disp_xy={:.3f}, old_disp_z={:.3f}, old_disp_3d={:.3f}, old_progress_xy={:.3f}, old_progress_3d={:.3f}, old_expected_progress={:.3f}, old_avg_tracking_error={:.3f}, keep_old_count={}, reject_count={}",
                            log_name,
                            tag,
                            decisionTypeName(decision.type),
@@ -1886,6 +1887,7 @@ namespace general_planner {
                            decision.candidate_safe,
                            candidate_safe_reason,
                            decision.candidate_commandable,
+                           candidate_fov_ok,
                            anti_rollback_pass,
                            anti_rollback_worse_count,
                            anti_rollback_max_regression,
@@ -1960,7 +1962,7 @@ namespace general_planner {
             }
             if (!anti_rollback_pass &&
                 decision.type == TrackingRuntimeManager::DecisionType::KEEP_OLD) {
-                ros_ptr_->warn(" -- [Tracking] TRACKING_CANDIDATE_REJECTED_ANTI_ROLLBACK reason={}, guide_path.size()={}, problem.sfcs.size()={}, problem.target_prediction.size()={}, out_traj_duration={:.3f}, prefix_duration={:.3f}, runtime_eval_start={:.3f}, worse_count={}, max_regression={:.3f}, candidate_disp_3d={:.3f}, candidate_progress_3d={:.3f}, old_remaining={:.3f}, old_activity_reason={}, old_speed_3d={:.3f}, old_disp_3d={:.3f}, old_progress_3d={:.3f}, old_expected_progress={:.3f}, old_avg_tracking_error={:.3f}",
+                ros_ptr_->warn(" -- [Tracking] TRACKING_CANDIDATE_REJECTED_ANTI_ROLLBACK reason={}, guide_path.size()={}, problem.sfcs.size()={}, problem.target_prediction.size()={}, out_traj_duration={:.3f}, prefix_duration={:.3f}, runtime_eval_start={:.3f}, candidate_fov_ok={}, worse_count={}, max_regression={:.3f}, candidate_disp_3d={:.3f}, candidate_progress_3d={:.3f}, old_remaining={:.3f}, old_activity_reason={}, old_speed_3d={:.3f}, old_disp_3d={:.3f}, old_progress_3d={:.3f}, old_expected_progress={:.3f}, old_avg_tracking_error={:.3f}",
                                decision.reason,
                                last_tracking_diag_guide_path_size_,
                                last_tracking_diag_sfc_size_,
@@ -1968,6 +1970,7 @@ namespace general_planner {
                                last_tracking_diag_out_traj_duration_,
                                prefix_duration,
                                runtime_eval_start,
+                               candidate_fov_ok,
                                anti_rollback_worse_count,
                                anti_rollback_max_regression,
                                candidate_metrics.displacement_3d,
@@ -1986,7 +1989,8 @@ namespace general_planner {
                 [&](const Trajectory &candidate,
                     const std::string &tag,
                     const double candidate_eval_start_t,
-                    const double target_eval_start_t) -> TrackingRuntimeManager::DecisionType {
+                    const double target_eval_start_t,
+                    const bool candidate_fov_ok) -> TrackingRuntimeManager::DecisionType {
             if (!cfg_.tracking_runtime_manager_enable || !tracking_runtime_manager_) {
                 int worse_count = 0;
                 double max_regression = 0.0;
@@ -1998,7 +2002,7 @@ namespace general_planner {
                                                          candidate_eval_start_t,
                                                          target_eval_start_t,
                                                          true,
-                                                         true,
+                                                         candidate_fov_ok,
                                                          &worse_count,
                                                          &max_regression,
                                                          &anti_reason);
@@ -2053,7 +2057,7 @@ namespace general_planner {
                                                            candidate_eval_start_t,
                                                            target_eval_start_t,
                                                            candidate_safe,
-                                                           true,
+                                                           candidate_fov_ok,
                                                            &anti_rollback_worse_count,
                                                            &anti_rollback_max_regression,
                                                            &anti_rollback_reason)
@@ -2078,12 +2082,13 @@ namespace general_planner {
                                       : decision.reason + ": " + anti_rollback_reason;
             }
             const std::string runtime_decision_detail = fmt::format(
-                    "tag={}|decision={}|has_old_tracking={}|candidate_safe={}|candidate_commandable={}|bypass_anti_rollback={}|candidate_safe_reason={}|candidate_safe_detail={}|anti_rollback_pass={}|anti_rollback_reason={}|anti_rollback_worse_count={}|anti_rollback_max_regression={:.3f}|candidate_eval_start_t={:.3f}|target_eval_start_t={:.3f}|candidate_duration={:.3f}|candidate_safety_start={:.3f}|candidate_safety_horizon={:.3f}|old_local_t={:.3f}",
+                    "tag={}|decision={}|has_old_tracking={}|candidate_safe={}|candidate_commandable={}|candidate_fov_ok={}|bypass_anti_rollback={}|candidate_safe_reason={}|candidate_safe_detail={}|anti_rollback_pass={}|anti_rollback_reason={}|anti_rollback_worse_count={}|anti_rollback_max_regression={:.3f}|candidate_eval_start_t={:.3f}|target_eval_start_t={:.3f}|candidate_duration={:.3f}|candidate_safety_start={:.3f}|candidate_safety_horizon={:.3f}|old_local_t={:.3f}",
                     tag,
                     decisionTypeName(decision.type),
                     static_cast<int>(has_old_tracking),
                     static_cast<int>(candidate_safe),
                     static_cast<int>(decision.candidate_commandable),
+                    static_cast<int>(candidate_fov_ok),
                     static_cast<int>(decision.bypass_anti_rollback),
                     candidate_safe_reason.empty() ? "none" : candidate_safe_reason,
                     candidate_safe_detail.empty() ? "none" : candidate_safe_detail,
@@ -2100,6 +2105,7 @@ namespace general_planner {
             logRuntimeDecision(decision,
                                candidate,
                                anti_rollback_pass,
+                               candidate_fov_ok,
                                candidate_eval_start_t,
                                candidate_eval_start_t,
                                anti_rollback_worse_count,
@@ -2219,6 +2225,7 @@ namespace general_planner {
         const bool should_check_fov =
                 cfg_.tracking_fov_commit_check_enable &&
                 (cfg_.tracking_fov_check_first_commit || has_committed_tracking);
+        bool candidate_fov_ok_for_commit = true;
         if (should_check_fov) {
             std::string fov_reject_reason;
             const double fov_start_t = 0.0;
@@ -2239,10 +2246,12 @@ namespace general_planner {
                                                 allow_reacquire_fov_relax)) {
                 Trajectory target_yaw_traj;
                 std::string rebuilt_yaw_fov_reason;
-                const bool rebuilt_yaw_ok =
+                const bool rebuilt_yaw_generated =
                         buildTrackingTargetYawTrajectory(committed_pos_traj,
                                                          target_prediction,
-                                                         target_yaw_traj) &&
+                                                         target_yaw_traj);
+                const bool rebuilt_yaw_ok =
+                        rebuilt_yaw_generated &&
                         trackingTrajectorySatisfiesFov(committed_pos_traj,
                                                        target_yaw_traj,
                                                        target_prediction,
@@ -2261,6 +2270,29 @@ namespace general_planner {
                                        fov_reject_reason,
                                        fov_horizon,
                                        allow_reacquire_fov_relax);
+                    }
+                } else if (allow_reacquire_fov_relax) {
+                    candidate_fov_ok_for_commit = false;
+                    if (rebuilt_yaw_generated && !target_yaw_traj.empty()) {
+                        committed_yaw_traj = target_yaw_traj;
+                        committed_yaw_traj.start_WT = commit_wt;
+                    }
+                    if (cfg_.print_log) {
+                        ros_ptr_->warn(" -- [Tracking] TRACKING_CANDIDATE_FOV_DEGRADED_ACCEPT reason={}, target_yaw_fallback={}, start_t={:.3f}, horizon={:.3f}, prefix_duration={:.3f}, runtime_eval_start={:.3f}, guide_path.size()={}, problem.sfcs.size()={}, problem.target_prediction.size()={}, out_traj_duration={:.3f}",
+                                       fov_reject_reason,
+                                       rebuilt_yaw_generated
+                                           ? (rebuilt_yaw_fov_reason.empty()
+                                                  ? "failed_without_reason"
+                                                  : rebuilt_yaw_fov_reason)
+                                           : "generation_failed",
+                                       fov_start_t,
+                                       fov_horizon,
+                                       stitched_prefix_duration,
+                                       stitched_prefix_duration,
+                                       last_tracking_diag_guide_path_size_,
+                                       last_tracking_diag_sfc_size_,
+                                       last_tracking_diag_target_prediction_size_,
+                                       last_tracking_diag_out_traj_duration_);
                     }
                 } else {
                     if (cfg_.print_log) {
@@ -2311,7 +2343,8 @@ namespace general_planner {
                                          : 0.0,
                                      cfg_.tracking_anti_rollback_eval_after_prefix
                                          ? stitched_prefix_duration
-                                         : 0.0);
+                                         : 0.0,
+                                     candidate_fov_ok_for_commit);
         if (runtime_decision == TrackingRuntimeManager::DecisionType::KEEP_OLD) {
             return true;
         }
@@ -2863,7 +2896,10 @@ namespace general_planner {
                                                     0.0,
                                                     &old_fov_reason,
                                                     true));
-            if (!old_fov_ok) {
+            const bool fov_degraded_grace =
+                    !old_fov_ok &&
+                    cfg_.tracking_reacquire_fov_relax_enable;
+            if (!old_fov_ok && !fov_degraded_grace) {
                 return false;
             }
 
@@ -2873,9 +2909,14 @@ namespace general_planner {
                 ++tracking_consecutive_keep_old_;
             }
             setTrackingDiagnostic("keep_old",
-                                  keepOldReason(fmt::format("short_safety_grace:{};grace_horizon={:.3f}",
+                                  keepOldReason(fmt::format("{}:{};grace_horizon={:.3f};old_fov_ok={};old_fov_reason={}",
+                                                            fov_degraded_grace
+                                                                ? "short_safety_grace_fov_degraded"
+                                                                : "short_safety_grace",
                                                             activity.reason,
-                                                            grace_horizon)),
+                                                            grace_horizon,
+                                                            static_cast<int>(old_fov_ok),
+                                                            old_fov_reason.empty() ? "none" : old_fov_reason)),
                                   last_tracking_diag_guide_path_size_,
                                   last_tracking_diag_sfc_size_,
                                   target_prediction.size(),
@@ -2884,11 +2925,16 @@ namespace general_planner {
             latest_replan.setExpYawTraj(old_yaw_traj);
             latest_replan.setRetCode(GENERAL_SUCCESS_NO_BACKUP);
             if (cfg_.print_log) {
-                ros_ptr_->warn(" -- [Tracking] TRACKING_KEEP_OLD_SHORT_SAFETY_GRACE reason={}, activity_reason={}, grace_horizon={:.3f}, old_remaining={:.3f}, keep_old_count={}, reject_count={}",
+                ros_ptr_->warn(" -- [Tracking] {} reason={}, activity_reason={}, grace_horizon={:.3f}, old_remaining={:.3f}, old_fov_ok={}, old_fov_reason={}, keep_old_count={}, reject_count={}",
+                               fov_degraded_grace
+                                   ? "TRACKING_KEEP_OLD_SHORT_SAFETY_GRACE_FOV_DEGRADED"
+                                   : "TRACKING_KEEP_OLD_SHORT_SAFETY_GRACE",
                                reason,
                                activity.reason,
                                grace_horizon,
                                activity.remaining,
+                               old_fov_ok,
+                               old_fov_reason.empty() ? "none" : old_fov_reason,
                                runtime_managed && tracking_runtime_manager_
                                    ? tracking_runtime_manager_->consecutiveKeepOld()
                                    : tracking_consecutive_keep_old_,
@@ -2973,6 +3019,13 @@ namespace general_planner {
                                                         old_local_t,
                                                         target_prediction,
                                                         &old_fov_reason)) {
+                if (tryShortSafetyGrace(old_pos_traj,
+                                        old_yaw_traj,
+                                        old_local_t,
+                                        activity,
+                                        true)) {
+                    return true;
+                }
                 setTrackingDiagnostic("keep_old",
                                       keepOldReason("fov_rejected:" + old_fov_reason),
                                       last_tracking_diag_guide_path_size_,
@@ -3075,6 +3128,13 @@ namespace general_planner {
                                                     old_local_t,
                                                     target_prediction,
                                                     &old_fov_reason)) {
+            if (tryShortSafetyGrace(old_pos_traj,
+                                    old_yaw_traj,
+                                    old_local_t,
+                                    activity,
+                                    false)) {
+                return true;
+            }
             setTrackingDiagnostic("keep_old",
                                   keepOldReason("fov_rejected:" + old_fov_reason),
                                   last_tracking_diag_guide_path_size_,
@@ -3481,16 +3541,63 @@ namespace general_planner {
                     total_max_h_violation <= reacquire_angular_grace_rad &&
                     total_max_v_violation <= reacquire_angular_grace_rad &&
                     total_max_front_violation <= 1.0e-6;
-            if (progress_ok && orientation_ok) {
+            const Vec3f transit_start = pos_traj.getPos(begin);
+            const Vec3f transit_end = pos_traj.getPos(std::min(total, begin + eval_horizon));
+            const Vec3f target_start = interpolateTargetPrediction(target_prediction, target_begin).position;
+            Vec3f chase_dir = target_start - transit_start;
+            if (!cfg_.tracking_motion_3d_enable) {
+                chase_dir.z() = 0.0;
+            }
+            const bool chase_dir_valid = chase_dir.allFinite() && chase_dir.norm() > 1.0e-4;
+            const Vec3f transit_dp = transit_end - transit_start;
+            const double chase_progress =
+                    chase_dir_valid && transit_dp.allFinite()
+                        ? transit_dp.dot(chase_dir.normalized())
+                        : 0.0;
+            const TrackingMotionMetrics transit_metrics =
+                    computeTrackingMotionMetrics(pos_traj,
+                                                 target_prediction,
+                                                 cfg_,
+                                                 begin,
+                                                 target_begin,
+                                                 eval_horizon);
+            const bool use_3d_motion =
+                    cfg_.tracking_motion_3d_enable || transit_metrics.target_vertical_moving;
+            const double transit_displacement =
+                    use_3d_motion ? transit_metrics.displacement_3d
+                                  : transit_metrics.displacement_xy;
+            const double transit_speed =
+                    use_3d_motion ? transit_metrics.speed_3d
+                                  : transit_metrics.speed_xy;
+            const double transit_target_speed =
+                    use_3d_motion ? transit_metrics.target_speed_3d
+                                  : transit_metrics.target_speed_xy;
+            const double required_chase_progress =
+                    std::max({0.15,
+                              std::max(0.0, cfg_.tracking_keep_old_min_progress_3d_ratio) *
+                                      transit_target_speed * eval_horizon,
+                              std::max(0.0, cfg_.tracking_no_motion_min_displacement)});
+            const bool chase_progress_ok =
+                    cfg_.tracking_detour_grace_enable &&
+                    chase_dir_valid &&
+                    std::isfinite(chase_progress) &&
+                    chase_progress >= required_chase_progress &&
+                    transit_displacement >= std::max(0.0, cfg_.tracking_no_motion_min_displacement) &&
+                    transit_speed >= std::max(0.0, cfg_.tracking_keep_old_min_speed);
+            if ((progress_ok || chase_progress_ok) && orientation_ok) {
                 return true;
             }
             setFailureReason(reason,
-                             fmt::format("reacquire transit without FOV entry: init_dist={:.2f}, best_dist={:.2f}, final_dist={:.2f}, entry_dist={:.2f}, required_progress={:.2f}, max_h={:.1f}deg, max_v={:.1f}deg, max_front={:.2f}",
+                             fmt::format("reacquire transit without FOV entry: init_dist={:.2f}, best_dist={:.2f}, final_dist={:.2f}, entry_dist={:.2f}, required_progress={:.2f}, chase_progress={:.2f}, required_chase_progress={:.2f}, transit_disp={:.2f}, transit_speed={:.2f}, max_h={:.1f}deg, max_v={:.1f}deg, max_front={:.2f}",
                                          initial_distance,
                                          best_distance,
                                          final_distance,
                                          reacquire_entry_distance,
                                          required_progress,
+                                         chase_progress,
+                                         required_chase_progress,
+                                         transit_displacement,
+                                         transit_speed,
                                          total_max_h_violation / kDegToRad,
                                          total_max_v_violation / kDegToRad,
                                          total_max_front_violation));
@@ -3696,6 +3803,55 @@ namespace general_planner {
         snapshot.runtime_preserved = last_tracking_runtime_preserved_;
         snapshot.runtime_reason = last_tracking_runtime_reason_;
         return snapshot;
+    }
+
+    std::string GeneralPlanner::getTrackingConfigSummary() const {
+        return fmt::format("tracking_distance={:.3f};distance_tolerance={:.3f};"
+                           "distance_lower_tolerance={:.3f};distance_upper_tolerance={:.3f};"
+                           "height_offset={:.3f};height_tolerance={:.3f};safe_distance={:.3f};"
+                           "hard_safe_distance={:.3f};fov_h_deg={:.3f};fov_v_deg={:.3f};"
+                           "fov_range={:.3f};fov_check_strict={};fov_commit_check_enable={};"
+                           "frontend_fov_feasibility_enable={};runtime_manager_enable={};"
+                           "keep_old_horizon={:.3f};keep_old_safety_dt={:.3f};"
+                           "keep_old_requires_fov={};short_safety_grace_enable={};"
+                           "anti_rollback_enable={};reacquire_distance={:.3f};"
+                           "reacquire_min_progress_distance={:.3f};reacquire_min_progress_ratio={:.3f};"
+                           "reacquire_fov_relax_enable={};reacquire_fov_deferred_strict_enable={};"
+                           "optimizer_commit_safety_precheck_enable={};"
+                           "detour_grace_enable={};detour_grace_horizon={:.3f};"
+                           "frontend_astar={};use_visible_region={};max_vel={:.3f};max_acc={:.3f}",
+                           cfg_.tracking_distance,
+                           cfg_.tracking_distance_tolerance,
+                           cfg_.tracking_distance_lower_tolerance,
+                           cfg_.tracking_distance_upper_tolerance,
+                           cfg_.tracking_height_offset,
+                           cfg_.tracking_height_tolerance,
+                           cfg_.tracking_safe_distance,
+                           cfg_.tracking_hard_safe_distance,
+                           cfg_.tracking_fov_horizontal_deg,
+                           cfg_.tracking_fov_vertical_deg,
+                           cfg_.tracking_fov_range,
+                           static_cast<int>(cfg_.tracking_fov_check_strict),
+                           static_cast<int>(cfg_.tracking_fov_commit_check_enable),
+                           static_cast<int>(cfg_.tracking_frontend_fov_feasibility_enable),
+                           static_cast<int>(cfg_.tracking_runtime_manager_enable),
+                           cfg_.tracking_keep_old_horizon,
+                           cfg_.tracking_keep_old_safety_dt,
+                           static_cast<int>(cfg_.tracking_keep_old_requires_fov),
+                           static_cast<int>(cfg_.tracking_keep_old_short_safety_grace_enable),
+                           static_cast<int>(cfg_.tracking_anti_rollback_enable),
+                           cfg_.tracking_reacquire_distance,
+                           cfg_.tracking_reacquire_min_progress_distance,
+                           cfg_.tracking_reacquire_min_progress_ratio,
+                           static_cast<int>(cfg_.tracking_reacquire_fov_relax_enable),
+                           static_cast<int>(cfg_.tracking_reacquire_fov_deferred_strict_enable),
+                           static_cast<int>(cfg_.tracking_optimizer_commit_safety_precheck_enable),
+                           static_cast<int>(cfg_.tracking_detour_grace_enable),
+                           cfg_.tracking_detour_grace_horizon,
+                           static_cast<int>(cfg_.tracking_frontend_astar),
+                           static_cast<int>(cfg_.tracking_use_visible_region),
+                           cfg_.exp_traj_cfg.max_vel,
+                           cfg_.exp_traj_cfg.max_acc);
     }
 
     double GeneralPlanner::trackingViewpointErrorScore(const Vec3f &tracker,
@@ -4843,9 +4999,11 @@ namespace general_planner {
 
             Trajectory target_yaw_traj;
             std::string target_yaw_reason;
-            if (buildTrackingTargetYawTrajectory(candidate_pos,
-                                                 check_target_prediction,
-                                                 target_yaw_traj) &&
+            const bool target_yaw_generated =
+                    buildTrackingTargetYawTrajectory(candidate_pos,
+                                                     check_target_prediction,
+                                                     target_yaw_traj);
+            if (target_yaw_generated &&
                 trackingTrajectorySatisfiesFov(candidate_pos,
                                                target_yaw_traj,
                                                check_target_prediction,
@@ -4866,10 +5024,39 @@ namespace general_planner {
                 return true;
             }
 
+            if (allow_reacquire_fov_relax) {
+                if (target_yaw_generated && !target_yaw_traj.empty()) {
+                    candidate_yaw = target_yaw_traj;
+                }
+                const std::string fallback_reason =
+                        target_yaw_generated
+                            ? (target_yaw_reason.empty()
+                                   ? "failed_without_reason"
+                                   : target_yaw_reason)
+                            : "generation_failed";
+                setFailureReason(reject_reason,
+                                 optimized_yaw_reason +
+                                 "; target_yaw_fallback=" +
+                                 fallback_reason +
+                                 "; degraded_fov_accepted=1");
+                if (cfg_.print_log) {
+                    ros_ptr_->warn(" -- [Tracking] TRACKING_OPT_FOV_DEGRADED_ACCEPT reason={}, target_yaw_fallback={}, horizon={:.3f}, reacquire_fov_relax={}",
+                                   optimized_yaw_reason,
+                                   fallback_reason,
+                                   fov_horizon,
+                                   allow_reacquire_fov_relax);
+                }
+                return true;
+            }
+
             setFailureReason(reject_reason,
                              optimized_yaw_reason +
                              "; target_yaw_fallback=" +
-                             (target_yaw_reason.empty() ? "failed" : target_yaw_reason));
+                             (target_yaw_generated
+                                  ? (target_yaw_reason.empty()
+                                         ? "failed_without_reason"
+                                         : target_yaw_reason)
+                                  : "generation_failed"));
             return false;
         };
 
@@ -5442,6 +5629,36 @@ namespace general_planner {
 
         traj_opt::TrackingProblem problem;
         TimeConsuming t_frontend("tracking_frontend", false);
+        const StatePVAJ head_state = makeTaskHeadState(from_rest);
+        const bool has_committed_tracking_for_frontend =
+                cfg_.tracking_runtime_manager_enable && tracking_runtime_manager_
+                    ? tracking_runtime_manager_->hasCommittedTracking()
+                    : !cmd_traj_info_.empty();
+        const double initial_target_distance =
+                (head_state.col(0) - target_prediction.front().position).head<2>().norm();
+        const double frontend_fov_range =
+                cfg_.tracking_fov_range > 0.0
+                    ? cfg_.tracking_fov_range
+                    : cfg_.tracking_distance + cfg_.tracking_distance_tolerance;
+        const double frontend_reacquire_entry_distance =
+                std::max({frontend_fov_range,
+                          std::max(0.0, cfg_.tracking_reacquire_distance),
+                          std::max(0.0, cfg_.tracking_reacquire_fov_entry_distance)});
+        const bool frontend_reacquire_mode =
+                cfg_.tracking_reacquire_fov_relax_enable &&
+                (from_rest ||
+                 !has_committed_tracking_for_frontend ||
+                 initial_target_distance > frontend_reacquire_entry_distance);
+        if (frontend_reacquire_mode && frontend_cfg.fov_feasibility_enable) {
+            frontend_cfg.fov_feasibility_enable = false;
+            if (cfg_.print_log) {
+                ros_ptr_->warn(" -- [Tracking] TRACKING_FRONTEND_FOV_FEASIBILITY_DISABLED reason=reacquire_or_uncommitted, from_rest={}, has_committed_tracking={}, initial_dist={:.3f}, entry_dist={:.3f}",
+                               from_rest,
+                               has_committed_tracking_for_frontend,
+                               initial_target_distance,
+                               frontend_reacquire_entry_distance);
+            }
+        }
         TrackingFrontend frontend(frontend_cfg, map_manager_, astar_ptr_);
         Vec3f reference_viewpoint = Vec3f::Zero();
         traj_opt::DynamicTargetState reference_target;
@@ -5449,7 +5666,6 @@ namespace general_planner {
                 findTrackingViewpointReference(target_prediction,
                                                reference_viewpoint,
                                                reference_target);
-        const StatePVAJ head_state = makeTaskHeadState(from_rest);
         if (!frontend.buildProblem(head_state,
                                    target_prediction,
                                    problem,
@@ -5607,23 +5823,6 @@ namespace general_planner {
                                                            &tracking_opt_failure_reason);
         time_consuming_[EXP_TRAJ_OPT] = t_opt.stop();
         if (!ok || out_traj.empty()) {
-            if (!from_rest) {
-                if (cfg_.print_log) {
-                    ros_ptr_->warn(" -- [Tracking] TRACKING_RETRY_FROM_REST previous_reason={}, guide_path.size()={}, problem.sfcs.size()={}, problem.target_prediction.size()={}",
-                                   tracking_opt_failure_reason,
-                                   problem.guide_path.size(),
-                                   problem.sfcs.size(),
-                                   problem.target_prediction.size());
-                }
-                const RET_CODE fallback_ret = optimizeTrackingTask(target_prediction, true);
-                if (fallback_ret != FAILED) {
-                    return fallback_ret;
-                }
-                if (cfg_.print_log) {
-                    ros_ptr_->warn(" -- [Tracking] TRACKING_RETRY_FROM_REST_FAILED previous_reason={}",
-                                   tracking_opt_failure_reason);
-                }
-            }
             setTrackingDiagnostic("optimizer",
                                   tracking_opt_failure_reason,
                                   problem,
@@ -5634,7 +5833,9 @@ namespace general_planner {
                            problem.sfcs.size(),
                            problem.target_prediction.size(),
                            out_traj.empty() ? 0.0 : out_traj.getTotalDuration());
-            return failOrKeepOld("Tracking optimization failed: " + tracking_opt_failure_reason);
+            const std::string failure_message =
+                    "Tracking optimization failed: " + tracking_opt_failure_reason;
+            return failOrKeepOld(failure_message);
         }
         setTrackingDiagnostic("candidate",
                               "optimizer_success",

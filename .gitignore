@@ -7,6 +7,7 @@ src/Localization/FAST_LIO/PCD
 *.dae
 *.csv
 *.pcd
+*.bin
 *.bag
 __pycache__/
 *.pyc

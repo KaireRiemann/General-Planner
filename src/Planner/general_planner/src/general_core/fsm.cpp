@@ -361,6 +361,72 @@ namespace fsm {
                               replan_log_id);
     }
 
+    void Fsm::recordTrackingTargetInput(const std::string &source,
+                                        const traj_opt::DynamicTargetStates &prediction,
+                                        const double source_stamp,
+                                        const std::size_t raw_sample_count) {
+        if (!cfg_.diagnostic_log_en || !useTrackingLogStream() || prediction.empty()) {
+            return;
+        }
+
+        const double now = ros_ptr_ ? ros_ptr_->getSimTime() : 0.0;
+        const auto &first = prediction.front();
+        const auto &last = prediction.back();
+        const bool prediction_static = trackingPredictionStatic(prediction);
+        const uint64_t target_seq = ++tracking_target_input_seq_;
+
+        const bool first_log = last_tracking_target_log_time_ < 0.0;
+        const bool source_changed = source != last_tracking_target_log_source_;
+        const bool size_changed = prediction.size() != last_tracking_target_log_size_;
+        const bool static_changed = prediction_static != last_tracking_target_log_static_;
+        const bool endpoint_changed =
+                (first.position - last_tracking_target_log_front_).norm() > 0.10 ||
+                (last.position - last_tracking_target_log_back_).norm() > 0.10;
+        const bool period_elapsed = first_log || now - last_tracking_target_log_time_ >= 0.20;
+        if (!period_elapsed && !source_changed && !size_changed && !static_changed && !endpoint_changed) {
+            return;
+        }
+
+        last_tracking_target_log_time_ = now;
+        last_tracking_target_log_source_ = source;
+        last_tracking_target_log_size_ = prediction.size();
+        last_tracking_target_log_front_ = first.position;
+        last_tracking_target_log_back_ = last.position;
+        last_tracking_target_log_static_ = prediction_static;
+
+        const double prediction_duration = std::max(0.0, last.t - first.t);
+        const double source_age = source_stamp > 0.0 ? now - source_stamp : -1.0;
+        const double displacement = (last.position - first.position).norm();
+        recordDiagnosticEvent("INFO",
+                              "tracking_target_input",
+                              fmt::format("source={};target_seq={};raw_samples={};prediction.size()={};"
+                                          "prediction_duration={:.3f};source_stamp={:.6f};source_age={:.3f};"
+                                          "prediction_static={};displacement={:.3f};"
+                                          "p0=({:.3f},{:.3f},{:.3f});v0=({:.3f},{:.3f},{:.3f});"
+                                          "a0=({:.3f},{:.3f},{:.3f});yaw0={:.3f};yaw_rate0={:.3f};"
+                                          "pend=({:.3f},{:.3f},{:.3f});vend=({:.3f},{:.3f},{:.3f});"
+                                          "aend=({:.3f},{:.3f},{:.3f});yaw_end={:.3f};yaw_rate_end={:.3f}",
+                                          source,
+                                          target_seq,
+                                          raw_sample_count,
+                                          prediction.size(),
+                                          prediction_duration,
+                                          source_stamp,
+                                          source_age,
+                                          static_cast<int>(prediction_static),
+                                          displacement,
+                                          first.position.x(), first.position.y(), first.position.z(),
+                                          first.velocity.x(), first.velocity.y(), first.velocity.z(),
+                                          first.acceleration.x(), first.acceleration.y(), first.acceleration.z(),
+                                          first.yaw,
+                                          first.yaw_rate,
+                                          last.position.x(), last.position.y(), last.position.z(),
+                                          last.velocity.x(), last.velocity.y(), last.velocity.z(),
+                                          last.acceleration.x(), last.acceleration.y(), last.acceleration.z(),
+                                          last.yaw,
+                                          last.yaw_rate));
+    }
+
     void Fsm::saveDiagnosticLogToFile(const std::string &name) {
         if (!cfg_.diagnostic_log_en) {
             return;
@@ -552,19 +618,12 @@ namespace fsm {
         if (ret_code == EMER) {
             ChangeState("ReplanTimerCallback", EMER_STOP);
         } else if (ret_code == FAILED && (trackingMode() || trackingPerchingMode())) {
-            {
-                std::lock_guard<std::mutex> lock(task_mutex_);
-                task_new_ = true;
-            }
-            finish_plan = false;
-            plan_from_rest_ = false;
             recordDiagnosticEvent("WARN",
-                                  "tracking_reacquire_requested",
-                                  fmt::format("reason=replan_failed;prediction_static={};input_prediction.size()={}",
+                                  "tracking_replan_failed_keep_current",
+                                  fmt::format("prediction_static={};input_prediction.size()={}",
                                               static_cast<int>(replan_tracking_static),
                                               replan_tracking_input_prediction_size),
                                   ret_code);
-            ChangeState("TrackingReplanFailed", GENERATE_TRAJ);
         } else if (ret_code == FAILED &&
                    state2stateMode() &&
                    perception_replan_trigger &&
@@ -731,9 +790,12 @@ namespace fsm {
     }
 
     void Fsm::callMainFsmOnce() {
-        std::unique_lock<std::mutex> tick_lock(fsm_tick_mutex_, std::try_to_lock);
-        if (!tick_lock.owns_lock()) {
-            return;
+        std::unique_lock<std::mutex> tick_lock;
+        if (!trackingMode() && !trackingPerchingMode()) {
+            tick_lock = std::unique_lock<std::mutex>(fsm_tick_mutex_, std::try_to_lock);
+            if (!tick_lock.owns_lock()) {
+                return;
+            }
         }
         if (stop) {
             return;
@@ -1196,17 +1258,12 @@ namespace fsm {
         const bool static_no_committed_limit =
                 prediction_static && no_committed_tracking && failure_limit_reached;
 
-        double backoff = std::max(0.0, cfg_.tracking_plan_from_rest_failure_backoff);
-        if (static_no_committed_limit) {
-            backoff = std::max(backoff, std::max(0.0, cfg_.tracking_plan_from_rest_limited_backoff));
-        }
-        const double now = ros_ptr_->getSimTime();
-        tracking_plan_from_rest_backoff_until_ = backoff > 1.0e-6 ? now + backoff : -1.0;
+        const double backoff = 0.0;
+        tracking_plan_from_rest_backoff_until_ = -1.0;
         last_tracking_plan_from_rest_backoff_log_time_ = -1.0;
 
-        cout << YELLOW << " -- [Fsm] Tracking PlanFromRest failed, backoff "
-             << std::fixed << std::setprecision(2) << backoff
-             << "s. consecutive_failures=" << tracking_plan_from_rest_fail_count_;
+        cout << YELLOW << " -- [Fsm] Tracking PlanFromRest failed, retry from GENERATE_TRAJ. consecutive_failures="
+             << tracking_plan_from_rest_fail_count_;
         if (failure_limit > 0) {
             cout << "/" << failure_limit;
         }
@@ -1231,27 +1288,6 @@ namespace fsm {
                                           diag.phase,
                                           diag.reason),
                               retcode);
-
-        if (static_no_committed_limit && cfg_.tracking_static_finish_on_plan_failure) {
-            {
-                std::lock_guard<std::mutex> lock(task_mutex_);
-                task_new_ = false;
-            }
-            gi_.new_goal = false;
-            plan_from_rest_ = false;
-            finish_plan = true;
-            tracking_plan_from_rest_backoff_until_ = -1.0;
-            recordDiagnosticEvent("ERROR",
-                                  "tracking_static_plan_from_rest_finished_after_limit",
-                                  fmt::format("count={};prediction_static=1;has_committed_tracking=0",
-                                              tracking_plan_from_rest_fail_count_),
-                                  retcode);
-            tracking_plan_from_rest_fail_count_ = 0;
-            ChangeState("TrackingPlanFromRestFailureLimit", WAIT_GOAL);
-            return;
-        }
-
-        ChangeState("TrackingPlanFromRestBackoff", WAIT_GOAL);
     }
 
     bool Fsm::activeTaskReady() {
@@ -1262,21 +1298,9 @@ namespace fsm {
             if (trackingPerchingPerchingActive()) {
                 return false;
             }
-            if (finish_plan && !task_new_) {
-                return false;
-            }
-            if (trackingPlanFromRestBackoffActive()) {
-                return false;
-            }
             return trackingTaskReady();
         }
         if (trackingPerchingMode()) {
-            if (finish_plan && !task_new_) {
-                return false;
-            }
-            if (trackingPlanFromRestBackoffActive()) {
-                return false;
-            }
             return !perching_contact_reached_ &&
                    planner_ptr_ &&
                    !planner_ptr_->trackingPerchingContactReached() &&
@@ -1317,43 +1341,7 @@ namespace fsm {
     }
 
     bool Fsm::markTrackingFinishedIfStaticTarget() {
-        if (!trackingMode() && !trackingPerchingMode()) {
-            return false;
-        }
-
-        traj_opt::DynamicTargetStates prediction;
-        double target_age = 0.0;
-        {
-            std::lock_guard<std::mutex> lock(task_mutex_);
-            if (tracking_target_prediction_.empty() || tracking_target_rcv_time_ < 0.0) {
-                return false;
-            }
-            const double now = ros_ptr_->getSimTime();
-            target_age = now - tracking_target_rcv_time_;
-            if (target_age > cfg_.task_timeout) {
-                return false;
-            }
-            prediction = tracking_target_prediction_;
-        }
-
-        if (!trackingPredictionStatic(prediction)) {
-            return false;
-        }
-
-        {
-            std::lock_guard<std::mutex> lock(task_mutex_);
-            task_new_ = false;
-        }
-        gi_.new_goal = false;
-        finish_plan = true;
-        resetTrackingPlanFromRestFailureState();
-        recordDiagnosticEvent("INFO",
-                              "tracking_static_target_finished",
-                              fmt::format("prediction.size()={};target_age={:.3f};block_replan_until_target_changes=1",
-                                          prediction.size(),
-                                          target_age),
-                              FINISH);
-        return true;
+        return false;
     }
 
     void Fsm::logStaticTrackingReplanDecision(const std::string &reason) {

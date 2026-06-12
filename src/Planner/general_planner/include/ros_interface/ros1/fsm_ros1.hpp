@@ -831,11 +831,25 @@ namespace fsm {
             const double pose_yaw = yawFromMsgQuat(msg->pose.pose.orientation);
 
             traj_opt::DynamicTargetStates prediction;
+            bool used_kinodynamic_prediction = false;
             if (!cfg_.tracking_prediction_use_kinodynamic ||
-                !buildKinodynamicTrackingPrediction(p, v, pose_yaw, prediction)) {
+                !(used_kinodynamic_prediction =
+                          buildKinodynamicTrackingPrediction(p, v, pose_yaw, prediction))) {
                 buildConstantVelocityTrackingPrediction(p, v, pose_yaw, prediction);
             }
             setTrackingTargetPrediction(prediction);
+            traj_opt::DynamicTargetStates accepted_prediction;
+            if (getTrackingTargetPrediction(accepted_prediction)) {
+                const double source_stamp = msg->header.stamp.isZero()
+                                            ? -1.0
+                                            : msg->header.stamp.toSec();
+                recordTrackingTargetInput(used_kinodynamic_prediction
+                                              ? "target_odom_kinodynamic"
+                                              : "target_odom_constant_velocity",
+                                          accepted_prediction,
+                                          source_stamp,
+                                          prediction.size());
+            }
         }
 
         static Vec3f poseMsgPosition(const geometry_msgs::PoseStamped &pose) {
@@ -846,6 +860,15 @@ namespace fsm {
 
         void trackingPredictionPathCallback(const nav_msgs::PathConstPtr &msg) {
             if (!cfg_.tracking_use_target_prediction_path || msg->poses.size() < 2) {
+                if (useTrackingLogStream()) {
+                    recordDiagnosticEvent("WARN",
+                                          "tracking_target_input_rejected",
+                                          fmt::format("source=target_prediction_path;reason={};raw_samples={}",
+                                                      cfg_.tracking_use_target_prediction_path
+                                                          ? "insufficient_path_samples"
+                                                          : "prediction_path_disabled",
+                                                      msg->poses.size()));
+                }
                 return;
             }
 
@@ -891,6 +914,19 @@ namespace fsm {
 
             last_tracking_prediction_path_time_ = ros::Time::now();
             setTrackingTargetPrediction(prediction);
+            traj_opt::DynamicTargetStates accepted_prediction;
+            if (getTrackingTargetPrediction(accepted_prediction)) {
+                double source_stamp = msg->header.stamp.isZero()
+                                      ? -1.0
+                                      : msg->header.stamp.toSec();
+                if (source_stamp < 0.0 && !msg->poses.front().header.stamp.isZero()) {
+                    source_stamp = msg->poses.front().header.stamp.toSec();
+                }
+                recordTrackingTargetInput("target_prediction_path",
+                                          accepted_prediction,
+                                          source_stamp,
+                                          msg->poses.size());
+            }
         }
 
         void perchingSurfaceCallback(const nav_msgs::OdometryConstPtr &msg) {
@@ -1102,6 +1138,29 @@ namespace fsm {
                                   false,
                                   -1,
                                   0);
+            if (useTrackingLogStream()) {
+                recordDiagnosticEvent("INFO",
+                                      "tracking_config_snapshot",
+                                      fmt::format("target_odom_topic={};target_prediction_topic={};use_prediction_path={};"
+                                                  "prediction_horizon={:.3f};prediction_dt={:.3f};prediction_kinodynamic={};"
+                                                  "task_timeout={:.3f};cmd_topic={};mpc_cmd_topic={};planner_config={}",
+                                                  cfg_.tracking_target_odom_topic,
+                                                  cfg_.tracking_target_prediction_topic,
+                                                  static_cast<int>(cfg_.tracking_use_target_prediction_path),
+                                                  cfg_.tracking_prediction_horizon,
+                                                  cfg_.tracking_prediction_dt,
+                                                  static_cast<int>(cfg_.tracking_prediction_use_kinodynamic),
+                                                  cfg_.task_timeout,
+                                                  cfg_.cmd_topic,
+                                                  cfg_.mpc_cmd_topic,
+                                                  planner_ptr_ ? planner_ptr_->getTrackingConfigSummary()
+                                                               : "planner_missing"),
+                                      -1,
+                                      -1,
+                                      false,
+                                      -1,
+                                      0);
+            }
             if (cfg_.auto_start) {
                 started_ = true;
                 if (explorationMode()) {
