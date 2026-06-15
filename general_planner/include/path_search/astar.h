@@ -26,7 +26,7 @@
 
 #include "Eigen/Dense"
 #include "vector"
-#include "general_core/map_manager.hpp"
+#include "map_manager/map_manager.hpp"
 #include "queue"
 #include "path_search/config.hpp"
 #include "utils/header/type_utils.hpp"

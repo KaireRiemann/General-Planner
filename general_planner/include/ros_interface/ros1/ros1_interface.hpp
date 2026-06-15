@@ -28,7 +28,6 @@
 
 #include "ros_interface/ros1/ros1_adapter.hpp"
 
-
 namespace ros_interface {
 
     class Ros1Interface : public RosInterface {
@@ -51,6 +50,9 @@ namespace ros_interface {
 
             yaw_traj_pub_ = nh_.advertise<visualization_msgs::MarkerArray>("visualization/yaw_traj", 100);
             fov_pub_ = nh_.advertise<visualization_msgs::MarkerArray>("visualization/tracking_fov", 100);
+
+            exploration_frontier_pub_ = nh_.advertise<sensor_msgs::PointCloud2>("visualization/exploration_frontier", 100);
+            exploration_debug_pub_ = nh_.advertise<visualization_msgs::MarkerArray>("visualization/exploration_debug", 100);
 
             /*=============================FOR A* debug ========================================*/
             astar_mkr_pub_ = nh_.advertise<visualization_msgs::MarkerArray>("visualization/astar_debug", 100);
@@ -285,6 +287,104 @@ namespace ros_interface {
             fov_pub_.publish(mkr_arr);
         }
 
+        void vizExplorationDebug(const general_planner::ExplorationDebugInfo &debug_info) override {
+            if (!visualization_en_) {
+                return;
+            }
+
+            if (exploration_frontier_pub_.getNumSubscribers() > 0) {
+                super_utils::vec_Vec3f frontier_points;
+                frontier_points.reserve(debug_info.frontier_voxels.size());
+                for (const auto &voxel : debug_info.frontier_voxels) {
+                    frontier_points.push_back(voxel.position);
+                }
+                sensor_msgs::PointCloud2 frontier_cloud;
+                Ros1Adapter::addVecPointsToPointCloud2(frontier_points, frontier_cloud);
+                exploration_frontier_pub_.publish(frontier_cloud);
+            }
+
+            if (exploration_debug_pub_.getNumSubscribers() <= 0) {
+                return;
+            }
+
+            Ros1Adapter::deleteAllMarkerArray(exploration_debug_pub_);
+
+            visualization_msgs::MarkerArray mkr_arr;
+            const ros::Time stamp = ros::Time::now();
+
+            auto toMsgPoint = [](const super_utils::Vec3f &p) {
+                geometry_msgs::Point msg;
+                msg.x = p.x();
+                msg.y = p.y();
+                msg.z = p.z();
+                return msg;
+            };
+
+            auto addSphereList = [&](const super_utils::vec_Vec3f &points,
+                                     const std::string &ns,
+                                     const int id,
+                                     const double size,
+                                     const Color &color) {
+                if (points.empty()) {
+                    return;
+                }
+
+                visualization_msgs::Marker marker;
+                marker.header.frame_id = DEFAULT_FRAME_ID;
+                marker.header.stamp = stamp;
+                marker.ns = ns;
+                marker.id = id;
+                marker.action = visualization_msgs::Marker::ADD;
+                marker.pose.orientation.w = 1.0;
+                marker.type = visualization_msgs::Marker::SPHERE_LIST;
+                marker.scale.x = size;
+                marker.scale.y = size;
+                marker.scale.z = size;
+                marker.color = color;
+                for (const auto &p : points) {
+                    marker.points.push_back(toMsgPoint(p));
+                }
+                mkr_arr.markers.push_back(marker);
+            };
+
+            super_utils::vec_Vec3f candidate_viewpoints;
+            super_utils::vec_Vec3f reachable_viewpoints;
+
+            for (const auto &viewpoint : debug_info.viewpoints) {
+                if (!viewpoint.accepted || viewpoint.selected) {
+                    continue;
+                }
+
+                if (viewpoint.reachable) {
+                    reachable_viewpoints.push_back(viewpoint.position);
+                } else {
+                    candidate_viewpoints.push_back(viewpoint.position);
+                }
+            }
+
+            addSphereList(candidate_viewpoints,
+                          "exploration_viewpoints",
+                          0,
+                          std::max(0.13, resolution_ * 1.1),
+                          Color(Color::Teal(), 0.85));
+            addSphereList(reachable_viewpoints,
+                          "exploration_viewpoint_reachable",
+                          0,
+                          std::max(0.18, resolution_ * 1.4),
+                          Color(Color::Yellow(), 0.9));
+
+            if (debug_info.selected_goal.valid) {
+                Ros1Adapter::addPointToMarkerArray(mkr_arr,
+                                                   debug_info.selected_goal.position,
+                                                   Color(Color::Green(), 1.0),
+                                                   "exploration_selected_viewpoint",
+                                                   std::max(0.32, resolution_ * 2.2),
+                                                   0);
+            }
+
+            exploration_debug_pub_.publish(mkr_arr);
+        }
+
 
         /*=============================FOR A* debug ========================================*/
         void vizAstarBoundingBox(const super_utils::Vec3f &bbox_min, const super_utils::Vec3f &bbox_max) override {
@@ -459,6 +559,8 @@ namespace ros_interface {
         ros::Publisher goal_pub_, backup_sfc_pub_, backup_traj_pub_, committed_traj_pub_,
                 receding_traj_pub_, exp_sfcs_pub_, point_pub_, fov_pub_,
                 exp_traj_pub_, astar_pub_, receding_sfc_pub_, backup_traj_star_point_, yaw_traj_pub_, guide_path_pub_;
+
+        ros::Publisher exploration_frontier_pub_, exploration_debug_pub_;
 
         ros::Publisher astar_mkr_pub_;
 

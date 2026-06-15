@@ -31,7 +31,7 @@
 #include <data_structure/base/polytope.h>
 #include <data_structure/base/trajectory.h>
 
-#include <general_core/map_manager.hpp>
+#include <map_manager/map_manager.hpp>
 #include <utils/header/fmt_eigen.hpp>
 
 #include <ros_interface/ros_interface.hpp>

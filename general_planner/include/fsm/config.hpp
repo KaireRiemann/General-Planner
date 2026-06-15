@@ -74,7 +74,9 @@ namespace fsm {
             mode == "dynamic-takeoff" || mode == "unperching") {
             return "dynamic_takeoff";
         }
-        if (mode == "explore" || mode == "exploration") {
+        if (mode == "explore" || mode == "exploration" ||
+            mode == "complete_exploration" || mode == "complete-exploration" ||
+            mode == "global_exploration" || mode == "rog_exploration") {
             return "exploration";
         }
         return "state2state";

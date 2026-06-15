@@ -40,9 +40,10 @@
 #include "traj_opt/traj_manager.h"
 #include "path_search/astar.h"
 #include "rog_map/rog_map.h"
-#include "general_core/map_manager.hpp"
+#include "map_manager/map_manager.hpp"
 #include "general_core/corridor_generator.h"
 #include "general_core/fov_checker.h"
+#include "general_core/complete_exploration_frontend.hpp"
 #include "general_core/exploration_frontend.hpp"
 #include "general_core/exploration_runtime_manager.hpp"
 #include "general_core/tracking_perching_frontend.hpp"
@@ -118,6 +119,7 @@ namespace general_planner {
         std::unique_ptr<TrackingToPerchingInitializer> tracking_to_perching_initializer_;
         std::unique_ptr<SE3AggressiveManager> se3_aggressive_manager_;
         std::unique_ptr<ExplorationFrontend> exploration_frontend_;
+        std::unique_ptr<CompleteExplorationFrontend> complete_exploration_frontend_;
         std::unique_ptr<ExplorationRuntimeManager> exploration_runtime_manager_;
 
         vector<double> time_consuming_;
@@ -597,6 +599,14 @@ namespace general_planner {
         TakeoffFrontend::Config makeTakeoffFrontendConfig() const;
 
         ExplorationFrontend::Config makeExplorationFrontendConfig() const;
+
+        CompleteExplorationFrontend::Config makeCompleteExplorationFrontendConfig() const;
+
+        bool useCompleteExploration() const;
+
+        RET_CODE PlanCompleteExplorationFromRestImpl(const bool &new_task);
+
+        RET_CODE ReplanCompleteExplorationOnceImpl(const bool &new_task);
 
         RET_CODE tryCommitPerchingFromTracking(
             const traj_opt::DynamicTargetStates &target_prediction,

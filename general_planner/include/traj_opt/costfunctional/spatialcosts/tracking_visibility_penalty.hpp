@@ -6,7 +6,7 @@
 
 #include <Eigen/Core>
 
-#include "general_core/map_manager.hpp"
+#include "map_manager/map_manager.hpp"
 #include "traj_opt/costfunctional/spatialcosts/esdf_distance_penalty.hpp"
 #include "traj_opt/costfunctional/penalty_utils.hpp"
 

@@ -7,7 +7,7 @@ fsm:
   click_yaw_en: true
   task_planner_en: false
   task_mode_topic: "/planning/task_mode"
-  replan_rate: 5.0
+  replan_rate: 10.0
   cmd_topic: "/planning/pos_cmd"
   mpc_cmd_topic: "/planning_cmd/poly_traj"
   timer_en: true
@@ -32,7 +32,7 @@ general_planner:
   ellipsoid_optimizer: classic
   ellipsoid_optimizer_fallback: false
   obs_skip_num: 2
-  replan_forward_dt: 0.1
+  replan_forward_dt: 0.2
   planning_horizon: 8.0
   sensing_horizon: -1
   receding_dis: 4.0
@@ -49,28 +49,100 @@ general_planner:
   yaw_mode: 1
   mpc_horizon: 15
 
+  exploration:
+    enable: true
+    mode: complete
+    print_log: true
+
+  complete_exploration:
+    enable: true
+    print_log: true
+    use_memory_grid: true
+    use_region_graph: false
+    use_coverage_guidance: false
+    use_fuel_style_tour: true
+    use_rog_complete_frontier: false
+    update_radius: 10.0
+    finish_confirm_time: 2.0
+    finish_confirm_count: 5
+    memory_resolution: 0.5
+    exploration_min: [-60.0, -60.0, -1.0]
+    exploration_max: [60.0, 60.0, 5.5]
+    frontier_cluster_radius: 0.9
+    min_frontier_cluster_size: 6
+    frontier_merge_center_distance: 1.2
+    frontier_max_fail_count: 3
+    region_resolution: 3.5
+    connectivity_radius: 4.5
+    revisit_penalty: 5.0
+    max_region_num: 64
+    viewpoint_min_distance: 1.4
+    viewpoint_max_distance: 4.5
+    viewpoint_min_robot_distance: 0.8
+    viewpoint_safe_distance: 0.45
+    viewpoint_yaw_sample_num: 12
+    viewpoint_radius_sample_num: 4
+    max_viewpoints_per_frontier: 4
+    max_total_candidates: 96
+    weight_travel: 1.0
+    weight_yaw: 0.5
+    weight_curvature: 0.8
+    weight_info_gain: -2.0
+    weight_unknown_risk: 1.0
+    weight_coverage_order: 1.5
+    weight_revisit: 2.0
+    weight_fail: 2.0
+    lazy_astar_enable: true
+    max_frontiers_per_cycle: 18
+    max_astar_checks_per_cycle: 18
+    travel_cost_cache_timeout: 0.5
+    tour_refined_num: 5
+    tour_refined_radius: 5.0
+    tour_replan_min_interval: 1.0
+    tour_radius_far: 5.0
+    tour_radius_close: 1.5
+
   exploration_enable: true
   exploration_frontier_search_radius: 10.0
   exploration_frontier_cluster_radius: 0.8
   exploration_min_frontier_cluster_size: 5
+  exploration_frontier_lifecycle_match_distance: 1.2
+  exploration_frontier_lifecycle_min_observations: 1
+  exploration_frontier_lifecycle_max_missing_frames: 3
   exploration_viewpoint_min_distance: 1.2
   exploration_viewpoint_max_distance: 4.0
   exploration_viewpoint_height_offset: 0.0
   exploration_viewpoint_safe_distance: 0.45
-  exploration_viewpoint_yaw_sample_num: 16
-  exploration_viewpoint_radius_sample_num: 3
-  exploration_max_candidate_num: 128
+  exploration_viewpoint_side_step: 0.8
+  exploration_viewpoint_yaw_sample_num: 24
+  exploration_viewpoint_radius_sample_num: 4
+  exploration_viewpoint_top_view_num: 15
+  exploration_viewpoint_max_decay: 0.8
+  exploration_viewpoint_min_visible_cells: 3
+  exploration_max_candidate_num: 256
   exploration_weight_travel: 1.0
   exploration_weight_yaw: 0.5
   exploration_weight_curvature: 0.8
   exploration_weight_info_gain: -2.0
   exploration_weight_unknown_risk: 1.0
+  exploration_weight_high_speed: -1.0
+  exploration_weight_lifecycle: -0.1
   exploration_min_information_gain: 3.0
   exploration_goal_switch_min_score_improvement: 0.25
   exploration_goal_reached_distance: 0.5
+  exploration_high_speed_open_space_radius: 2.0
+  exploration_high_speed_min_speed: 0.8
   exploration_unknown_as_occupied_for_motion: true
   exploration_require_line_free_to_frontier: false
   exploration_use_astar_cost: true
+  exploration_global_grid_cell_size: 4.0
+  exploration_global_max_nodes: 80
+  exploration_global_hybrid_search_radius: 15.0
+  exploration_global_unknown_penalty_factor: 2.0
+  exploration_global_refined_num: 7
+  exploration_global_refined_radius: 8.0
+  exploration_lkh_binary: ""
+  exploration_lkh_work_dir: "/tmp/general_planner_lkh"
   exploration_print_log: true
 
 traj_opt:
@@ -180,7 +252,7 @@ rog_map:
   unk_inflation_step: 1
   map_size: [60, 60, 8]
   fix_map_origin: [0, 0, 1.5]
-  frontier_extraction_en: false
+  frontier_extraction_en: true
   virtual_ceil_height: 5.5
   virtual_ground_height: -0.1
   load_pcd_en: false

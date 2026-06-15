@@ -3,8 +3,7 @@
     <arg name="sim_config_path" default="$(find task_planner)/config/exploration_big_field_sim.yaml"/>
     <arg name="rviz" default="true"/>
     <arg name="marsim" default="true"/>
-    <arg name="top_down" default="true"/>
-    <arg name="fpv" default="true"/>
+    <arg name="exploration" default="true"/>
 
     <node if="$(arg marsim)" pkg="perfect_drone_sim" type="perfect_drone"
           name="perfect_drone" output="screen" clear_params="true">
@@ -17,9 +16,7 @@
     </node>
 
     <group if="$(arg rviz)">
-        <node if="$(arg top_down)" pkg="rviz" type="rviz" name="exploration_top_down"
-              args="-d $(find perfect_drone_sim)/rviz/top_down.rviz" output="log"/>
-        <node if="$(arg fpv)" pkg="rviz" type="rviz" name="exploration_fpv"
-              args="-d $(find perfect_drone_sim)/rviz/fpv.rviz" output="log"/>
+        <node if="$(arg exploration)" pkg="rviz" type="rviz" name="exploration_top_down"
+              args="-d $(find perfect_drone_sim)/rviz/exploration.rviz" output="log"/>
     </group>
 </launch>

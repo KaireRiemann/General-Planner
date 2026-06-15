@@ -31,6 +31,7 @@
 #include <fmt/color.h>
 #include <data_structure/base/trajectory.h>
 #include <data_structure/base/polytope.h>
+#include <general_core/exploration_debug.hpp>
 #include <general_core/general_ret_code.hpp>
 
 #define TINYCOLORMAP_WITH_EIGEN
@@ -116,6 +117,10 @@ namespace ros_interface{
                                     const double &horizontal_fov_deg,
                                     const double &vertical_fov_deg,
                                     const double &range) {}
+
+        virtual void vizExplorationDebug(const general_planner::ExplorationDebugInfo &debug_info) {
+            (void)debug_info;
+        }
 
         /*For Astar debug ==================================*/
         virtual void vizAstarBoundingBox(const Vec3f & bbox_min, const Vec3f & bbox_max) = 0;

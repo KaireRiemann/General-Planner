@@ -25,6 +25,7 @@
 #include <checker/state2state_checker.hpp>
 #include <checker/trajectory_checker.hpp>
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <exception>
 #include <stdexcept>
@@ -71,6 +72,32 @@ namespace general_planner {
                                   const checker::CheckResult &result) {
             logCheckResult(ros_ptr, context, result);
             return result.rejected();
+        }
+
+        int state2StateInputGeneralRetCode(const checker::CheckResult &input_check) {
+            if (input_check.code == "MAP_NOT_READY") {
+                return GENERAL_RET_CODE::GENERAL_MAP_NOT_READY;
+            }
+            if (input_check.code == "ODOM_NOT_RECEIVED" ||
+                input_check.code == "ODOM_STALE" ||
+                input_check.code == "ROBOT_STATE_NON_FINITE" ||
+                input_check.code == "ROBOT_QUAT_INVALID") {
+                return GENERAL_RET_CODE::GENERAL_NO_ODOM;
+            }
+            return GENERAL_RET_CODE::GENERAL_UNDEFINED;
+        }
+
+        bool shouldCountCompleteExplorationFailure(const int general_ret_code) {
+            return general_ret_code != GENERAL_RET_CODE::GENERAL_NO_ODOM &&
+                   general_ret_code != GENERAL_RET_CODE::GENERAL_MAP_NOT_READY;
+        }
+
+        bool robotOdomStale(const rog_map::RobotState &robot_state,
+                            const double now,
+                            const double max_odom_age = 0.5) {
+            return robot_state.rcv_time > 0.0 &&
+                   std::isfinite(now) &&
+                   now - robot_state.rcv_time > max_odom_age;
         }
 
         void warnHighSpeedMargin(const ros_interface::RosInterface::Ptr &ros_ptr,
@@ -650,6 +677,8 @@ namespace general_planner {
         takeoff_optimizer_->setSafeDistance(cfg_.esdf_safe_distance);
         exploration_frontend_ = std::make_unique<ExplorationFrontend>(
                 makeExplorationFrontendConfig(), map_manager_, astar_ptr_);
+        complete_exploration_frontend_ = std::make_unique<CompleteExplorationFrontend>(
+                makeCompleteExplorationFrontendConfig(), map_manager_, astar_ptr_);
         exploration_runtime_manager_ = std::make_unique<ExplorationRuntimeManager>(cfg_);
         const auto ellipsoid_optimizer_config =
                 optimization_utils::EllipsoidOptimizer::makeConfig(cfg_.ellipsoid_optimizer,
@@ -865,12 +894,11 @@ namespace general_planner {
                                                                 goal_yaw,
                                                                 robot_state_,
                                                                 map_manager_,
-                                                                ros_ptr_->getSimTime());
+                                                                ros_ptr_->getSimTime(),
+                                                                useCompleteExploration() ? 1.0 : 0.5);
         if (rejectOnCheckFailure(ros_ptr_, "PlanFromRest input", input_check)) {
             latest_replan.setGoal(goal_p, goal_yaw, robot_state_);
-            latest_replan.setRetCode(input_check.code == "MAP_NOT_READY"
-                                     ? GENERAL_RET_CODE::GENERAL_MAP_NOT_READY
-                                     : GENERAL_RET_CODE::GENERAL_UNDEFINED);
+            latest_replan.setRetCode(state2StateInputGeneralRetCode(input_check));
             return FAILED;
         }
         warnHighSpeedMargin(ros_ptr_, cfg_, robot_state_.v.norm(), "PlanFromRest high-speed margin");
@@ -1011,13 +1039,12 @@ namespace general_planner {
                                                                 goal_yaw,
                                                                 robot_state_,
                                                                 map_manager_,
-                                                                ros_ptr_->getSimTime());
+                                                                ros_ptr_->getSimTime(),
+                                                                useCompleteExploration() ? 1.0 : 0.5);
         if (rejectOnCheckFailure(ros_ptr_, "ReplanOnce input", input_check)) {
             latest_replan.reset();
             latest_replan.setGoal(goal_p, goal_yaw, robot_state_);
-            latest_replan.setRetCode(input_check.code == "MAP_NOT_READY"
-                                     ? GENERAL_RET_CODE::GENERAL_MAP_NOT_READY
-                                     : GENERAL_RET_CODE::GENERAL_UNDEFINED);
+            latest_replan.setRetCode(state2StateInputGeneralRetCode(input_check));
             return FAILED;
         }
         warnHighSpeedMargin(ros_ptr_, cfg_, robot_state_.v.norm(), "ReplanOnce high-speed margin");
@@ -1137,9 +1164,19 @@ namespace general_planner {
                 ros_ptr_->info(" -- [GeneralPlanner] in [ReplanOnce]: Replan a new back traj success, all replan success.");
             return SUCCESS;
         } else if (back_ret_code == NO_NEED) {
-	            // 这次生成backup轨迹的点没有意义,
-	            robot_on_backup_traj_ = false;
-	            last_exp_traj_info_ = exp_traj_info;
+            if (exp_ret_code == SUCCESS) {
+                if (rejectOnCheckFailure(ros_ptr_,
+                                         "ReplanOnce exp commit after backup-noneed",
+                                         checker::checkExpTrajectory(exp_traj_info,
+                                                                     cfg_,
+                                                                     "replan_exp_backup_noneed"))) {
+                    return FAILED;
+                }
+                cmd_traj_info_.setTrajectory(exp_traj_info);
+            }
+            // 这次生成 backup 轨迹的点没有意义，但新 exp 轨迹仍然需要提交。
+            robot_on_backup_traj_ = false;
+            last_exp_traj_info_ = exp_traj_info;
             gi_.new_goal = false;
 
 
@@ -1183,6 +1220,9 @@ namespace general_planner {
     }
 
     RET_CODE GeneralPlanner::PlanExplorationFromRest(const bool &new_task) {
+        if (useCompleteExploration()) {
+            return PlanCompleteExplorationFromRestImpl(new_task);
+        }
         TimeConsuming total_t("PlanExplorationFromRest", false);
         ExplorationGoal goal;
         {
@@ -1215,7 +1255,9 @@ namespace general_planner {
             exploration_runtime_manager_->onSelectingGoal();
 
             const StatePVAJ head_state = makeTaskHeadState(true);
-            if (!exploration_frontend_->planNextGoal(head_state, robot_state_.yaw, goal)) {
+            const bool goal_selected = exploration_frontend_->planNextGoal(head_state, robot_state_.yaw, goal);
+            ros_ptr_->vizExplorationDebug(exploration_frontend_->latestDebugInfo());
+            if (!goal_selected) {
                 latest_replan.setGoal(robot_state_.p, robot_state_.yaw, robot_state_);
                 if (exploration_frontend_->isExplorationFinished()) {
                     exploration_runtime_manager_->onFinished(goal);
@@ -1249,6 +1291,9 @@ namespace general_planner {
     }
 
     RET_CODE GeneralPlanner::ReplanExplorationOnce(const bool &new_task) {
+        if (useCompleteExploration()) {
+            return ReplanCompleteExplorationOnceImpl(new_task);
+        }
         TimeConsuming total_t("ReplanExplorationOnce", false);
         ExplorationGoal selected_goal;
         bool goal_switched = new_task;
@@ -1285,7 +1330,9 @@ namespace general_planner {
             const double remaining = getCommittedTrajectoryRemainingDuration();
             ExplorationGoal candidate;
             const StatePVAJ head_state = makeTaskHeadState(false);
-            if (!exploration_frontend_->planNextGoal(head_state, robot_state_.yaw, candidate)) {
+            const bool goal_selected = exploration_frontend_->planNextGoal(head_state, robot_state_.yaw, candidate);
+            ros_ptr_->vizExplorationDebug(exploration_frontend_->latestDebugInfo());
+            if (!goal_selected) {
                 latest_replan.setGoal(robot_state_.p, robot_state_.yaw, robot_state_);
                 if (exploration_frontend_->isExplorationFinished()) {
                     exploration_runtime_manager_->onFinished(candidate);
@@ -1339,6 +1386,247 @@ namespace general_planner {
             std::lock_guard<std::mutex> guard(replan_lock_);
             if (exploration_runtime_manager_ != nullptr) {
                 if (ret == SUCCESS || ret == FINISH || ret == NO_NEED) {
+                    exploration_runtime_manager_->onCommitted(selected_goal);
+                } else {
+                    exploration_runtime_manager_->onTemporaryFailure(selected_goal);
+                }
+            }
+        }
+        time_consuming_[TOTAL_REPLAN] = total_t.stop();
+        return ret;
+    }
+
+    RET_CODE GeneralPlanner::PlanCompleteExplorationFromRestImpl(const bool &new_task) {
+        TimeConsuming total_t("PlanCompleteExplorationFromRest", false);
+        ExplorationGoal goal;
+        StatePVAJ head_state;
+        double current_yaw = 0.0;
+        std::string frontend_status;
+        bool goal_selected = false;
+        {
+            std::unique_lock<std::mutex> guard(replan_lock_);
+            latest_replan.reset();
+            if (!robot_state_.rcv) {
+                latest_replan.setRetCode(GENERAL_RET_CODE::GENERAL_NO_ODOM);
+                ros_ptr_->warn(" -- [CompleteExploration] PlanFromRest failed: no odom.");
+                return FAILED;
+            }
+            if (robotOdomStale(robot_state_, ros_ptr_->getSimTime(), 1.0)) {
+                latest_replan.setRetCode(GENERAL_RET_CODE::GENERAL_NO_ODOM);
+                ros_ptr_->warn(" -- [CompleteExploration] PlanFromRest skipped: odom is stale.");
+                return FAILED;
+            }
+            if (map_manager_ == nullptr || !map_manager_->ready()) {
+                latest_replan.setRetCode(GENERAL_RET_CODE::GENERAL_MAP_NOT_READY);
+                ros_ptr_->warn(" -- [CompleteExploration] PlanFromRest failed: map is not ready.");
+                return FAILED;
+            }
+            if (complete_exploration_frontend_ == nullptr) {
+                latest_replan.setRetCode(GENERAL_RET_CODE::GENERAL_UNDEFINED);
+                ros_ptr_->warn(" -- [CompleteExploration] PlanFromRest failed: frontend is not initialized.");
+                return FAILED;
+            }
+            if (exploration_runtime_manager_ == nullptr) {
+                latest_replan.setRetCode(GENERAL_RET_CODE::GENERAL_UNDEFINED);
+                ros_ptr_->warn(" -- [CompleteExploration] PlanFromRest failed: runtime manager is not initialized.");
+                return FAILED;
+            }
+            if (new_task) {
+                complete_exploration_frontend_->reset();
+                exploration_runtime_manager_->reset();
+            }
+            exploration_runtime_manager_->onSelectingGoal();
+
+            head_state = makeTaskHeadState(true);
+            current_yaw = robot_state_.yaw;
+            guard.unlock();
+            goal_selected = complete_exploration_frontend_->planNextGoal(head_state, current_yaw, goal);
+            frontend_status = complete_exploration_frontend_->latestStatusString();
+            ros_ptr_->vizExplorationDebug(complete_exploration_frontend_->latestDebugInfo());
+            guard.lock();
+            if (cfg_.complete_exploration_print_log) {
+                ros_ptr_->info(" -- [CompleteExploration] {}.", frontend_status);
+            }
+            if (!goal_selected) {
+                latest_replan.setGoal(robot_state_.p, robot_state_.yaw, robot_state_);
+                if (complete_exploration_frontend_->isExplorationFinished()) {
+                    exploration_runtime_manager_->onFinished(goal);
+                    latest_replan.setRetCode(GENERAL_RET_CODE::GENERAL_EXPLORATION_FINISH);
+                    ros_ptr_->info(" -- [CompleteExploration] Exploration finished: {}.", goal.reason);
+                    time_consuming_[TOTAL_REPLAN] = total_t.stop();
+                    return FINISH;
+                }
+                exploration_runtime_manager_->onTemporaryFailure(goal);
+                latest_replan.setRetCode(GENERAL_RET_CODE::GENERAL_UNDEFINED);
+                ros_ptr_->warn(" -- [CompleteExploration] Failed to select goal: {}.", goal.reason);
+                time_consuming_[TOTAL_REPLAN] = total_t.stop();
+                return FAILED;
+            }
+            exploration_runtime_manager_->onGoalSelected(goal);
+        }
+
+        const RET_CODE ret = PlanFromRest(goal.position, goal.yaw, true);
+        {
+            std::lock_guard<std::mutex> guard(replan_lock_);
+            const int planner_ret_code = latest_replan.getRetCode();
+            if (complete_exploration_frontend_ != nullptr &&
+                (ret == SUCCESS || ret == FINISH || ret == NO_NEED || ret == NEW_TRAJ ||
+                 shouldCountCompleteExplorationFailure(planner_ret_code))) {
+                complete_exploration_frontend_->onGoalResult(goal, ret, false);
+            }
+            if (exploration_runtime_manager_ != nullptr) {
+                if (ret == SUCCESS || ret == FINISH || ret == NO_NEED || ret == NEW_TRAJ) {
+                    exploration_runtime_manager_->onCommitted(goal);
+                } else {
+                    exploration_runtime_manager_->onTemporaryFailure(goal);
+                }
+            }
+        }
+        time_consuming_[TOTAL_REPLAN] = total_t.stop();
+        return ret;
+    }
+
+    RET_CODE GeneralPlanner::ReplanCompleteExplorationOnceImpl(const bool &new_task) {
+        TimeConsuming total_t("ReplanCompleteExplorationOnce", false);
+        ExplorationGoal selected_goal;
+        bool goal_switched = new_task;
+        bool selected_goal_ready = false;
+        ExplorationGoal candidate;
+        StatePVAJ head_state;
+        double current_yaw = 0.0;
+        std::string frontend_status;
+        bool goal_selected = false;
+        {
+            std::unique_lock<std::mutex> guard(replan_lock_);
+            latest_replan.reset();
+            if (!robot_state_.rcv) {
+                latest_replan.setRetCode(GENERAL_RET_CODE::GENERAL_NO_ODOM);
+                ros_ptr_->warn(" -- [CompleteExploration] Replan failed: no odom.");
+                return FAILED;
+            }
+            if (robotOdomStale(robot_state_, ros_ptr_->getSimTime(), 1.0)) {
+                latest_replan.setRetCode(GENERAL_RET_CODE::GENERAL_NO_ODOM);
+                ros_ptr_->warn(" -- [CompleteExploration] Replan skipped: odom is stale.");
+                return FAILED;
+            }
+            if (map_manager_ == nullptr || !map_manager_->ready()) {
+                latest_replan.setRetCode(GENERAL_RET_CODE::GENERAL_MAP_NOT_READY);
+                ros_ptr_->warn(" -- [CompleteExploration] Replan failed: map is not ready.");
+                return FAILED;
+            }
+            if (complete_exploration_frontend_ == nullptr) {
+                latest_replan.setRetCode(GENERAL_RET_CODE::GENERAL_UNDEFINED);
+                ros_ptr_->warn(" -- [CompleteExploration] Replan failed: frontend is not initialized.");
+                return FAILED;
+            }
+            if (exploration_runtime_manager_ == nullptr) {
+                latest_replan.setRetCode(GENERAL_RET_CODE::GENERAL_UNDEFINED);
+                ros_ptr_->warn(" -- [CompleteExploration] Replan failed: runtime manager is not initialized.");
+                return FAILED;
+            }
+            if (new_task) {
+                complete_exploration_frontend_->reset();
+                exploration_runtime_manager_->reset();
+            }
+            const double remaining = getCommittedTrajectoryRemainingDuration();
+            const double lock_min_remaining = std::max(1.2, 5.0 * cfg_.replan_forward_dt);
+            const bool rolling_switch_window = remaining <= lock_min_remaining;
+            if (!new_task &&
+                remaining > lock_min_remaining &&
+                exploration_runtime_manager_->shouldReuseLatestGoal(robot_state_.p, remaining, new_task) &&
+                exploration_runtime_manager_->getLatestGoal(selected_goal)) {
+                goal_switched = false;
+                selected_goal_ready = true;
+                exploration_runtime_manager_->onKeepCurrentGoal();
+                if (cfg_.complete_exploration_print_log) {
+                    ros_ptr_->info(" -- [CompleteExploration] Lock current goal for continuity: remaining={:.3f}, frontier_id={}, score={:.3f}.",
+                                   remaining,
+                                   selected_goal.frontier_cluster_id,
+                                   selected_goal.score);
+                }
+            }
+
+            if (selected_goal_ready) {
+                latest_replan.setGoal(selected_goal.position, selected_goal.yaw, robot_state_);
+            } else {
+                exploration_runtime_manager_->onSelectingGoal();
+            }
+
+            if (!selected_goal_ready) {
+                head_state = makeTaskHeadState(false);
+                current_yaw = robot_state_.yaw;
+                guard.unlock();
+                goal_selected =
+                        complete_exploration_frontend_->planNextGoal(head_state, current_yaw, candidate);
+                frontend_status = complete_exploration_frontend_->latestStatusString();
+                ros_ptr_->vizExplorationDebug(complete_exploration_frontend_->latestDebugInfo());
+                guard.lock();
+                if (cfg_.complete_exploration_print_log) {
+                    ros_ptr_->info(" -- [CompleteExploration] {}.", frontend_status);
+                }
+            }
+            if (!selected_goal_ready && !goal_selected) {
+                latest_replan.setGoal(robot_state_.p, robot_state_.yaw, robot_state_);
+                if (complete_exploration_frontend_->isExplorationFinished()) {
+                    exploration_runtime_manager_->onFinished(candidate);
+                    latest_replan.setRetCode(GENERAL_RET_CODE::GENERAL_EXPLORATION_FINISH);
+                    ros_ptr_->info(" -- [CompleteExploration] Exploration finished: {}.", candidate.reason);
+                    time_consuming_[TOTAL_REPLAN] = total_t.stop();
+                    return FINISH;
+                }
+                if (exploration_runtime_manager_->shouldReuseLatestGoal(robot_state_.p, remaining, new_task) &&
+                    exploration_runtime_manager_->getLatestGoal(selected_goal)) {
+                    goal_switched = false;
+                    selected_goal_ready = true;
+                    exploration_runtime_manager_->onKeepCurrentGoal();
+                    if (cfg_.complete_exploration_print_log) {
+                        ros_ptr_->info(" -- [CompleteExploration] Reuse current goal after temporary frontend failure: reason={}, remaining={:.3f}.",
+                                       candidate.reason,
+                                       remaining);
+                    }
+                } else {
+                    exploration_runtime_manager_->onTemporaryFailure(candidate);
+                    latest_replan.setRetCode(GENERAL_RET_CODE::GENERAL_UNDEFINED);
+                    ros_ptr_->warn(" -- [CompleteExploration] Failed to select replan goal: {}.",
+                                   candidate.reason);
+                    time_consuming_[TOTAL_REPLAN] = total_t.stop();
+                    return FAILED;
+                }
+            } else if (!selected_goal_ready) {
+                if (!rolling_switch_window &&
+                    exploration_runtime_manager_->shouldKeepCurrentGoal(candidate, robot_state_.p, remaining, new_task) &&
+                    exploration_runtime_manager_->getLatestGoal(selected_goal)) {
+                    goal_switched = false;
+                    exploration_runtime_manager_->onKeepCurrentGoal();
+                    if (cfg_.complete_exploration_print_log) {
+                        ros_ptr_->info(" -- [CompleteExploration] Keep current goal: remaining={:.3f}, current_score={:.3f}, candidate_score={:.3f}.",
+                                       remaining,
+                                       selected_goal.score,
+                                       candidate.score);
+                    }
+                } else {
+                    selected_goal = candidate;
+                    goal_switched = true;
+                    exploration_runtime_manager_->onGoalSelected(candidate);
+                }
+                selected_goal_ready = true;
+            }
+        }
+
+        if (!selected_goal_ready) {
+            return FAILED;
+        }
+        const RET_CODE ret = ReplanOnce(selected_goal.position, selected_goal.yaw, goal_switched);
+        {
+            std::lock_guard<std::mutex> guard(replan_lock_);
+            const int planner_ret_code = latest_replan.getRetCode();
+            if (complete_exploration_frontend_ != nullptr &&
+                (ret == SUCCESS || ret == FINISH || ret == NO_NEED || ret == NEW_TRAJ ||
+                 shouldCountCompleteExplorationFailure(planner_ret_code))) {
+                complete_exploration_frontend_->onGoalResult(selected_goal, ret, false);
+            }
+            if (exploration_runtime_manager_ != nullptr) {
+                if (ret == SUCCESS || ret == FINISH || ret == NO_NEED || ret == NEW_TRAJ) {
                     exploration_runtime_manager_->onCommitted(selected_goal);
                 } else {
                     exploration_runtime_manager_->onTemporaryFailure(selected_goal);
@@ -6276,25 +6564,168 @@ namespace general_planner {
         frontend_cfg.frontier_search_radius = cfg_.exploration_frontier_search_radius;
         frontend_cfg.frontier_cluster_radius = cfg_.exploration_frontier_cluster_radius;
         frontend_cfg.min_frontier_cluster_size = cfg_.exploration_min_frontier_cluster_size;
+        frontend_cfg.frontier_lifecycle_match_distance =
+                cfg_.exploration_frontier_lifecycle_match_distance;
+        frontend_cfg.frontier_lifecycle_min_observations =
+                cfg_.exploration_frontier_lifecycle_min_observations;
+        frontend_cfg.frontier_lifecycle_max_missing_frames =
+                cfg_.exploration_frontier_lifecycle_max_missing_frames;
         frontend_cfg.viewpoint_min_distance = cfg_.exploration_viewpoint_min_distance;
         frontend_cfg.viewpoint_max_distance = cfg_.exploration_viewpoint_max_distance;
         frontend_cfg.viewpoint_height_offset = cfg_.exploration_viewpoint_height_offset;
         frontend_cfg.viewpoint_safe_distance = cfg_.exploration_viewpoint_safe_distance;
+        frontend_cfg.viewpoint_side_step = cfg_.exploration_viewpoint_side_step;
         frontend_cfg.viewpoint_yaw_sample_num = cfg_.exploration_viewpoint_yaw_sample_num;
         frontend_cfg.viewpoint_radius_sample_num = cfg_.exploration_viewpoint_radius_sample_num;
+        frontend_cfg.viewpoint_top_view_num = cfg_.exploration_viewpoint_top_view_num;
+        frontend_cfg.viewpoint_max_decay = cfg_.exploration_viewpoint_max_decay;
+        frontend_cfg.viewpoint_min_visible_cells = cfg_.exploration_viewpoint_min_visible_cells;
         frontend_cfg.max_candidate_num = cfg_.exploration_max_candidate_num;
         frontend_cfg.weight_travel = cfg_.exploration_weight_travel;
         frontend_cfg.weight_yaw = cfg_.exploration_weight_yaw;
         frontend_cfg.weight_curvature = cfg_.exploration_weight_curvature;
         frontend_cfg.weight_info_gain = cfg_.exploration_weight_info_gain;
         frontend_cfg.weight_unknown_risk = cfg_.exploration_weight_unknown_risk;
+        frontend_cfg.weight_high_speed = cfg_.exploration_weight_high_speed;
+        frontend_cfg.weight_lifecycle = cfg_.exploration_weight_lifecycle;
         frontend_cfg.min_information_gain = cfg_.exploration_min_information_gain;
         frontend_cfg.goal_switch_min_score_improvement = cfg_.exploration_goal_switch_min_score_improvement;
         frontend_cfg.goal_reached_distance = cfg_.exploration_goal_reached_distance;
+        frontend_cfg.high_speed_open_space_radius = cfg_.exploration_high_speed_open_space_radius;
+        frontend_cfg.high_speed_min_speed = cfg_.exploration_high_speed_min_speed;
         frontend_cfg.unknown_as_occupied_for_motion = cfg_.exploration_unknown_as_occupied_for_motion;
         frontend_cfg.require_line_free_to_frontier = cfg_.exploration_require_line_free_to_frontier;
         frontend_cfg.use_astar_cost = cfg_.exploration_use_astar_cost;
+        frontend_cfg.global_grid_cell_size = cfg_.exploration_global_grid_cell_size;
+        frontend_cfg.global_max_nodes = cfg_.exploration_global_max_nodes;
+        frontend_cfg.global_hybrid_search_radius = cfg_.exploration_global_hybrid_search_radius;
+        frontend_cfg.global_unknown_penalty_factor = cfg_.exploration_global_unknown_penalty_factor;
+        frontend_cfg.global_refined_num = cfg_.exploration_global_refined_num;
+        frontend_cfg.global_refined_radius = cfg_.exploration_global_refined_radius;
+        frontend_cfg.lkh_binary = cfg_.exploration_lkh_binary;
+        frontend_cfg.lkh_work_dir = cfg_.exploration_lkh_work_dir;
         return frontend_cfg;
+    }
+
+    CompleteExplorationFrontend::Config GeneralPlanner::makeCompleteExplorationFrontendConfig() const {
+        CompleteExplorationFrontend::Config frontend_cfg;
+        frontend_cfg.enable = cfg_.complete_exploration_enable;
+        frontend_cfg.print_log = cfg_.complete_exploration_print_log;
+        frontend_cfg.update_radius = cfg_.complete_exploration_update_radius;
+        frontend_cfg.finish_confirm_time = cfg_.complete_exploration_finish_confirm_time;
+        frontend_cfg.finish_confirm_count = cfg_.complete_exploration_finish_confirm_count;
+        frontend_cfg.use_rog_complete_frontier = cfg_.complete_exploration_use_rog_complete_frontier;
+        frontend_cfg.use_memory_grid = cfg_.complete_exploration_use_memory_grid;
+        frontend_cfg.use_region_graph = cfg_.complete_exploration_use_region_graph;
+        frontend_cfg.use_coverage_guidance = cfg_.complete_exploration_use_coverage_guidance;
+        frontend_cfg.use_fuel_style_tour = cfg_.complete_exploration_use_fuel_style_tour;
+        frontend_cfg.max_frontiers_per_cycle = cfg_.complete_exploration_max_frontiers_per_cycle;
+        frontend_cfg.max_astar_checks_per_cycle = cfg_.complete_exploration_max_astar_checks_per_cycle;
+        frontend_cfg.lazy_astar_enable = cfg_.complete_exploration_lazy_astar_enable;
+        frontend_cfg.travel_cost_cache_timeout = cfg_.complete_exploration_travel_cost_cache_timeout;
+        frontend_cfg.tour_refined_num = cfg_.complete_exploration_tour_refined_num;
+        frontend_cfg.tour_refined_radius = cfg_.complete_exploration_tour_refined_radius;
+        frontend_cfg.tour_replan_min_interval = cfg_.complete_exploration_tour_replan_min_interval;
+        frontend_cfg.tour_radius_far = cfg_.complete_exploration_tour_radius_far;
+        frontend_cfg.tour_radius_close = cfg_.complete_exploration_tour_radius_close;
+        frontend_cfg.lkh_cfg.binary_path = cfg_.exploration_lkh_binary;
+        frontend_cfg.lkh_cfg.work_dir = cfg_.exploration_lkh_work_dir;
+        frontend_cfg.lkh_cfg.problem_name = "general_planner_complete_exploration";
+        frontend_cfg.lkh_cfg.allow_fallback = true;
+
+        frontend_cfg.memory_cfg.resolution = cfg_.complete_exploration_memory_resolution;
+        frontend_cfg.memory_cfg.use_global_memory = cfg_.complete_exploration_use_memory_grid;
+        if (cfg_.complete_exploration_min.size() >= 3) {
+            frontend_cfg.memory_cfg.exploration_min =
+                    Vec3f(cfg_.complete_exploration_min[0],
+                          cfg_.complete_exploration_min[1],
+                          cfg_.complete_exploration_min[2]);
+        }
+        if (cfg_.complete_exploration_max.size() >= 3) {
+            frontend_cfg.memory_cfg.exploration_max =
+                    Vec3f(cfg_.complete_exploration_max[0],
+                          cfg_.complete_exploration_max[1],
+                          cfg_.complete_exploration_max[2]);
+        }
+
+        frontend_cfg.frontier_db_cfg.cluster_radius =
+                cfg_.complete_exploration_frontier_cluster_radius;
+        frontend_cfg.frontier_db_cfg.min_cluster_size =
+                cfg_.complete_exploration_min_frontier_cluster_size;
+        frontend_cfg.frontier_db_cfg.merge_center_distance =
+                cfg_.complete_exploration_frontier_merge_center_distance;
+        frontend_cfg.frontier_db_cfg.max_fail_count =
+                cfg_.complete_exploration_frontier_max_fail_count;
+
+        frontend_cfg.region_graph_cfg.region_resolution =
+                cfg_.complete_exploration_region_resolution;
+        frontend_cfg.region_graph_cfg.connectivity_radius =
+                cfg_.complete_exploration_connectivity_radius;
+        frontend_cfg.region_graph_cfg.revisit_penalty =
+                cfg_.complete_exploration_revisit_penalty;
+        frontend_cfg.region_graph_cfg.max_region_num =
+                cfg_.complete_exploration_max_region_num;
+
+        frontend_cfg.coverage_cfg.enable = cfg_.complete_exploration_use_coverage_guidance;
+        frontend_cfg.coverage_cfg.max_region_num = cfg_.complete_exploration_max_region_num;
+        frontend_cfg.coverage_cfg.weight_revisit = cfg_.complete_exploration_weight_revisit;
+
+        frontend_cfg.viewpoint_cfg.min_distance =
+                cfg_.complete_exploration_viewpoint_min_distance;
+        frontend_cfg.viewpoint_cfg.max_distance =
+                cfg_.complete_exploration_viewpoint_max_distance;
+        frontend_cfg.viewpoint_cfg.min_robot_distance =
+                cfg_.complete_exploration_viewpoint_min_robot_distance;
+        frontend_cfg.viewpoint_cfg.height_offset =
+                cfg_.exploration_viewpoint_height_offset;
+        frontend_cfg.viewpoint_cfg.safe_distance =
+                cfg_.complete_exploration_viewpoint_safe_distance;
+        frontend_cfg.viewpoint_cfg.yaw_sample_num =
+                cfg_.complete_exploration_viewpoint_yaw_sample_num;
+        frontend_cfg.viewpoint_cfg.radius_sample_num =
+                cfg_.complete_exploration_viewpoint_radius_sample_num;
+        frontend_cfg.viewpoint_cfg.max_viewpoints_per_frontier =
+                cfg_.complete_exploration_max_viewpoints_per_frontier;
+        frontend_cfg.viewpoint_cfg.max_total_candidates =
+                cfg_.complete_exploration_max_total_candidates;
+        frontend_cfg.viewpoint_cfg.require_line_free_to_frontier =
+                cfg_.exploration_require_line_free_to_frontier;
+        frontend_cfg.viewpoint_cfg.unknown_as_occupied_for_motion =
+                cfg_.exploration_unknown_as_occupied_for_motion;
+        frontend_cfg.viewpoint_cfg.use_astar_cost =
+                cfg_.exploration_use_astar_cost;
+        frontend_cfg.viewpoint_cfg.min_information_gain =
+                cfg_.exploration_min_information_gain;
+        frontend_cfg.viewpoint_cfg.weight_travel =
+                cfg_.complete_exploration_weight_travel;
+        frontend_cfg.viewpoint_cfg.weight_yaw =
+                cfg_.complete_exploration_weight_yaw;
+        frontend_cfg.viewpoint_cfg.weight_curvature =
+                cfg_.complete_exploration_weight_curvature;
+        frontend_cfg.viewpoint_cfg.weight_info_gain =
+                cfg_.complete_exploration_weight_info_gain;
+        frontend_cfg.viewpoint_cfg.weight_unknown_risk =
+                cfg_.complete_exploration_weight_unknown_risk;
+        frontend_cfg.viewpoint_cfg.weight_coverage_order =
+                cfg_.complete_exploration_weight_coverage_order;
+        frontend_cfg.viewpoint_cfg.weight_revisit =
+                cfg_.complete_exploration_weight_revisit;
+        frontend_cfg.viewpoint_cfg.weight_fail =
+                cfg_.complete_exploration_weight_fail;
+        return frontend_cfg;
+    }
+
+    bool GeneralPlanner::useCompleteExploration() const {
+        std::string mode = cfg_.exploration_mode;
+        std::transform(mode.begin(), mode.end(), mode.begin(),
+                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        return cfg_.exploration_enable &&
+               cfg_.complete_exploration_enable &&
+               (mode == "complete" ||
+                mode == "complete_exploration" ||
+                mode == "global" ||
+                mode == "global_exploration" ||
+                mode == "rog_exploration");
     }
 
     RET_CODE GeneralPlanner::optimizePerchingTask(const traj_opt::PerchingSurfaceState &surface,
@@ -7806,10 +8237,31 @@ namespace general_planner {
         pos_fina_state.col(0) = guide_path.back();
         const bool local_endpoint_is_global_goal =
                 (pos_fina_state.col(0) - gi_.goal_p).norm() < cfg_.resolution * 2;
-        if (cfg_.goal_vel_en && (gi_.goal_p - robot_state_.p).norm() > cfg_.planning_horizon / 2) {
+        const bool complete_exploration_rolling_endpoint = useCompleteExploration();
+        if (complete_exploration_rolling_endpoint) {
+            Vec3f rolling_dir = local_endpoint_is_global_goal
+                                    ? gi_.goal_p - pos_init_state.col(0)
+                                    : gi_.goal_p - pos_fina_state.col(0);
+            rolling_dir.z() = 0.0;
+            if (rolling_dir.norm() < 1.0e-3) {
+                rolling_dir = robot_state_.v;
+                rolling_dir.z() = 0.0;
+            }
+            if (rolling_dir.norm() < 1.0e-3) {
+                rolling_dir = Vec3f(std::cos(robot_state_.yaw), std::sin(robot_state_.yaw), 0.0);
+            }
+            if (rolling_dir.norm() > 1.0e-3) {
+                const double current_speed = std::max(0.0, robot_state_.v.norm());
+                const double tail_speed =
+                        std::clamp(std::max(current_speed, 0.45 * cfg_.exp_traj_cfg.max_vel),
+                                   0.5,
+                                   std::max(0.5, 0.8 * cfg_.exp_traj_cfg.max_vel));
+                pos_fina_state.col(1) = rolling_dir.normalized() * tail_speed;
+            }
+        } else if (cfg_.goal_vel_en && (gi_.goal_p - robot_state_.p).norm() > cfg_.planning_horizon / 2) {
             pos_fina_state.col(1) = (gi_.goal_p - robot_state_.p).normalized() * cfg_.exp_traj_cfg.max_vel / 2;
         }
-        if (local_endpoint_is_global_goal) {
+        if (local_endpoint_is_global_goal && !complete_exploration_rolling_endpoint) {
             pos_fina_state.col(1).setZero();
             pos_fina_state.col(0) = gi_.goal_p;
         }

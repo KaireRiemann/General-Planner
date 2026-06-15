@@ -49,6 +49,7 @@ catkin_package(
 include_directories(
         SYSTEM
         include
+        include/lkh_tsp_solver
         ../../../devel/include
         ${catkin_INCLUDE_DIRS}
         ${Eigen3_INCLUDE_DIRS}
@@ -66,6 +67,12 @@ set(THIRD_PARTY
 )
 
 file(GLOB_RECURSE srcs CONFIGURE_DEPENDS src/*.cpp include/*.h include/*.hpp)
+file(GLOB_RECURSE LKH_SRCS CONFIGURE_DEPENDS
+        src/exploration_manager/lkh_tsp_solver/*.c
+        src/exploration_manager/lkh_tsp_solver/*.cpp)
+list(FILTER LKH_SRCS EXCLUDE REGEX ".*/LKHmain\\.c$")
+set_source_files_properties(${LKH_SRCS} PROPERTIES COMPILE_FLAGS "-w")
+list(FILTER srcs EXCLUDE REGEX ".*/src/exploration_manager/lkh_tsp_solver/.*")
 list(FILTER srcs EXCLUDE REGEX ".*/src/traj_opt/exp_traj_optimizer_s4\\.cpp$")
 list(FILTER srcs EXCLUDE REGEX ".*/src/traj_opt/backup_traj_optimizer_s4\\.cpp$")
 list(FILTER srcs EXCLUDE REGEX ".*/src/traj_opt/yaw_traj_opt\\.cpp$")
@@ -76,12 +83,21 @@ list(REMOVE_DUPLICATES srcs)
 add_library(general_planner_core STATIC ${srcs})
 target_include_directories(general_planner_core PUBLIC
         include)
+target_compile_definitions(general_planner_core PRIVATE
+        GENERAL_PLANNER_BUNDLED_LKH_BINARY="${CATKIN_DEVEL_PREFIX}/lib/${PROJECT_NAME}/general_planner_lkh")
 add_dependencies(general_planner_core
         ${${PROJECT_NAME}_EXPORTED_TARGETS}
         ${catkin_EXPORTED_TARGETS}
 )
 target_link_libraries(general_planner_core PUBLIC
 )
+
+add_executable(general_planner_lkh
+        Apps/lkh_solver_main.cpp
+        ${LKH_SRCS}
+)
+target_include_directories(general_planner_lkh PRIVATE
+        include/lkh_tsp_solver)
 
 
 add_executable(fsm_node

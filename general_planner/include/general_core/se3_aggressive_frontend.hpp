@@ -5,7 +5,7 @@
 
 #include "general_core/config.hpp"
 #include "general_core/corridor_generator.h"
-#include "general_core/map_manager.hpp"
+#include "map_manager/map_manager.hpp"
 #include "path_search/astar.h"
 #include "traj_opt/se3_aggressive_traj_opt.hpp"
 
