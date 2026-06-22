@@ -53,7 +53,7 @@ general_planner:
   ellipsoid_optimizer: classic
   ellipsoid_optimizer_fallback: false
   obs_skip_num: 2
-  replan_forward_dt: 0.1
+  replan_forward_dt: 0.25
   planning_horizon: 9.0
   sensing_horizon: -1
   receding_dis: 4.0

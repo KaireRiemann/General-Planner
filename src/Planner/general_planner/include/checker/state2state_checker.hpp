@@ -45,6 +45,26 @@ namespace general_planner::checker {
             return CheckResult::Warn("CONFIG_BACKUP_DISABLED_BY_EXP_MODE",
                                      "backup_traj_en is ignored in ESDF/plain mode");
         }
+        if (!std::isfinite(cfg.state2state_altitude_band) ||
+            cfg.state2state_altitude_band < 0.0) {
+            return CheckResult::Fatal("CONFIG_BAD_STATE2STATE_ALTITUDE_BAND",
+                                      "state2state altitude_band must be non-negative");
+        }
+        if (!std::isfinite(cfg.state2state_altitude_escape_band) ||
+            cfg.state2state_altitude_escape_band < cfg.state2state_altitude_band) {
+            return CheckResult::Fatal("CONFIG_BAD_STATE2STATE_ALTITUDE_ESCAPE_BAND",
+                                      "state2state altitude_escape_band must be >= altitude_band");
+        }
+        if (!std::isfinite(cfg.state2state_over_goal_tolerance) ||
+            cfg.state2state_over_goal_tolerance < 0.0) {
+            return CheckResult::Fatal("CONFIG_BAD_STATE2STATE_OVER_GOAL_TOLERANCE",
+                                      "state2state over_goal_tolerance must be non-negative");
+        }
+        if (!std::isfinite(cfg.state2state_near_goal_radius) ||
+            cfg.state2state_near_goal_radius <= 0.0) {
+            return CheckResult::Fatal("CONFIG_BAD_STATE2STATE_NEAR_GOAL_RADIUS",
+                                      "state2state near_goal_radius must be positive");
+        }
         return CheckResult::Ok();
     }
 

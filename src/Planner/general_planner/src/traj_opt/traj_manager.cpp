@@ -201,6 +201,74 @@ ClosestGuidePV closestPVOnPolyline(const vec_E<Vec3f> &path,
   return best;
 }
 
+bool referenceZOnGuideByXY(const vec_E<Vec3f> &path,
+                           const Vec3f &query,
+                           double &ref_z)
+{
+  if (path.empty())
+  {
+    return false;
+  }
+  if (path.size() == 1)
+  {
+    ref_z = path.front().z();
+    return std::isfinite(ref_z);
+  }
+
+  double best_xy_sq = std::numeric_limits<double>::infinity();
+  bool found = false;
+  for (int i = 0; i < static_cast<int>(path.size()) - 1; ++i)
+  {
+    const Vec3f a = path[i];
+    const Vec3f b = path[i + 1];
+    const double ab_x = b.x() - a.x();
+    const double ab_y = b.y() - a.y();
+    const double ap_x = query.x() - a.x();
+    const double ap_y = query.y() - a.y();
+    const double denom = ab_x * ab_x + ab_y * ab_y;
+    const double ratio = denom > 1.0e-9
+                             ? std::clamp((ap_x * ab_x + ap_y * ab_y) / denom, 0.0, 1.0)
+                             : 0.0;
+    const double closest_x = a.x() + ratio * ab_x;
+    const double closest_y = a.y() + ratio * ab_y;
+    const double dx = query.x() - closest_x;
+    const double dy = query.y() - closest_y;
+    const double xy_sq = dx * dx + dy * dy;
+    if (xy_sq < best_xy_sq)
+    {
+      best_xy_sq = xy_sq;
+      ref_z = a.z() + ratio * (b.z() - a.z());
+      found = std::isfinite(ref_z);
+    }
+  }
+  return found;
+}
+
+double addGuideZTubePenalty(const Vec3f &position,
+                            double ref_z,
+                            double radius,
+                            double weight,
+                            Vec3f &grad_position,
+                            double &max_violation)
+{
+  if (weight <= 0.0 || radius <= 0.0 || !std::isfinite(ref_z))
+  {
+    return 0.0;
+  }
+  const double z_err = position.z() - ref_z;
+  const double abs_err = std::abs(z_err);
+  const double violation = abs_err - radius;
+  if (violation <= 0.0)
+  {
+    return 0.0;
+  }
+
+  const double sign = z_err >= 0.0 ? 1.0 : -1.0;
+  grad_position.z() += weight * violation * sign;
+  max_violation = std::max(max_violation, violation);
+  return 0.5 * weight * violation * violation;
+}
+
 vec_E<Vec3f> estimateGuideVelocities(const vec_E<Vec3f> &path,
                                       const std::vector<double> &times,
                                       const Vec3f &start_vel,
@@ -297,6 +365,8 @@ ExpTrajOpt::ExpTrajOpt(const traj_opt::Config &cfg,
   opt_vars_.smooth_eps = cfg_.smooth_eps;
   opt_vars_.integral_res = std::max(1, cfg_.integral_reso);
   opt_vars_.quadrotor_flatness = cfg_.quadrotot_flatness;
+  opt_vars_.weight_guide_z_tube = std::max(0.0, cfg_.penna_guide_z_tube);
+  opt_vars_.guide_z_tube_radius = std::max(0.0, cfg_.guide_z_tube_radius);
 
   linear_time_cost_.weight = opt_vars_.rho;
 }
@@ -595,6 +665,11 @@ double ExpTrajOpt::evaluateCurrentCost(const VecDf &x, VecDf &g)
   exp_cost_manager_.beginEvaluation(&times);
 
   const auto &coeffs = minco_traj_.getCoefficients();
+  opt_vars_.guide_z_tube_violation = 0.0;
+  const bool use_guide_z_tube_cost =
+      opt_vars_.weight_guide_z_tube > 0.0 &&
+      opt_vars_.guide_z_tube_radius > 0.0 &&
+      opt_vars_.guide_path.size() >= 2;
   double seg_start = 0.0;
   for (int i = 0; i < opt_vars_.piece_num; ++i)
   {
@@ -625,7 +700,22 @@ double ExpTrajOpt::evaluateCurrentCost(const VecDf &x, VecDf &g)
       Vec3f gs = Vec3f::Zero();
       double gt = 0.0;
 
-      const double sample_cost = exp_cost_manager_(t, seg_start + t, i, k, p, v, a, j, s, gp, gv, ga, gj, gs, gt);
+      double sample_cost = exp_cost_manager_(t, seg_start + t, i, k, p, v, a, j, s, gp, gv, ga, gj, gs, gt);
+      if (use_guide_z_tube_cost)
+      {
+        double ref_z = 0.0;
+        if (referenceZOnGuideByXY(opt_vars_.guide_path, p, ref_z))
+        {
+          const double z_tube_sample_cost =
+              addGuideZTubePenalty(p,
+                                   ref_z,
+                                   opt_vars_.guide_z_tube_radius,
+                                   opt_vars_.weight_guide_z_tube,
+                                   gp,
+                                   opt_vars_.guide_z_tube_violation);
+          sample_cost += z_tube_sample_cost;
+        }
+      }
       cost += common * sample_cost;
       gdC.template block<SnapTraj::COEFF_NUM, TRAJ_DIM>(base, 0).noalias() +=
           (bp.transpose() * gp.transpose() +
@@ -665,6 +755,7 @@ double ExpTrajOpt::evaluateCurrentCost(const VecDf &x, VecDf &g)
   }
 
   opt_vars_.penalty_log.tail(7) = exp_cost_manager_.getPenaltyLog().tail(7);
+  opt_vars_.penalty_log(5) = std::max(opt_vars_.penalty_log(5), opt_vars_.guide_z_tube_violation);
   return cost;
 }
 
@@ -885,6 +976,8 @@ BackupTrajOpt::BackupTrajOpt(const traj_opt::Config &cfg,
   opt_vars_.integral_res = std::max(1, cfg_.integral_reso);
   opt_vars_.quadrotor_flatness = cfg_.quadrotot_flatness;
   opt_vars_.piece_num = std::max(1, cfg_.piece_num);
+  opt_vars_.weight_guide_z_tube = std::max(0.0, cfg_.penna_guide_z_tube);
+  opt_vars_.guide_z_tube_radius = std::max(0.0, cfg_.guide_z_tube_radius);
 }
 
 BackupTrajOpt::~BackupTrajOpt()
@@ -1087,6 +1180,13 @@ double BackupTrajOpt::evaluateCurrentCost(const VecDf &x, VecDf &g)
   backup_cost_manager_.beginEvaluation();
 
   const auto &coeffs = minco_traj_.getCoefficients();
+  opt_vars_.guide_z_tube_violation = 0.0;
+  const double exp_duration = opt_vars_.exp_traj.getTotalDuration();
+  const bool use_guide_z_tube_cost =
+      opt_vars_.weight_guide_z_tube > 0.0 &&
+      opt_vars_.guide_z_tube_radius > 0.0 &&
+      exp_duration > 1.0e-6;
+  double seg_start = 0.0;
   for (int i = 0; i < opt_vars_.piece_num; ++i)
   {
     const double T = times(i);
@@ -1113,7 +1213,18 @@ double BackupTrajOpt::evaluateCurrentCost(const VecDf &x, VecDf &g)
       Vec3f gj = Vec3f::Zero();
       Vec3f gs = Vec3f::Zero();
       double gt = 0.0;
-      const double sample_cost = backup_cost_manager_(t, t, i, k, p, v, a, j, s, gp, gv, ga, gj, gs, gt);
+      double sample_cost = backup_cost_manager_(t, t, i, k, p, v, a, j, s, gp, gv, ga, gj, gs, gt);
+      if (use_guide_z_tube_cost)
+      {
+        const double ref_t = std::clamp(ts + seg_start + t, 0.0, exp_duration);
+        const double ref_z = opt_vars_.exp_traj.getPos(ref_t).z();
+        sample_cost += addGuideZTubePenalty(p,
+                                            ref_z,
+                                            opt_vars_.guide_z_tube_radius,
+                                            opt_vars_.weight_guide_z_tube,
+                                            gp,
+                                            opt_vars_.guide_z_tube_violation);
+      }
       cost += common * sample_cost;
       gdC.template block<SnapTraj::COEFF_NUM, TRAJ_DIM>(base, 0).noalias() +=
           (bp.transpose() * gp.transpose() +
@@ -1123,6 +1234,7 @@ double BackupTrajOpt::evaluateCurrentCost(const VecDf &x, VecDf &g)
       gdT(i) += node * inv_K * sample_cost;
       gdT(i) += (gp.dot(v) + gv.dot(a) + ga.dot(j) + gj.dot(s)) * alpha * common;
     }
+    seg_start += T;
   }
 
   gdT.array() += opt_vars_.rho;
@@ -1171,6 +1283,7 @@ double BackupTrajOpt::evaluateCurrentCost(const VecDf &x, VecDf &g)
   g(offset) += grad_ts_from_state * logisticIntervalGrad(opt_vars_.min_ts, opt_vars_.max_ts, x(offset));
 
   opt_vars_.penalty_log.tail(7) = backup_cost_manager_.getPenaltyLog().tail(7);
+  opt_vars_.penalty_log(5) = std::max(opt_vars_.penalty_log(5), opt_vars_.guide_z_tube_violation);
   opt_vars_.ts = ts;
   opt_vars_.times = times;
   opt_vars_.points = points;

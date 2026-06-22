@@ -32,6 +32,16 @@ general_planner:
   sensing_horizon: -1
   receding_dis: 15.0
   robot_r: 0.2
+  state2state:
+    direct_line_frontend_enable: true
+    altitude_guard_enable: true
+    altitude_band: 0.25
+    altitude_escape_enable: true
+    altitude_escape_band: 3.5
+    over_goal_guard_enable: true
+    over_goal_tolerance: 0.25
+    near_goal_radius: 2.0
+    accept_exp_without_backup_near_goal: true
   yaw_dot_max: 3.0
   # Yaw mode: 1 heading to velocity, 2 heading to goal
   yaw_mode: 1
@@ -67,6 +77,8 @@ traj_opt:
     penna_acc: 5.0e+8
     penna_jerk: -5.0e+11
     penna_attract: -1.0e+7
+    penna_guide_z_tube: 1.0e+8
+    guide_z_tube_radius: 0.20
     penna_omg: 5.0e+8
     penna_thr: 5.0e+8
 
@@ -86,6 +98,8 @@ traj_opt:
     penna_vel: 1.0e+8
     penna_acc: 1.0e+8
     penna_jerk: -1.0e+8
+    penna_guide_z_tube: 5.0e+7
+    guide_z_tube_radius: 0.20
     penna_omg: 5.0e+8
     penna_thr: 5.0e+8
 

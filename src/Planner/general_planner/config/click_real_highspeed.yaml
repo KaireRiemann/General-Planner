@@ -32,13 +32,23 @@ general_planner:
   sensing_horizon: -1
   receding_dis: 8.0
   robot_r: 0.2
-  frontend_astar_time_out: 0.25
+  frontend_astar_time_out: 0.35
   over_wall_search_en: true
   over_wall_max_climb: 3.0
   over_wall_height_step: 0.3
   over_wall_min_blocked_span: 0.8
   over_wall_min_progress_gain: 0.5
   over_wall_forward_ratio: 0.9
+  state2state:
+    direct_line_frontend_enable: true
+    altitude_guard_enable: true
+    altitude_band: 0.25
+    altitude_escape_enable: true
+    altitude_escape_band: 3.5
+    over_goal_guard_enable: true
+    over_goal_tolerance: 0.25
+    near_goal_radius: 2.0
+    accept_exp_without_backup_near_goal: true
   unknown_goal_reveal_en: true
   yaw_dot_max: 3.0
   # Yaw mode: 1 heading to velocity, 2 heading to goal
@@ -73,8 +83,10 @@ traj_opt:
     penna_pos: 5.0e+7
     penna_vel: 1.0e+7
     penna_acc: 1.0e+7
-    penna_jerk: -1.0e+6
+    penna_jerk: -1.0e+5
     penna_attract: 1.0e+3
+    penna_guide_z_tube: 1.0e+7
+    guide_z_tube_radius: 0.20
     penna_omg: 5.0e+6
     penna_thr: 2.0e+6
 
@@ -94,6 +106,8 @@ traj_opt:
     penna_vel: 1.0e+7
     penna_acc: 1.0e+7
     penna_jerk: -1.0e+7
+    penna_guide_z_tube: 5.0e+6
+    guide_z_tube_radius: 0.20
     penna_omg: 5.0e+6
     penna_thr: 2.0e+6
 
@@ -140,7 +154,7 @@ rog_map:
   frontier_extraction_en: false
 
   # Virtual ceil and ground
-  virtual_ceil_height: 5.5
+  virtual_ceil_height: 2.5
   virtual_ground_height: -0.1
 
   load_pcd_en: false

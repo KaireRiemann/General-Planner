@@ -75,6 +75,15 @@ namespace general_planner {
         double over_wall_min_blocked_span{0.8};
         double over_wall_min_progress_gain{0.5};
         double over_wall_forward_ratio{0.9};
+        bool state2state_direct_line_frontend_enable{true};
+        bool state2state_altitude_guard_enable{true};
+        double state2state_altitude_band{0.25};
+        bool state2state_altitude_escape_enable{true};
+        double state2state_altitude_escape_band{3.5};
+        bool state2state_over_goal_guard_enable{true};
+        double state2state_over_goal_tolerance{0.25};
+        double state2state_near_goal_radius{2.0};
+        bool state2state_accept_exp_without_backup_near_goal{true};
         bool unknown_goal_reveal_en{true};
         int iris_iter_num;
         std::string ellipsoid_optimizer{"classic"};
@@ -417,6 +426,24 @@ namespace general_planner {
             loader.LoadParam("general_planner/over_wall_min_blocked_span", over_wall_min_blocked_span, 0.8);
             loader.LoadParam("general_planner/over_wall_min_progress_gain", over_wall_min_progress_gain, 0.5);
             loader.LoadParam("general_planner/over_wall_forward_ratio", over_wall_forward_ratio, 0.9);
+            loader.LoadParam("general_planner/state2state/direct_line_frontend_enable",
+                             state2state_direct_line_frontend_enable, true);
+            loader.LoadParam("general_planner/state2state/altitude_guard_enable",
+                             state2state_altitude_guard_enable, true);
+            loader.LoadParam("general_planner/state2state/altitude_band",
+                             state2state_altitude_band, 0.25);
+            loader.LoadParam("general_planner/state2state/altitude_escape_enable",
+                             state2state_altitude_escape_enable, true);
+            loader.LoadParam("general_planner/state2state/altitude_escape_band",
+                             state2state_altitude_escape_band, 3.5);
+            loader.LoadParam("general_planner/state2state/over_goal_guard_enable",
+                             state2state_over_goal_guard_enable, true);
+            loader.LoadParam("general_planner/state2state/over_goal_tolerance",
+                             state2state_over_goal_tolerance, 0.25);
+            loader.LoadParam("general_planner/state2state/near_goal_radius",
+                             state2state_near_goal_radius, 2.0);
+            loader.LoadParam("general_planner/state2state/accept_exp_without_backup_near_goal",
+                             state2state_accept_exp_without_backup_near_goal, true);
             loader.LoadParam("general_planner/unknown_goal_reveal_en", unknown_goal_reveal_en, true);
             loader.LoadParam("general_planner/iris_iter_num", iris_iter_num, 1);
             loader.LoadParam("general_planner/ellipsoid_optimizer", ellipsoid_optimizer, std::string("classic"));

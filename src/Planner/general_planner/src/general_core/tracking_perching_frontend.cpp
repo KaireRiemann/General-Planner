@@ -91,6 +91,29 @@ double estimateMovingTargetInterceptTime(const Vec3f &head_p,
     return std::clamp(best_t, lower, upper);
 }
 
+double adaptiveFovRange(const TrackingFrontend::Config &cfg)
+{
+    constexpr double kPi = 3.14159265358979323846;
+    constexpr double kDegToRad = kPi / 180.0;
+    const double horizontal_upper =
+        std::max(0.05,
+                 cfg.tracking_distance +
+                     std::max({0.0, cfg.distance_upper_tolerance, cfg.distance_tolerance}));
+    const double vertical_upper =
+        std::max(0.0, std::abs(cfg.height_offset) + std::max(0.0, cfg.height_tolerance));
+    const double base_range = cfg.fov_range > 0.0 ? cfg.fov_range : horizontal_upper;
+    const double half_h = std::clamp(0.5 * std::max(1.0, cfg.fov_horizontal_deg) * kDegToRad,
+                                     kPi / 180.0,
+                                     0.5 * kPi - 1.0e-3);
+    const double half_v = std::clamp(0.5 * std::max(1.0, cfg.fov_vertical_deg) * kDegToRad,
+                                     kPi / 180.0,
+                                     0.5 * kPi - 1.0e-3);
+    const double footprint_scale = std::hypot(std::tan(half_h), std::tan(half_v));
+    const double geometry_range = std::hypot(horizontal_upper, vertical_upper);
+    const double footprint_range = horizontal_upper + vertical_upper * footprint_scale;
+    return std::max({0.05, base_range, geometry_range, footprint_range});
+}
+
 double estimateTrapezoidalDuration(const double length,
                                    double start_speed,
                                    double end_speed,
@@ -422,11 +445,7 @@ bool TrackingFrontend::isViewpointFovFeasible(const Vec3f &viewpoint,
     const double half_v = std::clamp(0.5 * std::max(1.0, cfg_.fov_vertical_deg) * kDegToRad,
                                      kPi / 180.0,
                                      0.5 * kPi - 1.0e-3);
-    const double configured_range =
-        cfg_.fov_range > 0.0
-            ? cfg_.fov_range
-            : cfg_.tracking_distance + std::max(cfg_.distance_lower_tolerance,
-                                                cfg_.distance_upper_tolerance);
+    const double configured_range = adaptiveFovRange(cfg_);
     const double effective_range =
         std::max(0.05, configured_range - std::max(0.0, cfg_.fov_range_margin));
     const double min_forward = std::max(1.0e-3, cfg_.fov_front_margin);

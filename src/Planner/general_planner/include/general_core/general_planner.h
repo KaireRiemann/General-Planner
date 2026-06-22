@@ -425,7 +425,8 @@ namespace general_planner {
             traj_opt::DynamicTargetState &reference_target) const;
         void rememberTrackingViewpointReference(const traj_opt::TrackingProblem &problem);
 
-        StatePVAJ makeTaskHeadState(const bool &from_rest);
+        StatePVAJ makeTaskHeadState(const bool &from_rest,
+                                    double eval_wall_time = std::numeric_limits<double>::quiet_NaN());
 
         bool commitTaskTrajectory(const Trajectory &pos_traj,
                                   const double &terminal_yaw,
@@ -440,6 +441,7 @@ namespace general_planner {
                                       const Trajectory &yaw_traj,
                                       const traj_opt::DynamicTargetStates &target_prediction,
                                       const std::string &traj_ns,
+                                      double candidate_head_wt = std::numeric_limits<double>::quiet_NaN(),
                                       bool allow_reacquire_fov_relax = false);
 
         bool buildPerchingYawTrajectory(const Trajectory &pos_traj,

@@ -391,6 +391,32 @@ public:
                                                                           &grad_target);
     }
 
+    double adaptiveFovRange() const
+    {
+        constexpr double kPi = 3.14159265358979323846;
+        const double horizontal_upper =
+            std::max(0.05,
+                     problem_.od_h_upper > 0.0
+                         ? problem_.od_h_upper
+                         : problem_.tracking_distance + problem_.distance_tolerance);
+        const double vertical_upper =
+            std::max({0.0,
+                      std::abs(problem_.od_v_lower),
+                      std::abs(problem_.od_v_upper),
+                      std::abs(problem_.height_offset) + std::max(0.0, problem_.height_tolerance)});
+        const double base_range = problem_.fov_range > 0.0 ? problem_.fov_range : horizontal_upper;
+        const double half_h = std::clamp(0.5 * std::max(kPi / 180.0, problem_.fov_horizontal),
+                                         kPi / 180.0,
+                                         0.5 * kPi - 1.0e-3);
+        const double half_v = std::clamp(0.5 * std::max(kPi / 180.0, problem_.fov_vertical),
+                                         kPi / 180.0,
+                                         0.5 * kPi - 1.0e-3);
+        const double footprint_scale = std::hypot(std::tan(half_h), std::tan(half_v));
+        const double geometry_range = std::hypot(horizontal_upper, vertical_upper);
+        const double footprint_range = horizontal_upper + vertical_upper * footprint_scale;
+        return std::max({0.05, base_range, geometry_range, footprint_range});
+    }
+
     double addCameraFovCost(const Eigen::Vector3d &position,
                             double yaw,
                             const traj_opt::DynamicTargetState &target,
@@ -402,9 +428,10 @@ public:
         config.weight = problem_.weight_fov;
         config.horizontal_fov = problem_.fov_horizontal;
         config.vertical_fov = problem_.fov_vertical;
-        config.range = problem_.fov_range > 0.0
-                           ? std::max(0.05, problem_.fov_range - std::max(0.0, problem_.fov_range_margin))
-                           : problem_.fov_range;
+        const double fov_range = adaptiveFovRange();
+        config.range = fov_range > 0.0
+                           ? std::max(0.05, fov_range - std::max(0.0, problem_.fov_range_margin))
+                           : fov_range;
         config.angle_clearance = problem_.visibility_angle_clearance;
         config.min_forward = problem_.fov_front_margin;
         config.smooth_eps = cfg_->smooth_eps;

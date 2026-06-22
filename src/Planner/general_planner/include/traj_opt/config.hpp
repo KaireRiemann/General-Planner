@@ -60,6 +60,7 @@ namespace traj_opt {
         double penna_scale{-1}, penna_vel{0}, penna_acc{0}, penna_jerk{0}, penna_omg{0}, penna_thr{0};
         // penna_t; penna_pos only for corridor based method.
         double penna_t{0}, penna_pos{0}, penna_attract{0}, penna_guide_vel{0};
+        double penna_guide_z_tube{0}, guide_z_tube_radius{0};
         // penna_ts only for backupTraj;
         double penna_ts{0};
         // for backup traj piece num
@@ -122,6 +123,8 @@ namespace traj_opt {
             loader.LoadParam("traj_opt" + ns + "penna_jerk", penna_jerk, -1.0);
             loader.LoadParam("traj_opt" + ns + "penna_attract", penna_attract, -1.0);
             loader.LoadParam("traj_opt" + ns + "penna_guide_vel", penna_guide_vel, -1.0);
+            loader.LoadParam("traj_opt" + ns + "penna_guide_z_tube", penna_guide_z_tube, -1.0);
+            loader.LoadParam("traj_opt" + ns + "guide_z_tube_radius", guide_z_tube_radius, -1.0);
             loader.LoadParam("traj_opt" + ns + "penna_omg", penna_omg, -1.0);
             loader.LoadParam("traj_opt" + ns + "penna_thr", penna_thr, -1.0);
 
@@ -134,6 +137,7 @@ namespace traj_opt {
                 penna_jerk = penna_jerk * penna_scale;
                 penna_attract = penna_attract * penna_scale;
                 penna_guide_vel = penna_guide_vel * penna_scale;
+                penna_guide_z_tube = penna_guide_z_tube * penna_scale;
                 penna_omg = penna_omg * penna_scale;
                 penna_thr = penna_thr * penna_scale;
             }

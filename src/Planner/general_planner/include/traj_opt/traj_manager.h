@@ -422,6 +422,9 @@ private:
     StatePVAJ tail_pvaj;
     vec_E<Vec3f> guide_path;
     std::vector<double> guide_t;
+    double weight_guide_z_tube{0.0};
+    double guide_z_tube_radius{0.0};
+    double guide_z_tube_violation{0.0};
 
     VecDf penalty_log;
   };
@@ -524,6 +527,9 @@ private:
     double min_ts{0.0};
     double max_ts{0.0};
     double ts{0.0};
+    double weight_guide_z_tube{0.0};
+    double guide_z_tube_radius{0.0};
+    double guide_z_tube_violation{0.0};
 
     bool given_init_ts_and_ps{false};
     double given_init_ts{0.0};

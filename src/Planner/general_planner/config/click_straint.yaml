@@ -40,7 +40,7 @@ general_planner:
   over_wall_min_progress_gain: 0.5
   over_wall_forward_ratio: 0.9
   state2state:
-    direct_line_frontend_enable: true
+    direct_line_frontend_enable: false
     altitude_guard_enable: true
     altitude_band: 0.25
     altitude_escape_enable: true
@@ -84,8 +84,8 @@ traj_opt:
     penna_vel: 5.0e+5
     penna_acc: 5.0e+5
     penna_jerk: -5.0e+5
-    penna_attract: 1.0e+3
-    penna_guide_z_tube: 2.0e+6
+    penna_attract: -1.0e+3
+    penna_guide_z_tube: -2.0e+6
     guide_z_tube_radius: 0.10
     penna_omg:  5.0e+5
     penna_thr: 1.0e+5
@@ -106,7 +106,7 @@ traj_opt:
     penna_vel: 1.0e+5
     penna_acc: 1.0e+5
     penna_jerk: -1.0e+5
-    penna_guide_z_tube: 5.0e+5
+    penna_guide_z_tube: -5.0e+5
     guide_z_tube_radius: 0.10
     penna_omg: 1.0e+5
     penna_thr: 1.0e+5
@@ -188,7 +188,7 @@ rog_map:
     # The frame rate of visualization [Hz], if set to 0, the visualization will not be triggered by frame.
     frame_rate: 0
     # visualization range along the odom [m].
-    range: [ 15, 15,4 ]
+    range: [ 15,15,4 ]
     frame_id: "world"
     pub_unknown_map_en: false
 
