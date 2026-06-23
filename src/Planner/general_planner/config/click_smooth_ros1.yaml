@@ -1,8 +1,10 @@
 fsm:
   click_goal_en: true
   click_goal_topic: "/goal"
-  click_height: 1.5
+  click_height: 1.25
   click_yaw_en: true
+  state2state_plan_from_rest_max_failures: 5
+  state2state_clear_goal_on_plan_failure: true
   replan_rate: 5.0
   cmd_topic: "/planning/pos_cmd"
   mpc_cmd_topic: "/planning_cmd/poly_traj"
@@ -41,9 +43,9 @@ general_planner:
   over_wall_forward_ratio: 0.9
   state2state:
     direct_line_frontend_enable: true
-    altitude_guard_enable: true
+    altitude_guard_enable: false
     altitude_band: 0.25
-    altitude_escape_enable: true
+    altitude_escape_enable: false
     altitude_escape_band: 3.5
     over_goal_guard_enable: true
     over_goal_tolerance: 0.25
@@ -64,7 +66,7 @@ traj_opt:
   boundary:
     max_vel: 6.0
     max_acc: 8.0
-    max_jerk: 60.0
+    max_jerk: 80.0
     max_omg: 2.5
     max_acc_thr: 20.0
     min_acc_thr: 6.0
@@ -85,8 +87,8 @@ traj_opt:
     penna_acc: 5.0e+5
     penna_jerk: -5.0e+5
     penna_attract: 1.0e+3
-    penna_guide_z_tube: 2.0e+6
-    guide_z_tube_radius: 0.10
+    penna_guide_z_tube: -2.0e+6
+    guide_z_tube_radius: 0.05
     penna_omg:  5.0e+5
     penna_thr: 1.0e+5
 
@@ -106,7 +108,7 @@ traj_opt:
     penna_vel: 1.0e+5
     penna_acc: 1.0e+5
     penna_jerk: -1.0e+5
-    penna_guide_z_tube: 5.0e+5
+    penna_guide_z_tube: -5.0e+5
     guide_z_tube_radius: 0.10
     penna_omg: 1.0e+5
     penna_thr: 1.0e+5

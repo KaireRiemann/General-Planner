@@ -76,9 +76,9 @@ namespace general_planner {
         double over_wall_min_progress_gain{0.5};
         double over_wall_forward_ratio{0.9};
         bool state2state_direct_line_frontend_enable{true};
-        bool state2state_altitude_guard_enable{true};
+        bool state2state_altitude_guard_enable{false};
         double state2state_altitude_band{0.25};
-        bool state2state_altitude_escape_enable{true};
+        bool state2state_altitude_escape_enable{false};
         double state2state_altitude_escape_band{3.5};
         bool state2state_over_goal_guard_enable{true};
         double state2state_over_goal_tolerance{0.25};
@@ -429,11 +429,11 @@ namespace general_planner {
             loader.LoadParam("general_planner/state2state/direct_line_frontend_enable",
                              state2state_direct_line_frontend_enable, true);
             loader.LoadParam("general_planner/state2state/altitude_guard_enable",
-                             state2state_altitude_guard_enable, true);
+                             state2state_altitude_guard_enable, false);
             loader.LoadParam("general_planner/state2state/altitude_band",
                              state2state_altitude_band, 0.25);
             loader.LoadParam("general_planner/state2state/altitude_escape_enable",
-                             state2state_altitude_escape_enable, true);
+                             state2state_altitude_escape_enable, false);
             loader.LoadParam("general_planner/state2state/altitude_escape_band",
                              state2state_altitude_escape_band, 3.5);
             loader.LoadParam("general_planner/state2state/over_goal_guard_enable",

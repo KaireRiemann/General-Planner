@@ -537,10 +537,31 @@ namespace fsm {
         bool replan_tracking_static = false;
         std::size_t replan_tracking_input_prediction_size = 0;
         if (state2stateMode() || se3AggressiveMode()) {
-            planner_ptr_->getMapManager()->getNearestInfCellNot(GridType::OCCUPIED, gi_.goal_p, gi_.goal_p, 3.0);
+            Vec3f replan_goal = gi_.goal_p;
+            if (planner_ptr_->getMapManager()->getInfGridType(replan_goal) == GridType::OCCUPIED) {
+                Vec3f projected_goal = replan_goal;
+                if (planner_ptr_->getMapManager()->getNearestInfCellNot(GridType::OCCUPIED,
+                                                                         replan_goal,
+                                                                         projected_goal,
+                                                                         3.0)) {
+                    recordDiagnosticEvent("WARN",
+                                          "goal_projected_for_replan",
+                                          fmt::format("reason=occupied;original=[{:.3f},{:.3f},{:.3f}];projected=[{:.3f},{:.3f},{:.3f}];distance={:.3f};goal_unified=1",
+                                                      replan_goal.x(), replan_goal.y(), replan_goal.z(),
+                                                      projected_goal.x(), projected_goal.y(), projected_goal.z(),
+                                                      (projected_goal - replan_goal).norm()));
+                    gi_.goal_p = projected_goal;
+                    replan_goal = projected_goal;
+                } else {
+                    recordDiagnosticEvent("WARN",
+                                          "goal_projection_failed_for_replan",
+                                          fmt::format("reason=occupied;goal=[{:.3f},{:.3f},{:.3f}]",
+                                                      replan_goal.x(), replan_goal.y(), replan_goal.z()));
+                }
+            }
             ret_code = se3AggressiveMode()
-                       ? planner_ptr_->ReplanSE3AggressiveOnce(gi_.goal_p, gi_.goal_yaw, gi_.new_goal)
-                       : planner_ptr_->ReplanOnce(gi_.goal_p, gi_.goal_yaw, gi_.new_goal);
+                       ? planner_ptr_->ReplanSE3AggressiveOnce(replan_goal, gi_.goal_yaw, gi_.new_goal)
+                       : planner_ptr_->ReplanOnce(replan_goal, gi_.goal_yaw, gi_.new_goal);
         } else if (trackingMode() || trackingPerchingMode()) {
             traj_opt::DynamicTargetStates prediction;
             if (!getTrackingTargetPrediction(prediction)) {
@@ -1674,21 +1695,26 @@ namespace fsm {
         const Vec3f last_goal_p = gi_.goal_p;
         const double last_goal_yaw = gi_.goal_yaw;
 
-        if (planner_ptr_->getMapManager()->getNearestInfCellNot(GridType::OCCUPIED, click_point, gi_.goal_p, 3.0)) {
-            cout << GREEN << " -- [Fsm] Get goal at " << RESET << gi_.goal_p.transpose() << endl;
+        gi_.goal_p = click_point;
+        if (planner_ptr_->getMapManager()->getInfGridType(click_point) == GridType::OCCUPIED) {
+            if (planner_ptr_->getMapManager()->getNearestInfCellNot(GridType::OCCUPIED, click_point, gi_.goal_p, 3.0)) {
+                cout << GREEN << " -- [Fsm] Project occupied goal to " << RESET << gi_.goal_p.transpose() << endl;
+            } else {
+                fmt::print(fg(fmt::color::indian_red), "Goal is deeply occupied, skip this goal.\n");
+                recordDiagnosticEvent("WARN",
+                                      "goal_rejected",
+                                      fmt::format("reason=occupied_or_no_free_projection;raw=[{:.3f},{:.3f},{:.3f}];adjusted=[{:.3f},{:.3f},{:.3f}]",
+                                                  p.x(), p.y(), p.z(),
+                                                  click_point.x(), click_point.y(), click_point.z()),
+                                      -1,
+                                      -1,
+                                      false,
+                                      -1,
+                                      0);
+                return;
+            }
         } else {
-            fmt::print(fg(fmt::color::indian_red), "Goal is deeply occupied, skip this goal.\n");
-            recordDiagnosticEvent("WARN",
-                                  "goal_rejected",
-                                  fmt::format("reason=occupied_or_no_free_projection;raw=[{:.3f},{:.3f},{:.3f}];adjusted=[{:.3f},{:.3f},{:.3f}]",
-                                              p.x(), p.y(), p.z(),
-                                              click_point.x(), click_point.y(), click_point.z()),
-                                  -1,
-                                  -1,
-                                  false,
-                                  -1,
-                                  0);
-            return;
+            cout << GREEN << " -- [Fsm] Get goal at " << RESET << gi_.goal_p.transpose() << endl;
         }
         if ((robot_state_.p - gi_.goal_p).norm() <
             0.1) {

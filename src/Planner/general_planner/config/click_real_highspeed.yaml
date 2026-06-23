@@ -85,7 +85,7 @@ traj_opt:
     penna_acc: 1.0e+7
     penna_jerk: -1.0e+5
     penna_attract: 1.0e+3
-    penna_guide_z_tube: 1.0e+7
+    penna_guide_z_tube: -1.0e+7
     guide_z_tube_radius: 0.20
     penna_omg: 5.0e+6
     penna_thr: 2.0e+6
@@ -106,7 +106,7 @@ traj_opt:
     penna_vel: 1.0e+7
     penna_acc: 1.0e+7
     penna_jerk: -1.0e+7
-    penna_guide_z_tube: 5.0e+6
+    penna_guide_z_tube: -5.0e+6
     guide_z_tube_radius: 0.20
     penna_omg: 5.0e+6
     penna_thr: 2.0e+6

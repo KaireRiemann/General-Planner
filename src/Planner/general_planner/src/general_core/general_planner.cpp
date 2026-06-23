@@ -30,6 +30,7 @@
 #include <stdexcept>
 #include <limits>
 #include <memory>
+#include <sstream>
 #include <super_utils/scope_timer.hpp>
 #include <utils/optimization/polynomial_interpolation.h>
 #include <fmt/color.h>
@@ -47,6 +48,71 @@ namespace general_planner {
 
         bool backupTrajectoryPlanningEnabled(const Config &cfg) {
             return cfg.backup_traj_en && !cfg.esdf_traj_en && !cfg.plain_traj_en;
+        }
+
+        struct LocalZSummary {
+            bool valid{false};
+            double start{0.0};
+            double end{0.0};
+            double min{0.0};
+            double max{0.0};
+        };
+
+        LocalZSummary summarizePathZ(const vec_Vec3f &path) {
+            LocalZSummary out;
+            if (path.empty()) {
+                return out;
+            }
+            bool initialized = false;
+            for (const auto &point : path) {
+                if (!point.allFinite() || !std::isfinite(point.z())) {
+                    continue;
+                }
+                if (!initialized) {
+                    out.start = point.z();
+                    out.min = point.z();
+                    out.max = point.z();
+                    initialized = true;
+                }
+                out.end = point.z();
+                out.min = std::min(out.min, point.z());
+                out.max = std::max(out.max, point.z());
+            }
+            out.valid = initialized;
+            return out;
+        }
+
+        LocalZSummary summarizeTrajectoryZ(const Trajectory &traj, double sample_dt) {
+            LocalZSummary out;
+            if (traj.empty()) {
+                return out;
+            }
+            const double duration = traj.getTotalDuration();
+            if (!std::isfinite(duration) || duration < 0.0) {
+                return out;
+            }
+            sample_dt = std::max(0.02, sample_dt);
+            auto addSample = [&](const double t) {
+                const Vec3f pos = traj.getPos(std::clamp(t, 0.0, duration));
+                if (!pos.allFinite() || !std::isfinite(pos.z())) {
+                    return;
+                }
+                if (!out.valid) {
+                    out.start = pos.z();
+                    out.min = pos.z();
+                    out.max = pos.z();
+                    out.valid = true;
+                }
+                out.end = pos.z();
+                out.min = std::min(out.min, pos.z());
+                out.max = std::max(out.max, pos.z());
+            };
+            addSample(0.0);
+            for (double t = sample_dt; t < duration; t += sample_dt) {
+                addSample(t);
+            }
+            addSample(duration);
+            return out;
         }
 
         void logCheckResult(const ros_interface::RosInterface::Ptr &ros_ptr,
@@ -736,6 +802,41 @@ namespace general_planner {
 
         const int neighbor_step = floor(cfg_.robot_r / cfg_.resolution);
         astar_ptr_->setFineInfNeighbors(neighbor_step);
+    }
+
+    std::string GeneralPlanner::getLatestState2StateZDebugInfo() const {
+        if (!latest_state2state_z_debug_.valid) {
+            return "";
+        }
+        const auto &d = latest_state2state_z_debug_;
+        std::ostringstream oss;
+        oss << ";z_debug_valid=1"
+            << ";exp_mode=" << d.exp_mode
+            << ";goal_z=" << d.goal_z
+            << ";robot_z=" << d.robot_z
+            << ";guide_size=" << d.guide_size
+            << ";guide_z_valid=" << static_cast<int>(d.guide.valid)
+            << ";guide_z_start=" << d.guide.start
+            << ";guide_z_end=" << d.guide.end
+            << ";guide_z_min=" << d.guide.min
+            << ";guide_z_max=" << d.guide.max
+            << ";local_target_z=" << d.local_target_z
+            << ";local_target_goal_z_err=" << d.local_target_goal_z_err
+            << ";local_target_goal_dist=" << d.local_target_goal_dist
+            << ";local_target_goal_xy_dist=" << d.local_target_goal_xy_dist
+            << ";local_target_is_goal=" << static_cast<int>(d.local_target_is_global_goal)
+            << ";opt_z_valid=" << static_cast<int>(d.optimized.valid)
+            << ";opt_z_start=" << d.optimized.start
+            << ";opt_z_end=" << d.optimized.end
+            << ";opt_z_min=" << d.optimized.min
+            << ";opt_z_max=" << d.optimized.max
+            << ";opt_end_local_target_z_err=" << d.opt_end_local_target_z_err
+            << ";exp_full_z_valid=" << static_cast<int>(d.exp_full.valid)
+            << ";exp_full_z_start=" << d.exp_full.start
+            << ";exp_full_z_end=" << d.exp_full.end
+            << ";exp_full_z_min=" << d.exp_full.min
+            << ";exp_full_z_max=" << d.exp_full.max;
+        return oss.str();
     }
 
     void GeneralPlanner::setSwarmTrajectories(const traj_opt::SwarmTrajectories &trajectories) {
@@ -7646,6 +7747,12 @@ namespace general_planner {
     RET_CODE GeneralPlanner::generateExpTraj(ExpTraj &last_exp_traj_info, ExpTraj &out_exp_traj_info) {
         /* 1) Log the exp traj frontend time*/
         TimeConsuming t_exp_frontend("t_exp_frontend", false);
+        latest_state2state_z_debug_ = State2StateZDebug{};
+        latest_state2state_z_debug_.goal_z = gi_.goal_p.z();
+        latest_state2state_z_debug_.robot_z = robot_state_.p.z();
+        latest_state2state_z_debug_.exp_mode = cfg_.plain_traj_en
+                                               ? "plain"
+                                               : (cfg_.esdf_traj_en ? "esdf" : "corridor");
 
         // use hot init or not, just prepare a guide path, a guide t, init and fina state and sfc for exp traj opt
         StatePVAJ pos_init_state, pos_fina_state;
@@ -8045,6 +8152,24 @@ namespace general_planner {
             pos_fina_state.col(1).setZero();
             pos_fina_state.col(0) = gi_.goal_p;
         }
+        auto copyZSummary = [](const LocalZSummary &src, ZDebugSummary &dst) {
+            dst.valid = src.valid;
+            dst.start = src.start;
+            dst.end = src.end;
+            dst.min = src.min;
+            dst.max = src.max;
+        };
+        latest_state2state_z_debug_.valid = true;
+        latest_state2state_z_debug_.guide_size = static_cast<int>(guide_path.size());
+        copyZSummary(summarizePathZ(guide_path), latest_state2state_z_debug_.guide);
+        latest_state2state_z_debug_.goal_z = gi_.goal_p.z();
+        latest_state2state_z_debug_.robot_z = pos_init_state(2, 0);
+        latest_state2state_z_debug_.local_target_z = pos_fina_state(2, 0);
+        latest_state2state_z_debug_.local_target_goal_dist = (pos_fina_state.col(0) - gi_.goal_p).norm();
+        latest_state2state_z_debug_.local_target_goal_xy_dist =
+                (pos_fina_state.col(0).head<2>() - gi_.goal_p.head<2>()).norm();
+        latest_state2state_z_debug_.local_target_goal_z_err = pos_fina_state(2, 0) - gi_.goal_p.z();
+        latest_state2state_z_debug_.local_target_is_global_goal = local_endpoint_is_global_goal;
 
         // optimize and update exp traj
         bool temp_ret;
@@ -8094,6 +8219,13 @@ namespace general_planner {
                                                       out_traj);
         }
         time_consuming_[EXP_TRAJ_OPT] = t_exp_opt.stop();
+        copyZSummary(summarizeTrajectoryZ(out_traj, cfg_.sample_traj_dt),
+                     latest_state2state_z_debug_.optimized);
+        if (latest_state2state_z_debug_.optimized.valid) {
+            latest_state2state_z_debug_.opt_end_local_target_z_err =
+                    latest_state2state_z_debug_.optimized.end -
+                    latest_state2state_z_debug_.local_target_z;
+        }
         if (use_esdf_exp_traj) {
             VecDf init_ts;
             vec_Vec3f init_ps;
@@ -8143,6 +8275,8 @@ namespace general_planner {
         out_exp_traj_info.setSFC(sfc);
         temp_exp_traj = temp_exp_traj + out_traj;
         temp_exp_traj.start_WT = new_traj_WT; //last_exp_traj_info.replan_start_WT ;
+        copyZSummary(summarizeTrajectoryZ(temp_exp_traj, cfg_.sample_traj_dt),
+                     latest_state2state_z_debug_.exp_full);
 
         if (!last_exp_traj_info.empty()) {
             StatePVAJ yaw_replan_state;
@@ -8924,74 +9058,6 @@ namespace general_planner {
                 } else {
                     ros_ptr_->warn(" -- [GeneralPlanner] Near-goal frontend path overshoots goal by {:.2f}m but direct goal segment is not usable; keep A* path.",
                                    max_path_over);
-                }
-            }
-        }
-
-        if (cfg_.state2state_altitude_guard_enable && path.size() >= 2) {
-            const Vec3f ref_start = path.front();
-            const Vec3f ref_goal = goal;
-            const Vec3f ref_axis_xy(ref_goal.x() - ref_start.x(),
-                                    ref_goal.y() - ref_start.y(),
-                                    0.0);
-            const double ref_axis_xy_sq = ref_axis_xy.squaredNorm();
-            auto referenceZ = [&](const Vec3f &point) {
-                if (ref_axis_xy_sq < 1.0e-6) {
-                    const Vec3f axis_3d = ref_goal - ref_start;
-                    const double axis_3d_sq = axis_3d.squaredNorm();
-                    if (axis_3d_sq < 1.0e-6) {
-                        return ref_start.z();
-                    }
-                    const double alpha =
-                            std::clamp((point - ref_start).dot(axis_3d) / axis_3d_sq,
-                                       0.0,
-                                       1.0);
-                    return ref_start.z() + alpha * (ref_goal.z() - ref_start.z());
-                }
-                const Vec3f point_xy(point.x() - ref_start.x(),
-                                     point.y() - ref_start.y(),
-                                     0.0);
-                const double alpha =
-                        std::clamp(point_xy.dot(ref_axis_xy) / ref_axis_xy_sq,
-                                   0.0,
-                                   1.0);
-                return ref_start.z() + alpha * (ref_goal.z() - ref_start.z());
-            };
-
-            double max_alt_dev = 0.0;
-            for (const auto &point : path) {
-                max_alt_dev = std::max(max_alt_dev, std::abs(point.z() - referenceZ(point)));
-            }
-
-            if (max_alt_dev > cfg_.state2state_altitude_band + 1.0e-6) {
-                vec_Vec3f flattened_path = path;
-                for (auto &point : flattened_path) {
-                    point.z() = referenceZ(point);
-                }
-                if (!flattened_path.empty()) {
-                    flattened_path.front() = path.front();
-                }
-                if (selected_ret == REACH_GOAL && !flattened_path.empty()) {
-                    flattened_path.back() = goal;
-                }
-
-                bool flattened_usable = flattened_path.size() >= 2;
-                for (std::size_t i = 1; flattened_usable && i < flattened_path.size(); ++i) {
-                    flattened_usable = lineUsable(flattened_path[i - 1], flattened_path[i]);
-                }
-
-                if (flattened_usable) {
-                    path = flattened_path;
-                    ros_ptr_->warn(" -- [GeneralPlanner] Flatten A* frontend altitude drift {:.2f}m to reference z profile.",
-                                   max_alt_dev);
-                } else if (!cfg_.state2state_altitude_escape_enable ||
-                           max_alt_dev > cfg_.state2state_altitude_escape_band) {
-                    ros_ptr_->warn(" -- [GeneralPlanner] Reject A* frontend altitude drift {:.2f}m: flattened path blocked.",
-                                   max_alt_dev);
-                    return false;
-                } else if (cfg_.print_log) {
-                    ros_ptr_->warn(" -- [GeneralPlanner] Allow 3D A* altitude escape {:.2f}m because flattened path is blocked.",
-                                   max_alt_dev);
                 }
             }
         }

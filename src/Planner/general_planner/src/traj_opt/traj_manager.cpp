@@ -201,6 +201,233 @@ ClosestGuidePV closestPVOnPolyline(const vec_E<Vec3f> &path,
   return best;
 }
 
+struct GuideOverlapSample
+{
+  Vec3f position{Vec3f::Zero()};
+  double time{0.0};
+  double clearance{0.0};
+  bool valid{false};
+};
+
+double minNormalizedClearanceToHPoly(const PolyhedronH &h_poly, const Vec3f &point)
+{
+  if (h_poly.rows() <= 0 || !point.allFinite() || !std::isfinite(h_poly.sum()))
+  {
+    return -std::numeric_limits<double>::infinity();
+  }
+
+  double min_clearance = std::numeric_limits<double>::infinity();
+  for (int i = 0; i < h_poly.rows(); ++i)
+  {
+    const Vec3f normal = h_poly.row(i).head<3>().transpose();
+    const double normal_norm = normal.norm();
+    if (normal_norm <= 1.0e-12 || !std::isfinite(normal_norm))
+    {
+      continue;
+    }
+    const double signed_dist = normal.dot(point) + h_poly(i, 3);
+    min_clearance = std::min(min_clearance, -signed_dist / normal_norm);
+  }
+  return min_clearance;
+}
+
+bool clipGuideSegmentToHPoly(const Vec3f &start,
+                             const Vec3f &end,
+                             const PolyhedronH &h_poly,
+                             double boundary_margin,
+                             double &s_min,
+                             double &s_max)
+{
+  if (!start.allFinite() || !end.allFinite() ||
+      h_poly.rows() <= 0 || !std::isfinite(h_poly.sum()))
+  {
+    return false;
+  }
+
+  const Vec3f delta = end - start;
+  s_min = 0.0;
+  s_max = 1.0;
+  for (int i = 0; i < h_poly.rows(); ++i)
+  {
+    const Vec3f normal = h_poly.row(i).head<3>().transpose();
+    const double normal_norm = normal.norm();
+    if (normal_norm <= 1.0e-12 || !std::isfinite(normal_norm))
+    {
+      continue;
+    }
+
+    const double signed_start = normal.dot(start) + h_poly(i, 3) +
+                                std::max(0.0, boundary_margin) * normal_norm;
+    const double signed_delta = normal.dot(delta);
+    if (std::abs(signed_delta) <= 1.0e-12)
+    {
+      if (signed_start > 1.0e-9)
+      {
+        return false;
+      }
+      continue;
+    }
+
+    const double s_bound = -signed_start / signed_delta;
+    if (signed_delta > 0.0)
+    {
+      s_max = std::min(s_max, s_bound);
+    }
+    else
+    {
+      s_min = std::max(s_min, s_bound);
+    }
+
+    if (s_min > s_max + 1.0e-9)
+    {
+      return false;
+    }
+  }
+
+  s_min = std::clamp(s_min, 0.0, 1.0);
+  s_max = std::clamp(s_max, 0.0, 1.0);
+  return s_min <= s_max + 1.0e-9;
+}
+
+GuideOverlapSample closestGuideProjectionToPoint(const vec_E<Vec3f> &path,
+                                                 const std::vector<double> &times,
+                                                 const Vec3f &query)
+{
+  GuideOverlapSample best;
+  if (path.size() != times.size() || path.empty() || !query.allFinite())
+  {
+    return best;
+  }
+
+  double best_sq = std::numeric_limits<double>::infinity();
+  for (int i = 0; i < static_cast<int>(path.size()); ++i)
+  {
+    if (!path[i].allFinite() || !std::isfinite(times[i]))
+    {
+      continue;
+    }
+
+    const double sq = (path[i] - query).squaredNorm();
+    if (sq < best_sq)
+    {
+      best_sq = sq;
+      best.position = path[i];
+      best.time = times[i];
+      best.valid = true;
+    }
+
+    if (i + 1 >= static_cast<int>(path.size()) ||
+        !path[i + 1].allFinite() ||
+        !std::isfinite(times[i + 1]))
+    {
+      continue;
+    }
+    const Vec3f segment = path[i + 1] - path[i];
+    const double segment_sq = segment.squaredNorm();
+    if (segment_sq <= 1.0e-12)
+    {
+      continue;
+    }
+    const double ratio = std::clamp((query - path[i]).dot(segment) / segment_sq, 0.0, 1.0);
+    const Vec3f candidate = path[i] + ratio * segment;
+    const double candidate_sq = (candidate - query).squaredNorm();
+    if (candidate_sq < best_sq)
+    {
+      best_sq = candidate_sq;
+      best.position = candidate;
+      best.time = times[i] + ratio * (times[i + 1] - times[i]);
+      best.valid = true;
+    }
+  }
+  return best;
+}
+
+bool findGuidePointInOverlap(const vec_E<Vec3f> &path,
+                             const std::vector<double> &times,
+                             const PolyhedronH &overlap,
+                             const Vec3f &time_reference_point,
+                             const double min_time,
+                             GuideOverlapSample &sample)
+{
+  sample = GuideOverlapSample{};
+  if (path.size() < 2 || path.size() != times.size() ||
+      overlap.rows() <= 0 || !std::isfinite(overlap.sum()))
+  {
+    return false;
+  }
+
+  const GuideOverlapSample reference =
+      closestGuideProjectionToPoint(path, times, time_reference_point);
+  const double target_time = reference.valid && std::isfinite(reference.time)
+                                 ? std::max(min_time, reference.time)
+                                 : min_time;
+
+  double best_score = std::numeric_limits<double>::infinity();
+  double best_clearance = -std::numeric_limits<double>::infinity();
+  for (int i = 0; i + 1 < static_cast<int>(path.size()); ++i)
+  {
+    if (!path[i].allFinite() || !path[i + 1].allFinite() ||
+        !std::isfinite(times[i]) || !std::isfinite(times[i + 1]))
+    {
+      continue;
+    }
+    if (times[i + 1] + 1.0e-8 < min_time)
+    {
+      continue;
+    }
+
+    double s_min = 0.0;
+    double s_max = 1.0;
+    if (!clipGuideSegmentToHPoly(path[i], path[i + 1], overlap, 0.0, s_min, s_max))
+    {
+      continue;
+    }
+
+    const double dt = times[i + 1] - times[i];
+    if (dt > 1.0e-9)
+    {
+      s_min = std::max(s_min, (min_time - times[i]) / dt);
+    }
+    else if (times[i] + 1.0e-8 < min_time)
+    {
+      continue;
+    }
+    s_min = std::clamp(s_min, 0.0, 1.0);
+    if (s_min > s_max + 1.0e-9)
+    {
+      continue;
+    }
+
+    double ratio = 0.5 * (s_min + s_max);
+    if (dt > 1.0e-9 && std::isfinite(target_time))
+    {
+      ratio = std::clamp((target_time - times[i]) / dt, s_min, s_max);
+    }
+    const Vec3f position = path[i] + ratio * (path[i + 1] - path[i]);
+    const double time = times[i] + ratio * dt;
+    const double clearance = minNormalizedClearanceToHPoly(overlap, position);
+    if (!position.allFinite() || !std::isfinite(time) ||
+        !std::isfinite(clearance) || clearance < -1.0e-6)
+    {
+      continue;
+    }
+
+    const double score = std::abs(time - target_time);
+    if (score < best_score - 1.0e-9 ||
+        (std::abs(score - best_score) <= 1.0e-9 && clearance > best_clearance))
+    {
+      best_score = score;
+      best_clearance = clearance;
+      sample.position = position;
+      sample.time = time;
+      sample.clearance = std::max(0.0, clearance);
+      sample.valid = true;
+    }
+  }
+
+  return sample.valid;
+}
+
 bool referenceZOnGuideByXY(const vec_E<Vec3f> &path,
                            const Vec3f &query,
                            double &ref_z)
@@ -494,26 +721,54 @@ bool ExpTrajOpt::processCorridorWithGuideTraj()
   VecDf time_stamps(opt_vars_.waypoint_attractor.cols() + 2);
   time_stamps(0) = 0.0;
   time_stamps(time_stamps.size() - 1) = opt_vars_.guide_t.back();
+  int guide_overlap_fallback_count = 0;
   for (int j = 0; j < opt_vars_.waypoint_attractor.cols(); ++j)
   {
-    double min_dis = std::numeric_limits<double>::max();
-    int min_id = 0;
-    for (int i = 0; i < static_cast<int>(opt_vars_.guide_path.size()); ++i)
+    const Vec3f chebyshev_center = opt_vars_.waypoint_attractor.col(j);
+    const double chebyshev_dead_d = opt_vars_.waypoint_attractor_dead_d(j);
+    GuideOverlapSample guide_sample;
+    if (findGuidePointInOverlap(opt_vars_.guide_path,
+                                opt_vars_.guide_t,
+                                opt_vars_.h_overlap_polytopes[j],
+                                chebyshev_center,
+                                time_stamps(j),
+                                guide_sample))
     {
-      const double dis = (opt_vars_.guide_path[i] - opt_vars_.waypoint_attractor.col(j)).norm();
-      if (dis < min_dis)
-      {
-        min_dis = dis;
-        min_id = i;
-      }
+      opt_vars_.waypoint_attractor.col(j) = guide_sample.position;
+      opt_vars_.points.col(j) = guide_sample.position;
+      opt_vars_.waypoint_attractor_dead_d(j) =
+          std::min(chebyshev_dead_d, std::max(1.0e-3, 0.5 * guide_sample.clearance));
+      time_stamps(j + 1) = std::clamp(guide_sample.time,
+                                      time_stamps(0),
+                                      time_stamps(time_stamps.size() - 1));
     }
-    opt_vars_.points.col(j) = opt_vars_.waypoint_attractor.col(j);
-    time_stamps(j + 1) = opt_vars_.guide_t[min_id];
+    else
+    {
+      double min_dis = std::numeric_limits<double>::max();
+      int min_id = 0;
+      for (int i = 0; i < static_cast<int>(opt_vars_.guide_path.size()); ++i)
+      {
+        const double dis = (opt_vars_.guide_path[i] - chebyshev_center).norm();
+        if (dis < min_dis)
+        {
+          min_dis = dis;
+          min_id = i;
+        }
+      }
+      opt_vars_.points.col(j) = chebyshev_center;
+      time_stamps(j + 1) = opt_vars_.guide_t[min_id];
+      ++guide_overlap_fallback_count;
+    }
   }
 
   for (int i = 1; i < time_stamps.size(); ++i)
   {
     opt_vars_.times(i - 1) = std::max(0.01, time_stamps(i) - time_stamps(i - 1));
+  }
+  if (cfg_.print_optimizer_log && guide_overlap_fallback_count > 0)
+  {
+    std::cout << YELLOW << " -- [ExpTrajOpt] Guide-overlap waypoint fallback count: "
+              << guide_overlap_fallback_count << RESET << std::endl;
   }
   return true;
 }

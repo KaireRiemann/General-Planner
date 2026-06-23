@@ -170,6 +170,7 @@ namespace fsm {
             planner_ptr_->unlockCommittedTraj();
 
             cmd_traj.start_WT_pos = ros::Time(pos_traj.start_WT);
+            cmd_traj.debug_info += makeCommittedZDebugInfo(pos_traj);
 
             cmd_traj.piece_num_pos = pos_traj.getPieceNum();
             cmd_traj.order_pos = 7;
@@ -204,8 +205,55 @@ namespace fsm {
             }
         }
 
+        std::string makeCommittedZDebugInfo(const Trajectory &pos_traj) const {
+            if (pos_traj.empty()) {
+                return ";committed_z_valid=0";
+            }
+            const double duration = pos_traj.getTotalDuration();
+            if (!std::isfinite(duration) || duration < 0.0) {
+                return ";committed_z_valid=0";
+            }
+
+            bool valid = false;
+            double start_z = 0.0;
+            double end_z = 0.0;
+            double min_z = 0.0;
+            double max_z = 0.0;
+            const double sample_dt = 0.05;
+            auto addSample = [&](const double t) {
+                const Vec3f pos = pos_traj.getPos(std::clamp(t, 0.0, duration));
+                if (!pos.allFinite() || !std::isfinite(pos.z())) {
+                    return;
+                }
+                if (!valid) {
+                    valid = true;
+                    start_z = pos.z();
+                    min_z = pos.z();
+                    max_z = pos.z();
+                }
+                end_z = pos.z();
+                min_z = std::min(min_z, pos.z());
+                max_z = std::max(max_z, pos.z());
+            };
+            addSample(0.0);
+            for (double t = sample_dt; t < duration; t += sample_dt) {
+                addSample(t);
+            }
+            addSample(duration);
+
+            std::ostringstream oss;
+            oss << ";committed_z_valid=" << static_cast<int>(valid)
+                << ";committed_z_start=" << start_z
+                << ";committed_z_end=" << end_z
+                << ";committed_z_min=" << min_z
+                << ";committed_z_max=" << max_z;
+            return oss.str();
+        }
+
         std::string makeSwarmDebugInfo() const {
             const double corridor_time = planner_ptr_->getLatestCorridorTime();
+            const std::string state2state_z_debug =
+                    state2stateMode() ? planner_ptr_->getLatestState2StateZDebugInfo() : "";
             const char *task_phase = "state_to_state";
             if (perchingMode()) {
                 task_phase = "perching";
@@ -238,7 +286,8 @@ namespace fsm {
                 << ";backup_opt_time_ms=" << planner_ptr_->getLatestBackupOptimizationTime() * 1000.0
                 << ";total_replan_time_ms=" << planner_ptr_->getLatestTotalReplanTime() * 1000.0
                 << ";trajectory_optimization_success=1"
-                << ";optimization_time_ms=" << planner_ptr_->getLatestOptimizationTime() * 1000.0;
+                << ";optimization_time_ms=" << planner_ptr_->getLatestOptimizationTime() * 1000.0
+                << state2state_z_debug;
             return oss.str();
         }
 

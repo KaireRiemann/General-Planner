@@ -95,6 +95,31 @@ namespace general_planner {
 
         double planner_process_start_WT_;
 
+        struct ZDebugSummary {
+            bool valid{false};
+            double start{0.0};
+            double end{0.0};
+            double min{0.0};
+            double max{0.0};
+        };
+
+        struct State2StateZDebug {
+            bool valid{false};
+            std::string exp_mode{"none"};
+            int guide_size{0};
+            ZDebugSummary guide;
+            ZDebugSummary optimized;
+            ZDebugSummary exp_full;
+            double goal_z{0.0};
+            double robot_z{0.0};
+            double local_target_z{0.0};
+            double local_target_goal_xy_dist{0.0};
+            double local_target_goal_dist{0.0};
+            double local_target_goal_z_err{0.0};
+            double opt_end_local_target_z_err{0.0};
+            bool local_target_is_global_goal{false};
+        } latest_state2state_z_debug_;
+
         struct GoalInfo {
             Vec3f goal_p{0, 0, 0};
             double goal_yaw{0};
@@ -308,6 +333,8 @@ namespace general_planner {
         std::string getEllipsoidOptimizerName() const {
             return cfg_.ellipsoid_optimizer;
         }
+
+        std::string getLatestState2StateZDebugInfo() const;
 
         void setSwarmTrajectories(const traj_opt::SwarmTrajectories &trajectories);
 
