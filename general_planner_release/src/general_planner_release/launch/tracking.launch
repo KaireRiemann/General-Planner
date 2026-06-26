@@ -1,0 +1,24 @@
+<launch>
+  <arg name="interface_config"
+       default="$(find general_planner_release)/config/interface.yaml"/>
+  <arg name="generated_config_path"
+       default="$(env HOME)/.ros/general_planner_runtime/tracking_runtime.yaml"/>
+
+  <arg name="rviz" default="true"/>
+  <arg name="rviz_config" default="$(find perfect_drone_sim)/rviz/release.rviz"/>
+
+  <node pkg="general_planner_release"
+        type="general_planner_runtime_node"
+        name="general_planner_runtime_node"
+        output="screen"
+        clear_params="true">
+    <param name="interface_config_path" value="$(arg interface_config)" type="string"/>
+    <param name="generated_config_path" value="$(arg generated_config_path)" type="string"/>
+  </node>
+
+  <group if="$(arg rviz)">
+    <node pkg="rviz" type="rviz" name="release"
+          args="-d $(arg rviz_config)" output="log"/>
+  </group>
+</launch>
+

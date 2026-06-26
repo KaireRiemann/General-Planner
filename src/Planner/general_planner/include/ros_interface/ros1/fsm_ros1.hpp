@@ -715,12 +715,41 @@ namespace fsm {
         }
 
         bool getPoseFromTraj(super_utils::Pose &pose) {
-            if (machine_state_ != FOLLOW_TRAJ) {
-                cout << YELLOW << "[Fsm] Not in FOLLOW_TRAJ state, can't get pose from traj." << RESET << endl;
+            if (machine_state_ != FOLLOW_TRAJ &&
+                machine_state_ != STATIC_TRACKING) {
+                cout << YELLOW << "[Fsm] Not in trajectory execution state, can't get pose from traj." << RESET << endl;
                 return false;
             }
             getOnePositionCommand(pid_cmd_, traj_finish_);
             if (traj_finish_) {
+                const bool close_to_goal = closeToGoal(0.1);
+                const bool tracking_unfinished =
+                        (trackingMode() || trackingPerchingMode()) &&
+                        !trackingPerchingPerchingActive() &&
+                        !close_to_goal;
+                if (tracking_unfinished) {
+                    task_new_ = true;
+                    plan_from_rest_ = true;
+                    finish_plan = false;
+                    if (last_tracking_unfinished_traj_seq_ != static_cast<int>(traj_seq_)) {
+                        last_tracking_unfinished_traj_seq_ = static_cast<int>(traj_seq_);
+                        const bool hold_committed =
+                                planner_ptr_->commitTrackingHoldTrajectory(
+                                        "tracking pose query reached trajectory end before target");
+                        recordDiagnosticEvent("WARN",
+                                              "tracking_trajectory_finished_reacquire",
+                                              fmt::format("trajectory_id={};hold_committed={}",
+                                                          pid_cmd_.trajectory_id,
+                                                          static_cast<int>(hold_committed)),
+                                              -1,
+                                              static_cast<int>(traj_seq_),
+                                              pid_cmd_.trajectory_flag == 2);
+                        if (hold_committed) {
+                            publishPolyTraj();
+                        }
+                    }
+                    traj_finish_ = false;
+                } else {
                 cout << GREEN << " -- [Fsm] Traj finish." << RESET << endl;
                 const bool tracking_perching_contact = trackingPerchingPerchingActive();
                 if (perchingMode() || tracking_perching_contact) {
@@ -740,6 +769,7 @@ namespace fsm {
                     ChangeState("getPoseFromTraj", GENERATE_TRAJ);
                 } else {
                     ChangeState("getPoseFromTraj", WAIT_GOAL);
+                }
                 }
             }
             pose.first = Vec3f{pid_cmd_.position.x, pid_cmd_.position.y, pid_cmd_.position.z};
@@ -1299,7 +1329,9 @@ namespace fsm {
             if (stop) {
                 return;
             }
-            if (machine_state_ != FOLLOW_TRAJ && machine_state_ != EMER_STOP) {
+            if (machine_state_ != FOLLOW_TRAJ &&
+                machine_state_ != STATIC_TRACKING &&
+                machine_state_ != EMER_STOP) {
                 return;
             }
 
@@ -1316,15 +1348,25 @@ namespace fsm {
                 }
             }
             if (traj_finish_) {
-                cout << GREEN << " -- [Fsm] Traj finish." << RESET << endl;
-                recordDiagnosticEvent("INFO",
-                                      "trajectory_finished",
-                                      fmt::format("trajectory_id={};close_to_goal={}",
-                                                  pid_cmd_.trajectory_id,
-                                                  static_cast<int>(closeToGoal(0.1))),
-                                      -1,
-                                      static_cast<int>(traj_seq_),
-                                      pid_cmd_.trajectory_flag == 2);
+                const bool close_to_goal = closeToGoal(0.1);
+                const bool tracking_unfinished =
+                        (trackingMode() || trackingPerchingMode()) &&
+                        !trackingPerchingPerchingActive() &&
+                        !close_to_goal;
+                const bool log_finish_once =
+                        !tracking_unfinished ||
+                        last_tracking_unfinished_traj_seq_ != static_cast<int>(traj_seq_);
+                if (log_finish_once) {
+                    cout << GREEN << " -- [Fsm] Traj finish." << RESET << endl;
+                    recordDiagnosticEvent("INFO",
+                                          "trajectory_finished",
+                                          fmt::format("trajectory_id={};close_to_goal={}",
+                                                      pid_cmd_.trajectory_id,
+                                                      static_cast<int>(close_to_goal)),
+                                          -1,
+                                          static_cast<int>(traj_seq_),
+                                          pid_cmd_.trajectory_flag == 2);
+                }
                 const bool tracking_perching_contact = trackingPerchingPerchingActive();
                 if (perchingMode() || tracking_perching_contact) {
                     {
@@ -1338,6 +1380,30 @@ namespace fsm {
                         planner_ptr_->markTrackingPerchingContact();
                     }
                     cout << GREEN << " -- [Perching] PERCHING_CONTACT" << RESET << endl;
+                }
+                if (tracking_unfinished) {
+                    task_new_ = true;
+                    plan_from_rest_ = true;
+                    finish_plan = false;
+                    if (log_finish_once) {
+                        last_tracking_unfinished_traj_seq_ = static_cast<int>(traj_seq_);
+                        const bool hold_committed =
+                                planner_ptr_->commitTrackingHoldTrajectory(
+                                        "tracking trajectory finished before reaching target");
+                        recordDiagnosticEvent("WARN",
+                                              "tracking_trajectory_finished_reacquire",
+                                              fmt::format("trajectory_id={};hold_committed={}",
+                                                          pid_cmd_.trajectory_id,
+                                                          static_cast<int>(hold_committed)),
+                                              -1,
+                                              static_cast<int>(traj_seq_),
+                                              pid_cmd_.trajectory_flag == 2);
+                        if (hold_committed) {
+                            publishPolyTraj();
+                        }
+                    }
+                    traj_finish_ = false;
+                    return;
                 }
                 markTrackingFinishedIfStaticTarget();
                 if (shouldGenerateAfterTrajFinish()) {

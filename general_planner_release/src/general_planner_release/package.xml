@@ -1,0 +1,17 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>general_planner_release</name>
+  <version>0.1.0</version>
+  <description>Binary-only ROS1 release wrapper for General Planner.</description>
+  <maintainer email="release@example.com">general_planner_release</maintainer>
+  <license>Proprietary deployment wrapper; keep upstream licenses for bundled dependencies.</license>
+
+  <exec_depend>roscpp</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+  <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>nav_msgs</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>visualization_msgs</exec_depend>
+  <exec_depend>quadrotor_msgs</exec_depend>
+</package>
+

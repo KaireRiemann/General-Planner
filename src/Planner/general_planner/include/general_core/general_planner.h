@@ -257,6 +257,9 @@ namespace general_planner {
 
         double getCommittedTrajectoryRemainingDuration();
 
+        bool commitTrackingHoldTrajectory(const std::string &reason,
+                                          double duration = 0.0);
+
         bool checkCommittedPositionTrajectorySafety(
                 double horizon,
                 double dt,
@@ -469,7 +472,8 @@ namespace general_planner {
                                       const traj_opt::DynamicTargetStates &target_prediction,
                                       const std::string &traj_ns,
                                       double candidate_head_wt = std::numeric_limits<double>::quiet_NaN(),
-                                      bool allow_reacquire_fov_relax = false);
+                                      bool allow_reacquire_fov_relax = false,
+                                      bool allow_old_prefix = true);
 
         bool buildPerchingYawTrajectory(const Trajectory &pos_traj,
                                         const traj_opt::PerchingSurfaceState &surface,

@@ -588,8 +588,8 @@ namespace fsm {
                                                   prediction.size(),
                                                   planner_ptr_->getCommittedTrajectoryRemainingDuration()),
                                       NO_NEED);
-                if (machine_state_ != HOLD_TRACKING) {
-                    ChangeState("StaticTrackingHold", HOLD_TRACKING);
+                if (machine_state_ != STATIC_TRACKING) {
+                    ChangeState("StaticTrackingContinue", STATIC_TRACKING);
                 }
                 return;
             }
@@ -662,7 +662,7 @@ namespace fsm {
         } else if (ret_code == NO_NEED && (trackingMode() || trackingPerchingMode())) {
             publishPolyTraj();
             if (replan_tracking_static) {
-                ChangeState("ReplanTimerCallback", HOLD_TRACKING);
+                ChangeState("ReplanTimerCallback", STATIC_TRACKING);
             } else if (machine_state_ != FOLLOW_TRAJ) {
                 ChangeState("ReplanTimerCallback", FOLLOW_TRAJ);
             }
@@ -966,7 +966,7 @@ namespace fsm {
                     finish_plan = false;
                     publishPolyTraj();
                     ChangeState("MainFsmCallback",
-                                planned_tracking_static ? HOLD_TRACKING : FOLLOW_TRAJ);
+                                planned_tracking_static ? STATIC_TRACKING : FOLLOW_TRAJ);
                 } else if (retcode == FINISH && explorationMode()) {
                     gi_.new_goal = false;
                     task_new_ = false;
@@ -1117,8 +1117,7 @@ namespace fsm {
 
     bool Fsm::trackingExecutionState() const {
         return machine_state_ == FOLLOW_TRAJ ||
-               machine_state_ == STATIC_TRACKING ||
-               machine_state_ == HOLD_TRACKING;
+               machine_state_ == STATIC_TRACKING;
     }
 
     bool Fsm::trackingPerchingPerchingActive() const {

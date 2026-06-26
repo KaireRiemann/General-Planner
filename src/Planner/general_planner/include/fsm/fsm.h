@@ -218,6 +218,7 @@ namespace fsm {
         double system_start_time_{0.0};
 
         bool traj_finish_{false};
+        int last_tracking_unfinished_traj_seq_{-1};
 
         void WriteTimeToLog();
 

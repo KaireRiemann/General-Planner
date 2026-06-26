@@ -547,18 +547,18 @@ TrackingRuntimeManager::Decision TrackingRuntimeManager::decide(
                                  &decision.reason);
 
     if (old_committed == nullptr) {
-        if (candidate_safe && decision.candidate_commandable) {
+        if (candidate_safe) {
             decision.type = DecisionType::COMMIT_CANDIDATE;
             decision.status = Status::CANDIDATE_ACCEPTED;
-            decision.reason = "no old tracking trajectory";
+            decision.reason = decision.candidate_commandable
+                                  ? "no old tracking trajectory"
+                                  : "safe candidate accepted for reacquire without old tracking";
             return decision;
         }
         decision.type = DecisionType::REJECT_AND_FAIL;
-        decision.status =
-                candidate_safe ? Status::CANDIDATE_REJECTED_NO_MOTION : Status::LOST;
+        decision.status = Status::LOST;
         if (decision.reason.empty()) {
-            decision.reason = candidate_safe ? "candidate not commandable"
-                                             : "candidate unsafe and no old tracking trajectory";
+            decision.reason = "candidate unsafe and no old tracking trajectory";
         }
         return decision;
     }

@@ -163,7 +163,7 @@ general_planner:
     fov_range: 4.0
     target_front_margin: 0.05
     fov_commit_check_enable: true
-    fov_check_strict: true
+    fov_check_strict: false
     fov_check_dt: 0.03
     fov_range_grace_enable: true
     fov_range_grace: 0.9

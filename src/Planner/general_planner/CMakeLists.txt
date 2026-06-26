@@ -49,6 +49,7 @@ catkin_package(
 include_directories(
         SYSTEM
         include
+        ${CMAKE_CURRENT_BINARY_DIR}/generated
         ../../../devel/include
         ${catkin_INCLUDE_DIRS}
         ${Eigen3_INCLUDE_DIRS}
@@ -92,6 +93,70 @@ add_dependencies(fsm_node
         ${catkin_EXPORTED_TARGETS}
 )
 target_link_libraries(fsm_node
+        general_planner_core        ${THIRD_PARTY}
+)
+
+set(GENERAL_PLANNER_RUNTIME_PRESET_HEADER
+        "${CMAKE_CURRENT_BINARY_DIR}/generated/general_planner_runtime_preset.hpp")
+file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/generated")
+
+set(GENERAL_PLANNER_RUNTIME_TRACKING_PRESET_CONFIG
+        "${CMAKE_CURRENT_SOURCE_DIR}/config/tracking_tracker_drone1_ros1.yaml")
+set(GENERAL_PLANNER_RUNTIME_STATE2STATE_CORRIDOR_PRESET_CONFIG
+        "${CMAKE_CURRENT_SOURCE_DIR}/config/click_smooth_ros1.yaml")
+set(GENERAL_PLANNER_RUNTIME_STATE2STATE_ESDF_PRESET_CONFIG
+        "${CMAKE_CURRENT_SOURCE_DIR}/config/click_esdf_ros1.yaml")
+set(GENERAL_PLANNER_RUNTIME_STATE2STATE_PLAIN_PRESET_CONFIG
+        "${CMAKE_CURRENT_SOURCE_DIR}/config/click_plain_ros1.yaml")
+
+file(READ "${GENERAL_PLANNER_RUNTIME_TRACKING_PRESET_CONFIG}"
+        GENERAL_PLANNER_RUNTIME_TRACKING_PRESET_YAML)
+file(READ "${GENERAL_PLANNER_RUNTIME_STATE2STATE_CORRIDOR_PRESET_CONFIG}"
+        GENERAL_PLANNER_RUNTIME_STATE2STATE_CORRIDOR_PRESET_YAML)
+file(READ "${GENERAL_PLANNER_RUNTIME_STATE2STATE_ESDF_PRESET_CONFIG}"
+        GENERAL_PLANNER_RUNTIME_STATE2STATE_ESDF_PRESET_YAML)
+file(READ "${GENERAL_PLANNER_RUNTIME_STATE2STATE_PLAIN_PRESET_CONFIG}"
+        GENERAL_PLANNER_RUNTIME_STATE2STATE_PLAIN_PRESET_YAML)
+
+get_filename_component(GENERAL_PLANNER_RUNTIME_TRACKING_PRESET_NAME
+        "${GENERAL_PLANNER_RUNTIME_TRACKING_PRESET_CONFIG}" NAME)
+get_filename_component(GENERAL_PLANNER_RUNTIME_STATE2STATE_CORRIDOR_PRESET_NAME
+        "${GENERAL_PLANNER_RUNTIME_STATE2STATE_CORRIDOR_PRESET_CONFIG}" NAME)
+get_filename_component(GENERAL_PLANNER_RUNTIME_STATE2STATE_ESDF_PRESET_NAME
+        "${GENERAL_PLANNER_RUNTIME_STATE2STATE_ESDF_PRESET_CONFIG}" NAME)
+get_filename_component(GENERAL_PLANNER_RUNTIME_STATE2STATE_PLAIN_PRESET_NAME
+        "${GENERAL_PLANNER_RUNTIME_STATE2STATE_PLAIN_PRESET_CONFIG}" NAME)
+
+file(WRITE "${GENERAL_PLANNER_RUNTIME_PRESET_HEADER}"
+        "#pragma once\n"
+        "namespace general_planner_runtime_preset {\n"
+        "static constexpr const char *kTrackingPresetName = \"${GENERAL_PLANNER_RUNTIME_TRACKING_PRESET_NAME}\";\n"
+        "static constexpr const char *kTrackingPresetYaml = R\"GPTRACK(\n"
+        "${GENERAL_PLANNER_RUNTIME_TRACKING_PRESET_YAML}\n"
+        ")GPTRACK\";\n"
+        "static constexpr const char *kState2StateCorridorPresetName = \"${GENERAL_PLANNER_RUNTIME_STATE2STATE_CORRIDOR_PRESET_NAME}\";\n"
+        "static constexpr const char *kState2StateCorridorPresetYaml = R\"GPCORRID(\n"
+        "${GENERAL_PLANNER_RUNTIME_STATE2STATE_CORRIDOR_PRESET_YAML}\n"
+        ")GPCORRID\";\n"
+        "static constexpr const char *kState2StateEsdfPresetName = \"${GENERAL_PLANNER_RUNTIME_STATE2STATE_ESDF_PRESET_NAME}\";\n"
+        "static constexpr const char *kState2StateEsdfPresetYaml = R\"GPESDF(\n"
+        "${GENERAL_PLANNER_RUNTIME_STATE2STATE_ESDF_PRESET_YAML}\n"
+        ")GPESDF\";\n"
+        "static constexpr const char *kState2StatePlainPresetName = \"${GENERAL_PLANNER_RUNTIME_STATE2STATE_PLAIN_PRESET_NAME}\";\n"
+        "static constexpr const char *kState2StatePlainPresetYaml = R\"GPPLAIN(\n"
+        "${GENERAL_PLANNER_RUNTIME_STATE2STATE_PLAIN_PRESET_YAML}\n"
+        ")GPPLAIN\";\n"
+        "}\n")
+
+add_executable(general_planner_runtime_node
+        Apps/general_planner_runtime_node_ros1.cpp
+        "${GENERAL_PLANNER_RUNTIME_PRESET_HEADER}"
+)
+add_dependencies(general_planner_runtime_node
+        ${${PROJECT_NAME}_EXPORTED_TARGETS}
+        ${catkin_EXPORTED_TARGETS}
+)
+target_link_libraries(general_planner_runtime_node
         general_planner_core        ${THIRD_PARTY}
 )
 

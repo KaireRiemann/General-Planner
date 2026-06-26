@@ -1,0 +1,16 @@
+<launch>
+  <arg name="planner_backend" default="corridor"/>
+  <arg name="interface_config"
+       default="$(eval find('general_planner_release') + '/config/interface_state2state_' + arg('planner_backend') + '.yaml')"/>
+  <arg name="generated_config_path"
+       default="$(env HOME)/.ros/general_planner_runtime/state2state_runtime.yaml"/>
+
+  <node pkg="general_planner_release"
+        type="general_planner_runtime_node"
+        name="general_planner_runtime_node"
+        output="screen"
+        clear_params="true">
+    <param name="interface_config_path" value="$(arg interface_config)" type="string"/>
+    <param name="generated_config_path" value="$(arg generated_config_path)" type="string"/>
+  </node>
+</launch>

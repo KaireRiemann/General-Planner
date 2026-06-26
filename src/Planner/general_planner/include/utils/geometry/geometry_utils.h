@@ -47,6 +47,10 @@
 
 #pragma once
 
+#include <algorithm>
+#include <cmath>
+#include <limits>
+
 #include <utils/header/type_utils.hpp>
 #include <utils/geometry/quickhull.h>
 #include <Eigen/Eigen>
@@ -63,16 +67,37 @@ namespace geometry_utils {
     using super_utils::PolyhedronH;
 
     ///============ 2023-06-30: add by yunfan ============///
-    static void simplePMTimeAllocator(const double &a_max, const double &v_max,
+    static bool simplePMTimeAllocator(const double &a_max, const double &v_max,
                                 const double &v0,
                                 const double &total_dis,
                                 const double &cur_dis, double &t, double &vel) {
+        t = std::numeric_limits<double>::quiet_NaN();
+        vel = std::numeric_limits<double>::quiet_NaN();
+        if (!std::isfinite(a_max) || !std::isfinite(v_max) || !std::isfinite(v0) ||
+            !std::isfinite(total_dis) || !std::isfinite(cur_dis) ||
+            a_max <= 0.0 || v_max <= 0.0 || v0 < 0.0 ||
+            total_dis < -1.0e-9 || cur_dis < -1.0e-9) {
+            return false;
+        }
+
+        const double total = std::max(0.0, total_dis);
+        const double cur = std::clamp(cur_dis, 0.0, total);
+
         // Helper lambda functions
         auto calc_dis = [](double a, double t) { return 0.5 * a * t * t; };
-        auto calc_time = [](double a, double cur_dis) { return sqrt(2 * cur_dis / a); };
-        auto solve_quadratic = [](double a, double b, double c) {
+        auto calc_time = [](double a, double dis) {
+            return std::sqrt(std::max(0.0, 2.0 * dis / a));
+        };
+        auto solve_quadratic = [](double a, double b, double c, double &root) {
             double delta = b * b - 4 * a * c;
-            return (-b + sqrt(delta)) / (2 * a);
+            const double scale = std::max({1.0, b * b, std::abs(4 * a * c)});
+            const double tol = 1.0e-10 * scale;
+            if (delta < -tol || std::abs(a) < 1.0e-12) {
+                return false;
+            }
+            delta = std::max(0.0, delta);
+            root = (-b + std::sqrt(delta)) / (2 * a);
+            return std::isfinite(root);
         };
 
         // Precompute reusable values
@@ -86,55 +111,69 @@ namespace geometry_utils {
         const double dec_dis = 0.5 * (v_max + v0) * dec_time;
 
         // Case 1: Only acceleration to v0
-        if (total_dis <= dis_to_v0) {
-            t = calc_time(a_max, cur_dis);
+        if (total <= dis_to_v0) {
+            t = calc_time(a_max, cur);
             vel = a_max * t;
-            return;
+            return std::isfinite(t) && std::isfinite(vel);
         }
 
         // Case 2: Acceleration to v_max, then deceleration
-        if (total_dis <= dis_to_v_max + dec_dis) {
+        if (total <= dis_to_v_max + dec_dis) {
             const double a = 2 * a_max;
             const double b = -(a_max - v0);
-            const double c = -(v0 * v0 / a_max + 2 * total_dis);
-            const double t_acc = solve_quadratic(a, b, c);
-            const double t_dec = t_acc - t_to_v0;
+            const double c = -(v0 * v0 / a_max + 2 * total);
+            double t_acc = 0.0;
+            if (!solve_quadratic(a, b, c, t_acc)) {
+                return false;
+            }
             const double dis_acc = calc_dis(a_max, t_acc);
             const double cur_v_max = a_max * t_acc;
 
-            if (cur_dis <= dis_acc) {
-                t = calc_time(a_max, cur_dis);
+            if (cur <= dis_acc) {
+                t = calc_time(a_max, cur);
                 vel = a_max * t;
             } else {
-                const double remaining_dis = cur_dis - dis_acc;
-                const double t2 = solve_quadratic(-a_max, 2 * cur_v_max, -2 * remaining_dis);
+                const double remaining_dis = cur - dis_acc;
+                double t2 = 0.0;
+                if (!solve_quadratic(-a_max, 2 * cur_v_max, -2 * remaining_dis, t2)) {
+                    return false;
+                }
                 t = t_acc + t2;
                 vel = cur_v_max - t2 * a_max;
             }
-            return;
+            return std::isfinite(t) && std::isfinite(vel);
         }
 
         // Case 3: Acceleration + constant speed + deceleration
-        if (cur_dis < dis_to_v_max) {  // Case 3.1: During acceleration phase
-            t = calc_time(a_max, cur_dis);
+        if (cur < dis_to_v_max) {  // Case 3.1: During acceleration phase
+            t = calc_time(a_max, cur);
             vel = a_max * t;
-            return;
+            return std::isfinite(t) && std::isfinite(vel);
         }
 
-        if (cur_dis < total_dis - dec_dis) {  // Case 3.2: During constant speed phase
-            const double remaining_dis = cur_dis - dis_to_v_max;
+        if (cur < total - dec_dis) {  // Case 3.2: During constant speed phase
+            const double remaining_dis = cur - dis_to_v_max;
             const double t_const = remaining_dis / v_max;
             t = t_to_v_max + t_const;
             vel = v_max;
-            return;
+            return std::isfinite(t) && std::isfinite(vel);
         }
 
         // Case 3.3: During deceleration phase
-        const double const_phase_dis = total_dis - dec_dis - dis_to_v_max;
-        const double remaining_dis = cur_dis - dis_to_v_max - const_phase_dis;
-        const double t_dec = solve_quadratic(-a_max, 2 * v_max, -2 * remaining_dis);
+        const double const_phase_dis = total - dec_dis - dis_to_v_max;
+        const double remaining_dis = cur - dis_to_v_max - const_phase_dis;
+        double t_dec = 0.0;
+        if (!solve_quadratic(-a_max, 2 * v_max, -2 * remaining_dis, t_dec)) {
+            return false;
+        }
         t = t_to_v_max + const_phase_dis / v_max + t_dec;
         vel = v_max - t_dec * a_max;
+        if (std::isfinite(t) && std::isfinite(vel)) {
+            t = std::max(0.0, t);
+            vel = std::max(0.0, vel);
+            return true;
+        }
+        return false;
     }
 
     ///============ 2023-06-30: add by yunfan ============///
