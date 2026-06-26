@@ -628,7 +628,7 @@ template <int S>
 bool prepareBvpInitialState(const traj_opt::Config &cfg,
                             const StatePVAJ &head,
                             const StatePVAJ &nominal_tail,
-                            const minco::TerminalMappingBase<3, S> &terminal_mapping,
+                            const minco::BoundaryStateMappingBase<3, S> &boundary_mapping,
                             const PerchingInitialGuess &initial_guess,
                             int requested_piece_num,
                             double min_piece_duration,
@@ -641,7 +641,7 @@ bool prepareBvpInitialState(const traj_opt::Config &cfg,
                             bool use_perching_extra_seed = true)
 {
   static_assert(S == 4, "BVP perching initial guess is implemented for T4 MINCO.");
-  if (!terminal_mapping.enabled())
+  if (!boundary_mapping.enabled())
   {
     return false;
   }
@@ -666,11 +666,11 @@ bool prepareBvpInitialState(const traj_opt::Config &cfg,
     return false;
   }
 
-  const int extra_dim = terminal_mapping.extraVariableDim();
+  const int extra_dim = boundary_mapping.extraVariableDim();
   extra_vars.resize(extra_dim);
   if (extra_dim > 0)
   {
-    terminal_mapping.setInitialExtraVariables(extra_vars);
+    boundary_mapping.setInitialExtraVariables(extra_vars);
     if (use_perching_extra_seed && initial_guess.valid && extra_dim >= 3)
     {
       extra_vars(0) = initial_guess.nu.x();
@@ -710,7 +710,7 @@ bool prepareBvpInitialState(const traj_opt::Config &cfg,
     cache_T.setConstant(bvp_T / static_cast<double>(piece_num));
     TaskBoundaryState<4> mapped_head = head_state;
     TaskBoundaryState<4> mapped_tail = nominal_tail_state;
-    terminal_mapping.mapBoundaryStates(head_state,
+    boundary_mapping.mapBoundaryStates(head_state,
                                        nominal_tail_state,
                                        cache_T,
                                        extra_vars,
@@ -820,7 +820,7 @@ protected:
            double duration_seed_weight,
            CostManager &cost_manager,
            Trajectory &out_traj,
-           const minco::TerminalMappingBase<3, S> *terminal_mapping = nullptr,
+           const minco::BoundaryStateMappingBase<3, S> *boundary_mapping = nullptr,
            const std::vector<double> *initial_times = nullptr,
            const typename TaskOptimizer<S>::WaypointsType *initial_waypoints = nullptr,
            const Eigen::VectorXd *initial_extra_vars = nullptr)
@@ -909,7 +909,7 @@ protected:
     }
 
     active_cost_manager_ = &cost_manager;
-    active_terminal_mapping_ = terminal_mapping;
+    active_boundary_mapping_ = boundary_mapping;
     time_cost_.min_piece_duration = min_piece_duration;
     time_cost_.min_total_duration = min_total_duration;
     time_cost_.max_total_duration = max_total_duration;
@@ -924,9 +924,9 @@ protected:
         initial_extra_vars != nullptr
             ? optimizer_.encodeDecisionVector(times,
                                               waypoints,
-                                              active_terminal_mapping_,
+                                              active_boundary_mapping_,
                                               initial_extra_vars)
-            : optimizer_.generateInitialGuess(active_terminal_mapping_);
+            : optimizer_.generateInitialGuess(active_boundary_mapping_);
     if (x.size() == 0 || !x.allFinite())
     {
       return false;
@@ -972,12 +972,12 @@ protected:
                 << ", max_total_duration=" << max_total_duration
                 << std::endl;
       active_cost_manager_ = nullptr;
-      active_terminal_mapping_ = nullptr;
+      active_boundary_mapping_ = nullptr;
       return false;
     }
     optimizer_.setWarmStartGuess(x);
     active_cost_manager_ = nullptr;
-    active_terminal_mapping_ = nullptr;
+    active_boundary_mapping_ = nullptr;
     return !out_traj.empty();
   }
 
@@ -1011,13 +1011,13 @@ private:
       g.setZero();
       return std::numeric_limits<double>::infinity();
     }
-    if (active_terminal_mapping_ != nullptr)
+    if (active_boundary_mapping_ != nullptr)
     {
-      return optimizer_.evaluateWithTerminalMapping(x,
+      return optimizer_.evaluateWithBoundaryMapping(x,
                                                     g,
                                                     time_cost_,
                                                     *active_cost_manager_,
-                                                    active_terminal_mapping_);
+                                                    active_boundary_mapping_);
     }
     return optimizer_.evaluate(x, g, time_cost_, *active_cost_manager_);
   }
@@ -1034,7 +1034,7 @@ private:
   TaskTimeCost time_cost_;
   TaskOptimizer<S> optimizer_;
   CostManager *active_cost_manager_{nullptr};
-  const minco::TerminalMappingBase<3, S> *active_terminal_mapping_{nullptr};
+  const minco::BoundaryStateMappingBase<3, S> *active_boundary_mapping_{nullptr};
 };
 
 template <int S>
@@ -1947,7 +1947,7 @@ private:
   YawTraj yaw_traj_;
 };
 
-minco::PerchingSemanticConfig deriveTerminalConfig(const PerchingProblem &problem,
+minco::PerchingSemanticConfig deriveBoundaryConfig(const PerchingProblem &problem,
                                                    const traj_opt::Config &cfg)
 {
   if (problem.use_terminal_config)
@@ -2051,19 +2051,19 @@ public:
     const TaskOptimizer<4>::WaypointsType *initial_waypoints_ptr = nullptr;
     const Eigen::VectorXd *initial_extra_vars_ptr = nullptr;
 
-    const bool terminal_mapping_enabled = problem.use_terminal_config;
-    if (terminal_mapping_enabled)
+    const bool boundary_mapping_enabled = problem.use_terminal_config;
+    if (boundary_mapping_enabled)
     {
-      terminal_mapping_.configure(deriveTerminalConfig(problem, Base::mutableConfig()));
-      std::cout << " -- [PerchingSnapTrajOpt] PERCHING_TERMINAL_MAPPING_ENABLED"
+      boundary_mapping_.configure(deriveBoundaryConfig(problem, Base::mutableConfig()));
+      std::cout << " -- [PerchingSnapTrajOpt] PERCHING_BOUNDARY_MAPPING_ENABLED"
                 << std::endl;
     }
 
-    if (terminal_mapping_enabled &&
+    if (boundary_mapping_enabled &&
         prepareBvpInitialState<4>(Base::mutableConfig(),
                                   problem.head_pvaj,
                                   problem.nominal_tail_pvaj,
-                                  terminal_mapping_,
+                                  boundary_mapping_,
                                   problem.initial_guess,
                                   problem.piece_num,
                                   problem.min_piece_duration,
@@ -2086,13 +2086,13 @@ public:
                                          initial_times,
                                          initial_waypoints))
     {
-      initial_extra_vars.resize(minco::PerchingTerminalMapping<3, 4>::EXTRA_DIM);
+      initial_extra_vars.resize(minco::PerchingBoundaryMapping<3, 4>::EXTRA_DIM);
       initial_extra_vars.setZero();
-      initial_extra_vars(minco::PerchingTerminalMapping<3, 4>::IDX_NU_X) =
+      initial_extra_vars(minco::PerchingBoundaryMapping<3, 4>::IDX_NU_X) =
           problem.initial_guess.nu.x();
-      initial_extra_vars(minco::PerchingTerminalMapping<3, 4>::IDX_NU_Y) =
+      initial_extra_vars(minco::PerchingBoundaryMapping<3, 4>::IDX_NU_Y) =
           problem.initial_guess.nu.y();
-      initial_extra_vars(minco::PerchingTerminalMapping<3, 4>::IDX_TAU_F) =
+      initial_extra_vars(minco::PerchingBoundaryMapping<3, 4>::IDX_TAU_F) =
           problem.initial_guess.tau_f;
       initial_times_ptr = &initial_times;
       initial_waypoints_ptr = &initial_waypoints;
@@ -2122,7 +2122,7 @@ public:
                               problem.duration_seed_weight,
                               cost_manager_,
                               out_traj,
-                              terminal_mapping_enabled ? &terminal_mapping_ : nullptr,
+                              boundary_mapping_enabled ? &boundary_mapping_ : nullptr,
                               initial_times_ptr,
                               initial_waypoints_ptr,
                               initial_extra_vars_ptr);
@@ -2140,7 +2140,7 @@ public:
 
 private:
   cost_functional_manager::PerchingCostManager cost_manager_;
-  minco::PerchingTerminalMapping<3, 4> terminal_mapping_;
+  minco::PerchingBoundaryMapping<3, 4> boundary_mapping_;
 };
 
 class TakeoffRunner : public TaskRunner<4, cost_functional_manager::TakeoffCostManager>

@@ -75,6 +75,13 @@ namespace general_planner {
         double over_wall_min_blocked_span{0.8};
         double over_wall_min_progress_gain{0.5};
         double over_wall_forward_ratio{0.9};
+        bool dynamic_obstacle_layer_enable{false};
+        double dynamic_obstacle_layer_ttl{0.35};
+        double dynamic_obstacle_layer_voxel_size{0.20};
+        double dynamic_obstacle_layer_inflation_radius{0.35};
+        double dynamic_obstacle_layer_line_check_step{0.05};
+        int dynamic_obstacle_layer_max_points_per_frame{30000};
+        super_utils::Vec3f dynamic_obstacle_layer_local_half_size{10.0, 10.0, 3.0};
         bool state2state_direct_line_frontend_enable{true};
         bool state2state_altitude_guard_enable{false};
         double state2state_altitude_band{0.25};
@@ -376,6 +383,14 @@ namespace general_planner {
         double swarm_activation_scale{1.5};
         double swarm_time_horizon{5.0};
         double swarm_stale_timeout{1.0};
+        bool swarm_formation_enable{false};
+        double swarm_formation_weight{0.0};
+        int swarm_formation_num{0};
+        std::vector<double> swarm_formation_offsets;
+        std::vector<double> swarm_formation_start{0.0, 0.0, 0.0};
+        std::vector<double> swarm_formation_end{1.0, 0.0, 0.0};
+        double swarm_formation_time_horizon{5.0};
+        double swarm_formation_stale_timeout{1.0};
 
         rog_map::vec_E<rog_map::Vec3i> seed_line_neighbour;
 
@@ -426,6 +441,28 @@ namespace general_planner {
             loader.LoadParam("general_planner/over_wall_min_blocked_span", over_wall_min_blocked_span, 0.8);
             loader.LoadParam("general_planner/over_wall_min_progress_gain", over_wall_min_progress_gain, 0.5);
             loader.LoadParam("general_planner/over_wall_forward_ratio", over_wall_forward_ratio, 0.9);
+            loader.LoadParam("general_planner/dynamic_obstacle_layer/enable",
+                             dynamic_obstacle_layer_enable, false);
+            loader.LoadParam("general_planner/dynamic_obstacle_layer/ttl",
+                             dynamic_obstacle_layer_ttl, 0.35);
+            loader.LoadParam("general_planner/dynamic_obstacle_layer/voxel_size",
+                             dynamic_obstacle_layer_voxel_size, 0.20);
+            loader.LoadParam("general_planner/dynamic_obstacle_layer/inflation_radius",
+                             dynamic_obstacle_layer_inflation_radius, 0.35);
+            loader.LoadParam("general_planner/dynamic_obstacle_layer/line_check_step",
+                             dynamic_obstacle_layer_line_check_step, 0.05);
+            loader.LoadParam("general_planner/dynamic_obstacle_layer/max_points_per_frame",
+                             dynamic_obstacle_layer_max_points_per_frame, 30000);
+            std::vector<double> dynamic_obstacle_local_half_size;
+            loader.LoadParam("general_planner/dynamic_obstacle_layer/local_half_size",
+                             dynamic_obstacle_local_half_size,
+                             std::vector<double>{10.0, 10.0, 3.0});
+            if (dynamic_obstacle_local_half_size.size() == 3) {
+                dynamic_obstacle_layer_local_half_size =
+                        super_utils::Vec3f(dynamic_obstacle_local_half_size[0],
+                                           dynamic_obstacle_local_half_size[1],
+                                           dynamic_obstacle_local_half_size[2]);
+            }
             loader.LoadParam("general_planner/state2state/direct_line_frontend_enable",
                              state2state_direct_line_frontend_enable, true);
             loader.LoadParam("general_planner/state2state/altitude_guard_enable",
@@ -915,6 +952,19 @@ namespace general_planner {
             loader.LoadParam("general_planner/swarm/activation_scale", swarm_activation_scale, 1.5);
             loader.LoadParam("general_planner/swarm/time_horizon", swarm_time_horizon, 5.0);
             loader.LoadParam("general_planner/swarm/stale_timeout", swarm_stale_timeout, 1.0);
+            loader.LoadParam("general_planner/swarm/formation/enable", swarm_formation_enable, false);
+            loader.LoadParam("general_planner/swarm/formation/weight", swarm_formation_weight, 0.0);
+            loader.LoadParam("general_planner/swarm/formation/num", swarm_formation_num, 0);
+            loader.LoadParam("general_planner/swarm/formation/offsets",
+                             swarm_formation_offsets, std::vector<double>{});
+            loader.LoadParam("general_planner/swarm/formation/start",
+                             swarm_formation_start, std::vector<double>{0.0, 0.0, 0.0});
+            loader.LoadParam("general_planner/swarm/formation/end",
+                             swarm_formation_end, std::vector<double>{1.0, 0.0, 0.0});
+            loader.LoadParam("general_planner/swarm/formation/time_horizon",
+                             swarm_formation_time_horizon, 5.0);
+            loader.LoadParam("general_planner/swarm/formation/stale_timeout",
+                             swarm_formation_stale_timeout, 1.0);
 
             loader.LoadParam("rog_map/resolution", resolution, 0.01, true);
 

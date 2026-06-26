@@ -132,6 +132,40 @@ namespace general_planner {
             }
         }
 
+        Eigen::Vector3d vectorToVec3d(const std::vector<double> &values,
+                                      const Eigen::Vector3d &fallback) {
+            if (values.size() < 3) {
+                return fallback;
+            }
+            Eigen::Vector3d out(values[0], values[1], values[2]);
+            return out.allFinite() ? out : fallback;
+        }
+
+        traj_opt::SwarmPenaltyConfig makeSwarmPenaltyConfig(const Config &cfg) {
+            traj_opt::SwarmPenaltyConfig swarm_config;
+            swarm_config.enable = cfg.swarm_enable;
+            swarm_config.self_id = cfg.swarm_drone_id;
+            swarm_config.weight = cfg.swarm_weight;
+            swarm_config.clearance = cfg.swarm_clearance;
+            swarm_config.des_clearance = cfg.swarm_des_clearance;
+            swarm_config.horizontal_scale = cfg.swarm_horizontal_scale;
+            swarm_config.vertical_scale = cfg.swarm_vertical_scale;
+            swarm_config.activation_scale = cfg.swarm_activation_scale;
+            swarm_config.time_horizon = cfg.swarm_time_horizon;
+            swarm_config.stale_timeout = cfg.swarm_stale_timeout;
+            swarm_config.formation_enable = cfg.swarm_formation_enable;
+            swarm_config.formation_weight = cfg.swarm_formation_weight;
+            swarm_config.formation_num = cfg.swarm_formation_num;
+            swarm_config.formation_offsets = cfg.swarm_formation_offsets;
+            swarm_config.formation_start =
+                    vectorToVec3d(cfg.swarm_formation_start, Eigen::Vector3d::Zero());
+            swarm_config.formation_end =
+                    vectorToVec3d(cfg.swarm_formation_end, Eigen::Vector3d::UnitX());
+            swarm_config.formation_time_horizon = cfg.swarm_formation_time_horizon;
+            swarm_config.formation_stale_timeout = cfg.swarm_formation_stale_timeout;
+            return swarm_config;
+        }
+
         bool rejectOnCheckFailure(const ros_interface::RosInterface::Ptr &ros_ptr,
                                   const std::string &context,
                                   const checker::CheckResult &result) {
@@ -784,19 +818,27 @@ namespace general_planner {
                                                                 cfg_.esdf_safe_distance,
                                                                 ros_ptr_,
                                                                 map_manager_);
-        traj_opt::SwarmPenaltyConfig swarm_config;
-        swarm_config.enable = cfg_.swarm_enable;
-        swarm_config.self_id = cfg_.swarm_drone_id;
-        swarm_config.weight = cfg_.swarm_weight;
-        swarm_config.clearance = cfg_.swarm_clearance;
-        swarm_config.des_clearance = cfg_.swarm_des_clearance;
-        swarm_config.horizontal_scale = cfg_.swarm_horizontal_scale;
-        swarm_config.vertical_scale = cfg_.swarm_vertical_scale;
-        swarm_config.activation_scale = cfg_.swarm_activation_scale;
-        swarm_config.time_horizon = cfg_.swarm_time_horizon;
-        swarm_config.stale_timeout = cfg_.swarm_stale_timeout;
+        dynamic_obstacle_layer_ = std::make_unique<DynamicObstacleLayer>();
+        DynamicObstacleLayer::Config dynamic_obstacle_cfg;
+        dynamic_obstacle_cfg.enable = cfg_.dynamic_obstacle_layer_enable;
+        dynamic_obstacle_cfg.ttl = cfg_.dynamic_obstacle_layer_ttl;
+        dynamic_obstacle_cfg.voxel_size = cfg_.dynamic_obstacle_layer_voxel_size;
+        dynamic_obstacle_cfg.inflation_radius = cfg_.dynamic_obstacle_layer_inflation_radius;
+        dynamic_obstacle_cfg.line_check_step = cfg_.dynamic_obstacle_layer_line_check_step;
+        dynamic_obstacle_cfg.max_points_per_frame = cfg_.dynamic_obstacle_layer_max_points_per_frame;
+        dynamic_obstacle_cfg.local_half_size = cfg_.dynamic_obstacle_layer_local_half_size;
+        dynamic_obstacle_layer_->configure(dynamic_obstacle_cfg);
+        if (dynamic_obstacle_cfg.enable) {
+            ros_ptr_->info(" -- [GeneralPlanner] Dynamic obstacle layer enabled: ttl={:.3f}s, voxel={:.3f}m, inflation={:.3f}m, local_half=({:.1f},{:.1f},{:.1f}).",
+                           dynamic_obstacle_cfg.ttl,
+                           dynamic_obstacle_cfg.voxel_size,
+                           dynamic_obstacle_cfg.inflation_radius,
+                           dynamic_obstacle_cfg.local_half_size.x(),
+                           dynamic_obstacle_cfg.local_half_size.y(),
+                           dynamic_obstacle_cfg.local_half_size.z());
+        }
         swarm_trajs_ = std::make_shared<traj_opt::SwarmTrajectories>();
-        traj_manager_->setSwarmConfig(swarm_config);
+        traj_manager_->setSwarmConfig(makeSwarmPenaltyConfig(cfg_));
         traj_manager_->setSwarmTrajectories(swarm_trajs_);
 
         const auto rog_map_cfg = map_manager_->getMapConfig();
@@ -883,6 +925,26 @@ namespace general_planner {
         swarm_trajs_ = snapshot;
         if (traj_manager_) {
             traj_manager_->setSwarmTrajectories(swarm_trajs_);
+        }
+    }
+
+    void GeneralPlanner::setSwarmDroneId(const int drone_id) {
+        cfg_.swarm_drone_id = drone_id;
+        if (!traj_manager_) {
+            return;
+        }
+
+        traj_manager_->setSwarmConfig(makeSwarmPenaltyConfig(cfg_));
+    }
+
+    void GeneralPlanner::setSwarmFormationReference(const Vec3f &start, const Vec3f &end) {
+        if (!start.allFinite() || !end.allFinite()) {
+            return;
+        }
+        cfg_.swarm_formation_start = {start.x(), start.y(), start.z()};
+        cfg_.swarm_formation_end = {end.x(), end.y(), end.z()};
+        if (traj_manager_) {
+            traj_manager_->setSwarmConfig(makeSwarmPenaltyConfig(cfg_));
         }
     }
 
@@ -7660,12 +7722,15 @@ namespace general_planner {
                    grid_type == rog_map::GridType::OUT_OF_MAP ||
                    (unknown_as_occupied && grid_type == rog_map::GridType::UNKNOWN);
         };
+        const bool dynamic_layer_active =
+                dynamic_obstacle_layer_ != nullptr && dynamic_obstacle_layer_->enabled();
 
         for (double offset = 0.0;
              offset <= local_report.check_horizon + 1.0e-6;
              offset += sample_dt) {
             const double t = std::min(total_duration, current_t + offset);
             const Vec3f pos = traj.getPos(t);
+            Vec3f unsafe_pos = pos;
             bool unsafe = false;
             rog_map::GridType grid_type = rog_map::GridType::KNOWN_FREE;
             std::string reason;
@@ -7689,6 +7754,26 @@ namespace general_planner {
                         reason = "out_of_map_cell";
                     }
                 }
+                if (!unsafe && dynamic_layer_active) {
+                    DynamicObstacleLayer::QueryResult dynamic_query;
+                    if (dynamic_obstacle_layer_->pointOccupied(pos, now_wt, &dynamic_query)) {
+                        unsafe = true;
+                        grid_type = rog_map::GridType::OCCUPIED;
+                        unsafe_pos = dynamic_query.hit_pos;
+                        reason = "dynamic_obstacle_cell";
+                    }
+                }
+                if (!unsafe &&
+                    (pos - last_pos).norm() > 1.0e-4 &&
+                    dynamic_layer_active) {
+                    DynamicObstacleLayer::QueryResult dynamic_query;
+                    if (dynamic_obstacle_layer_->lineOccupied(last_pos, pos, now_wt, &dynamic_query)) {
+                        unsafe = true;
+                        grid_type = rog_map::GridType::OCCUPIED;
+                        unsafe_pos = dynamic_query.hit_pos;
+                        reason = "dynamic_obstacle_line";
+                    }
+                }
                 if (!unsafe &&
                     (pos - last_pos).norm() > 1.0e-4 &&
                     !map_manager_->isLineFree(last_pos, pos, true, unknown_as_occupied)) {
@@ -7700,7 +7785,7 @@ namespace general_planner {
             if (unsafe) {
                 if (hit_streak == 0) {
                     streak_start_t = t;
-                    streak_start_pos = pos;
+                    streak_start_pos = unsafe_pos;
                     streak_grid = grid_type;
                     streak_reason = reason;
                 }
@@ -8996,6 +9081,11 @@ namespace general_planner {
             if (!point.allFinite() || !map_manager_->insideLocalMap(point)) {
                 return false;
             }
+            if (dynamic_obstacle_layer_ != nullptr &&
+                dynamic_obstacle_layer_->enabled() &&
+                dynamic_obstacle_layer_->pointOccupied(point, ros_ptr_->getSimTime())) {
+                return false;
+            }
             const rog_map::GridType inf_type = map_manager_->getInfGridType(point);
             if (inf_type == OCCUPIED || inf_type == OUT_OF_MAP) {
                 return false;
@@ -9006,6 +9096,9 @@ namespace general_planner {
         auto lineUsable = [&](const Vec3f &a, const Vec3f &b) {
             return pointUsable(a) &&
                    pointUsable(b) &&
+                   (dynamic_obstacle_layer_ == nullptr ||
+                    !dynamic_obstacle_layer_->enabled() ||
+                    !dynamic_obstacle_layer_->lineOccupied(a, b, ros_ptr_->getSimTime())) &&
                    map_manager_->isLineFree(a, b, true, unknown_as_occupied_for_frontend);
         };
 
@@ -9287,6 +9380,19 @@ namespace general_planner {
         return true;
     }
 
+
+    void GeneralPlanner::updateDynamicObstacleCloud(const rog_map::PointCloud &cloud,
+                                                    const Vec3f &robot_pos,
+                                                    const double stamp) {
+        if (dynamic_obstacle_layer_ == nullptr || !dynamic_obstacle_layer_->enabled()) {
+            return;
+        }
+        dynamic_obstacle_layer_->updateCloud(cloud, robot_pos, stamp);
+    }
+
+    bool GeneralPlanner::dynamicObstacleLayerEnabled() const {
+        return dynamic_obstacle_layer_ != nullptr && dynamic_obstacle_layer_->enabled();
+    }
 
     void GeneralPlanner::getRobotState(rog_map::RobotState &out) {
         robot_state_ = map_manager_->getRobotState();

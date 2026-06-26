@@ -164,6 +164,10 @@ namespace fsm {
         bool perception_replan_unknown_as_occupied{false};
         double perception_replan_emergency_horizon{0.45};
         double perception_replan_log_period{0.5};
+        bool dynamic_obstacle_layer_enable{false};
+        string dynamic_obstacle_layer_cloud_topic{"/cloud_registered"};
+        int dynamic_obstacle_layer_cloud_queue_size{3};
+        double dynamic_obstacle_layer_odom_timeout{0.2};
         double task_timeout{0.6};
         int state2state_plan_from_rest_max_failures{0};
         bool state2state_clear_goal_on_plan_failure{false};
@@ -176,6 +180,8 @@ namespace fsm {
         bool swarm_broadcast_enable{true};
         string swarm_traj_broadcast_topic{"/swarm/trajectory"};
         string swarm_state_broadcast_topic{"/swarm/state"};
+        bool swarm_formation_reference_enable{false};
+        string swarm_formation_reference_topic{"/swarm/formation_reference"};
         vector<string> swarm_traj_topics;
         vector<int> swarm_traj_ids;
 
@@ -262,6 +268,14 @@ namespace fsm {
             loader.LoadParam("fsm/perception_replan_unknown_as_occupied", perception_replan_unknown_as_occupied, false);
             loader.LoadParam("fsm/perception_replan_emergency_horizon", perception_replan_emergency_horizon, 0.45);
             loader.LoadParam("fsm/perception_replan_log_period", perception_replan_log_period, 0.5);
+            loader.LoadParam("general_planner/dynamic_obstacle_layer/enable",
+                             dynamic_obstacle_layer_enable, false);
+            loader.LoadParam("general_planner/dynamic_obstacle_layer/cloud_topic",
+                             dynamic_obstacle_layer_cloud_topic, string("/cloud_registered"));
+            loader.LoadParam("general_planner/dynamic_obstacle_layer/cloud_queue_size",
+                             dynamic_obstacle_layer_cloud_queue_size, 3);
+            loader.LoadParam("general_planner/dynamic_obstacle_layer/odom_timeout",
+                             dynamic_obstacle_layer_odom_timeout, 0.2);
             loader.LoadParam("fsm/task_timeout", task_timeout, 0.6);
             loader.LoadParam("fsm/state2state_plan_from_rest_max_failures",
                              state2state_plan_from_rest_max_failures,
@@ -280,6 +294,10 @@ namespace fsm {
                              string("/swarm/trajectory"));
             loader.LoadParam("general_planner/swarm/state_broadcast_topic", swarm_state_broadcast_topic,
                              string("/swarm/state"));
+            loader.LoadParam("general_planner/swarm/formation/reference_enable",
+                             swarm_formation_reference_enable, false);
+            loader.LoadParam("general_planner/swarm/formation/reference_topic",
+                             swarm_formation_reference_topic, string("/swarm/formation_reference"));
             loader.LoadParam("general_planner/swarm/traj_topics", swarm_traj_topics, vector<string>{});
             loader.LoadParam("general_planner/swarm/traj_ids", swarm_traj_ids, vector<int>{});
 

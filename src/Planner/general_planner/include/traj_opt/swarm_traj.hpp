@@ -20,6 +20,14 @@ struct SwarmPenaltyConfig
   double activation_scale{1.5};
   double time_horizon{5.0};
   double stale_timeout{1.0};
+  bool formation_enable{false};
+  double formation_weight{0.0};
+  int formation_num{0};
+  std::vector<double> formation_offsets;
+  Eigen::Vector3d formation_start{Eigen::Vector3d::Zero()};
+  Eigen::Vector3d formation_end{Eigen::Vector3d::UnitX()};
+  double formation_time_horizon{5.0};
+  double formation_stale_timeout{1.0};
 };
 
 struct SwarmTrajectory

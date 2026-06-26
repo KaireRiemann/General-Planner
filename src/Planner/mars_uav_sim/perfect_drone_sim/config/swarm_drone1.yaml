@@ -8,8 +8,8 @@ local_pc_topic: "/drone_1/cloud_registered"
 global_pc_topic: "/drone_1/global_pc"
 robot_frame_id: "drone_1/base_link"
 init_position:
-  x: 2.5
-  y: 0.0
+  x: -30.0
+  y: 2.0
   z: 1.5
 init_yaw: 3.141592653589793
 

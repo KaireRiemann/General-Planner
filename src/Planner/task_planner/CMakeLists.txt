@@ -78,3 +78,25 @@ add_dependencies(swarm_task_source
 target_link_libraries(swarm_task_source
         ${THIRD_PARTY}
         )
+
+add_executable(swarm_goal_relay
+        Apps/swarm_goal_relay.cpp
+        )
+add_dependencies(swarm_goal_relay
+        ${${PROJECT_NAME}_EXPORTED_TARGETS}
+        ${catkin_EXPORTED_TARGETS}
+        )
+target_link_libraries(swarm_goal_relay
+        ${THIRD_PARTY}
+        )
+
+add_executable(formulation_task
+        Apps/formulation_task.cpp
+        )
+add_dependencies(formulation_task
+        ${${PROJECT_NAME}_EXPORTED_TARGETS}
+        ${catkin_EXPORTED_TARGETS}
+        )
+target_link_libraries(formulation_task
+        ${THIRD_PARTY}
+        )

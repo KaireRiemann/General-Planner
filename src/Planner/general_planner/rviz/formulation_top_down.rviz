@@ -1,0 +1,397 @@
+Panels:
+  - Class: rviz/Displays
+    Help Height: 70
+    Name: Displays
+    Property Tree Widget:
+      Expanded:
+        - /Swarm Robots1
+        - /Planner1
+      Splitter Ratio: 0.5
+    Tree Height: 363
+  - Class: rviz/Views
+    Expanded:
+      - /Current View1
+    Name: Views
+    Splitter Ratio: 0.5
+Preferences:
+  PromptSaveOnExit: true
+Toolbars:
+  toolButtonStyle: 2
+Visualization Manager:
+  Class: ""
+  Displays:
+    - Alpha: 0.5
+      Cell Size: 1
+      Class: rviz/Grid
+      Color: 160; 160; 164
+      Enabled: true
+      Line Style:
+        Line Width: 0.029999999329447746
+        Value: Lines
+      Name: Grid
+      Normal Cell Count: 0
+      Offset:
+        X: 0
+        Y: 0
+        Z: 0
+      Plane: XY
+      Plane Cell Count: 60
+      Reference Frame: <Fixed Frame>
+      Value: true
+    - Class: rviz/Group
+      Displays:
+        - Class: rviz/Marker
+          Enabled: true
+          Marker Topic: /swarm0/perfect_drone/robot
+          Name: Swarm0Mesh
+          Namespaces:
+            mesh: true
+          Queue Size: 20
+          Value: true
+        - Class: rviz/Marker
+          Enabled: true
+          Marker Topic: /swarm1/perfect_drone/robot
+          Name: Swarm1Mesh
+          Namespaces:
+            mesh: true
+          Queue Size: 20
+          Value: true
+        - Class: rviz/Marker
+          Enabled: true
+          Marker Topic: /swarm2/perfect_drone/robot
+          Name: Swarm2Mesh
+          Namespaces:
+            mesh: true
+          Queue Size: 20
+          Value: true
+        - Class: rviz/Marker
+          Enabled: true
+          Marker Topic: /swarm3/perfect_drone/robot
+          Name: Swarm3Mesh
+          Namespaces:
+            mesh: true
+          Queue Size: 20
+          Value: true
+        - Class: rviz/Marker
+          Enabled: true
+          Marker Topic: /swarm4/perfect_drone/robot
+          Name: Swarm4Mesh
+          Namespaces:
+            mesh: true
+          Queue Size: 20
+          Value: true
+        - Alpha: 1
+          Buffer Length: 1
+          Class: rviz/Path
+          Color: 25; 120; 255
+          Enabled: true
+          Head Diameter: 0.30000001192092896
+          Head Length: 0.20000000298023224
+          Length: 0.30000001192092896
+          Line Style: Lines
+          Line Width: 0.05000000074505806
+          Name: Swarm0Path
+          Offset:
+            X: 0
+            Y: 0
+            Z: 0
+          Pose Color: 255; 85; 255
+          Pose Style: None
+          Queue Size: 10
+          Radius: 0.029999999329447746
+          Shaft Diameter: 0.10000000149011612
+          Shaft Length: 0.10000000149011612
+          Topic: /swarm0/perfect_drone/path
+          Unreliable: false
+          Value: true
+        - Alpha: 1
+          Buffer Length: 1
+          Class: rviz/Path
+          Color: 255; 120; 25
+          Enabled: true
+          Head Diameter: 0.30000001192092896
+          Head Length: 0.20000000298023224
+          Length: 0.30000001192092896
+          Line Style: Lines
+          Line Width: 0.05000000074505806
+          Name: Swarm1Path
+          Offset:
+            X: 0
+            Y: 0
+            Z: 0
+          Pose Color: 255; 85; 255
+          Pose Style: None
+          Queue Size: 10
+          Radius: 0.029999999329447746
+          Shaft Diameter: 0.10000000149011612
+          Shaft Length: 0.10000000149011612
+          Topic: /swarm1/perfect_drone/path
+          Unreliable: false
+          Value: true
+        - Alpha: 1
+          Buffer Length: 1
+          Class: rviz/Path
+          Color: 25; 180; 90
+          Enabled: true
+          Head Diameter: 0.30000001192092896
+          Head Length: 0.20000000298023224
+          Length: 0.30000001192092896
+          Line Style: Lines
+          Line Width: 0.05000000074505806
+          Name: Swarm2Path
+          Offset:
+            X: 0
+            Y: 0
+            Z: 0
+          Pose Color: 255; 85; 255
+          Pose Style: None
+          Queue Size: 10
+          Radius: 0.029999999329447746
+          Shaft Diameter: 0.10000000149011612
+          Shaft Length: 0.10000000149011612
+          Topic: /swarm2/perfect_drone/path
+          Unreliable: false
+          Value: true
+        - Alpha: 1
+          Buffer Length: 1
+          Class: rviz/Path
+          Color: 185; 70; 255
+          Enabled: true
+          Head Diameter: 0.30000001192092896
+          Head Length: 0.20000000298023224
+          Length: 0.30000001192092896
+          Line Style: Lines
+          Line Width: 0.05000000074505806
+          Name: Swarm3Path
+          Offset:
+            X: 0
+            Y: 0
+            Z: 0
+          Pose Color: 255; 85; 255
+          Pose Style: None
+          Queue Size: 10
+          Radius: 0.029999999329447746
+          Shaft Diameter: 0.10000000149011612
+          Shaft Length: 0.10000000149011612
+          Topic: /swarm3/perfect_drone/path
+          Unreliable: false
+          Value: true
+        - Alpha: 1
+          Buffer Length: 1
+          Class: rviz/Path
+          Color: 255; 70; 120
+          Enabled: true
+          Head Diameter: 0.30000001192092896
+          Head Length: 0.20000000298023224
+          Length: 0.30000001192092896
+          Line Style: Lines
+          Line Width: 0.05000000074505806
+          Name: Swarm4Path
+          Offset:
+            X: 0
+            Y: 0
+            Z: 0
+          Pose Color: 255; 85; 255
+          Pose Style: None
+          Queue Size: 10
+          Radius: 0.029999999329447746
+          Shaft Diameter: 0.10000000149011612
+          Shaft Length: 0.10000000149011612
+          Topic: /swarm4/perfect_drone/path
+          Unreliable: false
+          Value: true
+      Enabled: true
+      Name: Swarm Robots
+    - Class: rviz/Group
+      Displays:
+        - Alpha: 0.25
+          Autocompute Intensity Bounds: true
+          Autocompute Value Bounds:
+            Max Value: 10
+            Min Value: -10
+            Value: true
+          Axis: Z
+          Channel Name: intensity
+          Class: rviz/PointCloud2
+          Color: 140; 140; 140
+          Color Transformer: FlatColor
+          Decay Time: 0
+          Enabled: true
+          Invert Rainbow: false
+          Max Color: 255; 255; 255
+          Min Color: 0; 0; 0
+          Name: GlobalCloud
+          Position Transformer: XYZ
+          Queue Size: 5
+          Selectable: true
+          Size (Pixels): 3
+          Size (m): 0.07999999821186066
+          Style: Boxes
+          Topic: /swarm0/global_pc
+          Unreliable: false
+          Use Fixed Frame: true
+          Use rainbow: true
+          Value: true
+        - Alpha: 1
+          Autocompute Intensity Bounds: true
+          Autocompute Value Bounds:
+            Max Value: 10
+            Min Value: -10
+            Value: true
+          Axis: Z
+          Channel Name: intensity
+          Class: rviz/PointCloud2
+          Color: 0; 255; 255
+          Color Transformer: FlatColor
+          Decay Time: 0
+          Enabled: true
+          Invert Rainbow: false
+          Max Color: 255; 255; 255
+          Min Color: 0; 0; 0
+          Name: Occ0
+          Position Transformer: XYZ
+          Queue Size: 10
+          Selectable: true
+          Size (Pixels): 3
+          Size (m): 0.10000000149011612
+          Style: Flat Squares
+          Topic: /swarm0/fsm_node/rog_map/occ
+          Unreliable: false
+          Use Fixed Frame: true
+          Use rainbow: true
+          Value: true
+      Enabled: true
+      Name: Map
+    - Class: rviz/Group
+      Displays:
+        - Class: rviz/MarkerArray
+          Enabled: true
+          Marker Topic: /swarm0/fsm_node/visualization/exp_traj
+          Name: Swarm0ExpTraj
+          Namespaces:
+            {}
+          Queue Size: 10
+          Value: true
+        - Class: rviz/MarkerArray
+          Enabled: true
+          Marker Topic: /swarm1/fsm_node/visualization/exp_traj
+          Name: Swarm1ExpTraj
+          Namespaces:
+            {}
+          Queue Size: 10
+          Value: true
+        - Class: rviz/MarkerArray
+          Enabled: true
+          Marker Topic: /swarm2/fsm_node/visualization/exp_traj
+          Name: Swarm2ExpTraj
+          Namespaces:
+            {}
+          Queue Size: 10
+          Value: true
+        - Class: rviz/MarkerArray
+          Enabled: true
+          Marker Topic: /swarm3/fsm_node/visualization/exp_traj
+          Name: Swarm3ExpTraj
+          Namespaces:
+            {}
+          Queue Size: 10
+          Value: true
+        - Class: rviz/MarkerArray
+          Enabled: true
+          Marker Topic: /swarm4/fsm_node/visualization/exp_traj
+          Name: Swarm4ExpTraj
+          Namespaces:
+            {}
+          Queue Size: 10
+          Value: true
+        - Class: rviz/MarkerArray
+          Enabled: true
+          Marker Topic: /swarm0/fsm_node/visualization/frontend_path
+          Name: Swarm0Frontend
+          Namespaces:
+            {}
+          Queue Size: 10
+          Value: true
+        - Class: rviz/MarkerArray
+          Enabled: true
+          Marker Topic: /swarm1/fsm_node/visualization/frontend_path
+          Name: Swarm1Frontend
+          Namespaces:
+            {}
+          Queue Size: 10
+          Value: true
+        - Class: rviz/MarkerArray
+          Enabled: true
+          Marker Topic: /swarm2/fsm_node/visualization/frontend_path
+          Name: Swarm2Frontend
+          Namespaces:
+            {}
+          Queue Size: 10
+          Value: true
+        - Class: rviz/MarkerArray
+          Enabled: true
+          Marker Topic: /swarm3/fsm_node/visualization/frontend_path
+          Name: Swarm3Frontend
+          Namespaces:
+            {}
+          Queue Size: 10
+          Value: true
+        - Class: rviz/MarkerArray
+          Enabled: true
+          Marker Topic: /swarm4/fsm_node/visualization/frontend_path
+          Name: Swarm4Frontend
+          Namespaces:
+            {}
+          Queue Size: 10
+          Value: true
+      Enabled: true
+      Name: Planner
+  Enabled: true
+  Global Options:
+    Background Color: 255; 255; 255
+    Default Light: true
+    Fixed Frame: world
+    Frame Rate: 30
+  Name: root
+  Tools:
+    - Class: rviz/Interact
+      Hide Inactive Objects: true
+    - Class: rviz/MoveCamera
+    - Class: rviz/SetGoal
+      Topic: /move_base_simple/goal
+  Value: true
+  Views:
+    Current:
+      Class: rviz/XYOrbit
+      Distance: 115.72590637207031
+      Enable Stereo Rendering:
+        Stereo Eye Separation: 0.05999999865889549
+        Stereo Focal Distance: 1
+        Swap Stereo Eyes: false
+        Value: false
+      Field of View: 0.7853981852531433
+      Focal Point:
+        X: -8
+        Y: 0
+        Z: 0
+      Focal Shape Fixed Size: false
+      Focal Shape Size: 0.05000000074505806
+      Invert Z Axis: false
+      Name: Current View
+      Near Clip Distance: 0.009999999776482582
+      Pitch: 0.5553982853889465
+      Target Frame: world
+      Yaw: 3.0765926837921143
+    Saved: ~
+Window Geometry:
+  Displays:
+    collapsed: true
+  Height: 1371
+  Hide Left Dock: true
+  Hide Right Dock: false
+  QMainWindow State: 000000ff00000000fd0000000100000000000001560000032efc0200000002fb000000100044006900730070006c006100790073000000003b000001ec000000c700fffffffb0000000a00560069006500770073000000022d0000013c000000a000ffffff000009be0000050500000004000000040000000800000008fc0000000100000002000000010000000a0054006f006f006c00730100000000ffffffff0000000000000000
+  Views:
+    collapsed: true
+  Width: 2494
+  X: 66
+  Y: 32

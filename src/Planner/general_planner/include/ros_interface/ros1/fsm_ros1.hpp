@@ -33,11 +33,14 @@
 #include "geometry_msgs/PoseStamped.h"
 #include "nav_msgs/Path.h"
 #include "nav_msgs/Odometry.h"
+#include "sensor_msgs/PointCloud2.h"
 #include "quadrotor_msgs/PositionCommand.h"
 #include "quadrotor_msgs/PolynomialTrajectory.h"
 #include "quadrotor_msgs/SO3Command.h"
 #include "std_msgs/String.h"
 #include "utils/geometry/quadrotor_flatness.hpp"
+
+#include <pcl_conversions/pcl_conversions.h>
 
 #include <algorithm>
 #include <array>
@@ -61,6 +64,8 @@ namespace fsm {
         ros::Subscriber perching_surface_sub_;
         ros::Subscriber swarm_broadcast_traj_sub_;
         ros::Subscriber swarm_state_sub_;
+        ros::Subscriber swarm_formation_reference_sub_;
+        ros::Subscriber dynamic_obstacle_cloud_sub_;
         ros::Publisher cmd_pub, so3_cmd_pub_, mpc_cmd_pub_, path_pub_;
         ros::Publisher swarm_traj_pub_, swarm_state_pub_;
         ros::Publisher diagnostic_event_pub_;
@@ -377,6 +382,25 @@ namespace fsm {
             if (!polynomialMsgToTrajectory(*msg, pos_traj)) {
                 return;
             }
+            const auto existing = swarm_traj_buffer_.find(drone_id);
+            if (existing != swarm_traj_buffer_.end() &&
+                pos_traj.start_WT <= existing->second.start_wall_time + 1.0e-6) {
+                ROS_WARN_STREAM_THROTTLE(1.0, " -- [Fsm] Ignore old swarm traj from drone "
+                                                  << drone_id << ", start_WT=" << pos_traj.start_WT
+                                                  << ", buffered=" << existing->second.start_wall_time);
+                return;
+            }
+            const double now_wt = ros::Time::now().toSec();
+            const double time_diff = now_wt - pos_traj.start_WT;
+            if (std::abs(time_diff) > 10.0) {
+                ROS_ERROR_STREAM(" -- [Fsm] Ignore swarm traj from drone " << drone_id
+                                 << " because swarm time is not synchronized, diff=" << time_diff);
+                return;
+            }
+            if (std::abs(time_diff) > 0.25) {
+                ROS_WARN_STREAM_THROTTLE(1.0, " -- [Fsm] Swarm traj time diff from drone "
+                                                  << drone_id << " is " << time_diff << "s");
+            }
 
             traj_opt::SwarmTrajectory swarm_traj;
             swarm_traj.drone_id = drone_id;
@@ -400,6 +424,28 @@ namespace fsm {
                                               << drone_id << ", traj_id=" << swarm_traj.traj_id
                                               << ", duration=" << swarm_traj.duration
                                               << ", buffer=" << snapshot.size());
+        }
+
+        void swarmFormationReferenceCallback(const nav_msgs::PathConstPtr &msg) {
+            if (!cfg_.swarm_enable || !cfg_.swarm_formation_reference_enable || planner_ptr_ == nullptr) {
+                return;
+            }
+            if (msg->poses.size() < 2) {
+                ROS_WARN_THROTTLE(1.0, " -- [Fsm] Invalid formation reference: need at least 2 poses.");
+                return;
+            }
+            const auto &start_msg = msg->poses.front().pose.position;
+            const auto &end_msg = msg->poses.back().pose.position;
+            Vec3f start(start_msg.x, start_msg.y, start_msg.z);
+            Vec3f end(end_msg.x, end_msg.y, end_msg.z);
+            if (!start.allFinite() || !end.allFinite() ||
+                (end - start).squaredNorm() < 1.0e-8) {
+                ROS_WARN_THROTTLE(1.0, " -- [Fsm] Invalid formation reference geometry.");
+                return;
+            }
+            planner_ptr_->setSwarmFormationReference(start, end);
+            ROS_INFO_STREAM_THROTTLE(1.0, " -- [Fsm] Formation reference update: start=["
+                                              << start.transpose() << "], end=[" << end.transpose() << "]");
         }
 
         void swarmStateCallback(const nav_msgs::OdometryConstPtr &msg) {
@@ -796,6 +842,26 @@ namespace fsm {
             setGoalPosiAndYaw(goal_p, goal_q);
         }
 
+        void dynamicObstacleCloudCallback(const sensor_msgs::PointCloud2ConstPtr &msg) {
+            if (!cfg_.dynamic_obstacle_layer_enable || planner_ptr_ == nullptr) {
+                return;
+            }
+
+            rog_map::RobotState robot_state;
+            planner_ptr_->getRobotState(robot_state);
+            const double now = ros_ptr_ != nullptr ? ros_ptr_->getSimTime() : ros::Time::now().toSec();
+            if (!robot_state.rcv ||
+                now - robot_state.rcv_time > std::max(0.0, cfg_.dynamic_obstacle_layer_odom_timeout)) {
+                ROS_WARN_THROTTLE(1.0,
+                                  " -- [Fsm] Dynamic obstacle cloud skipped: odom not ready or stale.");
+                return;
+            }
+
+            rog_map::PointCloud cloud;
+            pcl::fromROSMsg(*msg, cloud);
+            planner_ptr_->updateDynamicObstacleCloud(cloud, robot_state.p, now);
+        }
+
         static double yawFromMsgQuat(const geometry_msgs::Quaternion &q_msg) {
             const double w = q_msg.w;
             const double x = q_msg.x;
@@ -1106,14 +1172,42 @@ namespace fsm {
             setTaskModeFromString(msg->data);
         }
 
+        void applyLaunchOverrides() {
+            int swarm_drone_id = cfg_.swarm_drone_id;
+            bool swarm_id_overridden = nh_.getParam("swarm_drone_id", swarm_drone_id);
+            if (!swarm_id_overridden) {
+                swarm_id_overridden = nh_.getParam("general_planner/swarm/drone_id", swarm_drone_id);
+            }
+            if (swarm_id_overridden) {
+                cfg_.swarm_drone_id = swarm_drone_id;
+                cout << YELLOW << " -- [Fsm] LAUNCH OVERRIDE: swarm_drone_id="
+                     << cfg_.swarm_drone_id << RESET << endl;
+            }
+        }
+
         void init(const ros::NodeHandle &nh, const std::string &cfg_path) {
             // 初始化参数读取
             nh_ = nh;
             cfg_ = Config(cfg_path);
+            applyLaunchOverrides();
             map_ptr_ = std::make_shared<rog_map::ROGMapROS>(nh, cfg_path);
             // 初始化Planner
             ros_ptr_ = std::make_shared<ros_interface::Ros1Interface>(nh_);
             planner_ptr_ = std::make_shared<GeneralPlanner>(cfg_path, ros_ptr_, map_ptr_);
+            planner_ptr_->setSwarmDroneId(cfg_.swarm_drone_id);
+            if (cfg_.dynamic_obstacle_layer_enable) {
+                dynamic_obstacle_cloud_sub_ =
+                        nh_.subscribe<sensor_msgs::PointCloud2>(
+                                cfg_.dynamic_obstacle_layer_cloud_topic,
+                                std::max(1, cfg_.dynamic_obstacle_layer_cloud_queue_size),
+                                &FsmRos1::dynamicObstacleCloudCallback,
+                                this,
+                                ros::TransportHints().tcpNoDelay());
+                cout << YELLOW << " -- [Fsm] DYNAMIC OBSTACLE LAYER ENABLE: cloud "
+                     << cfg_.dynamic_obstacle_layer_cloud_topic
+                     << ", queue " << std::max(1, cfg_.dynamic_obstacle_layer_cloud_queue_size)
+                     << RESET << endl;
+            }
             cmd_pub = nh_.advertise<quadrotor_msgs::PositionCommand>(cfg_.cmd_topic, 10);
             if (cfg_.publish_so3_cmd) {
                 so3_cmd_pub_ = nh_.advertise<quadrotor_msgs::SO3Command>(cfg_.so3_cmd_topic, 10);
@@ -1143,6 +1237,14 @@ namespace fsm {
                     cout << YELLOW << " -- [Fsm] SWARM BROADCAST ENABLE: traj "
                          << cfg_.swarm_traj_broadcast_topic << ", state "
                          << cfg_.swarm_state_broadcast_topic << RESET << endl;
+                }
+                if (cfg_.swarm_formation_reference_enable) {
+                    swarm_formation_reference_sub_ =
+                        nh_.subscribe(cfg_.swarm_formation_reference_topic, 10,
+                                      &FsmRos1::swarmFormationReferenceCallback, this,
+                                      ros::TransportHints().tcpNoDelay());
+                    cout << YELLOW << " -- [Fsm] SWARM FORMATION REFERENCE SUB: "
+                         << cfg_.swarm_formation_reference_topic << RESET << endl;
                 }
                 for (size_t i = 0; i < cfg_.swarm_traj_topics.size(); ++i) {
                     const std::string &topic = cfg_.swarm_traj_topics[i];
@@ -1248,7 +1350,8 @@ namespace fsm {
                 cmd_timer_ = nh_.createTimer(ros::Duration(0.01), &FsmRos1::pubCmdTimerCallback, this); // 100Hz
                 replan_timer_ = nh_.createTimer(ros::Duration(1.0 / cfg_.replan_rate), &FsmRos1::replanTimerCallback,
                                                 this); // 10Hz
-                if (cfg_.perception_replan_check_en && cfg_.perception_replan_check_rate > 1.0e-3) {
+                if ((cfg_.perception_replan_check_en || cfg_.dynamic_obstacle_layer_enable) &&
+                    cfg_.perception_replan_check_rate > 1.0e-3) {
                     perception_safety_timer_ = nh_.createTimer(
                             ros::Duration(1.0 / cfg_.perception_replan_check_rate),
                             &FsmRos1::perceptionSafetyTimerCallback,
@@ -1273,11 +1376,13 @@ namespace fsm {
             openTrackingDiagnosticLogFile(LOG_FILE_DIR("tracking_diagnostic_events/tracking_runtime.csv"));
             recordDiagnosticEvent("INFO",
                                   "fsm_initialized",
-                                  fmt::format("task_mode={};replan_rate={:.3f};perception_replan_check_en={};perception_replan_check_rate={:.3f};cmd_topic={};mpc_cmd_topic={}",
+                                  fmt::format("task_mode={};replan_rate={:.3f};perception_replan_check_en={};perception_replan_check_rate={:.3f};dynamic_obstacle_layer_enable={};dynamic_obstacle_cloud_topic={};cmd_topic={};mpc_cmd_topic={}",
                                               cfg_.task_mode_str,
                                               cfg_.replan_rate,
                                               static_cast<int>(cfg_.perception_replan_check_en),
                                               cfg_.perception_replan_check_rate,
+                                              static_cast<int>(cfg_.dynamic_obstacle_layer_enable),
+                                              cfg_.dynamic_obstacle_layer_cloud_topic,
                                               cfg_.cmd_topic,
                                               cfg_.mpc_cmd_topic),
                                   -1,

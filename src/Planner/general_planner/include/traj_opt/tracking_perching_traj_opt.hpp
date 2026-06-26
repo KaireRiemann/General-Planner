@@ -11,7 +11,7 @@
 #include "data_structure/base/trajectory.h"
 #include "general_core/map_manager.hpp"
 #include "traj_opt/config.hpp"
-#include "traj_opt/minco/terminal_mapping.hpp"
+#include "traj_opt/minco/boundary_mapping.hpp"
 #include "traj_opt/perching_surface_state.hpp"
 #include "utils/header/type_utils.hpp"
 

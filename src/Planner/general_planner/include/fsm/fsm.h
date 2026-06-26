@@ -135,6 +135,44 @@ namespace fsm {
 
         MACHINE_STATE machine_state_{INIT};
 
+        struct TaskPlanContext {
+            bool handled{false};
+            bool missing_input{false};
+            bool tracking_context{false};
+            bool tracking_prediction_static{false};
+            std::size_t tracking_input_prediction_size{0};
+        };
+
+        class TaskExecutor {
+        public:
+            virtual ~TaskExecutor() = default;
+
+            virtual TaskMode mode() const = 0;
+            virtual const char *name() const = 0;
+            virtual bool trackingLike() const {
+                return false;
+            }
+            virtual bool goalLike() const {
+                return false;
+            }
+            virtual bool ready(Fsm &fsm) = 0;
+            virtual bool replanAllowed(const Fsm &fsm) const = 0;
+            virtual int planFromRest(Fsm &fsm, TaskPlanContext &context) = 0;
+            virtual int replan(Fsm &fsm, TaskPlanContext &context) = 0;
+            virtual bool shouldGenerateAfterTrajFinish(Fsm &fsm) = 0;
+        };
+
+        class State2StateTaskExecutor;
+        class TrackingTaskExecutor;
+        class TrackingPerchingTaskExecutor;
+        class PerchingTaskExecutor;
+        class DynamicTakeoffTaskExecutor;
+        class ExplorationTaskExecutor;
+        class SE3AggressiveTaskExecutor;
+
+        std::unique_ptr<TaskExecutor> task_executor_;
+        TaskMode task_executor_mode_{TaskMode::STATE_TO_STATE};
+
 
     public:
         Fsm() = default;
@@ -273,6 +311,12 @@ namespace fsm {
         void callPerceptionSafetyCheckOnce();
 
         void callMainFsmOnce();
+
+        TaskExecutor &taskExecutor();
+
+        std::unique_ptr<TaskExecutor> makeTaskExecutor(TaskMode mode) const;
+
+        void resetTaskExecutor();
 
         bool closeToGoal(const double &thresh_dis);
 

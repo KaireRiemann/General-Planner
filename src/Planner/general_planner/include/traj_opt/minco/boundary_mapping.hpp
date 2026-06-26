@@ -1,5 +1,5 @@
-#ifndef MINCO_TERMINAL_MAPPING_HPP
-#define MINCO_TERMINAL_MAPPING_HPP
+#ifndef MINCO_BOUNDARY_MAPPING_HPP
+#define MINCO_BOUNDARY_MAPPING_HPP
 
 #include <Eigen/Core>
 
@@ -18,9 +18,7 @@ namespace minco
  * M(T)c = b(head, inner, tail). State-to-state and current tracking tasks keep
  * head/tail fixed, so no chain rule beyond MINCO's own variables is required.
  *
- * This class name is kept for compatibility, but semantically it is now the
- * general boundary-state mapping hook. Perching-style tasks need a higher-level
- * terminal model such as
+ * Perching-style tasks need a higher-level tail boundary model such as
  * tail_state = F(T, Xi(T), nu, tau_f, ...). In that case the optimizer first
  * exposes dJ/d(head_state) and dJ/d(tail_state), then the task mapping adds
  * chain-rule terms to outer decision variables and to physical segment-time
@@ -41,9 +39,8 @@ public:
   /**
    * @brief Number of extra unconstrained variables appended after [tau, xi].
    *
-   * Fixed-terminal tasks keep this zero. Dynamic terminal tasks such as
-   * perching can expose variables like tangential closing velocity or thrust
-   * phase here.
+   * Fixed-boundary tasks keep this zero. Dynamic boundary tasks can expose
+   * variables like tangential closing velocity or thrust phase here.
    */
   virtual int extraVariableDim() const
   {
@@ -51,7 +48,7 @@ public:
   }
 
   /**
-   * @brief Fill the initial guess of extra terminal variables.
+   * @brief Fill the initial guess of extra boundary variables.
    */
   virtual void setInitialExtraVariables(Eigen::Ref<Eigen::VectorXd> extra_vars) const
   {
@@ -59,10 +56,10 @@ public:
   }
 
   /**
-   * @brief Forward terminal mapping hook.
+   * @brief Forward boundary mapping hook.
    *
    * MINCOOptimizer first decodes [tau, xi] into physical segment times and
-   * inner points. Dynamic terminal tasks then map
+   * inner points. Dynamic boundary tasks then map
    *   head/tail = F(cache_T, extra_vars, nominal_head, nominal_tail)
    * before generating the trajectory coefficients.
    */
@@ -80,7 +77,7 @@ public:
   }
 
   /**
-   * @brief Optional regularization on extra terminal variables.
+   * @brief Optional regularization on extra boundary variables.
    *
    * This cost is accumulated directly in the unconstrained decision space.
    */
@@ -93,13 +90,13 @@ public:
   }
 
   /**
-   * @brief Backpropagate terminal gradient to extra outer variables.
+   * @brief Backpropagate boundary-state gradients to extra outer variables.
    *
    * grad_out is the full unconstrained decision-gradient vector supplied by
-   * the caller. MINCO writes its own [tau, xi] entries; task-specific terminal
+   * the caller. MINCO writes its own [tau, xi] entries; task-specific boundary
    * variables, if present, should be written by the mapping implementation.
    */
-  virtual void backwardTerminalGradient(const BoundaryState &,
+  virtual void backwardBoundaryGradient(const BoundaryState &,
                                         const BoundaryState &,
                                         const Eigen::VectorXd &,
                                         const Eigen::Ref<const Eigen::VectorXd> &,
@@ -110,94 +107,33 @@ public:
   /**
    * @brief Add physical-time chain-rule terms before TimeMap::backward.
    *
-   * Fixed-boundary MINCO produces dJ/dT | fixed_tail. If a task has
-   * tail_state = F(T, ...), it must add
-   * (d tail_state / dT)^T * (dJ / d tail_state)
+   * Fixed-boundary MINCO produces dJ/dT | fixed_boundary. If a task has
+   * boundary_state = F(T, ...), it must add
+   * (d boundary_state / dT)^T * (dJ / d boundary_state)
    * to grad_by_times here. MINCOOptimizer then maps that physical dJ/dT to
    * the unconstrained tau gradient through the active TimeMap.
    */
-  virtual void backwardTerminalTimeGradient(const BoundaryState &,
+  virtual void backwardBoundaryTimeGradient(const BoundaryState &,
                                             const BoundaryState &,
                                             const Eigen::VectorXd &,
                                             const Eigen::Ref<const Eigen::VectorXd> &,
                                             Eigen::Ref<Eigen::VectorXd>) const
   {
   }
-
-  /**
-   * @brief General boundary-state gradient hook.
-   *
-   * New dynamic-head tasks such as takeoff should override this method. The
-   * default forwards to the historical terminal hook so existing perching code
-   * keeps the same behavior.
-   */
-  virtual void backwardBoundaryGradient(const BoundaryState &grad_head_state,
-                                        const BoundaryState &grad_tail_state,
-                                        const Eigen::VectorXd &cache_T,
-                                        const Eigen::Ref<const Eigen::VectorXd> &extra_vars,
-                                        Eigen::Ref<Eigen::VectorXd> grad_out) const
-  {
-    backwardTerminalGradient(grad_head_state,
-                             grad_tail_state,
-                             cache_T,
-                             extra_vars,
-                             grad_out);
-  }
-
-  /**
-   * @brief General boundary-state time-gradient hook.
-   *
-   * First-version dynamic takeoff fixes the release time at zero, so head
-   * mapping does not contribute to segment-time gradients. Tail mappings keep
-   * forwarding through the old terminal hook.
-   */
-  virtual void backwardBoundaryTimeGradient(const BoundaryState &grad_head_state,
-                                            const BoundaryState &grad_tail_state,
-                                            const Eigen::VectorXd &cache_T,
-                                            const Eigen::Ref<const Eigen::VectorXd> &extra_vars,
-                                            Eigen::Ref<Eigen::VectorXd> grad_by_times) const
-  {
-    backwardTerminalTimeGradient(grad_head_state,
-                                 grad_tail_state,
-                                 cache_T,
-                                 extra_vars,
-                                 grad_by_times);
-  }
 };
 
 template <int DIM, int S>
-using TerminalMappingBase = BoundaryStateMappingBase<DIM, S>;
-
-template <int DIM, int S>
-class FixedTerminalMapping final : public BoundaryStateMappingBase<DIM, S>
+class FixedBoundaryMapping final : public BoundaryStateMappingBase<DIM, S>
 {
 public:
-  using BoundaryState = typename BoundaryStateMappingBase<DIM, S>::BoundaryState;
-
   bool enabled() const override
   {
     return false;
   }
-
-  void backwardTerminalGradient(const BoundaryState &,
-                                const BoundaryState &,
-                                const Eigen::VectorXd &,
-                                const Eigen::Ref<const Eigen::VectorXd> &,
-                                Eigen::Ref<Eigen::VectorXd>) const override
-  {
-  }
-
-  void backwardTerminalTimeGradient(const BoundaryState &,
-                                    const BoundaryState &,
-                                    const Eigen::VectorXd &,
-                                    const Eigen::Ref<const Eigen::VectorXd> &,
-                                    Eigen::Ref<Eigen::VectorXd>) const override
-  {
-  }
 };
 
 /**
- * @brief Simplified Fast-Perching-style dynamic terminal mapping.
+ * @brief Simplified Fast-Perching-style dynamic tail boundary mapping.
  *
  * This mapping follows the paper semantics in a lightweight way:
  *   tail_pos(T) = Xi_ref + Xi_dot * (T - T_ref) + l * z_s
@@ -214,8 +150,8 @@ public:
  *   dJ / d T_i  += (d tail_state / d T)^T * dJ / d tail_state
  *
  * The same mapping works for S=3 (minimum jerk, P/V/A tail constraints) and
- * for S=4 (minimum snap, P/V/A/J tail constraints). When S=4, terminal jerk
- * is explicitly forced to zero as in the paper.
+ * for S=4 (minimum snap, P/V/A/J tail constraints). When S=4, tail jerk is
+ * explicitly forced to zero as in the paper.
  */
 struct PerchingSemanticConfig
 {
@@ -262,13 +198,13 @@ struct TakeoffBoundaryConfig
 };
 
 template <int DIM, int S>
-class PerchingTerminalMapping final : public TerminalMappingBase<DIM, S>
+class PerchingBoundaryMapping final : public BoundaryStateMappingBase<DIM, S>
 {
 public:
-  static_assert(DIM == 3, "PerchingTerminalMapping currently assumes 3D position trajectories.");
-  static_assert(S >= 3, "PerchingTerminalMapping requires boundary derivatives up to acceleration.");
+  static_assert(DIM == 3, "PerchingBoundaryMapping currently assumes 3D position trajectories.");
+  static_assert(S >= 3, "PerchingBoundaryMapping requires boundary derivatives up to acceleration.");
 
-  using BoundaryState = typename TerminalMappingBase<DIM, S>::BoundaryState;
+  using BoundaryState = typename BoundaryStateMappingBase<DIM, S>::BoundaryState;
   using PerchingSemanticConfig = minco::PerchingSemanticConfig;
 
   enum ExtraIndex
@@ -281,7 +217,7 @@ public:
 
   EIGEN_MAKE_ALIGNED_OPERATOR_NEW
 
-  PerchingTerminalMapping() = default;
+  PerchingBoundaryMapping() = default;
 
   /**
    * @brief Primary perching configuration path.
@@ -289,7 +225,7 @@ public:
    * The intended caller is the task/frontend layer after it has decoded rich
    * perching semantics such as contact frame, pre-contact distance and the
    * relaxed terminal window. The mapping itself only consumes the subset that
-   * affects terminal-state forward/backward passes, but it keeps the richer
+   * affects boundary-state forward/backward passes, but it keeps the richer
    * semantic payload so downstream acceptance / debug code can stay aligned.
    */
   void configure(const PerchingSemanticConfig &config)
@@ -463,7 +399,7 @@ public:
     return cost;
   }
 
-  void backwardTerminalGradient(const BoundaryState &,
+  void backwardBoundaryGradient(const BoundaryState &,
                                 const BoundaryState &grad_tail_state,
                                 const Eigen::VectorXd &cache_T,
                                 const Eigen::Ref<const Eigen::VectorXd> &extra_vars,
@@ -489,7 +425,7 @@ public:
     }
   }
 
-  void backwardTerminalTimeGradient(const BoundaryState &,
+  void backwardBoundaryTimeGradient(const BoundaryState &,
                                     const BoundaryState &grad_tail_state,
                                     const Eigen::VectorXd &cache_T,
                                     const Eigen::Ref<const Eigen::VectorXd> &extra_vars,
@@ -816,4 +752,4 @@ private:
 
 } // namespace minco
 
-#endif // MINCO_TERMINAL_MAPPING_HPP
+#endif // MINCO_BOUNDARY_MAPPING_HPP

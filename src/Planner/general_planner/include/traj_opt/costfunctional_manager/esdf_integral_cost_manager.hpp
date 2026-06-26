@@ -123,6 +123,14 @@ public:
                                                                        grad_pos,
                                                                        grad_time,
                                                                        &max_violation_(8));
+        local_cost += cost_functional::accumulateSwarmFormationPenalty(swarm_config,
+                                                                       swarm_trajs.get(),
+                                                                       swarm_current_wall_time,
+                                                                       t_global,
+                                                                       position,
+                                                                       velocity,
+                                                                       grad_pos,
+                                                                       grad_time);
         total_grad_pos = grad_pos;
 
         if (weight_omg > 0.0 || weight_acc_thr > 0.0)

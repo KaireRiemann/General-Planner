@@ -1,0 +1,172 @@
+<launch>
+    <arg name="rviz" default="true"/>
+    <arg name="marsim" default="true"/>
+    <arg name="planner_config" default="formulation.yaml"/>
+    <arg name="planner_config_path" default=""/>
+    <arg name="swarm0_sim_config" default="swarm_drone0.yaml"/>
+    <arg name="swarm1_sim_config" default="swarm_drone1.yaml"/>
+    <arg name="swarm2_sim_config" default="swarm_drone2.yaml"/>
+    <arg name="swarm3_sim_config" default="swarm_drone3.yaml"/>
+    <arg name="swarm4_sim_config" default="swarm_drone4.yaml"/>
+    <arg name="rviz_config" default="$(find general_planner)/rviz/formulation_top_down.rviz"/>
+    <arg name="swarm_click_goal_topic" default="/swarm/goal"/>
+    <arg name="swarm_goal_z" default="1.5"/>
+
+    <group ns="swarm0">
+        <node if="$(arg marsim)" pkg="perfect_drone_sim" type="perfect_drone"
+              name="perfect_drone" output="log" clear_params="true">
+            <param name="config_name" value="$(arg swarm0_sim_config)" type="string"/>
+            <remap from="/drone_0/planning/pos_cmd" to="/swarm0/planning/pos_cmd"/>
+            <remap from="/drone_0/lidar_slam/odom" to="/swarm0/lidar_slam/odom"/>
+            <remap from="/drone_0/lidar_slam/pose" to="/swarm0/lidar_slam/pose"/>
+            <remap from="/drone_0/cloud_registered" to="/swarm0/cloud_registered"/>
+            <remap from="/drone_0/global_pc" to="/swarm0/global_pc"/>
+        </node>
+        <node pkg="general_planner" name="fsm_node" type="fsm_node"
+              output="screen" clear_params="true">
+            <param if="$(eval arg('planner_config_path') != '')"
+                   name="config_path" value="$(arg planner_config_path)" type="string"/>
+            <param unless="$(eval arg('planner_config_path') != '')"
+                   name="config_name" value="$(arg planner_config)" type="string"/>
+            <param name="swarm_drone_id" value="0" type="int"/>
+            <remap from="/swarm/goal" to="/swarm0/goal"/>
+            <remap from="/swarm/planning/pos_cmd" to="/swarm0/planning/pos_cmd"/>
+            <remap from="/swarm/planning_cmd/poly_traj" to="/swarm0/planning_cmd/poly_traj"/>
+            <remap from="/swarm/planning/diagnostics/events" to="/swarm0/planning/diagnostics/events"/>
+            <remap from="/swarm/lidar_slam/odom" to="/swarm0/lidar_slam/odom"/>
+            <remap from="/swarm/cloud_registered" to="/swarm0/cloud_registered"/>
+        </node>
+    </group>
+
+    <group ns="swarm1">
+        <node if="$(arg marsim)" pkg="perfect_drone_sim" type="perfect_drone"
+              name="perfect_drone" output="log" clear_params="true">
+            <param name="config_name" value="$(arg swarm1_sim_config)" type="string"/>
+            <remap from="/drone_1/planning/pos_cmd" to="/swarm1/planning/pos_cmd"/>
+            <remap from="/drone_1/lidar_slam/odom" to="/swarm1/lidar_slam/odom"/>
+            <remap from="/drone_1/lidar_slam/pose" to="/swarm1/lidar_slam/pose"/>
+            <remap from="/drone_1/cloud_registered" to="/swarm1/cloud_registered"/>
+            <remap from="/drone_1/global_pc" to="/swarm1/global_pc"/>
+        </node>
+        <node pkg="general_planner" name="fsm_node" type="fsm_node"
+              output="screen" clear_params="true">
+            <param if="$(eval arg('planner_config_path') != '')"
+                   name="config_path" value="$(arg planner_config_path)" type="string"/>
+            <param unless="$(eval arg('planner_config_path') != '')"
+                   name="config_name" value="$(arg planner_config)" type="string"/>
+            <param name="swarm_drone_id" value="1" type="int"/>
+            <remap from="/swarm/goal" to="/swarm1/goal"/>
+            <remap from="/swarm/planning/pos_cmd" to="/swarm1/planning/pos_cmd"/>
+            <remap from="/swarm/planning_cmd/poly_traj" to="/swarm1/planning_cmd/poly_traj"/>
+            <remap from="/swarm/planning/diagnostics/events" to="/swarm1/planning/diagnostics/events"/>
+            <remap from="/swarm/lidar_slam/odom" to="/swarm1/lidar_slam/odom"/>
+            <remap from="/swarm/cloud_registered" to="/swarm1/cloud_registered"/>
+        </node>
+    </group>
+
+    <group ns="swarm2">
+        <node if="$(arg marsim)" pkg="perfect_drone_sim" type="perfect_drone"
+              name="perfect_drone" output="log" clear_params="true">
+            <param name="config_name" value="$(arg swarm2_sim_config)" type="string"/>
+            <remap from="/drone_2/planning/pos_cmd" to="/swarm2/planning/pos_cmd"/>
+            <remap from="/drone_2/lidar_slam/odom" to="/swarm2/lidar_slam/odom"/>
+            <remap from="/drone_2/lidar_slam/pose" to="/swarm2/lidar_slam/pose"/>
+            <remap from="/drone_2/cloud_registered" to="/swarm2/cloud_registered"/>
+            <remap from="/drone_2/global_pc" to="/swarm2/global_pc"/>
+        </node>
+        <node pkg="general_planner" name="fsm_node" type="fsm_node"
+              output="screen" clear_params="true">
+            <param if="$(eval arg('planner_config_path') != '')"
+                   name="config_path" value="$(arg planner_config_path)" type="string"/>
+            <param unless="$(eval arg('planner_config_path') != '')"
+                   name="config_name" value="$(arg planner_config)" type="string"/>
+            <param name="swarm_drone_id" value="2" type="int"/>
+            <remap from="/swarm/goal" to="/swarm2/goal"/>
+            <remap from="/swarm/planning/pos_cmd" to="/swarm2/planning/pos_cmd"/>
+            <remap from="/swarm/planning_cmd/poly_traj" to="/swarm2/planning_cmd/poly_traj"/>
+            <remap from="/swarm/planning/diagnostics/events" to="/swarm2/planning/diagnostics/events"/>
+            <remap from="/swarm/lidar_slam/odom" to="/swarm2/lidar_slam/odom"/>
+            <remap from="/swarm/cloud_registered" to="/swarm2/cloud_registered"/>
+        </node>
+    </group>
+
+    <group ns="swarm3">
+        <node if="$(arg marsim)" pkg="perfect_drone_sim" type="perfect_drone"
+              name="perfect_drone" output="log" clear_params="true">
+            <param name="config_name" value="$(arg swarm3_sim_config)" type="string"/>
+            <remap from="/drone_3/planning/pos_cmd" to="/swarm3/planning/pos_cmd"/>
+            <remap from="/drone_3/lidar_slam/odom" to="/swarm3/lidar_slam/odom"/>
+            <remap from="/drone_3/lidar_slam/pose" to="/swarm3/lidar_slam/pose"/>
+            <remap from="/drone_3/cloud_registered" to="/swarm3/cloud_registered"/>
+            <remap from="/drone_3/global_pc" to="/swarm3/global_pc"/>
+        </node>
+        <node pkg="general_planner" name="fsm_node" type="fsm_node"
+              output="screen" clear_params="true">
+            <param if="$(eval arg('planner_config_path') != '')"
+                   name="config_path" value="$(arg planner_config_path)" type="string"/>
+            <param unless="$(eval arg('planner_config_path') != '')"
+                   name="config_name" value="$(arg planner_config)" type="string"/>
+            <param name="swarm_drone_id" value="3" type="int"/>
+            <remap from="/swarm/goal" to="/swarm3/goal"/>
+            <remap from="/swarm/planning/pos_cmd" to="/swarm3/planning/pos_cmd"/>
+            <remap from="/swarm/planning_cmd/poly_traj" to="/swarm3/planning_cmd/poly_traj"/>
+            <remap from="/swarm/planning/diagnostics/events" to="/swarm3/planning/diagnostics/events"/>
+            <remap from="/swarm/lidar_slam/odom" to="/swarm3/lidar_slam/odom"/>
+            <remap from="/swarm/cloud_registered" to="/swarm3/cloud_registered"/>
+        </node>
+    </group>
+
+    <group ns="swarm4">
+        <node if="$(arg marsim)" pkg="perfect_drone_sim" type="perfect_drone"
+              name="perfect_drone" output="log" clear_params="true">
+            <param name="config_name" value="$(arg swarm4_sim_config)" type="string"/>
+            <remap from="/drone_4/planning/pos_cmd" to="/swarm4/planning/pos_cmd"/>
+            <remap from="/drone_4/lidar_slam/odom" to="/swarm4/lidar_slam/odom"/>
+            <remap from="/drone_4/lidar_slam/pose" to="/swarm4/lidar_slam/pose"/>
+            <remap from="/drone_4/cloud_registered" to="/swarm4/cloud_registered"/>
+            <remap from="/drone_4/global_pc" to="/swarm4/global_pc"/>
+        </node>
+        <node pkg="general_planner" name="fsm_node" type="fsm_node"
+              output="screen" clear_params="true">
+            <param if="$(eval arg('planner_config_path') != '')"
+                   name="config_path" value="$(arg planner_config_path)" type="string"/>
+            <param unless="$(eval arg('planner_config_path') != '')"
+                   name="config_name" value="$(arg planner_config)" type="string"/>
+            <param name="swarm_drone_id" value="4" type="int"/>
+            <remap from="/swarm/goal" to="/swarm4/goal"/>
+            <remap from="/swarm/planning/pos_cmd" to="/swarm4/planning/pos_cmd"/>
+            <remap from="/swarm/planning_cmd/poly_traj" to="/swarm4/planning_cmd/poly_traj"/>
+            <remap from="/swarm/planning/diagnostics/events" to="/swarm4/planning/diagnostics/events"/>
+            <remap from="/swarm/lidar_slam/odom" to="/swarm4/lidar_slam/odom"/>
+            <remap from="/swarm/cloud_registered" to="/swarm4/cloud_registered"/>
+        </node>
+    </group>
+
+    <node pkg="task_planner" name="formulation_task"
+          type="formulation_task" output="screen" clear_params="true">
+        <param name="input_goal_topic" value="$(arg swarm_click_goal_topic)" type="string"/>
+        <param name="formation_reference_topic" value="/swarm/formation_reference" type="string"/>
+        <param name="traj_broadcast_topic" value="/swarm/trajectory" type="string"/>
+        <param name="goal_z" value="$(arg swarm_goal_z)" type="double"/>
+        <param name="use_clicked_z" value="false" type="bool"/>
+        <param name="odom_timeout" value="1.0" type="double"/>
+        <param name="publish_repeat" value="3" type="int"/>
+        <param name="publish_period" value="0.05" type="double"/>
+        <param name="sequential_start_enable" value="true" type="bool"/>
+        <param name="sequential_timeout" value="5.0" type="double"/>
+        <param name="min_segment_length" value="0.2" type="double"/>
+        <rosparam param="formation_offsets">[0.0, 0.0, 0.0,
+                                             0.0, 2.0, 0.0,
+                                             0.0, -2.0, 0.0,
+                                             -2.0, 1.0, 0.0,
+                                             -2.0, -1.0, 0.0]</rosparam>
+        <rosparam param="odom_topics">["/swarm0/lidar_slam/odom", "/swarm1/lidar_slam/odom", "/swarm2/lidar_slam/odom", "/swarm3/lidar_slam/odom", "/swarm4/lidar_slam/odom"]</rosparam>
+        <rosparam param="goal_topics">["/swarm0/goal", "/swarm1/goal", "/swarm2/goal", "/swarm3/goal", "/swarm4/goal"]</rosparam>
+    </node>
+
+    <node if="$(arg rviz)" pkg="rviz" type="rviz" name="swarm_click_rviz"
+          args="-d $(arg rviz_config)" output="log">
+        <remap from="/move_base_simple/goal" to="$(arg swarm_click_goal_topic)"/>
+        <remap from="/goal" to="$(arg swarm_click_goal_topic)"/>
+    </node>
+</launch>

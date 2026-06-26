@@ -42,6 +42,7 @@
 #include "rog_map/rog_map.h"
 #include "general_core/map_manager.hpp"
 #include "general_core/corridor_generator.h"
+#include "general_core/dynamic_obstacle_layer.hpp"
 #include "general_core/fov_checker.h"
 #include "general_core/exploration_frontend.hpp"
 #include "general_core/exploration_runtime_manager.hpp"
@@ -75,6 +76,7 @@ namespace general_planner {
         path_search::Astar::Ptr astar_ptr_;
         ros_interface::RosInterface::Ptr ros_ptr_;
         Vec3f shifted_sfc_start_pt_;
+        std::unique_ptr<DynamicObstacleLayer> dynamic_obstacle_layer_;
 
         traj_opt::TrajManager::Ptr traj_manager_;
         traj_opt::SwarmTrajectoriesConstPtr swarm_trajs_;
@@ -267,6 +269,12 @@ namespace general_planner {
                 bool unknown_as_occupied,
                 CommittedTrajectorySafetyReport *report = nullptr);
 
+        void updateDynamicObstacleCloud(const rog_map::PointCloud &cloud,
+                                        const Vec3f &robot_pos,
+                                        double stamp);
+
+        bool dynamicObstacleLayerEnabled() const;
+
         bool trackingPerchingPerchingActive() const;
 
         bool trackingPerchingContactReached() const;
@@ -340,6 +348,8 @@ namespace general_planner {
         std::string getLatestState2StateZDebugInfo() const;
 
         void setSwarmTrajectories(const traj_opt::SwarmTrajectories &trajectories);
+        void setSwarmDroneId(int drone_id);
+        void setSwarmFormationReference(const Vec3f &start, const Vec3f &end);
 
         /* Tow type of replan strategy */
         RET_CODE PlanFromRest(const Vec3f &goal_p,

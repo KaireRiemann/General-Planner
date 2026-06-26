@@ -1,7 +1,7 @@
 #ifndef MINCO_OPTIMIZER_HPP
 #define MINCO_OPTIMIZER_HPP
 
-#include "traj_opt/minco/terminal_mapping.hpp"
+#include "traj_opt/minco/boundary_mapping.hpp"
 #include "traj_opt/minco/minco_trajectory.hpp"
 #include <Eigen/Dense>
 #include <algorithm>
@@ -227,7 +227,7 @@ public:
   Eigen::VectorXd encodeDecisionVector(
       const std::vector<double> &physical_times,
       const WaypointsType &physical_waypoints,
-      const TerminalMappingBase<DIM, S> *terminal_mapping = nullptr,
+      const BoundaryStateMappingBase<DIM, S> *boundary_mapping = nullptr,
       const Eigen::VectorXd *extra_vars = nullptr) const
   {
     if (static_cast<int>(physical_times.size()) != piece_num_ ||
@@ -239,8 +239,8 @@ public:
 
     const int dim_T = piece_num_;
     const int extra_dim =
-        (terminal_mapping != nullptr && terminal_mapping->enabled())
-            ? terminal_mapping->extraVariableDim()
+        (boundary_mapping != nullptr && boundary_mapping->enabled())
+            ? boundary_mapping->extraVariableDim()
             : 0;
     const int total_dim = getCoreDecisionDim() + extra_dim;
 
@@ -279,9 +279,9 @@ public:
       {
         extra_segment = *extra_vars;
       }
-      else if (terminal_mapping != nullptr)
+      else if (boundary_mapping != nullptr)
       {
-        terminal_mapping->setInitialExtraVariables(extra_segment);
+        boundary_mapping->setInitialExtraVariables(extra_segment);
       }
       else
       {
@@ -297,12 +297,12 @@ public:
     return generateInitialGuess(nullptr);
   }
 
-  Eigen::VectorXd generateInitialGuess(const TerminalMappingBase<DIM, S> *terminal_mapping) const
+  Eigen::VectorXd generateInitialGuess(const BoundaryStateMappingBase<DIM, S> *boundary_mapping) const
   {
     const int total_dim =
         getCoreDecisionDim() +
-        ((terminal_mapping != nullptr && terminal_mapping->enabled())
-             ? terminal_mapping->extraVariableDim()
+        ((boundary_mapping != nullptr && boundary_mapping->enabled())
+             ? boundary_mapping->extraVariableDim()
              : 0);
 
     if (has_warm_start_guess_ &&
@@ -312,7 +312,7 @@ public:
       return warm_start_guess_;
     }
 
-    return encodeDecisionVector(ref_times_, ref_waypoints_, terminal_mapping, nullptr);
+    return encodeDecisionVector(ref_times_, ref_waypoints_, boundary_mapping, nullptr);
   }
 
   template <typename TimeCostFunc, typename CostManager>
@@ -321,21 +321,21 @@ public:
                   TimeCostFunc &&time_cost_func,
                   CostManager &&cost_manager)
   {
-    FixedTerminalMapping<DIM, S> fixed_terminal_mapping;
-    return evaluateWithTerminalMapping(x,
+    FixedBoundaryMapping<DIM, S> fixed_boundary_mapping;
+    return evaluateWithBoundaryMapping(x,
                                        grad_out,
                                        std::forward<TimeCostFunc>(time_cost_func),
                                        std::forward<CostManager>(cost_manager),
-                                       &fixed_terminal_mapping);
+                                       &fixed_boundary_mapping);
   }
 
   template <typename TimeCostFunc, typename CostManager>
-  double evaluateWithTerminalMapping(
+  double evaluateWithBoundaryMapping(
       const Eigen::Ref<const Eigen::VectorXd> &x,
       Eigen::Ref<Eigen::VectorXd> grad_out,
       TimeCostFunc &&time_cost_func,
       CostManager &&cost_manager,
-      const TerminalMappingBase<DIM, S> *terminal_mapping)
+      const BoundaryStateMappingBase<DIM, S> *boundary_mapping)
   {
     static_assert(optimizer_traits::HasTimeCostInterface<typename std::decay<TimeCostFunc>::type>::value,
                   "TimeCostFunc does not satisfy the required interface.");
@@ -344,8 +344,8 @@ public:
     double total_cost = 0.0;
     const int core_dim = getCoreDecisionDim();
     const int extra_dim =
-        (terminal_mapping != nullptr && terminal_mapping->enabled())
-            ? terminal_mapping->extraVariableDim()
+        (boundary_mapping != nullptr && boundary_mapping->enabled())
+            ? boundary_mapping->extraVariableDim()
             : 0;
 
     if (x.size() != core_dim + extra_dim)
@@ -361,10 +361,10 @@ public:
     decodeDecisionVariables(x, grad_out, total_cost);
     workspace_->head_state = nominal_head_state_;
     workspace_->tail_state = nominal_tail_state_;
-    if (terminal_mapping != nullptr && terminal_mapping->enabled())
+    if (boundary_mapping != nullptr && boundary_mapping->enabled())
     {
       const auto extra_vars = x.segment(core_dim, extra_dim);
-      terminal_mapping->mapBoundaryStates(nominal_head_state_,
+      boundary_mapping->mapBoundaryStates(nominal_head_state_,
                                           nominal_tail_state_,
                                           workspace_->cache_T,
                                           extra_vars,
@@ -372,7 +372,7 @@ public:
                                           workspace_->tail_state);
       if (extra_dim > 0)
       {
-        total_cost += terminal_mapping->addExtraVariableCost(
+        total_cost += boundary_mapping->addExtraVariableCost(
             extra_vars, grad_out.segment(core_dim, extra_dim));
       }
     }
@@ -418,14 +418,13 @@ public:
                             workspace_->grad_by_head_state,
                             workspace_->grad_by_tail_state);
 
-    // Fixed-boundary MINCO already has dJ/dT | fixed_tail. For terminal
-    // mappings where tail_state = F(T, ...), add
-    // (d tail_state / dT)^T * (dJ / d tail_state) to the physical time
-    // gradient before mapping dJ/dT back to tau.
-    if (terminal_mapping != nullptr && terminal_mapping->enabled())
+    // Fixed-boundary MINCO already has dJ/dT with fixed head/tail states.
+    // For boundary mappings where boundary_state = F(T, ...), add the mapping
+    // chain-rule term before mapping dJ/dT back to tau.
+    if (boundary_mapping != nullptr && boundary_mapping->enabled())
     {
       const auto extra_vars = x.segment(core_dim, extra_dim);
-      terminal_mapping->backwardBoundaryTimeGradient(workspace_->grad_by_head_state,
+      boundary_mapping->backwardBoundaryTimeGradient(workspace_->grad_by_head_state,
                                                      workspace_->grad_by_tail_state,
                                                      workspace_->cache_T,
                                                      extra_vars,
@@ -434,10 +433,10 @@ public:
 
     writeDecisionGradient(x, grad_out);
 
-    if (terminal_mapping != nullptr && terminal_mapping->enabled())
+    if (boundary_mapping != nullptr && boundary_mapping->enabled())
     {
       const auto extra_vars = x.segment(core_dim, extra_dim);
-      terminal_mapping->backwardBoundaryGradient(workspace_->grad_by_head_state,
+      boundary_mapping->backwardBoundaryGradient(workspace_->grad_by_head_state,
                                                  workspace_->grad_by_tail_state,
                                                  workspace_->cache_T,
                                                  extra_vars,

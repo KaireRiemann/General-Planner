@@ -1,15 +1,15 @@
 #############| For swarm UAV simulation |#################################
 pcd_name: "forest.pcd"
 mesh_resource: "package://perfect_drone_sim/meshes/yunque-M.dae"
-cmd_topic: "/drone_0/planning/pos_cmd"
-odom_topic: "/drone_0/lidar_slam/odom"
-pose_topic: "/drone_0/lidar_slam/pose"
-local_pc_topic: "/drone_0/cloud_registered"
-global_pc_topic: "/drone_0/global_pc"
-robot_frame_id: "drone_0/base_link"
+cmd_topic: "/drone_3/planning/pos_cmd"
+odom_topic: "/drone_3/lidar_slam/odom"
+pose_topic: "/drone_3/lidar_slam/pose"
+local_pc_topic: "/drone_3/cloud_registered"
+global_pc_topic: "/drone_3/global_pc"
+robot_frame_id: "drone_3/base_link"
 init_position:
-  x: -30.0
-  y: 0.0
+  x: -32.0
+  y: 1.0
   z: 1.5
 init_yaw: 0.0
 
