@@ -30,10 +30,10 @@
 namespace optimization_utils {
 
     using namespace geometry_utils;
-    using super_utils::PolyhedronH;
-    using super_utils::PolyhedraH;
-    using super_utils::PolyhedraV;
-    using super_utils::PolyhedronV;
+    using general_utils::PolyhedronH;
+    using general_utils::PolyhedraH;
+    using general_utils::PolyhedraV;
+    using general_utils::PolyhedronV;
 
     template<typename EIGENVEC>
     class Gcopter {

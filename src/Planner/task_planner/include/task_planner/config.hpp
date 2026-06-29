@@ -18,7 +18,7 @@
 namespace task_planner {
     using namespace color_text;
     using namespace std;
-    using namespace super_utils;
+    using namespace general_utils;
 
     enum class ManagedTaskMode {
         STATE_TO_STATE = 0,

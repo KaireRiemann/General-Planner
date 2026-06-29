@@ -169,8 +169,8 @@ namespace traj_opt {
         Trajectory yaw_traj;
         switch (order) {
             case 3: {
-                const super_utils::Vec2f init_state3 = init_state.head(2);
-                const super_utils::Vec2f goal_state3 = goal_state.head(2);
+                const general_utils::Vec2f init_state3 = init_state.head(2);
+                const general_utils::Vec2f goal_state3 = goal_state.head(2);
                 yaw_traj = poly_interpo::minimumAccInterpolation<1>(init_state3,
                                                                     goal_state3,
                                                                     way_pts,

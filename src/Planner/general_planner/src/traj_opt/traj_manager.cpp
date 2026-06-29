@@ -13,7 +13,7 @@
 
 using namespace traj_opt;
 using namespace color_text;
-using namespace super_utils;
+using namespace general_utils;
 using namespace math_utils;
 
 namespace
@@ -61,9 +61,9 @@ std::vector<double> toStdVector(const VecDf &v)
 
 std::string gridTypeName(int grid_type)
 {
-  if (grid_type >= 0 && grid_type < static_cast<int>(super_utils::GridTypeStr.size()))
+  if (grid_type >= 0 && grid_type < static_cast<int>(general_utils::GridTypeStr.size()))
   {
-    return super_utils::GridTypeStr[grid_type];
+    return general_utils::GridTypeStr[grid_type];
   }
   return "UNKNOWN_GRID_TYPE";
 }
@@ -2617,7 +2617,7 @@ ESDFTrajOpt::ValidationReport ESDFTrajOpt::validateTrajectoryDetailed(const Traj
 {
   ValidationReport report;
   report.position.setZero();
-  report.grid_type = static_cast<int>(super_utils::GridType::UNDEFINED);
+  report.grid_type = static_cast<int>(general_utils::GridType::UNDEFINED);
   if (traj.empty())
   {
     report.reason = "EMPTY_TRAJ";
@@ -3276,13 +3276,13 @@ void PlainTrajOpt::generateLocalAstarPVPairs(const std::vector<Vec3f> &sample_po
     const double chord = (end_pt - start_pt).norm();
     const double horizon = std::clamp(chord + 4.0, 3.0, std::max(6.0, 2.0 * cfg_.max_vel));
     auto ret = local_astar_->pointToPointPathSearch(end_pt, start_pt, inf_flag, horizon, local_path, 0.08);
-    if ((ret != super_utils::SUCCESS && ret != super_utils::REACH_GOAL && ret != super_utils::REACH_HORIZON) ||
+    if ((ret != general_utils::SUCCESS && ret != general_utils::REACH_GOAL && ret != general_utils::REACH_HORIZON) ||
         local_path.size() < 2)
     {
       local_path.clear();
       ret = local_astar_->pointToPointPathSearch(end_pt, start_pt, prob_flag, horizon, local_path, 0.08);
     }
-    if ((ret != super_utils::SUCCESS && ret != super_utils::REACH_GOAL && ret != super_utils::REACH_HORIZON) ||
+    if ((ret != general_utils::SUCCESS && ret != general_utils::REACH_GOAL && ret != general_utils::REACH_HORIZON) ||
         local_path.size() < 2)
     {
       continue;
@@ -4291,7 +4291,7 @@ PlainTrajOpt::ValidationReport PlainTrajOpt::validateTrajectoryDetailed(const Tr
 {
   ValidationReport report;
   report.position.setZero();
-  report.grid_type = static_cast<int>(super_utils::GridType::UNDEFINED);
+  report.grid_type = static_cast<int>(general_utils::GridType::UNDEFINED);
   if (traj.empty())
   {
     report.reason = "EMPTY_TRAJ";

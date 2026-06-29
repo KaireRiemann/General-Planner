@@ -1380,8 +1380,8 @@ private:
         problem.use_corridor = !corridor.empty();
         problem.runtime_check_enable = true;
         problem.use_numeric_shape_gradient = true;
-        problem.head_pvaj = super_utils::StatePVAJ::Zero();
-        problem.tail_pvaj = super_utils::StatePVAJ::Zero();
+        problem.head_pvaj = general_utils::StatePVAJ::Zero();
+        problem.tail_pvaj = general_utils::StatePVAJ::Zero();
         problem.head_pvaj.col(0) = start;
         problem.tail_pvaj.col(0) = goal;
 

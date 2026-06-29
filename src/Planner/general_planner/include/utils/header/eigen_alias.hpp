@@ -31,7 +31,7 @@
 #define PCD_FILE_DIR(name) (string(string(ROOT_DIR) + "pcd/"+name))
 #define SIGN(x) ((x > 0) - (x < 0))
 
-namespace super_utils{
+namespace general_utils{
 
 /*
  * @\brief Rename the float type used in lib

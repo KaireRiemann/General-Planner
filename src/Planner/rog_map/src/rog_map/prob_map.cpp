@@ -23,7 +23,7 @@
 
 #include <rog_map/prob_map.h>
 using namespace rog_map;
-using namespace super_utils;
+using namespace general_utils;
 
 void ProbMap::initProbMap() {
     static bool init_once{false};
@@ -377,10 +377,10 @@ void ProbMap::updateProbMap(const PointCloud& cloud, const Pose& pose) {
 GridType ProbMap::getGridType(Vec3i& id_g) const {
     if (id_g.z() <= sc_.virtual_ground_height_id_g ||
         id_g.z() >= sc_.virtual_ceil_height_id_g - sc_.safe_margin_i) {
-        return super_utils::OCCUPIED;
+        return general_utils::OCCUPIED;
     }
     if (!insideLocalMap(id_g)) {
-        return super_utils::OUT_OF_MAP;
+        return general_utils::OUT_OF_MAP;
     }
     Vec3i id_l;
     globalIndexToLocalIndex(id_g, id_l);

@@ -14,7 +14,7 @@
 #include <utils/yaml_loader.hpp>
 #include <utils/color_text.hpp>
 namespace task_planner {
-    using namespace super_utils;
+    using namespace general_utils;
     using namespace color_text;
     using namespace std;
     enum TriggerType {

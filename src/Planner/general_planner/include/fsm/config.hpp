@@ -27,6 +27,7 @@
 
 
 #include <general_core/config.hpp>
+#include <general_core/planning_semantics.hpp>
 #include <algorithm>
 #include <cctype>
 #include <vector>
@@ -45,15 +46,42 @@ namespace fsm {
         PERCHING = 2,
         EXPLORATION = 3,
         DYNAMIC_TAKEOFF = 4,
-        TRACKING_PERCHING = 5,
-        SE3_AGGRESSIVE = 7
+        TRACKING_PERCHING = 5
     };
+
+    inline general_planner::architecture::TaskType taskTypeFromTaskMode(const TaskMode mode) {
+        using general_planner::architecture::TaskType;
+        switch (mode) {
+            case TaskMode::TRACKING:
+            case TaskMode::TRACKING_PERCHING:
+                return TaskType::TRACKING;
+            case TaskMode::PERCHING:
+                return TaskType::PERCHING;
+            case TaskMode::EXPLORATION:
+                return TaskType::EXPLORATION;
+            case TaskMode::DYNAMIC_TAKEOFF:
+                return TaskType::TAKEOFF;
+            case TaskMode::STATE_TO_STATE:
+            default:
+                return TaskType::STATE_TO_STATE;
+        }
+    }
+
+    inline general_planner::architecture::MissionMode missionModeFromTaskMode(const TaskMode mode) {
+        using general_planner::architecture::MissionMode;
+        if (mode == TaskMode::TRACKING_PERCHING) {
+            return MissionMode::PERCHING_MISSION;
+        }
+        return general_planner::architecture::missionModeForTask(taskTypeFromTaskMode(mode));
+    }
 
     inline std::string normalizeTaskMode(std::string mode) {
         std::transform(mode.begin(), mode.end(), mode.begin(),
                        [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
         if (mode == "state_to_state" || mode == "state-2-state" || mode == "state2state" ||
-            mode == "s2s" || mode == "corridor" || mode == "esdf" || mode == "plain") {
+            mode == "s2s" || mode == "corridor" || mode == "esdf" || mode == "plain" ||
+            mode == "se3" || mode == "se3_aggressive" || mode == "aggressive" ||
+            mode == "racing") {
             return "state2state";
         }
         if (mode == "track" || mode == "tracking") {
@@ -62,10 +90,6 @@ namespace fsm {
         if (mode == "tracking_perching" || mode == "tracking-perching" ||
             mode == "track_perch" || mode == "track-perch") {
             return "tracking_perching";
-        }
-        if (mode == "se3" || mode == "se3_aggressive" ||
-            mode == "aggressive" || mode == "racing") {
-            return "se3_aggressive";
         }
         if (mode == "perch" || mode == "perching") {
             return "perching";
@@ -87,9 +111,6 @@ namespace fsm {
         }
         if (normalized == "tracking_perching") {
             return TaskMode::TRACKING_PERCHING;
-        }
-        if (normalized == "se3_aggressive") {
-            return TaskMode::SE3_AGGRESSIVE;
         }
         if (normalized == "perching") {
             return TaskMode::PERCHING;
@@ -126,6 +147,13 @@ namespace fsm {
         double flatness_v_eps{0.0001};
         string task_mode_str{"state2state"};
         TaskMode task_mode{TaskMode::STATE_TO_STATE};
+        string planning_backend_str{"auto"};
+        general_planner::architecture::TaskType task_type{
+                general_planner::architecture::TaskType::STATE_TO_STATE};
+        general_planner::architecture::MissionMode mission_mode{
+                general_planner::architecture::MissionMode::SINGLE_TASK};
+        general_planner::architecture::BackendType backend_type{
+                general_planner::architecture::BackendType::AUTO};
         bool task_planner_en{false};
         string task_mode_topic{"/planning/task_mode"};
         string tracking_target_odom_topic{"/tracking/target_odom"};
@@ -216,8 +244,43 @@ namespace fsm {
             }
             loader.LoadParam("fsm/click_goal_topic", click_goal_topic, string("/planning/click_goal_topic"));
             loader.LoadParam("fsm/task_mode", task_mode_str, string("state2state"));
+            const string raw_task_mode_str = task_mode_str;
             task_mode_str = normalizeTaskMode(task_mode_str);
             task_mode = taskModeFromString(task_mode_str);
+            task_type = taskTypeFromTaskMode(task_mode);
+            mission_mode = missionModeFromTaskMode(task_mode);
+            loader.LoadParam("fsm/planning_backend", planning_backend_str, string(""));
+            if (planning_backend_str.empty()) {
+                loader.LoadParam("general_planner/backend", planning_backend_str, string(""));
+            }
+            bool planner_plain_traj_en{false};
+            bool planner_esdf_traj_en{false};
+            loader.LoadParam("general_planner/plain_traj_en", planner_plain_traj_en, false);
+            loader.LoadParam("general_planner/esdf_traj_en", planner_esdf_traj_en, false);
+            const auto legacy_backend =
+                    general_planner::architecture::backendTypeFromLegacyMode(raw_task_mode_str);
+            if (planning_backend_str.empty() && legacy_backend.has_value()) {
+                backend_type = *legacy_backend;
+            } else if (!planning_backend_str.empty()) {
+                backend_type = general_planner::architecture::backendTypeFromString(planning_backend_str);
+            } else if (task_type == general_planner::architecture::TaskType::STATE_TO_STATE) {
+                if (planner_plain_traj_en) {
+                    backend_type = general_planner::architecture::BackendType::PLAIN;
+                } else if (planner_esdf_traj_en) {
+                    backend_type = general_planner::architecture::BackendType::ESDF;
+                } else {
+                    backend_type = general_planner::architecture::BackendType::CORRIDOR;
+                }
+            } else if (task_type == general_planner::architecture::TaskType::TRACKING) {
+                bool tracking_use_snap{false};
+                loader.LoadParam("general_planner/tracking/use_snap", tracking_use_snap, false);
+                backend_type = tracking_use_snap
+                                   ? general_planner::architecture::BackendType::SNAP_TRACKING
+                                   : general_planner::architecture::BackendType::JERK_TRACKING;
+            } else {
+                backend_type = general_planner::architecture::defaultBackendForTask(task_type);
+            }
+            planning_backend_str = general_planner::architecture::toString(backend_type);
             loader.LoadParam("fsm/task_planner_en", task_planner_en, false);
             loader.LoadParam("fsm/task_mode_topic", task_mode_topic, string("/planning/task_mode"));
             loader.LoadParam("fsm/tracking_target_odom_topic", tracking_target_odom_topic,

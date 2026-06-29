@@ -28,7 +28,7 @@
 
 // #define COUNTER_MAP_DEBUG
 namespace rog_map {
-    using super_utils::GridType;
+    using general_utils::GridType;
 
 
     class CounterMap : public SlidingMap {

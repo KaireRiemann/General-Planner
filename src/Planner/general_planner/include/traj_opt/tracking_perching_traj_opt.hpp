@@ -28,22 +28,22 @@ struct DynamicTargetState
   EIGEN_MAKE_ALIGNED_OPERATOR_NEW
 
   double t{0.0};
-  super_utils::Vec3f position{super_utils::Vec3f::Zero()};
-  super_utils::Vec3f velocity{super_utils::Vec3f::Zero()};
-  super_utils::Vec3f acceleration{super_utils::Vec3f::Zero()};
+  general_utils::Vec3f position{general_utils::Vec3f::Zero()};
+  general_utils::Vec3f velocity{general_utils::Vec3f::Zero()};
+  general_utils::Vec3f acceleration{general_utils::Vec3f::Zero()};
   double yaw{0.0};
   double yaw_rate{0.0};
 };
 
-using DynamicTargetStates = super_utils::vec_E<DynamicTargetState>;
+using DynamicTargetStates = general_utils::vec_E<DynamicTargetState>;
 
 struct TrackingVisibleRegion
 {
   EIGEN_MAKE_ALIGNED_OPERATOR_NEW
 
   double t{0.0};
-  super_utils::Vec3f target_position{super_utils::Vec3f::Zero()};
-  super_utils::Vec3f visible_point{super_utils::Vec3f::Zero()};
+  general_utils::Vec3f target_position{general_utils::Vec3f::Zero()};
+  general_utils::Vec3f visible_point{general_utils::Vec3f::Zero()};
   double theta{3.14159265358979323846};
   double confidence{0.0};
   bool valid{false};
@@ -53,18 +53,18 @@ struct TrackingProblem
 {
   EIGEN_MAKE_ALIGNED_OPERATOR_NEW
 
-  super_utils::StatePVAJ head_pvaj{super_utils::StatePVAJ::Zero()};
-  super_utils::StatePVAJ tail_pvaj{super_utils::StatePVAJ::Zero()};
+  general_utils::StatePVAJ head_pvaj{general_utils::StatePVAJ::Zero()};
+  general_utils::StatePVAJ tail_pvaj{general_utils::StatePVAJ::Zero()};
   Eigen::Matrix<double, 1, 2> head_yaw{Eigen::Matrix<double, 1, 2>::Zero()};
   Eigen::Matrix<double, 1, 2> tail_yaw{Eigen::Matrix<double, 1, 2>::Zero()};
 
-  super_utils::vec_E<super_utils::Vec3f> guide_path;
+  general_utils::vec_E<general_utils::Vec3f> guide_path;
   std::vector<double> guide_t;
   geometry_utils::PolytopeVec sfcs;
-  super_utils::vec_E<super_utils::Vec3f> viewpoints;
+  general_utils::vec_E<general_utils::Vec3f> viewpoints;
   std::vector<double> target_sample_times;
   DynamicTargetStates target_prediction;
-  super_utils::vec_E<TrackingVisibleRegion> visible_regions;
+  general_utils::vec_E<TrackingVisibleRegion> visible_regions;
 
   double safe_distance{0.45};
   double tracking_distance{3.0};
@@ -129,7 +129,7 @@ struct PerchingInitialGuess
   double total_time{0.0};
   Eigen::Vector2d nu{Eigen::Vector2d::Zero()};
   double tau_f{0.0};
-  super_utils::vec_E<super_utils::Vec3f> guide_path;
+  general_utils::vec_E<general_utils::Vec3f> guide_path;
   std::vector<double> guide_t;
 };
 
@@ -137,9 +137,9 @@ struct PerchingProblem
 {
   EIGEN_MAKE_ALIGNED_OPERATOR_NEW
 
-  super_utils::StatePVAJ head_pvaj{super_utils::StatePVAJ::Zero()};
-  super_utils::StatePVAJ nominal_tail_pvaj{super_utils::StatePVAJ::Zero()};
-  super_utils::vec_E<super_utils::Vec3f> guide_path;
+  general_utils::StatePVAJ head_pvaj{general_utils::StatePVAJ::Zero()};
+  general_utils::StatePVAJ nominal_tail_pvaj{general_utils::StatePVAJ::Zero()};
+  general_utils::vec_E<general_utils::Vec3f> guide_path;
   std::vector<double> guide_t;
   PerchingSurfaceState surface;
 
@@ -152,7 +152,7 @@ struct PerchingProblem
   double init_total_time{0.0};
   Eigen::Vector2d init_nu{Eigen::Vector2d::Zero()};
   double init_tau_f{0.0};
-  super_utils::vec_E<super_utils::Vec3f> warm_start_guide_path;
+  general_utils::vec_E<general_utils::Vec3f> warm_start_guide_path;
   std::vector<double> warm_start_guide_t;
   Eigen::Matrix<double, 1, 2> warm_start_head_yaw{Eigen::Matrix<double, 1, 2>::Zero()};
 
@@ -186,14 +186,14 @@ struct DynamicTakeoffProblem
 {
   EIGEN_MAKE_ALIGNED_OPERATOR_NEW
 
-  super_utils::StatePVAJ nominal_head_pvaj{super_utils::StatePVAJ::Zero()};
-  super_utils::StatePVAJ tail_pvaj{super_utils::StatePVAJ::Zero()};
+  general_utils::StatePVAJ nominal_head_pvaj{general_utils::StatePVAJ::Zero()};
+  general_utils::StatePVAJ tail_pvaj{general_utils::StatePVAJ::Zero()};
 
   PerchingSurfaceState surface;
   minco::TakeoffBoundaryConfig boundary;
   bool use_head_mapping{true};
 
-  super_utils::vec_E<super_utils::Vec3f> guide_path;
+  general_utils::vec_E<general_utils::Vec3f> guide_path;
   std::vector<double> guide_t;
 
   double release_contact_time{0.20};

@@ -28,6 +28,7 @@
 #define SRC_FSM_ROS1_HPP
 
 #include "fsm/fsm.h"
+#include "ros_interface/ros_adapter_contract.hpp"
 
 #include "ros/ros.h"
 #include "geometry_msgs/PoseStamped.h"
@@ -77,6 +78,7 @@ namespace fsm {
         std::vector<ros::Subscriber> swarm_traj_subs_;
         std::map<int, traj_opt::SwarmTrajectory> swarm_traj_buffer_;
         std::map<int, nav_msgs::Odometry> swarm_state_buffer_;
+        ros_interface::RosAdapterContract ros_adapter_contract_;
         unsigned int traj_seq_{0};
         int last_cmd_backup_flag_{-1};
         ros::Time last_tracking_prediction_path_time_;
@@ -760,7 +762,7 @@ namespace fsm {
                        has_tracking_diagnostics);
         }
 
-        bool getPoseFromTraj(super_utils::Pose &pose) {
+        bool getPoseFromTraj(general_utils::Pose &pose) {
             if (machine_state_ != FOLLOW_TRAJ &&
                 machine_state_ != STATIC_TRACKING) {
                 cout << YELLOW << "[Fsm] Not in trajectory execution state, can't get pose from traj." << RESET << endl;
@@ -768,54 +770,15 @@ namespace fsm {
             }
             getOnePositionCommand(pid_cmd_, traj_finish_);
             if (traj_finish_) {
-                const bool close_to_goal = closeToGoal(0.1);
-                const bool tracking_unfinished =
-                        (trackingMode() || trackingPerchingMode()) &&
-                        !trackingPerchingPerchingActive() &&
-                        !close_to_goal;
-                if (tracking_unfinished) {
-                    task_new_ = true;
-                    plan_from_rest_ = true;
-                    finish_plan = false;
-                    if (last_tracking_unfinished_traj_seq_ != static_cast<int>(traj_seq_)) {
-                        last_tracking_unfinished_traj_seq_ = static_cast<int>(traj_seq_);
-                        const bool hold_committed =
-                                planner_ptr_->commitTrackingHoldTrajectory(
-                                        "tracking pose query reached trajectory end before target");
-                        recordDiagnosticEvent("WARN",
-                                              "tracking_trajectory_finished_reacquire",
-                                              fmt::format("trajectory_id={};hold_committed={}",
-                                                          pid_cmd_.trajectory_id,
-                                                          static_cast<int>(hold_committed)),
-                                              -1,
-                                              static_cast<int>(traj_seq_),
-                                              pid_cmd_.trajectory_flag == 2);
-                        if (hold_committed) {
-                            publishPolyTraj();
-                        }
-                    }
+                const auto finish_result = handleExecutedTrajectoryFinished(
+                        "getPoseFromTraj",
+                        pid_cmd_.trajectory_id,
+                        static_cast<int>(traj_seq_),
+                        pid_cmd_.trajectory_flag == 2,
+                        false,
+                        false);
+                if (finish_result.tracking_unfinished) {
                     traj_finish_ = false;
-                } else {
-                cout << GREEN << " -- [Fsm] Traj finish." << RESET << endl;
-                const bool tracking_perching_contact = trackingPerchingPerchingActive();
-                if (perchingMode() || tracking_perching_contact) {
-                    {
-                        std::lock_guard<std::mutex> lock(task_mutex_);
-                        perching_contact_reached_ = true;
-                        perching_contact_surface_position_ = perching_surface_.position;
-                        task_new_ = false;
-                    }
-                    gi_.new_goal = false;
-                    if (tracking_perching_contact) {
-                        planner_ptr_->markTrackingPerchingContact();
-                    }
-                    cout << GREEN << " -- [Perching] PERCHING_CONTACT" << RESET << endl;
-                }
-                if (shouldGenerateAfterTrajFinish()) {
-                    ChangeState("getPoseFromTraj", GENERATE_TRAJ);
-                } else {
-                    ChangeState("getPoseFromTraj", WAIT_GOAL);
-                }
                 }
             }
             pose.first = Vec3f{pid_cmd_.position.x, pid_cmd_.position.y, pid_cmd_.position.z};
@@ -836,8 +799,8 @@ namespace fsm {
         }
 
         void goalCallback(const geometry_msgs::PoseStampedConstPtr &msg) {
-            super_utils::Vec3f goal_p = Vec3f{msg->pose.position.x, msg->pose.position.y, msg->pose.position.z};
-            super_utils::Quatf goal_q = super_utils::Quatf{msg->pose.orientation.w, msg->pose.orientation.x,
+            general_utils::Vec3f goal_p = Vec3f{msg->pose.position.x, msg->pose.position.y, msg->pose.position.z};
+            general_utils::Quatf goal_q = general_utils::Quatf{msg->pose.orientation.w, msg->pose.orientation.x,
                                                            msg->pose.orientation.y, msg->pose.orientation.z};
             setGoalPosiAndYaw(goal_p, goal_q);
         }
@@ -883,8 +846,8 @@ namespace fsm {
                 return true;
             }
             const auto inf_grid_type = map_ptr_->getInfGridType(p);
-            return inf_grid_type != super_utils::GridType::OCCUPIED &&
-                   inf_grid_type != super_utils::GridType::OUT_OF_MAP;
+            return inf_grid_type != general_utils::GridType::OCCUPIED &&
+                   inf_grid_type != general_utils::GridType::OUT_OF_MAP;
         }
 
         void buildConstantVelocityTrackingPrediction(const Vec3f &p,
@@ -1190,6 +1153,12 @@ namespace fsm {
             nh_ = nh;
             cfg_ = Config(cfg_path);
             applyLaunchOverrides();
+            ros_adapter_contract_.adapter_name = "ros1";
+            ros_adapter_contract_.cloud_topic = cfg_.dynamic_obstacle_layer_cloud_topic;
+            ros_adapter_contract_.target_topic = cfg_.tracking_target_odom_topic;
+            ros_adapter_contract_.command_topic = cfg_.cmd_topic;
+            ros_adapter_contract_.trajectory_topic = cfg_.mpc_cmd_topic;
+            ros_adapter_contract_.mission = cfg_.mission_mode;
             map_ptr_ = std::make_shared<rog_map::ROGMapROS>(nh, cfg_path);
             // 初始化Planner
             ros_ptr_ = std::make_shared<ros_interface::Ros1Interface>(nh_);
@@ -1376,13 +1345,18 @@ namespace fsm {
             openTrackingDiagnosticLogFile(LOG_FILE_DIR("tracking_diagnostic_events/tracking_runtime.csv"));
             recordDiagnosticEvent("INFO",
                                   "fsm_initialized",
-                                  fmt::format("task_mode={};replan_rate={:.3f};perception_replan_check_en={};perception_replan_check_rate={:.3f};dynamic_obstacle_layer_enable={};dynamic_obstacle_cloud_topic={};cmd_topic={};mpc_cmd_topic={}",
+                                  fmt::format("task_mode={};mission={};task={};backend={};adapter={};replan_rate={:.3f};perception_replan_check_en={};perception_replan_check_rate={:.3f};dynamic_obstacle_layer_enable={};dynamic_obstacle_cloud_topic={};target_topic={};cmd_topic={};mpc_cmd_topic={}",
                                               cfg_.task_mode_str,
+                                              general_planner::architecture::toString(cfg_.mission_mode),
+                                              general_planner::architecture::toString(cfg_.task_type),
+                                              general_planner::architecture::toString(cfg_.backend_type),
+                                              ros_adapter_contract_.adapter_name,
                                               cfg_.replan_rate,
                                               static_cast<int>(cfg_.perception_replan_check_en),
                                               cfg_.perception_replan_check_rate,
                                               static_cast<int>(cfg_.dynamic_obstacle_layer_enable),
                                               cfg_.dynamic_obstacle_layer_cloud_topic,
+                                              ros_adapter_contract_.target_topic,
                                               cfg_.cmd_topic,
                                               cfg_.mpc_cmd_topic),
                                   -1,
@@ -1453,68 +1427,16 @@ namespace fsm {
                 }
             }
             if (traj_finish_) {
-                const bool close_to_goal = closeToGoal(0.1);
-                const bool tracking_unfinished =
-                        (trackingMode() || trackingPerchingMode()) &&
-                        !trackingPerchingPerchingActive() &&
-                        !close_to_goal;
-                const bool log_finish_once =
-                        !tracking_unfinished ||
-                        last_tracking_unfinished_traj_seq_ != static_cast<int>(traj_seq_);
-                if (log_finish_once) {
-                    cout << GREEN << " -- [Fsm] Traj finish." << RESET << endl;
-                    recordDiagnosticEvent("INFO",
-                                          "trajectory_finished",
-                                          fmt::format("trajectory_id={};close_to_goal={}",
-                                                      pid_cmd_.trajectory_id,
-                                                      static_cast<int>(close_to_goal)),
-                                          -1,
-                                          static_cast<int>(traj_seq_),
-                                          pid_cmd_.trajectory_flag == 2);
-                }
-                const bool tracking_perching_contact = trackingPerchingPerchingActive();
-                if (perchingMode() || tracking_perching_contact) {
-                    {
-                        std::lock_guard<std::mutex> lock(task_mutex_);
-                        perching_contact_reached_ = true;
-                        perching_contact_surface_position_ = perching_surface_.position;
-                        task_new_ = false;
-                    }
-                    gi_.new_goal = false;
-                    if (tracking_perching_contact) {
-                        planner_ptr_->markTrackingPerchingContact();
-                    }
-                    cout << GREEN << " -- [Perching] PERCHING_CONTACT" << RESET << endl;
-                }
-                if (tracking_unfinished) {
-                    task_new_ = true;
-                    plan_from_rest_ = true;
-                    finish_plan = false;
-                    if (log_finish_once) {
-                        last_tracking_unfinished_traj_seq_ = static_cast<int>(traj_seq_);
-                        const bool hold_committed =
-                                planner_ptr_->commitTrackingHoldTrajectory(
-                                        "tracking trajectory finished before reaching target");
-                        recordDiagnosticEvent("WARN",
-                                              "tracking_trajectory_finished_reacquire",
-                                              fmt::format("trajectory_id={};hold_committed={}",
-                                                          pid_cmd_.trajectory_id,
-                                                          static_cast<int>(hold_committed)),
-                                              -1,
-                                              static_cast<int>(traj_seq_),
-                                              pid_cmd_.trajectory_flag == 2);
-                        if (hold_committed) {
-                            publishPolyTraj();
-                        }
-                    }
+                const auto finish_result = handleExecutedTrajectoryFinished(
+                        "PubCmdCallback",
+                        pid_cmd_.trajectory_id,
+                        static_cast<int>(traj_seq_),
+                        pid_cmd_.trajectory_flag == 2,
+                        true,
+                        true);
+                if (finish_result.tracking_unfinished) {
                     traj_finish_ = false;
                     return;
-                }
-                markTrackingFinishedIfStaticTarget();
-                if (shouldGenerateAfterTrajFinish()) {
-                    ChangeState("PubCmdCallback", GENERATE_TRAJ);
-                } else {
-                    ChangeState("PubCmdCallback", WAIT_GOAL);
                 }
             }
         }

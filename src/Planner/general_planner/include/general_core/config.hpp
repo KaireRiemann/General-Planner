@@ -81,7 +81,7 @@ namespace general_planner {
         double dynamic_obstacle_layer_inflation_radius{0.35};
         double dynamic_obstacle_layer_line_check_step{0.05};
         int dynamic_obstacle_layer_max_points_per_frame{30000};
-        super_utils::Vec3f dynamic_obstacle_layer_local_half_size{10.0, 10.0, 3.0};
+        general_utils::Vec3f dynamic_obstacle_layer_local_half_size{10.0, 10.0, 3.0};
         bool state2state_direct_line_frontend_enable{true};
         bool state2state_altitude_guard_enable{false};
         double state2state_altitude_band{0.25};
@@ -214,6 +214,9 @@ namespace general_planner {
         double tracking_recovery_time_scale{1.4};
         double tracking_recovery_reduce_visible_region_weight{0.3};
         double tracking_recovery_reduce_target_forward_weight{0.5};
+        bool tracking_soft_recovery_enable{true};
+        double tracking_soft_recovery_margin{0.2};
+        double tracking_soft_recovery_hold_duration{0.8};
         bool tracking_reacquire_recovery_enable{true};
         double tracking_reacquire_recovery_horizon{0.8};
         bool tracking_reacquire_transit_enable{true};
@@ -459,7 +462,7 @@ namespace general_planner {
                              std::vector<double>{10.0, 10.0, 3.0});
             if (dynamic_obstacle_local_half_size.size() == 3) {
                 dynamic_obstacle_layer_local_half_size =
-                        super_utils::Vec3f(dynamic_obstacle_local_half_size[0],
+                        general_utils::Vec3f(dynamic_obstacle_local_half_size[0],
                                            dynamic_obstacle_local_half_size[1],
                                            dynamic_obstacle_local_half_size[2]);
             }
@@ -671,6 +674,12 @@ namespace general_planner {
                              tracking_recovery_reduce_visible_region_weight, 0.3);
             loader.LoadParam("general_planner/tracking/recovery_reduce_target_forward_weight",
                              tracking_recovery_reduce_target_forward_weight, 0.5);
+            loader.LoadParam("general_planner/tracking/soft_recovery_enable",
+                             tracking_soft_recovery_enable, true);
+            loader.LoadParam("general_planner/tracking/soft_recovery_margin",
+                             tracking_soft_recovery_margin, 0.2);
+            loader.LoadParam("general_planner/tracking/soft_recovery_hold_duration",
+                             tracking_soft_recovery_hold_duration, 0.8);
             loader.LoadParam("general_planner/tracking/reacquire_recovery_enable",
                              tracking_reacquire_recovery_enable, true);
             loader.LoadParam("general_planner/tracking/reacquire_recovery_horizon",

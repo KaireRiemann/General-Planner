@@ -11,15 +11,15 @@
 #include "traj_opt/flatness/se3_flatness_map.hpp"
 #include "utils/optimization/lbfgs.h"
 
-using super_utils::Mat3Df;
-using super_utils::StatePVAJ;
-using super_utils::Vec3f;
-using super_utils::VecDf;
+using general_utils::Mat3Df;
+using general_utils::StatePVAJ;
+using general_utils::Vec3f;
+using general_utils::VecDf;
 
 namespace traj_opt {
 namespace {
 
-std::vector<double> polylineArcLengths(const super_utils::vec_E<Vec3f> &path) {
+std::vector<double> polylineArcLengths(const general_utils::vec_E<Vec3f> &path) {
   std::vector<double> arc(path.size(), 0.0);
   for (std::size_t i = 1; i < path.size(); ++i) {
     arc[i] = arc[i - 1] + (path[i] - path[i - 1]).norm();
@@ -27,7 +27,7 @@ std::vector<double> polylineArcLengths(const super_utils::vec_E<Vec3f> &path) {
   return arc;
 }
 
-Vec3f interpolateByArc(const super_utils::vec_E<Vec3f> &path,
+Vec3f interpolateByArc(const general_utils::vec_E<Vec3f> &path,
                        const std::vector<double> &arc,
                        double target_arc) {
   if (path.empty()) {
@@ -89,7 +89,7 @@ bool SE3AggressiveTrajOpt::initialize(const SE3AggressiveProblem &problem) {
   opt_vars_.penalty_log.resize(5);
   opt_vars_.penalty_log.setZero();
 
-  super_utils::vec_E<Vec3f> path = problem.guide_path;
+  general_utils::vec_E<Vec3f> path = problem.guide_path;
   if (path.size() < 2) {
     path.clear();
     path.emplace_back(problem.head_pvaj.col(0));

@@ -31,7 +31,7 @@
 #include "utils/header/yaml_loader.hpp"
 
 namespace path_search {
-    using super_utils::Vec3i;
+    using general_utils::Vec3i;
     using std::cout;
     using std::endl;
     using std::string;

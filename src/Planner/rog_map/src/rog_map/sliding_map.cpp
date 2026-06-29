@@ -25,7 +25,7 @@
 
 using namespace rog_map;
 using namespace color_text;
-using namespace super_utils;
+using namespace general_utils;
 
 SlidingMap::SlidingMap(const Vec3i &half_map_size_i, const double &resolution, const bool &map_sliding_en,
                        const double &sliding_thresh, const Vec3f &fix_map_origin) {

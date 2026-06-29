@@ -29,7 +29,7 @@
 #include <fstream>
 #include <iostream>
 
-namespace super_utils {
+namespace general_utils {
     class TimeConsuming {
 
     public:

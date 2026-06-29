@@ -46,14 +46,20 @@
 #include "general_core/fov_checker.h"
 #include "general_core/exploration_frontend.hpp"
 #include "general_core/exploration_runtime_manager.hpp"
-#include "general_core/tracking_perching_frontend.hpp"
-#include "general_core/tracking_runtime_manager.hpp"
-#include "general_core/perching_runtime_manager.hpp"
-#include "general_core/takeoff_frontend.hpp"
-#include "general_core/takeoff_runtime_manager.hpp"
-#include "general_core/tracking_perching_transition_manager.hpp"
-#include "general_core/tracking_to_perching_initializer.hpp"
-#include "general_core/se3_aggressive_manager.hpp"
+#include "general_core/tracking/tracking_perching_frontend.hpp"
+#include "general_core/tracking/tracking_runtime_manager.hpp"
+#include "general_core/perching/perching_runtime_manager.hpp"
+#include "general_core/takeoff/takeoff_frontend.hpp"
+#include "general_core/takeoff/takeoff_runtime_manager.hpp"
+#include "general_core/tracking/tracking_perching_transition_manager.hpp"
+#include "general_core/tracking/tracking_to_perching_initializer.hpp"
+#include "general_core/tracking/tracking_backend.hpp"
+#include "general_core/tracking/tracking_plan_operations.hpp"
+#include "general_core/runtime_trajectory_safety.hpp"
+#include "general_core/state2state/state2state_exp_backup_backend.hpp"
+#include "general_core/state2state/state2state_plan_operations.hpp"
+#include "general_core/state2state/state2state_se3_backend.hpp"
+#include "general_core/state2state/se3_aggressive_manager.hpp"
 
 #include "general_core/general_ret_code.hpp"
 #include "utils/header/fmt_eigen.hpp"
@@ -69,6 +75,10 @@ namespace general_planner {
     using namespace geometry_utils;
 
     class GeneralPlanner {
+        class StateToStateBackendContextAdapter;
+        class StateToStateSE3BackendRuntimeAdapter;
+        class TrackingBackendRuntimeAdapter;
+
         LogOneReplan latest_replan;
         general_planner::Config cfg_;
         MapManager::Ptr map_manager_;
@@ -80,10 +90,13 @@ namespace general_planner {
 
         traj_opt::TrajManager::Ptr traj_manager_;
         traj_opt::SwarmTrajectoriesConstPtr swarm_trajs_;
+        std::unique_ptr<state2state_task::StateToStateBackendContext> state2state_backend_context_;
+        std::unique_ptr<state2state_task::StateToStateSE3BackendRuntime> state2state_se3_runtime_;
+        std::unique_ptr<tracking_task::TrackingBackendRuntime> tracking_backend_runtime_;
 
         CIRI::Ptr ciri_;
 
-        super_utils::RobotState robot_state_;
+        general_utils::RobotState robot_state_;
 
         std::mutex drone_state_mutex_;
         mutable std::mutex replan_lock_;
@@ -97,30 +110,7 @@ namespace general_planner {
 
         double planner_process_start_WT_;
 
-        struct ZDebugSummary {
-            bool valid{false};
-            double start{0.0};
-            double end{0.0};
-            double min{0.0};
-            double max{0.0};
-        };
-
-        struct State2StateZDebug {
-            bool valid{false};
-            std::string exp_mode{"none"};
-            int guide_size{0};
-            ZDebugSummary guide;
-            ZDebugSummary optimized;
-            ZDebugSummary exp_full;
-            double goal_z{0.0};
-            double robot_z{0.0};
-            double local_target_z{0.0};
-            double local_target_goal_xy_dist{0.0};
-            double local_target_goal_dist{0.0};
-            double local_target_goal_z_err{0.0};
-            double opt_end_local_target_z_err{0.0};
-            bool local_target_is_global_goal{false};
-        } latest_state2state_z_debug_;
+        state2state_task::State2StateZDebug latest_state2state_z_debug_;
 
         struct GoalInfo {
             Vec3f goal_p{0, 0, 0};
@@ -196,18 +186,7 @@ namespace general_planner {
         };
 
     public:
-        struct CommittedTrajectorySafetyReport {
-            bool valid{false};
-            bool safe{true};
-            double check_start_t{0.0};
-            double check_horizon{0.0};
-            double collision_t{0.0};
-            double time_to_collision{std::numeric_limits<double>::infinity()};
-            Vec3f collision_pos{Vec3f::Zero()};
-            int grid_type{static_cast<int>(rog_map::GridType::KNOWN_FREE)};
-            int hit_count{0};
-            std::string reason;
-        };
+        using CommittedTrajectorySafetyReport = general_planner::CommittedTrajectorySafetyReport;
 
         struct TrackingDiagnosticSnapshot {
             std::string phase{"none"};
@@ -235,7 +214,7 @@ namespace general_planner {
                               const ros_interface::RosInterface::Ptr &ros_ptr,
                               const rog_map::ROGMapROS::Ptr &map_ptr);
 
-        ~GeneralPlanner() = default;
+        ~GeneralPlanner();
 
         void lockCommittedTraj() {
             cmd_traj_info_.lock();
@@ -260,7 +239,8 @@ namespace general_planner {
         double getCommittedTrajectoryRemainingDuration();
 
         bool commitTrackingHoldTrajectory(const std::string &reason,
-                                          double duration = 0.0);
+                                          double duration = 0.0,
+                                          bool require_safe = false);
 
         bool checkCommittedPositionTrajectorySafety(
                 double horizon,
@@ -361,6 +341,12 @@ namespace general_planner {
                    const double &goal_yaw,
                    const bool &new_goal);
 
+        state2state_task::StateToStateTaskServices makeStateToStateTaskServices();
+        state2state_task::StateToStateFrontendServices makeStateToStateFrontendServices();
+        state2state_task::StateToStateExpBackendServices makeStateToStateExpBackendServices();
+        state2state_task::StateToStateBackupBackendServices makeStateToStateBackupBackendServices();
+        state2state_task::StateToStateSE3BackendServices makeStateToStateSE3BackendServices();
+
         RET_CODE PlanTrackingFromRest(const traj_opt::DynamicTargetStates &target_prediction,
                                       const bool &new_task);
 
@@ -372,6 +358,9 @@ namespace general_planner {
                                     const bool &new_task);
 
         void setTrackingPerchingRequest(bool request);
+
+        tracking_task::TrackingTaskServices makeTrackingTaskServices();
+        tracking_task::TrackingBackendServices makeTrackingBackendServices();
 
         RET_CODE TryCommitPerchingFromTracking(
             const traj_opt::DynamicTargetStates &target_prediction,
@@ -405,20 +394,12 @@ namespace general_planner {
                                          bool new_task);
 
     private:
-        RET_CODE generateExpTraj(ExpTraj &last_exp_traj_info,
-                                 ExpTraj &out_exp_traj_info);
+        void setGoalInfo(const Vec3f &goal,
+                         double goal_yaw,
+                         bool new_goal,
+                         bool goal_valid);
 
-        /* For Backup traj generation */
-        RET_CODE generateBackupTrajectory(ExpTraj &ref_exp_traj, BackupTraj &back_traj_info);
-
-        int getNearestFurtherGoalPoint(const vec_E<Vec3f> &goals, const Vec3f &start_pt);
-
-        bool PathSearch(const Vec3f &start_pt, const Vec3f &goal,
-                        const double &searching_horizon,
-                        vec_Vec3f &path);
-
-        bool prepareESDFGuideEndpoint(vec_Vec3f &guide_path,
-                                      std::vector<double> &guide_stamp);
+        void markGoalConsumed();
 
         bool checkPositionTrajectorySafety(const Trajectory &traj,
                                            double now_wt,
@@ -427,9 +408,6 @@ namespace general_planner {
                                            int consecutive_hits,
                                            bool unknown_as_occupied,
                                            CommittedTrajectorySafetyReport *report) const;
-
-        bool state2stateCurrentTrajectorySafeForNoNeed(const Trajectory &traj,
-                                                       double start_t) const;
 
         bool buildTrackingGuideCorridor(traj_opt::TrackingProblem &problem,
                                         std::string *failure_reason = nullptr);
@@ -628,10 +606,6 @@ namespace general_planner {
         RET_CODE optimizeDynamicTakeoffTask(const traj_opt::PerchingSurfaceState &surface,
                                             const bool &from_rest);
 
-        RET_CODE optimizeSE3AggressiveTask(const Vec3f &goal_p,
-                                           double goal_yaw,
-                                           const bool &from_rest);
-
         bool commitSE3AggressiveTrajectory(const Trajectory &pos_traj,
                                            const std::string &traj_ns);
 
@@ -674,7 +648,7 @@ namespace general_planner {
             return ave_t;
         }
 
-        void updateROGMap(const rog_map::PointCloud &cloud, const super_utils::Pose &pose) const {
+        void updateROGMap(const rog_map::PointCloud &cloud, const general_utils::Pose &pose) const {
             map_manager_->updateMap(cloud, pose);
         }
 

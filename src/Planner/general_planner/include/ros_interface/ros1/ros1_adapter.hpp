@@ -469,7 +469,7 @@ namespace ros_interface {
                 d.setConstant(planes(i, 3));
                 temp = temp + d;
                 for (int j = 0; j < temp.size(); j++) {
-                    if (std::abs(temp(j)) < super_utils::epsilon_) {
+                    if (std::abs(temp(j)) < general_utils::epsilon_) {
                         edges.emplace_back(vPoly.col(j));
                     }
                 }

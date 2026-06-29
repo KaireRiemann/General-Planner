@@ -24,7 +24,7 @@
 #include "rog_map/rog_map.h"
 
 using namespace rog_map;
-using namespace super_utils;
+using namespace general_utils;
 void ROGMap::init() {
 
     initProbMap();

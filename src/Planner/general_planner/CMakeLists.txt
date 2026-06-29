@@ -71,8 +71,6 @@ list(FILTER srcs EXCLUDE REGEX ".*/src/traj_opt/exp_traj_optimizer_s4\\.cpp$")
 list(FILTER srcs EXCLUDE REGEX ".*/src/traj_opt/backup_traj_optimizer_s4\\.cpp$")
 list(FILTER srcs EXCLUDE REGEX ".*/src/traj_opt/yaw_traj_opt\\.cpp$")
 list(FILTER srcs EXCLUDE REGEX ".*/src/utils/minco\\.cpp$")
-list(APPEND srcs ${CMAKE_CURRENT_SOURCE_DIR}/src/general_core/tracking_runtime_manager.cpp)
-list(APPEND srcs ${CMAKE_CURRENT_SOURCE_DIR}/src/general_core/perching_runtime_manager.cpp)
 list(REMOVE_DUPLICATES srcs)
 add_library(general_planner_core STATIC ${srcs})
 target_include_directories(general_planner_core PUBLIC

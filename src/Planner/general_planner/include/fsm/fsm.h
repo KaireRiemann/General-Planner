@@ -30,10 +30,16 @@
 #include <mutex>
 #include <cstdint>
 #include <limits>
+#include <utility>
 #include <fmt/color.h>
 #include <cereal/archives/binary_file_handler.hpp>
 #include <fsm/config.hpp>
+#include <general_core/commit_governor.hpp>
 #include <general_core/general_planner.h>
+#include <general_core/mission_orchestrator.hpp>
+#include <general_core/planner_context.hpp>
+#include <general_core/safety_monitor.hpp>
+#include <general_core/task_plugin.hpp>
 
 
 #ifndef LOG_FILE_DIR
@@ -53,6 +59,9 @@ namespace fsm {
                 "GENERATE_BACK_TRAJ", "TOTAL_REPLAN", "VISUALIZATION"
         };
         Config cfg_;
+        general_planner::architecture::MissionOrchestrator mission_orchestrator_;
+        general_planner::architecture::SafetyMonitor safety_monitor_;
+        general_planner::architecture::CommitGovernor commit_governor_;
         // map, checker, planner
         general_planner::GeneralPlanner::Ptr planner_ptr_;
         ros_interface::RosInterface::Ptr ros_ptr_;
@@ -135,20 +144,37 @@ namespace fsm {
 
         MACHINE_STATE machine_state_{INIT};
 
-        struct TaskPlanContext {
-            bool handled{false};
-            bool missing_input{false};
-            bool tracking_context{false};
-            bool tracking_prediction_static{false};
-            std::size_t tracking_input_prediction_size{0};
+        using TaskPlanContext = general_planner::architecture::TaskPlanContext;
+        using PlanRequest = general_planner::architecture::PlanRequest;
+        using PlanResult = general_planner::architecture::PlanResult;
+
+        struct ExecutedTrajectoryFinishResult {
+            bool tracking_unfinished{false};
+            bool state_changed{false};
         };
 
-        class TaskExecutor {
+        class TaskExecutor : public general_planner::architecture::TaskPlugin<Fsm> {
         public:
             virtual ~TaskExecutor() = default;
 
             virtual TaskMode mode() const = 0;
             virtual const char *name() const = 0;
+            virtual general_planner::architecture::TaskType taskType() const {
+                return taskTypeFromTaskMode(mode());
+            }
+            virtual general_planner::architecture::MissionMode missionMode() const {
+                return missionModeFromTaskMode(mode());
+            }
+            virtual general_planner::architecture::TaskIdentity identity(const Fsm &fsm) const {
+                general_planner::architecture::TaskIdentity identity;
+                identity.mission = missionMode();
+                identity.task = taskType();
+                identity.backend = fsm.cfg_.backend_type;
+                identity.plugin_name = name();
+                identity.goal_like = goalLike();
+                identity.tracking_like = trackingLike();
+                return identity;
+            }
             virtual bool trackingLike() const {
                 return false;
             }
@@ -157,18 +183,32 @@ namespace fsm {
             }
             virtual bool ready(Fsm &fsm) = 0;
             virtual bool replanAllowed(const Fsm &fsm) const = 0;
-            virtual int planFromRest(Fsm &fsm, TaskPlanContext &context) = 0;
-            virtual int replan(Fsm &fsm, TaskPlanContext &context) = 0;
+            virtual PlanResult plan(Fsm &fsm, const PlanRequest &request) = 0;
+            virtual PlanResult replan(Fsm &fsm, const PlanRequest &request) = 0;
             virtual bool shouldGenerateAfterTrajFinish(Fsm &fsm) = 0;
+
+        protected:
+            PlanResult makeResult(const Fsm &fsm,
+                                  const PlanRequest &request,
+                                  const int ret_code,
+                                  TaskPlanContext context = {},
+                                  std::string detail = "") const {
+                PlanResult result;
+                result.request = request;
+                result.request.identity = identity(fsm);
+                result.context = std::move(context);
+                result.ret_code = ret_code;
+                result.detail = std::move(detail);
+                return result;
+            }
         };
 
         class State2StateTaskExecutor;
         class TrackingTaskExecutor;
-        class TrackingPerchingTaskExecutor;
+        class TrackingPerchingMissionAdapter;
         class PerchingTaskExecutor;
         class DynamicTakeoffTaskExecutor;
         class ExplorationTaskExecutor;
-        class SE3AggressiveTaskExecutor;
 
         std::unique_ptr<TaskExecutor> task_executor_;
         TaskMode task_executor_mode_{TaskMode::STATE_TO_STATE};
@@ -178,12 +218,12 @@ namespace fsm {
         Fsm() = default;
         ~Fsm();
 
-        void updateROGMap(const rog_map::PointCloud &cloud, const super_utils::Pose &pose) {
+        void updateROGMap(const rog_map::PointCloud &cloud, const general_utils::Pose &pose) {
             planner_ptr_->updateROGMap(cloud, pose);
         }
 
         void callPlanOnce(const Vec3f &goal) {
-            super_utils::TimeConsuming tc("Call replan once time", true);
+            general_utils::TimeConsuming tc("Call replan once time", true);
             fmt::print(" -- [Fsm] Call plan once, cur state {}.\n", MACHINE_STATE_STR[machine_state_]);
             // check current state;
             Quatf q(NAN, NAN, NAN, NAN);
@@ -318,6 +358,8 @@ namespace fsm {
 
         void resetTaskExecutor();
 
+        general_planner::architecture::PlannerContext makePlannerContext();
+
         bool closeToGoal(const double &thresh_dis);
 
         void setGoalPosiAndYaw(const Vec3f &p, const Quatf &q);
@@ -348,6 +390,12 @@ namespace fsm {
 
         bool shouldGenerateAfterTrajFinish();
 
+        general_planner::architecture::ExecutionPhase executionPhase() const;
+
+        general_planner::architecture::TaskIdentity activeTaskIdentity();
+
+        const general_planner::architecture::MissionSnapshot &missionSnapshot() const;
+
         void resetTrackingPlanFromRestFailureState();
 
         bool trackingPlanFromRestBackoffActive();
@@ -361,6 +409,14 @@ namespace fsm {
         bool trackingPerchingPerchingActive() const;
 
         bool markTrackingFinishedIfStaticTarget();
+
+        ExecutedTrajectoryFinishResult handleExecutedTrajectoryFinished(
+                const std::string &source,
+                int trajectory_id,
+                int trajectory_seq,
+                bool on_backup,
+                bool record_regular_finish,
+                bool mark_static_target_finished);
 
         void logStaticTrackingReplanDecision(const std::string &reason);
 

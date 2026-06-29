@@ -12,7 +12,7 @@
 #include "rog_map_ros/rog_map_ros1.hpp"
 #include "path_search/astar.h"
 #include "ros_interface/ros1/ros1_interface.hpp"
-#include "general_core/tracking_perching_frontend.hpp"
+#include "general_core/tracking/tracking_perching_frontend.hpp"
 #include "traj_opt/config.hpp"
 #include "traj_opt/traj_manager.h"
 #include "traj_opt/tracking_perching_traj_opt.hpp"
@@ -24,8 +24,8 @@ namespace
 {
 
 using geometry_utils::Trajectory;
-using super_utils::StatePVAJ;
-using super_utils::Vec3f;
+using general_utils::StatePVAJ;
+using general_utils::Vec3f;
 
 traj_opt::DynamicTargetStates makeTrackingTargetPrediction()
 {
@@ -49,7 +49,7 @@ traj_opt::DynamicTargetStates makeTrackingTargetPrediction()
     return targets;
 }
 
-std::vector<double> allocatePathTime(const super_utils::vec_E<Vec3f> &path, double speed)
+std::vector<double> allocatePathTime(const general_utils::vec_E<Vec3f> &path, double speed)
 {
     std::vector<double> times(path.size(), 0.0);
     speed = std::max(0.2, speed);
@@ -62,7 +62,7 @@ std::vector<double> allocatePathTime(const super_utils::vec_E<Vec3f> &path, doub
     return times;
 }
 
-Vec3f interpolatePath(const super_utils::vec_E<Vec3f> &path,
+Vec3f interpolatePath(const general_utils::vec_E<Vec3f> &path,
                       const std::vector<double> &times,
                       double t,
                       Vec3f &velocity)
@@ -91,7 +91,7 @@ Vec3f interpolatePath(const super_utils::vec_E<Vec3f> &path,
            alpha * (path[static_cast<std::size_t>(idx)] - path[static_cast<std::size_t>(idx - 1)]);
 }
 
-traj_opt::DynamicTargetStates sampleTargetFromPath(const super_utils::vec_E<Vec3f> &path,
+traj_opt::DynamicTargetStates sampleTargetFromPath(const general_utils::vec_E<Vec3f> &path,
                                                    double speed,
                                                    double dt)
 {
@@ -122,7 +122,7 @@ traj_opt::DynamicTargetStates buildStateToStateTargetPrediction(
     const path_search::Astar::Ptr &astar,
     const std::string &target_planner,
     Trajectory &target_traj,
-    super_utils::vec_E<Vec3f> &target_guide)
+    general_utils::vec_E<Vec3f> &target_guide)
 {
     const Vec3f target_start(-2.2, -2.3, 1.25);
     const Vec3f target_goal(4.2, 2.15, 1.25);
@@ -132,13 +132,13 @@ traj_opt::DynamicTargetStates buildStateToStateTargetPrediction(
     if (astar != nullptr && map_manager != nullptr && map_manager->ready())
     {
         auto tryAstar = [&](const int flag, const std::string &label) {
-            super_utils::vec_E<Vec3f> astar_path;
+            general_utils::vec_E<Vec3f> astar_path;
             const auto ret =
                 astar->pointToPointPathSearch(target_start, target_goal, flag, 9.0, astar_path, 0.2);
-            const auto ret_str = (ret >= 0 && static_cast<std::size_t>(ret) < super_utils::RET_CODE_STR.size())
-                                     ? super_utils::RET_CODE_STR[static_cast<std::size_t>(ret)]
+            const auto ret_str = (ret >= 0 && static_cast<std::size_t>(ret) < general_utils::RET_CODE_STR.size())
+                                     ? general_utils::RET_CODE_STR[static_cast<std::size_t>(ret)]
                                      : std::to_string(ret);
-            if ((ret == super_utils::SUCCESS || ret == super_utils::REACH_GOAL) && astar_path.size() >= 2) {
+            if ((ret == general_utils::SUCCESS || ret == general_utils::REACH_GOAL) && astar_path.size() >= 2) {
                 target_guide = astar_path;
                 ROS_INFO("Target state-to-state %s A* guide: %zu waypoints, ret=%s.",
                          label.c_str(),
@@ -234,7 +234,7 @@ StatePVAJ makeHeadState(const Vec3f &p, const Vec3f &v = Vec3f::Zero())
 
 void visualizeRepeated(const ros_interface::RosInterface::Ptr &ros_ptr,
                        const Trajectory &traj,
-                       const super_utils::vec_E<Vec3f> &guide,
+                       const general_utils::vec_E<Vec3f> &guide,
                        const std::string &ns)
 {
     ros::Rate rate(2.0);
@@ -306,7 +306,7 @@ int main(int argc, char **argv)
         traj_opt::TrackingProblem problem;
         const StatePVAJ head = makeHeadState(Vec3f(0.0, -1.8, 1.5));
         Trajectory target_traj;
-        super_utils::vec_E<Vec3f> target_guide;
+        general_utils::vec_E<Vec3f> target_guide;
         const auto target_prediction =
             use_map ? buildStateToStateTargetPrediction(cfg,
                                                         ros_ptr,

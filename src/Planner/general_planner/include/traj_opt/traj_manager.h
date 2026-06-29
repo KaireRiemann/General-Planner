@@ -46,18 +46,18 @@ using YawBoundaryState = typename YawTraj::BoundaryState;
 using geometry_utils::Polytope;
 using geometry_utils::PolytopeVec;
 using geometry_utils::Trajectory;
-using super_utils::Mat3Df;
-using super_utils::PolyhedronH;
-using super_utils::PolyhedronV;
-using super_utils::PolyhedraH;
-using super_utils::PolyhedraV;
-using super_utils::StatePVAJ;
-using super_utils::Vec3f;
-using super_utils::Vec4f;
-using super_utils::VecDf;
-using super_utils::VecDi;
-using super_utils::vec_E;
-using super_utils::vec_Vec3f;
+using general_utils::Mat3Df;
+using general_utils::PolyhedronH;
+using general_utils::PolyhedronV;
+using general_utils::PolyhedraH;
+using general_utils::PolyhedraV;
+using general_utils::StatePVAJ;
+using general_utils::Vec3f;
+using general_utils::Vec4f;
+using general_utils::VecDf;
+using general_utils::VecDi;
+using general_utils::vec_E;
+using general_utils::vec_Vec3f;
 
 
 class YawTrajOpt

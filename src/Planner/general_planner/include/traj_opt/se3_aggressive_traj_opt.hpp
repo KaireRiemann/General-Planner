@@ -18,10 +18,10 @@ namespace traj_opt {
 struct SE3AggressiveProblem {
   EIGEN_MAKE_ALIGNED_OPERATOR_NEW
 
-  super_utils::StatePVAJ head_pvaj{super_utils::StatePVAJ::Zero()};
-  super_utils::StatePVAJ tail_pvaj{super_utils::StatePVAJ::Zero()};
+  general_utils::StatePVAJ head_pvaj{general_utils::StatePVAJ::Zero()};
+  general_utils::StatePVAJ tail_pvaj{general_utils::StatePVAJ::Zero()};
 
-  super_utils::vec_E<super_utils::Vec3f> guide_path;
+  general_utils::vec_E<general_utils::Vec3f> guide_path;
   std::vector<double> guide_t;
 
   std::vector<Eigen::Matrix<double, 6, Eigen::Dynamic>> hpolys;
@@ -78,9 +78,9 @@ private:
     int piece_num{0};
     int integral_res{10};
     int iter_num{0};
-    super_utils::VecDf times;
-    super_utils::Mat3Df inner_points;
-    super_utils::VecDf penalty_log;
+    general_utils::VecDf times;
+    general_utils::Mat3Df inner_points;
+    general_utils::VecDf penalty_log;
     double max_vel{0.0};
     double max_thrust{0.0};
     double max_body_rate{0.0};
@@ -100,7 +100,7 @@ private:
                                 Eigen::Matrix<double, 3, Eigen::Dynamic> &inner) const;
   double optimizeInternal(geometry_utils::Trajectory &traj, double rel_cost_tol);
 
-  static JerkTraj::BoundaryState toJerkBoundary(const super_utils::StatePVAJ &state);
+  static JerkTraj::BoundaryState toJerkBoundary(const general_utils::StatePVAJ &state);
   static geometry_utils::Trajectory toGeometryTrajectory(const JerkTraj &traj);
 
   traj_opt::Config cfg_;

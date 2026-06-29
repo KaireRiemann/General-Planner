@@ -2,7 +2,7 @@
 
 #include "traj_opt/costfunctional/penalty_utils.hpp"
 #include <algorithm>
-#include <super_utils/type_utils.hpp>
+#include <general_utils/type_utils.hpp>
 
 namespace cost_functional
 {
@@ -29,11 +29,11 @@ namespace cost_functional
 
         double occupied_penalty = 0.0;
         const auto inf_grid_type = map->getInfGridType(position);
-        if (inf_grid_type == super_utils::GridType::OCCUPIED)
+        if (inf_grid_type == general_utils::GridType::OCCUPIED)
         {
             Vec3T nearest_free = position;
             const double search_radius = std::max(1.0, safe_distance + 0.5);
-            if (map->getNearestInfCellNot(super_utils::GridType::OCCUPIED,
+            if (map->getNearestInfCellNot(general_utils::GridType::OCCUPIED,
                                           position,
                                           nearest_free,
                                           search_radius))

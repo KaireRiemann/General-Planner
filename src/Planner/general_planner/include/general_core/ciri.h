@@ -60,7 +60,7 @@
 #include <ros_interface/ros_interface.hpp>
 
 namespace general_planner {
-    using super_utils::RET_CODE;
+    using general_utils::RET_CODE;
     using geometry_utils::Ellipsoid;
     using geometry_utils::Polytope;
 

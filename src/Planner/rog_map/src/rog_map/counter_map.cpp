@@ -25,7 +25,7 @@
 
 using namespace rog_map;
 using namespace color_text;
-using namespace super_utils;
+using namespace general_utils;
 namespace rog_map {
 
     void CounterMap::initCounterMap(

@@ -18,12 +18,12 @@ namespace cost_functional_manager
 {
 struct PlainPVPair
 {
-    super_utils::Vec3f base_point{super_utils::Vec3f::Zero()};
-    super_utils::Vec3f direction{super_utils::Vec3f::Zero()};
+    general_utils::Vec3f base_point{general_utils::Vec3f::Zero()};
+    general_utils::Vec3f direction{general_utils::Vec3f::Zero()};
     EIGEN_MAKE_ALIGNED_OPERATOR_NEW
 };
 
-using PlainPVPairBucket = super_utils::vec_E<PlainPVPair>;
+using PlainPVPairBucket = general_utils::vec_E<PlainPVPair>;
 using PlainPVPairBuckets = std::vector<PlainPVPairBucket>;
 
 class PlainIntegralCostManager
@@ -33,8 +33,8 @@ public:
     double pv_clearance = 0.0;
     double pv_weight = 0.0;
     double smooth_eps = 0.0;
-    super_utils::VecDf magnitude_bounds;
-    super_utils::VecDf penalty_weights;
+    general_utils::VecDf magnitude_bounds;
+    general_utils::VecDf penalty_weights;
     flatness::FlatnessMap *quadrotor_flatness = nullptr;
     traj_opt::SwarmPenaltyConfig swarm_config;
     traj_opt::SwarmTrajectoriesConstPtr swarm_trajs;
@@ -45,8 +45,8 @@ public:
                double pv_clearance_in,
                double pv_weight_in,
                double smooth_eps_in,
-               const super_utils::VecDf &magnitude_bounds_in,
-               const super_utils::VecDf &penalty_weights_in,
+               const general_utils::VecDf &magnitude_bounds_in,
+               const general_utils::VecDf &penalty_weights_in,
                flatness::FlatnessMap *quadrotor_flatness_in,
                const traj_opt::SwarmPenaltyConfig &swarm_config_in,
                const traj_opt::SwarmTrajectoriesConstPtr &swarm_trajs_in,
@@ -68,7 +68,7 @@ public:
         max_violation_.setZero();
     }
 
-    const super_utils::VecDf &getPenaltyLog() const { return max_violation_; }
+    const general_utils::VecDf &getPenaltyLog() const { return max_violation_; }
     double getMaxCollisionViolation() const { return max_violation_.size() > 1 ? max_violation_(1) : 0.0; }
 
     double operator()(double /*t*/,
@@ -196,7 +196,7 @@ public:
                                          grad_acc,
                                          grad_jer,
                                          grad_thr,
-                                         super_utils::Vec4f::Zero(),
+                                         general_utils::Vec4f::Zero(),
                                          grad_omg,
                                          total_grad_pos,
                                          total_grad_vel,
@@ -214,6 +214,6 @@ public:
     }
 
 private:
-    mutable super_utils::VecDf max_violation_{super_utils::VecDf::Zero(9)};
+    mutable general_utils::VecDf max_violation_{general_utils::VecDf::Zero(9)};
 };
 } // namespace cost_functional_manager

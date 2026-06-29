@@ -38,7 +38,7 @@
 
 namespace ros_interface{
     using namespace geometry_utils;
-    using namespace super_utils;
+    using namespace general_utils;
 
     class RosInterface {
     protected:

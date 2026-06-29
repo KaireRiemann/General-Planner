@@ -24,7 +24,7 @@
 #include <general_core/ciri.h>
 using namespace color_text;
 using namespace optimization_utils;
-using namespace super_utils;
+using namespace general_utils;
 
 
 namespace general_planner {

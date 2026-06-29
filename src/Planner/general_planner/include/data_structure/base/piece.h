@@ -52,19 +52,19 @@
 
 
 namespace geometry_utils {
-    using super_utils::Mat3f;
-    using super_utils::MatDf;
-    using super_utils::VecDf;
-    using super_utils::Vec3f;
-    using super_utils::Quatf;
-    using super_utils::Vec4f;
-    using super_utils::vec_Vec3f;
-    using super_utils::Mat3Df;
-    using super_utils::MatD4f;
-    using super_utils::vec_E;
+    using general_utils::Mat3f;
+    using general_utils::MatDf;
+    using general_utils::VecDf;
+    using general_utils::Vec3f;
+    using general_utils::Quatf;
+    using general_utils::Vec4f;
+    using general_utils::vec_Vec3f;
+    using general_utils::Mat3Df;
+    using general_utils::MatD4f;
+    using general_utils::vec_E;
 
-    using super_utils::StatePVAJ;
-    using super_utils::StatePVA;
+    using general_utils::StatePVAJ;
+    using general_utils::StatePVA;
 
     class Piece {
     public:

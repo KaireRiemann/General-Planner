@@ -74,7 +74,7 @@ namespace general_planner {
             return true;
         }
 
-        bool cutPolyByFov(const Vec3f & robot_p, const super_utils::Quatf & robot_q,
+        bool cutPolyByFov(const Vec3f & robot_p, const general_utils::Quatf & robot_q,
             const Vec3f & guide_p, Polytope & poly) const {
             const double small_x = 0.1;
             Vec3f guide_p_B = robot_q.matrix().transpose() * (guide_p - robot_p);

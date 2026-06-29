@@ -119,7 +119,7 @@ namespace ros_interface {
             backup_traj_pub_.publish(mkr_arr);
         }
 
-        void vizFrontendPath(const super_utils::vec_Vec3f &path) override {
+        void vizFrontendPath(const general_utils::vec_Vec3f &path) override {
             if (!visualization_en_) {
                 return;
             }
@@ -177,7 +177,7 @@ namespace ros_interface {
             backup_sfc_pub_.publish(mkr_arr);
         }
 
-        void vizGoalPath(const super_utils::vec_Vec3f &path) override {
+        void vizGoalPath(const general_utils::vec_Vec3f &path) override {
             if (!visualization_en_) {
                 return;
             }
@@ -287,7 +287,7 @@ namespace ros_interface {
 
 
         /*=============================FOR A* debug ========================================*/
-        void vizAstarBoundingBox(const super_utils::Vec3f &bbox_min, const super_utils::Vec3f &bbox_max) override {
+        void vizAstarBoundingBox(const general_utils::Vec3f &bbox_min, const general_utils::Vec3f &bbox_max) override {
             if (!visualization_en_) {
                 return;
             }
@@ -302,7 +302,7 @@ namespace ros_interface {
             astar_mkr_pub_.publish(mkr_arr);
         }
 
-        void vizAstarPoints(const super_utils::Vec3f &position, const Color &c,
+        void vizAstarPoints(const general_utils::Vec3f &position, const Color &c,
                             const std::string &ns = "none", const double &size = 0.1,
                             const int &id = 0) override {
             if (!visualization_en_) {
@@ -384,7 +384,7 @@ namespace ros_interface {
             fmt::print("\tResult: {}\n", general_planner::GENERAL_RET_CODE_STR(ret_code));
         }
 
-        void vizCiriSeedLine(const super_utils::Vec3f &a, const super_utils::Vec3f &b, const double &robot_r) override {
+        void vizCiriSeedLine(const general_utils::Vec3f &a, const general_utils::Vec3f &b, const double &robot_r) override {
             if (!visualization_en_) {
                 return;
             }
@@ -411,7 +411,7 @@ namespace ros_interface {
             ciri_mkr_pub_.publish(mkr_arr);
         }
 
-        void vizCiriInfeasiblePoint(const super_utils::Vec3f p) override{
+        void vizCiriInfeasiblePoint(const general_utils::Vec3f p) override{
             if (!visualization_en_) {
                 return;
             }

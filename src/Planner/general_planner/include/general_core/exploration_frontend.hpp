@@ -5,7 +5,7 @@
 
 #include <general_core/map_manager.hpp>
 #include <path_search/astar.h>
-#include <super_utils/type_utils.hpp>
+#include <general_utils/type_utils.hpp>
 
 namespace general_planner {
 
@@ -13,7 +13,7 @@ struct ExplorationGoal {
     EIGEN_MAKE_ALIGNED_OPERATOR_NEW
 
     bool valid{false};
-    super_utils::Vec3f position{super_utils::Vec3f::Zero()};
+    general_utils::Vec3f position{general_utils::Vec3f::Zero()};
     double yaw{0.0};
 
     double score{0.0};
@@ -24,7 +24,7 @@ struct ExplorationGoal {
     double distance_to_robot{0.0};
 
     std::string reason;
-    super_utils::vec_E<super_utils::Vec3f> guide_path;
+    general_utils::vec_E<general_utils::Vec3f> guide_path;
 };
 
 class ExplorationFrontend {
@@ -68,7 +68,7 @@ public:
                         const MapManager::Ptr &map_manager,
                         const path_search::Astar::Ptr &astar);
 
-    bool planNextGoal(const super_utils::StatePVAJ &robot_state,
+    bool planNextGoal(const general_utils::StatePVAJ &robot_state,
                       double current_yaw,
                       ExplorationGoal &goal);
 
@@ -80,18 +80,18 @@ private:
     struct FrontierCell {
         EIGEN_MAKE_ALIGNED_OPERATOR_NEW
 
-        super_utils::Vec3f position{super_utils::Vec3f::Zero()};
-        super_utils::Vec3i index{super_utils::Vec3i::Zero()};
+        general_utils::Vec3f position{general_utils::Vec3f::Zero()};
+        general_utils::Vec3i index{general_utils::Vec3i::Zero()};
     };
 
     struct FrontierCluster {
         EIGEN_MAKE_ALIGNED_OPERATOR_NEW
 
-        super_utils::vec_E<FrontierCell> cells;
-        super_utils::Vec3f center{super_utils::Vec3f::Zero()};
-        super_utils::Vec3f unknown_direction{super_utils::Vec3f::UnitX()};
-        super_utils::Vec3f bbox_min{super_utils::Vec3f::Zero()};
-        super_utils::Vec3f bbox_max{super_utils::Vec3f::Zero()};
+        general_utils::vec_E<FrontierCell> cells;
+        general_utils::Vec3f center{general_utils::Vec3f::Zero()};
+        general_utils::Vec3f unknown_direction{general_utils::Vec3f::UnitX()};
+        general_utils::Vec3f bbox_min{general_utils::Vec3f::Zero()};
+        general_utils::Vec3f bbox_max{general_utils::Vec3f::Zero()};
         int size{0};
     };
 
@@ -103,8 +103,8 @@ private:
         int frontier_cells{0};
     };
 
-    bool collectFrontierCells(const super_utils::Vec3f &robot_pos,
-                              super_utils::vec_E<FrontierCell> &frontier_cells,
+    bool collectFrontierCells(const general_utils::Vec3f &robot_pos,
+                              general_utils::vec_E<FrontierCell> &frontier_cells,
                               FrontierSearchStats &stats) const;
 
     bool isFrontierCell(const FrontierCell &cell,
@@ -112,34 +112,34 @@ private:
 
     bool mapObservationReady(const FrontierSearchStats &stats) const;
 
-    void clusterFrontiers(const super_utils::vec_E<FrontierCell> &frontier_cells,
-                          super_utils::vec_E<FrontierCluster> &clusters) const;
+    void clusterFrontiers(const general_utils::vec_E<FrontierCell> &frontier_cells,
+                          general_utils::vec_E<FrontierCluster> &clusters) const;
 
     void sampleViewpointsForCluster(const FrontierCluster &cluster,
-                                    const super_utils::StatePVAJ &robot_state,
+                                    const general_utils::StatePVAJ &robot_state,
                                     double current_yaw,
-                                    super_utils::vec_E<ExplorationGoal> &candidates) const;
+                                    general_utils::vec_E<ExplorationGoal> &candidates) const;
 
-    bool viewpointSafe(const super_utils::Vec3f &viewpoint) const;
+    bool viewpointSafe(const general_utils::Vec3f &viewpoint) const;
 
-    bool viewpointVisible(const super_utils::Vec3f &viewpoint,
+    bool viewpointVisible(const general_utils::Vec3f &viewpoint,
                           const FrontierCluster &cluster) const;
 
-    double estimateInformationGain(const super_utils::Vec3f &viewpoint,
+    double estimateInformationGain(const general_utils::Vec3f &viewpoint,
                                    const FrontierCluster &cluster) const;
 
-    double estimateTravelCost(const super_utils::Vec3f &robot_pos,
-                              const super_utils::Vec3f &viewpoint,
-                              super_utils::vec_E<super_utils::Vec3f> &guide_path) const;
+    double estimateTravelCost(const general_utils::Vec3f &robot_pos,
+                              const general_utils::Vec3f &viewpoint,
+                              general_utils::vec_E<general_utils::Vec3f> &guide_path) const;
 
     double estimateYawCost(double current_yaw,
                            double candidate_yaw) const;
 
-    double estimateCurvatureCost(const super_utils::StatePVAJ &robot_state,
-                                 const super_utils::Vec3f &viewpoint,
+    double estimateCurvatureCost(const general_utils::StatePVAJ &robot_state,
+                                 const general_utils::Vec3f &viewpoint,
                                  const FrontierCluster &cluster) const;
 
-    double estimateUnknownRisk(const super_utils::Vec3f &viewpoint) const;
+    double estimateUnknownRisk(const general_utils::Vec3f &viewpoint) const;
 
     double scoreCandidate(const ExplorationGoal &candidate,
                           double unknown_risk) const;

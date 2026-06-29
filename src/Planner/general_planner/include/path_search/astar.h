@@ -34,7 +34,7 @@
 
 
 namespace path_search {
-    using namespace super_utils;
+    using namespace general_utils;
 
     constexpr double inf = static_cast<double>(1 << 20);
     struct GridNode;

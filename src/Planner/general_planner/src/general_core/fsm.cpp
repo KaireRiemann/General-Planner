@@ -30,7 +30,7 @@
 #include <memory>
 #include <sstream>
 
-using namespace super_utils;
+using namespace general_utils;
 
 namespace fsm {
     namespace {
@@ -149,456 +149,6 @@ namespace fsm {
         write_time_.close();
         diagnostic_event_log_.close();
         tracking_diagnostic_event_log_.close();
-    }
-
-    class Fsm::State2StateTaskExecutor final : public Fsm::TaskExecutor {
-    public:
-        TaskMode mode() const override {
-            return TaskMode::STATE_TO_STATE;
-        }
-
-        const char *name() const override {
-            return "state2state";
-        }
-
-        bool goalLike() const override {
-            return true;
-        }
-
-        bool ready(Fsm &fsm) override {
-            return fsm.gi_.new_goal;
-        }
-
-        bool replanAllowed(const Fsm &fsm) const override {
-            return fsm.machine_state_ == Fsm::FOLLOW_TRAJ;
-        }
-
-        int planFromRest(Fsm &fsm, TaskPlanContext &) override {
-            return fsm.planner_ptr_->PlanFromRest(fsm.gi_.goal_p,
-                                                  fsm.gi_.goal_yaw,
-                                                  fsm.gi_.new_goal);
-        }
-
-        int replan(Fsm &fsm, TaskPlanContext &) override {
-            Vec3f replan_goal = fsm.gi_.goal_p;
-            if (fsm.planner_ptr_->getMapManager()->getInfGridType(replan_goal) ==
-                rog_map::GridType::OCCUPIED) {
-                Vec3f projected_goal = replan_goal;
-                if (fsm.planner_ptr_->getMapManager()->getNearestInfCellNot(
-                        rog_map::GridType::OCCUPIED,
-                        replan_goal,
-                        projected_goal,
-                        3.0)) {
-                    fsm.recordDiagnosticEvent(
-                            "WARN",
-                            "goal_projected_for_replan",
-                            fmt::format("reason=occupied;original=[{:.3f},{:.3f},{:.3f}];projected=[{:.3f},{:.3f},{:.3f}];distance={:.3f};goal_unified=1",
-                                        replan_goal.x(), replan_goal.y(), replan_goal.z(),
-                                        projected_goal.x(), projected_goal.y(), projected_goal.z(),
-                                        (projected_goal - replan_goal).norm()));
-                    fsm.gi_.goal_p = projected_goal;
-                    replan_goal = projected_goal;
-                } else {
-                    fsm.recordDiagnosticEvent(
-                            "WARN",
-                            "goal_projection_failed_for_replan",
-                            fmt::format("reason=occupied;goal=[{:.3f},{:.3f},{:.3f}]",
-                                        replan_goal.x(), replan_goal.y(), replan_goal.z()));
-                }
-            }
-            return fsm.planner_ptr_->ReplanOnce(replan_goal,
-                                                fsm.gi_.goal_yaw,
-                                                fsm.gi_.new_goal);
-        }
-
-        bool shouldGenerateAfterTrajFinish(Fsm &fsm) override {
-            return !fsm.closeToGoal(0.1);
-        }
-    };
-
-    class Fsm::SE3AggressiveTaskExecutor final : public Fsm::TaskExecutor {
-    public:
-        TaskMode mode() const override {
-            return TaskMode::SE3_AGGRESSIVE;
-        }
-
-        const char *name() const override {
-            return "se3_aggressive";
-        }
-
-        bool goalLike() const override {
-            return true;
-        }
-
-        bool ready(Fsm &fsm) override {
-            return fsm.gi_.new_goal;
-        }
-
-        bool replanAllowed(const Fsm &fsm) const override {
-            return fsm.machine_state_ == Fsm::FOLLOW_TRAJ;
-        }
-
-        int planFromRest(Fsm &fsm, TaskPlanContext &) override {
-            return fsm.planner_ptr_->PlanSE3AggressiveFromRest(fsm.gi_.goal_p,
-                                                               fsm.gi_.goal_yaw,
-                                                               fsm.gi_.new_goal);
-        }
-
-        int replan(Fsm &fsm, TaskPlanContext &) override {
-            Vec3f replan_goal = fsm.gi_.goal_p;
-            if (fsm.planner_ptr_->getMapManager()->getInfGridType(replan_goal) ==
-                rog_map::GridType::OCCUPIED) {
-                Vec3f projected_goal = replan_goal;
-                if (fsm.planner_ptr_->getMapManager()->getNearestInfCellNot(
-                        rog_map::GridType::OCCUPIED,
-                        replan_goal,
-                        projected_goal,
-                        3.0)) {
-                    fsm.recordDiagnosticEvent(
-                            "WARN",
-                            "goal_projected_for_replan",
-                            fmt::format("reason=occupied;original=[{:.3f},{:.3f},{:.3f}];projected=[{:.3f},{:.3f},{:.3f}];distance={:.3f};goal_unified=1",
-                                        replan_goal.x(), replan_goal.y(), replan_goal.z(),
-                                        projected_goal.x(), projected_goal.y(), projected_goal.z(),
-                                        (projected_goal - replan_goal).norm()));
-                    fsm.gi_.goal_p = projected_goal;
-                    replan_goal = projected_goal;
-                } else {
-                    fsm.recordDiagnosticEvent(
-                            "WARN",
-                            "goal_projection_failed_for_replan",
-                            fmt::format("reason=occupied;goal=[{:.3f},{:.3f},{:.3f}]",
-                                        replan_goal.x(), replan_goal.y(), replan_goal.z()));
-                }
-            }
-            return fsm.planner_ptr_->ReplanSE3AggressiveOnce(replan_goal,
-                                                             fsm.gi_.goal_yaw,
-                                                             fsm.gi_.new_goal);
-        }
-
-        bool shouldGenerateAfterTrajFinish(Fsm &fsm) override {
-            return !fsm.closeToGoal(0.1);
-        }
-    };
-
-    class Fsm::TrackingTaskExecutor : public Fsm::TaskExecutor {
-    public:
-        TaskMode mode() const override {
-            return TaskMode::TRACKING;
-        }
-
-        const char *name() const override {
-            return "tracking";
-        }
-
-        bool trackingLike() const override {
-            return true;
-        }
-
-        bool ready(Fsm &fsm) override {
-            if (fsm.trackingPerchingPerchingActive()) {
-                return false;
-            }
-            return fsm.trackingTaskReady();
-        }
-
-        bool replanAllowed(const Fsm &fsm) const override {
-            return fsm.trackingExecutionState();
-        }
-
-        int planFromRest(Fsm &fsm, TaskPlanContext &context) override {
-            traj_opt::DynamicTargetStates prediction;
-            if (!fsm.getTrackingTargetPrediction(prediction)) {
-                fsm.recordDiagnosticEvent(
-                        "WARN",
-                        "tracking_prediction_unavailable",
-                        fmt::format("tracking_target_rcv_time={:.3f};timeout={:.3f}",
-                                    fsm.tracking_target_rcv_time_,
-                                    fsm.cfg_.task_timeout),
-                        FAILED);
-                context.missing_input = true;
-                return FAILED;
-            }
-            fillTrackingContext(fsm, prediction, context);
-            return fsm.planner_ptr_->PlanTrackingFromRest(prediction, fsm.task_new_);
-        }
-
-        int replan(Fsm &fsm, TaskPlanContext &context) override {
-            traj_opt::DynamicTargetStates prediction;
-            if (!fsm.getTrackingTargetPrediction(prediction)) {
-                fsm.recordDiagnosticEvent(
-                        "WARN",
-                        "tracking_prediction_unavailable",
-                        fmt::format("tracking_target_rcv_time={:.3f};timeout={:.3f}",
-                                    fsm.tracking_target_rcv_time_,
-                                    fsm.cfg_.task_timeout),
-                        FAILED);
-                context.missing_input = true;
-                return FAILED;
-            }
-            fillTrackingContext(fsm, prediction, context);
-            if (fsm.shouldSkipStaticTrackingReplan(prediction)) {
-                fsm.recordDiagnosticEvent(
-                        "INFO",
-                        "tracking_static_hold_skip_replan",
-                        fmt::format("prediction.size()={};prediction_static=1;remaining_traj_s={:.3f}",
-                                    prediction.size(),
-                                    fsm.planner_ptr_->getCommittedTrajectoryRemainingDuration()),
-                        NO_NEED);
-                if (fsm.machine_state_ != Fsm::STATIC_TRACKING) {
-                    fsm.ChangeState("StaticTrackingContinue", Fsm::STATIC_TRACKING);
-                }
-                context.handled = true;
-                return NO_NEED;
-            }
-            return fsm.planner_ptr_->ReplanTrackingOnce(prediction, fsm.task_new_);
-        }
-
-        bool shouldGenerateAfterTrajFinish(Fsm &fsm) override {
-            if (fsm.trackingPerchingPerchingActive()) {
-                return false;
-            }
-            return fsm.activeTaskReady();
-        }
-
-    protected:
-        void fillTrackingContext(Fsm &fsm,
-                                 const traj_opt::DynamicTargetStates &prediction,
-                                 TaskPlanContext &context) const {
-            context.tracking_context = true;
-            context.tracking_input_prediction_size = prediction.size();
-            context.tracking_prediction_static = fsm.trackingPredictionStatic(prediction);
-        }
-    };
-
-    class Fsm::TrackingPerchingTaskExecutor final : public Fsm::TrackingTaskExecutor {
-    public:
-        TaskMode mode() const override {
-            return TaskMode::TRACKING_PERCHING;
-        }
-
-        const char *name() const override {
-            return "tracking_perching";
-        }
-
-        bool ready(Fsm &fsm) override {
-            return !fsm.perching_contact_reached_ &&
-                   fsm.planner_ptr_ &&
-                   !fsm.planner_ptr_->trackingPerchingContactReached() &&
-                   fsm.trackingTaskReady();
-        }
-
-        int planFromRest(Fsm &fsm, TaskPlanContext &context) override {
-            traj_opt::DynamicTargetStates prediction;
-            if (!fsm.getTrackingTargetPrediction(prediction)) {
-                fsm.recordDiagnosticEvent(
-                        "WARN",
-                        "tracking_prediction_unavailable",
-                        fmt::format("tracking_target_rcv_time={:.3f};timeout={:.3f}",
-                                    fsm.tracking_target_rcv_time_,
-                                    fsm.cfg_.task_timeout),
-                        FAILED);
-                context.missing_input = true;
-                return FAILED;
-            }
-            fillTrackingContext(fsm, prediction, context);
-            int ret = fsm.planner_ptr_->PlanTrackingFromRest(prediction, fsm.task_new_);
-            traj_opt::PerchingSurfaceState surface;
-            if ((ret == SUCCESS || ret == NO_NEED) &&
-                fsm.getPerchingSurface(surface) &&
-                !fsm.planner_ptr_->trackingPerchingPerchingActive()) {
-                ret = fsm.planner_ptr_->TryCommitPerchingFromTracking(
-                        prediction,
-                        surface,
-                        static_cast<RET_CODE>(ret));
-            }
-            return ret;
-        }
-
-        int replan(Fsm &fsm, TaskPlanContext &context) override {
-            traj_opt::DynamicTargetStates prediction;
-            if (!fsm.getTrackingTargetPrediction(prediction)) {
-                fsm.recordDiagnosticEvent(
-                        "WARN",
-                        "tracking_prediction_unavailable",
-                        fmt::format("tracking_target_rcv_time={:.3f};timeout={:.3f}",
-                                    fsm.tracking_target_rcv_time_,
-                                    fsm.cfg_.task_timeout),
-                        FAILED);
-                context.missing_input = true;
-                return FAILED;
-            }
-            fillTrackingContext(fsm, prediction, context);
-
-            traj_opt::PerchingSurfaceState surface;
-            const bool has_surface = fsm.getPerchingSurface(surface);
-            if (!has_surface && fsm.shouldSkipStaticTrackingReplan(prediction)) {
-                fsm.recordDiagnosticEvent(
-                        "INFO",
-                        "tracking_static_hold_skip_replan",
-                        fmt::format("prediction.size()={};prediction_static=1;remaining_traj_s={:.3f}",
-                                    prediction.size(),
-                                    fsm.planner_ptr_->getCommittedTrajectoryRemainingDuration()),
-                        NO_NEED);
-                if (fsm.machine_state_ != Fsm::STATIC_TRACKING) {
-                    fsm.ChangeState("StaticTrackingContinue", Fsm::STATIC_TRACKING);
-                }
-                context.handled = true;
-                return NO_NEED;
-            }
-            if (has_surface) {
-                return fsm.planner_ptr_->ReplanTrackingOnce(prediction, surface, fsm.task_new_);
-            }
-            return fsm.planner_ptr_->ReplanTrackingOnce(prediction, fsm.task_new_);
-        }
-    };
-
-    class Fsm::PerchingTaskExecutor final : public Fsm::TaskExecutor {
-    public:
-        TaskMode mode() const override {
-            return TaskMode::PERCHING;
-        }
-
-        const char *name() const override {
-            return "perching";
-        }
-
-        bool ready(Fsm &fsm) override {
-            return !fsm.perching_contact_reached_ && fsm.task_new_ && fsm.perchingTaskReady();
-        }
-
-        bool replanAllowed(const Fsm &fsm) const override {
-            return fsm.machine_state_ == Fsm::FOLLOW_TRAJ;
-        }
-
-        int planFromRest(Fsm &fsm, TaskPlanContext &context) override {
-            traj_opt::PerchingSurfaceState surface;
-            if (!fsm.getPerchingSurface(surface)) {
-                context.missing_input = true;
-                return FAILED;
-            }
-            return fsm.planner_ptr_->PlanPerchingFromRest(surface, fsm.task_new_);
-        }
-
-        int replan(Fsm &fsm, TaskPlanContext &context) override {
-            traj_opt::PerchingSurfaceState surface;
-            if (!fsm.getPerchingSurface(surface)) {
-                context.missing_input = true;
-                return FAILED;
-            }
-            return fsm.planner_ptr_->ReplanPerchingOnce(surface, fsm.task_new_);
-        }
-
-        bool shouldGenerateAfterTrajFinish(Fsm &) override {
-            return false;
-        }
-    };
-
-    class Fsm::DynamicTakeoffTaskExecutor final : public Fsm::TaskExecutor {
-    public:
-        TaskMode mode() const override {
-            return TaskMode::DYNAMIC_TAKEOFF;
-        }
-
-        const char *name() const override {
-            return "dynamic_takeoff";
-        }
-
-        bool ready(Fsm &fsm) override {
-            return fsm.task_new_ && fsm.dynamicTakeoffTaskReady();
-        }
-
-        bool replanAllowed(const Fsm &fsm) const override {
-            return fsm.machine_state_ == Fsm::FOLLOW_TRAJ;
-        }
-
-        int planFromRest(Fsm &fsm, TaskPlanContext &context) override {
-            traj_opt::PerchingSurfaceState surface;
-            if (!fsm.getPerchingSurface(surface)) {
-                context.missing_input = true;
-                return FAILED;
-            }
-            return fsm.planner_ptr_->PlanDynamicTakeoffFromRest(surface, fsm.task_new_);
-        }
-
-        int replan(Fsm &fsm, TaskPlanContext &context) override {
-            traj_opt::PerchingSurfaceState surface;
-            if (!fsm.getPerchingSurface(surface)) {
-                context.missing_input = true;
-                return FAILED;
-            }
-            return fsm.planner_ptr_->ReplanDynamicTakeoffOnce(surface, fsm.task_new_);
-        }
-
-        bool shouldGenerateAfterTrajFinish(Fsm &) override {
-            return false;
-        }
-    };
-
-    class Fsm::ExplorationTaskExecutor final : public Fsm::TaskExecutor {
-    public:
-        TaskMode mode() const override {
-            return TaskMode::EXPLORATION;
-        }
-
-        const char *name() const override {
-            return "exploration";
-        }
-
-        bool ready(Fsm &fsm) override {
-            return fsm.started_ && !fsm.finish_plan;
-        }
-
-        bool replanAllowed(const Fsm &fsm) const override {
-            return fsm.machine_state_ == Fsm::FOLLOW_TRAJ;
-        }
-
-        int planFromRest(Fsm &fsm, TaskPlanContext &) override {
-            return fsm.planner_ptr_->PlanExplorationFromRest(fsm.task_new_);
-        }
-
-        int replan(Fsm &fsm, TaskPlanContext &) override {
-            return fsm.planner_ptr_->ReplanExplorationOnce(fsm.task_new_);
-        }
-
-        bool shouldGenerateAfterTrajFinish(Fsm &fsm) override {
-            return fsm.started_ && !fsm.finish_plan;
-        }
-    };
-
-    std::unique_ptr<Fsm::TaskExecutor> Fsm::makeTaskExecutor(const TaskMode mode) const {
-        switch (mode) {
-            case TaskMode::TRACKING:
-                return std::make_unique<TrackingTaskExecutor>();
-            case TaskMode::TRACKING_PERCHING:
-                return std::make_unique<TrackingPerchingTaskExecutor>();
-            case TaskMode::PERCHING:
-                return std::make_unique<PerchingTaskExecutor>();
-            case TaskMode::DYNAMIC_TAKEOFF:
-                return std::make_unique<DynamicTakeoffTaskExecutor>();
-            case TaskMode::EXPLORATION:
-                return std::make_unique<ExplorationTaskExecutor>();
-            case TaskMode::SE3_AGGRESSIVE:
-                return std::make_unique<SE3AggressiveTaskExecutor>();
-            case TaskMode::STATE_TO_STATE:
-            default:
-                return std::make_unique<State2StateTaskExecutor>();
-        }
-    }
-
-    Fsm::TaskExecutor &Fsm::taskExecutor() {
-        if (!task_executor_ || task_executor_mode_ != cfg_.task_mode) {
-            task_executor_ = makeTaskExecutor(cfg_.task_mode);
-            task_executor_mode_ = cfg_.task_mode;
-            if (ros_ptr_) {
-                ros_ptr_->info(" -- [Fsm] Active task executor: {}", task_executor_->name());
-            }
-        }
-        return *task_executor_;
-    }
-
-    void Fsm::resetTaskExecutor() {
-        task_executor_.reset();
     }
 
     void Fsm::WriteTimeToLog() {
@@ -974,14 +524,28 @@ namespace fsm {
         const auto perception_report = perception_replan_report_;
         recordDiagnosticEvent("INFO",
                               "replan_start",
-                              fmt::format("new_goal={};perception_trigger={};perception_ttc={:.3f};perception_reason={}",
+                              fmt::format("plugin={};mission={};task={};backend={};phase={};new_goal={};perception_trigger={};perception_ttc={:.3f};perception_reason={}",
+                                          executor.name(),
+                                          general_planner::architecture::toString(executor.missionMode()),
+                                          general_planner::architecture::toString(executor.taskType()),
+                                          general_planner::architecture::toString(cfg_.backend_type),
+                                          general_planner::architecture::toString(executionPhase()),
                                           static_cast<int>(gi_.new_goal),
                                           static_cast<int>(perception_replan_trigger),
                                           perception_replan_trigger ? perception_report.time_to_collision : -1.0,
                                           perception_replan_trigger ? perception_report.reason : "none"));
 
-        TaskPlanContext replan_context;
-        const RET_CODE ret_code = static_cast<RET_CODE>(executor.replan(*this, replan_context));
+        PlanRequest replan_request;
+        replan_request.identity = executor.identity(*this);
+        replan_request.invocation = general_planner::architecture::PlanInvocation::REPLAN;
+        replan_request.phase = executionPhase();
+        replan_request.new_goal = gi_.new_goal;
+        replan_request.new_task = task_new_;
+        replan_request.perception_trigger = perception_replan_trigger;
+        replan_request.perception_emergency = perception_replan_emergency;
+        PlanResult plan_result = executor.replan(*this, replan_request);
+        const TaskPlanContext &replan_context = plan_result.context;
+        const RET_CODE ret_code = static_cast<RET_CODE>(plan_result.ret_code);
         if (replan_context.missing_input || replan_context.handled) {
             return;
         }
@@ -1011,51 +575,93 @@ namespace fsm {
                                   ret_code);
         }
 
-        if (ret_code == EMER) {
-            ChangeState("ReplanTimerCallback", EMER_STOP);
-        } else if (ret_code == FAILED && executor.trackingLike()) {
-            recordDiagnosticEvent("WARN",
-                                  "tracking_replan_failed_keep_current",
-                                  fmt::format("prediction_static={};input_prediction.size()={}",
-                                              static_cast<int>(replan_tracking_static),
-                                              replan_tracking_input_prediction_size),
-                                  ret_code);
-        } else if (ret_code == FAILED &&
-                   executor.goalLike() &&
-                   perception_replan_trigger &&
-                   perception_replan_emergency) {
-            recordDiagnosticEvent("WARN",
-                                  "perception_replan_failed_keep_current",
-                                  fmt::format("keep_current_trajectory=1;ttc={:.3f};reason={}",
-                                              perception_report.time_to_collision,
-                                              perception_report.reason),
-                                  ret_code);
-        } else if (ret_code == NEW_TRAJ) {
-            ChangeState("ReplanTimerCallback", GENERATE_TRAJ);
-        } else if (ret_code == NO_NEED && executor.trackingLike()) {
-            publishPolyTraj();
-            if (replan_tracking_static) {
-                ChangeState("ReplanTimerCallback", STATIC_TRACKING);
-            } else if (machine_state_ != FOLLOW_TRAJ) {
-                ChangeState("ReplanTimerCallback", FOLLOW_TRAJ);
-            }
-        } else if (ret_code == FINISH && explorationMode()) {
-            gi_.new_goal = false;
-            task_new_ = false;
-            finish_plan = true;
-            cout << GREEN << " -- [Fsm] Exploration finished." << RESET << endl;
-            ChangeState("ReplanTimerCallback", WAIT_GOAL);
-        } else if (ret_code == SUCCESS || ret_code == FINISH) {
-            gi_.new_goal = false;
-            task_new_ = false;
-            publishPolyTraj();
-            if (executor.trackingLike()) {
-                if (replan_tracking_static) {
-                    ChangeState("ReplanTimerCallback", STATIC_TRACKING);
-                } else if (machine_state_ != FOLLOW_TRAJ) {
-                    ChangeState("ReplanTimerCallback", FOLLOW_TRAJ);
+        const auto commit_decision = commit_governor_.decideReplan(
+                general_planner::architecture::CommitGovernorInput{
+                        plan_result,
+                        true,
+                        explorationMode()});
+        recordDiagnosticEvent("INFO",
+                              "commit_governor_decision",
+                              fmt::format("invocation=replan;action={};next_phase={};reason={};mission_node={};detail={}",
+                                          general_planner::architecture::toString(commit_decision.action),
+                                          general_planner::architecture::toString(commit_decision.next_phase),
+                                          commit_decision.reason,
+                                          replan_context.mission_node.empty()
+                                              ? "none"
+                                              : replan_context.mission_node,
+                                          replan_context.decision_detail.empty()
+                                              ? "none"
+                                              : replan_context.decision_detail),
+                              ret_code);
+
+        switch (commit_decision.action) {
+            case general_planner::architecture::CommitAction::EMERGENCY_STOP:
+                ChangeState("ReplanTimerCallback", EMER_STOP);
+                break;
+            case general_planner::architecture::CommitAction::KEEP_OLD_TRAJECTORY:
+                if (ret_code == FAILED && executor.trackingLike()) {
+                    recordDiagnosticEvent("WARN",
+                                          "tracking_replan_failed_keep_current",
+                                          fmt::format("prediction_static={};input_prediction.size()={}",
+                                                      static_cast<int>(replan_tracking_static),
+                                                      replan_tracking_input_prediction_size),
+                                          ret_code);
+                } else if (ret_code == FAILED &&
+                           executor.goalLike() &&
+                           perception_replan_trigger &&
+                           perception_replan_emergency) {
+                    recordDiagnosticEvent("WARN",
+                                          "perception_replan_failed_keep_current",
+                                          fmt::format("keep_current_trajectory=1;ttc={:.3f};reason={}",
+                                                      perception_report.time_to_collision,
+                                                      perception_report.reason),
+                                          ret_code);
                 }
-            }
+                if (commit_decision.publish_trajectory) {
+                    publishPolyTraj();
+                    if (replan_tracking_static) {
+                        ChangeState("ReplanTimerCallback", STATIC_TRACKING);
+                    } else if (machine_state_ != FOLLOW_TRAJ) {
+                        ChangeState("ReplanTimerCallback", FOLLOW_TRAJ);
+                    }
+                }
+                break;
+            case general_planner::architecture::CommitAction::RETRY_PLANNING:
+                ChangeState("ReplanTimerCallback", GENERATE_TRAJ);
+                break;
+            case general_planner::architecture::CommitAction::FINISH_MISSION:
+                gi_.new_goal = false;
+                task_new_ = false;
+                finish_plan = true;
+                cout << GREEN << " -- [Fsm] Exploration finished." << RESET << endl;
+                ChangeState("ReplanTimerCallback", WAIT_GOAL);
+                break;
+            case general_planner::architecture::CommitAction::COMMIT_CANDIDATE:
+                if (commit_decision.clear_goal) {
+                    gi_.new_goal = false;
+                }
+                if (commit_decision.clear_task_new) {
+                    task_new_ = false;
+                }
+                if (commit_decision.publish_trajectory) {
+                    publishPolyTraj();
+                }
+                if (executor.trackingLike()) {
+                    if (replan_tracking_static) {
+                        ChangeState("ReplanTimerCallback", STATIC_TRACKING);
+                    } else if (machine_state_ != FOLLOW_TRAJ) {
+                        ChangeState("ReplanTimerCallback", FOLLOW_TRAJ);
+                    }
+                }
+                break;
+            case general_planner::architecture::CommitAction::HOLD:
+                ChangeState("ReplanTimerCallback", HOLD_TRACKING);
+                break;
+            case general_planner::architecture::CommitAction::BRAKE:
+            case general_planner::architecture::CommitAction::REQUEST_NEW_INPUT:
+            case general_planner::architecture::CommitAction::NOOP:
+            default:
+                break;
         }
 
         planner_ptr_->getModuleTimeConsuming(log_module_time);
@@ -1132,6 +738,17 @@ namespace fsm {
                     last_perception_replan_request_time_ < 0.0 ||
                     now - last_perception_replan_request_time_ >= min_interval ||
                     emergency;
+            const general_planner::architecture::SafetyMonitorContext safety_context{
+                    activeTaskIdentity(),
+                    executionPhase(),
+                    "perception_replan"};
+            const auto safety_decision = safety_monitor_.evaluateCommittedCollision(
+                    safety_context,
+                    report.valid,
+                    safe,
+                    report.time_to_collision,
+                    cfg_.perception_replan_emergency_horizon,
+                    interval_ok);
 
             const double log_period = std::max(0.0, cfg_.perception_replan_log_period);
             if (last_perception_replan_log_time_ < 0.0 ||
@@ -1164,21 +781,22 @@ namespace fsm {
             }
 
             perception_replan_requested_ = true;
-            perception_replan_emergency_ = emergency;
+            perception_replan_emergency_ = safety_decision.emergency;
             perception_replan_report_ = report;
             last_perception_replan_request_time_ = now;
-            should_trigger_replan = true;
-            recordDiagnosticEvent(emergency ? "ERROR" : "WARN",
+            should_trigger_replan = safety_decision.request_replan;
+            recordDiagnosticEvent(general_planner::architecture::toString(safety_decision.severity),
                                   "perception_replan_request",
-                                  fmt::format("reason={};ttc={:.3f};grid={};hits={};pos=({:.3f},{:.3f},{:.3f});emergency={}",
+                                  fmt::format("reason={};action={};ttc={:.3f};grid={};hits={};pos=({:.3f},{:.3f},{:.3f});emergency={}",
                                               report.reason,
+                                              general_planner::architecture::toString(safety_decision.action),
                                               report.time_to_collision,
                                               gridTypeName(report.grid_type),
                                               report.hit_count,
                                               report.collision_pos.x(),
                                               report.collision_pos.y(),
                                               report.collision_pos.z(),
-                                              static_cast<int>(emergency)));
+                                              static_cast<int>(safety_decision.emergency)));
         }
 
         if (should_trigger_replan) {
@@ -1257,12 +875,23 @@ namespace fsm {
                 }
                 recordDiagnosticEvent("INFO",
                                       "plan_from_rest_start",
-                                      fmt::format("task={};new_goal={};task_new={}",
+                                      fmt::format("plugin={};mission={};task={};backend={};phase={};new_goal={};task_new={}",
                                                   executor.name(),
+                                                  general_planner::architecture::toString(executor.missionMode()),
+                                                  general_planner::architecture::toString(executor.taskType()),
+                                                  general_planner::architecture::toString(cfg_.backend_type),
+                                                  general_planner::architecture::toString(executionPhase()),
                                                   static_cast<int>(gi_.new_goal),
                                                   static_cast<int>(task_new_)));
-                TaskPlanContext plan_context;
-                const int retcode = executor.planFromRest(*this, plan_context);
+                PlanRequest plan_request;
+                plan_request.identity = executor.identity(*this);
+                plan_request.invocation = general_planner::architecture::PlanInvocation::PLAN_FROM_REST;
+                plan_request.phase = executionPhase();
+                plan_request.new_goal = gi_.new_goal;
+                plan_request.new_task = task_new_;
+                PlanResult plan_result = executor.plan(*this, plan_request);
+                const TaskPlanContext &plan_context = plan_result.context;
+                const int retcode = plan_result.ret_code;
                 if (plan_context.missing_input || plan_context.handled) {
                     return;
                 }
@@ -1302,88 +931,129 @@ namespace fsm {
                                           fmt::format("ret={};task={}", retCodeName(retcode), executor.name()),
                                           retcode);
                 }
-                if (retcode == NO_NEED && executor.trackingLike()) {
-                    resetTrackingPlanFromRestFailureState();
-                    plan_from_rest_ = true;
-                    finish_plan = false;
-                    publishPolyTraj();
-                    ChangeState("MainFsmCallback",
-                                planned_tracking_static ? STATIC_TRACKING : FOLLOW_TRAJ);
-                } else if (retcode == FINISH && explorationMode()) {
-                    gi_.new_goal = false;
-                    task_new_ = false;
-                    plan_from_rest_ = false;
-                    finish_plan = true;
-                    cout << GREEN << " -- [Fsm] Exploration finished." << RESET << endl;
-                    ChangeState("MainFsmCallback", WAIT_GOAL);
-                } else if (retcode == SUCCESS || retcode == FINISH) {
-                    gi_.new_goal = false;
-                    task_new_ = false;
-                    if (executor.goalLike()) {
-                        state2state_plan_from_rest_fail_count_ = 0;
-                    } else if (executor.trackingLike()) {
-                        resetTrackingPlanFromRestFailureState();
-                    }
-                    plan_from_rest_ = true;
-                    finish_plan = false;
-                    if (retcode == FINISH) {
-                        finish_plan = true;
-                    }
 
-                    publishPolyTraj();
+                const auto commit_decision = commit_governor_.decidePlanFromRest(
+                        general_planner::architecture::CommitGovernorInput{
+                                plan_result,
+                                planner_ptr_->goalValid(),
+                                explorationMode()});
+                recordDiagnosticEvent("INFO",
+                                      "commit_governor_decision",
+                                      fmt::format("invocation=plan_from_rest;action={};next_phase={};reason={};mission_node={};detail={}",
+                                                  general_planner::architecture::toString(commit_decision.action),
+                                                  general_planner::architecture::toString(commit_decision.next_phase),
+                                                  commit_decision.reason,
+                                                  plan_context.mission_node.empty()
+                                                      ? "none"
+                                                      : plan_context.mission_node,
+                                                  plan_context.decision_detail.empty()
+                                                      ? "none"
+                                                      : plan_context.decision_detail),
+                                      retcode);
 
-                    ChangeState("MainFsmCallback",
-                                executor.trackingLike() && planned_tracking_static
-                                    ? STATIC_TRACKING
-                                    : FOLLOW_TRAJ);
-                } else {
-                    if (executor.goalLike()) {
-                        ++state2state_plan_from_rest_fail_count_;
-                        const int failure_limit = cfg_.state2state_plan_from_rest_max_failures;
-                        cout << YELLOW << " -- [Fsm] PlanFromRest failed, try replan. consecutive_failures="
-                             << state2state_plan_from_rest_fail_count_;
-                        if (failure_limit > 0) {
-                            cout << "/" << failure_limit;
+                switch (commit_decision.action) {
+                    case general_planner::architecture::CommitAction::KEEP_OLD_TRAJECTORY:
+                        if (executor.trackingLike()) {
+                            resetTrackingPlanFromRestFailureState();
                         }
-                        cout << RESET << endl;
-                        recordDiagnosticEvent("WARN",
-                                              "plan_from_rest_consecutive_failure",
-                                              fmt::format("count={};limit={};clear_goal_on_limit={}",
-                                                          state2state_plan_from_rest_fail_count_,
-                                                          failure_limit,
-                                                          static_cast<int>(
-                                                                  cfg_.state2state_clear_goal_on_plan_failure)),
-                                              retcode);
-                        if (failure_limit > 0 &&
-                            state2state_plan_from_rest_fail_count_ >= failure_limit) {
-                            recordDiagnosticEvent("ERROR",
-                                                  "plan_from_rest_failure_limit_reached",
-                                                  fmt::format("count={};clear_goal={}",
+                        plan_from_rest_ = true;
+                        finish_plan = false;
+                        if (commit_decision.publish_trajectory) {
+                            publishPolyTraj();
+                        }
+                        ChangeState("MainFsmCallback",
+                                    planned_tracking_static ? STATIC_TRACKING : FOLLOW_TRAJ);
+                        break;
+                    case general_planner::architecture::CommitAction::FINISH_MISSION:
+                        gi_.new_goal = false;
+                        task_new_ = false;
+                        plan_from_rest_ = false;
+                        finish_plan = true;
+                        cout << GREEN << " -- [Fsm] Exploration finished." << RESET << endl;
+                        ChangeState("MainFsmCallback", WAIT_GOAL);
+                        break;
+                    case general_planner::architecture::CommitAction::COMMIT_CANDIDATE:
+                        if (commit_decision.clear_goal) {
+                            gi_.new_goal = false;
+                        }
+                        if (commit_decision.clear_task_new) {
+                            task_new_ = false;
+                        }
+                        if (executor.goalLike()) {
+                            state2state_plan_from_rest_fail_count_ = 0;
+                        } else if (executor.trackingLike()) {
+                            resetTrackingPlanFromRestFailureState();
+                        }
+                        plan_from_rest_ = true;
+                        finish_plan = commit_decision.finish_plan;
+                        if (commit_decision.publish_trajectory) {
+                            publishPolyTraj();
+                        }
+                        ChangeState("MainFsmCallback",
+                                    executor.trackingLike() && planned_tracking_static
+                                        ? STATIC_TRACKING
+                                        : FOLLOW_TRAJ);
+                        break;
+                    case general_planner::architecture::CommitAction::EMERGENCY_STOP:
+                        ChangeState("MainFsmCallback", EMER_STOP);
+                        break;
+                    case general_planner::architecture::CommitAction::REQUEST_NEW_INPUT:
+                        gi_.new_goal = false;
+                        started_ = false;
+                        plan_from_rest_ = false;
+                        finish_plan = true;
+                        state2state_plan_from_rest_fail_count_ = 0;
+                        ChangeState("MainFsmCallback", WAIT_GOAL);
+                        break;
+                    case general_planner::architecture::CommitAction::RETRY_PLANNING:
+                    default:
+                        if (executor.goalLike()) {
+                            ++state2state_plan_from_rest_fail_count_;
+                            const int failure_limit = cfg_.state2state_plan_from_rest_max_failures;
+                            cout << YELLOW << " -- [Fsm] PlanFromRest failed, try replan. consecutive_failures="
+                                 << state2state_plan_from_rest_fail_count_;
+                            if (failure_limit > 0) {
+                                cout << "/" << failure_limit;
+                            }
+                            cout << RESET << endl;
+                            recordDiagnosticEvent("WARN",
+                                                  "plan_from_rest_consecutive_failure",
+                                                  fmt::format("count={};limit={};clear_goal_on_limit={}",
                                                               state2state_plan_from_rest_fail_count_,
+                                                              failure_limit,
                                                               static_cast<int>(
                                                                       cfg_.state2state_clear_goal_on_plan_failure)),
                                                   retcode);
-                            if (cfg_.state2state_clear_goal_on_plan_failure) {
-                                cout << YELLOW << " -- [Fsm] PlanFromRest failed "
-                                     << state2state_plan_from_rest_fail_count_
-                                     << " times, clear current state2state goal and wait for a new goal."
-                                     << RESET << endl;
-                                gi_.new_goal = false;
-                                started_ = false;
-                                plan_from_rest_ = false;
-                                finish_plan = true;
-                                ChangeState("PlanFromRestFailureLimit", WAIT_GOAL);
+                            if (failure_limit > 0 &&
+                                state2state_plan_from_rest_fail_count_ >= failure_limit) {
+                                recordDiagnosticEvent("ERROR",
+                                                      "plan_from_rest_failure_limit_reached",
+                                                      fmt::format("count={};clear_goal={}",
+                                                                  state2state_plan_from_rest_fail_count_,
+                                                                  static_cast<int>(
+                                                                          cfg_.state2state_clear_goal_on_plan_failure)),
+                                                      retcode);
+                                if (cfg_.state2state_clear_goal_on_plan_failure) {
+                                    cout << YELLOW << " -- [Fsm] PlanFromRest failed "
+                                         << state2state_plan_from_rest_fail_count_
+                                         << " times, clear current state2state goal and wait for a new goal."
+                                         << RESET << endl;
+                                    gi_.new_goal = false;
+                                    started_ = false;
+                                    plan_from_rest_ = false;
+                                    finish_plan = true;
+                                    ChangeState("PlanFromRestFailureLimit", WAIT_GOAL);
+                                }
+                                state2state_plan_from_rest_fail_count_ = 0;
                             }
-                            state2state_plan_from_rest_fail_count_ = 0;
+                        } else if (executor.trackingLike()) {
+                            handleTrackingPlanFromRestFailure(retcode,
+                                                              planned_tracking_static,
+                                                              plan_tracking_input_prediction_size);
+                        } else {
+                            cout << YELLOW << " -- [Fsm] PlanFromRest failed, try replan." << RESET << endl;
                         }
-                    } else if (executor.trackingLike()) {
-                        handleTrackingPlanFromRestFailure(retcode,
-                                                          planned_tracking_static,
-                                                          plan_tracking_input_prediction_size);
-                    } else {
-                        cout << YELLOW << " -- [Fsm] PlanFromRest failed, try replan." << RESET << endl;
-                    }
-                    // ros::Duration(0.1).sleep();
+                        break;
                 }
                 const auto log_id = appendLatestReplanLog();
                 const bool replan_warn = log_id.second == FAILED || log_id.second == OPT_FAILED;
@@ -1454,7 +1124,8 @@ namespace fsm {
     }
 
     bool Fsm::se3AggressiveMode() const {
-        return cfg_.task_mode == TaskMode::SE3_AGGRESSIVE;
+        return cfg_.task_type == general_planner::architecture::TaskType::STATE_TO_STATE &&
+               cfg_.backend_type == general_planner::architecture::BackendType::SE3;
     }
 
     bool Fsm::trackingExecutionState() const {
@@ -1471,54 +1142,42 @@ namespace fsm {
     }
 
     void Fsm::setTaskModeFromString(const std::string &mode) {
+        const auto requested_backend =
+                general_planner::architecture::backendTypeFromLegacyMode(mode);
         const std::string normalized = normalizeTaskMode(mode);
         const TaskMode new_mode = taskModeFromString(normalized);
-        if (trackingPerchingMode() &&
-            new_mode == TaskMode::PERCHING) {
-            cout << YELLOW << " -- [Fsm] Tracking-perching request received." << RESET << endl;
-            if (planner_ptr_) {
-                planner_ptr_->setTrackingPerchingRequest(true);
+        const auto refresh_task_semantics = [this, &requested_backend]() {
+            cfg_.task_type = taskTypeFromTaskMode(cfg_.task_mode);
+            cfg_.mission_mode = missionModeFromTaskMode(cfg_.task_mode);
+            if (requested_backend.has_value()) {
+                cfg_.backend_type = *requested_backend;
+                cfg_.planning_backend_str = general_planner::architecture::toString(cfg_.backend_type);
+                return;
             }
-            finish_plan = false;
-            task_new_ = true;
-            started_ = true;
-            return;
-        }
-        if (trackingPerchingMode() &&
-            new_mode == TaskMode::TRACKING &&
-            !trackingPerchingPerchingActive()) {
-            cout << YELLOW << " -- [Fsm] Tracking-perching request cleared." << RESET << endl;
-            if (planner_ptr_) {
-                planner_ptr_->setTrackingPerchingRequest(false);
+            const bool state2state_with_tracking_backend =
+                    cfg_.task_type == general_planner::architecture::TaskType::STATE_TO_STATE &&
+                    (cfg_.backend_type == general_planner::architecture::BackendType::JERK_TRACKING ||
+                     cfg_.backend_type == general_planner::architecture::BackendType::SNAP_TRACKING);
+            const bool tracking_with_state_backend =
+                    cfg_.task_type == general_planner::architecture::TaskType::TRACKING &&
+                    cfg_.backend_type == general_planner::architecture::BackendType::SE3;
+            if (cfg_.backend_type == general_planner::architecture::BackendType::AUTO ||
+                state2state_with_tracking_backend ||
+                tracking_with_state_backend) {
+                cfg_.backend_type = general_planner::architecture::defaultBackendForTask(cfg_.task_type);
+                cfg_.planning_backend_str = general_planner::architecture::toString(cfg_.backend_type);
             }
-            finish_plan = false;
-            task_new_ = true;
-            started_ = true;
-            return;
-        }
-        if (cfg_.tracking_perching_enable &&
-            cfg_.task_mode == TaskMode::TRACKING &&
-            new_mode == TaskMode::PERCHING) {
-            cout << YELLOW << " -- [Fsm] Tracking-perching request received." << RESET << endl;
-            cfg_.task_mode_str = "tracking_perching";
-            cfg_.task_mode = TaskMode::TRACKING_PERCHING;
-            resetTaskExecutor();
-            if (planner_ptr_) {
-                planner_ptr_->setTrackingPerchingRequest(true);
-            }
-            finish_plan = false;
-            task_new_ = true;
-            started_ = true;
-            return;
-        }
-        if (cfg_.tracking_perching_enable &&
-            cfg_.task_mode == TaskMode::TRACKING &&
-            new_mode == TaskMode::TRACKING &&
-            planner_ptr_) {
-            planner_ptr_->setTrackingPerchingRequest(false);
-        }
-        if (new_mode == cfg_.task_mode) {
+        };
+        const bool backend_change_only =
+                requested_backend.has_value() && *requested_backend != cfg_.backend_type;
+        if (new_mode == cfg_.task_mode && !backend_change_only) {
             if (new_mode == TaskMode::EXPLORATION) {
+                finish_plan = false;
+                task_new_ = true;
+                started_ = true;
+            }
+            if (new_mode == TaskMode::TRACKING_PERCHING && planner_ptr_) {
+                planner_ptr_->setTrackingPerchingRequest(true);
                 finish_plan = false;
                 task_new_ = true;
                 started_ = true;
@@ -1526,9 +1185,14 @@ namespace fsm {
             return;
         }
         cout << YELLOW << " -- [Fsm] Task mode switch: " << cfg_.task_mode_str
-             << " -> " << normalized << RESET << endl;
+             << " -> " << normalized;
+        if (requested_backend.has_value()) {
+            cout << " backend=" << general_planner::architecture::toString(*requested_backend);
+        }
+        cout << RESET << endl;
         cfg_.task_mode_str = normalized;
         cfg_.task_mode = new_mode;
+        refresh_task_semantics();
         resetTaskExecutor();
         finish_plan = false;
         task_new_ = true;
@@ -1539,6 +1203,9 @@ namespace fsm {
         if (new_mode == TaskMode::EXPLORATION ||
             new_mode == TaskMode::TRACKING_PERCHING) {
             started_ = true;
+        }
+        if (planner_ptr_) {
+            planner_ptr_->setTrackingPerchingRequest(new_mode == TaskMode::TRACKING_PERCHING);
         }
         perching_contact_reached_ = false;
     }
@@ -1670,8 +1337,127 @@ namespace fsm {
         return taskExecutor().shouldGenerateAfterTrajFinish(*this);
     }
 
+    general_planner::architecture::ExecutionPhase Fsm::executionPhase() const {
+        using general_planner::architecture::ExecutionPhase;
+        switch (machine_state_) {
+            case INIT:
+            case WAIT_GOAL:
+            case YAWING:
+                return ExecutionPhase::WAITING_INPUT;
+            case GENERATE_TRAJ:
+                return ExecutionPhase::PLANNING;
+            case FOLLOW_TRAJ:
+            case STATIC_TRACKING:
+                return ExecutionPhase::EXECUTING;
+            case HOLD_TRACKING:
+                return ExecutionPhase::HOLDING;
+            case EMER_STOP:
+                return ExecutionPhase::EMERGENCY;
+            default:
+                return ExecutionPhase::WAITING_INPUT;
+        }
+    }
+
+    general_planner::architecture::TaskIdentity Fsm::activeTaskIdentity() {
+        if (mission_orchestrator_.snapshot().mission == general_planner::architecture::MissionMode::IDLE) {
+            return taskExecutor().identity(*this);
+        }
+        return mission_orchestrator_.activeIdentity();
+    }
+
+    const general_planner::architecture::MissionSnapshot &Fsm::missionSnapshot() const {
+        return mission_orchestrator_.snapshot();
+    }
+
     bool Fsm::markTrackingFinishedIfStaticTarget() {
         return false;
+    }
+
+    Fsm::ExecutedTrajectoryFinishResult Fsm::handleExecutedTrajectoryFinished(
+            const std::string &source,
+            const int trajectory_id,
+            const int trajectory_seq,
+            const bool on_backup,
+            const bool record_regular_finish,
+            const bool mark_static_target_finished) {
+        ExecutedTrajectoryFinishResult result;
+        const bool close_to_goal = closeToGoal(0.1);
+        const bool tracking_unfinished =
+                (trackingMode() || trackingPerchingMode()) &&
+                !trackingPerchingPerchingActive() &&
+                !close_to_goal;
+        const bool log_finish_once =
+                !tracking_unfinished ||
+                last_tracking_unfinished_traj_seq_ != trajectory_seq;
+
+        if ((!record_regular_finish && !tracking_unfinished) ||
+            (record_regular_finish && log_finish_once)) {
+            cout << GREEN << " -- [Fsm] Traj finish." << RESET << endl;
+        }
+        if (record_regular_finish && log_finish_once) {
+            recordDiagnosticEvent("INFO",
+                                  "trajectory_finished",
+                                  fmt::format("trajectory_id={};close_to_goal={}",
+                                              trajectory_id,
+                                              static_cast<int>(close_to_goal)),
+                                  -1,
+                                  trajectory_seq,
+                                  on_backup);
+        }
+
+        const bool tracking_perching_contact = trackingPerchingPerchingActive();
+        if (!tracking_unfinished && (perchingMode() || tracking_perching_contact)) {
+            {
+                std::lock_guard<std::mutex> lock(task_mutex_);
+                perching_contact_reached_ = true;
+                perching_contact_surface_position_ = perching_surface_.position;
+                task_new_ = false;
+            }
+            gi_.new_goal = false;
+            if (tracking_perching_contact) {
+                planner_ptr_->markTrackingPerchingContact();
+            }
+            cout << GREEN << " -- [Perching] PERCHING_CONTACT" << RESET << endl;
+        }
+
+        if (tracking_unfinished) {
+            task_new_ = true;
+            plan_from_rest_ = true;
+            finish_plan = false;
+            if (log_finish_once) {
+                last_tracking_unfinished_traj_seq_ = trajectory_seq;
+                const std::string hold_reason =
+                        source == "getPoseFromTraj"
+                            ? "tracking pose query reached trajectory end before target"
+                            : "tracking trajectory finished before reaching target";
+                const bool hold_committed =
+                        planner_ptr_->commitTrackingHoldTrajectory(hold_reason);
+                recordDiagnosticEvent("WARN",
+                                      "tracking_trajectory_finished_reacquire",
+                                      fmt::format("trajectory_id={};hold_committed={}",
+                                                  trajectory_id,
+                                                  static_cast<int>(hold_committed)),
+                                      -1,
+                                      trajectory_seq,
+                                      on_backup);
+                if (hold_committed) {
+                    publishPolyTraj();
+                }
+            }
+            result.tracking_unfinished = true;
+            return result;
+        }
+
+        if (mark_static_target_finished) {
+            markTrackingFinishedIfStaticTarget();
+        }
+        if (shouldGenerateAfterTrajFinish()) {
+            ChangeState(source, GENERATE_TRAJ);
+        } else {
+            ChangeState(source, WAIT_GOAL);
+        }
+        result.state_changed = true;
+        return result;
     }
 
     void Fsm::logStaticTrackingReplanDecision(const std::string &reason) {
@@ -2093,5 +1879,6 @@ namespace fsm {
                                           MACHINE_STATE_STR[int(machine_state_)],
                                           MACHINE_STATE_STR[int(new_state)]));
         machine_state_ = new_state;
+        mission_orchestrator_.setExecutionPhase(executionPhase(), call_func);
     }
 }

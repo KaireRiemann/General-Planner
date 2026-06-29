@@ -23,7 +23,7 @@
 
 #include <utils/optimization/waypoint_trajectory_optimizer.h>
 
-using super_utils::TimeConsuming;
+using general_utils::TimeConsuming;
 
 namespace optimization_utils {
     using namespace color_text;

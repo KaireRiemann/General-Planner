@@ -21,8 +21,8 @@ public:
     double safe_distance = 0.0;
     double smooth_eps = 0.0;
     double weight = 0.0;
-    super_utils::VecDf magnitude_bounds;
-    super_utils::VecDf penalty_weights;
+    general_utils::VecDf magnitude_bounds;
+    general_utils::VecDf penalty_weights;
     flatness::FlatnessMap *quadrotor_flatness = nullptr;
     traj_opt::SwarmPenaltyConfig swarm_config;
     traj_opt::SwarmTrajectoriesConstPtr swarm_trajs;
@@ -32,8 +32,8 @@ public:
                const double safe_distance_in,
                const double smooth_eps_in,
                const double weight_in,
-               const super_utils::VecDf &magnitude_bounds_in,
-               const super_utils::VecDf &penalty_weights_in,
+               const general_utils::VecDf &magnitude_bounds_in,
+               const general_utils::VecDf &penalty_weights_in,
                flatness::FlatnessMap *quadrotor_flatness_in,
                const traj_opt::SwarmPenaltyConfig &swarm_config_in,
                const traj_opt::SwarmTrajectoriesConstPtr &swarm_trajs_in,
@@ -163,7 +163,7 @@ public:
                                          grad_acc,
                                          grad_jer,
                                          grad_thr,
-                                         super_utils::Vec4f::Zero(),
+                                         general_utils::Vec4f::Zero(),
                                          grad_omg,
                                          total_grad_pos,
                                          total_grad_vel,
@@ -181,9 +181,9 @@ public:
     }
 
     double getMaxViolation() const { return max_violation_.size() > 1 ? max_violation_(1) : 0.0; }
-    const super_utils::VecDf &getPenaltyLog() const { return max_violation_; }
+    const general_utils::VecDf &getPenaltyLog() const { return max_violation_; }
 
 private:
-    mutable super_utils::VecDf max_violation_{super_utils::VecDf::Zero(9)};
+    mutable general_utils::VecDf max_violation_{general_utils::VecDf::Zero(9)};
 };
 } // namespace cost_functional_manager

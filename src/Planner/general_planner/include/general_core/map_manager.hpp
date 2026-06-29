@@ -8,7 +8,7 @@
 #include <rog_map/rog_map.h>
 #include <rog_map_ros/rog_map_ros1.hpp>
 #include <rog_map_ros/rog_map_ros2.hpp>
-#include <super_utils/type_utils.hpp>
+#include <general_utils/type_utils.hpp>
 
 namespace general_planner
 {
@@ -49,7 +49,7 @@ public:
         return map_->getMapConfig();
     }
 
-    void updateMap(const rog_map::PointCloud &cloud, const super_utils::Pose &pose) const
+    void updateMap(const rog_map::PointCloud &cloud, const general_utils::Pose &pose) const
     {
         map_->updateMap(cloud, pose);
     }

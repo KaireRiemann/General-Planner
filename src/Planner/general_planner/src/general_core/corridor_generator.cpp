@@ -23,7 +23,7 @@
 
 #include <general_core/corridor_generator.h>
 
-using namespace super_utils;
+using namespace general_utils;
 
 namespace general_planner {
 
@@ -267,7 +267,7 @@ namespace general_planner {
 
     }
 
-    bool CorridorGenerator::GenerateEmptyPolytope(const super_utils::Vec3f &pt,
+    bool CorridorGenerator::GenerateEmptyPolytope(const general_utils::Vec3f &pt,
                                                   const double & dis,
                                                   Polytope & polytope){
         Eigen::Vector3d box_max, box_min;

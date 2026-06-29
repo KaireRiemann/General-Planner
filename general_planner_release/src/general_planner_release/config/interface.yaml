@@ -119,6 +119,9 @@ general_planner:
     recovery_time_scale: 1.4
     recovery_reduce_visible_region_weight: 0.3
     recovery_reduce_target_forward_weight: 0.5
+    soft_recovery_enable: true
+    soft_recovery_margin: 0.2
+    soft_recovery_hold_duration: 0.8
     reacquire_recovery_enable: true
     reacquire_recovery_horizon: 0.8
     reacquire_transit_enable: true

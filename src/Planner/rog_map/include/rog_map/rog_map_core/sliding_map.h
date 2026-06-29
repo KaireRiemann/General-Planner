@@ -24,7 +24,7 @@
 #pragma once
 
 #include <rog_map/rog_map_core/config.hpp>
-#include <super_utils/scope_timer.hpp>
+#include <general_utils/scope_timer.hpp>
 
 namespace rog_map {
     /// The policy of ORIGIN_AT_CORNER is:

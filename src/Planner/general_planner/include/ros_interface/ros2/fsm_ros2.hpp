@@ -254,7 +254,7 @@ namespace fsm {
             csv_writer.close();
         }
 
-        bool getPoseFromTraj(super_utils::Pose &pose) {
+        bool getPoseFromTraj(general_utils::Pose &pose) {
             if (machine_state_ != FOLLOW_TRAJ) {
                 cout << YELLOW << "[Fsm] Not in FOLLOW_TRAJ state, can't get pose from traj." << RESET << endl;
                 return false;
@@ -287,8 +287,8 @@ namespace fsm {
         }
 
         void goalCallback(const geometry_msgs::msg::PoseStamped::SharedPtr msg) {
-            super_utils::Vec3f goal_p = Vec3f{msg->pose.position.x, msg->pose.position.y, msg->pose.position.z};
-            super_utils::Quatf goal_q = super_utils::Quatf{msg->pose.orientation.w, msg->pose.orientation.x,
+            general_utils::Vec3f goal_p = Vec3f{msg->pose.position.x, msg->pose.position.y, msg->pose.position.z};
+            general_utils::Quatf goal_q = general_utils::Quatf{msg->pose.orientation.w, msg->pose.orientation.x,
                                                            msg->pose.orientation.y, msg->pose.orientation.z};
             setGoalPosiAndYaw(goal_p, goal_q);
         }

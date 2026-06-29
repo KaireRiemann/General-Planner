@@ -31,7 +31,7 @@
 #include <utils/optimization/minco.h>
 
 #include <utils/header/type_utils.hpp>
-#include <super_utils/scope_timer.hpp>
+#include <general_utils/scope_timer.hpp>
 
 namespace traj_opt {
     using namespace geometry_utils;

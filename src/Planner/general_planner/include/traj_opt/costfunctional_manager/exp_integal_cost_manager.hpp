@@ -20,25 +20,25 @@ namespace cost_functional_manager
     class ExpIntegralCostManager
     {
     public:
-        const super_utils::PolyhedraH *h_polys = nullptr;
+        const general_utils::PolyhedraH *h_polys = nullptr;
         const Eigen::VectorXi *h_poly_idx = nullptr;
-        const super_utils::Mat3Df *waypoint_attractors = nullptr;
-        const super_utils::VecDf *waypoint_attractor_dead_d = nullptr;
+        const general_utils::Mat3Df *waypoint_attractors = nullptr;
+        const general_utils::VecDf *waypoint_attractor_dead_d = nullptr;
         double smooth_eps = 0.0;
-        super_utils::VecDf magnitude_bounds;
-        super_utils::VecDf penalty_weights;
+        general_utils::VecDf magnitude_bounds;
+        general_utils::VecDf penalty_weights;
         flatness::FlatnessMap *quadrotor_flatness = nullptr; 
         traj_opt::SwarmPenaltyConfig swarm_config;
         traj_opt::SwarmTrajectoriesConstPtr swarm_trajs;
         double swarm_current_wall_time{0.0};
 
-        void reset(const super_utils::PolyhedraH *h_polys_in,
+        void reset(const general_utils::PolyhedraH *h_polys_in,
                    const Eigen::VectorXi *h_poly_idx_in,
-                   const super_utils::Mat3Df *waypoint_attractors_in,
-                   const super_utils::VecDf *waypoint_attractor_dead_d_in,
+                   const general_utils::Mat3Df *waypoint_attractors_in,
+                   const general_utils::VecDf *waypoint_attractor_dead_d_in,
                    double smooth_eps_in,
-                   const super_utils::VecDf &magnitude_bounds_in,
-                   const super_utils::VecDf &penalty_weights_in,
+                   const general_utils::VecDf &magnitude_bounds_in,
+                   const general_utils::VecDf &penalty_weights_in,
                    flatness::FlatnessMap *quadrotor_flatness_in,
                    const traj_opt::SwarmPenaltyConfig &swarm_config_in,
                    const traj_opt::SwarmTrajectoriesConstPtr &swarm_trajs_in,
@@ -64,7 +64,7 @@ namespace cost_functional_manager
             max_violation_.setZero();    
         }
 
-          const super_utils::VecDf &getPenaltyLog() const { return max_violation_; }
+          const general_utils::VecDf &getPenaltyLog() const { return max_violation_; }
 
         double operator()(double t,
                         double t_global,
@@ -189,7 +189,7 @@ namespace cost_functional_manager
                                 grad_acc,
                                 grad_jer,
                                 grad_thr,
-                                super_utils::Vec4f::Zero(),
+                                general_utils::Vec4f::Zero(),
                                 grad_omg,
                                 total_grad_pos,
                                 total_grad_vel,
@@ -208,7 +208,7 @@ namespace cost_functional_manager
 
     private:
         mutable const std::vector<double> *segment_times_ = nullptr;
-        mutable super_utils::VecDf max_violation_{super_utils::VecDf::Zero(9)};
+        mutable general_utils::VecDf max_violation_{general_utils::VecDf::Zero(9)};
     };
 
 }//namespace cost_functional_manager

@@ -194,7 +194,7 @@ namespace general_planner {
         }
 
         void setGoal(const Vec3f &_goal_p, const double &_goal_yaw,
-                     const super_utils::RobotState &_robot) {
+                     const general_utils::RobotState &_robot) {
             robot_p = _robot.p;
             robot_q = _robot.q.coeffs();
             goal_p = _goal_p;

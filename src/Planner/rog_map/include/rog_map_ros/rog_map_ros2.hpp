@@ -45,10 +45,10 @@
 #include <visualization_msgs/msg/marker_array.hpp>
 
 #include <rog_map/rog_map.h>
-#include <super_utils/color_msg_utils.hpp>
+#include <general_utils/color_msg_utils.hpp>
 
 namespace rog_map {
-    using namespace super_utils;
+    using namespace general_utils;
 
 
     class ROGMapROS : public ROGMap {

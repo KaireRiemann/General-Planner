@@ -10,12 +10,12 @@ struct PerchingSurfaceState
   EIGEN_MAKE_ALIGNED_OPERATOR_NEW
 
   double t{0.0};
-  super_utils::Vec3f position{super_utils::Vec3f::Zero()};
-  super_utils::Vec3f velocity{super_utils::Vec3f::Zero()};
-  super_utils::Vec3f acceleration{super_utils::Vec3f::Zero()};
-  super_utils::Vec3f surface_x{super_utils::Vec3f::UnitX()};
-  super_utils::Vec3f surface_y{super_utils::Vec3f::UnitY()};
-  super_utils::Vec3f surface_z{super_utils::Vec3f::UnitZ()};
+  general_utils::Vec3f position{general_utils::Vec3f::Zero()};
+  general_utils::Vec3f velocity{general_utils::Vec3f::Zero()};
+  general_utils::Vec3f acceleration{general_utils::Vec3f::Zero()};
+  general_utils::Vec3f surface_x{general_utils::Vec3f::UnitX()};
+  general_utils::Vec3f surface_y{general_utils::Vec3f::UnitY()};
+  general_utils::Vec3f surface_z{general_utils::Vec3f::UnitZ()};
   double yaw{0.0};
   double yaw_rate{0.0};
 };

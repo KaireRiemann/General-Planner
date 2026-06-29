@@ -20,7 +20,7 @@ namespace general_planner::checker {
         return std::isnan(yaw) || std::isfinite(yaw);
     }
 
-    inline bool quaternionValidOrDisabled(const super_utils::Quatf &q) {
+    inline bool quaternionValidOrDisabled(const general_utils::Quatf &q) {
         const bool all_nan = std::isnan(q.w()) && std::isnan(q.x()) &&
                              std::isnan(q.y()) && std::isnan(q.z());
         if (all_nan) {
@@ -33,7 +33,7 @@ namespace general_planner::checker {
         return q.norm() > 1.0e-6;
     }
 
-    inline CheckResult checkStateFinite(const super_utils::StatePVAJ &state,
+    inline CheckResult checkStateFinite(const general_utils::StatePVAJ &state,
                                         const std::string &name) {
         if (!state.allFinite()) {
             return CheckResult::Reject(name + "_NON_FINITE", name + " contains NaN or Inf");

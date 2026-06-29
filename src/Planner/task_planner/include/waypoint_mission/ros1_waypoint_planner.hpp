@@ -16,7 +16,7 @@
 
 namespace task_planner {
     using namespace std;
-    using namespace super_utils;
+    using namespace general_utils;
 
     class WaypointPlanner {
 

@@ -16,16 +16,16 @@ namespace cost_functional_manager
 class BackupIntegralCostManager
 {
 public:
-    const super_utils::PolyhedronH *h_polys = nullptr;
+    const general_utils::PolyhedronH *h_polys = nullptr;
     double smooth_eps = 0.0;
-    super_utils::VecDf magnitude_bounds;
-    super_utils::VecDf penalty_weights;
+    general_utils::VecDf magnitude_bounds;
+    general_utils::VecDf penalty_weights;
     flatness::FlatnessMap *quadrotor_flatness = nullptr;
 
-    void reset(const super_utils::PolyhedronH *h_polys,
+    void reset(const general_utils::PolyhedronH *h_polys,
                double smooth_eps,
-               const super_utils::VecDf &magnitude_bounds,
-               const super_utils::VecDf &penalty_weights,
+               const general_utils::VecDf &magnitude_bounds,
+               const general_utils::VecDf &penalty_weights,
                flatness::FlatnessMap *quadrotor_flatness)
     {
         this->h_polys = h_polys;
@@ -41,7 +41,7 @@ public:
         max_violation_.setZero();
     }
 
-    const super_utils::VecDf &getPenaltyLog() const
+    const general_utils::VecDf &getPenaltyLog() const
     {
         return max_violation_;
     }
@@ -100,7 +100,7 @@ public:
             double total_grad_psi = 0.0;
             double total_grad_psi_d = 0.0;
 
-            quadrotor_flatness->backward(grad_pos, grad_vel, grad_acc, grad_jer, grad_acc_thr, super_utils::Vec4f::Zero(), grad_omg,total_grad_pos, total_grad_vel, total_grad_acc, total_grad_jer, total_grad_psi, total_grad_psi_d);
+            quadrotor_flatness->backward(grad_pos, grad_vel, grad_acc, grad_jer, grad_acc_thr, general_utils::Vec4f::Zero(), grad_omg,total_grad_pos, total_grad_vel, total_grad_acc, total_grad_jer, total_grad_psi, total_grad_psi_d);
         }
 
         grad_position += total_grad_pos;
@@ -112,7 +112,7 @@ public:
     }
 
     private:
-        mutable super_utils::VecDf max_violation_{super_utils::VecDf::Zero(8)};
+        mutable general_utils::VecDf max_violation_{general_utils::VecDf::Zero(8)};
 };
 } // namespace cost_functional_manager
 

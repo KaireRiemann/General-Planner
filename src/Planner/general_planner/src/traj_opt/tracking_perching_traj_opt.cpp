@@ -32,10 +32,10 @@ namespace
 {
 
 using geometry_utils::Trajectory;
-using super_utils::Mat3Df;
-using super_utils::StatePVAJ;
-using super_utils::Vec3f;
-using super_utils::VecDf;
+using general_utils::Mat3Df;
+using general_utils::StatePVAJ;
+using general_utils::Vec3f;
+using general_utils::VecDf;
 
 constexpr double kTiny = 1.0e-9;
 
@@ -242,7 +242,7 @@ Vec3f normalizedOr(const Vec3f &v, const Vec3f &fallback)
   return v.normalized();
 }
 
-double pathLength(const super_utils::vec_E<Vec3f> &path)
+double pathLength(const general_utils::vec_E<Vec3f> &path)
 {
   double length = 0.0;
   for (int i = 1; i < static_cast<int>(path.size()); ++i)
@@ -263,11 +263,11 @@ void normalizeTrackingHPoly(spatial_map::PolyhedronH &poly)
   poly.array().colwise() /= norms;
 }
 
-super_utils::vec_E<Vec3f> sanitizeGuide(const super_utils::vec_E<Vec3f> &guide_path,
+general_utils::vec_E<Vec3f> sanitizeGuide(const general_utils::vec_E<Vec3f> &guide_path,
                                         const Vec3f &start,
                                         const Vec3f &goal)
 {
-  super_utils::vec_E<Vec3f> out;
+  general_utils::vec_E<Vec3f> out;
   out.reserve(std::max<std::size_t>(guide_path.size(), 2));
   out.emplace_back(start);
   for (const auto &p : guide_path)
@@ -292,7 +292,7 @@ super_utils::vec_E<Vec3f> sanitizeGuide(const super_utils::vec_E<Vec3f> &guide_p
   return out;
 }
 
-Vec3f interpolateByArc(const super_utils::vec_E<Vec3f> &path,
+Vec3f interpolateByArc(const general_utils::vec_E<Vec3f> &path,
                        const std::vector<double> &arc,
                        double s)
 {
@@ -392,7 +392,7 @@ template <int S>
 bool prepareInitialState(const traj_opt::Config &cfg,
                          const StatePVAJ &head,
                          const StatePVAJ &tail,
-                         const super_utils::vec_E<Vec3f> &guide_path,
+                         const general_utils::vec_E<Vec3f> &guide_path,
                          int requested_piece_num,
                          double min_piece_duration,
                          std::vector<double> &times,
@@ -809,7 +809,7 @@ public:
 protected:
   bool run(const StatePVAJ &head,
            const StatePVAJ &tail,
-           const super_utils::vec_E<Vec3f> &guide_path,
+           const general_utils::vec_E<Vec3f> &guide_path,
            int piece_num,
            double min_piece_duration,
            double min_total_duration,

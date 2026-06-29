@@ -57,14 +57,14 @@
 
 
 namespace geometry_utils {
-    using super_utils::Mat3f;
-    using super_utils::Vec3f;
-    using super_utils::Vec4f;
-    using super_utils::vec_Vec3f;
-    using super_utils::Mat3Df;
-    using super_utils::MatD4f;
-    using super_utils::vec_E;
-    using super_utils::PolyhedronH;
+    using general_utils::Mat3f;
+    using general_utils::Vec3f;
+    using general_utils::Vec4f;
+    using general_utils::vec_Vec3f;
+    using general_utils::Mat3Df;
+    using general_utils::MatD4f;
+    using general_utils::vec_E;
+    using general_utils::PolyhedronH;
 
     ///============ 2023-06-30: add by yunfan ============///
     static bool simplePMTimeAllocator(const double &a_max, const double &v_max,

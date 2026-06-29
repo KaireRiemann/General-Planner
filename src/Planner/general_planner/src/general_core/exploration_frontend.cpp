@@ -9,7 +9,7 @@
 #include <unordered_map>
 #include <unordered_set>
 
-using namespace super_utils;
+using namespace general_utils;
 
 namespace general_planner {
 namespace {

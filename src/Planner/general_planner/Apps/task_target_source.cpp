@@ -28,7 +28,7 @@
 namespace
 {
 
-using super_utils::Vec3f;
+using general_utils::Vec3f;
 
 geometry_msgs::Quaternion quatFromYaw(const double yaw)
 {
@@ -51,7 +51,7 @@ std_msgs::ColorRGBA colorRgba(const double r, const double g, const double b, co
     return color;
 }
 
-std::vector<double> allocatePathTime(const super_utils::vec_E<Vec3f> &path, double speed)
+std::vector<double> allocatePathTime(const general_utils::vec_E<Vec3f> &path, double speed)
 {
     std::vector<double> times(path.size(), 0.0);
     speed = std::max(0.2, speed);
@@ -86,7 +86,7 @@ bool debugInfoIndicatesPerchingTrajectory(const std::string &debug_info)
            debug_info.find("task_phase=tracking_perching_perching") != std::string::npos;
 }
 
-super_utils::vec_E<Vec3f> makeRuntimePath(const super_utils::vec_E<Vec3f> &path,
+general_utils::vec_E<Vec3f> makeRuntimePath(const general_utils::vec_E<Vec3f> &path,
                                           const bool loop,
                                           const std::string &loop_mode)
 {
@@ -95,7 +95,7 @@ super_utils::vec_E<Vec3f> makeRuntimePath(const super_utils::vec_E<Vec3f> &path,
         return path;
     }
 
-    super_utils::vec_E<Vec3f> runtime_path = path;
+    general_utils::vec_E<Vec3f> runtime_path = path;
     for (int i = static_cast<int>(path.size()) - 2; i >= 0; --i)
     {
         if ((runtime_path.back() - path[static_cast<std::size_t>(i)]).norm() > 1.0e-6)
@@ -126,7 +126,7 @@ double normalizePathTime(const double t,
     return wrapped;
 }
 
-Vec3f interpolatePath(const super_utils::vec_E<Vec3f> &path,
+Vec3f interpolatePath(const general_utils::vec_E<Vec3f> &path,
                       const std::vector<double> &times,
                       const double t,
                       Vec3f &velocity)
@@ -172,7 +172,7 @@ geometry_msgs::PoseStamped makePose(const std::string &frame_id,
     return pose;
 }
 
-nav_msgs::Path buildPathMsg(const super_utils::vec_E<Vec3f> &path,
+nav_msgs::Path buildPathMsg(const general_utils::vec_E<Vec3f> &path,
                             const std::vector<double> &times,
                             const std::string &frame_id)
 {
@@ -198,7 +198,7 @@ nav_msgs::Path buildPathMsg(const super_utils::vec_E<Vec3f> &path,
     return msg;
 }
 
-nav_msgs::Path buildPredictionMsg(const super_utils::vec_E<Vec3f> &path,
+nav_msgs::Path buildPredictionMsg(const general_utils::vec_E<Vec3f> &path,
                                   const std::vector<double> &times,
                                   const double current_t,
                                   const double total_t,
@@ -225,17 +225,17 @@ nav_msgs::Path buildPredictionMsg(const super_utils::vec_E<Vec3f> &path,
     return msg;
 }
 
-super_utils::vec_E<Vec3f> buildTrackingPath(const path_search::Astar::Ptr &astar,
+general_utils::vec_E<Vec3f> buildTrackingPath(const path_search::Astar::Ptr &astar,
                                             const Vec3f &start,
                                             const Vec3f &goal,
                                             const double horizon,
                                             const std::string &planner)
 {
-    super_utils::vec_E<Vec3f> path;
+    general_utils::vec_E<Vec3f> path;
     auto tryAstar = [&](const int flag, const std::string &label) {
-        super_utils::vec_E<Vec3f> astar_path;
+        general_utils::vec_E<Vec3f> astar_path;
         const auto ret = astar->pointToPointPathSearch(start, goal, flag, horizon, astar_path, 0.2);
-        if ((ret == super_utils::SUCCESS || ret == super_utils::REACH_GOAL) && astar_path.size() >= 2)
+        if ((ret == general_utils::SUCCESS || ret == general_utils::REACH_GOAL) && astar_path.size() >= 2)
         {
             path = astar_path;
             ROS_INFO("Task target source %s A* guide: %zu waypoints.", label.c_str(), path.size());
@@ -651,7 +651,7 @@ int main(int argc, char **argv)
     uint32_t scheduled_traj_id = 0;
     ros::Time scheduled_stop_time;
     PerchingSurfaceSample frozen_surface;
-    super_utils::vec_E<Vec3f> joint_path;
+    general_utils::vec_E<Vec3f> joint_path;
     std::vector<double> joint_times;
     double joint_total_t = 0.1;
     nav_msgs::Path joint_path_msg;
@@ -675,7 +675,7 @@ int main(int argc, char **argv)
         travel_distance = std::max(travel_distance,
                                    std::max(6.0, target_speed * std::max(6.0, tracking_prediction_horizon)));
         target_goal = target_start + direction * travel_distance;
-        super_utils::vec_E<Vec3f> base_path;
+        general_utils::vec_E<Vec3f> base_path;
         base_path.emplace_back(target_start);
         base_path.emplace_back(target_goal);
         joint_path = makeRuntimePath(base_path, target_loop, target_loop_mode);

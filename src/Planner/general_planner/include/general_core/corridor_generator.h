@@ -41,11 +41,11 @@
 namespace general_planner {
 #define DEBUG_FILE_DIR(name) (string(string(ROOT_DIR) + "log/"+name))
     using namespace geometry_utils;
-    using super_utils::Vec3i;
-    using super_utils::vec_E;
-    using super_utils::Line;
+    using general_utils::Vec3i;
+    using general_utils::vec_E;
+    using general_utils::Line;
     using namespace color_text;
-    using super_utils::OCCUPIED;
+    using general_utils::OCCUPIED;
 
     class CorridorGenerator {
     private:
@@ -103,7 +103,7 @@ namespace general_planner {
 
         bool GeneratePolytopeFromPoint(const Vec3f &pt, Polytope &polytope);
 
-        bool GenerateEmptyPolytope(const super_utils::Vec3f &pt,
+        bool GenerateEmptyPolytope(const general_utils::Vec3f &pt,
                                    const double & dis,
                                    Polytope & polytope);
 

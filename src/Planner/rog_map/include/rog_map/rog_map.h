@@ -25,13 +25,13 @@
 
 #include <rog_map/prob_map.h>
 #include <rog_map/rog_map_core/common_lib.hpp>
-#include <super_utils/type_utils.hpp>
+#include <general_utils/type_utils.hpp>
 #include <fmt/color.h>
 
 namespace rog_map {
     using namespace std;
-    using super_utils::vec_Vec3i;
-    using super_utils::RobotState;
+    using general_utils::vec_Vec3i;
+    using general_utils::RobotState;
 
     typedef pcl::PointXYZI PointType;
     typedef pcl::PointCloud<PointType> PointCloudXYZIN;

@@ -34,7 +34,7 @@
 #include <utils/header/yaml_loader.hpp>
 #include <traj_opt/traj_manager.h>
 
-using namespace super_utils;
+using namespace general_utils;
 using namespace fsm;
 
 using PointType = pcl::PointXYZI;

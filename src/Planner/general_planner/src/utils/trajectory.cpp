@@ -24,7 +24,7 @@
 #include <data_structure/base/trajectory.h>
 
 using namespace geometry_utils;
-using namespace super_utils;
+using namespace general_utils;
 using namespace color_text;
 // Trasjectory==================================================
 

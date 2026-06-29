@@ -33,7 +33,7 @@
 
 
 namespace rog_map {
-    using super_utils::Pose;
+    using general_utils::Pose;
 
 
     class ProbMap : public SlidingMap {

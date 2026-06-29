@@ -64,7 +64,7 @@ void ExplorationRuntimeManager::onFinished(const ExplorationGoal &goal)
     status_ = Status::FINISHED;
 }
 
-bool ExplorationRuntimeManager::latestGoalReusable(const super_utils::Vec3f &robot_pos,
+bool ExplorationRuntimeManager::latestGoalReusable(const general_utils::Vec3f &robot_pos,
                                                    const double committed_remaining,
                                                    const bool new_task) const
 {
@@ -83,7 +83,7 @@ bool ExplorationRuntimeManager::latestGoalReusable(const super_utils::Vec3f &rob
 }
 
 bool ExplorationRuntimeManager::shouldKeepCurrentGoal(const ExplorationGoal &candidate,
-                                                      const super_utils::Vec3f &robot_pos,
+                                                      const general_utils::Vec3f &robot_pos,
                                                       const double committed_remaining,
                                                       const bool new_task) const
 {
@@ -97,7 +97,7 @@ bool ExplorationRuntimeManager::shouldKeepCurrentGoal(const ExplorationGoal &can
     return candidate.score >= latest_goal_.score - switch_margin;
 }
 
-bool ExplorationRuntimeManager::shouldReuseLatestGoal(const super_utils::Vec3f &robot_pos,
+bool ExplorationRuntimeManager::shouldReuseLatestGoal(const general_utils::Vec3f &robot_pos,
                                                       const double committed_remaining,
                                                       const bool new_task) const
 {

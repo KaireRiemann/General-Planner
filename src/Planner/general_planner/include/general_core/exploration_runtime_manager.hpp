@@ -32,11 +32,11 @@ public:
     void onFinished(const ExplorationGoal &goal);
 
     bool shouldKeepCurrentGoal(const ExplorationGoal &candidate,
-                               const super_utils::Vec3f &robot_pos,
+                               const general_utils::Vec3f &robot_pos,
                                double committed_remaining,
                                bool new_task) const;
 
-    bool shouldReuseLatestGoal(const super_utils::Vec3f &robot_pos,
+    bool shouldReuseLatestGoal(const general_utils::Vec3f &robot_pos,
                                double committed_remaining,
                                bool new_task) const;
 
@@ -47,7 +47,7 @@ public:
     bool hasCommittedGoal() const;
 
 private:
-    bool latestGoalReusable(const super_utils::Vec3f &robot_pos,
+    bool latestGoalReusable(const general_utils::Vec3f &robot_pos,
                             double committed_remaining,
                             bool new_task) const;
 

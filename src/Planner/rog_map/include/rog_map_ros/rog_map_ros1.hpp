@@ -42,10 +42,10 @@
 #include <nav_msgs/Odometry.h>
 #include <sensor_msgs/PointCloud2.h>
 #include <visualization_msgs/MarkerArray.h>
-#include <super_utils/color_msg_utils.hpp>
+#include <general_utils/color_msg_utils.hpp>
 #include <tf2_ros/transform_broadcaster.h>
 namespace rog_map {
-    using namespace super_utils;
+    using namespace general_utils;
 
     class ROGMapROS :public ROGMap {
         ros::NodeHandle nh_;

@@ -28,10 +28,10 @@
 #include <utils/header/color_msg_utils.hpp>
 
 namespace geometry_utils {
-    using super_utils::Mat3f;
-    using super_utils::Vec3f;
-    using super_utils::vec_Vec3f;
-    using super_utils::Mat3Df;
+    using general_utils::Mat3f;
+    using general_utils::Vec3f;
+    using general_utils::vec_Vec3f;
+    using general_utils::Mat3Df;
     
 
     class Ellipsoid {

@@ -30,7 +30,7 @@
 
 
 using namespace geometry_utils;
-using namespace super_utils;
+using namespace general_utils;
 using namespace math_utils;
 using namespace std;
 
