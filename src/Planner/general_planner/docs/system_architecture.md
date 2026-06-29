@@ -171,6 +171,14 @@ The current task plugin boundary is:
 - `PerchingPlanner`: contact trajectory compatibility adapter.
 - `TakeoffPlanner`: dynamic takeoff/unperching compatibility adapter.
 - `ExplorationMissionAdapter`: exploration mission compatibility adapter.
+  Exploration-specific headers and sources now live under
+  `general_core/exploration`. ATSP ordering is isolated under
+  `general_core/exploration/atsp`, exploration memory now includes
+  `FrontierMemory` and `CoverageGrid`, and anti-NDO decision memory lives under
+  `general_core/nhbp`. Complete exploration, ATSP ordering, and NHBP anti-NDO
+  behavior are specified in `exploration_nhbp_architecture.md`. That work should
+  extend the exploration task plugin and planner memory layers without adding a
+  second top-level ROS/FSM.
 
 Combined missions compose these plugins. `TrackingPerching` should remain a
 mission behavior:
@@ -301,6 +309,25 @@ Completed in the current migration step:
   The public `rog_map/include/general_utils` headers define the canonical
   namespace, while `rog_map/include/super_utils` remains a compatibility
   include path for older downstream code.
+- Exploration headers and sources now live under `general_core/exploration`.
+  The exploration frontend has a configurable frontier source and can ingest
+  ROG-Map frontier cells in `auto` mode while preserving the previous fallback
+  local scan behavior.
+- Exploration ATSP ordering now has its own
+  `general_core/exploration/atsp` module. The implementation mirrors the
+  `fy_node` ATSP file workflow (`single.tsp`, `single.par`, `single.txt`).
+  The `fy_node` `lkh_tsp_solver` package has been migrated into this workspace,
+  so `solver=fy_node_lkh` directly calls `solveTSPLKH()`, with external-command
+  and deterministic greedy directed-tour fallbacks.
+- NHBP now has a dedicated `general_core/nhbp` module. `NavigationMemory`
+  records decision history, TTL failure blacklist entries, and initial NDO
+  diagnoses for repeated switching / no-progress detection. `DecisionStabilizer`
+  is now wired into exploration replanning before local trajectory optimization,
+  applying blacklist checks, switch-margin hysteresis, minimum commit-time
+  hysteresis, and NDO keep-current suppression.
+- Shared generic helpers now have a `general_core/utils` home. The first helper
+  is normalized string-token handling used by frontier-source and solver-mode
+  dispatch.
 
 Validation for this step:
 
@@ -311,6 +338,9 @@ Validation for this step:
   covering `click_smooth_ros1.yaml`, `click_esdf_ros1.yaml`,
   `click_plain_ros1.yaml`, `tracking_tracker_drone1_ros1.yaml`, and
   `tracking_perching_chain_ros1.yaml`.
+- Docker `ros1_noetic`: exploration smoke with `exploration.yaml`.
+- Docker `ros1_noetic`: small ATSP file smoke through migrated
+  `lkh_tsp_solver`, confirming a generated `single.txt` tour.
 
 Post-architecture cleanup target:
 
@@ -318,4 +348,6 @@ Post-architecture cleanup target:
   residual task-specific commit checks into concrete backend-owned classes.
 - Replace more legacy FSM branches with mission behavior objects once runtime
   behavior snapshots are stable.
+- Add frontier/coverage memory, recovery escape candidates, topology escape
+  nodes, and NDO scenario tests.
 - Keep behavior-compatible ROS1 smoke tests after each step.

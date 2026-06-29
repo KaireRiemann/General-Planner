@@ -1,6 +1,6 @@
 #include <fsm/fsm.h>
 
-#include <general_core/exploration_mission_adapter.hpp>
+#include <general_core/exploration/exploration_mission_adapter.hpp>
 #include <general_core/perching/perching_planner.hpp>
 #include <general_core/state2state/state2state_planner.hpp>
 #include <general_core/takeoff/takeoff_planner.hpp>

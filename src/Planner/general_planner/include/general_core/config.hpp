@@ -25,6 +25,8 @@
 #ifndef GENERAL_PLANNER_CONFIG_HPP
 #define GENERAL_PLANNER_CONFIG_HPP
 
+#include <string>
+
 #include <rog_map/rog_map_core/config.hpp>
 #include <traj_opt/config.hpp>
 #include <utils/header/yaml_loader.hpp>
@@ -128,9 +130,14 @@ namespace general_planner {
 
         bool exploration_enable{false};
         bool exploration_print_log{true};
+        std::string exploration_frontier_source{"fallback_scan"};
         double exploration_frontier_search_radius{12.0};
         double exploration_frontier_cluster_radius{0.8};
+        double exploration_frontier_sample_resolution{0.8};
         int exploration_min_frontier_cluster_size{5};
+        int exploration_max_raw_frontier_points{4096};
+        int exploration_max_frontier_cells{1536};
+        int exploration_max_frontier_clusters{64};
         double exploration_viewpoint_min_distance{1.2};
         double exploration_viewpoint_max_distance{4.0};
         double exploration_viewpoint_height_offset{0.0};
@@ -138,6 +145,8 @@ namespace general_planner {
         int exploration_viewpoint_yaw_sample_num{16};
         int exploration_viewpoint_radius_sample_num{3};
         int exploration_max_candidate_num{128};
+        int exploration_max_astar_checks{64};
+        int exploration_max_reachable_candidate_num{48};
         double exploration_weight_travel{1.0};
         double exploration_weight_yaw{0.5};
         double exploration_weight_curvature{0.8};
@@ -149,6 +158,42 @@ namespace general_planner {
         bool exploration_unknown_as_occupied_for_motion{true};
         bool exploration_require_line_free_to_frontier{false};
         bool exploration_use_astar_cost{true};
+        bool exploration_use_atsp{false};
+        std::string exploration_atsp_solver{"greedy"};
+        std::string exploration_atsp_work_dir{"/tmp/general_planner_atsp"};
+        std::string exploration_atsp_external_command;
+        int exploration_atsp_time_budget_ms{30};
+        int exploration_atsp_cost_scale{100};
+        int exploration_atsp_max_candidate_num{96};
+        bool exploration_use_frontier_memory{false};
+        int exploration_frontier_memory_max_records{256};
+        double exploration_frontier_memory_ttl{45.0};
+        double exploration_frontier_memory_failure_ttl{12.0};
+        double exploration_frontier_memory_covered_radius{0.8};
+        double exploration_frontier_memory_recovery_min_distance{0.8};
+        bool exploration_use_coverage_grid{false};
+        double exploration_coverage_grid_resolution{1.0};
+        double exploration_coverage_revisit_radius{0.8};
+        double exploration_coverage_revisit_time_window{5.0};
+        double exploration_coverage_revisit_penalty_weight{0.5};
+        int exploration_coverage_grid_max_cells{4096};
+        bool exploration_use_topological_memory{false};
+        int exploration_topology_max_nodes{256};
+        int exploration_topology_max_edges{512};
+        double exploration_topology_node_merge_radius{1.0};
+        double exploration_topology_node_blacklist_ttl{12.0};
+        double exploration_topology_edge_blacklist_ttl{12.0};
+        double exploration_topology_recovery_min_distance{1.0};
+        double exploration_topology_recovery_max_distance{8.0};
+        bool exploration_nhbp_enable{false};
+        int exploration_nhbp_decision_history{16};
+        double exploration_nhbp_blacklist_ttl{12.0};
+        double exploration_nhbp_min_commit_time{1.0};
+        double exploration_nhbp_min_progress_distance{0.3};
+        double exploration_nhbp_switch_margin{0.25};
+        int exploration_nhbp_max_switches{4};
+        double exploration_nhbp_no_progress_time{3.0};
+        bool exploration_nhbp_recovery_enable{true};
 
         double tracking_distance{2.2};
         double tracking_distance_tolerance{0.8};
@@ -518,12 +563,22 @@ namespace general_planner {
             loader.LoadParam("general_planner/se3_aggressive/use_numeric_shape_gradient",
                              se3_use_numeric_shape_gradient, true);
             loader.LoadParam("general_planner/exploration_enable", exploration_enable, false);
+            loader.LoadParam("general_planner/exploration_frontier_source",
+                             exploration_frontier_source, std::string("fallback_scan"));
             loader.LoadParam("general_planner/exploration_frontier_search_radius",
                              exploration_frontier_search_radius, 12.0);
             loader.LoadParam("general_planner/exploration_frontier_cluster_radius",
                              exploration_frontier_cluster_radius, 0.8);
+            loader.LoadParam("general_planner/exploration_frontier_sample_resolution",
+                             exploration_frontier_sample_resolution, 0.8);
             loader.LoadParam("general_planner/exploration_min_frontier_cluster_size",
                              exploration_min_frontier_cluster_size, 5);
+            loader.LoadParam("general_planner/exploration_max_raw_frontier_points",
+                             exploration_max_raw_frontier_points, 4096);
+            loader.LoadParam("general_planner/exploration_max_frontier_cells",
+                             exploration_max_frontier_cells, 1536);
+            loader.LoadParam("general_planner/exploration_max_frontier_clusters",
+                             exploration_max_frontier_clusters, 64);
             loader.LoadParam("general_planner/exploration_viewpoint_min_distance",
                              exploration_viewpoint_min_distance, 1.2);
             loader.LoadParam("general_planner/exploration_viewpoint_max_distance",
@@ -538,6 +593,10 @@ namespace general_planner {
                              exploration_viewpoint_radius_sample_num, 3);
             loader.LoadParam("general_planner/exploration_max_candidate_num",
                              exploration_max_candidate_num, 128);
+            loader.LoadParam("general_planner/exploration_max_astar_checks",
+                             exploration_max_astar_checks, 64);
+            loader.LoadParam("general_planner/exploration_max_reachable_candidate_num",
+                             exploration_max_reachable_candidate_num, 48);
             loader.LoadParam("general_planner/exploration_weight_travel",
                              exploration_weight_travel, 1.0);
             loader.LoadParam("general_planner/exploration_weight_yaw",
@@ -560,6 +619,78 @@ namespace general_planner {
                              exploration_require_line_free_to_frontier, false);
             loader.LoadParam("general_planner/exploration_use_astar_cost",
                              exploration_use_astar_cost, true);
+            loader.LoadParam("general_planner/exploration_use_atsp",
+                             exploration_use_atsp, false);
+            loader.LoadParam("general_planner/exploration_atsp_solver",
+                             exploration_atsp_solver, std::string("greedy"));
+            loader.LoadParam("general_planner/exploration_atsp_work_dir",
+                             exploration_atsp_work_dir, std::string("/tmp/general_planner_atsp"));
+            loader.LoadParam("general_planner/exploration_atsp_external_command",
+                             exploration_atsp_external_command, std::string(""));
+            loader.LoadParam("general_planner/exploration_atsp_time_budget_ms",
+                             exploration_atsp_time_budget_ms, 30);
+            loader.LoadParam("general_planner/exploration_atsp_cost_scale",
+                             exploration_atsp_cost_scale, 100);
+            loader.LoadParam("general_planner/exploration_atsp_max_candidate_num",
+                             exploration_atsp_max_candidate_num, 96);
+            loader.LoadParam("general_planner/exploration_use_frontier_memory",
+                             exploration_use_frontier_memory, false);
+            loader.LoadParam("general_planner/exploration_frontier_memory_max_records",
+                             exploration_frontier_memory_max_records, 256);
+            loader.LoadParam("general_planner/exploration_frontier_memory_ttl",
+                             exploration_frontier_memory_ttl, 45.0);
+            loader.LoadParam("general_planner/exploration_frontier_memory_failure_ttl",
+                             exploration_frontier_memory_failure_ttl, 12.0);
+            loader.LoadParam("general_planner/exploration_frontier_memory_covered_radius",
+                             exploration_frontier_memory_covered_radius, 0.8);
+            loader.LoadParam("general_planner/exploration_frontier_memory_recovery_min_distance",
+                             exploration_frontier_memory_recovery_min_distance, 0.8);
+            loader.LoadParam("general_planner/exploration_use_coverage_grid",
+                             exploration_use_coverage_grid, false);
+            loader.LoadParam("general_planner/exploration_coverage_grid_resolution",
+                             exploration_coverage_grid_resolution, 1.0);
+            loader.LoadParam("general_planner/exploration_coverage_revisit_radius",
+                             exploration_coverage_revisit_radius, 0.8);
+            loader.LoadParam("general_planner/exploration_coverage_revisit_time_window",
+                             exploration_coverage_revisit_time_window, 5.0);
+            loader.LoadParam("general_planner/exploration_coverage_revisit_penalty_weight",
+                             exploration_coverage_revisit_penalty_weight, 0.5);
+            loader.LoadParam("general_planner/exploration_coverage_grid_max_cells",
+                             exploration_coverage_grid_max_cells, 4096);
+            loader.LoadParam("general_planner/exploration_use_topological_memory",
+                             exploration_use_topological_memory, false);
+            loader.LoadParam("general_planner/exploration_topology_max_nodes",
+                             exploration_topology_max_nodes, 256);
+            loader.LoadParam("general_planner/exploration_topology_max_edges",
+                             exploration_topology_max_edges, 512);
+            loader.LoadParam("general_planner/exploration_topology_node_merge_radius",
+                             exploration_topology_node_merge_radius, 1.0);
+            loader.LoadParam("general_planner/exploration_topology_node_blacklist_ttl",
+                             exploration_topology_node_blacklist_ttl, 12.0);
+            loader.LoadParam("general_planner/exploration_topology_edge_blacklist_ttl",
+                             exploration_topology_edge_blacklist_ttl, 12.0);
+            loader.LoadParam("general_planner/exploration_topology_recovery_min_distance",
+                             exploration_topology_recovery_min_distance, 1.0);
+            loader.LoadParam("general_planner/exploration_topology_recovery_max_distance",
+                             exploration_topology_recovery_max_distance, 8.0);
+            loader.LoadParam("general_planner/exploration_nhbp_enable",
+                             exploration_nhbp_enable, false);
+            loader.LoadParam("general_planner/exploration_nhbp_decision_history",
+                             exploration_nhbp_decision_history, 16);
+            loader.LoadParam("general_planner/exploration_nhbp_blacklist_ttl",
+                             exploration_nhbp_blacklist_ttl, 12.0);
+            loader.LoadParam("general_planner/exploration_nhbp_min_commit_time",
+                             exploration_nhbp_min_commit_time, 1.0);
+            loader.LoadParam("general_planner/exploration_nhbp_min_progress_distance",
+                             exploration_nhbp_min_progress_distance, 0.3);
+            loader.LoadParam("general_planner/exploration_nhbp_switch_margin",
+                             exploration_nhbp_switch_margin, exploration_goal_switch_min_score_improvement);
+            loader.LoadParam("general_planner/exploration_nhbp_max_switches",
+                             exploration_nhbp_max_switches, 4);
+            loader.LoadParam("general_planner/exploration_nhbp_no_progress_time",
+                             exploration_nhbp_no_progress_time, 3.0);
+            loader.LoadParam("general_planner/exploration_nhbp_recovery_enable",
+                             exploration_nhbp_recovery_enable, true);
             loader.LoadParam("general_planner/exploration_print_log",
                              exploration_print_log, true);
             loader.LoadParam("general_planner/tracking/distance", tracking_distance, 2.2);

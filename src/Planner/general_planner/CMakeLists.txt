@@ -32,6 +32,7 @@ find_package(catkin REQUIRED COMPONENTS
         visualization_msgs
         message_filters
         rog_map
+        lkh_tsp_solver
         yaml-cpp
         tf
 )

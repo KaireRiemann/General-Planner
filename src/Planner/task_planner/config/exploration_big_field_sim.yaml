@@ -19,7 +19,7 @@ polar_resolution: 0.4
 downsample_res: 0.1
 vertical_fov: 178.0
 sensing_blind: 0.1
-sensing_horizon: 18.0
+sensing_horizon: 24.0
 sensing_rate: 10
 print_time_consumption: false
 # enum LiDARType:

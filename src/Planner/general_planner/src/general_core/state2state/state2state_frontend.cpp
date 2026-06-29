@@ -497,6 +497,36 @@ namespace state2state_task {
             return false;
         }
 
+        auto shortcutPathByLineOfSight = [&](const vec_Vec3f &input) {
+            if (input.size() <= 2) {
+                return input;
+            }
+            vec_Vec3f shortcut;
+            shortcut.reserve(input.size());
+            std::size_t anchor = 0;
+            appendPathPointUnique(input.front(), shortcut);
+            while (anchor + 1 < input.size()) {
+                std::size_t next = anchor + 1;
+                for (std::size_t j = input.size() - 1; j > anchor; --j) {
+                    if (lineUsable(input[anchor], input[j])) {
+                        next = j;
+                        break;
+                    }
+                }
+                appendPathPointUnique(input[next], shortcut);
+                anchor = next;
+            }
+            return shortcut;
+        };
+
+        const std::size_t raw_path_size = path.size();
+        path = shortcutPathByLineOfSight(path);
+        if (services.cfg.print_log && path.size() + 2 < raw_path_size) {
+            services.ros_ptr->info(" -- [GeneralPlanner] Frontend line-of-sight shortcut: {} -> {} points.",
+                           raw_path_size,
+                           path.size());
+        }
+
         if (services.cfg.state2state_over_goal_guard_enable) {
             const double near_goal_radius = std::max(services.cfg.resolution * 3.0,
                                                      services.cfg.state2state_near_goal_radius);
@@ -523,6 +553,7 @@ namespace state2state_task {
                     selected_path = direct_path;
                     selected_ret = direct_ret;
                     path = assembleSelectedPath();
+                    path = shortcutPathByLineOfSight(path);
                     services.ros_ptr->warn(" -- [GeneralPlanner] Near-goal frontend path overshoots goal by {:.2f}m; clamp to direct goal segment.",
                                    max_path_over);
                 } else {

@@ -44,8 +44,8 @@
 #include "general_core/corridor_generator.h"
 #include "general_core/dynamic_obstacle_layer.hpp"
 #include "general_core/fov_checker.h"
-#include "general_core/exploration_frontend.hpp"
-#include "general_core/exploration_runtime_manager.hpp"
+#include "general_core/exploration/exploration_frontend.hpp"
+#include "general_core/exploration/exploration_runtime_manager.hpp"
 #include "general_core/tracking/tracking_perching_frontend.hpp"
 #include "general_core/tracking/tracking_runtime_manager.hpp"
 #include "general_core/perching/perching_runtime_manager.hpp"
@@ -614,6 +614,13 @@ namespace general_planner {
         TakeoffFrontend::Config makeTakeoffFrontendConfig() const;
 
         ExplorationFrontend::Config makeExplorationFrontendConfig() const;
+        bool validateExplorationRecoveryGoal(const ExplorationGoal &goal,
+                                             const Vec3f &robot_pos,
+                                             std::string *reason = nullptr);
+        bool selectValidatedExplorationRecoveryGoal(const Vec3f &robot_pos,
+                                                    double stamp,
+                                                    ExplorationGoal &goal,
+                                                    std::string *reason = nullptr);
 
         RET_CODE tryCommitPerchingFromTracking(
             const traj_opt::DynamicTargetStates &target_prediction,

@@ -1,25 +1,31 @@
 <launch>
+    <!-- Big-field exploration simulation with perfect_drone. -->
     <arg name="planner_config_path" default="$(find general_planner)/config/exploration.yaml"/>
     <arg name="sim_config_path" default="$(find task_planner)/config/exploration_big_field_sim.yaml"/>
-    <arg name="rviz" default="true"/>
+
     <arg name="marsim" default="true"/>
+    <arg name="rviz" default="true"/>
     <arg name="top_down" default="true"/>
-    <arg name="fpv" default="true"/>
+    <arg name="fpv" default="false"/>
+    <arg name="sim_output" default="screen"/>
+    <arg name="planner_output" default="screen"/>
+    <arg name="top_down_rviz_config" default="$(find perfect_drone_sim)/rviz/top_down.rviz"/>
+    <arg name="fpv_rviz_config" default="$(find perfect_drone_sim)/rviz/fpv.rviz"/>
 
     <node if="$(arg marsim)" pkg="perfect_drone_sim" type="perfect_drone"
-          name="perfect_drone" output="screen" clear_params="true">
+          name="perfect_drone" output="$(arg sim_output)" clear_params="true">
         <param name="config_path" value="$(arg sim_config_path)" type="string"/>
     </node>
 
     <node pkg="general_planner" name="fsm_node" type="fsm_node"
-          output="screen" clear_params="true">
+          output="$(arg planner_output)" clear_params="true" required="true">
         <param name="config_path" value="$(arg planner_config_path)" type="string"/>
     </node>
 
     <group if="$(arg rviz)">
         <node if="$(arg top_down)" pkg="rviz" type="rviz" name="exploration_top_down"
-              args="-d $(find perfect_drone_sim)/rviz/top_down.rviz" output="log"/>
+              args="-d $(arg top_down_rviz_config)" output="log"/>
         <node if="$(arg fpv)" pkg="rviz" type="rviz" name="exploration_fpv"
-              args="-d $(find perfect_drone_sim)/rviz/fpv.rviz" output="log"/>
+              args="-d $(arg fpv_rviz_config)" output="log"/>
     </group>
 </launch>
