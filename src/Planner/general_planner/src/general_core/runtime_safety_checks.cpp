@@ -87,6 +87,11 @@ namespace general_planner {
                    grid_type == rog_map::GridType::OUT_OF_MAP ||
                    (unknown_as_occupied && grid_type == rog_map::GridType::UNKNOWN);
         };
+        const bool line_unknown_as_occupied =
+                unknown_as_occupied &&
+                map_manager_ != nullptr &&
+                map_manager_->ready() &&
+                map_manager_->getMapConfig().unk_inflation_en;
         const bool dynamic_layer_active =
                 dynamic_obstacle_layer_ != nullptr && dynamic_obstacle_layer_->enabled();
 
@@ -141,7 +146,7 @@ namespace general_planner {
                 }
                 if (!unsafe &&
                     (pos - last_pos).norm() > 1.0e-4 &&
-                    !map_manager_->isLineFree(last_pos, pos, true, unknown_as_occupied)) {
+                    !map_manager_->isLineFree(last_pos, pos, true, line_unknown_as_occupied)) {
                     unsafe = true;
                     reason = "line_collision";
                 }

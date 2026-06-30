@@ -72,6 +72,7 @@ general_planner:
   exploration_weight_curvature: 0.8
   exploration_weight_info_gain: -2.0
   exploration_weight_unknown_risk: 1.0
+  exploration_information_gain_saturation: 220.0
   exploration_min_information_gain: 2.0
   exploration_goal_switch_min_score_improvement: 0.45
   exploration_goal_reached_distance: 0.5
@@ -89,6 +90,7 @@ general_planner:
   exploration_frontier_memory_max_records: 256
   exploration_frontier_memory_ttl: 60.0
   exploration_frontier_memory_failure_ttl: 12.0
+  exploration_frontier_memory_failure_block_radius: 2.0
   exploration_frontier_memory_covered_radius: 0.8
   exploration_frontier_memory_recovery_min_distance: 0.8
   exploration_use_coverage_grid: true
@@ -114,6 +116,13 @@ general_planner:
   exploration_nhbp_max_switches: 4
   exploration_nhbp_no_progress_time: 3.0
   exploration_nhbp_recovery_enable: true
+  exploration_local_trap_detection_enable: true
+  exploration_local_trap_repeat_threshold: 4
+  exploration_local_trap_cluster_threshold: 2
+  exploration_local_trap_astar_threshold: 12
+  exploration_local_trap_min_information_gain: 800.0
+  exploration_local_trap_same_region_radius: 2.5
+  exploration_local_trap_cooldown: 4.0
   exploration_print_log: true
 
 traj_opt:

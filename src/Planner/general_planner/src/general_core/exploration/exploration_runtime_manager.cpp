@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <sstream>
 #include <string>
 
@@ -25,6 +26,7 @@ ExplorationRuntimeManager::ExplorationRuntimeManager(const Config &cfg)
                   cfg.exploration_frontier_memory_max_records,
                   cfg.exploration_frontier_memory_ttl,
                   cfg.exploration_frontier_memory_failure_ttl,
+                  cfg.exploration_frontier_memory_failure_block_radius,
                   cfg.exploration_frontier_memory_covered_radius,
                   cfg.exploration_frontier_memory_recovery_min_distance}),
           coverage_grid_(CoverageGrid::Config{
@@ -54,6 +56,22 @@ void ExplorationRuntimeManager::reset()
     consecutive_temporary_failures_ = 0;
     has_latest_goal_ = false;
     has_committed_goal_ = false;
+    has_last_trap_candidate_ = false;
+    last_trap_candidate_position_.setZero();
+    last_trap_robot_position_.setZero();
+    last_trap_frontier_id_ = -1;
+    repeated_local_region_count_ = 0;
+    local_trap_recovery_request_count_ = 0;
+    local_trap_cooldown_until_ = 0.0;
+    has_recent_trap_region_ = false;
+    recent_trap_position_.setZero();
+    recent_trap_frontier_id_ = -1;
+    recent_trap_block_until_ = 0.0;
+    recovery_query_count_ = 0;
+    frontier_recovery_selected_count_ = 0;
+    topology_recovery_selected_count_ = 0;
+    recovery_unavailable_count_ = 0;
+    recovery_blocked_by_recent_trap_count_ = 0;
     navigation_memory_.reset();
     frontier_memory_.reset();
     coverage_grid_.reset();
@@ -187,6 +205,31 @@ ExplorationRuntimeManager::SelectionDecision ExplorationRuntimeManager::stabiliz
         adjusted_candidate.reason += " coverage_revisit_penalty=" + std::to_string(revisit_penalty);
     }
 
+    std::string trap_reason;
+    if (localTrapDetected(adjusted_candidate, robot_pos, stamp, revisit_penalty, trap_reason)) {
+        frontier_memory_.markFailed(adjusted_candidate, stamp);
+        topological_memory_.recordFailureNear(adjusted_candidate.position, stamp);
+        if (nhbpEnabled() && !adjusted_candidate.memory_key.empty()) {
+            navigation_memory_.recordFailure(adjusted_candidate.memory_key,
+                                             nhbp::FailureReason::NDO_OSCILLATION,
+                                             stamp,
+                                             cfg_.exploration_nhbp_blacklist_ttl);
+        }
+        ++local_trap_recovery_request_count_;
+        local_trap_cooldown_until_ =
+                stamp + std::max(0.0, cfg_.exploration_local_trap_cooldown);
+        has_recent_trap_region_ = true;
+        recent_trap_position_ = adjusted_candidate.position;
+        recent_trap_frontier_id_ = adjusted_candidate.frontier_id;
+        recent_trap_block_until_ = local_trap_cooldown_until_;
+        out.ready = false;
+        out.reject = true;
+        out.recovery_requested = true;
+        out.allow_candidate_fallback = true;
+        out.reason = trap_reason;
+        return out;
+    }
+
     const bool current_reusable = latestGoalReusable(robot_pos,
                                                      committed_remaining,
                                                      new_task);
@@ -307,10 +350,12 @@ nhbp::NdoDiagnosis ExplorationRuntimeManager::diagnose(const double stamp) const
 
 bool ExplorationRuntimeManager::hasRecoveryGoal(const general_utils::Vec3f &robot_pos,
                                                 const double stamp,
-                                                ExplorationGoal &goal) const
+                                                ExplorationGoal &goal)
 {
+    ++recovery_query_count_;
     if (!cfg_.exploration_nhbp_recovery_enable) {
         goal = ExplorationGoal{};
+        ++recovery_unavailable_count_;
         return false;
     }
     if (frontier_memory_.hasRecoverableGoal(
@@ -318,14 +363,34 @@ bool ExplorationRuntimeManager::hasRecoveryGoal(const general_utils::Vec3f &robo
             stamp,
             goal,
             [this, stamp](const ExplorationGoal &candidate) {
-                return candidate.memory_key.empty() ||
-                       !navigation_memory_.isBlacklisted(candidate.memory_key, stamp);
+                if (!candidate.memory_key.empty() &&
+                    navigation_memory_.isBlacklisted(candidate.memory_key, stamp)) {
+                    return false;
+                }
+                const bool blocked_by_trap = recoveryBlockedByRecentTrap(candidate, stamp);
+                if (blocked_by_trap) {
+                    ++recovery_blocked_by_recent_trap_count_;
+                }
+                return !blocked_by_trap;
             })) {
+        ++frontier_recovery_selected_count_;
         return true;
     }
 
     general_utils::Vec3f recovery_position = general_utils::Vec3f::Zero();
-    if (!topological_memory_.findRecoveryPosition(robot_pos, stamp, recovery_position)) {
+    if (!topological_memory_.findRecoveryPosition(
+            robot_pos,
+            stamp,
+            recovery_position,
+            [this, stamp](const general_utils::Vec3f &candidate_position) {
+                const bool blocked_by_trap =
+                        recoveryPositionBlockedByRecentTrap(candidate_position, -1, stamp);
+                if (blocked_by_trap) {
+                    ++recovery_blocked_by_recent_trap_count_;
+                }
+                return !blocked_by_trap;
+            })) {
+        ++recovery_unavailable_count_;
         return false;
     }
 
@@ -341,6 +406,13 @@ bool ExplorationRuntimeManager::hasRecoveryGoal(const general_utils::Vec3f &robo
     goal.frontier_id = -1;
     goal.memory_key = "topology_recovery";
     goal.reason = "topological_memory_recovery";
+    if (recoveryBlockedByRecentTrap(goal, stamp)) {
+        ++recovery_blocked_by_recent_trap_count_;
+        ++recovery_unavailable_count_;
+        goal = ExplorationGoal{};
+        return false;
+    }
+    ++topology_recovery_selected_count_;
     return true;
 }
 
@@ -377,6 +449,14 @@ std::string ExplorationRuntimeManager::diagnosticSummary(const double stamp) con
         << ";topology_nodes=" << topological_memory_.activeNodeCount(stamp)
         << ";topology_blocked=" << topological_memory_.blockedNodeCount(stamp)
         << ";topology_edges=" << topological_memory_.edgeCount()
+        << ";local_trap_recovery_requests=" << local_trap_recovery_request_count_
+        << ";recent_trap_active="
+        << static_cast<int>(has_recent_trap_region_ && recent_trap_block_until_ > stamp)
+        << ";recovery_queries=" << recovery_query_count_
+        << ";frontier_recovery_selected=" << frontier_recovery_selected_count_
+        << ";topology_recovery_selected=" << topology_recovery_selected_count_
+        << ";recovery_unavailable=" << recovery_unavailable_count_
+        << ";recovery_blocked_by_recent_trap=" << recovery_blocked_by_recent_trap_count_
         << ";ndo=" << nhbp::toString(ndo.state)
         << ";ndo_reason=" << ndo.reason;
     return oss.str();
@@ -400,6 +480,122 @@ int ExplorationRuntimeManager::consecutiveTemporaryFailures() const
 bool ExplorationRuntimeManager::hasCommittedGoal() const
 {
     return has_committed_goal_;
+}
+
+bool ExplorationRuntimeManager::localTrapDetected(const ExplorationGoal &candidate,
+                                                  const general_utils::Vec3f &robot_pos,
+                                                  const double stamp,
+                                                  const double revisit_penalty,
+                                                  std::string &reason)
+{
+    reason.clear();
+    if (!cfg_.exploration_local_trap_detection_enable ||
+        !candidate.valid ||
+        !candidate.position.allFinite() ||
+        !robot_pos.allFinite()) {
+        return false;
+    }
+
+    const double same_region_radius =
+            std::max(0.1, cfg_.exploration_local_trap_same_region_radius);
+    const bool same_region =
+            has_last_trap_candidate_ &&
+            (candidate.position - last_trap_candidate_position_).norm() <= same_region_radius;
+    const bool same_frontier =
+            candidate.frontier_id >= 0 &&
+            candidate.frontier_id == last_trap_frontier_id_;
+
+    if (same_region || same_frontier) {
+        ++repeated_local_region_count_;
+    } else {
+        repeated_local_region_count_ = 1;
+    }
+
+    const double robot_motion =
+            has_last_trap_candidate_
+                    ? (robot_pos - last_trap_robot_position_).norm()
+                    : std::numeric_limits<double>::infinity();
+    last_trap_candidate_position_ = candidate.position;
+    last_trap_robot_position_ = robot_pos;
+    last_trap_frontier_id_ = candidate.frontier_id;
+    has_last_trap_candidate_ = true;
+
+    if (stamp < local_trap_cooldown_until_) {
+        return false;
+    }
+
+    const int repeat_threshold =
+            std::max(2, cfg_.exploration_local_trap_repeat_threshold);
+    const int cluster_threshold =
+            std::max(1, cfg_.exploration_local_trap_cluster_threshold);
+    const int astar_threshold =
+            std::max(1, cfg_.exploration_local_trap_astar_threshold);
+    const double min_information_gain =
+            std::max(0.0, cfg_.exploration_local_trap_min_information_gain);
+    const bool repeated = repeated_local_region_count_ >= repeat_threshold;
+    const int cluster_diversity =
+            candidate.raw_cluster_count > 0 ? candidate.raw_cluster_count : candidate.cluster_count;
+    const bool low_frontier_diversity =
+            cluster_diversity > 0 &&
+            cluster_diversity <= cluster_threshold;
+    const bool high_astar_pressure =
+            candidate.astar_check_count >= astar_threshold;
+    const bool high_local_information_gain =
+            min_information_gain <= 0.0 ||
+            candidate.information_gain >= min_information_gain;
+    const bool revisiting =
+            revisit_penalty > 0.0 ||
+            robot_motion <= std::max(0.1, cfg_.exploration_nhbp_min_progress_distance);
+
+    if (!(repeated && low_frontier_diversity && high_astar_pressure &&
+          high_local_information_gain && revisiting)) {
+        return false;
+    }
+
+    std::ostringstream oss;
+    oss << "local_trap_escape_requested"
+        << ":repeat=" << repeated_local_region_count_
+        << ",clusters=" << cluster_diversity
+        << ",astar_checks=" << candidate.astar_check_count
+        << ",reachable=" << candidate.reachable_candidate_count
+        << ",frontier=" << candidate.frontier_id
+        << ",info=" << candidate.information_gain
+        << ",revisit=" << revisit_penalty
+        << ",robot_motion=" << robot_motion;
+    reason = oss.str();
+    return true;
+}
+
+bool ExplorationRuntimeManager::recoveryBlockedByRecentTrap(const ExplorationGoal &goal,
+                                                            const double stamp) const
+{
+    if (!goal.valid || !goal.position.allFinite()) {
+        return false;
+    }
+    return recoveryPositionBlockedByRecentTrap(goal.position, goal.frontier_id, stamp);
+}
+
+bool ExplorationRuntimeManager::recoveryPositionBlockedByRecentTrap(
+        const general_utils::Vec3f &position,
+        const int frontier_id,
+        const double stamp) const
+{
+    if (!has_recent_trap_region_ ||
+        recent_trap_block_until_ <= stamp ||
+        !position.allFinite() ||
+        !recent_trap_position_.allFinite()) {
+        return false;
+    }
+
+    const double same_region_radius =
+            std::max(0.1, cfg_.exploration_local_trap_same_region_radius);
+    const bool same_region =
+            (position - recent_trap_position_).norm() <= same_region_radius;
+    const bool same_frontier =
+            frontier_id >= 0 &&
+            recent_trap_frontier_id_ >= 0 &&
+            frontier_id == recent_trap_frontier_id_;
+    return same_region || same_frontier;
 }
 
 const char *ExplorationRuntimeManager::toString(const Status status)

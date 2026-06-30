@@ -80,6 +80,11 @@ bool checkPositionTrajectorySafety(const RuntimeTrajectorySafetyServices &servic
                grid_type == rog_map::GridType::OUT_OF_MAP ||
                (unknown_as_occupied && grid_type == rog_map::GridType::UNKNOWN);
     };
+    const bool line_unknown_as_occupied =
+            unknown_as_occupied &&
+            services.map_manager != nullptr &&
+            services.map_manager->ready() &&
+            services.map_manager->getMapConfig().unk_inflation_en;
     const bool dynamic_layer_active =
             services.dynamic_obstacle_layer != nullptr && services.dynamic_obstacle_layer->enabled();
 
@@ -134,7 +139,7 @@ bool checkPositionTrajectorySafety(const RuntimeTrajectorySafetyServices &servic
             }
             if (!unsafe &&
                 (pos - last_pos).norm() > 1.0e-4 &&
-                !services.map_manager->isLineFree(last_pos, pos, true, unknown_as_occupied)) {
+                !services.map_manager->isLineFree(last_pos, pos, true, line_unknown_as_occupied)) {
                 unsafe = true;
                 reason = "line_collision";
             }

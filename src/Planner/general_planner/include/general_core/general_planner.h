@@ -74,6 +74,13 @@ namespace general_planner {
     using namespace color_text;
     using namespace geometry_utils;
 
+    namespace nhbp {
+    class FarGoalReasoner;
+    class SparseGlobalMap;
+    class State2StateNHBPAdapter;
+    class TopologicalMemory;
+    }
+
     class GeneralPlanner {
         class StateToStateBackendContextAdapter;
         class StateToStateSE3BackendRuntimeAdapter;
@@ -111,6 +118,7 @@ namespace general_planner {
         double planner_process_start_WT_;
 
         state2state_task::State2StateZDebug latest_state2state_z_debug_;
+        std::string latest_state2state_nhbp_debug_info_;
 
         struct GoalInfo {
             Vec3f goal_p{0, 0, 0};
@@ -131,11 +139,16 @@ namespace general_planner {
         std::unique_ptr<traj_opt::DynamicTakeoffSnapTrajOpt> takeoff_optimizer_;
         traj_opt::DynamicTakeoffProblem active_takeoff_problem_;
         bool active_takeoff_problem_valid_{false};
-        std::unique_ptr<TrackingPerchingTransitionManager> tracking_perching_manager_;
-        std::unique_ptr<TrackingToPerchingInitializer> tracking_to_perching_initializer_;
-        std::unique_ptr<SE3AggressiveManager> se3_aggressive_manager_;
-        std::unique_ptr<ExplorationFrontend> exploration_frontend_;
-        std::unique_ptr<ExplorationRuntimeManager> exploration_runtime_manager_;
+	        std::unique_ptr<TrackingPerchingTransitionManager> tracking_perching_manager_;
+	        std::unique_ptr<TrackingToPerchingInitializer> tracking_to_perching_initializer_;
+	        std::unique_ptr<SE3AggressiveManager> se3_aggressive_manager_;
+	        std::unique_ptr<nhbp::State2StateNHBPAdapter> state2state_nhbp_adapter_;
+	        std::unique_ptr<nhbp::SparseGlobalMap> sparse_global_map_;
+	        std::unique_ptr<nhbp::FarGoalReasoner> far_goal_reasoner_;
+	        std::unique_ptr<nhbp::TopologicalMemory> topological_memory_;
+	        double sparse_global_map_last_update_wt_{-1.0};
+	        std::unique_ptr<ExplorationFrontend> exploration_frontend_;
+	        std::unique_ptr<ExplorationRuntimeManager> exploration_runtime_manager_;
 
         vector<double> time_consuming_;
 
@@ -326,6 +339,7 @@ namespace general_planner {
         }
 
         std::string getLatestState2StateZDebugInfo() const;
+        std::string getLatestState2StateNhbpDebugInfo() const;
 
         void setSwarmTrajectories(const traj_opt::SwarmTrajectories &trajectories);
         void setSwarmDroneId(int drone_id);

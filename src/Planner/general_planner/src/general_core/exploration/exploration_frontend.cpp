@@ -345,6 +345,13 @@ bool ExplorationFrontend::planNextGoal(const StatePVAJ &robot_state,
     }
 
     best_goal.valid = true;
+    best_goal.checked_candidate_count = checked;
+    best_goal.astar_check_count = astar_checked;
+    best_goal.reachable_candidate_count = static_cast<int>(reachable_candidates.size());
+    best_goal.cluster_count = static_cast<int>(clusters.size());
+    best_goal.raw_cluster_count = static_cast<int>(raw_cluster_count);
+    best_goal.frontier_cell_count = static_cast<int>(frontier_cells.size());
+    best_goal.raw_frontier_cell_count = search_stats.raw_frontier_cells;
     goal = best_goal;
     exploration_finished_ = false;
 
@@ -1048,8 +1055,19 @@ double ExplorationFrontend::scoreCandidate(const ExplorationGoal &candidate,
     return cfg_.weight_travel * candidate.travel_cost +
            cfg_.weight_yaw * candidate.yaw_cost +
            cfg_.weight_curvature * candidate.curvature_cost +
-           cfg_.weight_info_gain * candidate.information_gain +
+           cfg_.weight_info_gain * effectiveInformationGain(candidate.information_gain) +
            cfg_.weight_unknown_risk * unknown_risk;
+}
+
+double ExplorationFrontend::effectiveInformationGain(const double information_gain) const {
+    if (!std::isfinite(information_gain) || information_gain <= 0.0) {
+        return 0.0;
+    }
+    const double saturation = std::max(0.0, cfg_.information_gain_saturation);
+    if (saturation <= 0.0) {
+        return information_gain;
+    }
+    return std::min(information_gain, saturation);
 }
 
 ExplorationGoal ExplorationFrontend::selectGoalWithAtsp(
@@ -1072,7 +1090,7 @@ ExplorationGoal ExplorationFrontend::selectGoalWithAtsp(
 
     for (int i = 0; i < candidate_num; ++i) {
         problem.candidates.push_back(exploration::ATSPCandidate{i});
-        problem.node_reward.push_back(std::max(0.0, reachable_candidates[i].information_gain));
+        problem.node_reward.push_back(effectiveInformationGain(reachable_candidates[i].information_gain));
     }
 
     for (int i = 0; i < candidate_num; ++i) {
@@ -1082,7 +1100,7 @@ ExplorationGoal ExplorationFrontend::selectGoalWithAtsp(
                 std::max(0.0, (candidate.position - robot_pos).norm()) +
                 cfg_.weight_yaw * yaw_cost +
                 cfg_.weight_curvature * candidate.curvature_cost +
-                cfg_.weight_info_gain * candidate.information_gain;
+                cfg_.weight_info_gain * effectiveInformationGain(candidate.information_gain);
         problem.directed_cost_matrix(i + 1, 0) = 0.0;
     }
 

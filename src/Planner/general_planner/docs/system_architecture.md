@@ -325,6 +325,33 @@ Completed in the current migration step:
   is now wired into exploration replanning before local trajectory optimization,
   applying blacklist checks, switch-margin hysteresis, minimum commit-time
   hysteresis, and NDO keep-current suppression.
+- NHBP is no longer exploration-only. `State2StateNHBPAdapter` is wired into
+  ordinary state2state replanning before candidate trajectory commit. It builds
+  a branch signature for the candidate and committed trajectory, detects
+  straight/left/right branch switching under the same long-range goal, and keeps
+  the current trajectory when it remains safe and the candidate does not improve
+  over the configured switch margin.
+- Long-range navigation architecture is now fixed in
+  `long_range_nhbp_architecture.md`. The current code includes a BDM-like
+  optional `SparseGlobalMap` for sparse boundary/frontier memory, a
+  `FarGoalReasoner` for direct-goal/frontier/topology subgoal selection, and
+  topology node typing for branch, frontier, failure, and vertical-connector
+  memory. In ordinary state2state planning the far-goal layer can be enabled to
+  choose a temporary local subgoal while preserving the original FSM/task goal.
+  These are intentionally separated from the local ROG safety map.
+- Exploration anti-trap handling now uses frontier-selection diagnostics
+  exported by `ExplorationFrontend`, saturated information gain for both normal
+  scoring and ATSP entry costs, and a local-trap detector in
+  `ExplorationRuntimeManager`. Repeated low-diversity, high-A* local attractors
+  are written back to frontier, topology, and NHBP failure memory before the
+  pipeline asks for a validated recovery goal.
+- Frontier failure memory now blocks a spatial region around failed candidates,
+  not only the exact memory key. Recovery selection also filters the latest
+  local-trap region, and the exploration guard runs an offline trap-signature
+  analyzer so house-like frontier absorption can be detected from logs.
+- Exploration runtime diagnostics now include recovery-chain counters, and
+  `sh_files/test_exploration_trap_log_guard.sh` provides a direct offline
+  regression check for historical trap logs or fresh trap-free runs.
 - Shared generic helpers now have a `general_core/utils` home. The first helper
   is normalized string-token handling used by frontier-source and solver-mode
   dispatch.
@@ -341,6 +368,20 @@ Validation for this step:
 - Docker `ros1_noetic`: exploration smoke with `exploration.yaml`.
 - Docker `ros1_noetic`: small ATSP file smoke through migrated
   `lkh_tsp_solver`, confirming a generated `single.txt` tour.
+- Docker `ros1_noetic`: 90s `big_field` perfect-drone exploration guard after
+  the diagnostic closure update: 218 selected goals, 218 planning successes, 0
+  counted planning failures, 0 odom-stale events, 0 NHBP rejects, 0 local-trap
+  triggers in the normal open-field case, 3 validated memory recoveries,
+  `trap_signature=0`, and PASS.
+- Docker `ros1_noetic`: offline trap-log guard on the fresh big-field log with
+  expected `trap_signature=0`: PASS. Offline trap-log guard on the provided
+  pasted problem log with expected `trap_signature=1`: PASS.
+- `sh_files/test_exploration_final_closure.sh` now provides the final closure
+  entry point. Latest run: historical trap-log guard PASS, package build PASS,
+  full workspace build PASS, 90s big-field exploration guard PASS with 218
+  selected goals and 218 planning successes, fresh-log guard PASS, and optional
+  ROS1 smoke tests PASS for corridor/esdf/plain state2state, tracking, and
+  tracking-perching.
 
 Post-architecture cleanup target:
 
@@ -348,6 +389,9 @@ Post-architecture cleanup target:
   residual task-specific commit checks into concrete backend-owned classes.
 - Replace more legacy FSM branches with mission behavior objects once runtime
   behavior snapshots are stable.
-- Add frontier/coverage memory, recovery escape candidates, topology escape
-  nodes, and NDO scenario tests.
+- Add live house-structure replay or a deterministic map-slice scenario test for
+  the NDO trap case; the offline log guard is in place, but live closed-loop
+  replay is still the stronger validation.
+- Build a fy_node-style global exploration tour only if the task needs global
+  optimality beyond the current memory-backed local/topology recovery behavior.
 - Keep behavior-compatible ROS1 smoke tests after each step.

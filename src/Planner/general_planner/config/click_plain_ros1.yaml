@@ -40,6 +40,55 @@ general_planner:
   over_wall_min_blocked_span: 0.8
   over_wall_min_progress_gain: 0.5
   over_wall_forward_ratio: 0.9
+  state2state_nhbp:
+    enable: true
+    decision_history: 16
+    blacklist_ttl: 12.0
+    min_commit_time: 0.6
+    min_commit_interval: 0.5
+    min_progress_distance: 0.25
+    switch_margin: 0.35
+    same_branch_margin: 0.2
+    endpoint_change_threshold: 0.8
+    lateral_oscillation_threshold: 0.35
+    commit_churn_window: 2.0
+    max_commits_in_window: 5
+    max_switches: 4
+    no_progress_time: 2.5
+    branch_lateral_threshold: 0.35
+    signature_horizon: 3.0
+    safety_check_horizon: 1.5
+    reuse_safety_check_horizon: 0.6
+    reuse_safety_consecutive_hits: 2
+    safety_unknown_as_occupied: false
+    goal_key_resolution: 0.5
+    goal_progress_weight: 2.0
+  sparse_global_map:
+    enable: false
+    resolution: 0.5
+    max_records: 200000
+    stale_time: 600.0
+    update_period: 0.5
+    sample_resolution: 1.0
+    max_boundary_samples: 4096
+  far_goal_reasoner:
+    enable: false
+    state2state_enable: false
+    direct_radius: 8.0
+    frontier_search_radius: 40.0
+    max_frontier_candidates: 128
+    travel_weight: 1.0
+    goal_weight: 1.5
+    state2state_min_distance: 8.0
+  topological_memory:
+    enable: false
+    max_nodes: 256
+    max_edges: 512
+    node_merge_radius: 1.0
+    node_blacklist_ttl: 12.0
+    edge_blacklist_ttl: 12.0
+    recovery_min_distance: 1.0
+    recovery_max_distance: 8.0
   unknown_goal_reveal_en: true
   yaw_dot_max: 3.0
   yaw_mode: 1

@@ -107,7 +107,10 @@ public:
                     const bool &use_inf_map,
                     const bool &use_unk_as_occ) const
     {
-        return map_->isLineFree(start_pt, end_pt, use_inf_map, use_unk_as_occ);
+        const bool safe_use_unk_as_occ =
+                use_unk_as_occ &&
+                (!use_inf_map || map_->getMapConfig().unk_inflation_en);
+        return map_->isLineFree(start_pt, end_pt, use_inf_map, safe_use_unk_as_occ);
     }
 
     bool getNearestCellNot(const rog_map::GridType &target_type,

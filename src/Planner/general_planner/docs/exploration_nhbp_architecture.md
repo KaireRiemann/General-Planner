@@ -539,6 +539,7 @@ general_planner:
   exploration_frontier_memory_max_records: 256
   exploration_frontier_memory_ttl: 45.0
   exploration_frontier_memory_failure_ttl: 12.0
+  exploration_frontier_memory_failure_block_radius: 1.8
   exploration_frontier_memory_covered_radius: 0.8
   exploration_frontier_memory_recovery_min_distance: 0.8
   exploration_use_coverage_grid: true
@@ -566,6 +567,14 @@ general_planner:
   exploration_nhbp_max_switches: 4
   exploration_nhbp_no_progress_time: 3.0
   exploration_nhbp_recovery_enable: true
+
+  exploration_local_trap_detection_enable: true
+  exploration_local_trap_repeat_threshold: 4
+  exploration_local_trap_cluster_threshold: 2
+  exploration_local_trap_astar_threshold: 12
+  exploration_local_trap_min_information_gain: 800.0
+  exploration_local_trap_same_region_radius: 2.5
+  exploration_local_trap_cooldown: 4.0
 ```
 
 Defaults must preserve current behavior as much as possible when NHBP is off.
@@ -929,3 +938,268 @@ Remaining high-value work:
   entrance, loop corridor, and no-progress local optimum.
 - Persist or visualize NHBP memories for offline bag/log diagnosis.
 - Add recovery success/failure counters to ROS diagnostics and guard scripts.
+
+Additional anti-trap work after the house-like-structure issue:
+
+- The problematic log shows a local-attractor signature rather than a backend
+  optimization failure: repeated selection of two nearby frontier IDs, raw
+  information gain around 1369, only one or two frontier clusters, capped
+  frontier count at 1536 from more than 360k raw ROG frontiers, and A* fallback
+  pressure up to 15 checks. Local trajectory generation still succeeds, so a
+  normal "planner failed" recovery trigger is not sufficient.
+- The `fy_node` reference handles this class of failure with mission-level
+  memory: bad frontiers are force deleted/blacklisted, wrong topology entrance
+  nodes are blacklisted in `tryGetTopoPath()`, and the exploration FSM replans
+  through local/global/topology modes instead of greedily accepting the next
+  highest-gain frontier.
+- `ExplorationFrontend` now exports selection diagnostics on the selected goal:
+  checked candidates, A* checks, reachable count, cluster/raw-cluster count, and
+  frontier/raw-frontier count. NHBP can use these as belief-state evidence
+  instead of treating every successful local trajectory as healthy progress.
+- Frontier information gain is now saturated before both normal candidate
+  scoring and ATSP reward/entry-cost construction. This prevents very large
+  local ROG frontier faces from dominating the decision by raw gain alone.
+- `ExplorationRuntimeManager` now has a local-trap detector. It triggers only
+  when the selected region repeats, frontier diversity is low, A* pressure is
+  high, and the robot is revisiting or making little progress. On trigger it
+  marks the frontier failed, blacklists nearby topology memory, records an NHBP
+  NDO failure when available, and asks the pipeline for a validated memory or
+  topology recovery goal.
+- The exploration guard now reports `local_trap`, `memory_recovery`, and
+  `max_astar_checks`, so future bag/log tests can distinguish normal recovery
+  use from true NDO escape behavior.
+
+Docker validation after this anti-trap push:
+
+```text
+git diff --check: pass
+bash -n sh_files/test_exploration_big_field_guard.sh: pass
+catkin_make --pkg general_planner: pass
+full workspace catkin_make: pass
+90s big_field perfect_drone exploration guard: pass
+  roslaunch_status=124
+  goal_selected=208
+  plan_success=208
+  plan_failed=0
+  odom_stale=0
+  nhbp_reject=0
+  local_trap=0
+  memory_recovery=21
+  astar_timeout=117
+  max_astar_checks=16
+  max_frontiers=1536
+  max_raw_frontiers=302233
+  fatal=0
+```
+
+Progress estimate after this anti-trap push:
+
+```text
+Exploration task completeness: 86% - 89%
+NHBP / NDO suppression completeness: 80% - 84%
+ATSP exploration ordering completeness: 72% - 76%
+```
+
+Remaining framework work:
+
+- Add a replay/regression guard for the house-like-structure bag or an equivalent
+  deterministic map slice, so `local_trap_escape_requested` can be verified with
+  live planning in the exact scenario where the old planner stayed inside the
+  structure.
+- Move from memory-only topology recovery to a real posegraph/HGrid global tour
+  equivalent to the `fy_node` exploration manager.
+- Add a first-class mission controller only if exploration needs policies beyond
+  current task-planner entry points, such as pause/resume, return-home, or
+  multi-stage global exploration completion.
+
+Additional spatial blacklist and regression-guard work:
+
+- `FrontierMemory` now applies a spatial failed-region blacklist in addition to
+  exact memory-key blocking. This is important for ROG frontier faces because the
+  same bad local attractor can generate many nearby keys/viewpoints. The
+  configured `exploration_frontier_memory_failure_block_radius` blocks nearby
+  candidates and prevents frontier-memory recovery from selecting another point
+  inside the same failed region.
+- `ExplorationRuntimeManager` stores the most recent local-trap region and
+  rejects frontier-memory and topology-memory recovery candidates that fall back
+  into that region while the trap cooldown is active. `TopologicalMemory`
+  recovery lookup now accepts a predicate so runtime memory can filter topology
+  escape nodes without hard-coding trap policy into the topology module.
+- Local-trap detection now has a minimum information-gain gate. This keeps the
+  detector focused on the observed house-like-structure signature
+  (`info` around 1369) and prevents open-field low-cluster frontier following
+  from being treated as NDO when it is still making normal progress.
+- Added `sh_files/analyze_exploration_trap_log.sh`. It detects the offline
+  signature of the original issue: repeated frontier ID, high A* pressure, low
+  cluster diversity, high raw information gain, and very large raw ROG frontier
+  count. The big-field guard now invokes this analyzer and fails if such a
+  signature appears without a `local_trap_escape_requested` or memory-recovery
+  response.
+
+Offline check on the provided problematic log:
+
+```text
+trap_signature=1
+max_frontier_repeat=4
+max_repeat_frontier=frontier_id=1045860931
+max_astar_checks=15
+low_cluster_lines=5
+max_info=1369.64
+max_raw_frontiers=366085
+local_trap=0
+memory_recovery=0
+```
+
+Docker validation after this spatial-blacklist push:
+
+```text
+git diff --check: pass
+bash -n sh_files/test_exploration_big_field_guard.sh: pass
+bash -n sh_files/analyze_exploration_trap_log.sh: pass
+catkin_make --pkg general_planner: pass
+full workspace catkin_make: pass
+90s big_field perfect_drone exploration guard: pass
+  roslaunch_status=124
+  goal_selected=217
+  plan_success=217
+  plan_failed=0
+  odom_stale=0
+  nhbp_reject=0
+  local_trap=0
+  memory_recovery=2
+  astar_timeout=13
+  max_astar_checks=16
+  max_frontiers=1536
+  max_raw_frontiers=368469
+  trap_signature=0
+  fatal=0
+```
+
+Progress estimate after this spatial-blacklist push:
+
+```text
+Exploration task completeness: 88% - 91%
+NHBP / NDO suppression completeness: 84% - 88%
+ATSP exploration ordering completeness: 74% - 78%
+```
+
+Final closure work for diagnostics and regression protection:
+
+- `ExplorationRuntimeManager::diagnosticSummary()` now includes recovery-chain
+  counters: query count, frontier-memory recovery selections, topology-memory
+  recovery selections, unavailable recovery attempts, and recovery candidates
+  blocked by the latest trap region. This makes failed or suspicious exploration
+  logs self-contained enough to tell whether the NHBP escape path was available,
+  filtered, or absent.
+- Added `sh_files/test_exploration_trap_log_guard.sh` as a direct regression-test
+  wrapper around the trap analyzer. It can assert either that a historical log
+  contains the expected trap signature or that a fresh run is trap-signature
+  free.
+- The provided house-like-structure pasted log is now usable as an offline
+  regression sample:
+
+```text
+sh_files/test_exploration_trap_log_guard.sh <pasted-text-log>: pass
+  expected trap_signature=1
+  observed max_frontier_repeat=4
+  observed max_astar_checks=15
+  observed max_info=1369.64
+```
+
+Final Docker validation after the diagnostic closure:
+
+```text
+git diff --check: pass
+bash -n sh_files/test_exploration_big_field_guard.sh: pass
+bash -n sh_files/analyze_exploration_trap_log.sh: pass
+bash -n sh_files/test_exploration_trap_log_guard.sh: pass
+catkin_make --pkg general_planner: pass
+full workspace catkin_make: pass
+90s big_field perfect_drone exploration guard: pass
+  roslaunch_status=124
+  goal_selected=218
+  plan_success=218
+  plan_failed=0
+  odom_stale=0
+  nhbp_reject=0
+  local_trap=0
+  memory_recovery=3
+  astar_timeout=11
+  max_astar_checks=16
+  max_frontiers=1536
+  max_raw_frontiers=379046
+  trap_signature=0
+  fatal=0
+trap-log guard on fresh big-field log: pass
+  expected trap_signature=0
+```
+
+Final progress estimate for this architecture pass:
+
+```text
+Exploration task completeness: 90% - 92%
+NHBP / NDO suppression completeness: 87% - 90%
+ATSP exploration ordering completeness: 76% - 80%
+```
+
+The remaining work is no longer basic framework construction. It is mainly
+scenario depth: a live replay or deterministic house-structure map test, then a
+full fy_node-style posegraph/HGrid global tour if exploration needs global
+optimality beyond the current memory-backed local/topology recovery layer.
+
+Final one-command closure validation:
+
+- Added `sh_files/test_exploration_final_closure.sh`. The script runs static
+  checks, optional historical trap-log regression, Docker package build, Docker
+  full workspace build, the big-field perfect-drone exploration guard, and a
+  fresh-log trap guard. It can also run the legacy ROS1 general-planner smoke
+  tests through `GP_FINAL_RUN_GENERAL_SMOKE=1`.
+- Fresh logs are checked with a response-aware policy: a trap signature is
+  acceptable only when the log also contains `local_trap_escape_requested` or
+  memory recovery. This matches the NDO goal: the system may encounter a local
+  attractor, but it must recognize and respond to it instead of silently staying
+  trapped.
+
+Latest final closure validation:
+
+```text
+historical pasted trap log guard: pass
+  expected trap_signature=1
+  observed max_frontier_repeat=4
+  observed max_astar_checks=15
+  observed max_info=1369.64
+catkin_make --pkg general_planner: pass
+full workspace catkin_make: pass
+90s big_field perfect_drone exploration guard: pass
+  roslaunch_status=124
+  goal_selected=218
+  plan_success=218
+  plan_failed=0
+  odom_stale=0
+  nhbp_reject=0
+  local_trap=0
+  memory_recovery=5
+  astar_timeout=14
+  max_astar_checks=16
+  max_frontiers=1536
+  max_raw_frontiers=356381
+  trap_signature=0
+  fatal=0
+fresh big-field trap-log guard: pass
+  expected trap_signature=any
+  expected response if signature appears
+legacy ROS1 general-planner smoke tests: pass
+  click_smooth_ros1.yaml
+  click_esdf_ros1.yaml
+  click_plain_ros1.yaml
+  tracking_tracker_drone1_ros1.yaml
+  tracking_perching_chain_ros1.yaml
+```
+
+Final progress estimate:
+
+```text
+Exploration task completeness: 91% - 93%
+NHBP / NDO suppression completeness: 89% - 91%
+ATSP exploration ordering completeness: 78% - 82%
+```

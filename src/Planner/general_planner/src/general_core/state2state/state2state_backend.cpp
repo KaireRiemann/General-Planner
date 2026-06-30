@@ -2,6 +2,20 @@
 #include <general_core/state2state/state2state_plan_operations.hpp>
 
 namespace general_planner::architecture {
+namespace {
+
+void appendState2StateNhbpDetail(StateToStateBackendResult &result,
+                                 const PlannerContext &context) {
+    if (!context.valid()) {
+        return;
+    }
+    const std::string nhbp_debug = context.planner().getLatestState2StateNhbpDebugInfo();
+    if (!nhbp_debug.empty()) {
+        result.detail += nhbp_debug;
+    }
+}
+
+} // namespace
 
 bool StateToStateBackend::supports(const BackendType backend) const {
     const BackendType resolved = backend == BackendType::AUTO ? BackendType::CORRIDOR : backend;
@@ -36,6 +50,7 @@ LegacyStateToStateBackend::run(const StateToStateBackendRequest &request) const 
                                                          request.goal,
                                                          request.goal_yaw,
                                                          request.new_goal);
+        appendState2StateNhbpDetail(result, context_);
         return result;
     }
     result.ret_code = state2state_task::replanOnce(services,
@@ -44,6 +59,7 @@ LegacyStateToStateBackend::run(const StateToStateBackendRequest &request) const 
                                                    request.goal,
                                                    request.goal_yaw,
                                                    request.new_goal);
+    appendState2StateNhbpDetail(result, context_);
     return result;
 }
 

@@ -44,6 +44,7 @@ namespace general_planner {
         frontend_cfg.weight_curvature = cfg_.exploration_weight_curvature;
         frontend_cfg.weight_info_gain = cfg_.exploration_weight_info_gain;
         frontend_cfg.weight_unknown_risk = cfg_.exploration_weight_unknown_risk;
+        frontend_cfg.information_gain_saturation = cfg_.exploration_information_gain_saturation;
         frontend_cfg.min_information_gain = cfg_.exploration_min_information_gain;
         frontend_cfg.goal_switch_min_score_improvement = cfg_.exploration_goal_switch_min_score_improvement;
         frontend_cfg.goal_reached_distance = cfg_.exploration_goal_reached_distance;
@@ -313,12 +314,20 @@ namespace general_planner {
                 if (selectValidatedExplorationRecoveryGoal(robot_state_.p, now, recovery_goal, &recovery_validation)) {
                     goal = recovery_goal;
                     exploration_runtime_manager_->onGoalSelected(goal);
-                    ros_ptr_->info(" -- [Exploration] Use memory recovery goal after initial NHBP reject: reject_reason={}, candidate_id={}, frontier_id={}, recovery_reason={}, validation={}.",
+                    ros_ptr_->info(" -- [Exploration] Use memory recovery goal after initial NHBP decision: reject_reason={}, recovery_requested={}, candidate_id={}, frontier_id={}, recovery_reason={}, validation={}.",
                                    decision.reason,
+                                   static_cast<int>(decision.recovery_requested),
                                    recovery_goal.candidate_id,
                                    recovery_goal.frontier_id,
                                    recovery_goal.reason,
                                    recovery_validation);
+                } else if (decision.allow_candidate_fallback && goal.valid) {
+                    goal.reason += " nhbp_recovery_unavailable=" + decision.reason;
+                    exploration_runtime_manager_->onGoalSelected(goal);
+                    ros_ptr_->warn(" -- [Exploration] NHBP requested recovery but no validated recovery goal was found, fallback to frontend candidate: reason={}, candidate_id={}, frontier_id={}.",
+                                   decision.reason,
+                                   goal.candidate_id,
+                                   goal.frontier_id);
                 } else {
                     exploration_runtime_manager_->onTemporaryFailure(goal);
                     latest_replan.setRetCode(GENERAL_RET_CODE::GENERAL_UNDEFINED);
@@ -495,13 +504,23 @@ namespace general_planner {
                         selected_goal = recovery_goal;
                         goal_switched = true;
                         exploration_runtime_manager_->onGoalSelected(selected_goal);
-                        ros_ptr_->info(" -- [Exploration] Use memory recovery goal after NHBP reject: reject_reason={}, candidate_id={}, frontier_id={}, recovery_candidate_id={}, recovery_frontier_id={}, validation={}.",
+                        ros_ptr_->info(" -- [Exploration] Use memory recovery goal after NHBP decision: reject_reason={}, recovery_requested={}, candidate_id={}, frontier_id={}, recovery_candidate_id={}, recovery_frontier_id={}, validation={}.",
                                        decision.reason,
+                                       static_cast<int>(decision.recovery_requested),
                                        candidate.candidate_id,
                                        candidate.frontier_id,
                                        selected_goal.candidate_id,
                                        selected_goal.frontier_id,
                                        recovery_validation);
+                    } else if (decision.allow_candidate_fallback && candidate.valid) {
+                        selected_goal = candidate;
+                        selected_goal.reason += " nhbp_recovery_unavailable=" + decision.reason;
+                        goal_switched = true;
+                        exploration_runtime_manager_->onGoalSelected(selected_goal);
+                        ros_ptr_->warn(" -- [Exploration] NHBP requested recovery but no validated recovery goal was found, fallback to frontend candidate: reason={}, candidate_id={}, frontier_id={}.",
+                                       decision.reason,
+                                       selected_goal.candidate_id,
+                                       selected_goal.frontier_id);
                     } else {
                         exploration_runtime_manager_->onTemporaryFailure(candidate);
                         latest_replan.setRetCode(GENERAL_RET_CODE::GENERAL_UNDEFINED);

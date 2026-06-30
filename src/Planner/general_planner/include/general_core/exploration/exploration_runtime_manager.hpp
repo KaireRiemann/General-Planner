@@ -42,6 +42,8 @@ public:
         bool ready{false};
         bool keep_current{false};
         bool reject{false};
+        bool recovery_requested{false};
+        bool allow_candidate_fallback{false};
         ExplorationGoal goal;
         std::string reason;
         nhbp::NdoDiagnosis ndo;
@@ -85,7 +87,7 @@ public:
 
     bool hasRecoveryGoal(const general_utils::Vec3f &robot_pos,
                          double stamp,
-                         ExplorationGoal &goal) const;
+                         ExplorationGoal &goal);
 
     bool shouldDelayFinish(double stamp) const;
 
@@ -107,6 +109,16 @@ private:
 
     nhbp::DecisionCandidate toDecisionCandidate(const ExplorationGoal &goal) const;
 
+    bool localTrapDetected(const ExplorationGoal &candidate,
+                           const general_utils::Vec3f &robot_pos,
+                           double stamp,
+                           double revisit_penalty,
+                           std::string &reason);
+    bool recoveryBlockedByRecentTrap(const ExplorationGoal &goal, double stamp) const;
+    bool recoveryPositionBlockedByRecentTrap(const general_utils::Vec3f &position,
+                                             int frontier_id,
+                                             double stamp) const;
+
     bool nhbpEnabled() const;
 
     const Config &cfg_;
@@ -122,6 +134,22 @@ private:
     int consecutive_temporary_failures_{0};
     bool has_latest_goal_{false};
     bool has_committed_goal_{false};
+    bool has_last_trap_candidate_{false};
+    general_utils::Vec3f last_trap_candidate_position_{general_utils::Vec3f::Zero()};
+    general_utils::Vec3f last_trap_robot_position_{general_utils::Vec3f::Zero()};
+    int last_trap_frontier_id_{-1};
+    int repeated_local_region_count_{0};
+    int local_trap_recovery_request_count_{0};
+    double local_trap_cooldown_until_{0.0};
+    bool has_recent_trap_region_{false};
+    general_utils::Vec3f recent_trap_position_{general_utils::Vec3f::Zero()};
+    int recent_trap_frontier_id_{-1};
+    double recent_trap_block_until_{0.0};
+    int recovery_query_count_{0};
+    int frontier_recovery_selected_count_{0};
+    int topology_recovery_selected_count_{0};
+    int recovery_unavailable_count_{0};
+    int recovery_blocked_by_recent_trap_count_{0};
 };
 
 } // namespace general_planner

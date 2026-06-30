@@ -66,6 +66,9 @@ general_planner:
     over_goal_tolerance: 0.25
     near_goal_radius: 2.0
     accept_exp_without_backup_near_goal: true
+  state2state_nhbp:
+    # Keep disabled for high-speed baseline A/B tests against the pre-NHBP behavior.
+    enable: false
   unknown_goal_reveal_en: true
   yaw_dot_max: 3.0
   # Yaw mode: 1 heading to velocity, 2 heading to goal
@@ -171,7 +174,7 @@ rog_map:
   frontier_extraction_en: false
 
   # Virtual ceil and ground
-  virtual_ceil_height: 2.5
+  virtual_ceil_height: 4.5
   virtual_ground_height: -0.1
 
   load_pcd_en: false

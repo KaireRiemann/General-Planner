@@ -47,4 +47,8 @@ namespace general_planner {
         return oss.str();
     }
 
+    std::string GeneralPlanner::getLatestState2StateNhbpDebugInfo() const {
+        return latest_state2state_nhbp_debug_info_;
+    }
+
 }

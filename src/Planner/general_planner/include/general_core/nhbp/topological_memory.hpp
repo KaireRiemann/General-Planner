@@ -1,5 +1,6 @@
 #pragma once
 
+#include <functional>
 #include <iostream>
 #include <string>
 #include <unordered_map>
@@ -16,9 +17,19 @@ enum class TopoEdgeStatus {
     STALE
 };
 
+enum class TopoNodeType {
+    POSE,
+    BRANCH,
+    FRONTIER,
+    FAILURE,
+    VERTICAL_CONNECTOR
+};
+
 struct TopoNode {
     int node_id{-1};
     general_utils::Vec3f position{general_utils::Vec3f::Zero()};
+    TopoNodeType node_type{TopoNodeType::POSE};
+    int floor_id{0};
     double created_time{0.0};
     double last_seen_time{0.0};
     int visit_count{0};
@@ -55,7 +66,13 @@ public:
 
     void reset();
 
-    int observePose(const general_utils::Vec3f &position, double stamp);
+    int observePose(const general_utils::Vec3f &position,
+                    double stamp,
+                    TopoNodeType node_type = TopoNodeType::POSE,
+                    int floor_id = 0);
+    int observeVerticalConnector(const general_utils::Vec3f &position,
+                                 double stamp,
+                                 int floor_id);
     void observeTransition(const general_utils::Vec3f &from,
                            const general_utils::Vec3f &to,
                            double stamp);
@@ -63,7 +80,9 @@ public:
 
     bool findRecoveryPosition(const general_utils::Vec3f &robot_pos,
                               double stamp,
-                              general_utils::Vec3f &position) const;
+                              general_utils::Vec3f &position,
+                              const std::function<bool(const general_utils::Vec3f &)> &accept =
+                                      std::function<bool(const general_utils::Vec3f &)>{}) const;
 
     int activeNodeCount(double stamp) const;
     int blockedNodeCount(double stamp) const;
@@ -86,5 +105,6 @@ private:
 };
 
 const char *toString(TopoEdgeStatus status);
+const char *toString(TopoNodeType type);
 
 } // namespace general_planner::nhbp

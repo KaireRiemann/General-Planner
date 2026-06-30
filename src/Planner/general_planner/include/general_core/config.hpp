@@ -93,6 +93,51 @@ namespace general_planner {
         double state2state_over_goal_tolerance{0.25};
         double state2state_near_goal_radius{2.0};
         bool state2state_accept_exp_without_backup_near_goal{true};
+        bool state2state_nhbp_enable{true};
+        int state2state_nhbp_decision_history{16};
+        double state2state_nhbp_blacklist_ttl{12.0};
+        double state2state_nhbp_min_commit_time{0.6};
+        double state2state_nhbp_min_commit_interval{0.5};
+        double state2state_nhbp_min_progress_distance{0.25};
+        double state2state_nhbp_switch_margin{0.35};
+        double state2state_nhbp_same_branch_margin{0.2};
+        double state2state_nhbp_endpoint_change_threshold{0.8};
+        double state2state_nhbp_lateral_oscillation_threshold{0.35};
+        double state2state_nhbp_commit_churn_window{2.0};
+        int state2state_nhbp_max_commits_in_window{5};
+        int state2state_nhbp_max_switches{4};
+        double state2state_nhbp_no_progress_time{2.5};
+        double state2state_nhbp_branch_lateral_threshold{0.35};
+        double state2state_nhbp_signature_horizon{3.0};
+        double state2state_nhbp_safety_check_horizon{1.5};
+        double state2state_nhbp_reuse_safety_check_horizon{0.6};
+        int state2state_nhbp_reuse_safety_consecutive_hits{2};
+        bool state2state_nhbp_safety_unknown_as_occupied{false};
+        double state2state_nhbp_goal_key_resolution{0.5};
+        double state2state_nhbp_goal_progress_weight{2.0};
+        bool sparse_global_map_enable{false};
+        double sparse_global_map_resolution{0.5};
+        int sparse_global_map_max_records{200000};
+        double sparse_global_map_stale_time{600.0};
+        double sparse_global_map_update_period{0.5};
+        double sparse_global_map_sample_resolution{1.0};
+        int sparse_global_map_max_boundary_samples{4096};
+        bool far_goal_reasoner_enable{false};
+        bool state2state_far_goal_enable{false};
+        double far_goal_direct_radius{8.0};
+        double far_goal_frontier_search_radius{40.0};
+        int far_goal_max_frontier_candidates{128};
+        double far_goal_travel_weight{1.0};
+        double far_goal_goal_weight{1.5};
+        double state2state_far_goal_min_distance{8.0};
+        bool topological_memory_enable{false};
+        int topological_memory_max_nodes{256};
+        int topological_memory_max_edges{512};
+        double topological_memory_node_merge_radius{1.0};
+        double topological_memory_node_blacklist_ttl{12.0};
+        double topological_memory_edge_blacklist_ttl{12.0};
+        double topological_memory_recovery_min_distance{1.0};
+        double topological_memory_recovery_max_distance{8.0};
         bool unknown_goal_reveal_en{true};
         int iris_iter_num;
         std::string ellipsoid_optimizer{"classic"};
@@ -152,6 +197,7 @@ namespace general_planner {
         double exploration_weight_curvature{0.8};
         double exploration_weight_info_gain{-2.0};
         double exploration_weight_unknown_risk{1.0};
+        double exploration_information_gain_saturation{250.0};
         double exploration_min_information_gain{3.0};
         double exploration_goal_switch_min_score_improvement{0.25};
         double exploration_goal_reached_distance{0.5};
@@ -169,6 +215,7 @@ namespace general_planner {
         int exploration_frontier_memory_max_records{256};
         double exploration_frontier_memory_ttl{45.0};
         double exploration_frontier_memory_failure_ttl{12.0};
+        double exploration_frontier_memory_failure_block_radius{1.8};
         double exploration_frontier_memory_covered_radius{0.8};
         double exploration_frontier_memory_recovery_min_distance{0.8};
         bool exploration_use_coverage_grid{false};
@@ -194,6 +241,13 @@ namespace general_planner {
         int exploration_nhbp_max_switches{4};
         double exploration_nhbp_no_progress_time{3.0};
         bool exploration_nhbp_recovery_enable{true};
+        bool exploration_local_trap_detection_enable{true};
+        int exploration_local_trap_repeat_threshold{4};
+        int exploration_local_trap_cluster_threshold{2};
+        int exploration_local_trap_astar_threshold{12};
+        double exploration_local_trap_min_information_gain{800.0};
+        double exploration_local_trap_same_region_radius{2.5};
+        double exploration_local_trap_cooldown{4.0};
 
         double tracking_distance{2.2};
         double tracking_distance_tolerance{0.8};
@@ -529,6 +583,96 @@ namespace general_planner {
                              state2state_near_goal_radius, 2.0);
             loader.LoadParam("general_planner/state2state/accept_exp_without_backup_near_goal",
                              state2state_accept_exp_without_backup_near_goal, true);
+            loader.LoadParam("general_planner/state2state_nhbp/enable",
+                             state2state_nhbp_enable, true);
+            loader.LoadParam("general_planner/state2state_nhbp/decision_history",
+                             state2state_nhbp_decision_history, 16);
+            loader.LoadParam("general_planner/state2state_nhbp/blacklist_ttl",
+                             state2state_nhbp_blacklist_ttl, 12.0);
+            loader.LoadParam("general_planner/state2state_nhbp/min_commit_time",
+                             state2state_nhbp_min_commit_time, 0.6);
+            loader.LoadParam("general_planner/state2state_nhbp/min_commit_interval",
+                             state2state_nhbp_min_commit_interval, 0.5);
+            loader.LoadParam("general_planner/state2state_nhbp/min_progress_distance",
+                             state2state_nhbp_min_progress_distance, 0.25);
+            loader.LoadParam("general_planner/state2state_nhbp/switch_margin",
+                             state2state_nhbp_switch_margin, 0.35);
+            loader.LoadParam("general_planner/state2state_nhbp/same_branch_margin",
+                             state2state_nhbp_same_branch_margin, 0.2);
+            loader.LoadParam("general_planner/state2state_nhbp/endpoint_change_threshold",
+                             state2state_nhbp_endpoint_change_threshold, 0.8);
+            loader.LoadParam("general_planner/state2state_nhbp/lateral_oscillation_threshold",
+                             state2state_nhbp_lateral_oscillation_threshold, 0.35);
+            loader.LoadParam("general_planner/state2state_nhbp/commit_churn_window",
+                             state2state_nhbp_commit_churn_window, 2.0);
+            loader.LoadParam("general_planner/state2state_nhbp/max_commits_in_window",
+                             state2state_nhbp_max_commits_in_window, 5);
+            loader.LoadParam("general_planner/state2state_nhbp/max_switches",
+                             state2state_nhbp_max_switches, 4);
+            loader.LoadParam("general_planner/state2state_nhbp/no_progress_time",
+                             state2state_nhbp_no_progress_time, 2.5);
+            loader.LoadParam("general_planner/state2state_nhbp/branch_lateral_threshold",
+                             state2state_nhbp_branch_lateral_threshold, 0.35);
+            loader.LoadParam("general_planner/state2state_nhbp/signature_horizon",
+                             state2state_nhbp_signature_horizon, 3.0);
+            loader.LoadParam("general_planner/state2state_nhbp/safety_check_horizon",
+                             state2state_nhbp_safety_check_horizon, 1.5);
+            loader.LoadParam("general_planner/state2state_nhbp/reuse_safety_check_horizon",
+                             state2state_nhbp_reuse_safety_check_horizon, 0.6);
+            loader.LoadParam("general_planner/state2state_nhbp/reuse_safety_consecutive_hits",
+                             state2state_nhbp_reuse_safety_consecutive_hits, 2);
+            loader.LoadParam("general_planner/state2state_nhbp/safety_unknown_as_occupied",
+                             state2state_nhbp_safety_unknown_as_occupied, false);
+            loader.LoadParam("general_planner/state2state_nhbp/goal_key_resolution",
+                             state2state_nhbp_goal_key_resolution, 0.5);
+            loader.LoadParam("general_planner/state2state_nhbp/goal_progress_weight",
+                             state2state_nhbp_goal_progress_weight, 2.0);
+            loader.LoadParam("general_planner/sparse_global_map/enable",
+                             sparse_global_map_enable, false);
+            loader.LoadParam("general_planner/sparse_global_map/resolution",
+                             sparse_global_map_resolution, 0.5);
+            loader.LoadParam("general_planner/sparse_global_map/max_records",
+                             sparse_global_map_max_records, 200000);
+            loader.LoadParam("general_planner/sparse_global_map/stale_time",
+                             sparse_global_map_stale_time, 600.0);
+            loader.LoadParam("general_planner/sparse_global_map/update_period",
+                             sparse_global_map_update_period, 0.5);
+            loader.LoadParam("general_planner/sparse_global_map/sample_resolution",
+                             sparse_global_map_sample_resolution, 1.0);
+            loader.LoadParam("general_planner/sparse_global_map/max_boundary_samples",
+                             sparse_global_map_max_boundary_samples, 4096);
+            loader.LoadParam("general_planner/far_goal_reasoner/enable",
+                             far_goal_reasoner_enable, false);
+            loader.LoadParam("general_planner/far_goal_reasoner/state2state_enable",
+                             state2state_far_goal_enable, false);
+            loader.LoadParam("general_planner/far_goal_reasoner/direct_radius",
+                             far_goal_direct_radius, 8.0);
+            loader.LoadParam("general_planner/far_goal_reasoner/frontier_search_radius",
+                             far_goal_frontier_search_radius, 40.0);
+            loader.LoadParam("general_planner/far_goal_reasoner/max_frontier_candidates",
+                             far_goal_max_frontier_candidates, 128);
+            loader.LoadParam("general_planner/far_goal_reasoner/travel_weight",
+                             far_goal_travel_weight, 1.0);
+            loader.LoadParam("general_planner/far_goal_reasoner/goal_weight",
+                             far_goal_goal_weight, 1.5);
+            loader.LoadParam("general_planner/far_goal_reasoner/state2state_min_distance",
+                             state2state_far_goal_min_distance, 8.0);
+            loader.LoadParam("general_planner/topological_memory/enable",
+                             topological_memory_enable, false);
+            loader.LoadParam("general_planner/topological_memory/max_nodes",
+                             topological_memory_max_nodes, 256);
+            loader.LoadParam("general_planner/topological_memory/max_edges",
+                             topological_memory_max_edges, 512);
+            loader.LoadParam("general_planner/topological_memory/node_merge_radius",
+                             topological_memory_node_merge_radius, 1.0);
+            loader.LoadParam("general_planner/topological_memory/node_blacklist_ttl",
+                             topological_memory_node_blacklist_ttl, 12.0);
+            loader.LoadParam("general_planner/topological_memory/edge_blacklist_ttl",
+                             topological_memory_edge_blacklist_ttl, 12.0);
+            loader.LoadParam("general_planner/topological_memory/recovery_min_distance",
+                             topological_memory_recovery_min_distance, 1.0);
+            loader.LoadParam("general_planner/topological_memory/recovery_max_distance",
+                             topological_memory_recovery_max_distance, 8.0);
             loader.LoadParam("general_planner/unknown_goal_reveal_en", unknown_goal_reveal_en, true);
             loader.LoadParam("general_planner/iris_iter_num", iris_iter_num, 1);
             loader.LoadParam("general_planner/ellipsoid_optimizer", ellipsoid_optimizer, std::string("classic"));
@@ -607,6 +751,8 @@ namespace general_planner {
                              exploration_weight_info_gain, -2.0);
             loader.LoadParam("general_planner/exploration_weight_unknown_risk",
                              exploration_weight_unknown_risk, 1.0);
+            loader.LoadParam("general_planner/exploration_information_gain_saturation",
+                             exploration_information_gain_saturation, 250.0);
             loader.LoadParam("general_planner/exploration_min_information_gain",
                              exploration_min_information_gain, 3.0);
             loader.LoadParam("general_planner/exploration_goal_switch_min_score_improvement",
@@ -641,6 +787,8 @@ namespace general_planner {
                              exploration_frontier_memory_ttl, 45.0);
             loader.LoadParam("general_planner/exploration_frontier_memory_failure_ttl",
                              exploration_frontier_memory_failure_ttl, 12.0);
+            loader.LoadParam("general_planner/exploration_frontier_memory_failure_block_radius",
+                             exploration_frontier_memory_failure_block_radius, 1.8);
             loader.LoadParam("general_planner/exploration_frontier_memory_covered_radius",
                              exploration_frontier_memory_covered_radius, 0.8);
             loader.LoadParam("general_planner/exploration_frontier_memory_recovery_min_distance",
@@ -691,6 +839,20 @@ namespace general_planner {
                              exploration_nhbp_no_progress_time, 3.0);
             loader.LoadParam("general_planner/exploration_nhbp_recovery_enable",
                              exploration_nhbp_recovery_enable, true);
+            loader.LoadParam("general_planner/exploration_local_trap_detection_enable",
+                             exploration_local_trap_detection_enable, true);
+            loader.LoadParam("general_planner/exploration_local_trap_repeat_threshold",
+                             exploration_local_trap_repeat_threshold, 4);
+            loader.LoadParam("general_planner/exploration_local_trap_cluster_threshold",
+                             exploration_local_trap_cluster_threshold, 2);
+            loader.LoadParam("general_planner/exploration_local_trap_astar_threshold",
+                             exploration_local_trap_astar_threshold, 12);
+            loader.LoadParam("general_planner/exploration_local_trap_min_information_gain",
+                             exploration_local_trap_min_information_gain, 800.0);
+            loader.LoadParam("general_planner/exploration_local_trap_same_region_radius",
+                             exploration_local_trap_same_region_radius, 2.5);
+            loader.LoadParam("general_planner/exploration_local_trap_cooldown",
+                             exploration_local_trap_cooldown, 4.0);
             loader.LoadParam("general_planner/exploration_print_log",
                              exploration_print_log, true);
             loader.LoadParam("general_planner/tracking/distance", tracking_distance, 2.2);

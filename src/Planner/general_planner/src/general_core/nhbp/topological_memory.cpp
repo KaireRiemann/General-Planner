@@ -26,7 +26,9 @@ void TopologicalMemory::reset()
 }
 
 int TopologicalMemory::observePose(const general_utils::Vec3f &position,
-                                   const double stamp)
+                                   const double stamp,
+                                   const TopoNodeType node_type,
+                                   const int floor_id)
 {
     if (!config_.enable || !position.allFinite()) {
         return -1;
@@ -39,6 +41,8 @@ int TopologicalMemory::observePose(const general_utils::Vec3f &position,
         TopoNode node;
         node.node_id = node_id;
         node.position = position;
+        node.node_type = node_type;
+        node.floor_id = floor_id;
         node.created_time = stamp;
         node.last_seen_time = stamp;
         node.visit_count = 1;
@@ -48,10 +52,21 @@ int TopologicalMemory::observePose(const general_utils::Vec3f &position,
         const double visits = static_cast<double>(std::max(1, node.visit_count));
         node.position = (node.position * visits + position) / (visits + 1.0);
         node.last_seen_time = stamp;
+        if (node_type != TopoNodeType::POSE) {
+            node.node_type = node_type;
+        }
+        node.floor_id = floor_id;
         ++node.visit_count;
     }
     prune(stamp);
     return node_id;
+}
+
+int TopologicalMemory::observeVerticalConnector(const general_utils::Vec3f &position,
+                                                const double stamp,
+                                                const int floor_id)
+{
+    return observePose(position, stamp, TopoNodeType::VERTICAL_CONNECTOR, floor_id);
 }
 
 void TopologicalMemory::observeTransition(const general_utils::Vec3f &from,
@@ -112,8 +127,9 @@ void TopologicalMemory::recordFailureNear(const general_utils::Vec3f &position,
 }
 
 bool TopologicalMemory::findRecoveryPosition(const general_utils::Vec3f &robot_pos,
-                                             const double stamp,
-                                             general_utils::Vec3f &position) const
+                                              const double stamp,
+                                              general_utils::Vec3f &position,
+                                              const std::function<bool(const general_utils::Vec3f &)> &accept) const
 {
     position = general_utils::Vec3f::Zero();
     if (!config_.enable || !robot_pos.allFinite()) {
@@ -136,6 +152,9 @@ bool TopologicalMemory::findRecoveryPosition(const general_utils::Vec3f &robot_p
         for (const auto &entry : nodes_) {
             const TopoNode &node = entry.second;
             if (!node.position.allFinite() || node.blacklist_until > stamp) {
+                continue;
+            }
+            if (accept && !accept(node.position)) {
                 continue;
             }
             const double distance = (node.position - robot_pos).norm();
@@ -308,6 +327,23 @@ const char *toString(const TopoEdgeStatus status)
             return "BLOCKED";
         case TopoEdgeStatus::STALE:
             return "STALE";
+    }
+    return "UNKNOWN";
+}
+
+const char *toString(const TopoNodeType type)
+{
+    switch (type) {
+        case TopoNodeType::POSE:
+            return "POSE";
+        case TopoNodeType::BRANCH:
+            return "BRANCH";
+        case TopoNodeType::FRONTIER:
+            return "FRONTIER";
+        case TopoNodeType::FAILURE:
+            return "FAILURE";
+        case TopoNodeType::VERTICAL_CONNECTOR:
+            return "VERTICAL_CONNECTOR";
     }
     return "UNKNOWN";
 }

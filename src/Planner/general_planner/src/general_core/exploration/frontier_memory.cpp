@@ -124,13 +124,15 @@ bool FrontierMemory::blocked(const ExplorationGoal &goal, const double stamp) co
         return false;
     }
     const auto it = records_.find(keyForGoal(goal));
-    if (it == records_.end()) {
-        return false;
+    if (it != records_.end()) {
+        const FrontierMemoryRecord &record = it->second;
+        if ((record.state == FrontierMemoryState::FAILED ||
+             record.state == FrontierMemoryState::COVERED) &&
+            record.blocked_until > stamp) {
+            return true;
+        }
     }
-    const FrontierMemoryRecord &record = it->second;
-    return (record.state == FrontierMemoryState::FAILED ||
-            record.state == FrontierMemoryState::COVERED) &&
-           record.blocked_until > stamp;
+    return failedRegionBlocked(goal, stamp);
 }
 
 bool FrontierMemory::hasRecoverableGoal(const general_utils::Vec3f &robot_pos,
@@ -157,6 +159,9 @@ bool FrontierMemory::hasRecoverableGoal(const general_utils::Vec3f &robot_pos,
             continue;
         }
         if (accept && !accept(record.goal)) {
+            continue;
+        }
+        if (failedRegionBlocked(record.goal, stamp)) {
             continue;
         }
         const double distance = (record.goal.position - robot_pos).norm();
@@ -249,6 +254,37 @@ bool FrontierMemory::expired(const FrontierMemoryRecord &record,
     }
     const double ttl = std::max(0.0, config_.record_ttl);
     return ttl > 0.0 && stamp - record.last_seen_stamp > ttl;
+}
+
+bool FrontierMemory::failedRegionBlocked(const ExplorationGoal &goal,
+                                         const double stamp) const
+{
+    if (!goal.valid || !goal.position.allFinite()) {
+        return false;
+    }
+    const double radius = std::max(0.0, config_.failure_block_radius);
+    if (radius <= 0.0) {
+        return false;
+    }
+    const double radius_sq = radius * radius;
+    const std::string goal_key = keyForGoal(goal);
+    for (const auto &entry : records_) {
+        if (entry.first == goal_key) {
+            continue;
+        }
+        const FrontierMemoryRecord &record = entry.second;
+        if (record.state != FrontierMemoryState::FAILED ||
+            record.blocked_until <= stamp ||
+            expired(record, stamp) ||
+            !record.goal.valid ||
+            !record.goal.position.allFinite()) {
+            continue;
+        }
+        if ((record.goal.position - goal.position).squaredNorm() <= radius_sq) {
+            return true;
+        }
+    }
+    return false;
 }
 
 const char *toString(const FrontierMemoryState state)

@@ -24,6 +24,14 @@ struct ExplorationGoal {
     double curvature_cost{0.0};
     double distance_to_robot{0.0};
 
+    int checked_candidate_count{0};
+    int astar_check_count{0};
+    int reachable_candidate_count{0};
+    int cluster_count{0};
+    int raw_cluster_count{0};
+    int frontier_cell_count{0};
+    int raw_frontier_cell_count{0};
+
     int candidate_id{-1};
     int frontier_id{-1};
     std::string memory_key;
@@ -66,6 +74,7 @@ public:
         double weight_curvature{0.8};
         double weight_info_gain{-2.0};
         double weight_unknown_risk{1.0};
+        double information_gain_saturation{250.0};
 
         double min_information_gain{3.0};
         double goal_switch_min_score_improvement{0.25};
@@ -172,6 +181,8 @@ private:
 
     double scoreCandidate(const ExplorationGoal &candidate,
                           double unknown_risk) const;
+
+    double effectiveInformationGain(double information_gain) const;
 
     ExplorationGoal selectGoalWithAtsp(const general_utils::Vec3f &robot_pos,
                                        double current_yaw,

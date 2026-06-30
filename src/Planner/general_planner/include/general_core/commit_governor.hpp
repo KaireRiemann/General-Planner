@@ -129,6 +129,14 @@ public:
             decision.reason = "tracking_no_need_keep_current";
             return decision;
         }
+        if (result.ret_code == general_utils::NO_NEED &&
+            result.request.identity.goal_like) {
+            decision.action = CommitAction::KEEP_OLD_TRAJECTORY;
+            decision.next_phase = ExecutionPhase::EXECUTING;
+            decision.publish_trajectory = false;
+            decision.reason = "state2state_no_need_keep_current";
+            return decision;
+        }
         if (result.ret_code == general_utils::FINISH && input.exploration_task) {
             decision.action = CommitAction::FINISH_MISSION;
             decision.next_phase = ExecutionPhase::WAITING_INPUT;

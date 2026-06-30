@@ -7,6 +7,7 @@ cd "${ROOT_DIR}"
 
 DURATION="${GP_EXPLORATION_GUARD_DURATION:-90}"
 LOG_FILE="${GP_EXPLORATION_GUARD_LOG:-/tmp/general_planner_exploration_big_field_guard.log}"
+TRAP_ANALYZER="${ROOT_DIR}/sh_files/analyze_exploration_trap_log.sh"
 
 MAX_ODOM_STALE="${GP_EXPLORATION_MAX_ODOM_STALE:-0}"
 MIN_GOAL_SELECTED="${GP_EXPLORATION_MIN_GOAL_SELECTED:-5}"
@@ -53,12 +54,15 @@ max_metric() {
 ODOM_STALE_COUNT="$(count_regex "ODOM_STALE")"
 ASTAR_TIMEOUT_COUNT="$(count_regex "time limit exceeded")"
 NHBP_REJECT_COUNT="$(count_regex "NHBP rejected")"
+LOCAL_TRAP_COUNT="$(count_regex "local_trap_escape_requested")"
+MEMORY_RECOVERY_COUNT="$(count_regex "Use memory recovery goal|Delay finish and use memory recovery goal")"
 PLAN_SUCCESS_COUNT="$(count_regex "ReplanOnce succeed|PlanFromRest succeed|GenerateExpTrajectory SUCCESS")"
 PLAN_FAILED_COUNT="$(count_regex "GenerateExpTrajectory failed|Replan failed:|PlanFromRest failed: (no odom|map is not ready|frontend|runtime manager)")"
 GOAL_SELECTED_COUNT="$(count_regex "Goal selected")"
 FATAL_COUNT="$(count_regex "FATAL|Segmentation fault|core dumped")"
 MAX_FRONTIERS_SEEN="$(max_metric "frontiers")"
 MAX_RAW_FRONTIERS_SEEN="$(max_metric "raw_frontiers")"
+MAX_ASTAR_CHECKS_SEEN="$(max_metric "astar_checks")"
 
 cat <<SUMMARY
 [exploration_guard] roslaunch_status=${ROSLAUNCH_STATUS}
@@ -68,11 +72,22 @@ cat <<SUMMARY
 [exploration_guard] plan_failed=${PLAN_FAILED_COUNT}
 [exploration_guard] odom_stale=${ODOM_STALE_COUNT}
 [exploration_guard] nhbp_reject=${NHBP_REJECT_COUNT}
+[exploration_guard] local_trap=${LOCAL_TRAP_COUNT}
+[exploration_guard] memory_recovery=${MEMORY_RECOVERY_COUNT}
 [exploration_guard] astar_timeout=${ASTAR_TIMEOUT_COUNT}
+[exploration_guard] max_astar_checks=${MAX_ASTAR_CHECKS_SEEN}
 [exploration_guard] max_frontiers=${MAX_FRONTIERS_SEEN}
 [exploration_guard] max_raw_frontiers=${MAX_RAW_FRONTIERS_SEEN}
 [exploration_guard] fatal=${FATAL_COUNT}
 SUMMARY
+
+TRAP_ANALYZER_STATUS=0
+if [[ -x "${TRAP_ANALYZER}" ]]; then
+    set +e
+    GP_TRAP_LOG_REQUIRE_RESPONSE=1 "${TRAP_ANALYZER}" "${LOG_FILE}"
+    TRAP_ANALYZER_STATUS=$?
+    set -e
+fi
 
 FAILED=0
 if [[ "${ROSLAUNCH_STATUS}" -ne 0 && "${ROSLAUNCH_STATUS}" -ne 124 ]]; then
@@ -109,6 +124,10 @@ if [[ "${MAX_FRONTIERS_SEEN}" -gt "${MAX_FRONTIERS}" ]]; then
 fi
 if [[ "${ASTAR_TIMEOUT_COUNT}" -gt "${MAX_ASTAR_TIMEOUT}" ]]; then
     echo "[exploration_guard] FAIL: A* timeout ${ASTAR_TIMEOUT_COUNT} > ${MAX_ASTAR_TIMEOUT}."
+    FAILED=1
+fi
+if [[ "${TRAP_ANALYZER_STATUS}" -ne 0 ]]; then
+    echo "[exploration_guard] FAIL: exploration trap analyzer failed."
     FAILED=1
 fi
 

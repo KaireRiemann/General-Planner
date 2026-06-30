@@ -2,6 +2,7 @@
 
 #include <memory>
 #include <mutex>
+#include <string>
 #include <vector>
 
 #include <general_core/state2state/state2state_backend_context.hpp>
@@ -20,6 +21,13 @@ class Config;
 class ExpTraj;
 class LogOneReplan;
 class MapManager;
+
+namespace nhbp {
+class FarGoalReasoner;
+class SparseGlobalMap;
+class State2StateNHBPAdapter;
+class TopologicalMemory;
+}
 
 namespace state2state_task {
 
@@ -40,6 +48,12 @@ struct StateToStateTaskServices {
     double &backend_time_sum;
     int &backend_time_count;
     StateToStateBackendContext &backend_context;
+    nhbp::State2StateNHBPAdapter *nhbp_adapter{nullptr};
+    nhbp::SparseGlobalMap *sparse_global_map{nullptr};
+    nhbp::FarGoalReasoner *far_goal_reasoner{nullptr};
+    nhbp::TopologicalMemory *topological_memory{nullptr};
+    double *sparse_global_map_last_update_wt{nullptr};
+    std::string *latest_nhbp_debug_info{nullptr};
 };
 
 struct StateToStateSE3BackendServices;
