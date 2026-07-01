@@ -45,6 +45,7 @@
 #include "general_core/dynamic_obstacle_layer.hpp"
 #include "general_core/fov_checker.h"
 #include "general_core/exploration/exploration_frontend.hpp"
+#include "general_core/exploration/exploration_manager.hpp"
 #include "general_core/exploration/exploration_runtime_manager.hpp"
 #include "general_core/tracking/tracking_perching_frontend.hpp"
 #include "general_core/tracking/tracking_runtime_manager.hpp"
@@ -147,8 +148,9 @@ namespace general_planner {
 	        std::unique_ptr<nhbp::FarGoalReasoner> far_goal_reasoner_;
 	        std::unique_ptr<nhbp::TopologicalMemory> topological_memory_;
 	        double sparse_global_map_last_update_wt_{-1.0};
-	        std::unique_ptr<ExplorationFrontend> exploration_frontend_;
-	        std::unique_ptr<ExplorationRuntimeManager> exploration_runtime_manager_;
+		        std::unique_ptr<ExplorationFrontend> exploration_frontend_;
+		        std::unique_ptr<ExplorationManager> exploration_manager_;
+		        std::unique_ptr<ExplorationRuntimeManager> exploration_runtime_manager_;
 
         vector<double> time_consuming_;
 

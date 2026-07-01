@@ -105,8 +105,13 @@ traj_opt:
     penna_acc: 1.0e+7
     penna_jerk: -1.0e+5
     penna_attract: 1.0e+3
-    penna_guide_z_tube: -1.0e+7
-    guide_z_tube_radius: 0.20
+    penna_guide_path: 0.0
+    guide_path_tube_radius: 0.05
+    guide_path_z_tube_radius: 0.05
+    guide_path_huber_delta: 0.40
+    guide_path_time_gradient_en: false
+    penna_guide_z_tube: 1.0e+7
+    guide_z_tube_radius: 0.00
     penna_omg: 5.0e+6
     penna_thr: 2.0e+6
 
@@ -115,7 +120,7 @@ traj_opt:
     pos_constraint_type: 1
     piece_num: 2
     energy_cost_type: 4
-    block_energy_cost: true
+    block_energy_cost: false
     opt_accuracy: 1.0e-6
     scale_factor: 1.0
     integral_reso: 12
@@ -126,8 +131,8 @@ traj_opt:
     penna_vel: 1.0e+7
     penna_acc: 1.0e+7
     penna_jerk: -1.0e+7
-    penna_guide_z_tube: -5.0e+6
-    guide_z_tube_radius: 0.20
+    penna_guide_z_tube: 5.0e+6
+    guide_z_tube_radius: 0.00
     penna_omg: 5.0e+6
     penna_thr: 2.0e+6
 
@@ -174,7 +179,7 @@ rog_map:
   frontier_extraction_en: false
 
   # Virtual ceil and ground
-  virtual_ceil_height: 4.5
+  virtual_ceil_height: 2.5
   virtual_ground_height: -0.1
 
   load_pcd_en: false

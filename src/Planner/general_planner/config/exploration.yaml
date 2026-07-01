@@ -7,7 +7,7 @@ fsm:
   click_yaw_en: true
   task_planner_en: false
   task_mode_topic: "/planning/task_mode"
-  replan_rate: 2.5
+  replan_rate: 5.0
   cmd_topic: "/planning/pos_cmd"
   mpc_cmd_topic: "/planning_cmd/poly_traj"
   timer_en: true
@@ -33,9 +33,9 @@ general_planner:
   ellipsoid_optimizer_fallback: false
   obs_skip_num: 2
   replan_forward_dt: 0.2
-  planning_horizon: 10.0
+  planning_horizon: 14.0
   sensing_horizon: -1
-  receding_dis: 4.0
+  receding_dis: 7.0
   robot_r: 0.2
   frontend_astar_time_out: 0.06
   over_wall_search_en: true
@@ -50,34 +50,101 @@ general_planner:
   mpc_horizon: 15
 
   exploration_enable: true
+  exploration_manager_enable: true
+  exploration_global_box_enable: true
+  exploration_global_box_min: [-60.0, -60.0, 0.0]
+  exploration_global_box_max: [60.0, 60.0, 3.0]
+  exploration_manager_frontier_merge_radius: 2.0
+  exploration_manager_frontier_record_ttl: 120.0
+  exploration_manager_frontier_failure_ttl: 15.0
+  exploration_manager_frontier_covered_radius: 2.0
+  exploration_manager_max_frontier_records: 1024
+  exploration_manager_coverage_resolution: 1.0
+  exploration_manager_coverage_radius: 10.0
+  exploration_manager_coverage_z_half: 1.5
+  exploration_manager_max_coverage_cells: 200000
+  exploration_manager_unknown_gain_radius: 4.0
+  exploration_manager_unknown_gain_resolution: 0.8
+  exploration_manager_unknown_gain_score_weight: -0.04
+  exploration_manager_revisit_score_weight: 2.0
+  exploration_manager_covered_score_weight: 20.0
+  exploration_manager_stale_frontier_score_weight: 0.25
+  exploration_manager_committed_frontier_score_weight: 8.0
+  exploration_manager_recent_commit_score_weight: 14.0
+  exploration_manager_recent_commit_time_window: 10.0
+  exploration_manager_max_commits_before_cooldown: 3
+  exploration_manager_overcommit_cooldown: 8.0
+  exploration_manager_completion_scan_resolution: 1.0
+  exploration_manager_completion_max_unknown_voxels: 40
+  exploration_manager_completion_min_coverage_ratio: 0.70
+  exploration_manager_completion_stable_cycles: 3
+  exploration_manager_completion_max_active_frontiers: 0
   exploration_frontier_source: "auto"
   exploration_frontier_search_radius: 16.0
   exploration_frontier_cluster_radius: 1.5
-  exploration_frontier_sample_resolution: 0.8
-  exploration_min_frontier_cluster_size: 3
-  exploration_max_raw_frontier_points: 4096
-  exploration_max_frontier_cells: 1536
+  exploration_frontier_sample_resolution: 0.6
+  exploration_frontier_subcluster_size: 4.0
+  exploration_min_frontier_cluster_size: 12
+  exploration_min_frontier_area: 0.12
+  exploration_min_frontier_extent: 0.4
+  exploration_min_unknown_neighbor_count: 12
+  exploration_max_raw_frontier_points: 8192
+  exploration_max_frontier_cells: 3072
   exploration_max_frontier_clusters: 64
-  exploration_viewpoint_min_distance: 1.2
-  exploration_viewpoint_max_distance: 5.5
+  exploration_max_subclusters_per_cluster: 16
+  exploration_frontier_manager_enable: true
+  exploration_frontier_manager_max_records: 768
+  exploration_frontier_manager_match_radius: 2.2
+  exploration_frontier_manager_stale_time: 10.0
+  exploration_frontier_manager_dormant_time: 7.0
+  exploration_frontier_manager_covered_unknown_radius: 1.8
+  exploration_frontier_manager_min_changed_fraction: 0.2
+  exploration_frontier_manager_selection_penalty: 7.5
+  exploration_frontier_manager_recent_selection_penalty: 16.0
+  exploration_frontier_manager_recent_selection_window: 12.0
+  exploration_frontier_manager_no_view_threshold: 2
+  exploration_viewpoint_min_distance: 2.0
+  exploration_viewpoint_max_distance: 8.0
   exploration_viewpoint_height_offset: 0.0
   exploration_viewpoint_safe_distance: 0.45
   exploration_viewpoint_yaw_sample_num: 12
-  exploration_viewpoint_radius_sample_num: 3
-  exploration_max_candidate_num: 80
-  exploration_max_astar_checks: 16
-  exploration_max_reachable_candidate_num: 16
-  exploration_weight_travel: 1.0
+  exploration_viewpoint_radius_sample_num: 4
+  exploration_viewpoint_use_normal_sampling: true
+  exploration_viewpoint_normal_angle: 1.1
+  exploration_viewpoint_z_sample_num: 1
+  exploration_viewpoint_z_min: 0.0
+  exploration_viewpoint_z_max: 0.0
+  exploration_min_visible_frontier_cells: 6
+  exploration_min_visible_frontier_ratio: 0.08
+  exploration_max_candidate_num: 120
+  exploration_max_candidates_per_frontier_cluster: 8
+  exploration_candidate_separation_distance: 1.5
+  exploration_max_astar_checks: 12
+  exploration_min_direct_reachable_before_astar: 8
+  exploration_max_astar_checks_per_frontier: 2
+  exploration_max_reachable_candidate_num: 32
+  exploration_max_gain_rays: 96
+  exploration_gain_ray_length: 5.0
+  exploration_gain_ray_step: 0.2
+  exploration_astar_time_out: 0.025
+  exploration_astar_total_time_budget_ms: 40.0
+  exploration_astar_failure_cache_ttl: 4.0
+  exploration_yaw_policy: "velocity"
+  exploration_weight_travel: 0.35
   exploration_weight_yaw: 0.5
   exploration_weight_curvature: 0.8
-  exploration_weight_info_gain: -2.0
+  exploration_weight_info_gain: -2.4
   exploration_weight_unknown_risk: 1.0
+  exploration_weight_progress: -1.25
+  exploration_weight_short_goal: 10.0
   exploration_information_gain_saturation: 220.0
   exploration_min_information_gain: 2.0
+  exploration_min_goal_distance: 6.0
+  exploration_preferred_goal_distance: 12.0
   exploration_goal_switch_min_score_improvement: 0.45
   exploration_goal_reached_distance: 0.5
   exploration_unknown_as_occupied_for_motion: true
-  exploration_require_line_free_to_frontier: false
+  exploration_require_line_free_to_frontier: true
   exploration_use_astar_cost: true
   exploration_use_atsp: true
   exploration_atsp_solver: "fy_node_lkh"

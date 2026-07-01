@@ -813,6 +813,22 @@ public:
     return true;
   }
 
+  bool generateUniform(const InnerPointsMat &inner_points,
+                       const BoundaryState &head_state,
+                       const BoundaryState &tail_state,
+                       double total_duration)
+  {
+    const int piece_num = inner_points.cols() + 1;
+    if (piece_num <= 0 || !std::isfinite(total_duration) || total_duration <= 0.0)
+    {
+      return false;
+    }
+
+    Eigen::VectorXd durations(piece_num);
+    durations.setConstant(total_duration / static_cast<double>(piece_num));
+    return generate(inner_points, head_state, tail_state, durations);
+  }
+
 	  int getPieceNum() const { return piece_num_; }
 	  const Eigen::VectorXd &getDurations() const { return durations_; }
 	  double getTotalDuration() const { return durations_.sum(); }
@@ -1162,6 +1178,163 @@ private:
   BandedSystem system_;
   CoeffMat coeffs_;
   Eigen::VectorXd durations_;
+};
+
+template <int DIM, int S = 3>
+class TimeUniformMINCOGenerator
+{
+public:
+  EIGEN_MAKE_ALIGNED_OPERATOR_NEW
+
+  using TrajType = MINCOTrajectory<DIM, S>;
+  using BoundaryState = typename TrajType::BoundaryState;
+  using InnerPointsMat = typename TrajType::InnerPointsMat;
+  using CoeffMat = typename TrajType::CoeffMat;
+  using BasisRow = typename TrajType::BasisRow;
+
+  bool generate(const InnerPointsMat &inner_points,
+                const BoundaryState &head_state,
+                const BoundaryState &tail_state,
+                double total_duration)
+  {
+    const int piece_num = inner_points.cols() + 1;
+    if (piece_num <= 0 || !std::isfinite(total_duration) || total_duration <= 0.0)
+    {
+      return false;
+    }
+
+    ensureUnitSystem(piece_num);
+    const double h = total_duration / static_cast<double>(piece_num);
+    CoeffMat rhs(TrajType::COEFF_NUM * piece_num, DIM);
+    rhs.setZero();
+
+    for (int r = 0; r < S; ++r)
+    {
+      rhs.row(r) = (std::pow(h, static_cast<double>(r)) * head_state.col(r)).transpose();
+    }
+
+    for (int i = 0; i < piece_num - 1; ++i)
+    {
+      const int waypoint_row = i * TrajType::COEFF_NUM + S + (TrajType::ORDER - S);
+      rhs.row(waypoint_row) = inner_points.col(i).transpose();
+    }
+
+    const int tail_start_row = TrajType::COEFF_NUM * piece_num - S;
+    for (int r = 0; r < S; ++r)
+    {
+      rhs.row(tail_start_row + r) =
+          (std::pow(h, static_cast<double>(r)) * tail_state.col(r)).transpose();
+    }
+
+    unit_system_.solve(rhs);
+
+    CoeffMat physical_coeffs = rhs;
+    for (int i = 0; i < piece_num; ++i)
+    {
+      double h_power = 1.0;
+      for (int k = 0; k < TrajType::COEFF_NUM; ++k)
+      {
+        physical_coeffs.row(i * TrajType::COEFF_NUM + k) = rhs.row(i * TrajType::COEFF_NUM + k) / h_power;
+        h_power *= h;
+      }
+    }
+
+    Eigen::VectorXd durations(piece_num);
+    durations.setConstant(h);
+    return traj_.setFromCoefficients(durations, physical_coeffs);
+  }
+
+  const TrajType &trajectory() const
+  {
+    return traj_;
+  }
+
+  TrajType &trajectory()
+  {
+    return traj_;
+  }
+
+private:
+  void ensureUnitSystem(int piece_num)
+  {
+    if (unit_system_ready_ && cached_piece_num_ == piece_num)
+    {
+      return;
+    }
+
+    cached_piece_num_ = piece_num;
+    unit_system_.create(TrajType::COEFF_NUM * piece_num,
+                        TrajType::COEFF_NUM,
+                        TrajType::COEFF_NUM);
+    unit_system_.reset();
+    buildHeadRows(piece_num);
+    buildInternalRows(piece_num);
+    buildTailRows(piece_num);
+    unit_system_.factorizeLU();
+    unit_system_ready_ = true;
+  }
+
+  void buildHeadRows(int)
+  {
+    for (int r = 0; r < S; ++r)
+    {
+      addBasisToRow(r, 0, r, 0.0, 1.0);
+    }
+  }
+
+  void buildInternalRows(int piece_num)
+  {
+    for (int i = 0; i < piece_num - 1; ++i)
+    {
+      int row = i * TrajType::COEFF_NUM + S;
+      for (int r = S; r <= TrajType::ORDER - 1; ++r, ++row)
+      {
+        addBasisToRow(row, i, r, 1.0, +1.0);
+        addBasisToRow(row, i + 1, r, 0.0, -1.0);
+      }
+
+      addBasisToRow(row, i, 0, 1.0, +1.0);
+      ++row;
+
+      addBasisToRow(row, i, 0, 1.0, +1.0);
+      addBasisToRow(row, i + 1, 0, 0.0, -1.0);
+      ++row;
+
+      for (int r = 1; r <= S - 1; ++r, ++row)
+      {
+        addBasisToRow(row, i, r, 1.0, +1.0);
+        addBasisToRow(row, i + 1, r, 0.0, -1.0);
+      }
+    }
+  }
+
+  void buildTailRows(int piece_num)
+  {
+    const int start_row = TrajType::COEFF_NUM * piece_num - S;
+    const int last_piece = piece_num - 1;
+    for (int r = 0; r < S; ++r)
+    {
+      addBasisToRow(start_row + r, last_piece, r, 1.0, 1.0);
+    }
+  }
+
+  void addBasisToRow(int row, int piece_idx, int derivative_order, double t, double scale)
+  {
+    const BasisRow basis = TrajType::derivativeBasis(derivative_order, t);
+    const int col0 = piece_idx * TrajType::COEFF_NUM;
+    for (int k = 0; k < TrajType::COEFF_NUM; ++k)
+    {
+      if (basis(k) != 0.0)
+      {
+        unit_system_(row, col0 + k) += scale * basis(k);
+      }
+    }
+  }
+
+  TrajType traj_;
+  BandedSystem unit_system_;
+  int cached_piece_num_{0};
+  bool unit_system_ready_{false};
 };
 
 template <int DIM>

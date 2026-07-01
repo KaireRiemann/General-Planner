@@ -74,6 +74,29 @@ namespace optimizer_traits
                                        decltype(std::declval<const T>().discreteSampleTimes())>> : std::true_type
   {
   };
+
+  template <typename T, typename = void>
+  struct HasBeginEvaluationWithTimes : std::false_type
+  {
+  };
+
+  template <typename T>
+  struct HasBeginEvaluationWithTimes<T, void_t<
+                                            decltype(std::declval<T>().beginEvaluation(
+                                                std::declval<const std::vector<double> *>()))>> : std::true_type
+  {
+  };
+
+  template <typename T, typename = void>
+  struct HasBeginEvaluationWithoutTimes : std::false_type
+  {
+  };
+
+  template <typename T>
+  struct HasBeginEvaluationWithoutTimes<T, void_t<
+                                               decltype(std::declval<T>().beginEvaluation())>> : std::true_type
+  {
+  };
 } // namespace optimizer_traits
 
 template <int DIM, int S, typename TimeMap, typename SpatialMap>
@@ -185,6 +208,11 @@ public:
     samples_per_piece_ = std::max(1, samples_per_piece);
   }
 
+  void setUniformTimeMode(bool enabled)
+  {
+    uniform_time_mode_ = enabled;
+  }
+
   bool setInitState(const std::vector<double> &time_segments,
                     const WaypointsType &waypoints,
                     const BoundaryState &boundary_head,
@@ -237,7 +265,6 @@ public:
       return Eigen::VectorXd{};
     }
 
-    const int dim_T = piece_num_;
     const int extra_dim =
         (boundary_mapping != nullptr && boundary_mapping->enabled())
             ? boundary_mapping->extraVariableDim()
@@ -245,17 +272,38 @@ public:
     const int total_dim = getCoreDecisionDim() + extra_dim;
 
     Eigen::VectorXd x(total_dim);
-    for (int i = 0; i < piece_num_; ++i)
+    if (uniform_time_mode_)
     {
-      if (!std::isfinite(physical_times[static_cast<std::size_t>(i)]) ||
-          physical_times[static_cast<std::size_t>(i)] <= 0.0)
+      double total_time = 0.0;
+      for (int i = 0; i < piece_num_; ++i)
+      {
+        const double T = physical_times[static_cast<std::size_t>(i)];
+        if (!std::isfinite(T) || T <= 0.0)
+        {
+          return Eigen::VectorXd{};
+        }
+        total_time += T;
+      }
+      if (total_time <= 0.0)
       {
         return Eigen::VectorXd{};
       }
-      x(i) = active_time_map_->toTau(physical_times[static_cast<std::size_t>(i)]);
+      x(0) = active_time_map_->toTau(total_time);
+    }
+    else
+    {
+      for (int i = 0; i < piece_num_; ++i)
+      {
+        if (!std::isfinite(physical_times[static_cast<std::size_t>(i)]) ||
+            physical_times[static_cast<std::size_t>(i)] <= 0.0)
+        {
+          return Eigen::VectorXd{};
+        }
+        x(i) = active_time_map_->toTau(physical_times[static_cast<std::size_t>(i)]);
+      }
     }
 
-    int offset = dim_T;
+    int offset = getTimeDecisionDim();
     for (int i = 1; i < piece_num_; ++i)
     {
       const int dof = active_spatial_map_->getUnconstrainedDim(i);
@@ -329,6 +377,49 @@ public:
                                        &fixed_boundary_mapping);
   }
 
+  bool updateTrajectoryFromDecisionVector(
+      const Eigen::Ref<const Eigen::VectorXd> &x,
+      const BoundaryStateMappingBase<DIM, S> *boundary_mapping = nullptr)
+  {
+    const int core_dim = getCoreDecisionDim();
+    const int extra_dim =
+        (boundary_mapping != nullptr && boundary_mapping->enabled())
+            ? boundary_mapping->extraVariableDim()
+            : 0;
+    if (x.size() != core_dim + extra_dim)
+    {
+      return false;
+    }
+
+    Eigen::VectorXd dummy_grad = Eigen::VectorXd::Zero(x.size());
+    double dummy_cost = 0.0;
+    decodeDecisionVariables(x, dummy_grad, dummy_cost);
+    workspace_->head_state = nominal_head_state_;
+    workspace_->tail_state = nominal_tail_state_;
+    if (boundary_mapping != nullptr && boundary_mapping->enabled())
+    {
+      const auto extra_vars = x.segment(core_dim, extra_dim);
+      boundary_mapping->mapBoundaryStates(nominal_head_state_,
+                                          nominal_tail_state_,
+                                          workspace_->cache_T,
+                                          extra_vars,
+                                          workspace_->head_state,
+                                          workspace_->tail_state);
+    }
+
+    if (uniform_time_mode_)
+    {
+      return traj_.generateUniform(workspace_->cache_P_inner,
+                                   workspace_->head_state,
+                                   workspace_->tail_state,
+                                   workspace_->cache_T.sum());
+    }
+    return traj_.generate(workspace_->cache_P_inner,
+                          workspace_->head_state,
+                          workspace_->tail_state,
+                          workspace_->cache_T);
+  }
+
   template <typename TimeCostFunc, typename CostManager>
   double evaluateWithBoundaryMapping(
       const Eigen::Ref<const Eigen::VectorXd> &x,
@@ -376,10 +467,20 @@ public:
             extra_vars, grad_out.segment(core_dim, extra_dim));
       }
     }
-    traj_.generate(workspace_->cache_P_inner,
-                   workspace_->head_state,
-                   workspace_->tail_state,
-                   workspace_->cache_T);
+    if (uniform_time_mode_)
+    {
+      traj_.generateUniform(workspace_->cache_P_inner,
+                            workspace_->head_state,
+                            workspace_->tail_state,
+                            workspace_->cache_T.sum());
+    }
+    else
+    {
+      traj_.generate(workspace_->cache_P_inner,
+                     workspace_->head_state,
+                     workspace_->tail_state,
+                     workspace_->cache_T);
+    }
 
     double energy_cost = 0.0;
     if (rho_energy_ > 0.0)
@@ -395,8 +496,10 @@ public:
     }
 
     std::vector<double> T_vec(workspace_->cache_T.data(), workspace_->cache_T.data() + workspace_->cache_T.size());
+    beginCostManagerEvaluation(cost_manager, T_vec);
     workspace_->gdT_time.setZero();
-    total_cost += time_cost_func(T_vec, workspace_->gdT_time);
+    const double time_cost = time_cost_func(T_vec, workspace_->gdT_time);
+    total_cost += time_cost;
 
     double integral_cost = 0.0;
     accumulateIntegralCost(cost_manager, integral_cost);
@@ -405,6 +508,11 @@ public:
     double sample_cost = 0.0;
     accumulateSampleCost(cost_manager, sample_cost);
     total_cost += sample_cost;
+
+    last_energy_cost_ = rho_energy_ * energy_cost;
+    last_time_cost_ = time_cost;
+    last_integral_cost_ = integral_cost;
+    last_sample_cost_ = sample_cost;
 
     const CoeffMat gdC_total =
         rho_energy_ * workspace_->gdC_energy + workspace_->gdC_integral + workspace_->gdC_sample;
@@ -450,7 +558,22 @@ public:
     return traj_;
   }
 
+  const Eigen::VectorXd &getCurrentTimes() const
+  {
+    return workspace_->cache_T;
+  }
+
+  double lastEnergyCost() const { return last_energy_cost_; }
+  double lastTimeCost() const { return last_time_cost_; }
+  double lastIntegralCost() const { return last_integral_cost_; }
+  double lastSampleCost() const { return last_sample_cost_; }
+
 private:
+  int getTimeDecisionDim() const
+  {
+    return uniform_time_mode_ ? 1 : piece_num_;
+  }
+
   int getCoreDecisionDim() const
   {
     int dim_P = 0;
@@ -458,19 +581,27 @@ private:
     {
       dim_P += active_spatial_map_->getUnconstrainedDim(i);
     }
-    return piece_num_ + dim_P;
+    return getTimeDecisionDim() + dim_P;
   }
 
   void decodeDecisionVariables(const Eigen::Ref<const Eigen::VectorXd> &x,
                                Eigen::Ref<Eigen::VectorXd> grad_out,
                                double &total_cost)
   {
-    for (int i = 0; i < piece_num_; ++i)
+    if (uniform_time_mode_)
     {
-      workspace_->cache_T(i) = active_time_map_->toTime(x(i));
+      const double total_time = active_time_map_->toTime(x(0));
+      workspace_->cache_T.setConstant(total_time / static_cast<double>(std::max(1, piece_num_)));
+    }
+    else
+    {
+      for (int i = 0; i < piece_num_; ++i)
+      {
+        workspace_->cache_T(i) = active_time_map_->toTime(x(i));
+      }
     }
 
-    int offset = piece_num_;
+    int offset = getTimeDecisionDim();
     for (int i = 1; i < piece_num_; ++i)
     {
       const int dof = active_spatial_map_->getUnconstrainedDim(i);
@@ -481,6 +612,26 @@ private:
       active_spatial_map_->addNormPenalty(xi, total_cost, grad_xi);
       grad_out.segment(offset, dof) += grad_xi;
       offset += dof;
+    }
+  }
+
+  template <typename CostManager>
+  void beginCostManagerEvaluation(CostManager &&cost_manager,
+                                  const std::vector<double> &times) const
+  {
+    using Manager = typename std::decay<CostManager>::type;
+    if constexpr (optimizer_traits::HasBeginEvaluationWithTimes<Manager>::value)
+    {
+      cost_manager.beginEvaluation(&times);
+    }
+    else if constexpr (optimizer_traits::HasBeginEvaluationWithoutTimes<Manager>::value)
+    {
+      cost_manager.beginEvaluation();
+    }
+    else
+    {
+      (void)cost_manager;
+      (void)times;
     }
   }
 
@@ -710,12 +861,22 @@ private:
   void writeDecisionGradient(const Eigen::Ref<const Eigen::VectorXd> &x,
                              Eigen::Ref<Eigen::VectorXd> grad_out) const
   {
-    for (int i = 0; i < piece_num_; ++i)
+    if (uniform_time_mode_)
     {
-      grad_out(i) += active_time_map_->backward(x(i), workspace_->cache_T(i), workspace_->grad_by_times(i));
+      grad_out(0) += active_time_map_->backward(
+          x(0),
+          workspace_->cache_T.sum(),
+          workspace_->grad_by_times.sum() / static_cast<double>(std::max(1, piece_num_)));
+    }
+    else
+    {
+      for (int i = 0; i < piece_num_; ++i)
+      {
+        grad_out(i) += active_time_map_->backward(x(i), workspace_->cache_T(i), workspace_->grad_by_times(i));
+      }
     }
 
-    int offset = piece_num_;
+    int offset = getTimeDecisionDim();
     for (int i = 1; i < piece_num_; ++i)
     {
       const int dof = active_spatial_map_->getUnconstrainedDim(i);
@@ -732,6 +893,11 @@ private:
   int piece_num_{0};
   int samples_per_piece_{5};
   double rho_energy_{1.0};
+  bool uniform_time_mode_{false};
+  double last_energy_cost_{0.0};
+  double last_time_cost_{0.0};
+  double last_integral_cost_{0.0};
+  double last_sample_cost_{0.0};
 
   std::vector<double> ref_times_;
   WaypointsType ref_waypoints_;

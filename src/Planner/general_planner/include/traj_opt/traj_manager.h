@@ -8,6 +8,7 @@
 
 #include "traj_opt/config.hpp"
 #include "traj_opt/minco/minco_trajectory.hpp"
+#include "traj_opt/minco/minco_optimizer.hpp"
 #include "traj_opt/costfunctional/temporalcosts/linear_time_cost.hpp"
 #include "traj_opt/costfunctional/spatialmap/polytope_spatial_map.hpp"
 #include "traj_opt/costfunctional/temporalmap/quad_inv_time_map.hpp"
@@ -40,6 +41,10 @@ constexpr int YAW_TRAJ_ORDER = 2 * YAW_TRAJ_S - 1;
 
 using SnapTraj = minco::MINCO_S4<TRAJ_DIM>;
 using SnapBoundaryState = typename SnapTraj::BoundaryState;
+using SnapOptimizer = minco::MINCOOptimizer<TRAJ_DIM,
+                                            SNAP_TRAJ_S,
+                                            temporal_map::QuadInvTimeMap,
+                                            spatial_map::PolytopeSpatialMap>;
 using YawTraj = minco::MINCO_S2<1>;
 using YawBoundaryState = typename YawTraj::BoundaryState;
 
@@ -169,7 +174,7 @@ private:
   };
 
   static double costFunctional(void *ptr, const VecDf &x, VecDf &g);
-  double evaluateCurrentCost(const VecDf &x, VecDf &g);
+  double evaluateMincoCost(const VecDf &x, VecDf &g);
   double optimize(Trajectory &traj, double rel_cost_tol);
   void decodeOptimizationVector(const VecDf &x, VecDf &times, Mat3Df &inner) const;
   void logValidationReport(const std::string &stage,
@@ -188,6 +193,7 @@ private:
   ros_interface::RosInterface::Ptr ros_ptr_;
   general_planner::MapManager::Ptr map_manager_;
   SnapTraj minco_traj_;
+  SnapOptimizer optimizer_;
   temporal_map::QuadInvTimeMap time_map_;
   cost_functional::LinearTimeCost linear_time_cost_;
   cost_functional_manager::ESDFIntegralCostManager esdf_cost_manager_;
@@ -285,7 +291,7 @@ private:
   };
 
   static double costFunctional(void *ptr, const VecDf &x, VecDf &g);
-  double evaluateCurrentCost(const VecDf &x, VecDf &g);
+  double evaluateMincoCost(const VecDf &x, VecDf &g);
   double optimize(Trajectory &traj, double rel_cost_tol);
   void decodeOptimizationVector(const VecDf &x, VecDf &times, Mat3Df &inner) const;
   void logValidationReport(const std::string &stage,
@@ -337,6 +343,7 @@ private:
   general_planner::MapManager::Ptr map_manager_;
   std::shared_ptr<path_search::Astar> local_astar_;
   SnapTraj minco_traj_;
+  SnapOptimizer optimizer_;
   temporal_map::QuadInvTimeMap time_map_;
   cost_functional::LinearTimeCost linear_time_cost_;
   cost_functional_manager::PlainIntegralCostManager plain_cost_manager_;
@@ -422,6 +429,15 @@ private:
     StatePVAJ tail_pvaj;
     vec_E<Vec3f> guide_path;
     std::vector<double> guide_t;
+    double weight_guide_integral{0.0};
+    double guide_integral_violation{0.0};
+    double guide_path_tube_radius{0.0};
+    double guide_path_z_tube_radius{0.0};
+    double guide_path_huber_delta{0.0};
+    bool guide_path_time_gradient_en{false};
+    double guide_path_cost_log{0.0};
+    double guide_path_max_abs_time_grad{0.0};
+    int guide_path_out_of_time_range_samples{0};
     double weight_guide_z_tube{0.0};
     double guide_z_tube_radius{0.0};
     double guide_z_tube_violation{0.0};
@@ -436,7 +452,7 @@ private:
   void defaultInitialization();
   bool setupProblemAndCheck();
   double optimize(Trajectory &traj, double rel_cost_tol);
-  double evaluateCurrentCost(const VecDf &x, VecDf &g);
+  double evaluateMincoCost(const VecDf &x, VecDf &g);
   bool loadCorridors(PolytopeVec &sfcs);
 
   static Trajectory toGeometryTrajectory(const SnapTraj &traj);
@@ -448,7 +464,7 @@ private:
   std::ofstream penalty_log_;
   ros_interface::RosInterface::Ptr ros_ptr_;
 
-  SnapTraj minco_traj_;
+  SnapOptimizer optimizer_;
   temporal_map::QuadInvTimeMap time_map_;
   spatial_map::PolytopeSpatialMap spatial_map_;
   cost_functional::LinearTimeCost linear_time_cost_;
@@ -548,15 +564,7 @@ private:
   bool processCorridor();
   bool setupProblemAndCheck();
   double optimize(Trajectory &traj, double rel_cost_tol);
-  double evaluateCurrentCost(const VecDf &x, VecDf &g);
-  void decodeDecisionVector(const VecDf &x,
-                            VecDf &times,
-                            Mat3Df &points,
-                            double &ts) const;
-  VecDf encodeDecisionVector() const;
-
-  static double logisticInterval(double lo, double hi, double eta);
-  static double logisticIntervalGrad(double lo, double hi, double eta);
+  double evaluateMincoCost(const VecDf &x, VecDf &g);
   static Trajectory toGeometryTrajectory(const SnapTraj &traj);
   static SnapBoundaryState toSnapBoundary(const StatePVAJ &state);
 
@@ -566,9 +574,11 @@ private:
   std::ofstream failed_traj_log_;
   std::ofstream penalty_log_;
 
-  SnapTraj minco_traj_;
+  SnapOptimizer optimizer_;
+  minco::BackupBoundaryMapping<TRAJ_DIM, SNAP_TRAJ_S> backup_boundary_mapping_;
   temporal_map::QuadInvTimeMap time_map_;
   spatial_map::PolytopeSpatialMap spatial_map_;
+  cost_functional::LinearTimeCost linear_time_cost_;
   cost_functional_manager::BackupIntegralCostManager backup_cost_manager_;
   OptimizationVariables opt_vars_;
 };

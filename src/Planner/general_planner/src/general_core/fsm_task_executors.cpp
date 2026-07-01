@@ -463,6 +463,10 @@ public:
         return "exploration";
     }
 
+    bool goalLike() const override {
+        return true;
+    }
+
     bool ready(Fsm &fsm) override {
         return fsm.started_ && !fsm.finish_plan;
     }

@@ -85,6 +85,11 @@ traj_opt:
     penna_acc: 5.0e+5
     penna_jerk: -5.0e+5
     penna_attract: 1.0e+3
+    penna_guide_path: 0.0
+    guide_path_tube_radius: 0.25
+    guide_path_z_tube_radius: 0.08
+    guide_path_huber_delta: 0.30
+    guide_path_time_gradient_en: false
     penna_guide_z_tube: -2.0e+6
     guide_z_tube_radius: 0.10
     penna_omg:  5.0e+5

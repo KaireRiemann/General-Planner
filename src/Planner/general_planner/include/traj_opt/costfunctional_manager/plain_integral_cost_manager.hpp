@@ -12,6 +12,8 @@
 #include "utils/header/type_utils.hpp"
 
 #include <algorithm>
+#include <cmath>
+#include <limits>
 #include <vector>
 
 namespace cost_functional_manager
@@ -40,6 +42,16 @@ public:
     traj_opt::SwarmTrajectoriesConstPtr swarm_trajs;
     double swarm_current_wall_time{0.0};
     int samples_per_piece{0};
+    const general_utils::vec_E<general_utils::Vec3f> *guide_path = nullptr;
+    const general_utils::vec_E<general_utils::Vec3f> *guide_velocities = nullptr;
+    const general_utils::Mat3Df *guide_points = nullptr;
+    double weight_guide{0.0};
+    double weight_guide_integral{0.0};
+    double weight_guide_vel_integral{0.0};
+    double weight_guide_tube{0.0};
+    double guide_tube_radius{0.0};
+    double guide_tube_radius_sqr{0.0};
+    int junction_sample_step{0};
 
     void reset(const PlainPVPairBuckets *pv_pairs_in,
                double pv_clearance_in,
@@ -51,7 +63,17 @@ public:
                const traj_opt::SwarmPenaltyConfig &swarm_config_in,
                const traj_opt::SwarmTrajectoriesConstPtr &swarm_trajs_in,
                double swarm_current_wall_time_in,
-               int samples_per_piece_in = 0)
+               int samples_per_piece_in = 0,
+               const general_utils::vec_E<general_utils::Vec3f> *guide_path_in = nullptr,
+               const general_utils::vec_E<general_utils::Vec3f> *guide_velocities_in = nullptr,
+               const general_utils::Mat3Df *guide_points_in = nullptr,
+               double weight_guide_in = 0.0,
+               double weight_guide_integral_in = 0.0,
+               double weight_guide_vel_integral_in = 0.0,
+               double weight_guide_tube_in = 0.0,
+               double guide_tube_radius_in = 0.0,
+               double guide_tube_radius_sqr_in = 0.0,
+               int junction_sample_step_in = 0)
     {
         pv_pairs = pv_pairs_in;
         pv_clearance = pv_clearance_in;
@@ -64,12 +86,156 @@ public:
         swarm_trajs = swarm_trajs_in;
         swarm_current_wall_time = swarm_current_wall_time_in;
         samples_per_piece = std::max(0, samples_per_piece_in);
+        guide_path = guide_path_in;
+        guide_velocities = guide_velocities_in;
+        guide_points = guide_points_in;
+        weight_guide = std::max(0.0, weight_guide_in);
+        weight_guide_integral = std::max(0.0, weight_guide_integral_in);
+        weight_guide_vel_integral = std::max(0.0, weight_guide_vel_integral_in);
+        weight_guide_tube = std::max(0.0, weight_guide_tube_in);
+        guide_tube_radius = std::max(0.0, guide_tube_radius_in);
+        guide_tube_radius_sqr = std::max(0.0, guide_tube_radius_sqr_in);
+        junction_sample_step = std::max(0, junction_sample_step_in);
         max_violation_.resize(9);
         max_violation_.setZero();
+        guide_cost_log_ = 0.0;
+        guide_tube_violation_ = 0.0;
+    }
+
+    void beginEvaluation(const std::vector<double> *)
+    {
+        max_violation_.resize(9);
+        max_violation_.setZero();
+        guide_cost_log_ = 0.0;
+        guide_tube_violation_ = 0.0;
     }
 
     const general_utils::VecDf &getPenaltyLog() const { return max_violation_; }
     double getMaxCollisionViolation() const { return max_violation_.size() > 1 ? max_violation_(1) : 0.0; }
+    double getGuideCostLog() const { return guide_cost_log_; }
+    double getGuideTubeViolation() const { return guide_tube_violation_; }
+
+    double evaluateIntegral(int logical_idx,
+                            double t,
+                            double t_global,
+                            int seg_idx,
+                            int step_in_seg,
+                            const Eigen::Vector3d &position,
+                            const Eigen::Vector3d &velocity,
+                            const Eigen::Vector3d &acceleration,
+                            const Eigen::Vector3d &jerk,
+                            Eigen::Vector3d &grad_position,
+                            Eigen::Vector3d &grad_velocity,
+                            Eigen::Vector3d &grad_acceleration,
+                            Eigen::Vector3d &grad_jerk,
+                            double &grad_time) const
+    {
+        (void)logical_idx;
+        Eigen::Vector3d grad_snap = Eigen::Vector3d::Zero();
+        const Eigen::Vector3d snap = Eigen::Vector3d::Zero();
+        double cost = operator()(t,
+                                 t_global,
+                                 seg_idx,
+                                 step_in_seg,
+                                 position,
+                                 velocity,
+                                 acceleration,
+                                 jerk,
+                                 snap,
+                                 grad_position,
+                                 grad_velocity,
+                                 grad_acceleration,
+                                 grad_jerk,
+                                 grad_snap,
+                                 grad_time);
+
+        const bool has_guide_path = guide_path != nullptr && guide_path->size() >= 2;
+        const bool use_guide_position = weight_guide_integral > 0.0 && has_guide_path;
+        const bool use_guide_velocity =
+            weight_guide_vel_integral > 0.0 &&
+            has_guide_path &&
+            guide_velocities != nullptr &&
+            guide_velocities->size() == guide_path->size();
+        const bool use_guide_tube =
+            weight_guide_tube > 0.0 &&
+            guide_tube_radius_sqr > 0.0 &&
+            has_guide_path;
+
+        if (use_guide_position || use_guide_velocity || use_guide_tube)
+        {
+            const ClosestGuidePV ref = closestPVOnPolyline(
+                *guide_path,
+                guide_velocities != nullptr ? *guide_velocities : empty_velocities_,
+                position);
+            const Eigen::Vector3d diff = position - ref.position;
+            if (use_guide_position)
+            {
+                const double guide_sample_cost =
+                    0.5 * weight_guide_integral * diff.squaredNorm();
+                cost += guide_sample_cost;
+                grad_position += weight_guide_integral * diff;
+                guide_cost_log_ += guide_sample_cost;
+            }
+            if (use_guide_tube)
+            {
+                const double dist_sqr = diff.squaredNorm();
+                const double violation = dist_sqr - guide_tube_radius_sqr;
+                if (violation > 0.0)
+                {
+                    const double tube_sample_cost =
+                        0.5 * weight_guide_tube * violation * violation;
+                    cost += tube_sample_cost;
+                    grad_position += 2.0 * weight_guide_tube * violation * diff;
+                    guide_cost_log_ += tube_sample_cost;
+                    guide_tube_violation_ =
+                        std::max(guide_tube_violation_,
+                                 std::sqrt(std::max(0.0, dist_sqr)) - guide_tube_radius);
+                }
+            }
+            if (use_guide_velocity)
+            {
+                const Eigen::Vector3d diff_v = velocity - ref.velocity;
+                const double guide_velocity_sample_cost =
+                    0.5 * weight_guide_vel_integral * diff_v.squaredNorm();
+                cost += guide_velocity_sample_cost;
+                grad_velocity += weight_guide_vel_integral * diff_v;
+                guide_cost_log_ += guide_velocity_sample_cost;
+            }
+        }
+        return cost;
+    }
+
+    template <typename SampleBuffer>
+    double evaluateSample(const SampleBuffer &samples,
+                          Eigen::Matrix<double, 3, Eigen::Dynamic> &grad_positions,
+                          Eigen::VectorXd &) const
+    {
+        if (weight_guide <= 0.0 ||
+            guide_points == nullptr ||
+            guide_points->cols() <= 0)
+        {
+            return 0.0;
+        }
+
+        double cost = 0.0;
+        for (std::size_t sample_id = 0; sample_id < samples.size(); ++sample_id)
+        {
+            const auto &sample = samples[sample_id];
+            if (sample.step_in_seg != junction_sample_step ||
+                sample.seg_idx < 0 ||
+                sample.seg_idx >= guide_points->cols())
+            {
+                continue;
+            }
+
+            const Eigen::Vector3d diff = sample.p - guide_points->col(sample.seg_idx);
+            const double sample_cost = 0.5 * weight_guide * diff.squaredNorm();
+            cost += sample_cost;
+            guide_cost_log_ += sample_cost;
+            grad_positions.col(static_cast<Eigen::Index>(sample_id)) += weight_guide * diff;
+        }
+        return cost;
+    }
 
     double operator()(double /*t*/,
                       double t_global,
@@ -214,6 +380,59 @@ public:
     }
 
 private:
+    struct ClosestGuidePV
+    {
+        general_utils::Vec3f position{general_utils::Vec3f::Zero()};
+        general_utils::Vec3f velocity{general_utils::Vec3f::Zero()};
+    };
+
+    static ClosestGuidePV closestPVOnPolyline(const general_utils::vec_E<general_utils::Vec3f> &path,
+                                             const general_utils::vec_E<general_utils::Vec3f> &velocities,
+                                             const Eigen::Vector3d &query)
+    {
+        ClosestGuidePV best;
+        if (path.empty())
+        {
+            best.position = query;
+            return best;
+        }
+        if (path.size() == 1)
+        {
+            best.position = path.front();
+            best.velocity = velocities.size() == path.size() ? velocities.front() : general_utils::Vec3f::Zero();
+            return best;
+        }
+
+        double best_sq = std::numeric_limits<double>::infinity();
+        for (int i = 0; i < static_cast<int>(path.size()) - 1; ++i)
+        {
+            const Eigen::Vector3d a = path[i];
+            const Eigen::Vector3d b = path[i + 1];
+            const Eigen::Vector3d ab = b - a;
+            const double denom = ab.squaredNorm();
+            const double s = denom > 1.0e-9 ? std::clamp((query - a).dot(ab) / denom, 0.0, 1.0) : 0.0;
+            const Eigen::Vector3d candidate = a + s * ab;
+            const double sq = (query - candidate).squaredNorm();
+            if (sq < best_sq)
+            {
+                best_sq = sq;
+                best.position = candidate;
+                if (velocities.size() == path.size())
+                {
+                    best.velocity = (1.0 - s) * velocities[i] + s * velocities[i + 1];
+                }
+                else
+                {
+                    best.velocity.setZero();
+                }
+            }
+        }
+        return best;
+    }
+
+    general_utils::vec_E<general_utils::Vec3f> empty_velocities_;
     mutable general_utils::VecDf max_violation_{general_utils::VecDf::Zero(9)};
+    mutable double guide_cost_log_{0.0};
+    mutable double guide_tube_violation_{0.0};
 };
 } // namespace cost_functional_manager

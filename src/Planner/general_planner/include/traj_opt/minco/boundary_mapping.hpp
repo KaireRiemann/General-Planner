@@ -6,6 +6,8 @@
 #include <algorithm>
 #include <cmath>
 
+#include "data_structure/base/trajectory.h"
+#include "traj_opt/costfunctional/spatialmap/polytope_spatial_map.hpp"
 #include "traj_opt/perching_surface_state.hpp"
 
 namespace minco
@@ -130,6 +132,198 @@ public:
   {
     return false;
   }
+};
+
+template <int DIM, int S>
+class BackupBoundaryMapping final : public BoundaryStateMappingBase<DIM, S>
+{
+public:
+  static_assert(DIM == 3, "BackupBoundaryMapping currently assumes 3D position trajectories.");
+  static_assert(S <= 4, "BackupBoundaryMapping supports PVAJ trajectories up to snap-backed time gradients.");
+
+  using BoundaryState = typename BoundaryStateMappingBase<DIM, S>::BoundaryState;
+
+  EIGEN_MAKE_ALIGNED_OPERATOR_NEW
+
+  void configure(const geometry_utils::Trajectory *reference_traj,
+                 double min_ts,
+                 double max_ts,
+                 double ts_seed,
+                 const Eigen::Vector3d &tail_seed,
+                 const general_utils::PolyhedronV *tail_polytope,
+                 int piece_num,
+                 bool identity_tail_map,
+                 double weight_ts)
+  {
+    reference_traj_ = reference_traj;
+    min_ts_ = min_ts;
+    max_ts_ = std::max(max_ts, min_ts + 1.0e-6);
+    ts_seed_ = std::clamp(ts_seed, min_ts_ + 1.0e-6, max_ts_ - 1.0e-6);
+    tail_seed_ = tail_seed;
+    tail_polytope_ = tail_polytope;
+    piece_num_ = std::max(1, piece_num);
+    identity_tail_map_ = identity_tail_map;
+    weight_ts_ = std::max(0.0, weight_ts);
+    if (tail_polytope_ != nullptr)
+    {
+      tail_map_.reset(tail_polytope_, piece_num_, identity_tail_map_);
+    }
+  }
+
+  bool enabled() const override
+  {
+    return reference_traj_ != nullptr;
+  }
+
+  int extraVariableDim() const override
+  {
+    return 1 + tail_map_.getUnconstrainedDim(piece_num_);
+  }
+
+  void setInitialExtraVariables(Eigen::Ref<Eigen::VectorXd> extra_vars) const override
+  {
+    if (extra_vars.size() != extraVariableDim())
+    {
+      return;
+    }
+    extra_vars(0) = toEta(ts_seed_);
+    const Eigen::VectorXd tail_xi = tail_map_.toUnconstrained(tail_seed_, piece_num_);
+    extra_vars.tail(tail_xi.size()) = tail_xi;
+  }
+
+  void mapBoundaryStates(const BoundaryState &nominal_head_state,
+                         const BoundaryState &nominal_tail_state,
+                         const Eigen::VectorXd &,
+                         const Eigen::Ref<const Eigen::VectorXd> &extra_vars,
+                         BoundaryState &mapped_head_state,
+                         BoundaryState &mapped_tail_state) const override
+  {
+    mapped_head_state = nominal_head_state;
+    mapped_tail_state = nominal_tail_state;
+    if (extra_vars.size() != extraVariableDim())
+    {
+      return;
+    }
+
+    const double ts = toTs(extra_vars(0));
+    general_utils::StatePVAJ state = general_utils::StatePVAJ::Zero();
+    if (reference_traj_ != nullptr && reference_traj_->getState(ts, state))
+    {
+      for (int d = 0; d < S; ++d)
+      {
+        mapped_head_state.col(d) = state.col(d);
+      }
+    }
+
+    const Eigen::VectorXd tail_xi = extra_vars.tail(extra_vars.size() - 1);
+    mapped_tail_state.col(0) = tail_map_.toPhysical(tail_xi, piece_num_);
+    last_ts_ = ts;
+    last_tail_ = mapped_tail_state.col(0);
+  }
+
+  double addExtraVariableCost(const Eigen::Ref<const Eigen::VectorXd> &extra_vars,
+                              Eigen::Ref<Eigen::VectorXd> grad_extra) const override
+  {
+    grad_extra.setZero();
+    if (extra_vars.size() != extraVariableDim())
+    {
+      return 0.0;
+    }
+
+    const double ts = toTs(extra_vars(0));
+    double cost = weight_ts_ * (max_ts_ - ts);
+    grad_extra(0) += -weight_ts_ * dTsDeta(extra_vars(0));
+
+    const Eigen::VectorXd tail_xi = extra_vars.tail(extra_vars.size() - 1);
+    Eigen::VectorXd tail_grad = grad_extra.tail(extra_vars.size() - 1);
+    tail_map_.addNormPenalty(tail_xi, cost, tail_grad);
+    grad_extra.tail(extra_vars.size() - 1) = tail_grad;
+    return cost;
+  }
+
+  void backwardBoundaryGradient(const BoundaryState &grad_head_state,
+                                const BoundaryState &grad_tail_state,
+                                const Eigen::VectorXd &,
+                                const Eigen::Ref<const Eigen::VectorXd> &extra_vars,
+                                Eigen::Ref<Eigen::VectorXd> grad_out) const override
+  {
+    const int extra_dim = extraVariableDim();
+    if (extra_vars.size() != extra_dim || grad_out.size() < extra_dim)
+    {
+      return;
+    }
+
+    const int extra_offset = static_cast<int>(grad_out.size()) - extra_dim;
+    const double ts = toTs(extra_vars(0));
+    double grad_ts = 0.0;
+    if (reference_traj_ != nullptr)
+    {
+      if constexpr (S >= 1)
+      {
+        grad_ts += grad_head_state.col(0).dot(reference_traj_->getVel(ts));
+      }
+      if constexpr (S >= 2)
+      {
+        grad_ts += grad_head_state.col(1).dot(reference_traj_->getAcc(ts));
+      }
+      if constexpr (S >= 3)
+      {
+        grad_ts += grad_head_state.col(2).dot(reference_traj_->getJer(ts));
+      }
+      if constexpr (S >= 4)
+      {
+        grad_ts += grad_head_state.col(3).dot(reference_traj_->getSnap(ts));
+      }
+    }
+    grad_out(extra_offset) += grad_ts * dTsDeta(extra_vars(0));
+
+    const Eigen::VectorXd tail_xi = extra_vars.tail(extra_dim - 1);
+    grad_out.segment(extra_offset + 1, extra_dim - 1) +=
+        tail_map_.backwardGrad(tail_xi, grad_tail_state.col(0), piece_num_);
+  }
+
+  double lastTs() const
+  {
+    return last_ts_;
+  }
+
+  const Eigen::Vector3d &lastTail() const
+  {
+    return last_tail_;
+  }
+
+private:
+  double toTs(double eta) const
+  {
+    const double sigma = 1.0 / (1.0 + std::exp(-eta));
+    return min_ts_ + (max_ts_ - min_ts_) * sigma;
+  }
+
+  double dTsDeta(double eta) const
+  {
+    const double sigma = 1.0 / (1.0 + std::exp(-eta));
+    return (max_ts_ - min_ts_) * sigma * (1.0 - sigma);
+  }
+
+  double toEta(double ts) const
+  {
+    const double span = std::max(1.0e-6, max_ts_ - min_ts_);
+    const double ratio = std::clamp((ts - min_ts_) / span, 1.0e-6, 1.0 - 1.0e-6);
+    return std::log(ratio / (1.0 - ratio));
+  }
+
+  const geometry_utils::Trajectory *reference_traj_{nullptr};
+  const general_utils::PolyhedronV *tail_polytope_{nullptr};
+  spatial_map::PolytopeSpatialMap tail_map_;
+  int piece_num_{1};
+  bool identity_tail_map_{false};
+  double min_ts_{0.0};
+  double max_ts_{1.0};
+  double ts_seed_{0.0};
+  double weight_ts_{0.0};
+  Eigen::Vector3d tail_seed_{Eigen::Vector3d::Zero()};
+  mutable double last_ts_{0.0};
+  mutable Eigen::Vector3d last_tail_{Eigen::Vector3d::Zero()};
 };
 
 /**

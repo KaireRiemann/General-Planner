@@ -59,8 +59,12 @@ namespace traj_opt {
         // Penalty cost.
         double penna_scale{-1}, penna_vel{0}, penna_acc{0}, penna_jerk{0}, penna_omg{0}, penna_thr{0};
         // penna_t; penna_pos only for corridor based method.
-        double penna_t{0}, penna_pos{0}, penna_attract{0}, penna_guide_vel{0};
+        double penna_t{0}, penna_pos{0}, penna_attract{0}, penna_guide_path{0}, penna_guide_vel{0};
         double penna_guide_z_tube{0}, guide_z_tube_radius{0};
+        double guide_path_tube_radius{0.25};
+        double guide_path_z_tube_radius{0.10};
+        double guide_path_huber_delta{0.25};
+        bool guide_path_time_gradient_en{false};
         // penna_ts only for backupTraj;
         double penna_ts{0};
         // for backup traj piece num
@@ -122,9 +126,14 @@ namespace traj_opt {
             loader.LoadParam("traj_opt" + ns + "penna_acc", penna_acc, -1.0);
             loader.LoadParam("traj_opt" + ns + "penna_jerk", penna_jerk, -1.0);
             loader.LoadParam("traj_opt" + ns + "penna_attract", penna_attract, -1.0);
+            loader.LoadParam("traj_opt" + ns + "penna_guide_path", penna_guide_path, -1.0);
             loader.LoadParam("traj_opt" + ns + "penna_guide_vel", penna_guide_vel, -1.0);
             loader.LoadParam("traj_opt" + ns + "penna_guide_z_tube", penna_guide_z_tube, -1.0);
             loader.LoadParam("traj_opt" + ns + "guide_z_tube_radius", guide_z_tube_radius, -1.0);
+            loader.LoadParam("traj_opt" + ns + "guide_path_tube_radius", guide_path_tube_radius, 0.25);
+            loader.LoadParam("traj_opt" + ns + "guide_path_z_tube_radius", guide_path_z_tube_radius, 0.10);
+            loader.LoadParam("traj_opt" + ns + "guide_path_huber_delta", guide_path_huber_delta, 0.25);
+            loader.LoadParam("traj_opt" + ns + "guide_path_time_gradient_en", guide_path_time_gradient_en, false);
             loader.LoadParam("traj_opt" + ns + "penna_omg", penna_omg, -1.0);
             loader.LoadParam("traj_opt" + ns + "penna_thr", penna_thr, -1.0);
 
@@ -136,6 +145,7 @@ namespace traj_opt {
                 penna_acc = penna_acc * penna_scale;
                 penna_jerk = penna_jerk * penna_scale;
                 penna_attract = penna_attract * penna_scale;
+                penna_guide_path = penna_guide_path * penna_scale;
                 penna_guide_vel = penna_guide_vel * penna_scale;
                 penna_guide_z_tube = penna_guide_z_tube * penna_scale;
                 penna_omg = penna_omg * penna_scale;

@@ -80,6 +80,13 @@ Mat3Df waypointsToMatrix(const StatePVAJ &head, const Mat3Df &inner, const State
   return waypoints;
 }
 
+SnapOptimizer::WaypointsType toOptimizerWaypoints(const Mat3Df &waypoints)
+{
+  SnapOptimizer::WaypointsType out(waypoints.cols(), TRAJ_DIM);
+  out = waypoints.transpose();
+  return out;
+}
+
 Vec3f interpolateGuideByArc(const vec_E<Vec3f> &path,
                             const std::vector<double> &times,
                             const std::vector<double> &arc_lengths,
@@ -428,74 +435,6 @@ bool findGuidePointInOverlap(const vec_E<Vec3f> &path,
   return sample.valid;
 }
 
-bool referenceZOnGuideByXY(const vec_E<Vec3f> &path,
-                           const Vec3f &query,
-                           double &ref_z)
-{
-  if (path.empty())
-  {
-    return false;
-  }
-  if (path.size() == 1)
-  {
-    ref_z = path.front().z();
-    return std::isfinite(ref_z);
-  }
-
-  double best_xy_sq = std::numeric_limits<double>::infinity();
-  bool found = false;
-  for (int i = 0; i < static_cast<int>(path.size()) - 1; ++i)
-  {
-    const Vec3f a = path[i];
-    const Vec3f b = path[i + 1];
-    const double ab_x = b.x() - a.x();
-    const double ab_y = b.y() - a.y();
-    const double ap_x = query.x() - a.x();
-    const double ap_y = query.y() - a.y();
-    const double denom = ab_x * ab_x + ab_y * ab_y;
-    const double ratio = denom > 1.0e-9
-                             ? std::clamp((ap_x * ab_x + ap_y * ab_y) / denom, 0.0, 1.0)
-                             : 0.0;
-    const double closest_x = a.x() + ratio * ab_x;
-    const double closest_y = a.y() + ratio * ab_y;
-    const double dx = query.x() - closest_x;
-    const double dy = query.y() - closest_y;
-    const double xy_sq = dx * dx + dy * dy;
-    if (xy_sq < best_xy_sq)
-    {
-      best_xy_sq = xy_sq;
-      ref_z = a.z() + ratio * (b.z() - a.z());
-      found = std::isfinite(ref_z);
-    }
-  }
-  return found;
-}
-
-double addGuideZTubePenalty(const Vec3f &position,
-                            double ref_z,
-                            double radius,
-                            double weight,
-                            Vec3f &grad_position,
-                            double &max_violation)
-{
-  if (weight <= 0.0 || radius <= 0.0 || !std::isfinite(ref_z))
-  {
-    return 0.0;
-  }
-  const double z_err = position.z() - ref_z;
-  const double abs_err = std::abs(z_err);
-  const double violation = abs_err - radius;
-  if (violation <= 0.0)
-  {
-    return 0.0;
-  }
-
-  const double sign = z_err >= 0.0 ? 1.0 : -1.0;
-  grad_position.z() += weight * violation * sign;
-  max_violation = std::max(max_violation, violation);
-  return 0.5 * weight * violation * violation;
-}
-
 vec_E<Vec3f> estimateGuideVelocities(const vec_E<Vec3f> &path,
                                       const std::vector<double> &times,
                                       const Vec3f &start_vel,
@@ -592,10 +531,21 @@ ExpTrajOpt::ExpTrajOpt(const traj_opt::Config &cfg,
   opt_vars_.smooth_eps = cfg_.smooth_eps;
   opt_vars_.integral_res = std::max(1, cfg_.integral_reso);
   opt_vars_.quadrotor_flatness = cfg_.quadrotot_flatness;
-  opt_vars_.weight_guide_z_tube = std::max(0.0, cfg_.penna_guide_z_tube);
   opt_vars_.guide_z_tube_radius = std::max(0.0, cfg_.guide_z_tube_radius);
+  // Guide-path integral cost is disabled until its planner-level semantics are redesigned.
+  opt_vars_.weight_guide_integral = 0.0;
+  opt_vars_.guide_path_tube_radius = std::max(0.0, cfg_.guide_path_tube_radius);
+  opt_vars_.guide_path_z_tube_radius = std::max(0.0, cfg_.guide_path_z_tube_radius);
+  opt_vars_.guide_path_huber_delta = std::max(0.0, cfg_.guide_path_huber_delta);
+  opt_vars_.guide_path_time_gradient_en = cfg_.guide_path_time_gradient_en;
+  opt_vars_.weight_guide_z_tube =
+      opt_vars_.guide_z_tube_radius > 0.0 ? std::max(0.0, cfg_.penna_guide_z_tube) : 0.0;
 
   linear_time_cost_.weight = opt_vars_.rho;
+  optimizer_.setTimeMap(&time_map_);
+  optimizer_.setSpatialMap(&spatial_map_);
+  optimizer_.setEnergyWeight(opt_vars_.block_energy_cost ? 0.0 : 1.0);
+  optimizer_.setSamplesPerPiece(opt_vars_.integral_res);
 }
 
 ExpTrajOpt::~ExpTrajOpt()
@@ -856,161 +806,22 @@ bool ExpTrajOpt::loadCorridors(PolytopeVec &sfcs)
 
 double ExpTrajOpt::costFunctional(void *ptr, const VecDf &x, VecDf &g)
 {
-  return static_cast<ExpTrajOpt *>(ptr)->evaluateCurrentCost(x, g);
+  return static_cast<ExpTrajOpt *>(ptr)->evaluateMincoCost(x, g);
 }
 
-double ExpTrajOpt::evaluateCurrentCost(const VecDf &x, VecDf &g)
+double ExpTrajOpt::evaluateMincoCost(const VecDf &x, VecDf &g)
 {
   opt_vars_.iter_num++;
-  g.setZero();
-
-  std::vector<double> times(static_cast<std::size_t>(opt_vars_.piece_num));
-  for (int i = 0; i < opt_vars_.piece_num; ++i)
-  {
-    times[static_cast<std::size_t>(i)] = time_map_.toTime(x(i));
-  }
-
-  Mat3Df waypoints(3, opt_vars_.piece_num + 1);
-  waypoints.col(0) = opt_vars_.head_pvaj.col(0);
-  waypoints.rightCols(1) = opt_vars_.tail_pvaj.col(0);
-  int offset = opt_vars_.piece_num;
-  for (int i = 1; i < opt_vars_.piece_num; ++i)
-  {
-    const int dim = spatial_map_.getUnconstrainedDim(i);
-    waypoints.col(i) = spatial_map_.toPhysical(x.segment(offset, dim), i);
-    offset += dim;
-  }
-
-  VecDf durations = Eigen::Map<VecDf>(times.data(), times.size());
-  minco_traj_.generate(waypoints.middleCols(1, opt_vars_.piece_num - 1),
-                       toSnapBoundary(opt_vars_.head_pvaj),
-                       toSnapBoundary(opt_vars_.tail_pvaj),
-                       durations);
-
-  double cost = 0.0;
-  typename SnapTraj::CoeffMat gdC(minco_traj_.getCoefficients().rows(), 3);
-  VecDf gdT(opt_vars_.piece_num);
-  gdC.setZero();
-  gdT.setZero();
-
-  if (!opt_vars_.block_energy_cost)
-  {
-    double energy = 0.0;
-    typename SnapTraj::CoeffMat gdC_energy;
-    VecDf gdT_energy;
-    minco_traj_.getEnergyPartialGradByCoeffs(energy, gdC_energy);
-    minco_traj_.getEnergyPartialGradByTimes(gdT_energy);
-    cost += energy;
-    gdC += gdC_energy;
-    gdT += gdT_energy;
-    opt_vars_.penalty_log(0) = energy;
-  }
-
-  exp_cost_manager_.reset(&opt_vars_.h_polytopes,
-                          &opt_vars_.h_poly_idx,
-                          &opt_vars_.waypoint_attractor,
-                          &opt_vars_.waypoint_attractor_dead_d,
-                          opt_vars_.smooth_eps,
-                          opt_vars_.magnitude_bounds,
-                          opt_vars_.penalty_weights,
-                          &opt_vars_.quadrotor_flatness,
-                          swarm_config_,
-                          swarm_trajs_,
-                          swarm_current_wall_time_);
-  exp_cost_manager_.beginEvaluation(&times);
-
-  const auto &coeffs = minco_traj_.getCoefficients();
+  const double cost = optimizer_.evaluate(x, g, linear_time_cost_, exp_cost_manager_);
+  opt_vars_.guide_integral_violation = exp_cost_manager_.guideIntegralViolation();
+  opt_vars_.guide_path_cost_log = exp_cost_manager_.guideCostLog();
+  opt_vars_.guide_path_max_abs_time_grad = exp_cost_manager_.guideMaxAbsTimeGrad();
+  opt_vars_.guide_path_out_of_time_range_samples = exp_cost_manager_.guideOutOfTimeRangeSamples();
   opt_vars_.guide_z_tube_violation = 0.0;
-  const bool use_guide_z_tube_cost =
-      opt_vars_.weight_guide_z_tube > 0.0 &&
-      opt_vars_.guide_z_tube_radius > 0.0 &&
-      opt_vars_.guide_path.size() >= 2;
-  double seg_start = 0.0;
-  for (int i = 0; i < opt_vars_.piece_num; ++i)
-  {
-    const double T = durations(i);
-    const double inv_K = 1.0 / static_cast<double>(opt_vars_.integral_res);
-    const double step = T * inv_K;
-    const int base = i * SnapTraj::COEFF_NUM;
-    const auto coeff_block = coeffs.template block<SnapTraj::COEFF_NUM, TRAJ_DIM>(base, 0);
-
-    for (int k = 0; k <= opt_vars_.integral_res; ++k)
-    {
-      const double alpha = static_cast<double>(k) * inv_K;
-      const double t = alpha * T;
-      const double node = (k == 0 || k == opt_vars_.integral_res) ? 0.5 : 1.0;
-      const double common = node * step;
-
-      SnapTraj::BasisRow bp, bv, ba, bj, bs;
-      SnapTraj::computeBasisFunctions(t, bp, bv, ba, bj, bs);
-      Vec3f p = coeff_block.transpose() * bp.transpose();
-      Vec3f v = coeff_block.transpose() * bv.transpose();
-      Vec3f a = coeff_block.transpose() * ba.transpose();
-      Vec3f j = coeff_block.transpose() * bj.transpose();
-      Vec3f s = coeff_block.transpose() * bs.transpose();
-      Vec3f gp = Vec3f::Zero();
-      Vec3f gv = Vec3f::Zero();
-      Vec3f ga = Vec3f::Zero();
-      Vec3f gj = Vec3f::Zero();
-      Vec3f gs = Vec3f::Zero();
-      double gt = 0.0;
-
-      double sample_cost = exp_cost_manager_(t, seg_start + t, i, k, p, v, a, j, s, gp, gv, ga, gj, gs, gt);
-      if (use_guide_z_tube_cost)
-      {
-        double ref_z = 0.0;
-        if (referenceZOnGuideByXY(opt_vars_.guide_path, p, ref_z))
-        {
-          const double z_tube_sample_cost =
-              addGuideZTubePenalty(p,
-                                   ref_z,
-                                   opt_vars_.guide_z_tube_radius,
-                                   opt_vars_.weight_guide_z_tube,
-                                   gp,
-                                   opt_vars_.guide_z_tube_violation);
-          sample_cost += z_tube_sample_cost;
-        }
-      }
-      cost += common * sample_cost;
-      gdC.template block<SnapTraj::COEFF_NUM, TRAJ_DIM>(base, 0).noalias() +=
-          (bp.transpose() * gp.transpose() +
-           bv.transpose() * gv.transpose() +
-           ba.transpose() * ga.transpose() +
-           bj.transpose() * gj.transpose()) * common;
-      gdT(i) += node * inv_K * sample_cost;
-      gdT(i) += (gp.dot(v) + gv.dot(a) + ga.dot(j) + gj.dot(s)) * alpha * common;
-      if (std::abs(gt) > 1.0e-12)
-      {
-        if (i > 0)
-        {
-          gdT.head(i).array() += gt * common;
-        }
-        gdT(i) += gt * alpha * common;
-      }
-    }
-    seg_start += T;
-  }
-
-  cost += linear_time_cost_(times, gdT);
-  const auto grad_result = minco_traj_.propagateGradFull(gdC, gdT);
-
-  for (int i = 0; i < opt_vars_.piece_num; ++i)
-  {
-    g(i) += time_map_.backward(x(i), durations(i), grad_result.grad_by_times(i));
-  }
-
-  offset = opt_vars_.piece_num;
-  for (int i = 1; i < opt_vars_.piece_num; ++i)
-  {
-    const int dim = spatial_map_.getUnconstrainedDim(i);
-    VecDf grad_xi = spatial_map_.backwardGrad(x.segment(offset, dim), grad_result.grad_by_points.col(i - 1), i);
-    spatial_map_.addNormPenalty(x.segment(offset, dim), cost, grad_xi);
-    g.segment(offset, dim) += grad_xi;
-    offset += dim;
-  }
-
+  opt_vars_.penalty_log(0) = optimizer_.lastEnergyCost();
   opt_vars_.penalty_log.tail(7) = exp_cost_manager_.getPenaltyLog().tail(7);
-  opt_vars_.penalty_log(5) = std::max(opt_vars_.penalty_log(5), opt_vars_.guide_z_tube_violation);
+  opt_vars_.penalty_log(5) = std::max({opt_vars_.penalty_log(5),
+                                       opt_vars_.guide_integral_violation});
   return cost;
 }
 
@@ -1039,27 +850,6 @@ double ExpTrajOpt::optimize(Trajectory &traj, double rel_cost_tol)
                      opt_vars_.pos_constraint_type == 1);
 
   const Mat3Df waypoints = waypointsToMatrix(opt_vars_.head_pvaj, opt_vars_.points, opt_vars_.tail_pvaj);
-  VecDf x(opt_vars_.piece_num + [&]() {
-    int dim = 0;
-    for (int i = 1; i < opt_vars_.piece_num; ++i)
-    {
-      dim += spatial_map_.getUnconstrainedDim(i);
-    }
-    return dim;
-  }());
-
-  for (int i = 0; i < opt_vars_.piece_num; ++i)
-  {
-    x(i) = time_map_.toTau(opt_vars_.times(i));
-  }
-  int offset = opt_vars_.piece_num;
-  for (int i = 1; i < opt_vars_.piece_num; ++i)
-  {
-    const VecDf xi = spatial_map_.toUnconstrained(waypoints.col(i), i);
-    x.segment(offset, xi.size()) = xi;
-    offset += xi.size();
-  }
-
   opt_vars_.init_ts = opt_vars_.times;
   opt_vars_.init_ps.clear();
   for (int col = 0; col < opt_vars_.points.cols(); ++col)
@@ -1073,6 +863,41 @@ double ExpTrajOpt::optimize(Trajectory &traj, double rel_cost_tol)
     truncateToSixDecimals(opt_vars_.waypoint_attractor(1, i));
     truncateToSixDecimals(opt_vars_.waypoint_attractor(2, i));
   }
+
+  optimizer_.setUniformTimeMode(false);
+  optimizer_.setEnergyWeight(opt_vars_.block_energy_cost ? 0.0 : 1.0);
+  optimizer_.setSamplesPerPiece(opt_vars_.integral_res);
+  if (!optimizer_.setInitState(toStdVector(opt_vars_.times),
+                               toOptimizerWaypoints(waypoints),
+                               toSnapBoundary(opt_vars_.head_pvaj),
+                               toSnapBoundary(opt_vars_.tail_pvaj)))
+  {
+    return INFINITY;
+  }
+  VecDf x = optimizer_.generateInitialGuess();
+  if (x.size() <= 0 || !x.allFinite())
+  {
+    return INFINITY;
+  }
+
+  exp_cost_manager_.reset(&opt_vars_.h_polytopes,
+                          &opt_vars_.h_poly_idx,
+                          &opt_vars_.waypoint_attractor,
+                          &opt_vars_.waypoint_attractor_dead_d,
+                          opt_vars_.smooth_eps,
+                          opt_vars_.magnitude_bounds,
+                          opt_vars_.penalty_weights,
+                          &opt_vars_.quadrotor_flatness,
+                          swarm_config_,
+                          swarm_trajs_,
+                          swarm_current_wall_time_,
+                          &opt_vars_.guide_path,
+                          &opt_vars_.guide_t,
+                          opt_vars_.weight_guide_integral,
+                          opt_vars_.guide_path_tube_radius,
+                          opt_vars_.guide_path_z_tube_radius,
+                          opt_vars_.guide_path_huber_delta,
+                          opt_vars_.guide_path_time_gradient_en);
 
   opt_vars_.iter_num = 0;
   double min_cost = 0.0;
@@ -1095,20 +920,29 @@ double ExpTrajOpt::optimize(Trajectory &traj, double rel_cost_tol)
               << "\tJerk: " << opt_vars_.penalty_log(4) << "\n"
               << "\tAttract: " << opt_vars_.penalty_log(5) << "\n"
               << "\tOmg: " << opt_vars_.penalty_log(6) << "\n"
-              << "\tThr: " << opt_vars_.penalty_log(7) << std::endl;
+              << "\tThr: " << opt_vars_.penalty_log(7) << "\n"
+              << "\tGuidePathCost(sample): " << opt_vars_.guide_path_cost_log << "\n"
+              << "\tGuidePathMaxExcess: " << opt_vars_.guide_integral_violation << "\n"
+              << "\tGuidePathMaxAbsTimeGrad: " << opt_vars_.guide_path_max_abs_time_grad << "\n"
+              << "\tGuidePathOutOfTimeSamples: " << opt_vars_.guide_path_out_of_time_range_samples << std::endl;
   }
 
   if (ret < 0)
   {
     traj.clear();
-    std::cout << YELLOW << " -- [ExpTrajOpt] Optimization failed: " << lbfgs::lbfgs_strerror(ret) << RESET << std::endl;
+    std::cout << YELLOW << " -- [ExpTrajOpt] Optimization failed: " << lbfgs::lbfgs_strerror(ret)
+              << ", guide_excess=" << opt_vars_.guide_integral_violation
+              << ", guide_cost_sample=" << opt_vars_.guide_path_cost_log
+              << ", guide_max_abs_gt=" << opt_vars_.guide_path_max_abs_time_grad
+              << ", guide_oob_samples=" << opt_vars_.guide_path_out_of_time_range_samples
+              << RESET << std::endl;
     return INFINITY;
   }
 
   VecDf grad = VecDf::Zero(x.size());
-  min_cost = evaluateCurrentCost(x, grad);
+  min_cost = evaluateMincoCost(x, grad);
 
-  traj = toGeometryTrajectory(minco_traj_);
+  traj = toGeometryTrajectory(optimizer_.getTrajectory());
   return min_cost;
 }
 
@@ -1231,8 +1065,14 @@ BackupTrajOpt::BackupTrajOpt(const traj_opt::Config &cfg,
   opt_vars_.integral_res = std::max(1, cfg_.integral_reso);
   opt_vars_.quadrotor_flatness = cfg_.quadrotot_flatness;
   opt_vars_.piece_num = std::max(1, cfg_.piece_num);
-  opt_vars_.weight_guide_z_tube = std::max(0.0, cfg_.penna_guide_z_tube);
   opt_vars_.guide_z_tube_radius = std::max(0.0, cfg_.guide_z_tube_radius);
+  opt_vars_.weight_guide_z_tube =
+      opt_vars_.guide_z_tube_radius > 0.0 ? std::max(0.0, cfg_.penna_guide_z_tube) : 0.0;
+  linear_time_cost_.weight = opt_vars_.rho;
+  optimizer_.setTimeMap(&time_map_);
+  optimizer_.setSpatialMap(&spatial_map_);
+  optimizer_.setEnergyWeight(opt_vars_.block_energy_cost ? 0.0 : 1.0);
+  optimizer_.setSamplesPerPiece(opt_vars_.integral_res);
 }
 
 BackupTrajOpt::~BackupTrajOpt()
@@ -1269,18 +1109,6 @@ Trajectory BackupTrajOpt::toGeometryTrajectory(const SnapTraj &traj)
   return out;
 }
 
-double BackupTrajOpt::logisticInterval(double lo, double hi, double eta)
-{
-  const double sigma = 1.0 / (1.0 + std::exp(-eta));
-  return lo + (hi - lo) * sigma;
-}
-
-double BackupTrajOpt::logisticIntervalGrad(double lo, double hi, double eta)
-{
-  const double sigma = 1.0 / (1.0 + std::exp(-eta));
-  return (hi - lo) * sigma * (1.0 - sigma);
-}
-
 bool BackupTrajOpt::processCorridor()
 {
   PolyhedronV cur_v;
@@ -1306,242 +1134,28 @@ bool BackupTrajOpt::setupProblemAndCheck()
   return true;
 }
 
-VecDf BackupTrajOpt::encodeDecisionVector() const
-{
-  spatial_map::PolytopeSpatialMap poly_map;
-  poly_map.reset(&opt_vars_.v_polytope,
-                 opt_vars_.piece_num,
-                 opt_vars_.pos_constraint_type == 1);
-  const int time_dim = opt_vars_.uniform_time_en ? 1 : opt_vars_.piece_num;
-  int spatial_dim = 0;
-  for (int i = 1; i <= opt_vars_.piece_num; ++i)
-  {
-    spatial_dim += poly_map.getUnconstrainedDim(i);
-  }
-
-  VecDf x(time_dim + spatial_dim + 1);
-  if (opt_vars_.uniform_time_en)
-  {
-    x(0) = time_map_.toTau(opt_vars_.times.sum());
-  }
-  else
-  {
-    for (int i = 0; i < opt_vars_.piece_num; ++i)
-    {
-      x(i) = time_map_.toTau(opt_vars_.times(i));
-    }
-  }
-
-  int offset = time_dim;
-  for (int i = 1; i <= opt_vars_.piece_num; ++i)
-  {
-    const VecDf xi = poly_map.toUnconstrained(opt_vars_.points.col(i - 1), i);
-    x.segment(offset, xi.size()) = xi;
-    offset += xi.size();
-  }
-
-  const double span = std::max(1.0e-6, opt_vars_.max_ts - opt_vars_.min_ts);
-  const double ratio = std::clamp((opt_vars_.ts - opt_vars_.min_ts) / span, 1.0e-6, 1.0 - 1.0e-6);
-  x(offset) = std::log(ratio / (1.0 - ratio));
-  return x;
-}
-
-void BackupTrajOpt::decodeDecisionVector(const VecDf &x, VecDf &times, Mat3Df &points, double &ts) const
-{
-  spatial_map::PolytopeSpatialMap poly_map;
-  poly_map.reset(&opt_vars_.v_polytope,
-                 opt_vars_.piece_num,
-                 opt_vars_.pos_constraint_type == 1);
-  const int time_dim = opt_vars_.uniform_time_en ? 1 : opt_vars_.piece_num;
-  times.resize(opt_vars_.piece_num);
-  if (opt_vars_.uniform_time_en)
-  {
-    times.setConstant(time_map_.toTime(x(0)) / static_cast<double>(opt_vars_.piece_num));
-  }
-  else
-  {
-    for (int i = 0; i < opt_vars_.piece_num; ++i)
-    {
-      times(i) = time_map_.toTime(x(i));
-    }
-  }
-
-  points.resize(3, opt_vars_.piece_num);
-  int offset = time_dim;
-  for (int i = 1; i <= opt_vars_.piece_num; ++i)
-  {
-    const int dim = poly_map.getUnconstrainedDim(i);
-    points.col(i - 1) = poly_map.toPhysical(x.segment(offset, dim), i);
-    offset += dim;
-  }
-  ts = logisticInterval(opt_vars_.min_ts, opt_vars_.max_ts, x(offset));
-}
-
 double BackupTrajOpt::costFunctional(void *ptr, const VecDf &x, VecDf &g)
 {
-  return static_cast<BackupTrajOpt *>(ptr)->evaluateCurrentCost(x, g);
+  return static_cast<BackupTrajOpt *>(ptr)->evaluateMincoCost(x, g);
 }
 
-double BackupTrajOpt::evaluateCurrentCost(const VecDf &x, VecDf &g)
+double BackupTrajOpt::evaluateMincoCost(const VecDf &x, VecDf &g)
 {
   opt_vars_.iter_num++;
-  g.setZero();
-
-  const int time_dim = opt_vars_.uniform_time_en ? 1 : opt_vars_.piece_num;
-  spatial_map_.reset(&opt_vars_.v_polytope,
-                     opt_vars_.piece_num,
-                     opt_vars_.pos_constraint_type == 1);
-
-  VecDf times;
-  Mat3Df points;
-  double ts = 0.0;
-  decodeDecisionVector(x, times, points, ts);
-
-  StatePVAJ head;
-  opt_vars_.exp_traj.getState(ts, head);
-  StatePVAJ tail = StatePVAJ::Zero();
-  tail.col(0) = points.rightCols(1);
-
-  minco_traj_.generate(points.leftCols(opt_vars_.piece_num - 1),
-                       toSnapBoundary(head),
-                       toSnapBoundary(tail),
-                       times);
-
-  double cost = 0.0;
-  typename SnapTraj::CoeffMat gdC(minco_traj_.getCoefficients().rows(), 3);
-  VecDf gdT(opt_vars_.piece_num);
-  gdC.setZero();
-  gdT.setZero();
-  opt_vars_.penalty_log.setZero();
-
-  if (!opt_vars_.block_energy_cost)
-  {
-    double energy = 0.0;
-    typename SnapTraj::CoeffMat gdC_energy;
-    VecDf gdT_energy;
-    minco_traj_.getEnergyPartialGradByCoeffs(energy, gdC_energy);
-    minco_traj_.getEnergyPartialGradByTimes(gdT_energy);
-    cost += energy;
-    gdC += gdC_energy;
-    gdT += gdT_energy;
-    opt_vars_.penalty_log(0) = energy;
-  }
-
-  backup_cost_manager_.reset(&opt_vars_.h_polytope,
-                             opt_vars_.smooth_eps,
-                             opt_vars_.magnitude_bounds,
-                             opt_vars_.penalty_weights,
-                             &opt_vars_.quadrotor_flatness);
-  backup_cost_manager_.beginEvaluation();
-
-  const auto &coeffs = minco_traj_.getCoefficients();
-  opt_vars_.guide_z_tube_violation = 0.0;
-  const double exp_duration = opt_vars_.exp_traj.getTotalDuration();
-  const bool use_guide_z_tube_cost =
-      opt_vars_.weight_guide_z_tube > 0.0 &&
-      opt_vars_.guide_z_tube_radius > 0.0 &&
-      exp_duration > 1.0e-6;
-  double seg_start = 0.0;
-  for (int i = 0; i < opt_vars_.piece_num; ++i)
-  {
-    const double T = times(i);
-    const double inv_K = 1.0 / static_cast<double>(opt_vars_.integral_res);
-    const double step = T * inv_K;
-    const int base = i * SnapTraj::COEFF_NUM;
-    const auto coeff_block = coeffs.template block<SnapTraj::COEFF_NUM, TRAJ_DIM>(base, 0);
-    for (int k = 0; k <= opt_vars_.integral_res; ++k)
-    {
-      const double alpha = static_cast<double>(k) * inv_K;
-      const double t = alpha * T;
-      const double node = (k == 0 || k == opt_vars_.integral_res) ? 0.5 : 1.0;
-      const double common = node * step;
-      SnapTraj::BasisRow bp, bv, ba, bj, bs;
-      SnapTraj::computeBasisFunctions(t, bp, bv, ba, bj, bs);
-      Vec3f p = coeff_block.transpose() * bp.transpose();
-      Vec3f v = coeff_block.transpose() * bv.transpose();
-      Vec3f a = coeff_block.transpose() * ba.transpose();
-      Vec3f j = coeff_block.transpose() * bj.transpose();
-      Vec3f s = coeff_block.transpose() * bs.transpose();
-      Vec3f gp = Vec3f::Zero();
-      Vec3f gv = Vec3f::Zero();
-      Vec3f ga = Vec3f::Zero();
-      Vec3f gj = Vec3f::Zero();
-      Vec3f gs = Vec3f::Zero();
-      double gt = 0.0;
-      double sample_cost = backup_cost_manager_(t, t, i, k, p, v, a, j, s, gp, gv, ga, gj, gs, gt);
-      if (use_guide_z_tube_cost)
-      {
-        const double ref_t = std::clamp(ts + seg_start + t, 0.0, exp_duration);
-        const double ref_z = opt_vars_.exp_traj.getPos(ref_t).z();
-        sample_cost += addGuideZTubePenalty(p,
-                                            ref_z,
-                                            opt_vars_.guide_z_tube_radius,
-                                            opt_vars_.weight_guide_z_tube,
-                                            gp,
-                                            opt_vars_.guide_z_tube_violation);
-      }
-      cost += common * sample_cost;
-      gdC.template block<SnapTraj::COEFF_NUM, TRAJ_DIM>(base, 0).noalias() +=
-          (bp.transpose() * gp.transpose() +
-           bv.transpose() * gv.transpose() +
-           ba.transpose() * ga.transpose() +
-           bj.transpose() * gj.transpose()) * common;
-      gdT(i) += node * inv_K * sample_cost;
-      gdT(i) += (gp.dot(v) + gv.dot(a) + ga.dot(j) + gj.dot(s)) * alpha * common;
-    }
-    seg_start += T;
-  }
-
-  gdT.array() += opt_vars_.rho;
-  cost += opt_vars_.rho * times.sum();
-  cost += opt_vars_.weight_ts * (opt_vars_.max_ts - ts);
-
-  const auto grad_result = minco_traj_.propagateGradFull(gdC, gdT);
-
-  if (opt_vars_.uniform_time_en)
-  {
-    g(0) += time_map_.backward(x(0), times.sum(), grad_result.grad_by_times.sum() / static_cast<double>(opt_vars_.piece_num));
-  }
-  else
-  {
-    for (int i = 0; i < opt_vars_.piece_num; ++i)
-    {
-      g(i) += time_map_.backward(x(i), times(i), grad_result.grad_by_times(i));
-    }
-  }
-
-  int offset = time_dim;
-  for (int i = 1; i <= opt_vars_.piece_num; ++i)
-  {
-    const int dim = spatial_map_.getUnconstrainedDim(i);
-    Vec3f grad_p;
-    if (i == opt_vars_.piece_num)
-    {
-      grad_p = grad_result.grad_by_tail_state.col(0);
-    }
-    else
-    {
-      grad_p = grad_result.grad_by_points.col(i - 1);
-    }
-    VecDf grad_xi = spatial_map_.backwardGrad(x.segment(offset, dim), grad_p, i);
-    spatial_map_.addNormPenalty(x.segment(offset, dim), cost, grad_xi);
-    g.segment(offset, dim) += grad_xi;
-    offset += dim;
-  }
-
-  StatePVAJ exp_state_grad = grad_result.grad_by_head_state;
-  const double grad_ts_from_state = exp_state_grad.col(0).dot(opt_vars_.exp_traj.getVel(ts)) +
-                                    exp_state_grad.col(1).dot(opt_vars_.exp_traj.getAcc(ts)) +
-                                    exp_state_grad.col(2).dot(opt_vars_.exp_traj.getJer(ts)) +
-                                    exp_state_grad.col(3).dot(opt_vars_.exp_traj.getSnap(ts)) -
-                                    opt_vars_.weight_ts;
-  g(offset) += grad_ts_from_state * logisticIntervalGrad(opt_vars_.min_ts, opt_vars_.max_ts, x(offset));
-
+  const double cost = optimizer_.evaluateWithBoundaryMapping(x,
+                                                            g,
+                                                            linear_time_cost_,
+                                                            backup_cost_manager_,
+                                                            &backup_boundary_mapping_);
+  opt_vars_.penalty_log(0) = optimizer_.lastEnergyCost();
   opt_vars_.penalty_log.tail(7) = backup_cost_manager_.getPenaltyLog().tail(7);
-  opt_vars_.penalty_log(5) = std::max(opt_vars_.penalty_log(5), opt_vars_.guide_z_tube_violation);
-  opt_vars_.ts = ts;
-  opt_vars_.times = times;
-  opt_vars_.points = points;
+  opt_vars_.guide_z_tube_violation = 0.0;
+  opt_vars_.ts = backup_boundary_mapping_.lastTs();
+  opt_vars_.times = optimizer_.getCurrentTimes();
+  if (optimizer_.getTrajectory().getPieceNum() == opt_vars_.piece_num)
+  {
+    opt_vars_.points = optimizer_.getTrajectory().getPositions().middleCols(1, opt_vars_.piece_num);
+  }
   return cost;
 }
 
@@ -1572,7 +1186,47 @@ double BackupTrajOpt::optimize(Trajectory &traj, double rel_cost_tol)
     opt_vars_.init_ps.emplace_back(opt_vars_.points.col(i));
   }
 
-  VecDf x = encodeDecisionVector();
+  spatial_map_.reset(&opt_vars_.v_polytope,
+                     opt_vars_.piece_num,
+                     opt_vars_.pos_constraint_type == 1);
+  backup_boundary_mapping_.configure(&opt_vars_.exp_traj,
+                                     opt_vars_.min_ts,
+                                     opt_vars_.max_ts,
+                                     opt_vars_.ts,
+                                     opt_vars_.points.col(opt_vars_.piece_num - 1),
+                                     &opt_vars_.v_polytope,
+                                     opt_vars_.piece_num,
+                                     opt_vars_.pos_constraint_type == 1,
+                                     opt_vars_.weight_ts);
+
+  Mat3Df inner_points(3, std::max(0, opt_vars_.piece_num - 1));
+  if (opt_vars_.piece_num > 1)
+  {
+    inner_points = opt_vars_.points.leftCols(opt_vars_.piece_num - 1);
+  }
+  const Mat3Df waypoints = waypointsToMatrix(opt_vars_.head_pvaj, inner_points, opt_vars_.tail_pvaj);
+  optimizer_.setUniformTimeMode(opt_vars_.uniform_time_en);
+  optimizer_.setEnergyWeight(opt_vars_.block_energy_cost ? 0.0 : 1.0);
+  optimizer_.setSamplesPerPiece(opt_vars_.integral_res);
+  if (!optimizer_.setInitState(toStdVector(opt_vars_.times),
+                               toOptimizerWaypoints(waypoints),
+                               toSnapBoundary(opt_vars_.head_pvaj),
+                               toSnapBoundary(opt_vars_.tail_pvaj)))
+  {
+    return INFINITY;
+  }
+  VecDf x = optimizer_.generateInitialGuess(&backup_boundary_mapping_);
+  if (x.size() <= 0 || !x.allFinite())
+  {
+    return INFINITY;
+  }
+
+  backup_cost_manager_.reset(&opt_vars_.h_polytope,
+                             opt_vars_.smooth_eps,
+                             opt_vars_.magnitude_bounds,
+                             opt_vars_.penalty_weights,
+                             &opt_vars_.quadrotor_flatness);
+
   opt_vars_.penalty_log.resize(8);
   opt_vars_.penalty_log.setZero();
   opt_vars_.iter_num = 0;
@@ -1594,8 +1248,8 @@ double BackupTrajOpt::optimize(Trajectory &traj, double rel_cost_tol)
   }
 
   VecDf grad = VecDf::Zero(x.size());
-  min_cost = evaluateCurrentCost(x, grad);
-  traj = toGeometryTrajectory(minco_traj_);
+  min_cost = evaluateMincoCost(x, grad);
+  traj = toGeometryTrajectory(optimizer_.getTrajectory());
   return min_cost;
 }
 
@@ -1898,6 +1552,9 @@ ESDFTrajOpt::ESDFTrajOpt(const traj_opt::Config &cfg,
   opt_vars_.penalty_log = VecDf::Zero(8);
   opt_vars_.quadrotor_flatness = cfg_.quadrotot_flatness;
   linear_time_cost_.weight = opt_vars_.rho;
+  optimizer_.setTimeMap(&time_map_);
+  optimizer_.setEnergyWeight(opt_vars_.block_energy_cost ? 0.0 : 1.0);
+  optimizer_.setSamplesPerPiece(opt_vars_.integral_res);
 
   if (cfg_.save_log_en)
   {
@@ -2225,165 +1882,18 @@ bool ESDFTrajOpt::initializeFromGuide(const vec_E<Vec3f> &guide_path,
 
 double ESDFTrajOpt::costFunctional(void *ptr, const VecDf &x, VecDf &g)
 {
-  return static_cast<ESDFTrajOpt *>(ptr)->evaluateCurrentCost(x, g);
+  return static_cast<ESDFTrajOpt *>(ptr)->evaluateMincoCost(x, g);
 }
 
-double ESDFTrajOpt::evaluateCurrentCost(const VecDf &x, VecDf &g)
+double ESDFTrajOpt::evaluateMincoCost(const VecDf &x, VecDf &g)
 {
   opt_vars_.iter_num++;
-  g.setZero();
-  const int piece_num = static_cast<int>(opt_vars_.times.size());
-  VecDf times(piece_num);
-  for (int i = 0; i < piece_num; ++i)
-  {
-    times(i) = time_map_.toTime(x(i));
-  }
-
-  Mat3Df inner(3, piece_num - 1);
-  int offset = piece_num;
-  for (int i = 0; i < piece_num - 1; ++i)
-  {
-    inner.col(i) = x.segment<3>(offset);
-    offset += 3;
-  }
-
-  minco_traj_.generate(inner, toSnapBoundary(opt_vars_.head_pvaj), toSnapBoundary(opt_vars_.tail_pvaj), times);
-
-  double cost = 0.0;
-  typename SnapTraj::CoeffMat gdC(minco_traj_.getCoefficients().rows(), 3);
-  VecDf gdT(piece_num);
-  gdC.setZero();
-  gdT.setZero();
   opt_vars_.penalty_log.setZero();
-
-  if (!opt_vars_.block_energy_cost)
-  {
-    double energy = 0.0;
-    typename SnapTraj::CoeffMat gdC_energy;
-    VecDf gdT_energy;
-    minco_traj_.getEnergyPartialGradByCoeffs(energy, gdC_energy);
-    minco_traj_.getEnergyPartialGradByTimes(gdT_energy);
-    cost += energy;
-    gdC += gdC_energy;
-    gdT += gdT_energy;
-    opt_vars_.penalty_log(0) = energy;
-  }
-
-  std::vector<double> time_vec = toStdVector(times);
-  cost += linear_time_cost_(time_vec, gdT);
-
-  esdf_cost_manager_.reset(map_manager_.get(),
-                           opt_vars_.safe_distance,
-                           opt_vars_.smooth_eps,
-                           opt_vars_.weight_esdf,
-                           opt_vars_.magnitude_bounds,
-                           opt_vars_.penalty_weights,
-                           &opt_vars_.quadrotor_flatness,
-                           swarm_config_,
-                           swarm_trajs_,
-                           swarm_current_wall_time_);
-  double guide_integral_cost = 0.0;
-  const bool use_guide_integral_cost = opt_vars_.weight_guide_integral > 0.0 &&
-                                       opt_vars_.guide_path.size() >= 2;
-  const bool use_guide_velocity_integral_cost =
-      opt_vars_.weight_guide_vel_integral > 0.0 &&
-      opt_vars_.guide_path.size() >= 2 &&
-      opt_vars_.guide_velocities.size() == opt_vars_.guide_path.size();
-  const auto &coeffs = minco_traj_.getCoefficients();
-  double seg_start = 0.0;
-  for (int i = 0; i < piece_num; ++i)
-  {
-    const double T = times(i);
-    const double inv_K = 1.0 / static_cast<double>(opt_vars_.integral_res);
-    const double step = T * inv_K;
-    const int base = i * SnapTraj::COEFF_NUM;
-    const auto coeff_block = coeffs.template block<SnapTraj::COEFF_NUM, TRAJ_DIM>(base, 0);
-    for (int k = 0; k <= opt_vars_.integral_res; ++k)
-    {
-      const double alpha = static_cast<double>(k) * inv_K;
-      const double t = alpha * T;
-      const double node = (k == 0 || k == opt_vars_.integral_res) ? 0.5 : 1.0;
-      const double common = node * step;
-      SnapTraj::BasisRow bp, bv, ba, bj, bs;
-      SnapTraj::computeBasisFunctions(t, bp, bv, ba, bj, bs);
-      Vec3f p = coeff_block.transpose() * bp.transpose();
-      Vec3f v = coeff_block.transpose() * bv.transpose();
-      Vec3f a = coeff_block.transpose() * ba.transpose();
-      Vec3f j = coeff_block.transpose() * bj.transpose();
-      Vec3f s = coeff_block.transpose() * bs.transpose();
-      Vec3f gp = Vec3f::Zero();
-      Vec3f gv = Vec3f::Zero();
-      Vec3f ga = Vec3f::Zero();
-      Vec3f gj = Vec3f::Zero();
-      Vec3f gs = Vec3f::Zero();
-      double gt = 0.0;
-      double sample_cost = esdf_cost_manager_(t, seg_start + t, i, k, p, v, a, j, s, gp, gv, ga, gj, gs, gt);
-      if (use_guide_integral_cost || use_guide_velocity_integral_cost)
-      {
-        const ClosestGuidePV ref = closestPVOnPolyline(opt_vars_.guide_path, opt_vars_.guide_velocities, p);
-        if (use_guide_integral_cost)
-        {
-          const Vec3f diff = p - ref.position;
-          const double guide_sample_cost = 0.5 * opt_vars_.weight_guide_integral * diff.squaredNorm();
-          sample_cost += guide_sample_cost;
-          gp += opt_vars_.weight_guide_integral * diff;
-          guide_integral_cost += common * guide_sample_cost;
-        }
-        if (use_guide_velocity_integral_cost)
-        {
-          const Vec3f diff_v = v - ref.velocity;
-          const double guide_velocity_sample_cost =
-              0.5 * opt_vars_.weight_guide_vel_integral * diff_v.squaredNorm();
-          sample_cost += guide_velocity_sample_cost;
-          gv += opt_vars_.weight_guide_vel_integral * diff_v;
-          guide_integral_cost += common * guide_velocity_sample_cost;
-        }
-      }
-      cost += common * sample_cost;
-      gdC.template block<SnapTraj::COEFF_NUM, TRAJ_DIM>(base, 0).noalias() +=
-          (bp.transpose() * gp.transpose() +
-           bv.transpose() * gv.transpose() +
-           ba.transpose() * ga.transpose() +
-           bj.transpose() * gj.transpose()) * common;
-      gdT(i) += node * inv_K * sample_cost;
-      gdT(i) += (gp.dot(v) + gv.dot(a) + ga.dot(j) + gj.dot(s)) * alpha * common;
-      if (std::abs(gt) > 1.0e-12)
-      {
-        if (i > 0)
-        {
-          gdT.head(i).array() += gt * common;
-        }
-        gdT(i) += gt * alpha * common;
-      }
-    }
-    seg_start += T;
-  }
-
-  const auto grad_result = minco_traj_.propagateGradFull(gdC, gdT);
-  for (int i = 0; i < piece_num; ++i)
-  {
-    g(i) += time_map_.backward(x(i), times(i), grad_result.grad_by_times(i));
-  }
-  offset = piece_num;
-  double guide_cost = 0.0;
-  const bool use_guide_cost = opt_vars_.weight_guide > 0.0 &&
-                              opt_vars_.guide_points.cols() == piece_num - 1;
-  for (int i = 0; i < piece_num - 1; ++i)
-  {
-    Vec3f grad_point = grad_result.grad_by_points.col(i);
-    if (use_guide_cost)
-    {
-      const Vec3f diff = inner.col(i) - opt_vars_.guide_points.col(i);
-      guide_cost += 0.5 * opt_vars_.weight_guide * diff.squaredNorm();
-      grad_point += opt_vars_.weight_guide * diff;
-    }
-    g.segment<3>(offset) += grad_point;
-    offset += 3;
-  }
-  cost += guide_cost;
+  const double cost = optimizer_.evaluate(x, g, linear_time_cost_, esdf_cost_manager_);
   opt_vars_.max_violation = esdf_cost_manager_.getMaxViolation();
+  opt_vars_.penalty_log(0) = optimizer_.lastEnergyCost();
   opt_vars_.penalty_log.tail(7) = esdf_cost_manager_.getPenaltyLog().tail(7);
-  opt_vars_.penalty_log(5) = guide_cost + guide_integral_cost;
+  opt_vars_.penalty_log(5) = esdf_cost_manager_.getGuideCostLog();
   return cost;
 }
 
@@ -2463,17 +1973,6 @@ void ESDFTrajOpt::logValidationReport(const std::string &stage,
 double ESDFTrajOpt::optimize(Trajectory &traj, double rel_cost_tol)
 {
   const int piece_num = static_cast<int>(opt_vars_.times.size());
-  VecDf x(piece_num + 3 * (piece_num - 1));
-  for (int i = 0; i < piece_num; ++i)
-  {
-    x(i) = time_map_.toTau(opt_vars_.times(i));
-  }
-  int offset = piece_num;
-  for (int i = 0; i < piece_num - 1; ++i)
-  {
-    x.segment<3>(offset) = opt_vars_.points.col(i);
-    offset += 3;
-  }
 
   auto buildTrajectory = [&](const Mat3Df &inner, const VecDf &times) {
     minco_traj_.generate(inner,
@@ -2523,6 +2022,41 @@ double ESDFTrajOpt::optimize(Trajectory &traj, double rel_cost_tol)
     }
   }
 
+  const Mat3Df waypoints = waypointsToMatrix(opt_vars_.head_pvaj, opt_vars_.points, opt_vars_.tail_pvaj);
+  optimizer_.setUniformTimeMode(false);
+  optimizer_.setEnergyWeight(opt_vars_.block_energy_cost ? 0.0 : 1.0);
+  optimizer_.setSamplesPerPiece(opt_vars_.integral_res);
+  if (!optimizer_.setInitState(toStdVector(opt_vars_.times),
+                               toOptimizerWaypoints(waypoints),
+                               toSnapBoundary(opt_vars_.head_pvaj),
+                               toSnapBoundary(opt_vars_.tail_pvaj)))
+  {
+    return INFINITY;
+  }
+  VecDf x = optimizer_.generateInitialGuess();
+  if (x.size() <= 0 || !x.allFinite())
+  {
+    return INFINITY;
+  }
+
+  esdf_cost_manager_.reset(map_manager_.get(),
+                           opt_vars_.safe_distance,
+                           opt_vars_.smooth_eps,
+                           opt_vars_.weight_esdf,
+                           opt_vars_.magnitude_bounds,
+                           opt_vars_.penalty_weights,
+                           &opt_vars_.quadrotor_flatness,
+                           swarm_config_,
+                           swarm_trajs_,
+                           swarm_current_wall_time_,
+                           &opt_vars_.guide_path,
+                           &opt_vars_.guide_velocities,
+                           &opt_vars_.guide_points,
+                           opt_vars_.weight_guide,
+                           opt_vars_.weight_guide_integral,
+                           opt_vars_.weight_guide_vel_integral,
+                           opt_vars_.integral_res);
+
   opt_vars_.iter_num = 0;
   double min_cost = 0.0;
   lbfgs::lbfgs_parameter_t params;
@@ -2552,14 +2086,16 @@ double ESDFTrajOpt::optimize(Trajectory &traj, double rel_cost_tol)
   }
 
   VecDf grad = VecDf::Zero(x.size());
-  min_cost = evaluateCurrentCost(x, grad);
+  min_cost = evaluateMincoCost(x, grad);
   VecDf optimized_times;
   Mat3Df optimized_inner;
-  decodeOptimizationVector(x, optimized_times, optimized_inner);
-  minco_traj_.generate(optimized_inner,
-                       toSnapBoundary(opt_vars_.head_pvaj),
-                       toSnapBoundary(opt_vars_.tail_pvaj),
-                       optimized_times);
+  optimized_times = optimizer_.getCurrentTimes();
+  optimized_inner.resize(3, std::max(0, piece_num - 1));
+  if (piece_num > 1)
+  {
+    optimized_inner = optimizer_.getTrajectory().getPositions().middleCols(1, piece_num - 1);
+  }
+  minco_traj_ = optimizer_.getTrajectory();
   traj = toGeometryTrajectory(minco_traj_);
   ValidationReport report = validateTrajectoryDetailed(traj);
   logValidationReport(has_valid_initial ? "optimized_recoverable" : "optimized", report, min_cost);
@@ -2765,6 +2301,9 @@ PlainTrajOpt::PlainTrajOpt(const traj_opt::Config &cfg,
   opt_vars_.penalty_log = VecDf::Zero(8);
   opt_vars_.quadrotor_flatness = cfg_.quadrotot_flatness;
   linear_time_cost_.weight = opt_vars_.rho;
+  optimizer_.setTimeMap(&time_map_);
+  optimizer_.setEnergyWeight(opt_vars_.block_energy_cost ? 0.0 : 1.0);
+  optimizer_.setSamplesPerPiece(opt_vars_.integral_res);
 
   if (cfg_.save_log_en)
   {
@@ -3447,13 +2986,11 @@ bool PlainTrajOpt::maybeRefreshPVPairsForRebound(const VecDf &x, int iteration)
     return false;
   }
 
-  VecDf times;
-  Mat3Df inner;
-  decodeOptimizationVector(x, times, inner);
-  minco_traj_.generate(inner,
-                       toSnapBoundary(opt_vars_.head_pvaj),
-                       toSnapBoundary(opt_vars_.tail_pvaj),
-                       times);
+  if (!optimizer_.updateTrajectoryFromDecisionVector(x))
+  {
+    return false;
+  }
+  minco_traj_ = optimizer_.getTrajectory();
 
   std::vector<Vec3f> sample_positions;
   collectCurrentTrajectorySamples(sample_positions);
@@ -3810,191 +3347,21 @@ bool PlainTrajOpt::initializeFromGuide(const vec_E<Vec3f> &guide_path,
 
 double PlainTrajOpt::costFunctional(void *ptr, const VecDf &x, VecDf &g)
 {
-  return static_cast<PlainTrajOpt *>(ptr)->evaluateCurrentCost(x, g);
+  return static_cast<PlainTrajOpt *>(ptr)->evaluateMincoCost(x, g);
 }
 
-double PlainTrajOpt::evaluateCurrentCost(const VecDf &x, VecDf &g)
+double PlainTrajOpt::evaluateMincoCost(const VecDf &x, VecDf &g)
 {
   opt_vars_.iter_num++;
-  g.setZero();
-  const int piece_num = static_cast<int>(opt_vars_.times.size());
-  VecDf times(piece_num);
-  for (int i = 0; i < piece_num; ++i)
-  {
-    times(i) = time_map_.toTime(x(i));
-  }
-
-  Mat3Df inner(3, piece_num - 1);
-  int offset = piece_num;
-  for (int i = 0; i < piece_num - 1; ++i)
-  {
-    inner.col(i) = x.segment<3>(offset);
-    offset += 3;
-  }
-
-  minco_traj_.generate(inner, toSnapBoundary(opt_vars_.head_pvaj), toSnapBoundary(opt_vars_.tail_pvaj), times);
-
-  double cost = 0.0;
-  typename SnapTraj::CoeffMat gdC(minco_traj_.getCoefficients().rows(), 3);
-  VecDf gdT(piece_num);
-  gdC.setZero();
-  gdT.setZero();
   opt_vars_.penalty_log.setZero();
-
-  if (!opt_vars_.block_energy_cost)
-  {
-    double energy = 0.0;
-    typename SnapTraj::CoeffMat gdC_energy;
-    VecDf gdT_energy;
-    minco_traj_.getEnergyPartialGradByCoeffs(energy, gdC_energy);
-    minco_traj_.getEnergyPartialGradByTimes(gdT_energy);
-    cost += energy;
-    gdC += gdC_energy;
-    gdT += gdT_energy;
-    opt_vars_.penalty_log(0) = energy;
-  }
-
-  std::vector<double> time_vec = toStdVector(times);
-  cost += linear_time_cost_(time_vec, gdT);
-
-  plain_cost_manager_.reset(&opt_vars_.pv_pairs,
-                            opt_vars_.safe_distance,
-                            opt_vars_.weight_pv,
-                            opt_vars_.smooth_eps,
-                            opt_vars_.magnitude_bounds,
-                            opt_vars_.penalty_weights,
-                            &opt_vars_.quadrotor_flatness,
-                            swarm_config_,
-                            swarm_trajs_,
-                            swarm_current_wall_time_,
-                            opt_vars_.pv_samples_per_piece);
-
-  double guide_integral_cost = 0.0;
-  double guide_tube_cost = 0.0;
-  opt_vars_.guide_tube_violation = 0.0;
-  const bool use_guide_integral_cost = opt_vars_.weight_guide_integral > 0.0 &&
-                                       opt_vars_.guide_path.size() >= 2;
-  const bool use_guide_velocity_integral_cost =
-      opt_vars_.weight_guide_vel_integral > 0.0 &&
-      opt_vars_.guide_path.size() >= 2 &&
-      opt_vars_.guide_velocities.size() == opt_vars_.guide_path.size();
-  const bool use_guide_tube_cost =
-      opt_vars_.weight_guide_tube > 0.0 &&
-      opt_vars_.guide_tube_radius_sqr > 0.0 &&
-      opt_vars_.guide_path.size() >= 2;
-  const auto &coeffs = minco_traj_.getCoefficients();
-  double seg_start = 0.0;
-  for (int i = 0; i < piece_num; ++i)
-  {
-    const double T = times(i);
-    const double inv_K = 1.0 / static_cast<double>(opt_vars_.integral_res);
-    const double step = T * inv_K;
-    const int base = i * SnapTraj::COEFF_NUM;
-    const auto coeff_block = coeffs.template block<SnapTraj::COEFF_NUM, TRAJ_DIM>(base, 0);
-    for (int k = 0; k <= opt_vars_.integral_res; ++k)
-    {
-      const double alpha = static_cast<double>(k) * inv_K;
-      const double t = alpha * T;
-      const double node = (k == 0 || k == opt_vars_.integral_res) ? 0.5 : 1.0;
-      const double common = node * step;
-      SnapTraj::BasisRow bp, bv, ba, bj, bs;
-      SnapTraj::computeBasisFunctions(t, bp, bv, ba, bj, bs);
-      Vec3f p = coeff_block.transpose() * bp.transpose();
-      Vec3f v = coeff_block.transpose() * bv.transpose();
-      Vec3f a = coeff_block.transpose() * ba.transpose();
-      Vec3f j = coeff_block.transpose() * bj.transpose();
-      Vec3f s = coeff_block.transpose() * bs.transpose();
-      Vec3f gp = Vec3f::Zero();
-      Vec3f gv = Vec3f::Zero();
-      Vec3f ga = Vec3f::Zero();
-      Vec3f gj = Vec3f::Zero();
-      Vec3f gs = Vec3f::Zero();
-      double gt = 0.0;
-      double sample_cost = plain_cost_manager_(t, seg_start + t, i, k, p, v, a, j, s, gp, gv, ga, gj, gs, gt);
-      if (use_guide_integral_cost || use_guide_velocity_integral_cost || use_guide_tube_cost)
-      {
-        const ClosestGuidePV ref = closestPVOnPolyline(opt_vars_.guide_path, opt_vars_.guide_velocities, p);
-        const Vec3f diff = p - ref.position;
-        if (use_guide_integral_cost)
-        {
-          const double guide_sample_cost = 0.5 * opt_vars_.weight_guide_integral * diff.squaredNorm();
-          sample_cost += guide_sample_cost;
-          gp += opt_vars_.weight_guide_integral * diff;
-          guide_integral_cost += common * guide_sample_cost;
-        }
-        if (use_guide_tube_cost)
-        {
-          const double dist_sqr = diff.squaredNorm();
-          const double violation = dist_sqr - opt_vars_.guide_tube_radius_sqr;
-          if (violation > 0.0)
-          {
-            const double tube_sample_cost =
-                0.5 * opt_vars_.weight_guide_tube * violation * violation;
-            sample_cost += tube_sample_cost;
-            gp += 2.0 * opt_vars_.weight_guide_tube * violation * diff;
-            guide_tube_cost += common * tube_sample_cost;
-            opt_vars_.guide_tube_violation =
-                std::max(opt_vars_.guide_tube_violation,
-                         std::sqrt(dist_sqr) - opt_vars_.guide_tube_radius);
-          }
-        }
-        if (use_guide_velocity_integral_cost)
-        {
-          const Vec3f diff_v = v - ref.velocity;
-          const double guide_velocity_sample_cost =
-              0.5 * opt_vars_.weight_guide_vel_integral * diff_v.squaredNorm();
-          sample_cost += guide_velocity_sample_cost;
-          gv += opt_vars_.weight_guide_vel_integral * diff_v;
-          guide_integral_cost += common * guide_velocity_sample_cost;
-        }
-      }
-      cost += common * sample_cost;
-      gdC.template block<SnapTraj::COEFF_NUM, TRAJ_DIM>(base, 0).noalias() +=
-          (bp.transpose() * gp.transpose() +
-           bv.transpose() * gv.transpose() +
-           ba.transpose() * ga.transpose() +
-           bj.transpose() * gj.transpose()) * common;
-      gdT(i) += node * inv_K * sample_cost;
-      gdT(i) += (gp.dot(v) + gv.dot(a) + ga.dot(j) + gj.dot(s)) * alpha * common;
-      if (std::abs(gt) > 1.0e-12)
-      {
-        if (i > 0)
-        {
-          gdT.head(i).array() += gt * common;
-        }
-        gdT(i) += gt * alpha * common;
-      }
-    }
-    seg_start += T;
-  }
-
-  const auto grad_result = minco_traj_.propagateGradFull(gdC, gdT);
-  for (int i = 0; i < piece_num; ++i)
-  {
-    g(i) += time_map_.backward(x(i), times(i), grad_result.grad_by_times(i));
-  }
-  offset = piece_num;
-  double guide_cost = 0.0;
-  const bool use_guide_cost = opt_vars_.weight_guide > 0.0 &&
-                              opt_vars_.guide_points.cols() == piece_num - 1;
-  for (int i = 0; i < piece_num - 1; ++i)
-  {
-    Vec3f grad_point = grad_result.grad_by_points.col(i);
-    if (use_guide_cost)
-    {
-      const Vec3f diff = inner.col(i) - opt_vars_.guide_points.col(i);
-      guide_cost += 0.5 * opt_vars_.weight_guide * diff.squaredNorm();
-      grad_point += opt_vars_.weight_guide * diff;
-    }
-    g.segment<3>(offset) += grad_point;
-    offset += 3;
-  }
-  cost += guide_cost;
+  const double cost = optimizer_.evaluate(x, g, linear_time_cost_, plain_cost_manager_);
+  opt_vars_.guide_tube_violation = plain_cost_manager_.getGuideTubeViolation();
   opt_vars_.max_violation =
       std::max(plain_cost_manager_.getMaxCollisionViolation(),
                opt_vars_.guide_tube_violation);
+  opt_vars_.penalty_log(0) = optimizer_.lastEnergyCost();
   opt_vars_.penalty_log.tail(7) = plain_cost_manager_.getPenaltyLog().tail(7);
-  opt_vars_.penalty_log(5) = guide_cost + guide_integral_cost + guide_tube_cost;
+  opt_vars_.penalty_log(5) = plain_cost_manager_.getGuideCostLog();
   return cost;
 }
 
@@ -4086,17 +3453,6 @@ int PlainTrajOpt::reboundProgress(void *ptr,
 double PlainTrajOpt::optimize(Trajectory &traj, double rel_cost_tol)
 {
   const int piece_num = static_cast<int>(opt_vars_.times.size());
-  VecDf x(piece_num + 3 * (piece_num - 1));
-  for (int i = 0; i < piece_num; ++i)
-  {
-    x(i) = time_map_.toTau(opt_vars_.times(i));
-  }
-  int offset = piece_num;
-  for (int i = 0; i < piece_num - 1; ++i)
-  {
-    x.segment<3>(offset) = opt_vars_.points.col(i);
-    offset += 3;
-  }
 
   auto buildTrajectory = [&](const Mat3Df &inner, const VecDf &times) {
     minco_traj_.generate(inner,
@@ -4146,6 +3502,45 @@ double PlainTrajOpt::optimize(Trajectory &traj, double rel_cost_tol)
     }
   }
 
+  const Mat3Df waypoints = waypointsToMatrix(opt_vars_.head_pvaj, opt_vars_.points, opt_vars_.tail_pvaj);
+  optimizer_.setUniformTimeMode(false);
+  optimizer_.setEnergyWeight(opt_vars_.block_energy_cost ? 0.0 : 1.0);
+  optimizer_.setSamplesPerPiece(opt_vars_.integral_res);
+  if (!optimizer_.setInitState(toStdVector(opt_vars_.times),
+                               toOptimizerWaypoints(waypoints),
+                               toSnapBoundary(opt_vars_.head_pvaj),
+                               toSnapBoundary(opt_vars_.tail_pvaj)))
+  {
+    return INFINITY;
+  }
+  VecDf x = optimizer_.generateInitialGuess();
+  if (x.size() <= 0 || !x.allFinite())
+  {
+    return INFINITY;
+  }
+
+  plain_cost_manager_.reset(&opt_vars_.pv_pairs,
+                            opt_vars_.safe_distance,
+                            opt_vars_.weight_pv,
+                            opt_vars_.smooth_eps,
+                            opt_vars_.magnitude_bounds,
+                            opt_vars_.penalty_weights,
+                            &opt_vars_.quadrotor_flatness,
+                            swarm_config_,
+                            swarm_trajs_,
+                            swarm_current_wall_time_,
+                            opt_vars_.pv_samples_per_piece,
+                            &opt_vars_.guide_path,
+                            &opt_vars_.guide_velocities,
+                            &opt_vars_.guide_points,
+                            opt_vars_.weight_guide,
+                            opt_vars_.weight_guide_integral,
+                            opt_vars_.weight_guide_vel_integral,
+                            opt_vars_.weight_guide_tube,
+                            opt_vars_.guide_tube_radius,
+                            opt_vars_.guide_tube_radius_sqr,
+                            opt_vars_.integral_res);
+
   double min_cost = 0.0;
   lbfgs::lbfgs_parameter_t params;
   params.mem_size = 32;
@@ -4193,12 +3588,14 @@ double PlainTrajOpt::optimize(Trajectory &traj, double rel_cost_tol)
                 << ", validate last accepted iterate." << RESET << std::endl;
     }
 
-    min_cost = evaluateCurrentCost(x, grad);
-    decodeOptimizationVector(x, optimized_times, optimized_inner);
-    minco_traj_.generate(optimized_inner,
-                         toSnapBoundary(opt_vars_.head_pvaj),
-                         toSnapBoundary(opt_vars_.tail_pvaj),
-                         optimized_times);
+    min_cost = evaluateMincoCost(x, grad);
+    optimized_times = optimizer_.getCurrentTimes();
+    optimized_inner.resize(3, std::max(0, piece_num - 1));
+    if (piece_num > 1)
+    {
+      optimized_inner = optimizer_.getTrajectory().getPositions().middleCols(1, piece_num - 1);
+    }
+    minco_traj_ = optimizer_.getTrajectory();
     traj = toGeometryTrajectory(minco_traj_);
     report = validateTrajectoryDetailed(traj);
     last_opt_report_ = report;

@@ -175,30 +175,97 @@ namespace general_planner {
 
         bool exploration_enable{false};
         bool exploration_print_log{true};
+        bool exploration_manager_enable{true};
+        bool exploration_global_box_enable{false};
+        std::vector<double> exploration_global_box_min{-50.0, -50.0, 0.0};
+        std::vector<double> exploration_global_box_max{50.0, 50.0, 3.0};
+        double exploration_manager_frontier_merge_radius{2.0};
+        double exploration_manager_frontier_record_ttl{120.0};
+        double exploration_manager_frontier_failure_ttl{15.0};
+        double exploration_manager_frontier_covered_radius{2.0};
+        int exploration_manager_max_frontier_records{1024};
+        double exploration_manager_coverage_resolution{1.0};
+        double exploration_manager_coverage_radius{10.0};
+        double exploration_manager_coverage_z_half{1.5};
+        int exploration_manager_max_coverage_cells{200000};
+        double exploration_manager_unknown_gain_radius{4.0};
+        double exploration_manager_unknown_gain_resolution{0.8};
+        double exploration_manager_unknown_gain_score_weight{-0.04};
+        double exploration_manager_revisit_score_weight{2.0};
+        double exploration_manager_covered_score_weight{20.0};
+        double exploration_manager_stale_frontier_score_weight{0.25};
+        double exploration_manager_committed_frontier_score_weight{8.0};
+        double exploration_manager_recent_commit_score_weight{14.0};
+        double exploration_manager_recent_commit_time_window{10.0};
+        int exploration_manager_max_commits_before_cooldown{3};
+        double exploration_manager_overcommit_cooldown{8.0};
+        double exploration_manager_completion_scan_resolution{1.0};
+        int exploration_manager_completion_max_unknown_voxels{25};
+        double exploration_manager_completion_min_coverage_ratio{0.85};
+        int exploration_manager_completion_stable_cycles{3};
+        int exploration_manager_completion_max_active_frontiers{0};
         std::string exploration_frontier_source{"fallback_scan"};
         double exploration_frontier_search_radius{12.0};
         double exploration_frontier_cluster_radius{0.8};
         double exploration_frontier_sample_resolution{0.8};
+        double exploration_frontier_subcluster_size{4.0};
         int exploration_min_frontier_cluster_size{5};
+        double exploration_min_frontier_area{0.12};
+        double exploration_min_frontier_extent{0.25};
+        int exploration_min_unknown_neighbor_count{6};
         int exploration_max_raw_frontier_points{4096};
         int exploration_max_frontier_cells{1536};
         int exploration_max_frontier_clusters{64};
+        int exploration_max_subclusters_per_cluster{16};
+        bool exploration_frontier_manager_enable{true};
+        int exploration_frontier_manager_max_records{512};
+        double exploration_frontier_manager_match_radius{2.0};
+        double exploration_frontier_manager_stale_time{8.0};
+        double exploration_frontier_manager_dormant_time{6.0};
+        double exploration_frontier_manager_covered_unknown_radius{1.5};
+        double exploration_frontier_manager_min_changed_fraction{0.2};
+        double exploration_frontier_manager_selection_penalty{6.0};
+        double exploration_frontier_manager_recent_selection_penalty{12.0};
+        double exploration_frontier_manager_recent_selection_window{10.0};
+        int exploration_frontier_manager_no_view_threshold{2};
         double exploration_viewpoint_min_distance{1.2};
         double exploration_viewpoint_max_distance{4.0};
         double exploration_viewpoint_height_offset{0.0};
         double exploration_viewpoint_safe_distance{0.45};
         int exploration_viewpoint_yaw_sample_num{16};
         int exploration_viewpoint_radius_sample_num{3};
+        bool exploration_viewpoint_use_normal_sampling{true};
+        double exploration_viewpoint_normal_angle{1.2};
+        int exploration_viewpoint_z_sample_num{1};
+        double exploration_viewpoint_z_min{0.0};
+        double exploration_viewpoint_z_max{0.0};
+        int exploration_min_visible_frontier_cells{3};
+        double exploration_min_visible_frontier_ratio{0.05};
         int exploration_max_candidate_num{128};
+        int exploration_max_candidates_per_frontier_cluster{8};
+        double exploration_candidate_separation_distance{1.5};
         int exploration_max_astar_checks{64};
+        int exploration_min_direct_reachable_before_astar{8};
+        int exploration_max_astar_checks_per_frontier{2};
         int exploration_max_reachable_candidate_num{48};
+        int exploration_max_gain_rays{96};
+        double exploration_gain_ray_length{5.0};
+        double exploration_gain_ray_step{0.2};
+        double exploration_astar_time_out{0.04};
+        double exploration_astar_total_time_budget_ms{40.0};
+        double exploration_astar_failure_cache_ttl{4.0};
+        std::string exploration_yaw_policy{"velocity"};
         double exploration_weight_travel{1.0};
         double exploration_weight_yaw{0.5};
         double exploration_weight_curvature{0.8};
         double exploration_weight_info_gain{-2.0};
         double exploration_weight_unknown_risk{1.0};
+        double exploration_weight_progress{-0.75};
+        double exploration_weight_short_goal{4.0};
         double exploration_information_gain_saturation{250.0};
         double exploration_min_information_gain{3.0};
+        double exploration_min_goal_distance{3.0};
+        double exploration_preferred_goal_distance{8.0};
         double exploration_goal_switch_min_score_improvement{0.25};
         double exploration_goal_reached_distance{0.5};
         bool exploration_unknown_as_occupied_for_motion{true};
@@ -707,6 +774,64 @@ namespace general_planner {
             loader.LoadParam("general_planner/se3_aggressive/use_numeric_shape_gradient",
                              se3_use_numeric_shape_gradient, true);
             loader.LoadParam("general_planner/exploration_enable", exploration_enable, false);
+            loader.LoadParam("general_planner/exploration_manager_enable",
+                             exploration_manager_enable, true);
+            loader.LoadParam("general_planner/exploration_global_box_enable",
+                             exploration_global_box_enable, false);
+            loader.LoadParam("general_planner/exploration_global_box_min",
+                             exploration_global_box_min, std::vector<double>{-50.0, -50.0, 0.0});
+            loader.LoadParam("general_planner/exploration_global_box_max",
+                             exploration_global_box_max, std::vector<double>{50.0, 50.0, 3.0});
+            loader.LoadParam("general_planner/exploration_manager_frontier_merge_radius",
+                             exploration_manager_frontier_merge_radius, 2.0);
+            loader.LoadParam("general_planner/exploration_manager_frontier_record_ttl",
+                             exploration_manager_frontier_record_ttl, 120.0);
+            loader.LoadParam("general_planner/exploration_manager_frontier_failure_ttl",
+                             exploration_manager_frontier_failure_ttl, 15.0);
+            loader.LoadParam("general_planner/exploration_manager_frontier_covered_radius",
+                             exploration_manager_frontier_covered_radius, 2.0);
+            loader.LoadParam("general_planner/exploration_manager_max_frontier_records",
+                             exploration_manager_max_frontier_records, 1024);
+            loader.LoadParam("general_planner/exploration_manager_coverage_resolution",
+                             exploration_manager_coverage_resolution, 1.0);
+            loader.LoadParam("general_planner/exploration_manager_coverage_radius",
+                             exploration_manager_coverage_radius, 10.0);
+            loader.LoadParam("general_planner/exploration_manager_coverage_z_half",
+                             exploration_manager_coverage_z_half, 1.5);
+            loader.LoadParam("general_planner/exploration_manager_max_coverage_cells",
+                             exploration_manager_max_coverage_cells, 200000);
+            loader.LoadParam("general_planner/exploration_manager_unknown_gain_radius",
+                             exploration_manager_unknown_gain_radius, 4.0);
+            loader.LoadParam("general_planner/exploration_manager_unknown_gain_resolution",
+                             exploration_manager_unknown_gain_resolution, 0.8);
+            loader.LoadParam("general_planner/exploration_manager_unknown_gain_score_weight",
+                             exploration_manager_unknown_gain_score_weight, -0.04);
+            loader.LoadParam("general_planner/exploration_manager_revisit_score_weight",
+                             exploration_manager_revisit_score_weight, 2.0);
+            loader.LoadParam("general_planner/exploration_manager_covered_score_weight",
+                             exploration_manager_covered_score_weight, 20.0);
+            loader.LoadParam("general_planner/exploration_manager_stale_frontier_score_weight",
+                             exploration_manager_stale_frontier_score_weight, 0.25);
+            loader.LoadParam("general_planner/exploration_manager_committed_frontier_score_weight",
+                             exploration_manager_committed_frontier_score_weight, 8.0);
+            loader.LoadParam("general_planner/exploration_manager_recent_commit_score_weight",
+                             exploration_manager_recent_commit_score_weight, 14.0);
+            loader.LoadParam("general_planner/exploration_manager_recent_commit_time_window",
+                             exploration_manager_recent_commit_time_window, 10.0);
+            loader.LoadParam("general_planner/exploration_manager_max_commits_before_cooldown",
+                             exploration_manager_max_commits_before_cooldown, 3);
+            loader.LoadParam("general_planner/exploration_manager_overcommit_cooldown",
+                             exploration_manager_overcommit_cooldown, 8.0);
+            loader.LoadParam("general_planner/exploration_manager_completion_scan_resolution",
+                             exploration_manager_completion_scan_resolution, 1.0);
+            loader.LoadParam("general_planner/exploration_manager_completion_max_unknown_voxels",
+                             exploration_manager_completion_max_unknown_voxels, 25);
+            loader.LoadParam("general_planner/exploration_manager_completion_min_coverage_ratio",
+                             exploration_manager_completion_min_coverage_ratio, 0.85);
+            loader.LoadParam("general_planner/exploration_manager_completion_stable_cycles",
+                             exploration_manager_completion_stable_cycles, 3);
+            loader.LoadParam("general_planner/exploration_manager_completion_max_active_frontiers",
+                             exploration_manager_completion_max_active_frontiers, 0);
             loader.LoadParam("general_planner/exploration_frontier_source",
                              exploration_frontier_source, std::string("fallback_scan"));
             loader.LoadParam("general_planner/exploration_frontier_search_radius",
@@ -715,14 +840,46 @@ namespace general_planner {
                              exploration_frontier_cluster_radius, 0.8);
             loader.LoadParam("general_planner/exploration_frontier_sample_resolution",
                              exploration_frontier_sample_resolution, 0.8);
+            loader.LoadParam("general_planner/exploration_frontier_subcluster_size",
+                             exploration_frontier_subcluster_size, 4.0);
             loader.LoadParam("general_planner/exploration_min_frontier_cluster_size",
                              exploration_min_frontier_cluster_size, 5);
+            loader.LoadParam("general_planner/exploration_min_frontier_area",
+                             exploration_min_frontier_area, 0.12);
+            loader.LoadParam("general_planner/exploration_min_frontier_extent",
+                             exploration_min_frontier_extent, 0.25);
+            loader.LoadParam("general_planner/exploration_min_unknown_neighbor_count",
+                             exploration_min_unknown_neighbor_count, 6);
             loader.LoadParam("general_planner/exploration_max_raw_frontier_points",
                              exploration_max_raw_frontier_points, 4096);
             loader.LoadParam("general_planner/exploration_max_frontier_cells",
                              exploration_max_frontier_cells, 1536);
             loader.LoadParam("general_planner/exploration_max_frontier_clusters",
                              exploration_max_frontier_clusters, 64);
+            loader.LoadParam("general_planner/exploration_max_subclusters_per_cluster",
+                             exploration_max_subclusters_per_cluster, 16);
+            loader.LoadParam("general_planner/exploration_frontier_manager_enable",
+                             exploration_frontier_manager_enable, true);
+            loader.LoadParam("general_planner/exploration_frontier_manager_max_records",
+                             exploration_frontier_manager_max_records, 512);
+            loader.LoadParam("general_planner/exploration_frontier_manager_match_radius",
+                             exploration_frontier_manager_match_radius, 2.0);
+            loader.LoadParam("general_planner/exploration_frontier_manager_stale_time",
+                             exploration_frontier_manager_stale_time, 8.0);
+            loader.LoadParam("general_planner/exploration_frontier_manager_dormant_time",
+                             exploration_frontier_manager_dormant_time, 6.0);
+            loader.LoadParam("general_planner/exploration_frontier_manager_covered_unknown_radius",
+                             exploration_frontier_manager_covered_unknown_radius, 1.5);
+            loader.LoadParam("general_planner/exploration_frontier_manager_min_changed_fraction",
+                             exploration_frontier_manager_min_changed_fraction, 0.2);
+            loader.LoadParam("general_planner/exploration_frontier_manager_selection_penalty",
+                             exploration_frontier_manager_selection_penalty, 6.0);
+            loader.LoadParam("general_planner/exploration_frontier_manager_recent_selection_penalty",
+                             exploration_frontier_manager_recent_selection_penalty, 12.0);
+            loader.LoadParam("general_planner/exploration_frontier_manager_recent_selection_window",
+                             exploration_frontier_manager_recent_selection_window, 10.0);
+            loader.LoadParam("general_planner/exploration_frontier_manager_no_view_threshold",
+                             exploration_frontier_manager_no_view_threshold, 2);
             loader.LoadParam("general_planner/exploration_viewpoint_min_distance",
                              exploration_viewpoint_min_distance, 1.2);
             loader.LoadParam("general_planner/exploration_viewpoint_max_distance",
@@ -735,12 +892,48 @@ namespace general_planner {
                              exploration_viewpoint_yaw_sample_num, 16);
             loader.LoadParam("general_planner/exploration_viewpoint_radius_sample_num",
                              exploration_viewpoint_radius_sample_num, 3);
+            loader.LoadParam("general_planner/exploration_viewpoint_use_normal_sampling",
+                             exploration_viewpoint_use_normal_sampling, true);
+            loader.LoadParam("general_planner/exploration_viewpoint_normal_angle",
+                             exploration_viewpoint_normal_angle, 1.2);
+            loader.LoadParam("general_planner/exploration_viewpoint_z_sample_num",
+                             exploration_viewpoint_z_sample_num, 1);
+            loader.LoadParam("general_planner/exploration_viewpoint_z_min",
+                             exploration_viewpoint_z_min, 0.0);
+            loader.LoadParam("general_planner/exploration_viewpoint_z_max",
+                             exploration_viewpoint_z_max, 0.0);
+            loader.LoadParam("general_planner/exploration_min_visible_frontier_cells",
+                             exploration_min_visible_frontier_cells, 3);
+            loader.LoadParam("general_planner/exploration_min_visible_frontier_ratio",
+                             exploration_min_visible_frontier_ratio, 0.05);
             loader.LoadParam("general_planner/exploration_max_candidate_num",
                              exploration_max_candidate_num, 128);
+            loader.LoadParam("general_planner/exploration_max_candidates_per_frontier_cluster",
+                             exploration_max_candidates_per_frontier_cluster, 8);
+            loader.LoadParam("general_planner/exploration_candidate_separation_distance",
+                             exploration_candidate_separation_distance, 1.5);
             loader.LoadParam("general_planner/exploration_max_astar_checks",
                              exploration_max_astar_checks, 64);
+            loader.LoadParam("general_planner/exploration_min_direct_reachable_before_astar",
+                             exploration_min_direct_reachable_before_astar, 8);
+            loader.LoadParam("general_planner/exploration_max_astar_checks_per_frontier",
+                             exploration_max_astar_checks_per_frontier, 2);
             loader.LoadParam("general_planner/exploration_max_reachable_candidate_num",
                              exploration_max_reachable_candidate_num, 48);
+            loader.LoadParam("general_planner/exploration_max_gain_rays",
+                             exploration_max_gain_rays, 96);
+            loader.LoadParam("general_planner/exploration_gain_ray_length",
+                             exploration_gain_ray_length, 5.0);
+            loader.LoadParam("general_planner/exploration_gain_ray_step",
+                             exploration_gain_ray_step, 0.2);
+            loader.LoadParam("general_planner/exploration_astar_time_out",
+                             exploration_astar_time_out, 0.04);
+            loader.LoadParam("general_planner/exploration_astar_total_time_budget_ms",
+                             exploration_astar_total_time_budget_ms, 40.0);
+            loader.LoadParam("general_planner/exploration_astar_failure_cache_ttl",
+                             exploration_astar_failure_cache_ttl, 4.0);
+            loader.LoadParam("general_planner/exploration_yaw_policy",
+                             exploration_yaw_policy, std::string("velocity"));
             loader.LoadParam("general_planner/exploration_weight_travel",
                              exploration_weight_travel, 1.0);
             loader.LoadParam("general_planner/exploration_weight_yaw",
@@ -751,10 +944,18 @@ namespace general_planner {
                              exploration_weight_info_gain, -2.0);
             loader.LoadParam("general_planner/exploration_weight_unknown_risk",
                              exploration_weight_unknown_risk, 1.0);
+            loader.LoadParam("general_planner/exploration_weight_progress",
+                             exploration_weight_progress, -0.75);
+            loader.LoadParam("general_planner/exploration_weight_short_goal",
+                             exploration_weight_short_goal, 4.0);
             loader.LoadParam("general_planner/exploration_information_gain_saturation",
                              exploration_information_gain_saturation, 250.0);
             loader.LoadParam("general_planner/exploration_min_information_gain",
                              exploration_min_information_gain, 3.0);
+            loader.LoadParam("general_planner/exploration_min_goal_distance",
+                             exploration_min_goal_distance, 3.0);
+            loader.LoadParam("general_planner/exploration_preferred_goal_distance",
+                             exploration_preferred_goal_distance, 8.0);
             loader.LoadParam("general_planner/exploration_goal_switch_min_score_improvement",
                              exploration_goal_switch_min_score_improvement, 0.25);
             loader.LoadParam("general_planner/exploration_goal_reached_distance",

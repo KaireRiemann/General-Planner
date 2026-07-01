@@ -46,6 +46,50 @@ public:
         return max_violation_;
     }
 
+    double evaluateIntegral(int logical_idx,
+                            double t,
+                            double t_global,
+                            int seg_idx,
+                            int step_in_seg,
+                            const Eigen::Vector3d &position,
+                            const Eigen::Vector3d &velocity,
+                            const Eigen::Vector3d &acceleration,
+                            const Eigen::Vector3d &jerk,
+                            Eigen::Vector3d &grad_position,
+                            Eigen::Vector3d &grad_velocity,
+                            Eigen::Vector3d &grad_acceleration,
+                            Eigen::Vector3d &grad_jerk,
+                            double &grad_time) const
+    {
+        (void)logical_idx;
+        Eigen::Vector3d grad_snap = Eigen::Vector3d::Zero();
+        const Eigen::Vector3d snap = Eigen::Vector3d::Zero();
+        double cost = operator()(t,
+                                 t_global,
+                                 seg_idx,
+                                 step_in_seg,
+                                 position,
+                                 velocity,
+                                 acceleration,
+                                 jerk,
+                                 snap,
+                                 grad_position,
+                                 grad_velocity,
+                                 grad_acceleration,
+                                 grad_jerk,
+                                 grad_snap,
+                                 grad_time);
+        return cost;
+    }
+
+    template <typename SampleBuffer>
+    double evaluateSample(const SampleBuffer &,
+                          Eigen::Matrix<double, 3, Eigen::Dynamic> &,
+                          Eigen::VectorXd &) const
+    {
+        return 0.0;
+    }
+
     double operator()(double /*t*/, double /*t_global*/, int /*seg_idx*/, int /*step_in_seg*/,
                       const Eigen::Vector3d &position,
                       const Eigen::Vector3d &velocity,
@@ -110,7 +154,6 @@ public:
         
         return local_cost;
     }
-
     private:
         mutable general_utils::VecDf max_violation_{general_utils::VecDf::Zero(8)};
 };

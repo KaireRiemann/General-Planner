@@ -4,6 +4,7 @@
 #include "traj_opt/costfunctional/spatialcosts/acceleration_bound_penalty.hpp"
 #include "traj_opt/costfunctional/spatialcosts/angular_rate_bound_penalty.hpp"
 #include "traj_opt/costfunctional/spatialcosts/flatness_state.hpp"
+#include "traj_opt/costfunctional/spatialcosts/guide_path_consistency_penalty.hpp"
 #include "traj_opt/costfunctional/spatialcosts/jerk_bound_penalty.hpp"
 #include "traj_opt/costfunctional/spatialcosts/polytope_position_penalty.hpp"
 #include "traj_opt/costfunctional/spatialcosts/thrust_band_penalty.hpp"
@@ -13,6 +14,8 @@
 #include "utils/geometry/quadrotor_flatness.hpp"
 #include "utils/header/type_utils.hpp"
 
+#include <algorithm>
+#include <cmath>
 #include <vector>
 
 namespace cost_functional_manager
@@ -31,6 +34,13 @@ namespace cost_functional_manager
         traj_opt::SwarmPenaltyConfig swarm_config;
         traj_opt::SwarmTrajectoriesConstPtr swarm_trajs;
         double swarm_current_wall_time{0.0};
+        const general_utils::vec_E<general_utils::Vec3f> *guide_path = nullptr;
+        const std::vector<double> *guide_t = nullptr;
+        double weight_guide_integral{0.0};
+        double guide_path_tube_radius{0.0};
+        double guide_path_z_tube_radius{0.0};
+        double guide_path_huber_delta{0.0};
+        bool guide_path_time_gradient_en{false};
 
         void reset(const general_utils::PolyhedraH *h_polys_in,
                    const Eigen::VectorXi *h_poly_idx_in,
@@ -42,7 +52,14 @@ namespace cost_functional_manager
                    flatness::FlatnessMap *quadrotor_flatness_in,
                    const traj_opt::SwarmPenaltyConfig &swarm_config_in,
                    const traj_opt::SwarmTrajectoriesConstPtr &swarm_trajs_in,
-                   double swarm_current_wall_time_in)
+                   double swarm_current_wall_time_in,
+                   const general_utils::vec_E<general_utils::Vec3f> *guide_path_in = nullptr,
+                   const std::vector<double> *guide_t_in = nullptr,
+                   double weight_guide_integral_in = 0.0,
+                   double guide_path_tube_radius_in = 0.0,
+                   double guide_path_z_tube_radius_in = 0.0,
+                   double guide_path_huber_delta_in = 0.0,
+                   bool guide_path_time_gradient_en_in = false)
         {
             h_polys = h_polys_in;
             h_poly_idx = h_poly_idx_in;
@@ -55,6 +72,13 @@ namespace cost_functional_manager
             swarm_config = swarm_config_in;
             swarm_trajs = swarm_trajs_in;
             swarm_current_wall_time = swarm_current_wall_time_in;
+            guide_path = guide_path_in;
+            guide_t = guide_t_in;
+            weight_guide_integral = std::max(0.0, weight_guide_integral_in);
+            guide_path_tube_radius = std::max(0.0, guide_path_tube_radius_in);
+            guide_path_z_tube_radius = std::max(0.0, guide_path_z_tube_radius_in);
+            guide_path_huber_delta = std::max(0.0, guide_path_huber_delta_in);
+            guide_path_time_gradient_en = guide_path_time_gradient_en_in;
         }
 
         void beginEvaluation(const std::vector<double> *times)
@@ -62,9 +86,49 @@ namespace cost_functional_manager
             segment_times_ = times;
             max_violation_.resize(9);
             max_violation_.setZero();    
+            guide_integral_violation_ = 0.0;
+            guide_cost_log_ = 0.0;
+            guide_max_abs_time_grad_ = 0.0;
+            guide_out_of_time_range_samples_ = 0;
         }
 
-          const general_utils::VecDf &getPenaltyLog() const { return max_violation_; }
+        const general_utils::VecDf &getPenaltyLog() const { return max_violation_; }
+        double guideIntegralViolation() const { return guide_integral_violation_; }
+        double guideCostLog() const { return guide_cost_log_; }
+        double guideMaxAbsTimeGrad() const { return guide_max_abs_time_grad_; }
+        int guideOutOfTimeRangeSamples() const { return guide_out_of_time_range_samples_; }
+
+        double evaluateIntegral(int logical_idx,
+                                double t,
+                                double t_global,
+                                int seg_idx,
+                                int step_in_seg,
+                                const Eigen::Vector3d &p,
+                                const Eigen::Vector3d &v,
+                                const Eigen::Vector3d &a,
+                                const Eigen::Vector3d &j,
+                                Eigen::Vector3d &gp,
+                                Eigen::Vector3d &gv,
+                                Eigen::Vector3d &ga,
+                                Eigen::Vector3d &gj,
+                                double &gt) const
+        {
+            (void)logical_idx;
+            Eigen::Vector3d gs = Eigen::Vector3d::Zero();
+            const Eigen::Vector3d snap = Eigen::Vector3d::Zero();
+            double cost = operator()(t, t_global, seg_idx, step_in_seg,
+                                     p, v, a, j, snap,
+                                     gp, gv, ga, gj, gs, gt);
+            return cost;
+        }
+
+        template <typename SampleBuffer>
+        double evaluateSample(const SampleBuffer &,
+                              Eigen::Matrix<double, 3, Eigen::Dynamic> &,
+                              Eigen::VectorXd &) const
+        {
+            return 0.0;
+        }
 
         double operator()(double t,
                         double t_global,
@@ -118,6 +182,21 @@ namespace cost_functional_manager
                                                                                         weight_att,
                                                                                         grad_pos,
                                                                                         &max_violation_(5));
+            local_cost += cost_functional::accumulateGuidePathConsistencyPenalty(guide_path,
+                                                                                 guide_t,
+                                                                                 t_global,
+                                                                                 p,
+                                                                                 weight_guide_integral,
+                                                                                 guide_path_tube_radius,
+                                                                                 guide_path_z_tube_radius,
+                                                                                 guide_path_huber_delta,
+                                                                                 guide_path_time_gradient_en,
+                                                                                 grad_pos,
+                                                                                 gt,
+                                                                                 &guide_integral_violation_,
+                                                                                 &guide_cost_log_,
+                                                                                 &guide_max_abs_time_grad_,
+                                                                                 &guide_out_of_time_range_samples_);
             local_cost += cost_functional::accumulateVelocityBoundPenalty(v,
                                                                             magnitude_bounds(0) * magnitude_bounds(0),
                                                                             smooth_eps,
@@ -209,6 +288,10 @@ namespace cost_functional_manager
     private:
         mutable const std::vector<double> *segment_times_ = nullptr;
         mutable general_utils::VecDf max_violation_{general_utils::VecDf::Zero(9)};
+        mutable double guide_integral_violation_{0.0};
+        mutable double guide_cost_log_{0.0};
+        mutable double guide_max_abs_time_grad_{0.0};
+        mutable int guide_out_of_time_range_samples_{0};
     };
 
 }//namespace cost_functional_manager

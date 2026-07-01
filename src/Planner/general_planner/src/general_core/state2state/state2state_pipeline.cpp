@@ -757,6 +757,11 @@ namespace general_planner {
             if (services.cfg.print_log) {
                 services.ros_ptr->info(" -- [GeneralPlanner] in [ReplanOnce]: No need to replan a new exp traj, use last one.");
             }
+            services.latest_replan.setRetCode(GENERAL_SUCCESS_NO_BACKUP);
+            setState2StateNhbpDebug(
+                    services,
+                    ";nhbp_action=KEEP_CURRENT;nhbp_reason=exp_no_need");
+            return NO_NEED;
         }
 
         if (exp_ret_code == SUCCESS && services.nhbp_adapter != nullptr) {

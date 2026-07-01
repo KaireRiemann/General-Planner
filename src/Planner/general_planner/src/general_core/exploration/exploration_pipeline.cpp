@@ -26,32 +26,80 @@ namespace general_planner {
         frontend_cfg.frontier_search_radius = cfg_.exploration_frontier_search_radius;
         frontend_cfg.frontier_cluster_radius = cfg_.exploration_frontier_cluster_radius;
         frontend_cfg.frontier_sample_resolution = cfg_.exploration_frontier_sample_resolution;
+        frontend_cfg.frontier_subcluster_size = cfg_.exploration_frontier_subcluster_size;
         frontend_cfg.min_frontier_cluster_size = cfg_.exploration_min_frontier_cluster_size;
+        frontend_cfg.min_frontier_area = cfg_.exploration_min_frontier_area;
+        frontend_cfg.min_frontier_extent = cfg_.exploration_min_frontier_extent;
+        frontend_cfg.min_unknown_neighbor_count = cfg_.exploration_min_unknown_neighbor_count;
         frontend_cfg.max_raw_frontier_points = cfg_.exploration_max_raw_frontier_points;
         frontend_cfg.max_frontier_cells = cfg_.exploration_max_frontier_cells;
         frontend_cfg.max_frontier_clusters = cfg_.exploration_max_frontier_clusters;
+        frontend_cfg.max_subclusters_per_cluster = cfg_.exploration_max_subclusters_per_cluster;
+        frontend_cfg.frontier_manager_enable = cfg_.exploration_frontier_manager_enable;
+        frontend_cfg.frontier_manager_max_records = cfg_.exploration_frontier_manager_max_records;
+        frontend_cfg.frontier_manager_match_radius =
+                cfg_.exploration_frontier_manager_match_radius;
+        frontend_cfg.frontier_manager_stale_time =
+                cfg_.exploration_frontier_manager_stale_time;
+        frontend_cfg.frontier_manager_dormant_time =
+                cfg_.exploration_frontier_manager_dormant_time;
+        frontend_cfg.frontier_manager_covered_unknown_radius =
+                cfg_.exploration_frontier_manager_covered_unknown_radius;
+        frontend_cfg.frontier_manager_min_changed_fraction =
+                cfg_.exploration_frontier_manager_min_changed_fraction;
+        frontend_cfg.frontier_manager_selection_penalty =
+                cfg_.exploration_frontier_manager_selection_penalty;
+        frontend_cfg.frontier_manager_recent_selection_penalty =
+                cfg_.exploration_frontier_manager_recent_selection_penalty;
+        frontend_cfg.frontier_manager_recent_selection_window =
+                cfg_.exploration_frontier_manager_recent_selection_window;
+        frontend_cfg.frontier_manager_no_view_threshold =
+                cfg_.exploration_frontier_manager_no_view_threshold;
         frontend_cfg.viewpoint_min_distance = cfg_.exploration_viewpoint_min_distance;
         frontend_cfg.viewpoint_max_distance = cfg_.exploration_viewpoint_max_distance;
         frontend_cfg.viewpoint_height_offset = cfg_.exploration_viewpoint_height_offset;
         frontend_cfg.viewpoint_safe_distance = cfg_.exploration_viewpoint_safe_distance;
         frontend_cfg.viewpoint_yaw_sample_num = cfg_.exploration_viewpoint_yaw_sample_num;
         frontend_cfg.viewpoint_radius_sample_num = cfg_.exploration_viewpoint_radius_sample_num;
+        frontend_cfg.viewpoint_use_normal_sampling = cfg_.exploration_viewpoint_use_normal_sampling;
+        frontend_cfg.viewpoint_normal_angle = cfg_.exploration_viewpoint_normal_angle;
+        frontend_cfg.viewpoint_z_sample_num = cfg_.exploration_viewpoint_z_sample_num;
+        frontend_cfg.viewpoint_z_min = cfg_.exploration_viewpoint_z_min;
+        frontend_cfg.viewpoint_z_max = cfg_.exploration_viewpoint_z_max;
+        frontend_cfg.min_visible_frontier_cells = cfg_.exploration_min_visible_frontier_cells;
+        frontend_cfg.min_visible_frontier_ratio = cfg_.exploration_min_visible_frontier_ratio;
         frontend_cfg.max_candidate_num = cfg_.exploration_max_candidate_num;
+        frontend_cfg.max_candidates_per_frontier_cluster =
+                cfg_.exploration_max_candidates_per_frontier_cluster;
+        frontend_cfg.candidate_separation_distance =
+                cfg_.exploration_candidate_separation_distance;
         frontend_cfg.max_astar_checks = cfg_.exploration_max_astar_checks;
+        frontend_cfg.min_direct_reachable_before_astar = cfg_.exploration_min_direct_reachable_before_astar;
+        frontend_cfg.max_astar_checks_per_frontier = cfg_.exploration_max_astar_checks_per_frontier;
         frontend_cfg.max_reachable_candidate_num = cfg_.exploration_max_reachable_candidate_num;
+        frontend_cfg.max_gain_rays = cfg_.exploration_max_gain_rays;
+        frontend_cfg.gain_ray_length = cfg_.exploration_gain_ray_length;
+        frontend_cfg.gain_ray_step = cfg_.exploration_gain_ray_step;
+        frontend_cfg.yaw_policy = cfg_.exploration_yaw_policy;
         frontend_cfg.weight_travel = cfg_.exploration_weight_travel;
         frontend_cfg.weight_yaw = cfg_.exploration_weight_yaw;
         frontend_cfg.weight_curvature = cfg_.exploration_weight_curvature;
         frontend_cfg.weight_info_gain = cfg_.exploration_weight_info_gain;
         frontend_cfg.weight_unknown_risk = cfg_.exploration_weight_unknown_risk;
+        frontend_cfg.weight_progress = cfg_.exploration_weight_progress;
+        frontend_cfg.weight_short_goal = cfg_.exploration_weight_short_goal;
         frontend_cfg.information_gain_saturation = cfg_.exploration_information_gain_saturation;
         frontend_cfg.min_information_gain = cfg_.exploration_min_information_gain;
+        frontend_cfg.min_goal_distance = cfg_.exploration_min_goal_distance;
+        frontend_cfg.preferred_goal_distance = cfg_.exploration_preferred_goal_distance;
         frontend_cfg.goal_switch_min_score_improvement = cfg_.exploration_goal_switch_min_score_improvement;
         frontend_cfg.goal_reached_distance = cfg_.exploration_goal_reached_distance;
         frontend_cfg.unknown_as_occupied_for_motion = cfg_.exploration_unknown_as_occupied_for_motion;
         frontend_cfg.require_line_free_to_frontier = cfg_.exploration_require_line_free_to_frontier;
         frontend_cfg.use_astar_cost = cfg_.exploration_use_astar_cost;
-        frontend_cfg.astar_time_out = cfg_.frontend_astar_time_out;
+        frontend_cfg.astar_time_out = cfg_.exploration_astar_time_out;
+        frontend_cfg.astar_total_time_budget_ms = cfg_.exploration_astar_total_time_budget_ms;
+        frontend_cfg.astar_failure_cache_ttl = cfg_.exploration_astar_failure_cache_ttl;
         frontend_cfg.use_atsp = cfg_.exploration_use_atsp;
         frontend_cfg.atsp.enable = cfg_.exploration_use_atsp;
         frontend_cfg.atsp.solver = cfg_.exploration_atsp_solver;
@@ -87,6 +135,10 @@ namespace general_planner {
         }
         if (!map_manager_->insideLocalMap(goal.position)) {
             return fail("goal_outside_local_map");
+        }
+        if (exploration_manager_ != nullptr &&
+            !exploration_manager_->insideTaskBox(goal.position)) {
+            return fail("goal_outside_exploration_box");
         }
 
         const rog_map::GridType grid_type = map_manager_->getGridType(goal.position);
@@ -149,7 +201,7 @@ namespace general_planner {
                 astar_flag,
                 search_horizon,
                 path,
-                std::max(0.005, cfg_.frontend_astar_time_out));
+                std::max(0.005, cfg_.exploration_astar_time_out));
         if (ret != REACH_GOAL || path.empty()) {
             return fail("astar_not_reached");
         }
@@ -189,40 +241,65 @@ namespace general_planner {
             }
         };
 
-        if (exploration_runtime_manager_ == nullptr) {
-            set_reason("runtime_manager_null");
-            return false;
-        }
-
         const int max_attempts = 3;
         std::string last_reject_reason = "no_recovery_goal";
-        for (int attempt = 0; attempt < max_attempts; ++attempt) {
-            ExplorationGoal candidate;
-            if (!exploration_runtime_manager_->hasRecoveryGoal(robot_pos, stamp, candidate)) {
-                set_reason(last_reject_reason);
-                return false;
-            }
+        if (exploration_runtime_manager_ != nullptr) {
+            for (int attempt = 0; attempt < max_attempts; ++attempt) {
+                ExplorationGoal candidate;
+                if (!exploration_runtime_manager_->hasRecoveryGoal(robot_pos, stamp, candidate)) {
+                    break;
+                }
 
-            std::string validation_reason;
-            if (validateExplorationRecoveryGoal(candidate, robot_pos, &validation_reason)) {
-                goal = candidate;
-                set_reason(validation_reason);
-                return true;
-            }
+                std::string validation_reason;
+                if (validateExplorationRecoveryGoal(candidate, robot_pos, &validation_reason)) {
+                    goal = candidate;
+                    set_reason(validation_reason);
+                    return true;
+                }
 
-            const nhbp::FailureReason failure_reason =
-                    validation_reason.find("astar") != std::string::npos ||
-                    validation_reason.find("line") != std::string::npos
-                            ? nhbp::FailureReason::ASTAR_FAIL
-                            : nhbp::FailureReason::VIEWPOINT_UNSAFE;
-            exploration_runtime_manager_->recordFailure(candidate, failure_reason, stamp);
-            last_reject_reason = validation_reason;
-            if (cfg_.exploration_print_log) {
-                ros_ptr_->warn(" -- [Exploration] Reject memory recovery goal before backend: reason={}, candidate_id={}, frontier_id={}, recovery_reason={}.",
-                               validation_reason,
-                               candidate.candidate_id,
-                               candidate.frontier_id,
-                               candidate.reason);
+                const nhbp::FailureReason failure_reason =
+                        validation_reason.find("astar") != std::string::npos ||
+                        validation_reason.find("line") != std::string::npos
+                                ? nhbp::FailureReason::ASTAR_FAIL
+                                : nhbp::FailureReason::VIEWPOINT_UNSAFE;
+                exploration_runtime_manager_->recordFailure(candidate, failure_reason, stamp);
+                last_reject_reason = validation_reason;
+                if (exploration_manager_ != nullptr) {
+                    exploration_manager_->recordFailure(candidate, stamp);
+                }
+                if (cfg_.exploration_print_log) {
+                    ros_ptr_->warn(" -- [Exploration] Reject memory recovery goal before backend: reason={}, candidate_id={}, frontier_id={}, recovery_reason={}.",
+                                   validation_reason,
+                                   candidate.candidate_id,
+                                   candidate.frontier_id,
+                                   candidate.reason);
+                }
+            }
+        }
+
+        if (exploration_manager_ != nullptr) {
+            for (int attempt = 0; attempt < max_attempts; ++attempt) {
+                ExplorationGoal candidate;
+                if (!exploration_manager_->recoverGoal(robot_pos, robot_state_.yaw, stamp, candidate)) {
+                    break;
+                }
+
+                std::string validation_reason;
+                if (validateExplorationRecoveryGoal(candidate, robot_pos, &validation_reason)) {
+                    goal = candidate;
+                    set_reason("manager_" + validation_reason);
+                    return true;
+                }
+
+                exploration_manager_->recordFailure(candidate, stamp);
+                last_reject_reason = validation_reason;
+                if (cfg_.exploration_print_log) {
+                    ros_ptr_->warn(" -- [Exploration] Reject manager recovery goal before backend: reason={}, candidate_id={}, frontier_id={}, recovery_reason={}.",
+                                   validation_reason,
+                                   candidate.candidate_id,
+                                   candidate.frontier_id,
+                                   candidate.reason);
+                }
             }
         }
 
@@ -258,14 +335,17 @@ namespace general_planner {
             }
             if (new_task) {
                 exploration_frontend_->reset();
+                if (exploration_manager_ != nullptr) {
+                    exploration_manager_->reset();
+                }
                 exploration_runtime_manager_->reset();
             }
             exploration_runtime_manager_->onSelectingGoal();
 
+            const double now = ros_ptr_->getSimTime();
             const StatePVAJ head_state = makeTaskHeadState(true);
-            if (!exploration_frontend_->planNextGoal(head_state, robot_state_.yaw, goal)) {
+            if (!exploration_frontend_->planNextGoal(head_state, robot_state_.yaw, goal, now)) {
                 latest_replan.setGoal(robot_state_.p, robot_state_.yaw, robot_state_);
-                const double now = ros_ptr_->getSimTime();
                 ExplorationGoal recovery_goal;
                 std::string recovery_validation;
                 if (exploration_frontend_->isExplorationFinished() &&
@@ -301,7 +381,6 @@ namespace general_planner {
                     return FAILED;
                 }
             }
-            const double now = ros_ptr_->getSimTime();
             const ExplorationRuntimeManager::SelectionDecision decision =
                     exploration_runtime_manager_->stabilizeCandidate(goal,
                                                                      robot_state_.p,
@@ -355,9 +434,21 @@ namespace general_planner {
             if (exploration_runtime_manager_ != nullptr) {
                 const double now = ros_ptr_->getSimTime();
                 if (ret == SUCCESS || ret == FINISH || ret == NO_NEED) {
+                    if (exploration_frontend_ != nullptr) {
+                        exploration_frontend_->recordGoalCommitted(goal, now, true);
+                    }
+                    if (exploration_manager_ != nullptr) {
+                        exploration_manager_->recordCommitted(goal, robot_state_.p, now);
+                    }
                     exploration_runtime_manager_->recordDecision(goal, robot_state_.p, now);
                     exploration_runtime_manager_->onCommitted(goal);
                 } else {
+                    if (exploration_frontend_ != nullptr) {
+                        exploration_frontend_->recordGoalFailed(goal, now);
+                    }
+                    if (exploration_manager_ != nullptr) {
+                        exploration_manager_->recordFailure(goal, now);
+                    }
                     exploration_runtime_manager_->recordFailure(goal,
                                                                nhbp::FailureReason::OPTIMIZATION_FAIL,
                                                                now);
@@ -403,6 +494,9 @@ namespace general_planner {
             }
             if (new_task) {
                 exploration_frontend_->reset();
+                if (exploration_manager_ != nullptr) {
+                    exploration_manager_->reset();
+                }
                 exploration_runtime_manager_->reset();
             }
             exploration_runtime_manager_->onSelectingGoal();
@@ -411,7 +505,7 @@ namespace general_planner {
             const double now = ros_ptr_->getSimTime();
             ExplorationGoal candidate;
             const StatePVAJ head_state = makeTaskHeadState(false);
-            if (!exploration_frontend_->planNextGoal(head_state, robot_state_.yaw, candidate)) {
+            if (!exploration_frontend_->planNextGoal(head_state, robot_state_.yaw, candidate, now)) {
                 latest_replan.setGoal(robot_state_.p, robot_state_.yaw, robot_state_);
                 if (exploration_frontend_->isExplorationFinished()) {
                     ExplorationGoal recovery_goal;
@@ -552,9 +646,23 @@ namespace general_planner {
             if (exploration_runtime_manager_ != nullptr) {
                 const double now = ros_ptr_->getSimTime();
                 if (ret == SUCCESS || ret == FINISH || ret == NO_NEED) {
+                    if (exploration_frontend_ != nullptr) {
+                        exploration_frontend_->recordGoalCommitted(selected_goal,
+                                                                   now,
+                                                                   goal_switched);
+                    }
+                    if (exploration_manager_ != nullptr) {
+                        exploration_manager_->recordCommitted(selected_goal, robot_state_.p, now);
+                    }
                     exploration_runtime_manager_->recordDecision(selected_goal, robot_state_.p, now);
                     exploration_runtime_manager_->onCommitted(selected_goal);
                 } else {
+                    if (exploration_frontend_ != nullptr) {
+                        exploration_frontend_->recordGoalFailed(selected_goal, now);
+                    }
+                    if (exploration_manager_ != nullptr) {
+                        exploration_manager_->recordFailure(selected_goal, now);
+                    }
                     exploration_runtime_manager_->recordFailure(selected_goal,
                                                                nhbp::FailureReason::OPTIMIZATION_FAIL,
                                                                now);

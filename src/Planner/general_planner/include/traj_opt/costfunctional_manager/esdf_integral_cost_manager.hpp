@@ -12,6 +12,10 @@
 #include "utils/geometry/quadrotor_flatness.hpp"
 #include "utils/header/type_utils.hpp"
 
+#include <algorithm>
+#include <cmath>
+#include <limits>
+
 namespace cost_functional_manager
 {
 class ESDFIntegralCostManager
@@ -27,6 +31,13 @@ public:
     traj_opt::SwarmPenaltyConfig swarm_config;
     traj_opt::SwarmTrajectoriesConstPtr swarm_trajs;
     double swarm_current_wall_time{0.0};
+    const general_utils::vec_E<general_utils::Vec3f> *guide_path = nullptr;
+    const general_utils::vec_E<general_utils::Vec3f> *guide_velocities = nullptr;
+    const general_utils::Mat3Df *guide_points = nullptr;
+    double weight_guide{0.0};
+    double weight_guide_integral{0.0};
+    double weight_guide_vel_integral{0.0};
+    int junction_sample_step{0};
 
     void reset(const general_planner::MapManager *map_in,
                const double safe_distance_in,
@@ -37,7 +48,14 @@ public:
                flatness::FlatnessMap *quadrotor_flatness_in,
                const traj_opt::SwarmPenaltyConfig &swarm_config_in,
                const traj_opt::SwarmTrajectoriesConstPtr &swarm_trajs_in,
-               double swarm_current_wall_time_in)
+               double swarm_current_wall_time_in,
+               const general_utils::vec_E<general_utils::Vec3f> *guide_path_in = nullptr,
+               const general_utils::vec_E<general_utils::Vec3f> *guide_velocities_in = nullptr,
+               const general_utils::Mat3Df *guide_points_in = nullptr,
+               double weight_guide_in = 0.0,
+               double weight_guide_integral_in = 0.0,
+               double weight_guide_vel_integral_in = 0.0,
+               int junction_sample_step_in = 0)
     {
         map = map_in;
         safe_distance = safe_distance_in;
@@ -49,8 +67,123 @@ public:
         swarm_config = swarm_config_in;
         swarm_trajs = swarm_trajs_in;
         swarm_current_wall_time = swarm_current_wall_time_in;
+        guide_path = guide_path_in;
+        guide_velocities = guide_velocities_in;
+        guide_points = guide_points_in;
+        weight_guide = std::max(0.0, weight_guide_in);
+        weight_guide_integral = std::max(0.0, weight_guide_integral_in);
+        weight_guide_vel_integral = std::max(0.0, weight_guide_vel_integral_in);
+        junction_sample_step = std::max(0, junction_sample_step_in);
+    }
+
+    void beginEvaluation(const std::vector<double> *)
+    {
         max_violation_.resize(9);
         max_violation_.setZero();
+        guide_cost_log_ = 0.0;
+    }
+
+    double evaluateIntegral(int logical_idx,
+                            double t,
+                            double t_global,
+                            int seg_idx,
+                            int step_in_seg,
+                            const Eigen::Vector3d &position,
+                            const Eigen::Vector3d &velocity,
+                            const Eigen::Vector3d &acceleration,
+                            const Eigen::Vector3d &jerk,
+                            Eigen::Vector3d &grad_position,
+                            Eigen::Vector3d &grad_velocity,
+                            Eigen::Vector3d &grad_acceleration,
+                            Eigen::Vector3d &grad_jerk,
+                            double &grad_time) const
+    {
+        (void)logical_idx;
+        Eigen::Vector3d grad_snap = Eigen::Vector3d::Zero();
+        const Eigen::Vector3d snap = Eigen::Vector3d::Zero();
+        double cost = operator()(t,
+                                 t_global,
+                                 seg_idx,
+                                 step_in_seg,
+                                 position,
+                                 velocity,
+                                 acceleration,
+                                 jerk,
+                                 snap,
+                                 grad_position,
+                                 grad_velocity,
+                                 grad_acceleration,
+                                 grad_jerk,
+                                 grad_snap,
+                                 grad_time);
+
+        const bool use_guide_position =
+            weight_guide_integral > 0.0 &&
+            guide_path != nullptr &&
+            guide_path->size() >= 2;
+        const bool use_guide_velocity =
+            weight_guide_vel_integral > 0.0 &&
+            guide_path != nullptr &&
+            guide_velocities != nullptr &&
+            guide_path->size() >= 2 &&
+            guide_velocities->size() == guide_path->size();
+
+        if (use_guide_position || use_guide_velocity)
+        {
+            const ClosestGuidePV ref = closestPVOnPolyline(*guide_path,
+                                                           guide_velocities != nullptr ? *guide_velocities : empty_velocities_,
+                                                           position);
+            if (use_guide_position)
+            {
+                const Eigen::Vector3d diff = position - ref.position;
+                const double guide_sample_cost = 0.5 * weight_guide_integral * diff.squaredNorm();
+                cost += guide_sample_cost;
+                grad_position += weight_guide_integral * diff;
+                guide_cost_log_ += guide_sample_cost;
+            }
+            if (use_guide_velocity)
+            {
+                const Eigen::Vector3d diff_v = velocity - ref.velocity;
+                const double guide_velocity_sample_cost =
+                    0.5 * weight_guide_vel_integral * diff_v.squaredNorm();
+                cost += guide_velocity_sample_cost;
+                grad_velocity += weight_guide_vel_integral * diff_v;
+                guide_cost_log_ += guide_velocity_sample_cost;
+            }
+        }
+        return cost;
+    }
+
+    template <typename SampleBuffer>
+    double evaluateSample(const SampleBuffer &samples,
+                          Eigen::Matrix<double, 3, Eigen::Dynamic> &grad_positions,
+                          Eigen::VectorXd &) const
+    {
+        if (weight_guide <= 0.0 ||
+            guide_points == nullptr ||
+            guide_points->cols() <= 0)
+        {
+            return 0.0;
+        }
+
+        double cost = 0.0;
+        for (std::size_t sample_id = 0; sample_id < samples.size(); ++sample_id)
+        {
+            const auto &sample = samples[sample_id];
+            if (sample.step_in_seg != junction_sample_step ||
+                sample.seg_idx < 0 ||
+                sample.seg_idx >= guide_points->cols())
+            {
+                continue;
+            }
+
+            const Eigen::Vector3d diff = sample.p - guide_points->col(sample.seg_idx);
+            const double sample_cost = 0.5 * weight_guide * diff.squaredNorm();
+            cost += sample_cost;
+            guide_cost_log_ += sample_cost;
+            grad_positions.col(static_cast<Eigen::Index>(sample_id)) += weight_guide * diff;
+        }
+        return cost;
     }
 
     double operator()(double /*t*/, double t_global, int /*seg_idx*/, int /*step_in_seg*/,
@@ -182,8 +315,61 @@ public:
 
     double getMaxViolation() const { return max_violation_.size() > 1 ? max_violation_(1) : 0.0; }
     const general_utils::VecDf &getPenaltyLog() const { return max_violation_; }
+    double getGuideCostLog() const { return guide_cost_log_; }
 
 private:
+    struct ClosestGuidePV
+    {
+        general_utils::Vec3f position{general_utils::Vec3f::Zero()};
+        general_utils::Vec3f velocity{general_utils::Vec3f::Zero()};
+    };
+
+    static ClosestGuidePV closestPVOnPolyline(const general_utils::vec_E<general_utils::Vec3f> &path,
+                                             const general_utils::vec_E<general_utils::Vec3f> &velocities,
+                                             const Eigen::Vector3d &query)
+    {
+        ClosestGuidePV best;
+        if (path.empty())
+        {
+            best.position = query;
+            return best;
+        }
+        if (path.size() == 1)
+        {
+            best.position = path.front();
+            best.velocity = velocities.size() == path.size() ? velocities.front() : general_utils::Vec3f::Zero();
+            return best;
+        }
+
+        double best_sq = std::numeric_limits<double>::infinity();
+        for (int i = 0; i < static_cast<int>(path.size()) - 1; ++i)
+        {
+            const Eigen::Vector3d a = path[i];
+            const Eigen::Vector3d b = path[i + 1];
+            const Eigen::Vector3d ab = b - a;
+            const double denom = ab.squaredNorm();
+            const double s = denom > 1.0e-9 ? std::clamp((query - a).dot(ab) / denom, 0.0, 1.0) : 0.0;
+            const Eigen::Vector3d candidate = a + s * ab;
+            const double sq = (query - candidate).squaredNorm();
+            if (sq < best_sq)
+            {
+                best_sq = sq;
+                best.position = candidate;
+                if (velocities.size() == path.size())
+                {
+                    best.velocity = (1.0 - s) * velocities[i] + s * velocities[i + 1];
+                }
+                else
+                {
+                    best.velocity.setZero();
+                }
+            }
+        }
+        return best;
+    }
+
+    general_utils::vec_E<general_utils::Vec3f> empty_velocities_;
     mutable general_utils::VecDf max_violation_{general_utils::VecDf::Zero(9)};
+    mutable double guide_cost_log_{0.0};
 };
 } // namespace cost_functional_manager
