@@ -1,6 +1,7 @@
 #include <general_core/exploration/exploration_frontend.hpp>
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <iostream>
@@ -598,6 +599,7 @@ bool ExplorationFrontend::planNextGoal(const StatePVAJ &robot_state,
                                        ExplorationGoal &goal,
                                        const double stamp) {
     goal = ExplorationGoal{};
+    last_candidate_set_ = ExplorationCandidateSet{};
     exploration_finished_ = false;
 
     if (!cfg_.enable) {
@@ -678,7 +680,8 @@ bool ExplorationFrontend::planNextGoal(const StatePVAJ &robot_state,
                     : static_cast<int>(frontier_cells.size());
     if ((clusters_from_incremental_cache && clusters.empty()) ||
         (!clusters_from_incremental_cache && frontier_cells.empty())) {
-        if (!mapObservationReady(search_stats)) {
+        const bool observation_ready = mapObservationReady(search_stats);
+        if (!observation_ready) {
             if (mission_manager_ != nullptr) {
                 mission_manager_->updateNoFrontier(robot_pos, stamp, false);
             }
@@ -697,50 +700,80 @@ bool ExplorationFrontend::planNextGoal(const StatePVAJ &robot_state,
             }
             return false;
         }
+
+        if (!cfg_.expansion_fallback_enable) {
+            if (mission_manager_ != nullptr) {
+                mission_manager_->updateNoFrontier(robot_pos, stamp, true);
+                exploration_finished_ = mission_manager_->isFinished();
+                goal.reason = exploration_finished_
+                                      ? mission_manager_->finishReason()
+                                      : "no local frontier inside mission box";
+            } else {
+                exploration_finished_ = true;
+                goal.reason = "no frontier";
+            }
+            if (cfg_.print_log) {
+                std::cout << " -- [ExplorationFrontend] "
+                          << (exploration_finished_ ? "Exploration finished" : "No local frontier")
+                          << ": " << goal.reason << ". "
+                          << "source=" << search_stats.source
+                          << ", raw_frontiers=" << search_stats.raw_frontier_cells
+                          << ", fallback=" << static_cast<int>(search_stats.fallback_used)
+                          << ", "
+                          << "searched=" << search_stats.searched_cells
+                          << ", free=" << search_stats.known_free_cells
+                          << ", unknown=" << search_stats.unknown_cells
+                          << ", occupied=" << search_stats.occupied_cells
+                          << "." << std::endl;
+            }
+            return false;
+        }
+
+        exploration_finished_ = false;
         if (mission_manager_ != nullptr) {
             mission_manager_->updateNoFrontier(robot_pos, stamp, true);
-            exploration_finished_ = mission_manager_->isFinished();
-            goal.reason = exploration_finished_
-                                  ? mission_manager_->finishReason()
-                                  : "no local frontier inside mission box";
-        } else {
-            exploration_finished_ = true;
-            goal.reason = "no frontier";
         }
         if (cfg_.print_log) {
-            std::cout << " -- [ExplorationFrontend] "
-                      << (exploration_finished_ ? "Exploration finished" : "No local frontier")
-                      << ": " << goal.reason << ". "
+            std::cout << " -- [ExplorationFrontend] No local frontier; using expansion fallback. "
                       << "source=" << search_stats.source
                       << ", raw_frontiers=" << search_stats.raw_frontier_cells
                       << ", fallback=" << static_cast<int>(search_stats.fallback_used)
-                      << ", "
-                      << "searched=" << search_stats.searched_cells
+                      << ", searched=" << search_stats.searched_cells
                       << ", free=" << search_stats.known_free_cells
                       << ", unknown=" << search_stats.unknown_cells
                       << ", occupied=" << search_stats.occupied_cells
                       << "." << std::endl;
         }
-        return false;
     }
 
     if (!clusters_from_incremental_cache) {
         clusterFrontiers(frontier_cells, clusters);
     }
     if (clusters.empty()) {
-        exploration_finished_ = false;
-        goal.reason = "no frontier cluster";
+        if (!cfg_.expansion_fallback_enable) {
+            exploration_finished_ = false;
+            goal.reason = "no frontier cluster";
+            if (cfg_.print_log) {
+                std::cout << " -- [ExplorationFrontend] No frontier cluster yet. "
+                          << "source=" << search_stats.source
+                          << ", raw_frontiers=" << search_stats.raw_frontier_cells
+                          << ", fallback=" << static_cast<int>(search_stats.fallback_used)
+                          << ", "
+                          << "frontiers=" << frontier_output_count
+                          << ", min_cluster_size=" << cfg_.min_frontier_cluster_size
+                          << "." << std::endl;
+            }
+            return false;
+        }
         if (cfg_.print_log) {
-            std::cout << " -- [ExplorationFrontend] No frontier cluster yet. "
+            std::cout << " -- [ExplorationFrontend] No frontier cluster; using expansion fallback. "
                       << "source=" << search_stats.source
                       << ", raw_frontiers=" << search_stats.raw_frontier_cells
                       << ", fallback=" << static_cast<int>(search_stats.fallback_used)
-                      << ", "
-                      << "frontiers=" << frontier_output_count
+                      << ", frontiers=" << frontier_output_count
                       << ", min_cluster_size=" << cfg_.min_frontier_cluster_size
                       << "." << std::endl;
         }
-        return false;
     }
 
     const size_t raw_cluster_count = clusters.size();
@@ -842,6 +875,9 @@ bool ExplorationFrontend::planNextGoal(const StatePVAJ &robot_state,
     int bootstrap_reject_esdf = 0;
     int bootstrap_reject_near = 0;
     int bootstrap_reject_unreachable = 0;
+    int expansion_attempt_count = 0;
+    int expansion_added_count = 0;
+    int expansion_memory_added_count = 0;
     if (candidates.empty()) {
         const int bootstrap_limit = std::min(max_candidate_num,
                                              std::max(4,
@@ -1068,6 +1104,42 @@ bool ExplorationFrontend::planNextGoal(const StatePVAJ &robot_state,
         }
     }
 
+    const int expansion_trigger_min_candidates =
+            std::clamp(cfg_.expansion_trigger_min_candidates, 0, max_candidate_num);
+    const int expansion_trigger_max_clusters =
+            std::max(0, cfg_.expansion_trigger_max_clusters);
+    const bool expansion_sparse_candidates =
+            candidates.empty() ||
+            static_cast<int>(candidates.size()) < expansion_trigger_min_candidates;
+    const bool expansion_weak_frontier_structure =
+            clusters.empty() ||
+            static_cast<int>(clusters.size()) <= expansion_trigger_max_clusters;
+    const bool expansion_needed =
+            cfg_.expansion_fallback_enable &&
+            (candidates.empty() ||
+             (expansion_sparse_candidates && expansion_weak_frontier_structure) ||
+             (candidate_sampling_budget_hit && expansion_sparse_candidates));
+    if (expansion_needed) {
+        appendExpansionFallbackCandidates(robot_state,
+                                          current_yaw,
+                                          stamp,
+                                          clusters,
+                                          candidates,
+                                          expansion_attempt_count,
+                                          expansion_added_count);
+    }
+    if (cfg_.expansion_fallback_enable &&
+        cfg_.expansion_memory_enable &&
+        expansion_needed &&
+        static_cast<int>(candidates.size()) < max_candidate_num) {
+        appendRememberedExpansionCandidates(robot_state,
+                                            current_yaw,
+                                            stamp,
+                                            clusters,
+                                            candidates,
+                                            expansion_memory_added_count);
+    }
+
     if (mission_manager_ != nullptr) {
         mission_manager_->filterAndScoreCandidates(robot_pos, stamp, candidates);
     }
@@ -1100,6 +1172,9 @@ bool ExplorationFrontend::planNextGoal(const StatePVAJ &robot_state,
                       << ", bootstrap_reject_esdf=" << bootstrap_reject_esdf
                       << ", bootstrap_reject_near=" << bootstrap_reject_near
                       << ", bootstrap_reject_unreachable=" << bootstrap_reject_unreachable
+                      << ", expansion_attempts=" << expansion_attempt_count
+                      << ", expansion_added=" << expansion_added_count
+                      << ", expansion_memory_added=" << expansion_memory_added_count
                       << ")." << std::endl;
         }
         return false;
@@ -1365,6 +1440,19 @@ bool ExplorationFrontend::planNextGoal(const StatePVAJ &robot_state,
     best_goal.raw_frontier_cell_count = search_stats.raw_frontier_cells;
     goal = best_goal;
     exploration_finished_ = false;
+    last_candidate_set_.valid = true;
+    last_candidate_set_.exploration_finished = false;
+    last_candidate_set_.reason = "reachable_frontier_candidates";
+    last_candidate_set_.suggested_goal = best_goal;
+    last_candidate_set_.candidates = reachable_candidates;
+    last_candidate_set_.checked_candidate_count = checked;
+    last_candidate_set_.astar_check_count = astar_checked;
+    last_candidate_set_.reachable_candidate_count =
+            static_cast<int>(reachable_candidates.size());
+    last_candidate_set_.cluster_count = static_cast<int>(clusters.size());
+    last_candidate_set_.raw_cluster_count = static_cast<int>(raw_cluster_count);
+    last_candidate_set_.frontier_cell_count = frontier_output_count;
+    last_candidate_set_.raw_frontier_cell_count = search_stats.raw_frontier_cells;
 
     if (cfg_.print_log) {
         std::cout << " -- [ExplorationFrontend] Goal selected: p=["
@@ -1398,6 +1486,9 @@ bool ExplorationFrontend::planNextGoal(const StatePVAJ &robot_state,
                   << ", bootstrap_candidates="
                   << static_cast<int>(used_bootstrap_candidates)
                   << ", bootstrap_attempts=" << bootstrap_attempt_count
+                  << ", expansion_attempts=" << expansion_attempt_count
+                  << ", expansion_added=" << expansion_added_count
+                  << ", expansion_memory_added=" << expansion_memory_added_count
                   << ", frontiers=" << frontier_output_count
                   << ", source=" << search_stats.source
                   << ", raw_frontiers=" << search_stats.raw_frontier_cells
@@ -1411,10 +1502,18 @@ bool ExplorationFrontend::isExplorationFinished() const {
     return exploration_finished_;
 }
 
+bool ExplorationFrontend::getLastCandidateSet(ExplorationCandidateSet &candidate_set) const {
+    candidate_set = last_candidate_set_;
+    return candidate_set.valid && !candidate_set.candidates.empty();
+}
+
 void ExplorationFrontend::reset() {
     exploration_finished_ = false;
+    last_candidate_set_ = ExplorationCandidateSet{};
     astar_failure_cache_.clear();
     cached_frontier_clusters_.clear();
+    expansion_viewpoint_records_.clear();
+    expansion_visit_records_.clear();
     frontier_cache_initialized_ = false;
     if (frontier_object_manager_ != nullptr) {
         frontier_object_manager_->reset();
@@ -1428,6 +1527,10 @@ void ExplorationFrontend::setMissionManager(ExplorationManager *manager) {
 void ExplorationFrontend::recordGoalCommitted(const ExplorationGoal &goal,
                                               const double stamp,
                                               const bool goal_switched) {
+    if (goal.reason.find("expansion") != std::string::npos ||
+        goal.identity.intent_mode == "exploration_expansion") {
+        rememberExpansionVisit(goal, stamp);
+    }
     if (frontier_object_manager_ != nullptr) {
         frontier_object_manager_->recordCommitted(goal, stamp, goal_switched);
     }
@@ -1435,6 +1538,20 @@ void ExplorationFrontend::recordGoalCommitted(const ExplorationGoal &goal,
 
 void ExplorationFrontend::recordGoalFailed(const ExplorationGoal &goal,
                                            const double stamp) {
+    if (goal.reason.find("expansion") != std::string::npos ||
+        goal.identity.intent_mode == "exploration_expansion") {
+        rememberExpansionVisit(goal, stamp);
+        const double match_radius = std::max(0.1, cfg_.expansion_memory_match_radius);
+        const double match_radius_sq = match_radius * match_radius;
+        for (auto it = expansion_viewpoint_records_.begin();
+             it != expansion_viewpoint_records_.end();) {
+            if ((it->goal.position - goal.position).squaredNorm() <= match_radius_sq) {
+                it = expansion_viewpoint_records_.erase(it);
+            } else {
+                ++it;
+            }
+        }
+    }
     if (frontier_object_manager_ != nullptr) {
         frontier_object_manager_->recordFailed(goal, stamp);
     }
@@ -1518,9 +1635,21 @@ bool ExplorationFrontend::collectFallbackFrontierCells(const Vec3f &robot_pos,
 
     const double radius_sq = cfg_.frontier_search_radius * cfg_.frontier_search_radius;
     std::unordered_set<GridKey, GridKeyHasher> inserted;
+    const int max_frontier_cells = cfg_.max_frontier_cells > 0
+                                           ? cfg_.max_frontier_cells
+                                           : std::numeric_limits<int>::max();
     for (int ix = min_id.x(); ix <= max_id.x(); ix += index_step) {
+        if (static_cast<int>(frontier_cells.size()) >= max_frontier_cells) {
+            break;
+        }
         for (int iy = min_id.y(); iy <= max_id.y(); iy += index_step) {
+            if (static_cast<int>(frontier_cells.size()) >= max_frontier_cells) {
+                break;
+            }
             for (int iz = min_id.z(); iz <= max_id.z(); iz += index_step) {
+                if (static_cast<int>(frontier_cells.size()) >= max_frontier_cells) {
+                    break;
+                }
                 FrontierCell cell;
                 cell.index = Vec3i(ix, iy, iz);
                 map_manager_->probMapGlobalIndexToPos(cell.index, cell.position);
@@ -2411,6 +2540,578 @@ void ExplorationFrontend::sampleViewpointsForCluster(const FrontierCluster &clus
     }
 }
 
+void ExplorationFrontend::appendExpansionFallbackCandidates(
+        const StatePVAJ &robot_state,
+        const double current_yaw,
+        const double stamp,
+        const vec_E<FrontierCluster> &clusters,
+        vec_E<ExplorationGoal> &candidates,
+        int &attempt_count,
+        int &added_count) {
+    attempt_count = 0;
+    added_count = 0;
+    if (!cfg_.expansion_fallback_enable ||
+        map_manager_ == nullptr ||
+        !map_manager_->ready() ||
+        static_cast<int>(candidates.size()) >= std::max(1, cfg_.max_candidate_num)) {
+        return;
+    }
+
+    pruneExpansionViewpointMemory(stamp);
+    pruneExpansionVisitMemory(stamp);
+
+    const Vec3f robot_pos = robot_state.col(0);
+    const int max_total_candidates = std::max(1, cfg_.max_candidate_num);
+    const int max_add = std::min(std::max(1, cfg_.expansion_max_candidate_num),
+                                 max_total_candidates - static_cast<int>(candidates.size()));
+    if (max_add <= 0) {
+        return;
+    }
+
+    const int yaw_num = std::max(4, cfg_.expansion_yaw_sample_num);
+    const int radius_num = std::max(1, cfg_.expansion_radius_sample_num);
+    const int z_num = std::max(1, cfg_.expansion_z_sample_num);
+    const double min_radius = std::max(0.2, cfg_.expansion_min_radius);
+    const double max_radius = std::max(min_radius, cfg_.expansion_max_radius);
+    const double separation = std::max(0.0, cfg_.candidate_separation_distance);
+
+    vec_E<ExplorationGoal> expansion_candidates;
+    expansion_candidates.reserve(static_cast<size_t>(max_add));
+
+    for (int ri = 0; ri < radius_num; ++ri) {
+        const double radius_alpha =
+                radius_num == 1
+                        ? 0.0
+                        : static_cast<double>(ri) / static_cast<double>(radius_num - 1);
+        const double radius = min_radius + radius_alpha * (max_radius - min_radius);
+        const double ring_phase = (ri % 2 == 0) ? 0.0 : (kPi / static_cast<double>(yaw_num));
+        for (int zi = 0; zi < z_num; ++zi) {
+            const double z_alpha =
+                    z_num == 1
+                            ? 0.5
+                            : static_cast<double>(zi) / static_cast<double>(z_num - 1);
+            const double z_offset =
+                    cfg_.expansion_z_min +
+                    z_alpha * (cfg_.expansion_z_max - cfg_.expansion_z_min);
+            for (int yi = 0; yi < yaw_num; ++yi) {
+                ++attempt_count;
+                const double angle =
+                        ring_phase +
+                        2.0 * kPi * static_cast<double>(yi) / static_cast<double>(yaw_num);
+                Vec3f viewpoint =
+                        robot_pos + radius * Vec3f(std::cos(angle), std::sin(angle), 0.0);
+                viewpoint.z() = robot_pos.z() + cfg_.viewpoint_height_offset + z_offset;
+
+                ExplorationGoal candidate;
+                if (!makeExpansionCandidate(robot_state,
+                                            current_yaw,
+                                            stamp,
+                                            viewpoint,
+                                            clusters,
+                                            candidate)) {
+                    continue;
+                }
+                if (!candidateSeparatedFromPool(candidate, candidates, separation) ||
+                    !candidateSeparatedFromPool(candidate, expansion_candidates, separation)) {
+                    continue;
+                }
+                expansion_candidates.push_back(candidate);
+            }
+        }
+    }
+
+    std::sort(expansion_candidates.begin(), expansion_candidates.end(),
+              [](const ExplorationGoal &lhs, const ExplorationGoal &rhs) {
+                  return lhs.score < rhs.score;
+              });
+
+    for (const ExplorationGoal &candidate : expansion_candidates) {
+        if (added_count >= max_add ||
+            static_cast<int>(candidates.size()) >= max_total_candidates) {
+            break;
+        }
+        candidates.push_back(candidate);
+        rememberExpansionCandidate(candidate, stamp);
+        ++added_count;
+    }
+}
+
+void ExplorationFrontend::appendRememberedExpansionCandidates(
+        const StatePVAJ &robot_state,
+        const double current_yaw,
+        const double stamp,
+        const vec_E<FrontierCluster> &clusters,
+        vec_E<ExplorationGoal> &candidates,
+        int &added_count) {
+    added_count = 0;
+    if (!cfg_.expansion_memory_enable ||
+        expansion_viewpoint_records_.empty() ||
+        map_manager_ == nullptr ||
+        !map_manager_->ready()) {
+        return;
+    }
+
+    pruneExpansionViewpointMemory(stamp);
+    pruneExpansionVisitMemory(stamp);
+    const int max_total_candidates = std::max(1, cfg_.max_candidate_num);
+    if (static_cast<int>(candidates.size()) >= max_total_candidates) {
+        return;
+    }
+
+    const int max_add = std::min(std::max(1, cfg_.expansion_max_candidate_num),
+                                 max_total_candidates - static_cast<int>(candidates.size()));
+    const double separation = std::max(0.0, cfg_.candidate_separation_distance);
+    vec_E<ExplorationGoal> remembered_candidates;
+    remembered_candidates.reserve(static_cast<size_t>(max_add));
+
+    for (const ExpansionViewpointRecord &record : expansion_viewpoint_records_) {
+        ExplorationGoal candidate;
+        if (!makeExpansionCandidate(robot_state,
+                                    current_yaw,
+                                    stamp,
+                                    record.goal.position,
+                                    clusters,
+                                    candidate)) {
+            continue;
+        }
+        candidate.reason += " remembered_expansion_seen=" +
+                            std::to_string(std::max(1, record.seen_count));
+        if (!candidateSeparatedFromPool(candidate, candidates, separation) ||
+            !candidateSeparatedFromPool(candidate, remembered_candidates, separation)) {
+            continue;
+        }
+        remembered_candidates.push_back(candidate);
+    }
+
+    std::sort(remembered_candidates.begin(), remembered_candidates.end(),
+              [](const ExplorationGoal &lhs, const ExplorationGoal &rhs) {
+                  return lhs.score < rhs.score;
+              });
+
+    for (const ExplorationGoal &candidate : remembered_candidates) {
+        if (added_count >= max_add ||
+            static_cast<int>(candidates.size()) >= max_total_candidates) {
+            break;
+        }
+        candidates.push_back(candidate);
+        ++added_count;
+    }
+}
+
+bool ExplorationFrontend::makeExpansionCandidate(
+        const StatePVAJ &robot_state,
+        const double current_yaw,
+        const double stamp,
+        const Vec3f &viewpoint,
+        const vec_E<FrontierCluster> &clusters,
+        ExplorationGoal &candidate) const {
+    candidate = ExplorationGoal{};
+    if (!viewpoint.allFinite() ||
+        !expansionViewpointSafe(viewpoint, cfg_.expansion_allow_unknown_viewpoint)) {
+        return false;
+    }
+
+    const Vec3f robot_pos = robot_state.col(0);
+    const double distance_to_robot = (viewpoint - robot_pos).norm();
+    if (distance_to_robot <= std::max(0.2, cfg_.goal_reached_distance)) {
+        return false;
+    }
+    if (expansionBlockedByVisitMemory(viewpoint, stamp)) {
+        return false;
+    }
+
+    const double local_unknown_gain =
+            estimateLocalUnknownGain(viewpoint, cfg_.max_gain_rays);
+    const int cluster_index = nearestClusterIndex(viewpoint, clusters);
+
+    FrontierCluster reference_cluster;
+    bool has_reference_frontier = false;
+    int visible_count = 0;
+    double visible_ratio = 0.0;
+    double frontier_gain = 0.0;
+    if (cluster_index >= 0) {
+        const FrontierCluster &cluster = clusters[static_cast<size_t>(cluster_index)];
+        visible_count = countVisibleFrontierCells(viewpoint, cluster, cfg_.max_gain_rays);
+        const int visibility_denominator =
+                sampledCount(cluster.cells.size(), std::max(1, cfg_.max_gain_rays));
+        visible_ratio = visibility_denominator <= 0
+                                ? 0.0
+                                : static_cast<double>(visible_count) /
+                                          static_cast<double>(visibility_denominator);
+        if (visible_count > 0) {
+            frontier_gain = estimateInformationGain(viewpoint, cluster);
+            reference_cluster = cluster;
+            has_reference_frontier = true;
+        }
+    }
+
+    if (!has_reference_frontier) {
+        const Vec3f motion_dir = horizontalNormalized(viewpoint - robot_pos,
+                                                      Vec3f::UnitX());
+        reference_cluster.center =
+                viewpoint + std::max(1.0, 0.5 * cfg_.gain_ray_length) * motion_dir;
+        reference_cluster.unknown_direction = motion_dir;
+        reference_cluster.normal = motion_dir;
+        reference_cluster.free_direction = -motion_dir;
+        reference_cluster.bbox_min = reference_cluster.center - Vec3f::Constant(0.5);
+        reference_cluster.bbox_max = reference_cluster.center + Vec3f::Constant(0.5);
+        reference_cluster.extent = Vec3f::Constant(1.0);
+        reference_cluster.area = 0.0;
+        reference_cluster.size = 0;
+    }
+
+    const double synthetic_gain_ratio =
+            std::clamp(cfg_.expansion_synthetic_gain_ratio, 0.05, 1.0);
+    const double synthetic_gain_cap =
+            std::max(cfg_.expansion_min_information_gain,
+                     std::max(1.0, cfg_.information_gain_saturation) *
+                             synthetic_gain_ratio);
+    const double expansion_unknown_gain =
+            has_reference_frontier ? local_unknown_gain
+                                   : std::min(local_unknown_gain, synthetic_gain_cap);
+    const double information_gain =
+            expansion_unknown_gain + 0.5 * frontier_gain +
+            0.25 * static_cast<double>(visible_count);
+    const double min_expansion_gain =
+            std::max(0.0, cfg_.expansion_min_information_gain);
+    if (information_gain < min_expansion_gain ||
+        information_gain < std::max(0.0, cfg_.min_information_gain)) {
+        return false;
+    }
+
+    const GridKey candidate_key =
+            quantizedKey(viewpoint, std::max(0.25, cfg_.map_resolution));
+    const GridKey frontier_key =
+            has_reference_frontier
+                    ? quantizedKey(reference_cluster.center,
+                                   std::max(0.25, cfg_.frontier_cluster_radius))
+                    : quantizedKey(reference_cluster.center,
+                                   std::max(1.0, cfg_.expansion_memory_match_radius));
+
+    candidate.valid = true;
+    candidate.position = viewpoint;
+    candidate.yaw = resolveCandidateYaw(current_yaw,
+                                        robot_pos,
+                                        viewpoint,
+                                        reference_cluster);
+    candidate.candidate_id = stableIdFromKey(candidate_key);
+    candidate.frontier_id =
+            has_reference_frontier && reference_cluster.object_id >= 0
+                    ? reference_cluster.object_id
+                    : stableIdFromKey(frontier_key);
+    candidate.memory_key = memoryKeyFromKey(candidate_key);
+    candidate.identity.intent_mode = "exploration_expansion";
+    candidate.identity.candidate_id = candidate.candidate_id;
+    candidate.identity.frontier_id = candidate.frontier_id;
+    candidate.identity.candidate_key = "candidate:" + candidate.memory_key;
+    candidate.identity.frontier_key =
+            has_reference_frontier && reference_cluster.object_id >= 0
+                    ? std::string("frontier_object:") +
+                              std::to_string(reference_cluster.object_id)
+                    : "expansion:" + memoryKeyFromKey(frontier_key);
+    candidate.identity.goal_key = candidate.identity.candidate_key;
+    candidate.identity.guide_path_key =
+            nhbp::makeGuidePathKey(vec_E<Vec3f>{robot_pos, viewpoint}, cfg_.map_resolution);
+    candidate.frontier_center_valid = has_reference_frontier;
+    candidate.frontier_center = has_reference_frontier ? reference_cluster.center
+                                                       : viewpoint;
+    candidate.frontier_bbox_min = has_reference_frontier
+                                          ? reference_cluster.bbox_min
+                                          : viewpoint - Vec3f::Constant(0.5);
+    candidate.frontier_bbox_max = has_reference_frontier
+                                          ? reference_cluster.bbox_max
+                                          : viewpoint + Vec3f::Constant(0.5);
+    candidate.frontier_area = has_reference_frontier ? reference_cluster.area : 0.0;
+    candidate.visible_frontier_cell_count =
+            std::max(visible_count,
+                     static_cast<int>(std::round(std::min(1000.0,
+                                                          expansion_unknown_gain))));
+    candidate.visible_frontier_ratio =
+            has_reference_frontier
+                    ? visible_ratio
+                    : std::min(1.0,
+                               expansion_unknown_gain /
+                                       std::max(1.0, static_cast<double>(cfg_.max_gain_rays)));
+    candidate.information_gain = information_gain;
+    candidate.distance_to_robot = distance_to_robot;
+    candidate.travel_cost = distance_to_robot;
+    candidate.guide_path = vec_E<Vec3f>{robot_pos, viewpoint};
+    candidate.yaw_cost = estimateYawCost(current_yaw, candidate.yaw);
+    candidate.curvature_cost = estimateCurvatureCost(robot_state,
+                                                     viewpoint,
+                                                     reference_cluster);
+    candidate.history_score_delta =
+            has_reference_frontier ? reference_cluster.object_score_delta : 0.0;
+    const double unknown_risk = estimateUnknownRisk(viewpoint);
+    candidate.score = scoreCandidate(candidate, unknown_risk) +
+                      candidate.history_score_delta;
+    candidate.reason =
+            "expansion fallback viewpoint local_unknown_gain=" +
+            std::to_string(local_unknown_gain) +
+            " capped_unknown_gain=" + std::to_string(expansion_unknown_gain) +
+            " frontier_gain=" + std::to_string(frontier_gain);
+    return true;
+}
+
+bool ExplorationFrontend::expansionViewpointSafe(const Vec3f &viewpoint,
+                                                 const bool allow_unknown) const {
+    if (!viewpoint.allFinite() ||
+        map_manager_ == nullptr ||
+        !map_manager_->ready() ||
+        !map_manager_->insideLocalMap(viewpoint) ||
+        !insideTaskRegion(viewpoint)) {
+        return false;
+    }
+
+    const rog_map::GridType grid_type = map_manager_->getGridType(viewpoint);
+    if (grid_type == rog_map::GridType::OCCUPIED ||
+        grid_type == rog_map::GridType::OUT_OF_MAP) {
+        return false;
+    }
+    if (!allow_unknown && !isFreeLike(grid_type)) {
+        return false;
+    }
+
+    const rog_map::GridType inf_type = map_manager_->getInfGridType(viewpoint);
+    if (inf_type == rog_map::GridType::OCCUPIED ||
+        inf_type == rog_map::GridType::OUT_OF_MAP) {
+        return false;
+    }
+    if (!allow_unknown && !isFreeLike(inf_type)) {
+        return false;
+    }
+
+    if (map_manager_->hasESDF() && cfg_.viewpoint_safe_distance > 0.0) {
+        double dist = 0.0;
+        Vec3f grad = Vec3f::Zero();
+        const bool esdf_ok = map_manager_->evaluateESDF(viewpoint, dist, grad);
+        if (!esdf_ok) {
+            return allow_unknown;
+        }
+        if (!std::isfinite(dist) || dist < cfg_.viewpoint_safe_distance) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool ExplorationFrontend::candidateSeparatedFromPool(
+        const ExplorationGoal &candidate,
+        const vec_E<ExplorationGoal> &pool,
+        const double separation) const {
+    const double separation_sq = std::max(0.0, separation) * std::max(0.0, separation);
+    for (const ExplorationGoal &other : pool) {
+        if (candidate.candidate_id >= 0 &&
+            other.candidate_id == candidate.candidate_id) {
+            return false;
+        }
+        if (!candidate.memory_key.empty() &&
+            candidate.memory_key == other.memory_key) {
+            return false;
+        }
+        if (separation > 1.0e-6 &&
+            (candidate.position - other.position).squaredNorm() < separation_sq) {
+            return false;
+        }
+    }
+    return true;
+}
+
+int ExplorationFrontend::nearestClusterIndex(const Vec3f &viewpoint,
+                                             const vec_E<FrontierCluster> &clusters) const {
+    int best_index = -1;
+    double best_distance_sq = std::numeric_limits<double>::infinity();
+    for (size_t i = 0; i < clusters.size(); ++i) {
+        const FrontierCluster &cluster = clusters[i];
+        if (!cluster.center.allFinite()) {
+            continue;
+        }
+        const double distance_sq = (cluster.center - viewpoint).squaredNorm();
+        if (distance_sq < best_distance_sq) {
+            best_distance_sq = distance_sq;
+            best_index = static_cast<int>(i);
+        }
+    }
+    return best_index;
+}
+
+void ExplorationFrontend::rememberExpansionCandidate(const ExplorationGoal &candidate,
+                                                     const double stamp) {
+    if (!cfg_.expansion_memory_enable ||
+        !candidate.valid ||
+        !candidate.position.allFinite()) {
+        return;
+    }
+
+    const double match_radius = std::max(0.1, cfg_.expansion_memory_match_radius);
+    const double match_radius_sq = match_radius * match_radius;
+    for (ExpansionViewpointRecord &record : expansion_viewpoint_records_) {
+        if ((record.goal.position - candidate.position).squaredNorm() <= match_radius_sq) {
+            record.goal = candidate;
+            record.last_seen_stamp = stamp;
+            ++record.seen_count;
+            return;
+        }
+    }
+
+    ExpansionViewpointRecord record;
+    record.goal = candidate;
+    record.last_seen_stamp = stamp;
+    record.seen_count = 1;
+    expansion_viewpoint_records_.push_back(record);
+    pruneExpansionViewpointMemory(stamp);
+}
+
+void ExplorationFrontend::pruneExpansionViewpointMemory(const double stamp) {
+    if (!cfg_.expansion_memory_enable) {
+        expansion_viewpoint_records_.clear();
+        return;
+    }
+
+    const double ttl = std::max(0.0, cfg_.expansion_memory_ttl);
+    if (ttl > 0.0 && stamp > 0.0) {
+        vec_E<ExpansionViewpointRecord> kept_records;
+        kept_records.reserve(expansion_viewpoint_records_.size());
+        for (const ExpansionViewpointRecord &record : expansion_viewpoint_records_) {
+            if (!record.goal.valid || !record.goal.position.allFinite()) {
+                continue;
+            }
+            if (record.last_seen_stamp > 0.0 &&
+                stamp - record.last_seen_stamp > ttl) {
+                continue;
+            }
+            kept_records.push_back(record);
+        }
+        expansion_viewpoint_records_.swap(kept_records);
+    }
+
+    const int max_records = std::max(0, cfg_.expansion_memory_max_records);
+    if (max_records == 0) {
+        expansion_viewpoint_records_.clear();
+        return;
+    }
+    if (static_cast<int>(expansion_viewpoint_records_.size()) <= max_records) {
+        return;
+    }
+
+    std::sort(expansion_viewpoint_records_.begin(), expansion_viewpoint_records_.end(),
+              [](const ExpansionViewpointRecord &lhs,
+                 const ExpansionViewpointRecord &rhs) {
+                  if (lhs.last_seen_stamp != rhs.last_seen_stamp) {
+                      return lhs.last_seen_stamp > rhs.last_seen_stamp;
+                  }
+                  return lhs.goal.information_gain > rhs.goal.information_gain;
+    });
+    expansion_viewpoint_records_.resize(static_cast<size_t>(max_records));
+}
+
+bool ExplorationFrontend::expansionBlockedByVisitMemory(
+        const Vec3f &viewpoint,
+        const double stamp) const {
+    if (!cfg_.expansion_anti_revisit_enable ||
+        !viewpoint.allFinite() ||
+        expansion_visit_records_.empty()) {
+        return false;
+    }
+
+    const int retire_after_commits =
+            std::max(1, cfg_.expansion_retire_after_commits);
+    const double block_radius =
+            std::max(0.1, cfg_.expansion_commit_block_radius);
+    const double block_radius_sq = block_radius * block_radius;
+    const double ttl = std::max(0.0, cfg_.expansion_commit_block_ttl);
+
+    for (const ExpansionVisitRecord &record : expansion_visit_records_) {
+        if (!record.position.allFinite() ||
+            record.commit_count < retire_after_commits) {
+            continue;
+        }
+        if (ttl > 0.0 &&
+            stamp > 0.0 &&
+            record.last_commit_stamp > 0.0 &&
+            stamp - record.last_commit_stamp > ttl) {
+            continue;
+        }
+        if ((record.position - viewpoint).squaredNorm() <= block_radius_sq) {
+            return true;
+        }
+    }
+    return false;
+}
+
+void ExplorationFrontend::rememberExpansionVisit(const ExplorationGoal &goal,
+                                                 const double stamp) {
+    if (!cfg_.expansion_anti_revisit_enable ||
+        !goal.valid ||
+        !goal.position.allFinite()) {
+        return;
+    }
+
+    pruneExpansionVisitMemory(stamp);
+    const double match_radius =
+            std::max(0.1, cfg_.expansion_commit_block_radius);
+    const double match_radius_sq = match_radius * match_radius;
+    for (ExpansionVisitRecord &record : expansion_visit_records_) {
+        if (!record.position.allFinite()) {
+            continue;
+        }
+        if ((record.position - goal.position).squaredNorm() <= match_radius_sq) {
+            const double count = static_cast<double>(std::max(1, record.commit_count));
+            record.position =
+                    (count * record.position + goal.position) / (count + 1.0);
+            record.last_commit_stamp = stamp;
+            ++record.commit_count;
+            return;
+        }
+    }
+
+    ExpansionVisitRecord record;
+    record.position = goal.position;
+    record.last_commit_stamp = stamp;
+    record.commit_count = 1;
+    expansion_visit_records_.push_back(record);
+    pruneExpansionVisitMemory(stamp);
+}
+
+void ExplorationFrontend::pruneExpansionVisitMemory(const double stamp) {
+    if (!cfg_.expansion_anti_revisit_enable) {
+        expansion_visit_records_.clear();
+        return;
+    }
+
+    const double ttl = std::max(0.0, cfg_.expansion_commit_block_ttl);
+    if (ttl > 0.0 && stamp > 0.0) {
+        vec_E<ExpansionVisitRecord> kept_records;
+        kept_records.reserve(expansion_visit_records_.size());
+        for (const ExpansionVisitRecord &record : expansion_visit_records_) {
+            if (!record.position.allFinite()) {
+                continue;
+            }
+            if (record.last_commit_stamp > 0.0 &&
+                stamp - record.last_commit_stamp > ttl) {
+                continue;
+            }
+            kept_records.push_back(record);
+        }
+        expansion_visit_records_.swap(kept_records);
+    }
+
+    const int max_records = std::max(1, cfg_.expansion_memory_max_records);
+    if (static_cast<int>(expansion_visit_records_.size()) <= max_records) {
+        return;
+    }
+
+    std::sort(expansion_visit_records_.begin(), expansion_visit_records_.end(),
+              [](const ExpansionVisitRecord &lhs,
+                 const ExpansionVisitRecord &rhs) {
+                  if (lhs.last_commit_stamp != rhs.last_commit_stamp) {
+                      return lhs.last_commit_stamp > rhs.last_commit_stamp;
+                  }
+                  return lhs.commit_count > rhs.commit_count;
+              });
+    expansion_visit_records_.resize(static_cast<size_t>(max_records));
+}
+
 void ExplorationFrontend::diversifyCandidates(vec_E<ExplorationGoal> &candidates) const {
     if (candidates.size() <= 1U) {
         return;
@@ -2645,6 +3346,75 @@ double ExplorationFrontend::estimateInformationGain(const Vec3f &viewpoint,
     return raw_gain / (1.0 + 0.1 * distance);
 }
 
+double ExplorationFrontend::estimateLocalUnknownGain(const Vec3f &viewpoint,
+                                                     const int max_rays) const {
+    if (!viewpoint.allFinite() ||
+        map_manager_ == nullptr ||
+        !map_manager_->ready() ||
+        !map_manager_->insideLocalMap(viewpoint) ||
+        !insideTaskRegion(viewpoint)) {
+        return 0.0;
+    }
+
+    const double map_res = std::max(1.0e-3, map_manager_->getResolution());
+    const double ray_step = std::max(map_res, cfg_.gain_ray_step);
+    const double ray_length = std::max(ray_step, cfg_.gain_ray_length);
+    const int requested_rays = max_rays > 0 ? max_rays : cfg_.max_gain_rays;
+    const int yaw_samples = std::clamp(requested_rays / 3, 8, 32);
+    constexpr std::array<double, 3> pitch_samples = {-0.35, 0.0, 0.35};
+
+    std::unordered_set<GridKey, GridKeyHasher> unknown_voxels;
+    unknown_voxels.reserve(static_cast<size_t>(yaw_samples * 12));
+    int unknown_ray_count = 0;
+    int free_ray_prefix_count = 0;
+
+    for (int yi = 0; yi < yaw_samples; ++yi) {
+        const double yaw =
+                2.0 * kPi * static_cast<double>(yi) / static_cast<double>(yaw_samples);
+        for (const double pitch : pitch_samples) {
+            const double cp = std::cos(pitch);
+            const Vec3f direction(cp * std::cos(yaw),
+                                  cp * std::sin(yaw),
+                                  std::sin(pitch));
+            bool ray_has_unknown = false;
+            bool ray_has_free_prefix = false;
+            for (double distance = ray_step; distance <= ray_length; distance += ray_step) {
+                const Vec3f sample_pos = viewpoint + distance * direction;
+                if (!map_manager_->insideLocalMap(sample_pos) ||
+                    !insideTaskRegion(sample_pos)) {
+                    break;
+                }
+
+                const rog_map::GridType grid_type = map_manager_->getGridType(sample_pos);
+                const rog_map::GridType inf_type = map_manager_->getInfGridType(sample_pos);
+                if (grid_type == rog_map::GridType::OCCUPIED ||
+                    grid_type == rog_map::GridType::OUT_OF_MAP ||
+                    inf_type == rog_map::GridType::OCCUPIED ||
+                    inf_type == rog_map::GridType::OUT_OF_MAP) {
+                    break;
+                }
+
+                if (isUnknownLike(grid_type)) {
+                    unknown_voxels.insert(makeBucketKey(sample_pos, map_res));
+                    ray_has_unknown = true;
+                } else if (isFreeLike(grid_type)) {
+                    ray_has_free_prefix = true;
+                }
+            }
+            if (ray_has_unknown) {
+                ++unknown_ray_count;
+            }
+            if (ray_has_free_prefix) {
+                ++free_ray_prefix_count;
+            }
+        }
+    }
+
+    return static_cast<double>(unknown_voxels.size()) +
+           0.5 * static_cast<double>(unknown_ray_count) +
+           0.05 * static_cast<double>(free_ray_prefix_count);
+}
+
 double ExplorationFrontend::estimateTravelCost(const Vec3f &robot_pos,
                                                const Vec3f &viewpoint,
                                                vec_E<Vec3f> &guide_path,
@@ -2736,12 +3506,20 @@ double ExplorationFrontend::resolveCandidateYaw(const double current_yaw,
                                                 const Vec3f &viewpoint,
                                                 const FrontierCluster &cluster) const {
     const std::string policy = core_utils::normalizeToken(cfg_.yaw_policy);
-    if (policy == "velocity" ||
-        policy == "vel" ||
-        policy == "free" ||
-        policy == "yaw_to_vel") {
+    if (policy == "free" ||
+        policy == "free_yaw" ||
+        policy == "nan") {
         return std::numeric_limits<double>::quiet_NaN();
     }
+    const auto finite_yaw_near_current = [current_yaw](const double yaw) {
+        if (!std::isfinite(yaw)) {
+            return std::isfinite(current_yaw) ? current_yaw : 0.0;
+        }
+        if (!std::isfinite(current_yaw)) {
+            return std::atan2(std::sin(yaw), std::cos(yaw));
+        }
+        return current_yaw + ExplorationFrontend::wrapAngleDiff(yaw, current_yaw);
+    };
 
     Vec3f motion_dir = viewpoint - robot_pos;
     motion_dir.z() = 0.0;
@@ -2749,21 +3527,22 @@ double ExplorationFrontend::resolveCandidateYaw(const double current_yaw,
     frontier_dir.z() = 0.0;
 
     if (motion_dir.norm() < 1.0e-3) {
-        return current_yaw;
+        return finite_yaw_near_current(current_yaw);
     }
     if (policy == "frontier" || policy == "frontier_center" || policy == "observe") {
         if (frontier_dir.norm() > 1.0e-3) {
-            return std::atan2(frontier_dir.y(), frontier_dir.x());
+            return finite_yaw_near_current(
+                    std::atan2(frontier_dir.y(), frontier_dir.x()));
         }
-        return current_yaw;
+        return finite_yaw_near_current(current_yaw);
     }
     if (policy == "blend" && frontier_dir.norm() > 1.0e-3) {
         const Vec3f blended = motion_dir.normalized() + 0.35 * frontier_dir.normalized();
         if (blended.head<2>().norm() > 1.0e-3) {
-            return std::atan2(blended.y(), blended.x());
+            return finite_yaw_near_current(std::atan2(blended.y(), blended.x()));
         }
     }
-    return std::atan2(motion_dir.y(), motion_dir.x());
+    return finite_yaw_near_current(std::atan2(motion_dir.y(), motion_dir.x()));
 }
 
 double ExplorationFrontend::estimateCurvatureCost(const StatePVAJ &robot_state,

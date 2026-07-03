@@ -56,6 +56,22 @@ struct ExplorationGoal {
     general_utils::vec_E<general_utils::Vec3f> guide_path;
 };
 
+struct ExplorationCandidateSet {
+    bool valid{false};
+    bool exploration_finished{false};
+    std::string reason;
+    ExplorationGoal suggested_goal;
+    general_utils::vec_E<ExplorationGoal> candidates;
+
+    int checked_candidate_count{0};
+    int astar_check_count{0};
+    int reachable_candidate_count{0};
+    int cluster_count{0};
+    int raw_cluster_count{0};
+    int frontier_cell_count{0};
+    int raw_frontier_cell_count{0};
+};
+
 class ExplorationFrontend {
 public:
     using Ptr = std::shared_ptr<ExplorationFrontend>;
@@ -103,6 +119,30 @@ public:
         int viewpoint_z_sample_num{1};
         double viewpoint_z_min{0.0};
         double viewpoint_z_max{0.0};
+
+        bool expansion_fallback_enable{true};
+        int expansion_trigger_min_candidates{10};
+        int expansion_trigger_max_clusters{1};
+        int expansion_max_candidate_num{24};
+        int expansion_yaw_sample_num{16};
+        int expansion_radius_sample_num{3};
+        double expansion_min_radius{2.0};
+        double expansion_max_radius{7.0};
+        int expansion_z_sample_num{3};
+        double expansion_z_min{-0.6};
+        double expansion_z_max{0.8};
+        double expansion_min_information_gain{4.0};
+        bool expansion_allow_unknown_viewpoint{false};
+        bool expansion_memory_enable{true};
+        int expansion_memory_max_records{128};
+        double expansion_memory_ttl{45.0};
+        double expansion_memory_match_radius{1.2};
+        bool expansion_anti_revisit_enable{true};
+        int expansion_retire_after_commits{1};
+        double expansion_commit_block_radius{3.0};
+        double expansion_commit_block_ttl{45.0};
+        double expansion_synthetic_gain_ratio{0.25};
+
         int min_visible_frontier_cells{3};
         double min_visible_frontier_ratio{0.05};
         int max_candidate_num{128};
@@ -153,6 +193,8 @@ public:
                       double current_yaw,
                       ExplorationGoal &goal,
                       double stamp = 0.0);
+
+    bool getLastCandidateSet(ExplorationCandidateSet &candidate_set) const;
 
     bool isExplorationFinished() const;
 
@@ -224,6 +266,22 @@ private:
         int records{0};
     };
 
+    struct ExpansionViewpointRecord {
+        EIGEN_MAKE_ALIGNED_OPERATOR_NEW
+
+        ExplorationGoal goal;
+        double last_seen_stamp{0.0};
+        int seen_count{0};
+    };
+
+    struct ExpansionVisitRecord {
+        EIGEN_MAKE_ALIGNED_OPERATOR_NEW
+
+        general_utils::Vec3f position{general_utils::Vec3f::Zero()};
+        double last_commit_stamp{0.0};
+        int commit_count{0};
+    };
+
     class FrontierObjectManager;
 
     bool collectFrontierCells(const general_utils::Vec3f &robot_pos,
@@ -286,6 +344,53 @@ private:
                                     general_utils::vec_E<ExplorationGoal> &candidates,
                                     int candidate_budget) const;
 
+    void appendExpansionFallbackCandidates(
+            const general_utils::StatePVAJ &robot_state,
+            double current_yaw,
+            double stamp,
+            const general_utils::vec_E<FrontierCluster> &clusters,
+            general_utils::vec_E<ExplorationGoal> &candidates,
+            int &attempt_count,
+            int &added_count);
+
+    void appendRememberedExpansionCandidates(
+            const general_utils::StatePVAJ &robot_state,
+            double current_yaw,
+            double stamp,
+            const general_utils::vec_E<FrontierCluster> &clusters,
+            general_utils::vec_E<ExplorationGoal> &candidates,
+            int &added_count);
+
+    bool makeExpansionCandidate(
+            const general_utils::StatePVAJ &robot_state,
+            double current_yaw,
+            double stamp,
+            const general_utils::Vec3f &viewpoint,
+            const general_utils::vec_E<FrontierCluster> &clusters,
+            ExplorationGoal &candidate) const;
+
+    bool expansionViewpointSafe(const general_utils::Vec3f &viewpoint,
+                                bool allow_unknown) const;
+
+    bool candidateSeparatedFromPool(
+            const ExplorationGoal &candidate,
+            const general_utils::vec_E<ExplorationGoal> &pool,
+            double separation) const;
+
+    int nearestClusterIndex(const general_utils::Vec3f &viewpoint,
+                            const general_utils::vec_E<FrontierCluster> &clusters) const;
+
+    void rememberExpansionCandidate(const ExplorationGoal &candidate, double stamp);
+
+    void pruneExpansionViewpointMemory(double stamp);
+
+    bool expansionBlockedByVisitMemory(const general_utils::Vec3f &viewpoint,
+                                       double stamp) const;
+
+    void rememberExpansionVisit(const ExplorationGoal &goal, double stamp);
+
+    void pruneExpansionVisitMemory(double stamp);
+
     void diversifyCandidates(general_utils::vec_E<ExplorationGoal> &candidates) const;
 
     bool viewpointSafe(const general_utils::Vec3f &viewpoint) const;
@@ -301,6 +406,9 @@ private:
 
     double estimateInformationGain(const general_utils::Vec3f &viewpoint,
                                    const FrontierCluster &cluster) const;
+
+    double estimateLocalUnknownGain(const general_utils::Vec3f &viewpoint,
+                                    int max_rays = 0) const;
 
     double estimateTravelCost(const general_utils::Vec3f &robot_pos,
                               const general_utils::Vec3f &viewpoint,
@@ -354,6 +462,9 @@ private:
     std::unique_ptr<FrontierObjectManager> frontier_object_manager_;
     general_utils::vec_E<FrontierCluster> cached_frontier_clusters_;
     bool frontier_cache_initialized_{false};
+    general_utils::vec_E<ExpansionViewpointRecord> expansion_viewpoint_records_;
+    general_utils::vec_E<ExpansionVisitRecord> expansion_visit_records_;
+    ExplorationCandidateSet last_candidate_set_;
 };
 
 }  // namespace general_planner

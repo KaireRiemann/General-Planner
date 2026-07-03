@@ -5,6 +5,9 @@
 #include <limits>
 #include <sstream>
 #include <string>
+#include <unordered_map>
+#include <unordered_set>
+#include <vector>
 
 namespace general_planner {
 namespace {
@@ -39,6 +42,15 @@ std::string stripLockedRecoveryReusePrefix(std::string reason)
     }
     return reason;
 }
+
+double yawDistance(const double from_yaw, const double to_yaw)
+{
+    if (!std::isfinite(from_yaw) || !std::isfinite(to_yaw)) {
+        return 0.0;
+    }
+    return std::abs(std::atan2(std::sin(to_yaw - from_yaw),
+                               std::cos(to_yaw - from_yaw)));
+}
 } // namespace
 
 ExplorationRuntimeManager::ExplorationRuntimeManager(const Config &cfg)
@@ -67,6 +79,7 @@ ExplorationRuntimeManager::ExplorationRuntimeManager(const Config &cfg)
                   cfg.exploration_coverage_grid_resolution,
                   cfg.exploration_coverage_revisit_radius,
                   cfg.exploration_coverage_revisit_time_window,
+                  cfg.exploration_coverage_intent_radius,
                   cfg.exploration_coverage_grid_max_cells,
                   cfg.exploration_coverage_information_gain_alpha,
                   cfg.exploration_coverage_covered_visit_threshold,
@@ -79,7 +92,9 @@ ExplorationRuntimeManager::ExplorationRuntimeManager(const Config &cfg)
                   cfg.exploration_topology_node_blacklist_ttl,
                   cfg.exploration_topology_edge_blacklist_ttl,
                   cfg.exploration_topology_recovery_min_distance,
-                  cfg.exploration_topology_recovery_max_distance})
+                  cfg.exploration_topology_recovery_max_distance}),
+          frontier_db_(cfg),
+          task_planner_(cfg)
 {
 }
 
@@ -119,10 +134,30 @@ void ExplorationRuntimeManager::reset()
     recovery_lock_until_ = 0.0;
     recovery_lock_request_count_ = 0;
     recovery_lock_release_count_ = 0;
+    active_sector_ = ActiveSector{};
+    active_tour_ = ActiveTour{};
+    sector_memory_.clear();
+    active_sector_reuse_count_ = 0;
+    active_sector_switch_count_ = 0;
+    active_sector_invalid_count_ = 0;
+    active_sector_filter_count_ = 0;
+    sector_completed_count_ = 0;
+    sector_blocked_count_ = 0;
+    sector_reactivated_count_ = 0;
+    active_tour_reuse_count_ = 0;
+    active_tour_rebuild_count_ = 0;
+    active_tour_repair_count_ = 0;
+    active_tour_advance_count_ = 0;
+    active_tour_invalid_count_ = 0;
+    active_tour_node_completed_count_ = 0;
+    active_tour_node_failed_count_ = 0;
+    active_tour_node_skipped_count_ = 0;
     navigation_memory_.reset();
     frontier_memory_.reset();
     coverage_grid_.reset();
     topological_memory_.reset();
+    frontier_db_.reset();
+    task_planner_.reset();
 }
 
 void ExplorationRuntimeManager::onSelectingGoal()
@@ -519,6 +554,266 @@ ExplorationRuntimeManager::SelectionDecision ExplorationRuntimeManager::stabiliz
     return out;
 }
 
+ExplorationRuntimeManager::SelectionDecision
+ExplorationRuntimeManager::selectGoalFromCandidates(
+        const ExplorationCandidateSet &candidate_set,
+        const general_utils::Vec3f &robot_pos,
+        const double current_yaw,
+        const double committed_remaining,
+        const double stamp,
+        const bool new_task)
+{
+    SelectionDecision out;
+    if (!candidate_set.valid || candidate_set.candidates.empty()) {
+        out.reject = true;
+        out.reason = candidate_set.reason.empty()
+                             ? "candidate_set_empty"
+                             : candidate_set.reason;
+        out.ndo = navigation_memory_.diagnose(stamp);
+        return out;
+    }
+
+    if (!activeTourEnabled()) {
+        const ExplorationGoal fallback =
+                candidate_set.suggested_goal.valid
+                        ? candidate_set.suggested_goal
+                        : *std::min_element(candidate_set.candidates.begin(),
+                                            candidate_set.candidates.end(),
+                                            [](const ExplorationGoal &lhs,
+                                               const ExplorationGoal &rhs) {
+                                                return lhs.score < rhs.score;
+                                            });
+        return stabilizeCandidate(fallback,
+                                  robot_pos,
+                                  committed_remaining,
+                                  stamp,
+                                  new_task);
+    }
+
+    phase_ = Phase::SELECT_TOUR;
+    updateRecoveryLock(robot_pos, stamp);
+    updateSectorMemoryFromCandidates(candidate_set, stamp);
+    ExplorationFrontierDB::ObservationContext frontier_db_context;
+    frontier_db_context.robot_pos = robot_pos;
+    frontier_db_context.stamp = stamp;
+    frontier_db_context.node_penalty =
+            [this, stamp](const ExplorationGoal &goal) {
+                const std::string sector_key = sectorKeyForGoal(goal);
+                return std::max(0.0, cfg_.exploration_tour_coverage_penalty_weight) *
+                               coverage_grid_.revisitPenalty(sectorReference(goal), stamp) +
+                       sectorMemoryPenalty(sector_key, stamp);
+            };
+    frontier_db_context.coverage_intent_reward =
+            [this, stamp](const ExplorationGoal &goal) {
+                if (!cfg_.exploration_coverage_intent_enable) {
+                    return 0.0;
+                }
+                return coverage_grid_.intentReward(sectorReference(goal), stamp);
+            };
+    frontier_db_context.sector_key =
+            [this](const ExplorationGoal &goal) {
+                return sectorKeyForGoal(goal);
+            };
+    frontier_db_context.sector_reference =
+            [this](const ExplorationGoal &goal) {
+                return sectorReference(goal);
+            };
+    frontier_db_.observeCandidates(candidate_set, frontier_db_context);
+    advanceCompletedTourNodes(robot_pos, stamp);
+
+    std::string sector_reason;
+    const ExplorationCandidateSet sector_candidate_set =
+            selectSectorCandidates(candidate_set,
+                                   robot_pos,
+                                   stamp,
+                                   new_task,
+                                   sector_reason);
+    const ExplorationCandidateSet &decision_candidates =
+            sector_candidate_set.valid && !sector_candidate_set.candidates.empty()
+                    ? sector_candidate_set
+                    : candidate_set;
+
+    ExplorationGoal prefix_goal;
+    std::string prefix_reason;
+    if (findActiveTourCandidate(decision_candidates,
+                                robot_pos,
+                                stamp,
+                                prefix_goal,
+                                prefix_reason)) {
+        prefix_goal.reason += " active_sector=" + sector_reason +
+                              " active_tour_prefix_reuse=" + prefix_reason;
+        SelectionDecision prefix_decision =
+                stabilizeCandidate(prefix_goal,
+                                   robot_pos,
+                                   committed_remaining,
+                                   stamp,
+                                   new_task);
+        if (prefix_decision.ready) {
+            markTourNodeExecuting(prefix_decision.goal, stamp);
+            ++active_tour_reuse_count_;
+            return prefix_decision;
+        }
+        if (prefix_decision.recovery_requested) {
+            return prefix_decision;
+        }
+        ++active_tour_repair_count_;
+    }
+
+    std::string repair_reason;
+    if (repairActiveTourFromCandidates(decision_candidates,
+                                       robot_pos,
+                                       stamp,
+                                       repair_reason) &&
+        findActiveTourCandidate(decision_candidates,
+                                robot_pos,
+                                stamp,
+                                prefix_goal,
+                                prefix_reason)) {
+        prefix_goal.reason += " active_sector=" + sector_reason +
+                              " active_tour_repair=" + repair_reason +
+                              " active_tour_prefix_reuse=" + prefix_reason;
+        SelectionDecision repaired_decision =
+                stabilizeCandidate(prefix_goal,
+                                   robot_pos,
+                                   committed_remaining,
+                                   stamp,
+                                   new_task);
+        if (repaired_decision.ready) {
+            markTourNodeExecuting(repaired_decision.goal, stamp);
+            ++active_tour_reuse_count_;
+            return repaired_decision;
+        }
+        if (repaired_decision.recovery_requested) {
+            return repaired_decision;
+        }
+    }
+
+    std::string rebuild_reason;
+    const bool rebuild_throttled =
+            active_tour_.valid &&
+            cfg_.exploration_active_tour_rebuild_min_interval > 0.0 &&
+            stamp - active_tour_.last_rebuild_stamp <
+                    cfg_.exploration_active_tour_rebuild_min_interval;
+    if (rebuild_throttled && decision_candidates.suggested_goal.valid) {
+        ExplorationGoal throttled_goal = decision_candidates.suggested_goal;
+        throttled_goal.reason += " active_sector=" + sector_reason +
+                                 " active_tour_rebuild_throttled";
+        return stabilizeCandidate(throttled_goal,
+                                  robot_pos,
+                                  committed_remaining,
+                                  stamp,
+                                  new_task);
+    }
+
+    if (!rebuildActiveTour(decision_candidates,
+                           robot_pos,
+                           current_yaw,
+                           stamp,
+                           rebuild_reason)) {
+        const ExplorationGoal fallback =
+                decision_candidates.suggested_goal.valid
+                        ? decision_candidates.suggested_goal
+                        : decision_candidates.candidates.front();
+        return stabilizeCandidate(fallback,
+                                  robot_pos,
+                                  committed_remaining,
+                                  stamp,
+                                  new_task);
+    }
+
+    for (int i = std::max(0, active_tour_.cursor);
+         active_tour_.valid &&
+         i < static_cast<int>(active_tour_.goals.size());
+         ++i) {
+        ExplorationGoal tour_goal = active_tour_.goals[static_cast<size_t>(i)];
+        tour_goal.identity.tour_key = active_tour_.tour_key;
+        tour_goal.identity.tour_rank = i;
+        tour_goal.reason += " active_sector=" + sector_reason +
+                            " active_tour=" + rebuild_reason +
+                            " rank=" + std::to_string(i);
+        SelectionDecision decision =
+                stabilizeCandidate(tour_goal,
+                                   robot_pos,
+                                   committed_remaining,
+                                   stamp,
+                                   new_task);
+        if (decision.ready) {
+            active_tour_.cursor = i;
+            markTourNodeExecuting(decision.goal, stamp);
+            return decision;
+        }
+        if (decision.recovery_requested) {
+            return decision;
+        }
+        ++active_tour_repair_count_;
+    }
+
+    invalidateActiveTour("all_tour_nodes_rejected");
+    if (activeSectorEnabled()) {
+        ++active_sector_.failure_count;
+        if (active_sector_.failure_count >= 3) {
+            invalidateActiveSector("tour_nodes_rejected");
+        }
+    }
+    const ExplorationGoal fallback =
+            decision_candidates.suggested_goal.valid
+                    ? decision_candidates.suggested_goal
+                    : decision_candidates.candidates.front();
+    return stabilizeCandidate(fallback,
+                              robot_pos,
+                              committed_remaining,
+                              stamp,
+                              new_task);
+}
+
+ExplorationRuntimeManager::SelectionDecision
+ExplorationRuntimeManager::selectGoalFromActiveTour(
+        const general_utils::Vec3f &robot_pos,
+        const double committed_remaining,
+        const double stamp,
+        const bool new_task)
+{
+    SelectionDecision out;
+    if (!activeTourEnabled() || !active_tour_.valid || active_tour_.goals.empty()) {
+        out.reject = true;
+        out.reason = "active_tour_unavailable";
+        out.ndo = navigation_memory_.diagnose(stamp);
+        return out;
+    }
+
+    phase_ = Phase::SELECT_TOUR;
+    updateRecoveryLock(robot_pos, stamp);
+    advanceCompletedTourNodes(robot_pos, stamp);
+
+    ExplorationCandidateSet empty_candidate_set;
+    empty_candidate_set.valid = true;
+    ExplorationGoal prefix_goal;
+    std::string prefix_reason;
+    if (!findActiveTourCandidate(empty_candidate_set,
+                                 robot_pos,
+                                 stamp,
+                                 prefix_goal,
+                                 prefix_reason)) {
+        out.reject = true;
+        out.reason = "active_tour_prefix_unavailable:" + prefix_reason;
+        out.ndo = navigation_memory_.diagnose(stamp);
+        return out;
+    }
+
+    prefix_goal.reason += " active_tour_no_new_frontend_candidate=" + prefix_reason;
+    SelectionDecision decision =
+            stabilizeCandidate(prefix_goal,
+                               robot_pos,
+                               committed_remaining,
+                               stamp,
+                               new_task);
+    if (decision.ready) {
+        markTourNodeExecuting(decision.goal, stamp);
+        ++active_tour_reuse_count_;
+    }
+    return decision;
+}
+
 void ExplorationRuntimeManager::recordDecision(const ExplorationGoal &goal,
                                                const general_utils::Vec3f &robot_pos,
                                                const double stamp)
@@ -538,7 +833,24 @@ void ExplorationRuntimeManager::recordDecision(const ExplorationGoal &goal,
                                             cfg_.exploration_frontier_memory_covered_radius));
     frontier_memory_.markCommitted(goal, stamp);
     frontier_memory_.markCoveredNear(robot_pos, stamp);
+    frontier_db_.markCommitted(goal, stamp);
+    frontier_db_.markCoveredNear(robot_pos,
+                                 stamp,
+                                 std::max(cfg_.exploration_coverage_revisit_radius,
+                                          cfg_.exploration_frontier_memory_covered_radius));
+    topological_memory_.observePose(goal.position,
+                                    stamp,
+                                    nhbp::TopoNodeType::FRONTIER);
     topological_memory_.observeTransition(robot_pos, goal.position, stamp);
+    markTourNodeExecuting(goal, stamp);
+    markSectorProgress(goal, stamp);
+    if (activeSectorEnabled() && active_sector_.valid) {
+        const std::string goal_sector = sectorKeyForGoal(goal);
+        if (goal_sector == active_sector_.key) {
+            active_sector_.last_progress_stamp = stamp;
+            active_sector_.failure_count = 0;
+        }
+    }
     if (!nhbpEnabled()) {
         return;
     }
@@ -586,7 +898,21 @@ void ExplorationRuntimeManager::recordFailure(const ExplorationGoal &goal,
     if (!goal.valid) {
         return;
     }
+    if (activeTourEnabled() && active_tour_.valid) {
+        markTourNodeFailed(goal, stamp);
+    }
+    markSectorFailure(goal, stamp);
+    if (activeSectorEnabled() && active_sector_.valid) {
+        const std::string failed_sector = sectorKeyForGoal(goal);
+        if (!failed_sector.empty() && failed_sector == active_sector_.key) {
+            ++active_sector_.failure_count;
+            if (active_sector_.failure_count >= 3) {
+                invalidateActiveSector("sector_goal_failures");
+            }
+        }
+    }
     frontier_memory_.markFailed(goal, stamp);
+    frontier_db_.markFailed(goal, stamp);
     topological_memory_.recordFailureNear(goal.position, stamp);
     const nhbp::NavIdentity identity = normalizedIdentity(goal);
     const std::string key =
@@ -857,6 +1183,41 @@ std::string ExplorationRuntimeManager::diagnosticSummary(const double stamp) con
         << ";topology_nodes=" << topological_memory_.activeNodeCount(stamp)
         << ";topology_blocked=" << topological_memory_.blockedNodeCount(stamp)
         << ";topology_edges=" << topological_memory_.edgeCount()
+        << ";active_sector_valid=" << static_cast<int>(active_sector_.valid)
+        << ";active_sector_generation=" << active_sector_.generation
+        << ";active_sector_key=" << active_sector_.key
+        << ";active_sector_candidates=" << active_sector_.candidate_count
+        << ";active_sector_score=" << active_sector_.score
+        << ";active_sector_failures=" << active_sector_.failure_count
+        << ";active_sector_invalid_reason=" << active_sector_.invalid_reason
+        << ";active_sector_reuse=" << active_sector_reuse_count_
+        << ";active_sector_switch=" << active_sector_switch_count_
+        << ";active_sector_invalid=" << active_sector_invalid_count_
+        << ";active_sector_filter=" << active_sector_filter_count_
+        << ";sector_memory_size=" << sector_memory_.size()
+        << ";sector_completed_events=" << sector_completed_count_
+        << ";sector_blocked_events=" << sector_blocked_count_
+        << ";sector_reactivated_events=" << sector_reactivated_count_
+        << ";active_tour_valid=" << static_cast<int>(active_tour_.valid)
+        << ";active_tour_generation=" << active_tour_.generation
+        << ";active_tour_size=" << active_tour_.goals.size()
+        << ";active_tour_cursor=" << active_tour_.cursor
+        << ";active_tour_executing_rank=" << active_tour_.executing_rank
+        << ";active_tour_pending_nodes=" << pendingTourNodeCount()
+        << ";active_tour_executing_nodes=" << executingTourNodeCount()
+        << ";active_tour_completed_nodes=" << completedTourNodeCount()
+        << ";active_tour_failed_nodes=" << failedTourNodeCount()
+        << ";active_tour_key=" << active_tour_.tour_key
+        << ";active_tour_sector=" << active_tour_.sector_key
+        << ";active_tour_invalid_reason=" << active_tour_.invalid_reason
+        << ";active_tour_reuse=" << active_tour_reuse_count_
+        << ";active_tour_rebuild=" << active_tour_rebuild_count_
+        << ";active_tour_repair=" << active_tour_repair_count_
+        << ";active_tour_advance=" << active_tour_advance_count_
+        << ";active_tour_invalid=" << active_tour_invalid_count_
+        << ";active_tour_node_completed_events=" << active_tour_node_completed_count_
+        << ";active_tour_node_failed_events=" << active_tour_node_failed_count_
+        << ";active_tour_node_skipped_events=" << active_tour_node_skipped_count_
         << ";local_trap_recovery_requests=" << local_trap_recovery_request_count_
         << ";recent_trap_active="
         << static_cast<int>(has_recent_trap_region_ && recent_trap_block_until_ > stamp)
@@ -1241,6 +1602,9 @@ void ExplorationRuntimeManager::bindRecoveryGoal(const ExplorationGoal &goal,
     }
     const bool locked_reuse =
             goal.reason.rfind("locked_recovery_goal_reuse:", 0) == 0;
+    const std::string recovery_reason = stripLockedRecoveryReusePrefix(goal.reason);
+    const bool frontier_memory_recovery =
+            recovery_reason.find("frontier_memory_recovery") != std::string::npos;
     recovery_state_.active = true;
     recovery_state_.recovery_id = normalizedIdentity(goal);
     if (!recovery_state_.start_pos.allFinite() ||
@@ -1253,19 +1617,42 @@ void ExplorationRuntimeManager::bindRecoveryGoal(const ExplorationGoal &goal,
             {cfg_.exploration_recovery_min_distance,
              cfg_.exploration_topology_recovery_min_distance,
              cfg_.exploration_nhbp_min_progress_distance * 2.0});
+    if (frontier_memory_recovery) {
+        const double short_lock_duration =
+                std::max(0.2, cfg_.exploration_frontier_memory_recovery_lock_duration);
+        const double short_lock_distance =
+                std::max({0.3,
+                          cfg_.exploration_frontier_memory_recovery_lock_distance,
+                          cfg_.exploration_frontier_memory_recovery_min_distance,
+                          cfg_.exploration_nhbp_min_progress_distance});
+        recovery_state_.min_duration =
+                std::min(recovery_state_.min_duration, short_lock_duration);
+        recovery_state_.min_distance =
+                std::min(recovery_state_.min_distance, short_lock_distance);
+    }
     if (recovery_state_.start_stamp <= 0.0) {
         recovery_state_.start_stamp = stamp;
     }
     if (!locked_reuse) {
-        recovery_state_.lock_until =
-                std::max(recovery_state_.lock_until,
-                         recovery_state_.start_stamp +
-                                 std::max({recovery_state_.min_duration,
-                                           cfg_.exploration_local_trap_cooldown,
-                                           cfg_.exploration_nhbp_no_progress_time}));
-        recovery_lock_until_ = std::max(recovery_lock_until_, recovery_state_.lock_until);
+        const double lock_duration =
+                frontier_memory_recovery
+                        ? recovery_state_.min_duration
+                        : std::max({recovery_state_.min_duration,
+                                    cfg_.exploration_local_trap_cooldown,
+                                    cfg_.exploration_nhbp_no_progress_time});
+        const double next_lock_until =
+                recovery_state_.start_stamp + std::max(0.2, lock_duration);
+        if (frontier_memory_recovery) {
+            recovery_state_.lock_until = next_lock_until;
+            recovery_lock_until_ = next_lock_until;
+        } else {
+            recovery_state_.lock_until =
+                    std::max(recovery_state_.lock_until, next_lock_until);
+            recovery_lock_until_ =
+                    std::max(recovery_lock_until_, recovery_state_.lock_until);
+        }
     }
-    recovery_state_.reason = stripLockedRecoveryReusePrefix(goal.reason);
+    recovery_state_.reason = recovery_reason;
     recovery_state_.exit_reason.clear();
     recovery_lock_reason_ = recovery_state_.reason;
     active_recovery_goal_ = goal;
@@ -1390,6 +1777,1523 @@ bool ExplorationRuntimeManager::lockedRecoveryGoalReusable(
 bool ExplorationRuntimeManager::nhbpEnabled() const
 {
     return cfg_.exploration_nhbp_enable;
+}
+
+bool ExplorationRuntimeManager::activeTourEnabled() const
+{
+    return cfg_.exploration_active_tour_enable && cfg_.exploration_use_atsp;
+}
+
+bool ExplorationRuntimeManager::activeSectorEnabled() const
+{
+    return cfg_.exploration_active_sector_enable && activeTourEnabled();
+}
+
+double ExplorationRuntimeManager::activeSectorResolution() const
+{
+    return std::max({cfg_.exploration_active_sector_size,
+                     2.0 * cfg_.exploration_frontier_cluster_radius,
+                     2.0 * cfg_.exploration_coverage_grid_resolution,
+                     1.0});
+}
+
+general_utils::Vec3f ExplorationRuntimeManager::sectorReference(
+        const ExplorationGoal &goal) const
+{
+    const bool expansion_candidate =
+            goal.identity.intent_mode == "exploration_expansion" ||
+            goal.reason.find("expansion") != std::string::npos;
+    if (expansion_candidate) {
+        return goal.position;
+    }
+    if (goal.frontier_center_valid && goal.frontier_center.allFinite()) {
+        return goal.frontier_center;
+    }
+    return goal.position;
+}
+
+std::string ExplorationRuntimeManager::sectorKeyForGoal(
+        const ExplorationGoal &goal) const
+{
+    const general_utils::Vec3f reference = sectorReference(goal);
+    return nhbp::quantizedPositionKey(reference,
+                                     activeSectorResolution(),
+                                     "sector");
+}
+
+void ExplorationRuntimeManager::updateSectorMemoryFromCandidates(
+        const ExplorationCandidateSet &candidate_set,
+        const double stamp)
+{
+    if (!activeSectorEnabled() ||
+        !candidate_set.valid ||
+        candidate_set.candidates.empty()) {
+        return;
+    }
+
+    struct Accumulator {
+        general_utils::Vec3f center{general_utils::Vec3f::Zero()};
+        double score{std::numeric_limits<double>::infinity()};
+        int count{0};
+    };
+
+    std::unordered_map<std::string, Accumulator> observed;
+    observed.reserve(candidate_set.candidates.size());
+    for (const ExplorationGoal &candidate : candidate_set.candidates) {
+        if (!candidate.valid || !candidate.position.allFinite()) {
+            continue;
+        }
+        const std::string key = sectorKeyForGoal(candidate);
+        if (key.empty()) {
+            continue;
+        }
+        Accumulator &acc = observed[key];
+        acc.center += sectorReference(candidate);
+        ++acc.count;
+        acc.score = std::min(acc.score, candidate.score);
+    }
+
+    for (const auto &entry : observed) {
+        const std::string &key = entry.first;
+        const Accumulator &acc = entry.second;
+        if (acc.count <= 0) {
+            continue;
+        }
+        SectorMemoryEntry &memory = sector_memory_[key];
+        const bool new_entry = memory.key.empty();
+        const SectorStatus previous_status = memory.status;
+        memory.key = key;
+        memory.center = acc.center / static_cast<double>(acc.count);
+        memory.score = acc.score;
+        memory.candidate_count = acc.count;
+        memory.total_seen_count += acc.count;
+        if (new_entry || memory.first_seen_stamp <= 0.0) {
+            memory.first_seen_stamp = stamp;
+        }
+        memory.last_seen_stamp = stamp;
+        if (memory.status == SectorStatus::UNKNOWN) {
+            memory.status = SectorStatus::STALE;
+        }
+        const double completed_age =
+                memory.completed_stamp > 0.0
+                        ? std::max(0.0, stamp - memory.completed_stamp)
+                        : std::numeric_limits<double>::infinity();
+        if (memory.status == SectorStatus::COMPLETED &&
+            completed_age >= std::max(0.0, cfg_.exploration_active_sector_min_duration) &&
+            acc.count > std::max(1, cfg_.exploration_sector_completion_max_candidates)) {
+            memory.status = SectorStatus::STALE;
+            ++sector_reactivated_count_;
+        }
+        if (memory.status == SectorStatus::BLOCKED && stamp >= memory.block_until) {
+            memory.status = SectorStatus::STALE;
+        }
+        if (previous_status == SectorStatus::COMPLETED &&
+            memory.status != SectorStatus::COMPLETED) {
+            memory.completed_stamp = 0.0;
+        }
+    }
+
+    const int max_records = std::max(16, cfg_.exploration_sector_memory_max_records);
+    while (static_cast<int>(sector_memory_.size()) > max_records) {
+        auto oldest = sector_memory_.end();
+        for (auto it = sector_memory_.begin(); it != sector_memory_.end(); ++it) {
+            if (it->second.status == SectorStatus::ACTIVE) {
+                continue;
+            }
+            if (oldest == sector_memory_.end() ||
+                it->second.last_seen_stamp < oldest->second.last_seen_stamp) {
+                oldest = it;
+            }
+        }
+        if (oldest == sector_memory_.end()) {
+            break;
+        }
+        sector_memory_.erase(oldest);
+    }
+}
+
+void ExplorationRuntimeManager::markSectorActive(const std::string &sector_key,
+                                                 const general_utils::Vec3f &center,
+                                                 const int candidate_count,
+                                                 const double score,
+                                                 const double stamp)
+{
+    if (sector_key.empty()) {
+        return;
+    }
+    SectorMemoryEntry &memory = sector_memory_[sector_key];
+    const bool was_completed = memory.status == SectorStatus::COMPLETED;
+    const bool was_blocked = memory.status == SectorStatus::BLOCKED &&
+                             stamp < memory.block_until;
+    memory.key = sector_key;
+    if (center.allFinite()) {
+        memory.center = center;
+    }
+    memory.candidate_count = candidate_count;
+    memory.score = score;
+    memory.last_selected_stamp = stamp;
+    memory.last_seen_stamp = std::max(memory.last_seen_stamp, stamp);
+    if (memory.first_seen_stamp <= 0.0) {
+        memory.first_seen_stamp = stamp;
+    }
+    if (!was_blocked) {
+        memory.status = SectorStatus::ACTIVE;
+        if (was_completed) {
+            ++sector_reactivated_count_;
+            memory.completed_stamp = 0.0;
+        }
+    }
+    ++memory.selection_count;
+}
+
+void ExplorationRuntimeManager::markSectorProgress(const ExplorationGoal &goal,
+                                                   const double stamp)
+{
+    const std::string key = sectorKeyForGoal(goal);
+    if (key.empty()) {
+        return;
+    }
+    SectorMemoryEntry &memory = sector_memory_[key];
+    memory.key = key;
+    memory.center = sectorReference(goal);
+    memory.last_progress_stamp = stamp;
+    memory.last_seen_stamp = std::max(memory.last_seen_stamp, stamp);
+    if (memory.first_seen_stamp <= 0.0) {
+        memory.first_seen_stamp = stamp;
+    }
+    ++memory.progress_count;
+    memory.failure_count = 0;
+    if (memory.status == SectorStatus::BLOCKED && stamp >= memory.block_until) {
+        memory.status = SectorStatus::ACTIVE;
+    }
+    const bool enough_progress =
+            memory.progress_count >=
+            std::max(1, cfg_.exploration_sector_completion_min_commits);
+    const bool candidate_count_low =
+            memory.candidate_count <=
+            std::max(0, cfg_.exploration_sector_completion_max_candidates);
+    if (enough_progress && candidate_count_low) {
+        if (memory.status != SectorStatus::COMPLETED) {
+            ++sector_completed_count_;
+        }
+        memory.status = SectorStatus::COMPLETED;
+        memory.completed_stamp = stamp;
+        if (active_sector_.valid && active_sector_.key == key) {
+            active_sector_.last_progress_stamp = stamp;
+        }
+    } else if (memory.status != SectorStatus::COMPLETED) {
+        memory.status = SectorStatus::ACTIVE;
+    }
+}
+
+void ExplorationRuntimeManager::markSectorFailure(const ExplorationGoal &goal,
+                                                  const double stamp)
+{
+    const std::string key = sectorKeyForGoal(goal);
+    if (key.empty()) {
+        return;
+    }
+    SectorMemoryEntry &memory = sector_memory_[key];
+    memory.key = key;
+    memory.center = sectorReference(goal);
+    memory.last_seen_stamp = std::max(memory.last_seen_stamp, stamp);
+    if (memory.first_seen_stamp <= 0.0) {
+        memory.first_seen_stamp = stamp;
+    }
+    ++memory.failure_count;
+    if (memory.failure_count >=
+        std::max(1, cfg_.exploration_sector_block_failure_threshold)) {
+        if (memory.status != SectorStatus::BLOCKED) {
+            ++sector_blocked_count_;
+        }
+        memory.status = SectorStatus::BLOCKED;
+        memory.block_until =
+                stamp + std::max(cfg_.exploration_local_trap_cooldown,
+                                 cfg_.exploration_sector_memory_stale_time * 0.25);
+    }
+}
+
+double ExplorationRuntimeManager::sectorMemoryPenalty(const std::string &sector_key,
+                                                      const double stamp) const
+{
+    const auto it = sector_memory_.find(sector_key);
+    if (it == sector_memory_.end()) {
+        return 0.0;
+    }
+    const SectorMemoryEntry &memory = it->second;
+    if (memory.status == SectorStatus::BLOCKED && stamp < memory.block_until) {
+        return std::max(0.0, cfg_.exploration_sector_blocked_penalty);
+    }
+    if (memory.status == SectorStatus::COMPLETED) {
+        return std::max(0.0, cfg_.exploration_sector_completed_penalty);
+    }
+    if (memory.status == SectorStatus::STALE &&
+        stamp - memory.last_seen_stamp >
+                std::max(1.0, cfg_.exploration_sector_memory_stale_time)) {
+        return -0.25 * std::max(0.0, cfg_.exploration_sector_completed_penalty);
+    }
+    return 0.0;
+}
+
+ExplorationCandidateSet ExplorationRuntimeManager::selectSectorCandidates(
+        const ExplorationCandidateSet &candidate_set,
+        const general_utils::Vec3f &robot_pos,
+        const double stamp,
+        const bool new_task,
+        std::string &reason)
+{
+    reason = "sector_disabled";
+    if (!activeSectorEnabled() ||
+        !candidate_set.valid ||
+        candidate_set.candidates.empty()) {
+        return candidate_set;
+    }
+
+    struct SectorAccumulator {
+        std::string key;
+        double sum_x{0.0};
+        double sum_y{0.0};
+        double sum_z{0.0};
+        double best_score{std::numeric_limits<double>::infinity()};
+        double total_gain{0.0};
+        int best_index{-1};
+        int count{0};
+    };
+
+    std::unordered_map<std::string, SectorAccumulator> sectors;
+    sectors.reserve(candidate_set.candidates.size());
+    for (int i = 0; i < static_cast<int>(candidate_set.candidates.size()); ++i) {
+        const ExplorationGoal &candidate =
+                candidate_set.candidates[static_cast<size_t>(i)];
+        if (!candidate.valid || !candidate.position.allFinite()) {
+            continue;
+        }
+        const std::string key = sectorKeyForGoal(candidate);
+        if (key.empty()) {
+            continue;
+        }
+        const general_utils::Vec3f reference = sectorReference(candidate);
+        SectorAccumulator &sector = sectors[key];
+        sector.key = key;
+        sector.sum_x += reference.x();
+        sector.sum_y += reference.y();
+        sector.sum_z += reference.z();
+        ++sector.count;
+        sector.total_gain += std::max(0.0, candidate.information_gain);
+        const double coverage_penalty =
+                std::max(0.0, cfg_.exploration_tour_coverage_penalty_weight) *
+                coverage_grid_.revisitPenalty(reference, stamp);
+        const double memory_penalty = sectorMemoryPenalty(key, stamp);
+        const double coverage_reward =
+                cfg_.exploration_coverage_intent_enable
+                        ? std::max(0.0, cfg_.exploration_coverage_intent_weight) *
+                                  coverage_grid_.intentReward(reference, stamp)
+                        : 0.0;
+        const double distance_bias =
+                robot_pos.allFinite()
+                        ? 0.05 * std::max(0.0, (reference - robot_pos).norm())
+                        : 0.0;
+        const double score =
+                candidate.score + coverage_penalty + memory_penalty +
+                distance_bias - coverage_reward;
+        if (score < sector.best_score) {
+            sector.best_score = score;
+            sector.best_index = i;
+        }
+    }
+
+    if (sectors.empty()) {
+        reason = "sector_no_valid_candidates";
+        return candidate_set;
+    }
+
+    auto sectorAdjustedScore = [this](const SectorAccumulator &sector) {
+        const double gain_bonus =
+                0.03 * std::min(sector.total_gain,
+                                std::max(1.0, cfg_.exploration_information_gain_saturation));
+        const double breadth_bonus = 0.25 * std::log1p(static_cast<double>(sector.count));
+        return sector.best_score - gain_bonus - breadth_bonus;
+    };
+
+    const SectorAccumulator *best_sector = nullptr;
+    const SectorAccumulator *active_sector_acc = nullptr;
+    double best_sector_score = std::numeric_limits<double>::infinity();
+    double active_sector_score = std::numeric_limits<double>::infinity();
+    for (const auto &entry : sectors) {
+        const SectorAccumulator &sector = entry.second;
+        const double score = sectorAdjustedScore(sector);
+        if (score < best_sector_score) {
+            best_sector_score = score;
+            best_sector = &sector;
+        }
+        if (active_sector_.valid && sector.key == active_sector_.key) {
+            active_sector_acc = &sector;
+            active_sector_score = score;
+        }
+    }
+
+    if (best_sector == nullptr || best_sector->best_index < 0) {
+        reason = "sector_no_best_candidate";
+        return candidate_set;
+    }
+
+    bool keep_active_sector =
+            active_sector_.valid &&
+            active_sector_acc != nullptr &&
+            !new_task;
+    if (keep_active_sector) {
+        const auto active_memory = sector_memory_.find(active_sector_.key);
+        if (active_memory != sector_memory_.end() &&
+            active_memory->second.status == SectorStatus::BLOCKED &&
+            stamp < active_memory->second.block_until) {
+            keep_active_sector = false;
+        }
+    }
+    if (keep_active_sector) {
+        const double active_age = std::max(0.0, stamp - active_sector_.created_stamp);
+        const double switch_margin =
+                std::max(0.0, cfg_.exploration_active_sector_switch_margin);
+        const bool min_duration_elapsed =
+                active_age >= std::max(0.0,
+                                       cfg_.exploration_active_sector_min_duration);
+        const bool outsider_clearly_better =
+                best_sector->key != active_sector_.key &&
+                best_sector_score + switch_margin < active_sector_score;
+        if (min_duration_elapsed && outsider_clearly_better) {
+            keep_active_sector = false;
+        }
+    }
+
+    const SectorAccumulator *selected_sector =
+            keep_active_sector ? active_sector_acc : best_sector;
+    if (selected_sector == nullptr) {
+        selected_sector = best_sector;
+    }
+
+    if (!active_sector_.valid || active_sector_.key != selected_sector->key || new_task) {
+        if (active_sector_.valid && active_sector_.key != selected_sector->key) {
+            ++active_sector_switch_count_;
+        }
+        active_sector_.valid = true;
+        active_sector_.key = selected_sector->key;
+        active_sector_.generation += 1;
+        active_sector_.created_stamp = stamp;
+        active_sector_.failure_count = 0;
+    } else {
+        ++active_sector_reuse_count_;
+    }
+    active_sector_.candidate_count = selected_sector->count;
+    active_sector_.score = sectorAdjustedScore(*selected_sector);
+    active_sector_.center =
+            general_utils::Vec3f(selected_sector->sum_x / selected_sector->count,
+                                 selected_sector->sum_y / selected_sector->count,
+                                 selected_sector->sum_z / selected_sector->count);
+    active_sector_.last_update_stamp = stamp;
+    active_sector_.invalid_reason.clear();
+    markSectorActive(active_sector_.key,
+                     active_sector_.center,
+                     active_sector_.candidate_count,
+                     active_sector_.score,
+                     stamp);
+
+    ExplorationCandidateSet filtered = candidate_set;
+    filtered.candidates.clear();
+    filtered.reason = candidate_set.reason + " active_sector=" + active_sector_.key;
+    filtered.suggested_goal = ExplorationGoal{};
+    filtered.valid = true;
+    for (const ExplorationGoal &candidate : candidate_set.candidates) {
+        if (sectorKeyForGoal(candidate) != active_sector_.key) {
+            continue;
+        }
+        filtered.candidates.push_back(candidate);
+    }
+    const int min_tour_candidates =
+            std::min({static_cast<int>(candidate_set.candidates.size()),
+                      std::max(1, cfg_.exploration_atsp_max_candidate_num),
+                      std::max(2, std::min(6, cfg_.exploration_atsp_max_candidate_num))});
+    int prefix_extra_count = 0;
+    if (static_cast<int>(filtered.candidates.size()) < min_tour_candidates) {
+        auto same_candidate = [](const ExplorationGoal &lhs,
+                                 const ExplorationGoal &rhs) {
+            if (!lhs.identity.candidate_key.empty() &&
+                lhs.identity.candidate_key == rhs.identity.candidate_key) {
+                return true;
+            }
+            if (!lhs.memory_key.empty() && lhs.memory_key == rhs.memory_key) {
+                return true;
+            }
+            if (lhs.candidate_id != 0 && lhs.candidate_id == rhs.candidate_id) {
+                return true;
+            }
+            return (lhs.position - rhs.position).squaredNorm() <= 0.25;
+        };
+        auto already_kept = [&filtered, &same_candidate](const ExplorationGoal &candidate) {
+            for (const ExplorationGoal &kept : filtered.candidates) {
+                if (same_candidate(candidate, kept)) {
+                    return true;
+                }
+            }
+            return false;
+        };
+
+        struct ExtraCandidate {
+            int index{-1};
+            double score{std::numeric_limits<double>::infinity()};
+        };
+        std::vector<ExtraCandidate> extras;
+        extras.reserve(candidate_set.candidates.size());
+        for (int i = 0; i < static_cast<int>(candidate_set.candidates.size()); ++i) {
+            const ExplorationGoal &candidate =
+                    candidate_set.candidates[static_cast<size_t>(i)];
+            if (!candidate.valid ||
+                !candidate.position.allFinite() ||
+                already_kept(candidate)) {
+                continue;
+            }
+            const general_utils::Vec3f reference = sectorReference(candidate);
+            const double sector_distance_bias =
+                    active_sector_.center.allFinite()
+                            ? 0.12 * std::max(0.0,
+                                              (reference - active_sector_.center).norm())
+                            : 0.0;
+            const double robot_distance_bias =
+                    robot_pos.allFinite()
+                            ? 0.02 * std::max(0.0, (reference - robot_pos).norm())
+                            : 0.0;
+            const double memory_penalty =
+                    sectorMemoryPenalty(sectorKeyForGoal(candidate), stamp);
+            const double gain_bonus =
+                    0.02 * std::min(std::max(0.0, candidate.information_gain),
+                                    std::max(1.0,
+                                             cfg_.exploration_information_gain_saturation));
+            extras.push_back(ExtraCandidate{
+                    i,
+                    candidate.score + sector_distance_bias + robot_distance_bias +
+                            memory_penalty - gain_bonus});
+        }
+        std::sort(extras.begin(),
+                  extras.end(),
+                  [](const ExtraCandidate &lhs, const ExtraCandidate &rhs) {
+                      return lhs.score < rhs.score;
+                  });
+        for (const ExtraCandidate &extra : extras) {
+            if (static_cast<int>(filtered.candidates.size()) >= min_tour_candidates) {
+                break;
+            }
+            if (extra.index < 0 ||
+                extra.index >= static_cast<int>(candidate_set.candidates.size())) {
+                continue;
+            }
+            filtered.candidates.push_back(
+                    candidate_set.candidates[static_cast<size_t>(extra.index)]);
+            ++prefix_extra_count;
+        }
+    }
+    filtered.reachable_candidate_count =
+            static_cast<int>(filtered.candidates.size());
+    if (!filtered.candidates.empty()) {
+        const int selected_best_index = selected_sector->best_index;
+        if (selected_best_index >= 0 &&
+            selected_best_index < static_cast<int>(candidate_set.candidates.size()) &&
+            sectorKeyForGoal(candidate_set.candidates[static_cast<size_t>(selected_best_index)]) ==
+                    active_sector_.key) {
+            filtered.suggested_goal =
+                    candidate_set.candidates[static_cast<size_t>(selected_best_index)];
+        } else {
+            filtered.suggested_goal =
+                    *std::min_element(filtered.candidates.begin(),
+                                      filtered.candidates.end(),
+                                      [](const ExplorationGoal &lhs,
+                                         const ExplorationGoal &rhs) {
+                                          return lhs.score < rhs.score;
+                                      });
+        }
+        ++active_sector_filter_count_;
+    }
+
+    std::ostringstream oss;
+    oss << active_sector_.key
+        << ",generation=" << active_sector_.generation
+        << ",candidates=" << filtered.candidates.size()
+        << ",tour_prefix_extras=" << prefix_extra_count
+        << ",score=" << active_sector_.score
+        << ",memory_penalty=" << sectorMemoryPenalty(active_sector_.key, stamp)
+        << (keep_active_sector ? ",kept=1" : ",kept=0");
+    reason = oss.str();
+    return filtered.candidates.empty() ? candidate_set : filtered;
+}
+
+void ExplorationRuntimeManager::invalidateActiveTour(const std::string &reason)
+{
+    if (active_tour_.valid) {
+        ++active_tour_invalid_count_;
+    }
+    const int generation = active_tour_.generation;
+    active_tour_ = ActiveTour{};
+    active_tour_.generation = generation;
+    active_tour_.invalid_reason = reason;
+}
+
+void ExplorationRuntimeManager::invalidateActiveSector(const std::string &reason)
+{
+    if (active_sector_.valid) {
+        ++active_sector_invalid_count_;
+    }
+    const int generation = active_sector_.generation;
+    active_sector_ = ActiveSector{};
+    active_sector_.generation = generation;
+    active_sector_.invalid_reason = reason;
+    invalidateActiveTour("sector_invalidated:" + reason);
+}
+
+void ExplorationRuntimeManager::ensureActiveTourState()
+{
+    const size_t size = active_tour_.goals.size();
+    active_tour_.node_status.resize(size, ActiveTour::NodeStatus::PENDING);
+    active_tour_.node_failures.resize(size, 0);
+    active_tour_.node_enter_stamp.resize(size, 0.0);
+    active_tour_.node_exit_stamp.resize(size, 0.0);
+    if (active_tour_.cursor < 0) {
+        active_tour_.cursor = 0;
+    }
+    if (active_tour_.cursor > static_cast<int>(size)) {
+        active_tour_.cursor = static_cast<int>(size);
+    }
+    if (active_tour_.executing_rank >= static_cast<int>(size)) {
+        active_tour_.executing_rank = -1;
+    }
+}
+
+void ExplorationRuntimeManager::markTourNodeCompleted(const int rank,
+                                                      const double stamp)
+{
+    if (!active_tour_.valid ||
+        rank < 0 ||
+        rank >= static_cast<int>(active_tour_.goals.size())) {
+        return;
+    }
+    ensureActiveTourState();
+    ActiveTour::NodeStatus &status =
+            active_tour_.node_status[static_cast<size_t>(rank)];
+    if (status == ActiveTour::NodeStatus::COMPLETED ||
+        status == ActiveTour::NodeStatus::FAILED ||
+        status == ActiveTour::NodeStatus::SKIPPED) {
+        return;
+    }
+    status = ActiveTour::NodeStatus::COMPLETED;
+    active_tour_.node_exit_stamp[static_cast<size_t>(rank)] = stamp;
+    frontier_db_.markCompleted(active_tour_.goals[static_cast<size_t>(rank)], stamp);
+    if (active_tour_.executing_rank == rank) {
+        active_tour_.executing_rank = -1;
+    }
+    ++active_tour_node_completed_count_;
+}
+
+void ExplorationRuntimeManager::markTourNodeSkipped(const int rank,
+                                                    const double stamp)
+{
+    if (!active_tour_.valid ||
+        rank < 0 ||
+        rank >= static_cast<int>(active_tour_.goals.size())) {
+        return;
+    }
+    ensureActiveTourState();
+    ActiveTour::NodeStatus &status =
+            active_tour_.node_status[static_cast<size_t>(rank)];
+    if (status == ActiveTour::NodeStatus::COMPLETED ||
+        status == ActiveTour::NodeStatus::FAILED ||
+        status == ActiveTour::NodeStatus::SKIPPED) {
+        return;
+    }
+    status = ActiveTour::NodeStatus::SKIPPED;
+    active_tour_.node_exit_stamp[static_cast<size_t>(rank)] = stamp;
+    if (active_tour_.executing_rank == rank) {
+        active_tour_.executing_rank = -1;
+    }
+    if (rank <= active_tour_.cursor) {
+        active_tour_.cursor = rank + 1;
+        ++active_tour_advance_count_;
+    }
+    ++active_tour_node_skipped_count_;
+    if (pendingTourNodeCount() + executingTourNodeCount() <= 0) {
+        invalidateActiveTour("all_tour_nodes_terminal");
+    }
+}
+
+bool ExplorationRuntimeManager::advanceCompletedTourNodes(
+        const general_utils::Vec3f &robot_pos,
+        const double stamp)
+{
+    if (!active_tour_.valid || active_tour_.goals.empty()) {
+        return false;
+    }
+    ensureActiveTourState();
+    bool advanced = false;
+    const double reached_distance =
+            std::max({cfg_.exploration_goal_reached_distance,
+                      0.5 * cfg_.exploration_coverage_revisit_radius,
+                      0.35});
+    while (active_tour_.cursor < static_cast<int>(active_tour_.goals.size())) {
+        const size_t rank = static_cast<size_t>(active_tour_.cursor);
+        ActiveTour::NodeStatus status = active_tour_.node_status[rank];
+        if (status == ActiveTour::NodeStatus::COMPLETED ||
+            status == ActiveTour::NodeStatus::SKIPPED ||
+            status == ActiveTour::NodeStatus::FAILED) {
+            ++active_tour_.cursor;
+            ++active_tour_advance_count_;
+            advanced = true;
+            continue;
+        }
+        if (robot_pos.allFinite() &&
+            active_tour_.goals[rank].position.allFinite() &&
+            (active_tour_.goals[rank].position - robot_pos).norm() <=
+                    reached_distance) {
+            markTourNodeCompleted(active_tour_.cursor, stamp);
+            ++active_tour_.cursor;
+            ++active_tour_advance_count_;
+            advanced = true;
+            continue;
+        }
+        break;
+    }
+    if (active_tour_.cursor >= static_cast<int>(active_tour_.goals.size())) {
+        invalidateActiveTour("tour_prefix_exhausted");
+    }
+    return advanced;
+}
+
+void ExplorationRuntimeManager::markTourNodeExecuting(const ExplorationGoal &goal,
+                                                      const double stamp)
+{
+    if (!active_tour_.valid || active_tour_.goals.empty() || !goal.valid) {
+        return;
+    }
+    ensureActiveTourState();
+    int rank = -1;
+    if (goal.identity.tour_key == active_tour_.tour_key &&
+        goal.identity.tour_rank >= 0 &&
+        goal.identity.tour_rank < static_cast<int>(active_tour_.goals.size())) {
+        rank = goal.identity.tour_rank;
+    }
+    const std::string goal_key = tourGoalKey(goal);
+    const double match_radius =
+            std::max({cfg_.exploration_active_tour_match_radius,
+                      cfg_.exploration_goal_reached_distance,
+                      cfg_.exploration_coverage_revisit_radius,
+                      0.75});
+    if (rank < 0) {
+        for (int i = std::max(0, active_tour_.cursor);
+             i < static_cast<int>(active_tour_.goals.size());
+             ++i) {
+            const ExplorationGoal &tour_goal =
+                    active_tour_.goals[static_cast<size_t>(i)];
+            const std::string tour_key = tourGoalKey(tour_goal);
+            const bool same_key =
+                    !goal_key.empty() && !tour_key.empty() && goal_key == tour_key;
+            const bool same_frontier =
+                    goal.frontier_id >= 0 &&
+                    tour_goal.frontier_id >= 0 &&
+                    goal.frontier_id == tour_goal.frontier_id;
+            const bool same_region =
+                    goal.position.allFinite() &&
+                    tour_goal.position.allFinite() &&
+                    (goal.position - tour_goal.position).norm() <= match_radius;
+            if (same_key || same_frontier || same_region) {
+                rank = i;
+                break;
+            }
+        }
+    }
+    if (rank < 0) {
+        return;
+    }
+    ActiveTour::NodeStatus &status =
+            active_tour_.node_status[static_cast<size_t>(rank)];
+    if (status == ActiveTour::NodeStatus::COMPLETED ||
+        status == ActiveTour::NodeStatus::FAILED ||
+        status == ActiveTour::NodeStatus::SKIPPED) {
+        return;
+    }
+    status = ActiveTour::NodeStatus::EXECUTING;
+    active_tour_.executing_rank = rank;
+    if (active_tour_.node_enter_stamp[static_cast<size_t>(rank)] <= 0.0) {
+        active_tour_.node_enter_stamp[static_cast<size_t>(rank)] = stamp;
+    }
+    active_tour_.cursor = std::min(active_tour_.cursor, rank);
+}
+
+void ExplorationRuntimeManager::markTourNodeFailed(const ExplorationGoal &goal,
+                                                   const double stamp)
+{
+    if (!active_tour_.valid || active_tour_.goals.empty() || !goal.valid) {
+        return;
+    }
+    ensureActiveTourState();
+    const std::string failed_key = tourGoalKey(goal);
+    const double match_radius =
+            std::max({cfg_.exploration_goal_reached_distance,
+                      cfg_.exploration_coverage_revisit_radius,
+                      cfg_.exploration_active_tour_match_radius,
+                      0.75});
+    int rank = -1;
+    for (int i = 0; i < static_cast<int>(active_tour_.goals.size()); ++i) {
+        const ExplorationGoal &tour_goal = active_tour_.goals[static_cast<size_t>(i)];
+        const std::string tour_key = tourGoalKey(tour_goal);
+        const bool same_key =
+                !failed_key.empty() && !tour_key.empty() && failed_key == tour_key;
+        const bool same_frontier =
+                goal.frontier_id >= 0 &&
+                tour_goal.frontier_id >= 0 &&
+                goal.frontier_id == tour_goal.frontier_id;
+        const bool same_region =
+                goal.position.allFinite() &&
+                tour_goal.position.allFinite() &&
+                (goal.position - tour_goal.position).norm() <= match_radius;
+        if (same_key || same_frontier || same_region) {
+            rank = i;
+            break;
+        }
+    }
+    if (rank < 0) {
+        return;
+    }
+    const size_t index = static_cast<size_t>(rank);
+    ++active_tour_.node_failures[index];
+    const int max_failures = std::max(1, cfg_.exploration_tour_max_node_failures);
+    if (active_tour_.node_failures[index] < max_failures) {
+        return;
+    }
+    ActiveTour::NodeStatus &status = active_tour_.node_status[index];
+    if (status != ActiveTour::NodeStatus::FAILED) {
+        status = ActiveTour::NodeStatus::FAILED;
+        active_tour_.node_exit_stamp[index] = stamp;
+        ++active_tour_node_failed_count_;
+    }
+    if (active_tour_.executing_rank == rank) {
+        active_tour_.executing_rank = -1;
+    }
+    if (rank <= active_tour_.cursor) {
+        active_tour_.cursor = rank + 1;
+        ++active_tour_advance_count_;
+    }
+    if (pendingTourNodeCount() + executingTourNodeCount() <= 0) {
+        invalidateActiveTour("all_tour_nodes_terminal");
+    }
+}
+
+int ExplorationRuntimeManager::pendingTourNodeCount() const
+{
+    int count = 0;
+    for (const ActiveTour::NodeStatus status : active_tour_.node_status) {
+        if (status == ActiveTour::NodeStatus::PENDING) {
+            ++count;
+        }
+    }
+    return count;
+}
+
+int ExplorationRuntimeManager::executingTourNodeCount() const
+{
+    int count = 0;
+    for (const ActiveTour::NodeStatus status : active_tour_.node_status) {
+        if (status == ActiveTour::NodeStatus::EXECUTING) {
+            ++count;
+        }
+    }
+    return count;
+}
+
+int ExplorationRuntimeManager::completedTourNodeCount() const
+{
+    int count = 0;
+    for (const ActiveTour::NodeStatus status : active_tour_.node_status) {
+        if (status == ActiveTour::NodeStatus::COMPLETED) {
+            ++count;
+        }
+    }
+    return count;
+}
+
+int ExplorationRuntimeManager::failedTourNodeCount() const
+{
+    int count = 0;
+    for (const ActiveTour::NodeStatus status : active_tour_.node_status) {
+        if (status == ActiveTour::NodeStatus::FAILED) {
+            ++count;
+        }
+    }
+    return count;
+}
+
+std::string ExplorationRuntimeManager::tourGoalKey(const ExplorationGoal &goal) const
+{
+    nhbp::NavIdentity identity = normalizedIdentity(goal);
+    const std::string canonical = identity.canonicalKey();
+    if (!canonical.empty()) {
+        return canonical;
+    }
+    const std::string frontier = identity.frontierIdentityKey();
+    if (!frontier.empty()) {
+        return frontier;
+    }
+    if (!goal.memory_key.empty()) {
+        return "candidate:" + goal.memory_key;
+    }
+    if (goal.position.allFinite()) {
+        return nhbp::quantizedPositionKey(
+                goal.position,
+                std::max(0.25, cfg_.exploration_coverage_grid_resolution),
+                "goal");
+    }
+    return {};
+}
+
+bool ExplorationRuntimeManager::candidateMatchesTourGoal(
+        const ExplorationGoal &candidate,
+        const ExplorationGoal &tour_goal,
+        const double match_radius) const
+{
+    if (!candidate.valid) {
+        return false;
+    }
+    const std::string target_key = tourGoalKey(tour_goal);
+    const std::string candidate_key = tourGoalKey(candidate);
+    const bool same_key =
+            !target_key.empty() &&
+            !candidate_key.empty() &&
+            target_key == candidate_key;
+    const bool same_frontier =
+            tour_goal.frontier_id >= 0 &&
+            candidate.frontier_id >= 0 &&
+            tour_goal.frontier_id == candidate.frontier_id;
+    const double distance =
+            tour_goal.position.allFinite() && candidate.position.allFinite()
+                    ? (tour_goal.position - candidate.position).norm()
+                    : std::numeric_limits<double>::infinity();
+    const bool same_region =
+            distance <= std::max(0.0, match_radius) &&
+            (same_frontier || target_key.empty() || candidate_key.empty());
+    return same_key || same_frontier || same_region;
+}
+
+bool ExplorationRuntimeManager::findActiveTourCandidate(
+        const ExplorationCandidateSet &candidate_set,
+        const general_utils::Vec3f &robot_pos,
+        const double stamp,
+        ExplorationGoal &goal,
+        std::string &reason)
+{
+    goal = ExplorationGoal{};
+    reason.clear();
+    if (!active_tour_.valid || active_tour_.goals.empty()) {
+        return false;
+    }
+    ensureActiveTourState();
+    advanceCompletedTourNodes(robot_pos, stamp);
+    if (active_tour_.cursor >= static_cast<int>(active_tour_.goals.size())) {
+        invalidateActiveTour("tour_prefix_exhausted");
+        return false;
+    }
+
+    const ExplorationGoal &tour_goal =
+            active_tour_.goals[static_cast<size_t>(active_tour_.cursor)];
+    const ActiveTour::NodeStatus target_status =
+            active_tour_.node_status[static_cast<size_t>(active_tour_.cursor)];
+    if (target_status == ActiveTour::NodeStatus::COMPLETED ||
+        target_status == ActiveTour::NodeStatus::FAILED ||
+        target_status == ActiveTour::NodeStatus::SKIPPED) {
+        ++active_tour_.cursor;
+        ++active_tour_advance_count_;
+        return findActiveTourCandidate(candidate_set, robot_pos, stamp, goal, reason);
+    }
+    const double match_radius =
+            std::max({cfg_.exploration_goal_reached_distance,
+                      cfg_.exploration_frontier_cluster_radius,
+                      cfg_.exploration_coverage_revisit_radius,
+                      cfg_.exploration_active_tour_match_radius,
+                      0.75});
+    int best_index = -1;
+    double best_distance = std::numeric_limits<double>::infinity();
+    for (int i = 0; i < static_cast<int>(candidate_set.candidates.size()); ++i) {
+        const ExplorationGoal &candidate =
+                candidate_set.candidates[static_cast<size_t>(i)];
+        if (!candidateMatchesTourGoal(candidate, tour_goal, match_radius)) {
+            continue;
+        }
+        const double distance =
+                tour_goal.position.allFinite() && candidate.position.allFinite()
+                        ? (tour_goal.position - candidate.position).norm()
+                        : std::numeric_limits<double>::infinity();
+        if (distance < best_distance) {
+            best_distance = distance;
+            best_index = i;
+        }
+    }
+    if (best_index < 0) {
+        const bool prefix_commit_active =
+                target_status == ActiveTour::NodeStatus::EXECUTING &&
+                active_tour_.node_enter_stamp[static_cast<size_t>(active_tour_.cursor)] > 0.0 &&
+                stamp - active_tour_.node_enter_stamp[static_cast<size_t>(active_tour_.cursor)] <=
+                        std::max(0.0, cfg_.exploration_tour_prefix_commit_duration);
+        const nhbp::NavIdentity target_identity = normalizedIdentity(tour_goal);
+        const std::string target_blacklist_key = target_identity.blacklistKey();
+        const bool frontier_object_active = frontier_db_.goalActive(tour_goal, stamp);
+        const bool prefix_blocked =
+                (!target_blacklist_key.empty() &&
+                 navigation_memory_.isBlacklisted(target_blacklist_key, stamp)) ||
+                frontier_memory_.blocked(tour_goal, stamp) ||
+                recoveryBlockedByRecentTrap(tour_goal, stamp) ||
+                !frontier_object_active;
+        if (prefix_commit_active && !prefix_blocked) {
+            goal = tour_goal;
+            goal.identity.tour_key = active_tour_.tour_key;
+            goal.identity.tour_rank = active_tour_.cursor;
+            reason = "cursor=" + std::to_string(active_tour_.cursor) +
+                     ",prefix_commit_hold=1,age=" +
+                     std::to_string(
+                             std::max(0.0, stamp - active_tour_.created_stamp));
+            return true;
+        }
+        markTourNodeSkipped(active_tour_.cursor, stamp);
+        reason = prefix_blocked ? "prefix_blocked_or_inactive"
+                                : "prefix_candidate_missing_revalidate_failed";
+        return false;
+    }
+
+    goal = candidate_set.candidates[static_cast<size_t>(best_index)];
+    goal.identity.tour_key = active_tour_.tour_key;
+    goal.identity.tour_rank = active_tour_.cursor;
+    reason = "cursor=" + std::to_string(active_tour_.cursor) +
+             ",match_distance=" + std::to_string(best_distance) +
+             ",age=" + std::to_string(std::max(0.0, stamp - active_tour_.created_stamp));
+    return true;
+}
+
+bool ExplorationRuntimeManager::repairActiveTourFromCandidates(
+        const ExplorationCandidateSet &candidate_set,
+        const general_utils::Vec3f &robot_pos,
+        const double stamp,
+        std::string &reason)
+{
+    reason.clear();
+    if (!active_tour_.valid ||
+        active_tour_.goals.empty() ||
+        candidate_set.candidates.empty()) {
+        return false;
+    }
+    ensureActiveTourState();
+
+    const double match_radius =
+            std::max({cfg_.exploration_active_tour_match_radius,
+                      cfg_.exploration_frontier_cluster_radius,
+                      cfg_.exploration_coverage_revisit_radius,
+                      0.75});
+    const std::string active_sector_key =
+            activeSectorEnabled() && active_sector_.valid
+                    ? active_sector_.key
+                    : active_tour_.sector_key;
+
+    std::vector<bool> used(candidate_set.candidates.size(), false);
+    general_utils::vec_E<ExplorationGoal> repaired_goals;
+    std::vector<ActiveTour::NodeStatus> repaired_status;
+    std::vector<int> repaired_failures;
+    std::vector<double> repaired_enter_stamp;
+    std::vector<double> repaired_exit_stamp;
+    repaired_goals.reserve(active_tour_.goals.size());
+    repaired_status.reserve(active_tour_.goals.size());
+    repaired_failures.reserve(active_tour_.goals.size());
+    repaired_enter_stamp.reserve(active_tour_.goals.size());
+    repaired_exit_stamp.reserve(active_tour_.goals.size());
+
+    const int start_rank =
+            std::clamp(active_tour_.cursor,
+                       0,
+                       static_cast<int>(active_tour_.goals.size()));
+    for (int rank = start_rank;
+         rank < static_cast<int>(active_tour_.goals.size());
+         ++rank) {
+        const ActiveTour::NodeStatus old_status =
+                active_tour_.node_status[static_cast<size_t>(rank)];
+        if (old_status == ActiveTour::NodeStatus::COMPLETED ||
+            old_status == ActiveTour::NodeStatus::FAILED ||
+            old_status == ActiveTour::NodeStatus::SKIPPED) {
+            continue;
+        }
+        const ExplorationGoal &old_goal =
+                active_tour_.goals[static_cast<size_t>(rank)];
+        const std::string old_key = tourGoalKey(old_goal);
+        const std::string old_sector = sectorKeyForGoal(old_goal);
+        int best_index = -1;
+        int best_priority = 100;
+        double best_distance = std::numeric_limits<double>::infinity();
+
+        for (int i = 0; i < static_cast<int>(candidate_set.candidates.size()); ++i) {
+            if (used[static_cast<size_t>(i)]) {
+                continue;
+            }
+            const ExplorationGoal &candidate =
+                    candidate_set.candidates[static_cast<size_t>(i)];
+            if (!candidate.valid || !candidate.position.allFinite()) {
+                continue;
+            }
+            const std::string candidate_sector = sectorKeyForGoal(candidate);
+            if (!active_sector_key.empty() && candidate_sector != active_sector_key) {
+                continue;
+            }
+            const std::string candidate_key = tourGoalKey(candidate);
+            const bool same_key =
+                    !old_key.empty() &&
+                    !candidate_key.empty() &&
+                    old_key == candidate_key;
+            const bool same_frontier =
+                    old_goal.frontier_id >= 0 &&
+                    candidate.frontier_id >= 0 &&
+                    old_goal.frontier_id == candidate.frontier_id;
+            const double distance =
+                    old_goal.position.allFinite()
+                            ? (old_goal.position - candidate.position).norm()
+                            : std::numeric_limits<double>::infinity();
+            const bool same_sector =
+                    !old_sector.empty() && old_sector == candidate_sector;
+            int priority = 100;
+            if (same_key) {
+                priority = 0;
+            } else if (same_frontier) {
+                priority = 1;
+            } else if (same_sector && distance <= match_radius) {
+                priority = 2;
+            }
+            if (priority >= 100) {
+                continue;
+            }
+            if (priority < best_priority ||
+                (priority == best_priority && distance < best_distance)) {
+                best_priority = priority;
+                best_distance = distance;
+                best_index = i;
+            }
+        }
+
+        if (best_index < 0) {
+            continue;
+        }
+        used[static_cast<size_t>(best_index)] = true;
+        ExplorationGoal repaired =
+                candidate_set.candidates[static_cast<size_t>(best_index)];
+        repaired.identity.tour_key = active_tour_.tour_key;
+        repaired.identity.tour_rank = static_cast<int>(repaired_goals.size());
+        repaired.reason += " tour_repaired_from_rank=" + std::to_string(rank);
+        repaired_goals.push_back(repaired);
+        repaired_status.push_back(old_status);
+        repaired_failures.push_back(active_tour_.node_failures[static_cast<size_t>(rank)]);
+        repaired_enter_stamp.push_back(
+                active_tour_.node_enter_stamp[static_cast<size_t>(rank)]);
+        repaired_exit_stamp.push_back(
+                active_tour_.node_exit_stamp[static_cast<size_t>(rank)]);
+    }
+
+    if (repaired_goals.empty()) {
+        reason = "no_repairable_tour_nodes";
+        return false;
+    }
+
+    for (int rank = 0; rank < static_cast<int>(repaired_goals.size()); ++rank) {
+        repaired_goals[static_cast<size_t>(rank)].identity.tour_rank = rank;
+    }
+
+    active_tour_.goals = repaired_goals;
+    active_tour_.node_status = repaired_status;
+    active_tour_.node_failures = repaired_failures;
+    active_tour_.node_enter_stamp = repaired_enter_stamp;
+    active_tour_.node_exit_stamp = repaired_exit_stamp;
+    active_tour_.cursor = 0;
+    active_tour_.executing_rank = -1;
+    for (int rank = 0; rank < static_cast<int>(active_tour_.node_status.size()); ++rank) {
+        if (active_tour_.node_status[static_cast<size_t>(rank)] ==
+            ActiveTour::NodeStatus::EXECUTING) {
+            active_tour_.executing_rank = rank;
+            break;
+        }
+    }
+    active_tour_.last_rebuild_stamp = stamp;
+    active_tour_.valid = true;
+    if (activeSectorEnabled() && active_sector_.valid) {
+        active_tour_.sector_key = active_sector_.key;
+    }
+    ++active_tour_repair_count_;
+    reason = "repaired_nodes=" + std::to_string(active_tour_.goals.size()) +
+             ",sector=" + active_tour_.sector_key;
+    return true;
+}
+
+double ExplorationRuntimeManager::coverageIntentReward(
+        const ExplorationGoal &goal,
+        const double stamp) const
+{
+    if (!cfg_.exploration_coverage_intent_enable) {
+        return 0.0;
+    }
+    return std::max(0.0, cfg_.exploration_coverage_intent_weight) *
+           coverage_grid_.intentReward(sectorReference(goal), stamp);
+}
+
+general_utils::vec_E<ExplorationFrontierDB::ObjectSnapshot>
+ExplorationRuntimeManager::selectLiveFrontierObjectsForTour(
+        const ExplorationCandidateSet &candidate_set,
+        const double stamp) const
+{
+    general_utils::vec_E<ExplorationFrontierDB::ObjectSnapshot> live_objects;
+    if (!candidate_set.valid || candidate_set.candidates.empty()) {
+        return live_objects;
+    }
+
+    const general_utils::vec_E<ExplorationFrontierDB::ObjectSnapshot> db_objects =
+            frontier_db_.activeObjects(stamp);
+    if (db_objects.empty()) {
+        return live_objects;
+    }
+
+    const double match_radius =
+            std::max({cfg_.exploration_active_tour_match_radius,
+                      cfg_.exploration_frontier_manager_match_radius,
+                      cfg_.exploration_frontier_cluster_radius,
+                      cfg_.exploration_coverage_revisit_radius,
+                      0.75});
+
+    for (const ExplorationFrontierDB::ObjectSnapshot &db_object : db_objects) {
+        if (db_object.key.empty()) {
+            continue;
+        }
+
+        ExplorationFrontierDB::ObjectSnapshot object = db_object;
+        object.viewpoints.clear();
+        object.best_score = std::numeric_limits<double>::infinity();
+        object.total_gain = 0.0;
+        object.max_gain = 0.0;
+        object.candidate_count = 0;
+        object.expansion_count = 0;
+
+        std::unordered_set<std::string> emitted;
+        for (const ExplorationGoal &candidate : candidate_set.candidates) {
+            if (!candidate.valid || !candidate.position.allFinite()) {
+                continue;
+            }
+            const std::string candidate_sector = sectorKeyForGoal(candidate);
+            const std::string candidate_object_key =
+                    frontier_db_.objectKeyForGoal(candidate, candidate_sector);
+            const bool same_key =
+                    !candidate_object_key.empty() &&
+                    candidate_object_key == db_object.key;
+            const bool same_frontier =
+                    candidate.frontier_id >= 0 &&
+                    db_object.key == "frontier:" + std::to_string(candidate.frontier_id);
+            const double reference_distance =
+                    db_object.reference.allFinite()
+                            ? (sectorReference(candidate) - db_object.reference).norm()
+                            : std::numeric_limits<double>::infinity();
+            const bool same_region =
+                    reference_distance <= match_radius &&
+                    (candidate.frontier_center_valid || candidate.frontier_id < 0);
+            if (!same_key && !same_frontier && !same_region) {
+                continue;
+            }
+
+            ExplorationGoal live_viewpoint = candidate;
+            if (live_viewpoint.identity.frontier_key.empty()) {
+                live_viewpoint.identity.frontier_key = db_object.key;
+            }
+            live_viewpoint.reason += " live_frontier_object=" + db_object.key;
+            const std::string viewpoint_key = tourGoalKey(live_viewpoint);
+            const std::string dedup_key =
+                    !viewpoint_key.empty()
+                            ? viewpoint_key
+                            : nhbp::quantizedPositionKey(
+                                      live_viewpoint.position,
+                                      std::max(0.25,
+                                               cfg_.exploration_coverage_grid_resolution),
+                                      "live_viewpoint");
+            if (!dedup_key.empty() && emitted.find(dedup_key) != emitted.end()) {
+                continue;
+            }
+            if (!dedup_key.empty()) {
+                emitted.insert(dedup_key);
+            }
+
+            object.viewpoints.push_back(live_viewpoint);
+            object.best_score = std::min(object.best_score, live_viewpoint.score);
+            object.total_gain += std::max(0.0, live_viewpoint.information_gain);
+            object.max_gain =
+                    std::max(object.max_gain,
+                             std::max(0.0, live_viewpoint.information_gain));
+            ++object.candidate_count;
+            if (live_viewpoint.identity.intent_mode == "exploration_expansion" ||
+                live_viewpoint.reason.find("expansion") != std::string::npos) {
+                ++object.expansion_count;
+            }
+        }
+
+        if (object.viewpoints.empty()) {
+            continue;
+        }
+        if (!std::isfinite(object.best_score)) {
+            object.best_score = db_object.best_score;
+        }
+        object.expansion_only =
+                object.candidate_count > 0 &&
+                object.expansion_count == object.candidate_count;
+        std::sort(object.viewpoints.begin(),
+                  object.viewpoints.end(),
+                  [](const ExplorationGoal &lhs, const ExplorationGoal &rhs) {
+                      if (lhs.score != rhs.score) {
+                          return lhs.score < rhs.score;
+                      }
+                      return lhs.information_gain > rhs.information_gain;
+                  });
+        const int keep =
+                std::max(1, cfg_.exploration_task_planner_viewpoints_per_frontier);
+        if (static_cast<int>(object.viewpoints.size()) > keep) {
+            object.viewpoints.resize(static_cast<size_t>(keep));
+        }
+        live_objects.push_back(std::move(object));
+    }
+
+    std::sort(live_objects.begin(),
+              live_objects.end(),
+              [](const ExplorationFrontierDB::ObjectSnapshot &lhs,
+                 const ExplorationFrontierDB::ObjectSnapshot &rhs) {
+                  if (lhs.best_score != rhs.best_score) {
+                      return lhs.best_score < rhs.best_score;
+                  }
+                  return lhs.total_gain > rhs.total_gain;
+              });
+    return live_objects;
+}
+
+bool ExplorationRuntimeManager::rebuildActiveTour(
+        const ExplorationCandidateSet &candidate_set,
+        const general_utils::Vec3f &robot_pos,
+        const double current_yaw,
+        const double stamp,
+        std::string &reason)
+{
+    reason.clear();
+    if (candidate_set.candidates.empty()) {
+        reason = "empty_candidate_set";
+        return false;
+    }
+
+    const general_utils::vec_E<ExplorationFrontierDB::ObjectSnapshot> frontier_objects =
+            selectLiveFrontierObjectsForTour(candidate_set, stamp);
+    ExplorationTaskPlanner::Request task_request;
+    task_request.candidate_set = &candidate_set;
+    task_request.frontier_objects = &frontier_objects;
+    task_request.robot_pos = robot_pos;
+    task_request.current_yaw = current_yaw;
+    task_request.stamp = stamp;
+    task_request.pairwise_cost =
+            [this, stamp](const ExplorationGoal &from, const ExplorationGoal &to) {
+                return tourPairwiseCandidateCost(from, to, stamp);
+            };
+    task_request.start_cost =
+            [this, &robot_pos, current_yaw, stamp](const ExplorationGoal &goal) {
+                const double travel_cost =
+                        std::isfinite(goal.travel_cost)
+                                ? goal.travel_cost
+                                : (goal.position - robot_pos).norm();
+                const double yaw_cost = yawDistance(current_yaw, goal.yaw);
+                const std::string sector_key = sectorKeyForGoal(goal);
+                const double coverage_penalty =
+                        std::max(0.0, cfg_.exploration_tour_coverage_penalty_weight) *
+                        coverage_grid_.revisitPenalty(sectorReference(goal), stamp);
+                const double memory_penalty = sectorMemoryPenalty(sector_key, stamp);
+                const double coverage_reward = coverageIntentReward(goal, stamp);
+                return std::max(0.0,
+                       travel_cost +
+                       cfg_.exploration_weight_yaw * yaw_cost +
+                       cfg_.exploration_weight_curvature * goal.curvature_cost +
+                       coverage_penalty +
+                       memory_penalty -
+                       coverage_reward);
+            };
+    task_request.node_penalty =
+            [this, stamp](const ExplorationGoal &goal) {
+                const std::string sector_key = sectorKeyForGoal(goal);
+                return std::max(0.0, cfg_.exploration_tour_coverage_penalty_weight) *
+                               coverage_grid_.revisitPenalty(sectorReference(goal), stamp) +
+                       sectorMemoryPenalty(sector_key, stamp);
+            };
+    task_request.goal_key =
+            [this](const ExplorationGoal &goal) {
+                return tourGoalKey(goal);
+            };
+    task_request.sector_key =
+            [this](const ExplorationGoal &goal) {
+                return sectorKeyForGoal(goal);
+            };
+    task_request.sector_reference =
+            [this](const ExplorationGoal &goal) {
+                return sectorReference(goal);
+            };
+
+    ExplorationTaskPlanner::Plan task_plan;
+    general_utils::vec_E<ExplorationGoal> ordered_goals;
+    if (task_planner_.plan(task_request, task_plan)) {
+        ordered_goals = task_plan.ordered_goals;
+        reason = task_plan.reason +
+                 ",live_objects=" + std::to_string(frontier_objects.size());
+    } else {
+        const int candidate_num =
+                std::min(static_cast<int>(candidate_set.candidates.size()),
+                         std::max(1, cfg_.exploration_atsp_max_candidate_num));
+        std::vector<int> ordered_indices(static_cast<size_t>(candidate_num));
+        for (int i = 0; i < candidate_num; ++i) {
+            ordered_indices[static_cast<size_t>(i)] = i;
+        }
+        std::sort(ordered_indices.begin(),
+                  ordered_indices.end(),
+                  [&candidate_set](const int lhs, const int rhs) {
+                      return candidate_set.candidates[static_cast<size_t>(lhs)].score <
+                             candidate_set.candidates[static_cast<size_t>(rhs)].score;
+                  });
+        ordered_goals.reserve(ordered_indices.size());
+        for (const int index : ordered_indices) {
+            ordered_goals.push_back(candidate_set.candidates[static_cast<size_t>(index)]);
+        }
+        reason = task_plan.reason.empty()
+                         ? "task_planner_fallback_score_order"
+                         : task_plan.reason + "_fallback_score_order";
+        reason += ",live_objects=" + std::to_string(frontier_objects.size());
+    }
+    if (ordered_goals.empty()) {
+        reason = reason.empty() ? "empty_task_tour" : reason + "_empty_task_tour";
+        return false;
+    }
+
+    ActiveTour rebuilt;
+    rebuilt.cursor = 0;
+    rebuilt.generation = active_tour_.generation + 1;
+    rebuilt.created_stamp = stamp;
+    rebuilt.last_rebuild_stamp = stamp;
+    rebuilt.valid = true;
+    rebuilt.goals.reserve(ordered_goals.size());
+    rebuilt.node_status.reserve(ordered_goals.size());
+    rebuilt.node_failures.reserve(ordered_goals.size());
+    rebuilt.node_enter_stamp.reserve(ordered_goals.size());
+    rebuilt.node_exit_stamp.reserve(ordered_goals.size());
+
+    std::ostringstream key;
+    key << "tour:" << rebuilt.generation << ":" << reason;
+    for (int rank = 0; rank < static_cast<int>(ordered_goals.size()); ++rank) {
+        ExplorationGoal goal = ordered_goals[static_cast<size_t>(rank)];
+        goal.identity.tour_rank = rank;
+        const std::string goal_key = tourGoalKey(goal);
+        key << "|" << (goal_key.empty() ? std::to_string(goal.candidate_id) : goal_key);
+        rebuilt.goals.push_back(goal);
+        rebuilt.node_status.push_back(ActiveTour::NodeStatus::PENDING);
+        rebuilt.node_failures.push_back(0);
+        rebuilt.node_enter_stamp.push_back(0.0);
+        rebuilt.node_exit_stamp.push_back(0.0);
+    }
+    rebuilt.tour_key = key.str();
+    if (!rebuilt.goals.empty()) {
+        const general_utils::Vec3f sector_position =
+                rebuilt.goals.front().frontier_center_valid
+                        ? rebuilt.goals.front().frontier_center
+                        : rebuilt.goals.front().position;
+        rebuilt.sector_key = activeSectorEnabled() && active_sector_.valid
+                                     ? active_sector_.key
+                                     : nhbp::quantizedPositionKey(
+                                               sector_position,
+                                               activeSectorResolution(),
+                                               "sector");
+        for (int rank = 0; rank < static_cast<int>(rebuilt.goals.size()); ++rank) {
+            rebuilt.goals[static_cast<size_t>(rank)].identity.tour_key =
+                    rebuilt.tour_key;
+            rebuilt.goals[static_cast<size_t>(rank)].identity.tour_rank = rank;
+        }
+    }
+
+    active_tour_ = rebuilt;
+    ++active_tour_rebuild_count_;
+    reason += ":generation=" + std::to_string(active_tour_.generation) +
+              ",size=" + std::to_string(active_tour_.goals.size());
+    return active_tour_.valid && !active_tour_.goals.empty();
+}
+
+double ExplorationRuntimeManager::tourPairwiseCandidateCost(
+        const ExplorationGoal &from,
+        const ExplorationGoal &to,
+        const double stamp) const
+{
+    if (!from.position.allFinite() || !to.position.allFinite()) {
+        return std::numeric_limits<double>::infinity();
+    }
+    const double travel = topologyAwareTravelCost(from, to, stamp);
+    const double yaw_cost = yawDistance(from.yaw, to.yaw);
+    const double info_saturation =
+            std::max(1.0e-6, cfg_.exploration_information_gain_saturation);
+    const double effective_gain =
+            std::min(std::max(0.0, to.information_gain), info_saturation);
+    const double node_cost =
+            cfg_.exploration_weight_yaw * yaw_cost +
+            cfg_.exploration_weight_curvature * to.curvature_cost +
+            cfg_.exploration_weight_info_gain * effective_gain;
+    const double same_frontier_penalty =
+            from.frontier_id >= 0 &&
+            from.frontier_id == to.frontier_id
+                    ? cfg_.exploration_frontier_cluster_radius
+                    : 0.0;
+    const std::string from_sector = sectorKeyForGoal(from);
+    const std::string to_sector = sectorKeyForGoal(to);
+    const double cross_sector_penalty =
+            !from_sector.empty() &&
+            !to_sector.empty() &&
+            from_sector != to_sector
+                    ? std::max(0.0, cfg_.exploration_tour_cross_sector_penalty)
+                    : 0.0;
+    const double coverage_penalty =
+            std::max(0.0, cfg_.exploration_tour_coverage_penalty_weight) *
+            coverage_grid_.revisitPenalty(sectorReference(to), stamp);
+    const double coverage_reward = coverageIntentReward(to, stamp);
+    const double sector_memory_penalty = sectorMemoryPenalty(to_sector, stamp);
+    return std::max(0.0,
+                    travel +
+                            node_cost +
+                            same_frontier_penalty +
+                            cross_sector_penalty +
+                            coverage_penalty +
+                            sector_memory_penalty -
+                            coverage_reward);
+}
+
+double ExplorationRuntimeManager::topologyAwareTravelCost(
+        const ExplorationGoal &from,
+        const ExplorationGoal &to,
+        const double stamp) const
+{
+    if (!from.position.allFinite() || !to.position.allFinite()) {
+        return std::numeric_limits<double>::infinity();
+    }
+    const double euclidean = std::max(0.0, (to.position - from.position).norm());
+    const double topology_weight =
+            std::clamp(cfg_.exploration_tour_topology_weight, 0.0, 1.0);
+    if (!cfg_.exploration_use_topological_memory || topology_weight <= 1.0e-6) {
+        return euclidean;
+    }
+    nhbp::TopoPath topo_path;
+    if (topological_memory_.searchPath(from.position, to.position, stamp, topo_path) &&
+        topo_path.valid &&
+        topo_path.length > 1.0e-3) {
+        const double topo_length = std::max(euclidean, topo_path.length);
+        return (1.0 - topology_weight) * euclidean + topology_weight * topo_length;
+    }
+    const bool topology_has_context =
+            topological_memory_.activeNodeCount(stamp) >= 2 &&
+            topological_memory_.edgeCount() > 0;
+    if (!topology_has_context) {
+        return euclidean;
+    }
+    return euclidean * (1.0 + 0.25 * topology_weight);
 }
 
 } // namespace general_planner

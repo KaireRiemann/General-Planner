@@ -199,7 +199,12 @@ void ExplorationManager::filterAndScoreCandidates(const Vec3f &robot_pos,
 
         const bool bootstrap_candidate =
                 candidate.reason.find("bootstrap") != std::string::npos;
-        if (!bootstrap_candidate && isFrontierCovered(reference, robot_pos)) {
+        const bool expansion_candidate =
+                candidate.identity.intent_mode == "exploration_expansion" ||
+                candidate.reason.find("expansion") != std::string::npos;
+        if (!bootstrap_candidate &&
+            !expansion_candidate &&
+            isFrontierCovered(reference, robot_pos)) {
             FrontierRecord &covered = upsertFrontier(candidate, stamp, reference);
             covered.state = FrontierState::COVERED;
             covered.last_state_stamp = stamp;
@@ -401,6 +406,10 @@ std::string ExplorationManager::keyForFrontier(const ExplorationGoal &goal) cons
 }
 
 Vec3f ExplorationManager::frontierReference(const ExplorationGoal &goal) const {
+    if (goal.identity.intent_mode == "exploration_expansion" ||
+        goal.reason.find("expansion") != std::string::npos) {
+        return goal.position;
+    }
     if (goal.frontier_center_valid && goal.frontier_center.allFinite()) {
         return goal.frontier_center;
     }

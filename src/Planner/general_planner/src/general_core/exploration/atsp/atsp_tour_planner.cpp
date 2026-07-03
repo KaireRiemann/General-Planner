@@ -32,6 +32,31 @@ bool validCostMatrix(const ATSPProblem &problem)
            problem.directed_cost_matrix.cols() == expected_size;
 }
 
+Eigen::MatrixXd rewardAdjustedCostMatrix(const ATSPProblem &problem)
+{
+    Eigen::MatrixXd adjusted = problem.directed_cost_matrix;
+    const int node_count = adjusted.rows();
+    for (int to = 1; to < node_count; ++to) {
+        const int candidate_index = to - 1;
+        if (candidate_index >= static_cast<int>(problem.node_reward.size())) {
+            continue;
+        }
+        const double reward = std::max(0.0,
+                                       problem.node_reward[static_cast<size_t>(
+                                               candidate_index)]);
+        if (reward <= 1.0e-9) {
+            continue;
+        }
+        for (int from = 0; from < node_count; ++from) {
+            if (from == to || !std::isfinite(adjusted(from, to))) {
+                continue;
+            }
+            adjusted(from, to) = std::max(0.0, adjusted(from, to) - reward);
+        }
+    }
+    return adjusted;
+}
+
 } // namespace
 
 ATSPTourPlanner::ATSPTourPlanner()
@@ -69,7 +94,10 @@ ATSPSolution ATSPTourPlanner::solve(const ATSPProblem &problem) const
     const bool wants_lkh = solver == "lkh" ||
                            solver == "fy_node_lkh" ||
                            solver == "linked_lkh";
-    if (wants_lkh && problem.time_budget_ms > 0 && problem.time_budget_ms < 1000) {
+    if (wants_lkh &&
+        problem.time_budget_ms > 0 &&
+        problem.time_budget_ms < 100 &&
+        problem.candidates.size() > 8U) {
         solution = solveGreedy(problem, "linked_lkh_budget_guard_greedy", true);
         solution.solve_time_ms = elapsedMs(start);
         return solution;
@@ -153,7 +181,8 @@ bool ATSPTourPlanner::solveExternalLkh(const ATSPProblem &problem,
     const std::string parameter_file = config_.work_dir + "/single.par";
     const std::string tour_file = config_.work_dir + "/single.txt";
 
-    if (!writeFyNodeTsplibProblem(problem.directed_cost_matrix, problem_file) ||
+    const Eigen::MatrixXd lkh_cost_matrix = rewardAdjustedCostMatrix(problem);
+    if (!writeFyNodeTsplibProblem(lkh_cost_matrix, problem_file) ||
         !writeFyNodeLkhParameterFile(problem_file, tour_file, parameter_file)) {
         return false;
     }
@@ -185,7 +214,8 @@ bool ATSPTourPlanner::solveLinkedLkh(const ATSPProblem &problem,
     const std::string parameter_file = config_.work_dir + "/single.par";
     const std::string tour_file = config_.work_dir + "/single.txt";
 
-    if (!writeFyNodeTsplibProblem(problem.directed_cost_matrix, problem_file) ||
+    const Eigen::MatrixXd lkh_cost_matrix = rewardAdjustedCostMatrix(problem);
+    if (!writeFyNodeTsplibProblem(lkh_cost_matrix, problem_file) ||
         !writeFyNodeLkhParameterFile(problem_file, tour_file, parameter_file)) {
         return false;
     }

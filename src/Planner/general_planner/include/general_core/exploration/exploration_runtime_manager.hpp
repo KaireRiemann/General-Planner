@@ -2,10 +2,14 @@
 
 #include <memory>
 #include <string>
+#include <unordered_map>
+#include <vector>
 
 #include "general_core/config.hpp"
 #include "general_core/exploration/coverage_grid.hpp"
 #include "general_core/exploration/exploration_frontend.hpp"
+#include "general_core/exploration/exploration_frontier_db.hpp"
+#include "general_core/exploration/exploration_task_planner.hpp"
 #include "general_core/exploration/frontier_memory.hpp"
 #include "general_core/nhbp/decision_stabilizer.hpp"
 #include "general_core/nhbp/navigation_memory.hpp"
@@ -89,6 +93,20 @@ public:
                                          double stamp,
                                          bool new_task);
 
+    SelectionDecision selectGoalFromCandidates(
+            const ExplorationCandidateSet &candidate_set,
+            const general_utils::Vec3f &robot_pos,
+            double current_yaw,
+            double committed_remaining,
+            double stamp,
+            bool new_task);
+
+    SelectionDecision selectGoalFromActiveTour(
+            const general_utils::Vec3f &robot_pos,
+            double committed_remaining,
+            double stamp,
+            bool new_task);
+
     void recordDecision(const ExplorationGoal &goal,
                         const general_utils::Vec3f &robot_pos,
                         double stamp);
@@ -156,6 +174,68 @@ private:
                                     double stamp) const;
 
     bool nhbpEnabled() const;
+    bool activeTourEnabled() const;
+    bool activeSectorEnabled() const;
+    double activeSectorResolution() const;
+    general_utils::Vec3f sectorReference(const ExplorationGoal &goal) const;
+    std::string sectorKeyForGoal(const ExplorationGoal &goal) const;
+    void updateSectorMemoryFromCandidates(const ExplorationCandidateSet &candidate_set,
+                                          double stamp);
+    void markSectorActive(const std::string &sector_key,
+                          const general_utils::Vec3f &center,
+                          int candidate_count,
+                          double score,
+                          double stamp);
+    void markSectorProgress(const ExplorationGoal &goal, double stamp);
+    void markSectorFailure(const ExplorationGoal &goal, double stamp);
+    double sectorMemoryPenalty(const std::string &sector_key, double stamp) const;
+    ExplorationCandidateSet selectSectorCandidates(
+            const ExplorationCandidateSet &candidate_set,
+            const general_utils::Vec3f &robot_pos,
+            double stamp,
+            bool new_task,
+            std::string &reason);
+    void invalidateActiveTour(const std::string &reason);
+    void invalidateActiveSector(const std::string &reason);
+    void ensureActiveTourState();
+    bool advanceCompletedTourNodes(const general_utils::Vec3f &robot_pos,
+                                   double stamp);
+    void markTourNodeExecuting(const ExplorationGoal &goal, double stamp);
+    void markTourNodeCompleted(int rank, double stamp);
+    void markTourNodeSkipped(int rank, double stamp);
+    void markTourNodeFailed(const ExplorationGoal &goal, double stamp);
+    int pendingTourNodeCount() const;
+    int executingTourNodeCount() const;
+    int completedTourNodeCount() const;
+    int failedTourNodeCount() const;
+    bool findActiveTourCandidate(const ExplorationCandidateSet &candidate_set,
+                                 const general_utils::Vec3f &robot_pos,
+                                 double stamp,
+                                 ExplorationGoal &goal,
+                                 std::string &reason);
+    bool repairActiveTourFromCandidates(const ExplorationCandidateSet &candidate_set,
+                                        const general_utils::Vec3f &robot_pos,
+                                        double stamp,
+                                        std::string &reason);
+    bool rebuildActiveTour(const ExplorationCandidateSet &candidate_set,
+                           const general_utils::Vec3f &robot_pos,
+                           double current_yaw,
+                           double stamp,
+                           std::string &reason);
+    general_utils::vec_E<ExplorationFrontierDB::ObjectSnapshot>
+    selectLiveFrontierObjectsForTour(const ExplorationCandidateSet &candidate_set,
+                                     double stamp) const;
+    bool candidateMatchesTourGoal(const ExplorationGoal &candidate,
+                                  const ExplorationGoal &tour_goal,
+                                  double match_radius) const;
+    double coverageIntentReward(const ExplorationGoal &goal, double stamp) const;
+    double tourPairwiseCandidateCost(const ExplorationGoal &from,
+                                     const ExplorationGoal &to,
+                                     double stamp) const;
+    double topologyAwareTravelCost(const ExplorationGoal &from,
+                                   const ExplorationGoal &to,
+                                   double stamp) const;
+    std::string tourGoalKey(const ExplorationGoal &goal) const;
 
     const Config &cfg_;
     nhbp::NavigationMemory navigation_memory_;
@@ -163,6 +243,8 @@ private:
     FrontierMemory frontier_memory_;
     CoverageGrid coverage_grid_;
     nhbp::TopologicalMemory topological_memory_;
+    ExplorationFrontierDB frontier_db_;
+    ExplorationTaskPlanner task_planner_;
     ExplorationGoal latest_goal_;
     ExplorationGoal committed_goal_;
     Status status_{Status::IDLE};
@@ -197,6 +279,90 @@ private:
     double recovery_lock_until_{0.0};
     int recovery_lock_request_count_{0};
     int recovery_lock_release_count_{0};
+
+    struct ActiveSector {
+        bool valid{false};
+        std::string key;
+        general_utils::Vec3f center{general_utils::Vec3f::Zero()};
+        double score{0.0};
+        int candidate_count{0};
+        int generation{0};
+        int failure_count{0};
+        double created_stamp{0.0};
+        double last_update_stamp{0.0};
+        double last_progress_stamp{0.0};
+        std::string invalid_reason;
+    };
+
+    struct ActiveTour {
+        enum class NodeStatus {
+            PENDING,
+            EXECUTING,
+            COMPLETED,
+            SKIPPED,
+            FAILED
+        };
+
+        general_utils::vec_E<ExplorationGoal> goals;
+        std::vector<NodeStatus> node_status;
+        std::vector<int> node_failures;
+        std::vector<double> node_enter_stamp;
+        std::vector<double> node_exit_stamp;
+        std::string tour_key;
+        std::string sector_key;
+        int cursor{0};
+        int executing_rank{-1};
+        int generation{0};
+        double created_stamp{0.0};
+        double last_rebuild_stamp{0.0};
+        bool valid{false};
+        std::string invalid_reason;
+    };
+
+    enum class SectorStatus {
+        UNKNOWN,
+        ACTIVE,
+        COMPLETED,
+        BLOCKED,
+        STALE
+    };
+
+    struct SectorMemoryEntry {
+        std::string key;
+        SectorStatus status{SectorStatus::UNKNOWN};
+        general_utils::Vec3f center{general_utils::Vec3f::Zero()};
+        double score{0.0};
+        int candidate_count{0};
+        int total_seen_count{0};
+        int selection_count{0};
+        int progress_count{0};
+        int failure_count{0};
+        double first_seen_stamp{0.0};
+        double last_seen_stamp{0.0};
+        double last_selected_stamp{0.0};
+        double last_progress_stamp{0.0};
+        double block_until{0.0};
+        double completed_stamp{0.0};
+    };
+
+    ActiveSector active_sector_;
+    ActiveTour active_tour_;
+    std::unordered_map<std::string, SectorMemoryEntry> sector_memory_;
+    int active_sector_reuse_count_{0};
+    int active_sector_switch_count_{0};
+    int active_sector_invalid_count_{0};
+    int active_sector_filter_count_{0};
+    int sector_completed_count_{0};
+    int sector_blocked_count_{0};
+    int sector_reactivated_count_{0};
+    int active_tour_reuse_count_{0};
+    int active_tour_rebuild_count_{0};
+    int active_tour_repair_count_{0};
+    int active_tour_advance_count_{0};
+    int active_tour_invalid_count_{0};
+    int active_tour_node_completed_count_{0};
+    int active_tour_node_failed_count_{0};
+    int active_tour_node_skipped_count_{0};
 };
 
 } // namespace general_planner

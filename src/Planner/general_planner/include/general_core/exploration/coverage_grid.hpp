@@ -29,6 +29,7 @@ public:
         double resolution{1.0};
         double revisit_radius{0.8};
         double revisit_time_window{5.0};
+        double intent_radius{4.0};
         int max_cells{4096};
         double information_gain_alpha{0.35};
         int covered_visit_threshold{2};
@@ -53,6 +54,7 @@ public:
                              double radius);
     bool recentlyVisited(const general_utils::Vec3f &position, double stamp) const;
     double revisitPenalty(const general_utils::Vec3f &position, double stamp) const;
+    double intentReward(const general_utils::Vec3f &position, double stamp) const;
 
     int visitedCellCount() const;
     int totalVisitCount() const;

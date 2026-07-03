@@ -130,6 +130,29 @@ namespace general_planner {
             return result.rejected();
         }
 
+        bool isYawRateLimitFailure(const checker::CheckResult &result) {
+            return result.rejected() &&
+                   result.code.find("YAW_RATE_LIMIT") != std::string::npos;
+        }
+
+        bool buildConstantYawTrajectory(const double yaw,
+                                        const double duration,
+                                        const double start_wt,
+                                        Trajectory &traj) {
+            if (!std::isfinite(yaw) ||
+                !std::isfinite(duration) ||
+                duration <= 1.0e-5 ||
+                !std::isfinite(start_wt)) {
+                return false;
+            }
+            Eigen::MatrixXd coeff = Eigen::MatrixXd::Zero(3, 8);
+            coeff(0, 7) = yaw;
+            traj.clear();
+            traj.emplace_back(duration, coeff);
+            traj.start_WT = start_wt;
+            return !traj.empty();
+        }
+
         bool currentTrajectorySafeForNoNeed(state2state_task::StateToStateExpBackendServices &services,
                                             const Trajectory &traj,
                                             const double start_t) {
@@ -787,7 +810,7 @@ namespace general_planner {
             }
         }
 
-        const auto temp_yaw_traj = old_traj + new_traj;
+        Trajectory temp_yaw_traj = old_traj + new_traj;
         double on_backup_end_TT{-1}, on_backup_start_TT{-1};
         if (!last_exp_traj_info.empty() && replan_state_TT > services.cmd_traj_info.getBackupTrajStartTT()) {
             on_backup_start_TT = services.cmd_traj_info.getBackupTrajStartTT() - replan_process_start_TT;
@@ -796,11 +819,69 @@ namespace general_planner {
         out_exp_traj_info.setTrajectory(new_traj_WT, temp_exp_traj, temp_yaw_traj, on_backup_start_TT,
                                         on_backup_end_TT);
 
-        if (rejectOnCheckFailure(services.ros_ptr,
-                                 "generateExpTraj output",
-                                 checker::checkExpTrajectory(out_exp_traj_info,
-                                                             services.cfg,
-                                                             "state2state_exp_output"))) {
+        const checker::CheckResult output_check =
+                checker::checkExpTrajectory(out_exp_traj_info,
+                                            services.cfg,
+                                            "state2state_exp_output");
+        if (output_check.rejected()) {
+            if (services.cfg.exploration_enable && isYawRateLimitFailure(output_check)) {
+                const double hold_yaw =
+                        std::isfinite(init_yaw[0])
+                                ? init_yaw[0]
+                                : (std::isfinite(services.robot_state.yaw)
+                                           ? services.robot_state.yaw
+                                           : 0.0);
+                Trajectory hold_new_yaw_traj;
+                if (buildConstantYawTrajectory(hold_yaw,
+                                               out_traj.getTotalDuration(),
+                                               new_traj_WT,
+                                               hold_new_yaw_traj)) {
+                    const Trajectory hold_yaw_traj = old_traj + hold_new_yaw_traj;
+                    out_exp_traj_info.setTrajectory(new_traj_WT,
+                                                    temp_exp_traj,
+                                                    hold_yaw_traj,
+                                                    on_backup_start_TT,
+                                                    on_backup_end_TT);
+                    const checker::CheckResult hold_check =
+                            checker::checkExpTrajectory(out_exp_traj_info,
+                                                        services.cfg,
+                                                        "state2state_exp_output_yaw_hold_fallback");
+                    if (!hold_check.rejected()) {
+                        temp_yaw_traj = hold_yaw_traj;
+                        if (services.ros_ptr != nullptr) {
+                            services.ros_ptr->warn(
+                                    " -- [GeneralPlanner] Exploration yaw-rate fallback accepted: original_code={}, hold_yaw={:.3f}, duration={:.3f}.",
+                                    output_check.code,
+                                    hold_yaw,
+                                    out_traj.getTotalDuration());
+                        }
+                    } else {
+                        logCheckResult(services.ros_ptr,
+                                       "generateExpTraj yaw-hold fallback",
+                                       hold_check);
+                        logCheckResult(services.ros_ptr,
+                                       "generateExpTraj output",
+                                       output_check);
+                        out_exp_traj_info.setEmpty();
+                        return FAILED;
+                    }
+                } else {
+                    logCheckResult(services.ros_ptr,
+                                   "generateExpTraj output",
+                                   output_check);
+                    out_exp_traj_info.setEmpty();
+                    return FAILED;
+                }
+            } else {
+                logCheckResult(services.ros_ptr,
+                               "generateExpTraj output",
+                               output_check);
+                out_exp_traj_info.setEmpty();
+                return FAILED;
+            }
+        }
+
+        if (out_exp_traj_info.empty()) {
             out_exp_traj_info.setEmpty();
             return FAILED;
         }

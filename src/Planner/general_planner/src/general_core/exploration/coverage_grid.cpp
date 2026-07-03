@@ -174,6 +174,71 @@ double CoverageGrid::revisitPenalty(const general_utils::Vec3f &position,
     return penalty;
 }
 
+double CoverageGrid::intentReward(const general_utils::Vec3f &position,
+                                  const double stamp) const
+{
+    if (!config_.enable || !position.allFinite()) {
+        return 0.0;
+    }
+
+    const Key center = keyForPosition(position);
+    const double resolution = std::max(1.0e-3, config_.resolution);
+    const double radius = std::max(config_.intent_radius, config_.revisit_radius);
+    const int radius_steps =
+            std::max(0, static_cast<int>(std::ceil(radius / resolution)));
+    double reward = 0.0;
+    int sample_count = 0;
+
+    for (int dx = -radius_steps; dx <= radius_steps; ++dx) {
+        for (int dy = -radius_steps; dy <= radius_steps; ++dy) {
+            for (int dz = -radius_steps; dz <= radius_steps; ++dz) {
+                const double dist =
+                        resolution *
+                        std::sqrt(static_cast<double>(dx * dx + dy * dy + dz * dz));
+                if (dist > radius) {
+                    continue;
+                }
+                ++sample_count;
+                const Key key{center.x + dx, center.y + dy, center.z + dz};
+                const auto it = cells_.find(key);
+                const double distance_weight =
+                        1.0 - 0.5 * std::min(1.0, dist / std::max(radius, resolution));
+                if (it == cells_.end()) {
+                    reward += 1.0 * distance_weight;
+                    continue;
+                }
+
+                const CoverageCellRecord &record = it->second;
+                if (recordStale(record, stamp)) {
+                    reward += 0.7 * distance_weight;
+                    continue;
+                }
+
+                const double visit_deficit =
+                        1.0 / (1.0 + static_cast<double>(std::max(0, record.visits)));
+                const double evidence =
+                        std::min(2.5,
+                                 record.information_gain_ema / 40.0 +
+                                         static_cast<double>(record.observed_frontier_count) / 12.0 +
+                                         static_cast<double>(record.observed_unknown_count) / 24.0);
+                double cell_reward = 0.65 * visit_deficit + evidence;
+                if (record.covered) {
+                    cell_reward *= 0.15;
+                }
+                if (record.no_progress_basin) {
+                    cell_reward *= 0.25;
+                }
+                reward += std::max(0.0, cell_reward) * distance_weight;
+            }
+        }
+    }
+
+    if (sample_count <= 0) {
+        return 0.0;
+    }
+    return reward / static_cast<double>(sample_count);
+}
+
 int CoverageGrid::visitedCellCount() const
 {
     return static_cast<int>(cells_.size());

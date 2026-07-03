@@ -106,6 +106,48 @@ namespace general_planner {
         frontend_cfg.viewpoint_z_sample_num = cfg_.exploration_viewpoint_z_sample_num;
         frontend_cfg.viewpoint_z_min = cfg_.exploration_viewpoint_z_min;
         frontend_cfg.viewpoint_z_max = cfg_.exploration_viewpoint_z_max;
+        frontend_cfg.expansion_fallback_enable =
+                cfg_.exploration_expansion_fallback_enable;
+        frontend_cfg.expansion_trigger_min_candidates =
+                cfg_.exploration_expansion_trigger_min_candidates;
+        frontend_cfg.expansion_trigger_max_clusters =
+                cfg_.exploration_expansion_trigger_max_clusters;
+        frontend_cfg.expansion_max_candidate_num =
+                cfg_.exploration_expansion_max_candidate_num;
+        frontend_cfg.expansion_yaw_sample_num =
+                cfg_.exploration_expansion_yaw_sample_num;
+        frontend_cfg.expansion_radius_sample_num =
+                cfg_.exploration_expansion_radius_sample_num;
+        frontend_cfg.expansion_min_radius =
+                cfg_.exploration_expansion_min_radius;
+        frontend_cfg.expansion_max_radius =
+                cfg_.exploration_expansion_max_radius;
+        frontend_cfg.expansion_z_sample_num =
+                cfg_.exploration_expansion_z_sample_num;
+        frontend_cfg.expansion_z_min = cfg_.exploration_expansion_z_min;
+        frontend_cfg.expansion_z_max = cfg_.exploration_expansion_z_max;
+        frontend_cfg.expansion_min_information_gain =
+                cfg_.exploration_expansion_min_information_gain;
+        frontend_cfg.expansion_allow_unknown_viewpoint =
+                cfg_.exploration_expansion_allow_unknown_viewpoint;
+        frontend_cfg.expansion_memory_enable =
+                cfg_.exploration_expansion_memory_enable;
+        frontend_cfg.expansion_memory_max_records =
+                cfg_.exploration_expansion_memory_max_records;
+        frontend_cfg.expansion_memory_ttl =
+                cfg_.exploration_expansion_memory_ttl;
+        frontend_cfg.expansion_memory_match_radius =
+                cfg_.exploration_expansion_memory_match_radius;
+        frontend_cfg.expansion_anti_revisit_enable =
+                cfg_.exploration_expansion_anti_revisit_enable;
+        frontend_cfg.expansion_retire_after_commits =
+                cfg_.exploration_expansion_retire_after_commits;
+        frontend_cfg.expansion_commit_block_radius =
+                cfg_.exploration_expansion_commit_block_radius;
+        frontend_cfg.expansion_commit_block_ttl =
+                cfg_.exploration_expansion_commit_block_ttl;
+        frontend_cfg.expansion_synthetic_gain_ratio =
+                cfg_.exploration_expansion_synthetic_gain_ratio;
         frontend_cfg.min_visible_frontier_cells = cfg_.exploration_min_visible_frontier_cells;
         frontend_cfg.min_visible_frontier_ratio = cfg_.exploration_min_visible_frontier_ratio;
         frontend_cfg.max_candidate_num = cfg_.exploration_max_candidate_num;
@@ -396,6 +438,7 @@ namespace general_planner {
     RET_CODE GeneralPlanner::PlanExplorationFromRest(const bool &new_task) {
         TimeConsuming total_t("PlanExplorationFromRest", false);
         ExplorationGoal goal;
+        bool goal_selected_from_active_tour = false;
         {
             std::lock_guard<std::mutex> guard(replan_lock_);
             latest_replan.reset();
@@ -434,7 +477,22 @@ namespace general_planner {
                 latest_replan.setGoal(robot_state_.p, robot_state_.yaw, robot_state_);
                 ExplorationGoal recovery_goal;
                 std::string recovery_validation;
-                if (exploration_frontend_->isExplorationFinished() &&
+                const ExplorationRuntimeManager::SelectionDecision tour_decision =
+                        exploration_runtime_manager_->selectGoalFromActiveTour(
+                                robot_state_.p,
+                                0.0,
+                                now,
+                                new_task);
+                if (tour_decision.ready) {
+                    goal = tour_decision.goal;
+                    goal_selected_from_active_tour = true;
+                    exploration_runtime_manager_->onGoalSelected(goal);
+                    ros_ptr_->info(" -- [Exploration] Use active tour after frontend failure: reason={}, candidate_id={}, frontier_id={}, goal_reason={}.",
+                                   tour_decision.reason,
+                                   goal.candidate_id,
+                                   goal.frontier_id,
+                                   goal.reason);
+                } else if (exploration_frontend_->isExplorationFinished() &&
                     exploration_runtime_manager_->shouldDelayFinish(now) &&
                     selectValidatedExplorationRecoveryGoal(robot_state_.p, now, recovery_goal, &recovery_validation)) {
                     goal = recovery_goal;
@@ -505,46 +563,66 @@ namespace general_planner {
                     }
                 }
             }
-            const ExplorationRuntimeManager::SelectionDecision decision =
-                    exploration_runtime_manager_->stabilizeCandidate(goal,
-                                                                     robot_state_.p,
-                                                                     0.0,
-                                                                     now,
-                                                                     new_task);
-            if (!decision.ready) {
-                ExplorationGoal recovery_goal;
-                std::string recovery_validation;
-                if (selectValidatedExplorationRecoveryGoal(robot_state_.p, now, recovery_goal, &recovery_validation)) {
-                    goal = recovery_goal;
-                    exploration_runtime_manager_->onGoalSelected(goal);
-                    ros_ptr_->info(" -- [Exploration] Use memory recovery goal after initial NHBP decision: reject_reason={}, recovery_requested={}, candidate_id={}, frontier_id={}, recovery_reason={}, validation={}.",
-                                   decision.reason,
-                                   static_cast<int>(decision.recovery_requested),
-                                   recovery_goal.candidate_id,
-                                   recovery_goal.frontier_id,
-                                   recovery_goal.reason,
-                                   recovery_validation);
-                } else if ((decision.allow_candidate_fallback ||
-                            goal.reason.find("bootstrap") != std::string::npos) &&
-                           goal.valid) {
-                    goal.reason += " nhbp_recovery_unavailable=" + decision.reason;
-                    exploration_runtime_manager_->onGoalSelected(goal);
-                    ros_ptr_->warn(" -- [Exploration] NHBP requested recovery but no validated recovery goal was found, fallback to frontend candidate: reason={}, candidate_id={}, frontier_id={}.",
-                                   decision.reason,
-                                   goal.candidate_id,
-                                   goal.frontier_id);
+            if (!goal_selected_from_active_tour) {
+                ExplorationCandidateSet candidate_set;
+                const bool has_candidate_set =
+                        exploration_frontend_->getLastCandidateSet(candidate_set);
+                const ExplorationRuntimeManager::SelectionDecision decision =
+                        has_candidate_set
+                                ? exploration_runtime_manager_->selectGoalFromCandidates(
+                                          candidate_set,
+                                          robot_state_.p,
+                                          robot_state_.yaw,
+                                          0.0,
+                                          now,
+                                          new_task)
+                                : exploration_runtime_manager_->stabilizeCandidate(goal,
+                                                                                   robot_state_.p,
+                                                                                   0.0,
+                                                                                   now,
+                                                                                   new_task);
+                if (!decision.ready) {
+                    ExplorationGoal recovery_goal;
+                    std::string recovery_validation;
+                    if (selectValidatedExplorationRecoveryGoal(robot_state_.p, now, recovery_goal, &recovery_validation)) {
+                        goal = recovery_goal;
+                        exploration_runtime_manager_->onGoalSelected(goal);
+                        ros_ptr_->info(" -- [Exploration] Use memory recovery goal after initial NHBP decision: reject_reason={}, recovery_requested={}, candidate_id={}, frontier_id={}, recovery_reason={}, validation={}.",
+                                       decision.reason,
+                                       static_cast<int>(decision.recovery_requested),
+                                       recovery_goal.candidate_id,
+                                       recovery_goal.frontier_id,
+                                       recovery_goal.reason,
+                                       recovery_validation);
+                    } else if ((decision.allow_candidate_fallback ||
+                                goal.reason.find("bootstrap") != std::string::npos) &&
+                               goal.valid) {
+                        goal.reason += " nhbp_recovery_unavailable=" + decision.reason;
+                        exploration_runtime_manager_->onGoalSelected(goal);
+                        ros_ptr_->warn(" -- [Exploration] NHBP requested recovery but no validated recovery goal was found, fallback to frontend candidate: reason={}, candidate_id={}, frontier_id={}.",
+                                       decision.reason,
+                                       goal.candidate_id,
+                                       goal.frontier_id);
+                    } else {
+                        exploration_runtime_manager_->onTemporaryFailure(goal);
+                        latest_replan.setRetCode(GENERAL_RET_CODE::GENERAL_UNDEFINED);
+                        ros_ptr_->warn(" -- [Exploration] NHBP rejected initial goal: reason={}, ndo={}.",
+                                       decision.reason,
+                                       nhbp::toString(decision.ndo.state));
+                        time_consuming_[TOTAL_REPLAN] = total_t.stop();
+                        return FAILED;
+                    }
                 } else {
-                    exploration_runtime_manager_->onTemporaryFailure(goal);
-                    latest_replan.setRetCode(GENERAL_RET_CODE::GENERAL_UNDEFINED);
-                    ros_ptr_->warn(" -- [Exploration] NHBP rejected initial goal: reason={}, ndo={}.",
-                                   decision.reason,
-                                   nhbp::toString(decision.ndo.state));
-                    time_consuming_[TOTAL_REPLAN] = total_t.stop();
-                    return FAILED;
+                    goal = decision.goal;
+                    exploration_runtime_manager_->onGoalSelected(goal);
+                    if (cfg_.exploration_print_log) {
+                        ros_ptr_->info(" -- [Exploration] Initial goal accepted: reason={}, candidate_id={}, frontier_id={}, goal_reason={}.",
+                                       decision.reason,
+                                       goal.candidate_id,
+                                       goal.frontier_id,
+                                       goal.reason);
+                    }
                 }
-            } else {
-                goal = decision.goal;
-                exploration_runtime_manager_->onGoalSelected(goal);
             }
         }
 
@@ -662,6 +740,30 @@ namespace general_planner {
                         return FINISH;
                     }
                 }
+                if (!selected_goal_ready) {
+                    const ExplorationRuntimeManager::SelectionDecision tour_decision =
+                            exploration_runtime_manager_->selectGoalFromActiveTour(
+                                    robot_state_.p,
+                                    remaining,
+                                    now,
+                                    new_task);
+                    if (tour_decision.ready) {
+                        selected_goal = tour_decision.goal;
+                        goal_switched = !tour_decision.keep_current;
+                        selected_goal_ready = true;
+                        if (tour_decision.keep_current) {
+                            exploration_runtime_manager_->onKeepCurrentGoal();
+                        } else {
+                            exploration_runtime_manager_->onGoalSelected(selected_goal);
+                        }
+                        ros_ptr_->info(" -- [Exploration] Use active tour after frontend failure: reason={}, keep_current={}, candidate_id={}, frontier_id={}, goal_reason={}.",
+                                       tour_decision.reason,
+                                       static_cast<int>(tour_decision.keep_current),
+                                       selected_goal.candidate_id,
+                                       selected_goal.frontier_id,
+                                       selected_goal.reason);
+                    }
+                }
                 if (!selected_goal_ready &&
                     exploration_runtime_manager_->shouldReuseLatestGoal(robot_state_.p, remaining, new_task) &&
                     exploration_runtime_manager_->getLatestGoal(selected_goal)) {
@@ -695,12 +797,23 @@ namespace general_planner {
                     }
                 }
             } else {
+                ExplorationCandidateSet candidate_set;
+                const bool has_candidate_set =
+                        exploration_frontend_->getLastCandidateSet(candidate_set);
                 const ExplorationRuntimeManager::SelectionDecision decision =
-                        exploration_runtime_manager_->stabilizeCandidate(candidate,
-                                                                         robot_state_.p,
-                                                                         remaining,
-                                                                         now,
-                                                                         new_task);
+                        has_candidate_set
+                                ? exploration_runtime_manager_->selectGoalFromCandidates(
+                                          candidate_set,
+                                          robot_state_.p,
+                                          robot_state_.yaw,
+                                          remaining,
+                                          now,
+                                          new_task)
+                                : exploration_runtime_manager_->stabilizeCandidate(candidate,
+                                                                                   robot_state_.p,
+                                                                                   remaining,
+                                                                                   now,
+                                                                                   new_task);
                 if (decision.ready && decision.keep_current) {
                     selected_goal = decision.goal;
                     goal_switched = false;
@@ -723,6 +836,8 @@ namespace general_planner {
                                        nhbp::toString(decision.ndo.state),
                                        selected_goal.candidate_id,
                                        selected_goal.frontier_id);
+                        ros_ptr_->info(" -- [Exploration] NHBP accepted goal reason: {}.",
+                                       selected_goal.reason);
                     }
                 } else {
                     ExplorationGoal recovery_goal;
