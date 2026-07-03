@@ -16,6 +16,46 @@
 using namespace general_utils;
 
 namespace general_planner {
+    namespace {
+        double explorationYawDiff(const double target_yaw, const double current_yaw) {
+            if (!std::isfinite(target_yaw) || !std::isfinite(current_yaw)) {
+                return 0.0;
+            }
+            return std::atan2(std::sin(target_yaw - current_yaw),
+                              std::cos(target_yaw - current_yaw));
+        }
+
+        bool explorationGoalIsYawScanRecovery(const ExplorationGoal &goal,
+                                              const Vec3f &robot_pos,
+                                              const double position_tolerance) {
+            if (!goal.valid ||
+                !goal.identity.recovery_intent ||
+                goal.reason.find("yaw scan") == std::string::npos ||
+                !goal.position.allFinite() ||
+                !robot_pos.allFinite()) {
+                return false;
+            }
+            return (goal.position - robot_pos).norm() <= std::max(0.05, position_tolerance);
+        }
+
+        bool buildExplorationConstantPositionTrajectory(const Vec3f &position,
+                                                        const double duration,
+                                                        const double start_wt,
+                                                        Trajectory &traj) {
+            if (!position.allFinite() ||
+                !std::isfinite(duration) ||
+                duration <= 1.0e-5 ||
+                !std::isfinite(start_wt)) {
+                return false;
+            }
+            Eigen::MatrixXd coeff = Eigen::MatrixXd::Zero(3, 8);
+            coeff.col(7) = position;
+            traj.clear();
+            traj.emplace_back(duration, coeff);
+            traj.start_WT = start_wt;
+            return !traj.empty();
+        }
+    } // namespace
 
     ExplorationFrontend::Config GeneralPlanner::makeExplorationFrontendConfig() const {
         ExplorationFrontend::Config frontend_cfg;
@@ -241,7 +281,8 @@ namespace general_planner {
             }
         };
 
-        const int max_attempts = 3;
+        const int max_attempts =
+                std::clamp(cfg_.exploration_max_astar_checks / 2, 3, 8);
         std::string last_reject_reason = "no_recovery_goal";
         if (exploration_runtime_manager_ != nullptr) {
             for (int attempt = 0; attempt < max_attempts; ++attempt) {
@@ -307,6 +348,51 @@ namespace general_planner {
         return false;
     }
 
+    bool GeneralPlanner::commitExplorationYawScanTrajectory(const ExplorationGoal &goal) {
+        if (!robot_state_.rcv || !robot_state_.p.allFinite()) {
+            ros_ptr_->warn(" -- [Exploration] Yaw-scan recovery commit failed: invalid robot state.");
+            return false;
+        }
+        const double position_tolerance = std::max(0.15, cfg_.resolution * 2.0);
+        if (!explorationGoalIsYawScanRecovery(goal, robot_state_.p, position_tolerance)) {
+            return false;
+        }
+
+        const double yaw_delta =
+                std::abs(explorationYawDiff(goal.yaw, robot_state_.yaw));
+        const double yaw_rate =
+                std::max(0.5, std::isfinite(cfg_.yaw_dot_max) ? cfg_.yaw_dot_max : 3.0);
+        const double duration =
+                std::clamp(yaw_delta / yaw_rate + 0.25, 0.6, 2.5);
+        const double commit_wt = ros_ptr_->getSimTime();
+
+        Trajectory hold_pos_traj;
+        if (!buildExplorationConstantPositionTrajectory(robot_state_.p,
+                                                        duration,
+                                                        commit_wt,
+                                                        hold_pos_traj)) {
+            ros_ptr_->warn(" -- [Exploration] Yaw-scan recovery commit failed: cannot build hold trajectory.");
+            return false;
+        }
+
+        latest_replan.setGoal(goal.position, goal.yaw, robot_state_);
+        const bool committed =
+                commitTaskTrajectory(hold_pos_traj,
+                                     goal.yaw,
+                                     true,
+                                     "exploration_yaw_scan");
+        if (!committed) {
+            ros_ptr_->warn(" -- [Exploration] Yaw-scan recovery commit failed: task trajectory commit rejected.");
+            return false;
+        }
+
+        ros_ptr_->info(" -- [Exploration] Yaw-scan recovery committed: yaw_delta={:.3f}, duration={:.3f}, reason={}.",
+                       yaw_delta,
+                       duration,
+                       goal.reason);
+        return true;
+    }
+
     RET_CODE GeneralPlanner::PlanExplorationFromRest(const bool &new_task) {
         TimeConsuming total_t("PlanExplorationFromRest", false);
         ExplorationGoal goal;
@@ -367,18 +453,56 @@ namespace general_planner {
                                    goal.reason,
                                    recovery_validation);
                 } else {
-                    if (exploration_frontend_->isExplorationFinished()) {
-                        exploration_runtime_manager_->onFinished(goal);
-                        latest_replan.setRetCode(GENERAL_RET_CODE::GENERAL_EXPLORATION_FINISH);
-                        ros_ptr_->info(" -- [Exploration] Exploration finished: {}.", goal.reason);
-                        time_consuming_[TOTAL_REPLAN] = total_t.stop();
-                        return FINISH;
+                    ExplorationGoal latest_goal;
+                    std::string latest_validation;
+                    const bool has_latest_goal =
+                            exploration_runtime_manager_->getLatestGoal(latest_goal) &&
+                            latest_goal.valid &&
+                            latest_goal.position.allFinite() &&
+                            (latest_goal.position - robot_state_.p).norm() >
+                                    std::max(0.5, cfg_.exploration_goal_reached_distance);
+                    if (has_latest_goal &&
+                        validateExplorationRecoveryGoal(latest_goal,
+                                                        robot_state_.p,
+                                                        &latest_validation)) {
+                        goal = latest_goal;
+                        goal.reason += " plan_from_rest_latest_goal_recovery";
+                        exploration_runtime_manager_->onGoalSelected(goal);
+                        ros_ptr_->info(" -- [Exploration] Reuse validated latest goal after frontend failure: candidate_id={}, frontier_id={}, validation={}.",
+                                       goal.candidate_id,
+                                       goal.frontier_id,
+                                       latest_validation);
+                    } else if (has_latest_goal) {
+                        const nhbp::FailureReason failure_reason =
+                                latest_validation.find("astar") != std::string::npos ||
+                                latest_validation.find("line") != std::string::npos
+                                        ? nhbp::FailureReason::ASTAR_FAIL
+                                        : nhbp::FailureReason::VIEWPOINT_UNSAFE;
+                        exploration_runtime_manager_->recordFailure(latest_goal,
+                                                                    failure_reason,
+                                                                    now);
+                        if (exploration_manager_ != nullptr) {
+                            exploration_manager_->recordFailure(latest_goal, now);
+                        }
+                        ros_ptr_->warn(" -- [Exploration] Reject latest goal after frontend failure: reason={}, candidate_id={}, frontier_id={}.",
+                                       latest_validation,
+                                       latest_goal.candidate_id,
+                                       latest_goal.frontier_id);
                     }
-                    exploration_runtime_manager_->onTemporaryFailure(goal);
-                    latest_replan.setRetCode(GENERAL_RET_CODE::GENERAL_UNDEFINED);
-                    ros_ptr_->warn(" -- [Exploration] Failed to select goal: {}.", goal.reason);
-                    time_consuming_[TOTAL_REPLAN] = total_t.stop();
-                    return FAILED;
+                    if (!goal.valid) {
+                        if (exploration_frontend_->isExplorationFinished()) {
+                            exploration_runtime_manager_->onFinished(goal);
+                            latest_replan.setRetCode(GENERAL_RET_CODE::GENERAL_EXPLORATION_FINISH);
+                            ros_ptr_->info(" -- [Exploration] Exploration finished: {}.", goal.reason);
+                            time_consuming_[TOTAL_REPLAN] = total_t.stop();
+                            return FINISH;
+                        }
+                        exploration_runtime_manager_->onTemporaryFailure(goal);
+                        latest_replan.setRetCode(GENERAL_RET_CODE::GENERAL_UNDEFINED);
+                        ros_ptr_->warn(" -- [Exploration] Failed to select goal: {}.", goal.reason);
+                        time_consuming_[TOTAL_REPLAN] = total_t.stop();
+                        return FAILED;
+                    }
                 }
             }
             const ExplorationRuntimeManager::SelectionDecision decision =
@@ -400,7 +524,9 @@ namespace general_planner {
                                    recovery_goal.frontier_id,
                                    recovery_goal.reason,
                                    recovery_validation);
-                } else if (decision.allow_candidate_fallback && goal.valid) {
+                } else if ((decision.allow_candidate_fallback ||
+                            goal.reason.find("bootstrap") != std::string::npos) &&
+                           goal.valid) {
                     goal.reason += " nhbp_recovery_unavailable=" + decision.reason;
                     exploration_runtime_manager_->onGoalSelected(goal);
                     ros_ptr_->warn(" -- [Exploration] NHBP requested recovery but no validated recovery goal was found, fallback to frontend candidate: reason={}, candidate_id={}, frontier_id={}.",
@@ -428,7 +554,14 @@ namespace general_planner {
                 robot_state_ = map_manager_->getRobotState();
             }
         }
-        const RET_CODE ret = PlanFromRest(goal.position, goal.yaw, true);
+        const bool yaw_scan_recovery =
+                explorationGoalIsYawScanRecovery(goal,
+                                                 robot_state_.p,
+                                                 std::max(0.15, cfg_.resolution * 2.0));
+        const RET_CODE ret =
+                yaw_scan_recovery
+                        ? (commitExplorationYawScanTrajectory(goal) ? SUCCESS : FAILED)
+                        : PlanFromRest(goal.position, goal.yaw, true);
         {
             std::lock_guard<std::mutex> guard(replan_lock_);
             if (exploration_runtime_manager_ != nullptr) {
@@ -452,7 +585,7 @@ namespace general_planner {
                     exploration_runtime_manager_->recordFailure(goal,
                                                                nhbp::FailureReason::OPTIMIZATION_FAIL,
                                                                now);
-                    exploration_runtime_manager_->onTemporaryFailure(goal);
+                    exploration_runtime_manager_->onTemporaryFailure(ExplorationGoal{});
                     if (cfg_.exploration_print_log) {
                         ros_ptr_->warn(" -- [Exploration] PlanFromRest failure memory summary: {}.",
                                        exploration_runtime_manager_->diagnosticSummary(now));
@@ -606,7 +739,9 @@ namespace general_planner {
                                        selected_goal.candidate_id,
                                        selected_goal.frontier_id,
                                        recovery_validation);
-                    } else if (decision.allow_candidate_fallback && candidate.valid) {
+                    } else if ((decision.allow_candidate_fallback ||
+                                candidate.reason.find("bootstrap") != std::string::npos) &&
+                               candidate.valid) {
                         selected_goal = candidate;
                         selected_goal.reason += " nhbp_recovery_unavailable=" + decision.reason;
                         goal_switched = true;
@@ -640,7 +775,14 @@ namespace general_planner {
                 robot_state_ = map_manager_->getRobotState();
             }
         }
-        const RET_CODE ret = ReplanOnce(selected_goal.position, selected_goal.yaw, goal_switched);
+        const bool yaw_scan_recovery =
+                explorationGoalIsYawScanRecovery(selected_goal,
+                                                 robot_state_.p,
+                                                 std::max(0.15, cfg_.resolution * 2.0));
+        const RET_CODE ret =
+                yaw_scan_recovery
+                        ? (commitExplorationYawScanTrajectory(selected_goal) ? SUCCESS : FAILED)
+                        : ReplanOnce(selected_goal.position, selected_goal.yaw, goal_switched);
         {
             std::lock_guard<std::mutex> guard(replan_lock_);
             if (exploration_runtime_manager_ != nullptr) {
@@ -666,7 +808,7 @@ namespace general_planner {
                     exploration_runtime_manager_->recordFailure(selected_goal,
                                                                nhbp::FailureReason::OPTIMIZATION_FAIL,
                                                                now);
-                    exploration_runtime_manager_->onTemporaryFailure(selected_goal);
+                    exploration_runtime_manager_->onTemporaryFailure(ExplorationGoal{});
                     if (cfg_.exploration_print_log) {
                         ros_ptr_->warn(" -- [Exploration] Replan failure memory summary: {}.",
                                        exploration_runtime_manager_->diagnosticSummary(now));

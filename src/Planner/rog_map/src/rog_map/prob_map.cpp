@@ -514,6 +514,21 @@ void ProbMap::boundBoxByLocalMap(Vec3f& box_min, Vec3f& box_max) const {
     box_min.z() = std::max(box_min.z(), cfg_.virtual_ground_height);
 }
 
+bool ProbMap::getUpdatedBox(Vec3f& box_min, Vec3f& box_max) const {
+    if (map_empty_) {
+        box_min.setZero();
+        box_max.setZero();
+        return false;
+    }
+    box_min = raycast_data_.cache_box_min;
+    box_max = raycast_data_.cache_box_max;
+    if (!box_min.allFinite() || !box_max.allFinite()) {
+        return false;
+    }
+    boundBoxByLocalMap(box_min, box_max);
+    return (box_max - box_min).minCoeff() > 0.0;
+}
+
 void ProbMap::resetCell(const int& hash_id) {
     float& ret = occupancy_buffer_[hash_id];
     if (isOccupied(ret)) {

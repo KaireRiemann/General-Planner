@@ -46,6 +46,8 @@ void SparseGlobalMap::observeBoundaryCell(const general_utils::Vec3f &position,
     record.state = state;
     record.stamp = stamp;
     ++record.observations;
+    record.confidence = std::min(1.0,
+                                 0.25 + 0.15 * static_cast<double>(record.observations));
     prune(stamp);
 }
 
@@ -60,6 +62,27 @@ SparseCellState SparseGlobalMap::query(const general_utils::Vec3f &position,
         return SparseCellState::UNKNOWN;
     }
     return it->second.state;
+}
+
+SparseQueryResult SparseGlobalMap::queryDetailed(const general_utils::Vec3f &position,
+                                                 const double stamp) const
+{
+    SparseQueryResult result;
+    if (!config_.enable || !position.allFinite()) {
+        return result;
+    }
+    const auto it = records_.find(key(position));
+    if (it == records_.end()) {
+        return result;
+    }
+    const SparseCellRecord &record = it->second;
+    result.observed = true;
+    result.stale = stale(record, stamp);
+    result.age = std::max(0.0, stamp - record.stamp);
+    result.observations = record.observations;
+    result.confidence = result.stale ? 0.0 : record.confidence;
+    result.state = result.stale ? SparseCellState::UNKNOWN : record.state;
+    return result;
 }
 
 std::vector<SparseCellRecord> SparseGlobalMap::frontierRecords(
@@ -84,8 +107,11 @@ std::vector<SparseCellRecord> SparseGlobalMap::frontierRecords(
     }
     std::sort(out.begin(), out.end(), [&](const SparseCellRecord &lhs,
                                           const SparseCellRecord &rhs) {
-        return (lhs.position - center).squaredNorm() <
-               (rhs.position - center).squaredNorm();
+        const double lhs_score = (lhs.position - center).squaredNorm() -
+                                 0.25 * lhs.confidence;
+        const double rhs_score = (rhs.position - center).squaredNorm() -
+                                 0.25 * rhs.confidence;
+        return lhs_score < rhs_score;
     });
     if (max_count > 0 && static_cast<int>(out.size()) > max_count) {
         out.resize(max_count);

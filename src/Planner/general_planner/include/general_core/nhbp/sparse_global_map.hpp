@@ -21,6 +21,16 @@ struct SparseCellRecord {
     SparseCellState state{SparseCellState::UNKNOWN};
     double stamp{0.0};
     int observations{0};
+    double confidence{0.0};
+};
+
+struct SparseQueryResult {
+    SparseCellState state{SparseCellState::UNKNOWN};
+    double confidence{0.0};
+    double age{0.0};
+    int observations{0};
+    bool stale{true};
+    bool observed{false};
 };
 
 class SparseGlobalMap {
@@ -44,6 +54,8 @@ public:
 
     SparseCellState query(const general_utils::Vec3f &position,
                           double stamp) const;
+    SparseQueryResult queryDetailed(const general_utils::Vec3f &position,
+                                    double stamp) const;
 
     std::vector<SparseCellRecord> frontierRecords(const general_utils::Vec3f &center,
                                                   double radius,

@@ -69,6 +69,11 @@ ATSPSolution ATSPTourPlanner::solve(const ATSPProblem &problem) const
     const bool wants_lkh = solver == "lkh" ||
                            solver == "fy_node_lkh" ||
                            solver == "linked_lkh";
+    if (wants_lkh && problem.time_budget_ms > 0 && problem.time_budget_ms < 1000) {
+        solution = solveGreedy(problem, "linked_lkh_budget_guard_greedy", true);
+        solution.solve_time_ms = elapsedMs(start);
+        return solution;
+    }
     if (wants_lkh && solveLinkedLkh(problem, solution)) {
         solution.solve_time_ms = elapsedMs(start);
         return solution;

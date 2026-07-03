@@ -245,10 +245,31 @@ void State2StateNHBPAdapter::recordCommitted(const geometry_utils::Trajectory &t
     DecisionRecord record;
     record.candidate_id = candidateId(signature);
     record.frontier_id = -1;
+    record.identity.intent_mode = "state2state";
+    record.identity.candidate_id = record.candidate_id;
+    record.identity.candidate_key = signature.branch_key;
+    record.identity.goal_key = signature.goal_key;
+    record.identity.branch_key = signature.branch_key;
     record.position = robot_state.p;
+    record.robot_position = robot_state.p;
+    record.target_position = goal;
     record.stamp = stamp;
     record.score = scoreSignature(signature);
+    record.travel_cost = signature.length;
+    record.goal_distance = signature.goal_distance;
+    record.reason = source;
     memory_.recordDecision(record);
+
+    DecisionTrace trace;
+    trace.action = DecisionTraceAction::COMMIT;
+    trace.identity = record.identity;
+    trace.robot_position = robot_state.p;
+    trace.target_position = goal;
+    trace.stamp = stamp;
+    trace.score = record.score;
+    trace.travel_cost = record.travel_cost;
+    trace.reason = source;
+    memory_.recordTrace(trace);
 
     if (source != "keep_current") {
         has_last_new_commit_ = true;
@@ -282,20 +303,42 @@ void State2StateNHBPAdapter::recordFailure(
     DecisionRecord record;
     record.candidate_id = -1;
     record.frontier_id = -1;
+    record.identity.intent_mode = "state2state";
+    record.identity.candidate_key = key;
+    record.identity.goal_key = makeGoalKey(goal);
+    record.identity.branch_key = key;
     record.position = robot_state.p;
+    record.robot_position = robot_state.p;
+    record.target_position = goal;
     record.stamp = stamp;
     record.score = 0.0;
+    record.reason = toString(reason);
     memory_.recordDecision(record);
+
+    DecisionTrace trace;
+    trace.action = DecisionTraceAction::FAILURE;
+    trace.identity = record.identity;
+    trace.robot_position = robot_state.p;
+    trace.target_position = goal;
+    trace.stamp = stamp;
+    trace.reason = toString(reason);
+    memory_.recordTrace(trace);
+}
+
+NdoDiagnosis State2StateNHBPAdapter::diagnose(const double stamp) const
+{
+    return memory_.diagnose(stamp);
 }
 
 std::string State2StateNHBPAdapter::diagnosticSummary(const double stamp) const
 {
     const NdoDiagnosis diagnosis = memory_.diagnose(stamp);
-    return fmt::format("state2state_nhbp={{enabled={},goal={},decisions={},failures={},ndo={},reason={},commits_window={}}}",
+    return fmt::format("state2state_nhbp={{enabled={},goal={},decisions={},failures={},traces={},ndo={},reason={},commits_window={}}}",
                        static_cast<int>(config_.enable),
                        active_goal_key_.empty() ? "none" : active_goal_key_,
                        memory_.decisionHistory().size(),
                        memory_.failures().size(),
+                       memory_.traceHistory().size(),
                        toString(diagnosis.state),
                        diagnosis.reason,
                        commitsInWindow(stamp));

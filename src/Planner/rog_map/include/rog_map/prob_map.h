@@ -80,6 +80,8 @@ namespace rog_map {
 
         void boundBoxByLocalMap(Vec3f &box_min, Vec3f &box_max) const;
 
+        bool getUpdatedBox(Vec3f &box_min, Vec3f &box_max) const;
+
         Vec3f getLocalMapOrigin() const;
 
         Vec3f getLocalMapSize() const;

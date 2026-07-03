@@ -154,6 +154,11 @@ public:
         map_->boundBoxByLocalMap(box_min, box_max);
     }
 
+    bool getUpdatedBox(rog_map::Vec3f &box_min, rog_map::Vec3f &box_max) const
+    {
+        return map_ != nullptr && map_->getUpdatedBox(box_min, box_max);
+    }
+
     void boxSearch(const rog_map::Vec3f &box_min,
                    const rog_map::Vec3f &box_max,
                    const rog_map::GridType &gt,

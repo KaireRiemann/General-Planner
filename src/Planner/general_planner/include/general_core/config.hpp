@@ -179,6 +179,9 @@ namespace general_planner {
         bool exploration_global_box_enable{false};
         std::vector<double> exploration_global_box_min{-50.0, -50.0, 0.0};
         std::vector<double> exploration_global_box_max{50.0, 50.0, 3.0};
+        bool exploration_keep_terminal_velocity{false};
+        double exploration_terminal_velocity_ratio{0.45};
+        double exploration_keep_old_min_remaining{0.8};
         double exploration_manager_frontier_merge_radius{2.0};
         double exploration_manager_frontier_record_ttl{120.0};
         double exploration_manager_frontier_failure_ttl{15.0};
@@ -291,6 +294,9 @@ namespace general_planner {
         double exploration_coverage_revisit_time_window{5.0};
         double exploration_coverage_revisit_penalty_weight{0.5};
         int exploration_coverage_grid_max_cells{4096};
+        double exploration_coverage_information_gain_alpha{0.35};
+        int exploration_coverage_covered_visit_threshold{2};
+        double exploration_coverage_stale_time{30.0};
         bool exploration_use_topological_memory{false};
         int exploration_topology_max_nodes{256};
         int exploration_topology_max_edges{512};
@@ -308,6 +314,8 @@ namespace general_planner {
         int exploration_nhbp_max_switches{4};
         double exploration_nhbp_no_progress_time{3.0};
         bool exploration_nhbp_recovery_enable{true};
+        double exploration_recovery_min_duration{3.0};
+        double exploration_recovery_min_distance{2.0};
         bool exploration_local_trap_detection_enable{true};
         int exploration_local_trap_repeat_threshold{4};
         int exploration_local_trap_cluster_threshold{2};
@@ -782,6 +790,12 @@ namespace general_planner {
                              exploration_global_box_min, std::vector<double>{-50.0, -50.0, 0.0});
             loader.LoadParam("general_planner/exploration_global_box_max",
                              exploration_global_box_max, std::vector<double>{50.0, 50.0, 3.0});
+            loader.LoadParam("general_planner/exploration_keep_terminal_velocity",
+                             exploration_keep_terminal_velocity, false);
+            loader.LoadParam("general_planner/exploration_terminal_velocity_ratio",
+                             exploration_terminal_velocity_ratio, 0.45);
+            loader.LoadParam("general_planner/exploration_keep_old_min_remaining",
+                             exploration_keep_old_min_remaining, 0.8);
             loader.LoadParam("general_planner/exploration_manager_frontier_merge_radius",
                              exploration_manager_frontier_merge_radius, 2.0);
             loader.LoadParam("general_planner/exploration_manager_frontier_record_ttl",
@@ -1006,6 +1020,12 @@ namespace general_planner {
                              exploration_coverage_revisit_penalty_weight, 0.5);
             loader.LoadParam("general_planner/exploration_coverage_grid_max_cells",
                              exploration_coverage_grid_max_cells, 4096);
+            loader.LoadParam("general_planner/exploration_coverage_information_gain_alpha",
+                             exploration_coverage_information_gain_alpha, 0.35);
+            loader.LoadParam("general_planner/exploration_coverage_covered_visit_threshold",
+                             exploration_coverage_covered_visit_threshold, 2);
+            loader.LoadParam("general_planner/exploration_coverage_stale_time",
+                             exploration_coverage_stale_time, 30.0);
             loader.LoadParam("general_planner/exploration_use_topological_memory",
                              exploration_use_topological_memory, false);
             loader.LoadParam("general_planner/exploration_topology_max_nodes",
@@ -1040,6 +1060,10 @@ namespace general_planner {
                              exploration_nhbp_no_progress_time, 3.0);
             loader.LoadParam("general_planner/exploration_nhbp_recovery_enable",
                              exploration_nhbp_recovery_enable, true);
+            loader.LoadParam("general_planner/exploration_recovery_min_duration",
+                             exploration_recovery_min_duration, 3.0);
+            loader.LoadParam("general_planner/exploration_recovery_min_distance",
+                             exploration_recovery_min_distance, 2.0);
             loader.LoadParam("general_planner/exploration_local_trap_detection_enable",
                              exploration_local_trap_detection_enable, true);
             loader.LoadParam("general_planner/exploration_local_trap_repeat_threshold",

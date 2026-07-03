@@ -28,6 +28,7 @@
 
 #include "ros_interface/ros1/ros1_adapter.hpp"
 
+#include <vector>
 
 namespace ros_interface {
 
@@ -51,6 +52,8 @@ namespace ros_interface {
 
             yaw_traj_pub_ = nh_.advertise<visualization_msgs::MarkerArray>("visualization/yaw_traj", 100);
             fov_pub_ = nh_.advertise<visualization_msgs::MarkerArray>("visualization/tracking_fov", 100);
+            exploration_box_pub_ =
+                    nh_.advertise<visualization_msgs::MarkerArray>("visualization/exploration_box", 1, true);
 
             /*=============================FOR A* debug ========================================*/
             astar_mkr_pub_ = nh_.advertise<visualization_msgs::MarkerArray>("visualization/astar_debug", 100);
@@ -61,6 +64,57 @@ namespace ros_interface {
             /*=============================FOR replan log ========================================*/
             replan_log_pc_pub_ = nh_.advertise<sensor_msgs::PointCloud2>("visualization/replan_log_pc", 100);
             replan_log_mkr_pub_ = nh_.advertise<visualization_msgs::MarkerArray>("visualization/replan_log_mkr", 100);
+        }
+
+
+        void vizExplorationBox(const std::vector<double> &box_min,
+                               const std::vector<double> &box_max) {
+            if (!visualization_en_ || box_min.size() < 3 || box_max.size() < 3) {
+                return;
+            }
+            const Vec3f min_pt(box_min[0], box_min[1], box_min[2]);
+            const Vec3f max_pt(box_max[0], box_max[1], box_max[2]);
+            if (!min_pt.allFinite() || !max_pt.allFinite() ||
+                (max_pt.array() <= min_pt.array()).any()) {
+                return;
+            }
+
+            visualization_msgs::MarkerArray mkr_arr;
+            visualization_msgs::Marker clear;
+            clear.action = visualization_msgs::Marker::DELETEALL;
+            clear.header.frame_id = DEFAULT_FRAME_ID;
+            clear.header.stamp = ros::Time::now();
+            mkr_arr.markers.push_back(clear);
+            Ros1Adapter::addBoundingBoxToMarkerArray(mkr_arr,
+                                                     min_pt,
+                                                     max_pt,
+                                                     "exploration_global_box",
+                                                     Color::Teal(),
+                                                     0.08,
+                                                     0.9,
+                                                     false);
+
+            visualization_msgs::Marker fill;
+            fill.header.frame_id = DEFAULT_FRAME_ID;
+            fill.header.stamp = ros::Time::now();
+            fill.ns = "exploration_global_box_fill";
+            fill.id = 0;
+            fill.action = visualization_msgs::Marker::ADD;
+            fill.type = visualization_msgs::Marker::CUBE;
+            fill.pose.orientation.w = 1.0;
+            const Vec3f center = 0.5 * (min_pt + max_pt);
+            const Vec3f extent = max_pt - min_pt;
+            fill.pose.position.x = center.x();
+            fill.pose.position.y = center.y();
+            fill.pose.position.z = center.z();
+            fill.scale.x = extent.x();
+            fill.scale.y = extent.y();
+            fill.scale.z = extent.z();
+            fill.color = Color::Teal();
+            fill.color.a = 0.05;
+            mkr_arr.markers.push_back(fill);
+
+            exploration_box_pub_.publish(mkr_arr);
         }
 
 
@@ -458,7 +512,8 @@ namespace ros_interface {
         // viz markers
         ros::Publisher goal_pub_, backup_sfc_pub_, backup_traj_pub_, committed_traj_pub_,
                 receding_traj_pub_, exp_sfcs_pub_, point_pub_, fov_pub_,
-                exp_traj_pub_, astar_pub_, receding_sfc_pub_, backup_traj_star_point_, yaw_traj_pub_, guide_path_pub_;
+                exp_traj_pub_, astar_pub_, receding_sfc_pub_, backup_traj_star_point_, yaw_traj_pub_, guide_path_pub_,
+                exploration_box_pub_;
 
         ros::Publisher astar_mkr_pub_;
 

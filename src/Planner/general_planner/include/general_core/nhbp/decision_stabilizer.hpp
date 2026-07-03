@@ -10,6 +10,7 @@ struct DecisionCandidate {
     bool valid{false};
     int candidate_id{-1};
     int frontier_id{-1};
+    NavIdentity identity;
     std::string key;
     general_utils::Vec3f position{general_utils::Vec3f::Zero()};
     double score{0.0};

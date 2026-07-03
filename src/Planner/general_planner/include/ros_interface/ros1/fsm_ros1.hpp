@@ -1162,9 +1162,17 @@ namespace fsm {
             ros_adapter_contract_.mission = cfg_.mission_mode;
             map_ptr_ = std::make_shared<rog_map::ROGMapROS>(nh, cfg_path);
             // 初始化Planner
-            ros_ptr_ = std::make_shared<ros_interface::Ros1Interface>(nh_);
+            auto ros1_ptr = std::make_shared<ros_interface::Ros1Interface>(nh_);
+            ros_ptr_ = ros1_ptr;
             planner_ptr_ = std::make_shared<GeneralPlanner>(cfg_path, ros_ptr_, map_ptr_);
             planner_ptr_->setSwarmDroneId(cfg_.swarm_drone_id);
+            if (explorationMode()) {
+                const general_planner::Config planner_cfg(cfg_path);
+                if (planner_cfg.exploration_global_box_enable) {
+                    ros1_ptr->vizExplorationBox(planner_cfg.exploration_global_box_min,
+                                                planner_cfg.exploration_global_box_max);
+                }
+            }
             if (cfg_.dynamic_obstacle_layer_enable) {
                 dynamic_obstacle_cloud_sub_ =
                         nh_.subscribe<sensor_msgs::PointCloud2>(

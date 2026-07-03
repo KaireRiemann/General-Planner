@@ -49,6 +49,20 @@ public:
         nhbp::NdoDiagnosis ndo;
     };
 
+    struct RecoveryState {
+        bool active{false};
+        nhbp::NavIdentity recovery_id;
+        general_utils::Vec3f start_pos{general_utils::Vec3f::Zero()};
+        general_utils::Vec3f goal_pos{general_utils::Vec3f::Zero()};
+        double start_stamp{0.0};
+        double min_duration{0.0};
+        double min_distance{0.0};
+        double lock_until{0.0};
+        bool exit_success{false};
+        std::string reason;
+        std::string exit_reason;
+    };
+
     explicit ExplorationRuntimeManager(const Config &cfg);
 
     void reset();
@@ -118,6 +132,28 @@ private:
     bool recoveryPositionBlockedByRecentTrap(const general_utils::Vec3f &position,
                                              int frontier_id,
                                              double stamp) const;
+    bool isRecoveryGoal(const ExplorationGoal &goal) const;
+    nhbp::NavIdentity normalizedIdentity(const ExplorationGoal &goal) const;
+    void recordTrace(nhbp::DecisionTraceAction action,
+                     const ExplorationGoal &goal,
+                     const ExplorationGoal &previous_goal,
+                     const general_utils::Vec3f &robot_pos,
+                     double stamp,
+                     double committed_remaining,
+                     const nhbp::NdoDiagnosis &ndo,
+                     const std::string &reason);
+    void enterRecoveryLock(const ExplorationGoal &trigger_goal,
+                           const general_utils::Vec3f &robot_pos,
+                           double stamp,
+                           const std::string &reason);
+    void updateRecoveryLock(const general_utils::Vec3f &robot_pos, double stamp);
+    bool recoveryLockActive(double stamp) const;
+    void releaseRecoveryLock(double stamp, const std::string &reason, bool success);
+    void bindRecoveryGoal(const ExplorationGoal &goal,
+                          const general_utils::Vec3f &robot_pos,
+                          double stamp);
+    bool lockedRecoveryGoalReusable(const general_utils::Vec3f &robot_pos,
+                                    double stamp) const;
 
     bool nhbpEnabled() const;
 
@@ -148,8 +184,19 @@ private:
     int recovery_query_count_{0};
     int frontier_recovery_selected_count_{0};
     int topology_recovery_selected_count_{0};
+    int locked_recovery_goal_reused_count_{0};
     int recovery_unavailable_count_{0};
     int recovery_blocked_by_recent_trap_count_{0};
+    bool recovery_lock_active_{false};
+    RecoveryState recovery_state_;
+    ExplorationGoal recovery_lock_trigger_goal_;
+    ExplorationGoal active_recovery_goal_;
+    bool has_active_recovery_goal_{false};
+    std::string recovery_lock_reason_;
+    double recovery_lock_started_stamp_{0.0};
+    double recovery_lock_until_{0.0};
+    int recovery_lock_request_count_{0};
+    int recovery_lock_release_count_{0};
 };
 
 } // namespace general_planner

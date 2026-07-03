@@ -114,6 +114,7 @@ public:
                        double stamp,
 	                       FailureReason reason);
 
+    NdoDiagnosis diagnose(double stamp) const;
     std::string diagnosticSummary(double stamp) const;
     std::string formatDecisionDiagnostic(const State2StateNHBPDecision &decision) const;
 

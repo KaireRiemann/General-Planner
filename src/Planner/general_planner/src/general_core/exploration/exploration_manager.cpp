@@ -197,7 +197,9 @@ void ExplorationManager::filterAndScoreCandidates(const Vec3f &robot_pos,
             }
         }
 
-        if (isFrontierCovered(reference, robot_pos)) {
+        const bool bootstrap_candidate =
+                candidate.reason.find("bootstrap") != std::string::npos;
+        if (!bootstrap_candidate && isFrontierCovered(reference, robot_pos)) {
             FrontierRecord &covered = upsertFrontier(candidate, stamp, reference);
             covered.state = FrontierState::COVERED;
             covered.last_state_stamp = stamp;

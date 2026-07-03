@@ -637,6 +637,7 @@ namespace general_planner {
                                                     double stamp,
                                                     ExplorationGoal &goal,
                                                     std::string *reason = nullptr);
+        bool commitExplorationYawScanTrajectory(const ExplorationGoal &goal);
 
         RET_CODE tryCommitPerchingFromTracking(
             const traj_opt::DynamicTargetStates &target_prediction,

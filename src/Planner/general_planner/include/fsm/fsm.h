@@ -276,6 +276,7 @@ namespace fsm {
         uint64_t next_replan_id_{1};
         uint64_t active_replan_id_{0};
         int state2state_plan_from_rest_fail_count_{0};
+        int exploration_plan_from_rest_fail_count_{0};
         int tracking_plan_from_rest_fail_count_{0};
         double tracking_plan_from_rest_backoff_until_{-1.0};
         double last_tracking_plan_from_rest_backoff_log_time_{-1.0};

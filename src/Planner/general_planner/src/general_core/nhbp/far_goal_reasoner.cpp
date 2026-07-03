@@ -39,9 +39,45 @@ FarGoalDecision FarGoalReasoner::selectSubgoal(
         decision.ready = true;
         decision.type = FarGoalDecisionType::DIRECT_GOAL;
         decision.local_goal = far_goal;
+        decision.identity.intent_mode = "far_goal";
+        decision.identity.goal_key = quantizedPositionKey(far_goal, 0.5, "far_direct");
+        decision.identity.candidate_key = decision.identity.goal_key;
         decision.reason = "far_goal_inside_direct_radius";
         decision.score = goal_distance;
         return decision;
+    }
+
+    if (topology != nullptr) {
+        TopoPath path;
+        general_utils::Vec3f subgoal = general_utils::Vec3f::Zero();
+        if (topology->searchPath(robot_pos, far_goal, stamp, path) &&
+            topology->selectLocalSubgoalFromPath(path,
+                                                 robot_pos,
+                                                 std::max(0.1, config_.direct_goal_radius),
+                                                 subgoal) &&
+            subgoal.allFinite()) {
+            decision.ready = true;
+            decision.type = FarGoalDecisionType::TOPO_PATH_PREFIX;
+            decision.local_goal = subgoal;
+            decision.guide_path = path.positions;
+            decision.identity.intent_mode = "far_goal";
+            decision.identity.goal_key =
+                    quantizedPositionKey(far_goal, 0.5, "far_topology_goal");
+            decision.identity.candidate_key =
+                    quantizedPositionKey(subgoal, 0.5, "topology_prefix");
+            if (!path.node_ids.empty()) {
+                decision.identity.topo_node_id = path.node_ids.back();
+            }
+            if (!path.edge_ids.empty()) {
+                decision.identity.topo_edge_id = path.edge_ids.front();
+            }
+            decision.identity.guide_path_key = makeGuidePathKey(path.positions, 0.5);
+            decision.reason = "topology_path_prefix";
+            decision.score = (subgoal - robot_pos).norm() +
+                             0.25 * (subgoal - far_goal).norm() +
+                             0.1 * path.length;
+            return decision;
+        }
     }
 
     if (sparse_map != nullptr) {
@@ -55,12 +91,19 @@ FarGoalDecision FarGoalReasoner::selectSubgoal(
             const double travel_cost = (frontier.position - robot_pos).norm();
             const double goal_cost = (frontier.position - far_goal).norm();
             const double score = std::max(0.0, config_.travel_weight) * travel_cost +
-                                 std::max(0.0, config_.goal_weight) * goal_cost;
+                                 std::max(0.0, config_.goal_weight) * goal_cost -
+                                 0.5 * std::clamp(frontier.confidence, 0.0, 1.0);
             if (score < best_score) {
                 best_score = score;
                 decision.ready = true;
                 decision.type = FarGoalDecisionType::FRONTIER_TOWARD_GOAL;
                 decision.local_goal = frontier.position;
+                decision.identity.intent_mode = "far_goal";
+                decision.identity.goal_key =
+                        quantizedPositionKey(far_goal, 0.5, "far_goal");
+                decision.identity.candidate_key =
+                        quantizedPositionKey(frontier.position, 0.5, "sparse_frontier");
+                decision.identity.frontier_key = decision.identity.candidate_key;
                 decision.reason = "frontier_toward_far_goal";
                 decision.score = score;
             }
@@ -71,12 +114,29 @@ FarGoalDecision FarGoalReasoner::selectSubgoal(
     }
 
     if (topology != nullptr) {
+        TopoPath path;
         general_utils::Vec3f recovery = general_utils::Vec3f::Zero();
-        if (topology->findRecoveryPosition(robot_pos, stamp, recovery)) {
+        const bool has_path = topology->findRecoveryPath(robot_pos, stamp, path);
+        if (has_path && path.valid && !path.positions.empty()) {
+            recovery = path.positions.back();
+        }
+        if ((has_path && path.valid) ||
+            topology->findRecoveryPosition(robot_pos, stamp, recovery)) {
             decision.ready = true;
             decision.type = FarGoalDecisionType::TOPOLOGY_RECOVERY;
             decision.local_goal = recovery;
-            decision.reason = "topology_recovery_fallback";
+            decision.identity.intent_mode = "far_goal_recovery";
+            decision.identity.recovery_intent = true;
+            decision.identity.goal_key =
+                    quantizedPositionKey(recovery, 0.5, "far_topology_recovery");
+            decision.identity.candidate_key = decision.identity.goal_key;
+            if (has_path && path.valid) {
+                decision.guide_path = path.positions;
+                decision.identity.guide_path_key = makeGuidePathKey(path.positions, 0.5);
+            }
+            decision.reason = has_path && path.valid
+                                      ? "topology_recovery_path_fallback"
+                                      : "topology_recovery_fallback";
             decision.score = (recovery - robot_pos).norm() +
                              0.5 * (recovery - far_goal).norm();
             return decision;
@@ -92,6 +152,8 @@ const char *toString(const FarGoalDecisionType type)
     switch (type) {
         case FarGoalDecisionType::DIRECT_GOAL:
             return "DIRECT_GOAL";
+        case FarGoalDecisionType::TOPO_PATH_PREFIX:
+            return "TOPO_PATH_PREFIX";
         case FarGoalDecisionType::FRONTIER_TOWARD_GOAL:
             return "FRONTIER_TOWARD_GOAL";
         case FarGoalDecisionType::TOPOLOGY_RECOVERY:

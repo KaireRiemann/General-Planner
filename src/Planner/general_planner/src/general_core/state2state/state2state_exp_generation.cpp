@@ -24,6 +24,9 @@ using namespace geometry_utils;
 #include <general_core/config.hpp>
 #include <general_core/corridor_generator.h>
 #include <general_core/map_manager.hpp>
+#include <general_core/nhbp/guide_consistency_policy.hpp>
+#include <general_core/nhbp/nav_identity.hpp>
+#include <general_core/nhbp/state2state_nhbp_adapter.hpp>
 #include <ros_interface/ros1/ros1_interface.hpp>
 #include <traj_opt/traj_manager.h>
 #include <general_core/log_utils.hpp>
@@ -134,8 +137,16 @@ namespace general_planner {
                 return false;
             }
             const double total_duration = traj.getTotalDuration();
-            if (!std::isfinite(total_duration) || start_t >= total_duration) {
-                return true;
+            if (!std::isfinite(total_duration)) {
+                return false;
+            }
+            if (start_t >= total_duration) {
+                return !services.cfg.exploration_enable;
+            }
+            const double remaining = std::max(0.0, total_duration - std::max(0.0, start_t));
+            if (services.cfg.exploration_enable &&
+                remaining <= std::max(0.0, services.cfg.exploration_keep_old_min_remaining)) {
+                return false;
             }
             CommittedTrajectorySafetyReport report;
             const double now_wt = traj.start_WT + std::clamp(start_t, 0.0, total_duration);
@@ -220,7 +231,8 @@ namespace general_planner {
             std::vector<TimePosPair> last_exp_traj_time_pos;
             std::vector<double> last_exp_traj_vel;
 
-            if (replan_state_TT >= services.cmd_traj_info.getTotalDuration()) {
+            const double cmd_total_duration = services.cmd_traj_info.getTotalDuration();
+            if (replan_state_TT >= cmd_total_duration) {
                 out_exp_traj_info = last_exp_traj_info;
 
                 if (services.robot_on_backup_traj) {
@@ -231,27 +243,58 @@ namespace general_planner {
                     return FAILED;
                 }
 
-                if (services.cfg.print_log) {
-                    services.ros_ptr->warn(
-                            " -- [generateExpTraj] replan_state_TT >= services.cmd_traj_info.pos_traj.getTotalDuration(), return NONEED and wait for plan form rest.");
-                }
-                return NO_NEED;
-            }
-
-            if (!last_exp_traj_info.empty()) {
-                if (replan_state_TT >= last_exp_traj.getTotalDuration()) {
-                    out_exp_traj_info = last_exp_traj_info;
+                const bool can_continue_exploration =
+                        services.cfg.exploration_enable &&
+                        std::isfinite(cmd_total_duration) &&
+                        replan_process_start_TT >= 0.0 &&
+                        replan_process_start_TT < cmd_total_duration;
+                if (can_continue_exploration) {
+                    replan_state_TT = std::clamp(replan_process_start_TT,
+                                                 0.0,
+                                                 std::max(0.0, cmd_total_duration - 1.0e-3));
                     if (services.cfg.print_log) {
                         services.ros_ptr->warn(
-                                " -- [generateExpTraj] replan_state_TT >= last_exp_traj.getTotalDuration(), return NONEED and wait for plan form rest.");
+                                " -- [generateExpTraj] exploration replan forward point exceeds current trajectory, continue from current state.");
                     }
+                } else {
+                    if (services.cfg.print_log) {
+                        services.ros_ptr->warn(
+                                " -- [generateExpTraj] replan_state_TT >= services.cmd_traj_info.pos_traj.getTotalDuration(), return NONEED and wait for plan form rest.");
+                    }
+                    return NO_NEED;
+                }
+	            }
+
+            if (!last_exp_traj_info.empty()) {
+                const double last_exp_total_duration = last_exp_traj.getTotalDuration();
+                if (replan_state_TT >= last_exp_total_duration) {
+                    out_exp_traj_info = last_exp_traj_info;
                     if (services.robot_on_backup_traj) {
                         if (services.cfg.print_log) {
                             services.ros_ptr->warn(
                                     " -- [GeneralPlanner] Replan, emergency stop, return FAILED and wait for plan form rest.");
                         }
                         return FAILED;
+                    }
+                    const bool can_continue_exploration =
+                            services.cfg.exploration_enable &&
+                            std::isfinite(last_exp_total_duration) &&
+                            replan_process_start_TT >= 0.0 &&
+                            replan_process_start_TT < last_exp_total_duration;
+                    if (can_continue_exploration) {
+                        replan_state_TT = std::clamp(replan_process_start_TT,
+                                                     0.0,
+                                                     std::max(0.0,
+                                                              last_exp_total_duration - 1.0e-3));
+                        if (services.cfg.print_log) {
+                            services.ros_ptr->warn(
+                                    " -- [generateExpTraj] exploration replan point exceeds last exp trajectory, continue from current state.");
+                        }
                     } else {
+                        if (services.cfg.print_log) {
+                            services.ros_ptr->warn(
+                                    " -- [generateExpTraj] replan_state_TT >= last_exp_traj.getTotalDuration(), return NONEED and wait for plan form rest.");
+                        }
                         return NO_NEED;
                     }
                 }
@@ -327,7 +370,8 @@ namespace general_planner {
             if (!services.new_goal &&
                 use_distance_field_exp_traj &&
                 last_exp_traj_info.connectedToGoal() &&
-                last_exp_traj_info.wholeTrajKnownFree()) {
+                last_exp_traj_info.wholeTrajKnownFree() &&
+                currentTrajectorySafeForNoNeed(services, guide_pos_traj, replan_state_TT)) {
                 out_exp_traj_info = last_exp_traj_info;
                 if (services.robot_on_backup_traj) {
                     if (services.cfg.print_log) {
@@ -520,8 +564,30 @@ namespace general_planner {
             pos_fina_state.col(1) = (services.goal_p - services.robot_state.p).normalized() * services.cfg.exp_traj_cfg.max_vel / 2;
         }
         if (local_endpoint_is_global_goal) {
-            pos_fina_state.col(1).setZero();
             pos_fina_state.col(0) = services.goal_p;
+            pos_fina_state.col(1).setZero();
+            const double goal_distance = (services.goal_p - services.robot_state.p).norm();
+            const double keep_vel_min_distance =
+                    std::max(1.0, services.cfg.exploration_goal_reached_distance * 2.0);
+            if (services.cfg.exploration_enable &&
+                services.cfg.exploration_keep_terminal_velocity &&
+                goal_distance > keep_vel_min_distance) {
+                Vec3f terminal_dir = Vec3f::Zero();
+                if (guide_path.size() >= 2) {
+                    terminal_dir = guide_path.back() - guide_path[guide_path.size() - 2];
+                }
+                if (!terminal_dir.allFinite() || terminal_dir.norm() < 1.0e-3) {
+                    terminal_dir = services.goal_p - services.robot_state.p;
+                }
+                terminal_dir.z() = 0.0;
+                if (terminal_dir.allFinite() && terminal_dir.norm() > 1.0e-3) {
+                    const double ratio = std::clamp(services.cfg.exploration_terminal_velocity_ratio,
+                                                    0.0,
+                                                    1.0);
+                    pos_fina_state.col(1) =
+                            terminal_dir.normalized() * services.cfg.exp_traj_cfg.max_vel * ratio;
+                }
+            }
         }
         auto copyZSummary = [](const LocalZSummary &src, State2StateZSummary &dst) {
             dst.valid = src.valid;
@@ -542,6 +608,47 @@ namespace general_planner {
         services.z_debug.local_target_goal_z_err = pos_fina_state(2, 0) - services.goal_p.z();
         services.z_debug.local_target_is_global_goal = local_endpoint_is_global_goal;
 
+        nhbp::GuideConsistencyContext guide_context;
+        guide_context.guide_path_key =
+                nhbp::makeGuidePathKey(
+                        guide_path,
+                        std::max(0.25, services.cfg.state2state_nhbp_goal_key_resolution));
+        if (services.nhbp_adapter != nullptr && services.cfg.state2state_nhbp_enable) {
+            const nhbp::NdoDiagnosis ndo =
+                    services.nhbp_adapter->diagnose(services.ros_ptr->getSimTime());
+            nhbp::GuideConsistencyPolicy policy(
+                    nhbp::GuideConsistencyPolicy::Config{
+                            true,
+                            0.5,
+                            0.0,
+                            0.0,
+                            1.0,
+                            services.cfg.plain_traj_cfg.guide_path_tube_radius,
+                            services.cfg.plain_traj_cfg.guide_path_z_tube_radius});
+            guide_context = policy.decide(ndo,
+                                          false,
+                                          true,
+                                          false,
+                                          guide_context.guide_path_key);
+        }
+        const double guide_position_scale =
+                guide_context.enabled ? guide_context.weight_scale : 0.0;
+        if (services.traj_manager->esdf()) {
+            services.traj_manager->esdf()->setGuideConsistencyScale(guide_position_scale,
+                                                                    guide_position_scale);
+        }
+        if (services.traj_manager->plain()) {
+            services.traj_manager->plain()->setGuideConsistencyScale(guide_position_scale,
+                                                                     guide_position_scale);
+        }
+        if (services.latest_nhbp_debug_info != nullptr) {
+            *services.latest_nhbp_debug_info +=
+                    fmt::format(";guide_policy={};guide_scale={:.2f};guide_key={}",
+                                guide_context.reason,
+                                guide_position_scale,
+                                guide_context.guide_path_key);
+        }
+
         bool temp_ret;
         Trajectory out_traj;
         TimeConsuming t_exp_opt("t_exp_opt", false);
@@ -553,7 +660,9 @@ namespace general_planner {
                                                        guide_stamp,
                                                        out_traj);
             if (!temp_ret) {
-                if (!planning_from_rest && last_exp_traj_info.wholeTrajKnownFree()) {
+                if (!planning_from_rest &&
+                    last_exp_traj_info.wholeTrajKnownFree() &&
+                    currentTrajectorySafeForNoNeed(services, guide_pos_traj, replan_state_TT)) {
                     out_exp_traj_info = last_exp_traj_info;
                     if (services.cfg.print_log) {
                         services.ros_ptr->warn(" -- [GeneralPlanner] ESDF candidate optimization failed, keep current safe trajectory.");
@@ -570,7 +679,9 @@ namespace general_planner {
                                                         guide_stamp,
                                                         out_traj);
             if (!temp_ret) {
-                if (!planning_from_rest && last_exp_traj_info.wholeTrajKnownFree()) {
+                if (!planning_from_rest &&
+                    last_exp_traj_info.wholeTrajKnownFree() &&
+                    currentTrajectorySafeForNoNeed(services, guide_pos_traj, replan_state_TT)) {
                     out_exp_traj_info = last_exp_traj_info;
                     if (services.cfg.print_log) {
                         services.ros_ptr->warn(" -- [GeneralPlanner] Plain candidate optimization failed, keep current safe trajectory.");

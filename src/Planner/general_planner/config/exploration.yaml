@@ -54,6 +54,9 @@ general_planner:
   exploration_global_box_enable: true
   exploration_global_box_min: [-60.0, -60.0, 0.0]
   exploration_global_box_max: [60.0, 60.0, 3.0]
+  exploration_keep_terminal_velocity: true
+  exploration_terminal_velocity_ratio: 0.45
+  exploration_keep_old_min_remaining: 0.8
   exploration_manager_frontier_merge_radius: 2.0
   exploration_manager_frontier_record_ttl: 120.0
   exploration_manager_frontier_failure_ttl: 15.0
@@ -107,8 +110,8 @@ general_planner:
   exploration_viewpoint_max_distance: 8.0
   exploration_viewpoint_height_offset: 0.0
   exploration_viewpoint_safe_distance: 0.45
-  exploration_viewpoint_yaw_sample_num: 12
-  exploration_viewpoint_radius_sample_num: 4
+  exploration_viewpoint_yaw_sample_num: 8
+  exploration_viewpoint_radius_sample_num: 3
   exploration_viewpoint_use_normal_sampling: true
   exploration_viewpoint_normal_angle: 1.1
   exploration_viewpoint_z_sample_num: 1
@@ -116,18 +119,18 @@ general_planner:
   exploration_viewpoint_z_max: 0.0
   exploration_min_visible_frontier_cells: 6
   exploration_min_visible_frontier_ratio: 0.08
-  exploration_max_candidate_num: 120
+  exploration_max_candidate_num: 80
   exploration_max_candidates_per_frontier_cluster: 8
   exploration_candidate_separation_distance: 1.5
-  exploration_max_astar_checks: 12
+  exploration_max_astar_checks: 20
   exploration_min_direct_reachable_before_astar: 8
   exploration_max_astar_checks_per_frontier: 2
-  exploration_max_reachable_candidate_num: 32
-  exploration_max_gain_rays: 96
+  exploration_max_reachable_candidate_num: 24
+  exploration_max_gain_rays: 48
   exploration_gain_ray_length: 5.0
   exploration_gain_ray_step: 0.2
-  exploration_astar_time_out: 0.025
-  exploration_astar_total_time_budget_ms: 40.0
+  exploration_astar_time_out: 0.04
+  exploration_astar_total_time_budget_ms: 70.0
   exploration_astar_failure_cache_ttl: 4.0
   exploration_yaw_policy: "velocity"
   exploration_weight_travel: 0.35
@@ -147,12 +150,12 @@ general_planner:
   exploration_require_line_free_to_frontier: true
   exploration_use_astar_cost: true
   exploration_use_atsp: true
-  exploration_atsp_solver: "fy_node_lkh"
+  exploration_atsp_solver: "greedy"
   exploration_atsp_work_dir: "/tmp/general_planner_atsp"
   exploration_atsp_external_command: ""
   exploration_atsp_time_budget_ms: 50
   exploration_atsp_cost_scale: 100
-  exploration_atsp_max_candidate_num: 24
+  exploration_atsp_max_candidate_num: 16
   exploration_use_frontier_memory: true
   exploration_frontier_memory_max_records: 256
   exploration_frontier_memory_ttl: 60.0
@@ -162,10 +165,13 @@ general_planner:
   exploration_frontier_memory_recovery_min_distance: 0.8
   exploration_use_coverage_grid: true
   exploration_coverage_grid_resolution: 1.0
-  exploration_coverage_revisit_radius: 0.8
-  exploration_coverage_revisit_time_window: 4.0
-  exploration_coverage_revisit_penalty_weight: 0.25
+  exploration_coverage_revisit_radius: 1.6
+  exploration_coverage_revisit_time_window: 18.0
+  exploration_coverage_revisit_penalty_weight: 1.0
   exploration_coverage_grid_max_cells: 4096
+  exploration_coverage_information_gain_alpha: 0.35
+  exploration_coverage_covered_visit_threshold: 2
+  exploration_coverage_stale_time: 30.0
   exploration_use_topological_memory: true
   exploration_topology_max_nodes: 256
   exploration_topology_max_edges: 512
@@ -177,12 +183,14 @@ general_planner:
   exploration_nhbp_enable: true
   exploration_nhbp_decision_history: 16
   exploration_nhbp_blacklist_ttl: 12.0
-  exploration_nhbp_min_commit_time: 1.8
+  exploration_nhbp_min_commit_time: 2.5
   exploration_nhbp_min_progress_distance: 0.3
-  exploration_nhbp_switch_margin: 0.45
+  exploration_nhbp_switch_margin: 0.75
   exploration_nhbp_max_switches: 4
   exploration_nhbp_no_progress_time: 3.0
   exploration_nhbp_recovery_enable: true
+  exploration_recovery_min_duration: 3.0
+  exploration_recovery_min_distance: 2.0
   exploration_local_trap_detection_enable: true
   exploration_local_trap_repeat_threshold: 4
   exploration_local_trap_cluster_threshold: 2
@@ -198,8 +206,8 @@ traj_opt:
     print_optimizer_log: false
 
   boundary:
-    max_vel: 3.0
-    max_acc: 3.5
+    max_vel: 5.0
+    max_acc: 6.0
     max_jerk: 80.0
     max_omg: 2.5
     max_acc_thr: 20.0

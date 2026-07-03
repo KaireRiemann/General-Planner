@@ -4,6 +4,7 @@
 #include <iostream>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 #include <general_utils/type_utils.hpp>
 
@@ -48,6 +49,15 @@ struct TopoEdge {
     double blacklist_until{0.0};
 };
 
+struct TopoPath {
+    bool valid{false};
+    std::vector<int> node_ids;
+    std::vector<int> edge_ids;
+    general_utils::vec_E<general_utils::Vec3f> positions;
+    double length{0.0};
+    std::string reason;
+};
+
 class TopologicalMemory {
 public:
     struct Config {
@@ -83,6 +93,19 @@ public:
                               general_utils::Vec3f &position,
                               const std::function<bool(const general_utils::Vec3f &)> &accept =
                                       std::function<bool(const general_utils::Vec3f &)>{}) const;
+    bool findRecoveryPath(const general_utils::Vec3f &robot_pos,
+                          double stamp,
+                          TopoPath &path,
+                          const std::function<bool(const general_utils::Vec3f &)> &accept =
+                                  std::function<bool(const general_utils::Vec3f &)>{}) const;
+    bool searchPath(const general_utils::Vec3f &start,
+                    const general_utils::Vec3f &goal,
+                    double stamp,
+                    TopoPath &path) const;
+    bool selectLocalSubgoalFromPath(const TopoPath &path,
+                                    const general_utils::Vec3f &robot_pos,
+                                    double local_radius,
+                                    general_utils::Vec3f &subgoal) const;
 
     int activeNodeCount(double stamp) const;
     int blockedNodeCount(double stamp) const;

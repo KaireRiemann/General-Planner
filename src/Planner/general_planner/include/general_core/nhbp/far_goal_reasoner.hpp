@@ -2,6 +2,7 @@
 
 #include <string>
 
+#include <general_core/nhbp/nav_identity.hpp>
 #include <general_core/nhbp/sparse_global_map.hpp>
 #include <general_core/nhbp/topological_memory.hpp>
 
@@ -9,6 +10,7 @@ namespace general_planner::nhbp {
 
 enum class FarGoalDecisionType {
     DIRECT_GOAL,
+    TOPO_PATH_PREFIX,
     FRONTIER_TOWARD_GOAL,
     TOPOLOGY_RECOVERY,
     UNAVAILABLE
@@ -18,6 +20,8 @@ struct FarGoalDecision {
     FarGoalDecisionType type{FarGoalDecisionType::UNAVAILABLE};
     bool ready{false};
     general_utils::Vec3f local_goal{general_utils::Vec3f::Zero()};
+    NavIdentity identity;
+    general_utils::vec_E<general_utils::Vec3f> guide_path;
     std::string reason{"unavailable"};
     double score{0.0};
 };

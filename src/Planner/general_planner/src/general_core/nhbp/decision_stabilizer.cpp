@@ -39,7 +39,12 @@ StabilizerDecision DecisionStabilizer::stabilize(
         return decision;
     }
 
-    if (!candidate.key.empty() && memory.isBlacklisted(candidate.key, context.stamp)) {
+    const std::string candidate_blacklist_key =
+            candidate.identity.blacklistKey().empty()
+                    ? candidate.key
+                    : candidate.identity.blacklistKey();
+    if (!candidate_blacklist_key.empty() &&
+        memory.isBlacklisted(candidate_blacklist_key, context.stamp)) {
         decision.action = context.current_reusable
                                   ? StabilizerAction::KEEP_CURRENT
                                   : StabilizerAction::REJECT_CANDIDATE;
@@ -95,6 +100,9 @@ bool DecisionStabilizer::sameCandidate(const DecisionCandidate &lhs,
     if (!lhs.valid || !rhs.valid) {
         return false;
     }
+    if (!lhs.identity.empty() && !rhs.identity.empty()) {
+        return sameGoalIntent(lhs.identity, rhs.identity);
+    }
     if (!lhs.key.empty() && !rhs.key.empty()) {
         return lhs.key == rhs.key;
     }
@@ -106,7 +114,37 @@ bool DecisionStabilizer::sameCandidate(const DecisionCandidate &lhs,
 bool DecisionStabilizer::implicatedByNdo(const DecisionCandidate &candidate,
                                          const NdoDiagnosis &diagnosis) const
 {
-    if (!candidate.valid || candidate.candidate_id < 0) {
+    if (!candidate.valid) {
+        return false;
+    }
+    const std::string key = candidate.identity.canonicalKey();
+    if (!key.empty() &&
+        std::find(diagnosis.implicated_identity_keys.begin(),
+                  diagnosis.implicated_identity_keys.end(),
+                  key) != diagnosis.implicated_identity_keys.end()) {
+        return true;
+    }
+    const std::string guide_key = candidate.identity.guideIdentityKey();
+    if (!guide_key.empty() &&
+        std::find(diagnosis.implicated_identity_keys.begin(),
+                  diagnosis.implicated_identity_keys.end(),
+                  guide_key) != diagnosis.implicated_identity_keys.end()) {
+        return true;
+    }
+    const std::string frontier_key = candidate.identity.frontierIdentityKey();
+    if (!frontier_key.empty() &&
+        std::find(diagnosis.implicated_identity_keys.begin(),
+                  diagnosis.implicated_identity_keys.end(),
+                  frontier_key) != diagnosis.implicated_identity_keys.end()) {
+        return true;
+    }
+    if (!candidate.key.empty() &&
+        std::find(diagnosis.implicated_identity_keys.begin(),
+                  diagnosis.implicated_identity_keys.end(),
+                  candidate.key) != diagnosis.implicated_identity_keys.end()) {
+        return true;
+    }
+    if (candidate.candidate_id < 0) {
         return false;
     }
     return std::find(diagnosis.implicated_candidate_ids.begin(),

@@ -88,7 +88,9 @@ namespace general_planner {
                 gi_.goal_p,
                 gi_.goal_yaw,
                 gi_.new_goal,
-                latest_state2state_z_debug_
+                latest_state2state_z_debug_,
+                state2state_nhbp_adapter_.get(),
+                &latest_state2state_nhbp_debug_info_
         };
         return services;
     }

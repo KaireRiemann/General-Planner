@@ -110,6 +110,8 @@ public:
   void setSafeDistance(double safe_distance);
   void setWeight(double weight);
   void setShortcutGuide(bool shortcut_guide);
+  void setGuideConsistencyScale(double position_scale,
+                                double velocity_scale = 1.0);
   void setLabel(const std::string &label);
   void setSwarmConfig(const SwarmPenaltyConfig &config);
   void setSwarmTrajectories(const SwarmTrajectoriesConstPtr &trajectories);
@@ -200,6 +202,8 @@ private:
   SwarmPenaltyConfig swarm_config_;
   SwarmTrajectoriesConstPtr swarm_trajs_;
   double swarm_current_wall_time_{0.0};
+  double guide_consistency_position_scale_{1.0};
+  double guide_consistency_velocity_scale_{1.0};
   OptimizationVariables opt_vars_;
   mutable std::ofstream esdf_debug_log_;
   std::string label_{"ESDFTrajOpt"};
@@ -218,6 +222,8 @@ public:
   void setLocalAstar(const std::shared_ptr<path_search::Astar> &astar);
   void setSafeDistance(double safe_distance);
   void setShortcutGuide(bool shortcut_guide);
+  void setGuideConsistencyScale(double position_scale,
+                                double velocity_scale = 1.0);
   void setSwarmConfig(const SwarmPenaltyConfig &config);
   void setSwarmTrajectories(const SwarmTrajectoriesConstPtr &trajectories);
   void setSwarmCurrentWallTime(double wall_time);
@@ -350,6 +356,8 @@ private:
   SwarmPenaltyConfig swarm_config_;
   SwarmTrajectoriesConstPtr swarm_trajs_;
   double swarm_current_wall_time_{0.0};
+  double guide_consistency_position_scale_{1.0};
+  double guide_consistency_velocity_scale_{1.0};
   OptimizationVariables opt_vars_;
   ValidationReport last_opt_report_;
   mutable std::ofstream plain_debug_log_;

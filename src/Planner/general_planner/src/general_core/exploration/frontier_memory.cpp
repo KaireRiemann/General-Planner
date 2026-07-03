@@ -220,6 +220,10 @@ int FrontierMemory::coveredCount() const
 
 std::string FrontierMemory::keyForGoal(const ExplorationGoal &goal) const
 {
+    const std::string identity_key = goal.identity.canonicalKey();
+    if (!identity_key.empty()) {
+        return identity_key;
+    }
     if (!goal.memory_key.empty()) {
         return goal.memory_key;
     }

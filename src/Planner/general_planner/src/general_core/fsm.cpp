@@ -979,7 +979,9 @@ namespace fsm {
                         if (commit_decision.clear_task_new) {
                             task_new_ = false;
                         }
-                        if (executor.goalLike()) {
+                        if (explorationMode()) {
+                            exploration_plan_from_rest_fail_count_ = 0;
+                        } else if (executor.goalLike()) {
                             state2state_plan_from_rest_fail_count_ = 0;
                         } else if (executor.trackingLike()) {
                             resetTrackingPlanFromRestFailureState();
@@ -1007,7 +1009,26 @@ namespace fsm {
                         break;
                     case general_planner::architecture::CommitAction::RETRY_PLANNING:
                     default:
-                        if (executor.goalLike()) {
+                        if (explorationMode()) {
+                            ++exploration_plan_from_rest_fail_count_;
+                            cout << YELLOW << " -- [Fsm] Exploration PlanFromRest failed, keep retrying. consecutive_failures="
+                                 << exploration_plan_from_rest_fail_count_ << RESET << endl;
+                            if (task_new_) {
+                                task_new_ = false;
+                                recordDiagnosticEvent("INFO",
+                                                      "exploration_initial_task_reset_consumed",
+                                                      "retry_after_first_plan_from_rest_attempt",
+                                                      retcode);
+                            }
+                            started_ = true;
+                            finish_plan = false;
+                            recordDiagnosticEvent("WARN",
+                                                  "exploration_plan_from_rest_consecutive_failure",
+                                                  fmt::format("count={};ret={}",
+                                                              exploration_plan_from_rest_fail_count_,
+                                                              retCodeName(retcode)),
+                                                  retcode);
+                        } else if (executor.goalLike()) {
                             ++state2state_plan_from_rest_fail_count_;
                             const int failure_limit = cfg_.state2state_plan_from_rest_max_failures;
                             cout << YELLOW << " -- [Fsm] PlanFromRest failed, try replan. consecutive_failures="
@@ -1175,6 +1196,7 @@ namespace fsm {
                 finish_plan = false;
                 task_new_ = true;
                 started_ = true;
+                exploration_plan_from_rest_fail_count_ = 0;
             }
             if (new_mode == TaskMode::TRACKING_PERCHING && planner_ptr_) {
                 planner_ptr_->setTrackingPerchingRequest(true);
@@ -1196,6 +1218,7 @@ namespace fsm {
         resetTaskExecutor();
         finish_plan = false;
         task_new_ = true;
+        exploration_plan_from_rest_fail_count_ = 0;
         if (new_mode == TaskMode::DYNAMIC_TAKEOFF) {
             perching_surface_first_rcv_time_ = -1.0;
             last_dynamic_takeoff_wait_log_time_ = -1.0;

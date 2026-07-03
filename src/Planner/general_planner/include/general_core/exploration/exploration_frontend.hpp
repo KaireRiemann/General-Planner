@@ -4,9 +4,11 @@
 #include <memory>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 
 #include <general_core/exploration/atsp/atsp_tour_planner.hpp>
 #include <general_core/map_manager.hpp>
+#include <general_core/nhbp/nav_identity.hpp>
 #include <path_search/astar.h>
 #include <general_utils/type_utils.hpp>
 
@@ -43,6 +45,7 @@ struct ExplorationGoal {
     int candidate_id{-1};
     int frontier_id{-1};
     std::string memory_key;
+    nhbp::NavIdentity identity;
 
     bool frontier_center_valid{false};
     general_utils::Vec3f frontier_center{general_utils::Vec3f::Zero()};
@@ -175,6 +178,7 @@ private:
     struct FrontierCluster {
         EIGEN_MAKE_ALIGNED_OPERATOR_NEW
 
+        general_utils::vec_E<FrontierCell> raw_cells;
         general_utils::vec_E<FrontierCell> cells;
         general_utils::Vec3f center{general_utils::Vec3f::Zero()};
         general_utils::Vec3f unknown_direction{general_utils::Vec3f::UnitX()};
@@ -224,7 +228,7 @@ private:
 
     bool collectFrontierCells(const general_utils::Vec3f &robot_pos,
                               general_utils::vec_E<FrontierCell> &frontier_cells,
-                              FrontierSearchStats &stats) const;
+                              FrontierSearchStats &stats);
 
     bool collectFallbackFrontierCells(const general_utils::Vec3f &robot_pos,
                                       general_utils::vec_E<FrontierCell> &frontier_cells,
@@ -232,7 +236,30 @@ private:
 
     bool collectRogMapFrontierCells(const general_utils::Vec3f &robot_pos,
                                     general_utils::vec_E<FrontierCell> &frontier_cells,
-                                    FrontierSearchStats &stats) const;
+                                    FrontierSearchStats &stats);
+
+    bool collectRogMapFrontierClusters(const general_utils::Vec3f &robot_pos,
+                                       general_utils::vec_E<FrontierCluster> &clusters,
+                                       FrontierSearchStats &stats);
+
+    bool updateIncrementalRogFrontiers(const general_utils::Vec3f &robot_pos,
+                                       FrontierSearchStats &stats);
+
+    bool frontierClusterChanged(const FrontierCluster &cluster) const;
+
+    bool frontierClusterOverlapsBox(const FrontierCluster &cluster,
+                                    const general_utils::Vec3f &box_min,
+                                    const general_utils::Vec3f &box_max) const;
+
+    void downsampleFrontierCluster(FrontierCluster &cluster) const;
+
+    void appendCachedFrontierCells(const general_utils::Vec3f &robot_pos,
+                                   general_utils::vec_E<FrontierCell> &frontier_cells,
+                                   FrontierSearchStats &stats) const;
+
+    void appendCachedFrontierClusters(const general_utils::Vec3f &robot_pos,
+                                      general_utils::vec_E<FrontierCluster> &clusters,
+                                      FrontierSearchStats &stats) const;
 
     bool isFrontierCell(const FrontierCell &cell,
                         rog_map::GridType grid_type) const;
@@ -325,6 +352,8 @@ private:
     bool exploration_finished_{false};
     std::unordered_map<std::string, AstarFailureCacheEntry> astar_failure_cache_;
     std::unique_ptr<FrontierObjectManager> frontier_object_manager_;
+    general_utils::vec_E<FrontierCluster> cached_frontier_clusters_;
+    bool frontier_cache_initialized_{false};
 };
 
 }  // namespace general_planner

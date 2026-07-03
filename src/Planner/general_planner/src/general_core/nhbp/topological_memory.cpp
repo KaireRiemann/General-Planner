@@ -3,7 +3,9 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <queue>
 #include <sstream>
+#include <utility>
 
 namespace general_planner::nhbp {
 
@@ -202,6 +204,320 @@ bool TopologicalMemory::findRecoveryPosition(const general_utils::Vec3f &robot_p
         return true;
     }
     return search_best(false, position);
+}
+
+bool TopologicalMemory::findRecoveryPath(
+        const general_utils::Vec3f &robot_pos,
+        const double stamp,
+        TopoPath &path,
+        const std::function<bool(const general_utils::Vec3f &)> &accept) const
+{
+    path = TopoPath{};
+    if (!config_.enable || !robot_pos.allFinite()) {
+        path.reason = "disabled_or_invalid_robot";
+        return false;
+    }
+
+    const int current_node =
+            nearestNode(robot_pos,
+                        std::max(1.0e-3, config_.node_merge_radius * 2.0),
+                        stamp,
+                        false);
+    if (current_node < 0) {
+        path.reason = "no_current_topology_node";
+        return false;
+    }
+
+    const double min_distance = std::max(0.0, config_.recovery_min_distance);
+    const double max_distance = std::max(min_distance, config_.recovery_max_distance);
+    std::unordered_map<int, double> dist;
+    std::unordered_map<int, int> prev;
+    std::unordered_map<int, int> prev_edge;
+    using QueueEntry = std::pair<double, int>;
+    std::priority_queue<QueueEntry,
+                        std::vector<QueueEntry>,
+                        std::greater<QueueEntry>>
+            queue;
+
+    dist[current_node] = 0.0;
+    queue.push({0.0, current_node});
+
+    while (!queue.empty()) {
+        const auto [distance_so_far, node_id] = queue.top();
+        queue.pop();
+        const auto dist_it = dist.find(node_id);
+        if (dist_it == dist.end() || distance_so_far > dist_it->second + 1.0e-6) {
+            continue;
+        }
+        const auto node_it = nodes_.find(node_id);
+        if (node_it == nodes_.end() || node_it->second.blacklist_until > stamp) {
+            continue;
+        }
+
+        for (const auto &entry : edges_) {
+            const TopoEdge &edge = entry.second;
+            if (!edgeUsable(edge, stamp)) {
+                continue;
+            }
+            int next_node = -1;
+            if (edge.from_node == node_id) {
+                next_node = edge.to_node;
+            } else if (edge.to_node == node_id) {
+                next_node = edge.from_node;
+            } else {
+                continue;
+            }
+            const auto next_it = nodes_.find(next_node);
+            if (next_it == nodes_.end() || next_it->second.blacklist_until > stamp) {
+                continue;
+            }
+            const double edge_length =
+                    edge.length > 1.0e-3
+                            ? edge.length
+                            : (node_it->second.position - next_it->second.position).norm();
+            const double next_distance = distance_so_far + edge_length;
+            const auto old = dist.find(next_node);
+            if (old != dist.end() && old->second <= next_distance) {
+                continue;
+            }
+            dist[next_node] = next_distance;
+            prev[next_node] = node_id;
+            prev_edge[next_node] = edge.edge_id;
+            queue.push({next_distance, next_node});
+        }
+    }
+
+    int best_node = -1;
+    double best_score = std::numeric_limits<double>::infinity();
+    for (const auto &entry : dist) {
+        const int node_id = entry.first;
+        if (node_id == current_node) {
+            continue;
+        }
+        const auto node_it = nodes_.find(node_id);
+        if (node_it == nodes_.end()) {
+            continue;
+        }
+        const TopoNode &node = node_it->second;
+        if (!node.position.allFinite() || node.blacklist_until > stamp) {
+            continue;
+        }
+        if (accept && !accept(node.position)) {
+            continue;
+        }
+        const double robot_distance = (node.position - robot_pos).norm();
+        if (robot_distance < min_distance || robot_distance > max_distance) {
+            continue;
+        }
+        const double recency = std::max(0.0, stamp - node.last_seen_time);
+        const double score = entry.second +
+                             0.2 * recency +
+                             0.5 * static_cast<double>(node.failure_count);
+        if (score < best_score) {
+            best_score = score;
+            best_node = node_id;
+        }
+    }
+
+    if (best_node < 0) {
+        path.reason = "no_connected_recovery_node";
+        return false;
+    }
+
+    std::vector<int> reversed_nodes;
+    std::vector<int> reversed_edges;
+    for (int node = best_node; node >= 0;) {
+        reversed_nodes.push_back(node);
+        if (node == current_node) {
+            break;
+        }
+        const auto prev_it = prev.find(node);
+        if (prev_it == prev.end()) {
+            path.reason = "path_reconstruction_failed";
+            return false;
+        }
+        const auto edge_it = prev_edge.find(node);
+        if (edge_it != prev_edge.end()) {
+            reversed_edges.push_back(edge_it->second);
+        }
+        node = prev_it->second;
+    }
+    std::reverse(reversed_nodes.begin(), reversed_nodes.end());
+    std::reverse(reversed_edges.begin(), reversed_edges.end());
+
+    path.valid = true;
+    path.node_ids = reversed_nodes;
+    path.edge_ids = reversed_edges;
+    path.positions.push_back(robot_pos);
+    for (const int node_id : reversed_nodes) {
+        const auto node_it = nodes_.find(node_id);
+        if (node_it != nodes_.end()) {
+            path.positions.push_back(node_it->second.position);
+        }
+    }
+    path.length = dist[best_node];
+    path.reason = "topology_recovery_path";
+    return !path.positions.empty();
+}
+
+bool TopologicalMemory::searchPath(const general_utils::Vec3f &start,
+                                   const general_utils::Vec3f &goal,
+                                   const double stamp,
+                                   TopoPath &path) const
+{
+    path = TopoPath{};
+    if (!config_.enable || !start.allFinite() || !goal.allFinite()) {
+        path.reason = "disabled_or_invalid_input";
+        return false;
+    }
+
+    const double lookup_radius = std::max(1.0e-3, config_.node_merge_radius * 2.0);
+    const int start_node = nearestNode(start, lookup_radius, stamp, false);
+    const int goal_node = nearestNode(goal,
+                                      std::max(lookup_radius, config_.recovery_max_distance),
+                                      stamp,
+                                      false);
+    if (start_node < 0 || goal_node < 0 || start_node == goal_node) {
+        path.reason = "missing_distinct_topology_endpoints";
+        return false;
+    }
+
+    std::unordered_map<int, double> dist;
+    std::unordered_map<int, int> prev;
+    std::unordered_map<int, int> prev_edge;
+    using QueueEntry = std::pair<double, int>;
+    std::priority_queue<QueueEntry,
+                        std::vector<QueueEntry>,
+                        std::greater<QueueEntry>>
+            queue;
+
+    dist[start_node] = 0.0;
+    queue.push({0.0, start_node});
+
+    while (!queue.empty()) {
+        const auto [distance_so_far, node_id] = queue.top();
+        queue.pop();
+        const auto dist_it = dist.find(node_id);
+        if (dist_it == dist.end() || distance_so_far > dist_it->second + 1.0e-6) {
+            continue;
+        }
+        if (node_id == goal_node) {
+            break;
+        }
+        const auto node_it = nodes_.find(node_id);
+        if (node_it == nodes_.end() || node_it->second.blacklist_until > stamp) {
+            continue;
+        }
+
+        for (const auto &entry : edges_) {
+            const TopoEdge &edge = entry.second;
+            if (!edgeUsable(edge, stamp)) {
+                continue;
+            }
+            int next_node = -1;
+            if (edge.from_node == node_id) {
+                next_node = edge.to_node;
+            } else if (edge.to_node == node_id) {
+                next_node = edge.from_node;
+            } else {
+                continue;
+            }
+            const auto next_it = nodes_.find(next_node);
+            if (next_it == nodes_.end() || next_it->second.blacklist_until > stamp) {
+                continue;
+            }
+            const double edge_length =
+                    edge.length > 1.0e-3
+                            ? edge.length
+                            : (node_it->second.position - next_it->second.position).norm();
+            const double next_distance = distance_so_far + edge_length;
+            const auto old = dist.find(next_node);
+            if (old != dist.end() && old->second <= next_distance) {
+                continue;
+            }
+            dist[next_node] = next_distance;
+            prev[next_node] = node_id;
+            prev_edge[next_node] = edge.edge_id;
+            queue.push({next_distance, next_node});
+        }
+    }
+
+    if (dist.find(goal_node) == dist.end()) {
+        path.reason = "topology_goal_unreachable";
+        return false;
+    }
+
+    std::vector<int> reversed_nodes;
+    std::vector<int> reversed_edges;
+    for (int node = goal_node; node >= 0;) {
+        reversed_nodes.push_back(node);
+        if (node == start_node) {
+            break;
+        }
+        const auto prev_it = prev.find(node);
+        if (prev_it == prev.end()) {
+            path.reason = "path_reconstruction_failed";
+            return false;
+        }
+        const auto edge_it = prev_edge.find(node);
+        if (edge_it != prev_edge.end()) {
+            reversed_edges.push_back(edge_it->second);
+        }
+        node = prev_it->second;
+    }
+    std::reverse(reversed_nodes.begin(), reversed_nodes.end());
+    std::reverse(reversed_edges.begin(), reversed_edges.end());
+
+    path.valid = true;
+    path.node_ids = reversed_nodes;
+    path.edge_ids = reversed_edges;
+    path.positions.push_back(start);
+    for (const int node_id : reversed_nodes) {
+        const auto node_it = nodes_.find(node_id);
+        if (node_it != nodes_.end()) {
+            path.positions.push_back(node_it->second.position);
+        }
+    }
+    path.positions.push_back(goal);
+    path.length = dist[goal_node] + (nodes_.at(goal_node).position - goal).norm();
+    path.reason = "topology_path";
+    return path.positions.size() >= 2;
+}
+
+bool TopologicalMemory::selectLocalSubgoalFromPath(const TopoPath &path,
+                                                   const general_utils::Vec3f &robot_pos,
+                                                   const double local_radius,
+                                                   general_utils::Vec3f &subgoal) const
+{
+    subgoal = general_utils::Vec3f::Zero();
+    if (!path.valid || path.positions.empty() || !robot_pos.allFinite()) {
+        return false;
+    }
+    const double radius = std::max(0.1, local_radius);
+    general_utils::Vec3f best = path.positions.front();
+    bool found = false;
+    for (const general_utils::Vec3f &position : path.positions) {
+        if (!position.allFinite()) {
+            continue;
+        }
+        const double distance = (position - robot_pos).norm();
+        if (distance <= radius) {
+            best = position;
+            found = true;
+            continue;
+        }
+        if (found) {
+            subgoal = position;
+            return true;
+        }
+        subgoal = position;
+        return true;
+    }
+    if (found) {
+        subgoal = best;
+        return true;
+    }
+    return false;
 }
 
 int TopologicalMemory::activeNodeCount(const double stamp) const
