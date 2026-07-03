@@ -151,6 +151,7 @@ namespace general_planner {
 		        std::unique_ptr<ExplorationFrontend> exploration_frontend_;
 		        std::unique_ptr<ExplorationManager> exploration_manager_;
 		        std::unique_ptr<ExplorationRuntimeManager> exploration_runtime_manager_;
+        double exploration_task_graph_last_update_stamp_{-1.0};
 
         vector<double> time_consuming_;
 

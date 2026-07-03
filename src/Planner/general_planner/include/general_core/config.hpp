@@ -182,6 +182,9 @@ namespace general_planner {
         bool exploration_keep_terminal_velocity{false};
         double exploration_terminal_velocity_ratio{0.45};
         double exploration_keep_old_min_remaining{0.8};
+        bool exploration_task_graph_update_enable{true};
+        double exploration_task_graph_update_period{1.5};
+        double exploration_task_graph_update_min_remaining{1.8};
         double exploration_manager_frontier_merge_radius{2.0};
         double exploration_manager_frontier_record_ttl{120.0};
         double exploration_manager_frontier_failure_ttl{15.0};
@@ -849,6 +852,12 @@ namespace general_planner {
                              exploration_terminal_velocity_ratio, 0.45);
             loader.LoadParam("general_planner/exploration_keep_old_min_remaining",
                              exploration_keep_old_min_remaining, 0.8);
+            loader.LoadParam("general_planner/exploration_task_graph_update_enable",
+                             exploration_task_graph_update_enable, true);
+            loader.LoadParam("general_planner/exploration_task_graph_update_period",
+                             exploration_task_graph_update_period, 1.5);
+            loader.LoadParam("general_planner/exploration_task_graph_update_min_remaining",
+                             exploration_task_graph_update_min_remaining, 1.8);
             loader.LoadParam("general_planner/exploration_manager_frontier_merge_radius",
                              exploration_manager_frontier_merge_radius, 2.0);
             loader.LoadParam("general_planner/exploration_manager_frontier_record_ttl",

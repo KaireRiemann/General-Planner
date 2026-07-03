@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <sstream>
 
 namespace general_planner {
 
@@ -239,6 +240,124 @@ double CoverageGrid::intentReward(const general_utils::Vec3f &position,
     return reward / static_cast<double>(sample_count);
 }
 
+CoverageGrid::RegionSummary CoverageGrid::summarizeRegion(
+        const general_utils::Vec3f &position,
+        const double radius,
+        const double stamp) const
+{
+    RegionSummary summary;
+    if (!config_.enable || !position.allFinite()) {
+        return summary;
+    }
+
+    const Key center = keyForPosition(position);
+    const double resolution = std::max(1.0e-3, config_.resolution);
+    const double effective_radius =
+            std::max({std::max(0.0, radius), config_.intent_radius, resolution});
+    const int radius_steps =
+            std::max(0, static_cast<int>(std::ceil(effective_radius / resolution)));
+
+    for (int dx = -radius_steps; dx <= radius_steps; ++dx) {
+        for (int dy = -radius_steps; dy <= radius_steps; ++dy) {
+            for (int dz = -radius_steps; dz <= radius_steps; ++dz) {
+                const double dist =
+                        resolution *
+                        std::sqrt(static_cast<double>(dx * dx + dy * dy + dz * dz));
+                if (dist > effective_radius) {
+                    continue;
+                }
+                ++summary.sampled_cells;
+                const Key key{center.x + dx, center.y + dy, center.z + dz};
+                const auto it = cells_.find(key);
+                if (it == cells_.end()) {
+                    ++summary.unvisited_cells;
+                    continue;
+                }
+
+                const CoverageCellRecord &record = it->second;
+                if (record.visits > 0) {
+                    ++summary.visited_cells;
+                } else {
+                    ++summary.unvisited_cells;
+                }
+                if (record.covered) {
+                    ++summary.covered_cells;
+                }
+                if (recordStale(record, stamp)) {
+                    ++summary.stale_cells;
+                }
+                if (record.observed_frontier_count > 0) {
+                    ++summary.frontier_evidence_cells;
+                }
+                if (record.observed_unknown_count > 0) {
+                    ++summary.unknown_evidence_cells;
+                }
+                if (record.no_progress_basin && !recordStale(record, stamp)) {
+                    ++summary.no_progress_cells;
+                }
+                if (record.last_information_gain_stamp > 0.0) {
+                    summary.information_gain += record.information_gain_ema;
+                }
+            }
+        }
+    }
+
+    if (summary.sampled_cells <= 0) {
+        return summary;
+    }
+    const double sampled = static_cast<double>(summary.sampled_cells);
+    summary.coverage_ratio =
+            static_cast<double>(summary.covered_cells) / sampled;
+    summary.unvisited_ratio =
+            static_cast<double>(summary.unvisited_cells) / sampled;
+    summary.stale_ratio =
+            static_cast<double>(summary.stale_cells) / sampled;
+    summary.evidence_ratio =
+            static_cast<double>(summary.frontier_evidence_cells +
+                                summary.unknown_evidence_cells) /
+            sampled;
+    summary.no_progress_ratio =
+            static_cast<double>(summary.no_progress_cells) / sampled;
+
+    const double normalized_gain =
+            std::min(2.0, summary.information_gain /
+                                  std::max(10.0, sampled));
+    summary.priority_score =
+            1.20 * summary.unvisited_ratio +
+            0.90 * summary.evidence_ratio +
+            0.45 * summary.stale_ratio +
+            0.30 * normalized_gain -
+            0.70 * summary.coverage_ratio -
+            0.80 * summary.no_progress_ratio;
+    return summary;
+}
+
+double CoverageGrid::regionPriority(const general_utils::Vec3f &position,
+                                    const double radius,
+                                    const double stamp) const
+{
+    return summarizeRegion(position, radius, stamp).priority_score;
+}
+
+std::string CoverageGrid::regionDebugString(const general_utils::Vec3f &position,
+                                            const double radius,
+                                            const double stamp) const
+{
+    const RegionSummary summary = summarizeRegion(position, radius, stamp);
+    std::ostringstream oss;
+    oss << "samples=" << summary.sampled_cells
+        << ",visited=" << summary.visited_cells
+        << ",unvisited=" << summary.unvisited_cells
+        << ",covered=" << summary.covered_cells
+        << ",frontier_ev=" << summary.frontier_evidence_cells
+        << ",unknown_ev=" << summary.unknown_evidence_cells
+        << ",no_progress=" << summary.no_progress_cells
+        << ",cov_ratio=" << summary.coverage_ratio
+        << ",unvisited_ratio=" << summary.unvisited_ratio
+        << ",priority=" << summary.priority_score;
+    return oss.str();
+}
+
 int CoverageGrid::visitedCellCount() const
 {
     return static_cast<int>(cells_.size());
@@ -254,6 +373,34 @@ int CoverageGrid::coveredCellCount() const
     int count = 0;
     for (const auto &entry : cells_) {
         if (entry.second.covered) {
+            ++count;
+        }
+    }
+    return count;
+}
+
+int CoverageGrid::staleCellCount(const double stamp) const
+{
+    int count = 0;
+    for (const auto &entry : cells_) {
+        if (recordStale(entry.second, stamp)) {
+            ++count;
+        }
+    }
+    return count;
+}
+
+int CoverageGrid::evidenceCellCount(const double stamp) const
+{
+    int count = 0;
+    for (const auto &entry : cells_) {
+        const CoverageCellRecord &record = entry.second;
+        if (recordStale(record, stamp)) {
+            continue;
+        }
+        if (record.observed_frontier_count > 0 ||
+            record.observed_unknown_count > 0 ||
+            record.information_gain_ema > 1.0e-3) {
             ++count;
         }
     }
@@ -284,6 +431,26 @@ double CoverageGrid::recentInformationGain(const double stamp) const
         gain += record.information_gain_ema;
     }
     return gain;
+}
+
+double CoverageGrid::knownCoverageRatio(const double stamp) const
+{
+    int known = 0;
+    int covered = 0;
+    for (const auto &entry : cells_) {
+        const CoverageCellRecord &record = entry.second;
+        if (recordStale(record, stamp)) {
+            continue;
+        }
+        ++known;
+        if (record.covered) {
+            ++covered;
+        }
+    }
+    if (known <= 0) {
+        return 0.0;
+    }
+    return static_cast<double>(covered) / static_cast<double>(known);
 }
 
 std::size_t CoverageGrid::KeyHasher::operator()(const Key &key) const

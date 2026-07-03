@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <iostream>
+#include <string>
 #include <unordered_map>
 
 #include <general_utils/type_utils.hpp>
@@ -36,6 +37,24 @@ public:
         double stale_time{30.0};
     };
 
+    struct RegionSummary {
+        int sampled_cells{0};
+        int visited_cells{0};
+        int unvisited_cells{0};
+        int covered_cells{0};
+        int stale_cells{0};
+        int frontier_evidence_cells{0};
+        int unknown_evidence_cells{0};
+        int no_progress_cells{0};
+        double information_gain{0.0};
+        double coverage_ratio{0.0};
+        double unvisited_ratio{0.0};
+        double stale_ratio{0.0};
+        double evidence_ratio{0.0};
+        double no_progress_ratio{0.0};
+        double priority_score{0.0};
+    };
+
     CoverageGrid();
     explicit CoverageGrid(Config config);
 
@@ -55,12 +74,24 @@ public:
     bool recentlyVisited(const general_utils::Vec3f &position, double stamp) const;
     double revisitPenalty(const general_utils::Vec3f &position, double stamp) const;
     double intentReward(const general_utils::Vec3f &position, double stamp) const;
+    RegionSummary summarizeRegion(const general_utils::Vec3f &position,
+                                  double radius,
+                                  double stamp) const;
+    double regionPriority(const general_utils::Vec3f &position,
+                          double radius,
+                          double stamp) const;
+    std::string regionDebugString(const general_utils::Vec3f &position,
+                                  double radius,
+                                  double stamp) const;
 
     int visitedCellCount() const;
     int totalVisitCount() const;
     int coveredCellCount() const;
+    int staleCellCount(double stamp) const;
+    int evidenceCellCount(double stamp) const;
     int noProgressBasinCount(double stamp) const;
     double recentInformationGain(double stamp) const;
+    double knownCoverageRatio(double stamp) const;
 
 private:
     struct Key {

@@ -107,6 +107,24 @@ public:
             double stamp,
             bool new_task);
 
+    SelectionDecision selectGoalForExecution(
+            const ExplorationCandidateSet &candidate_set,
+            bool has_candidate_set,
+            const ExplorationGoal &frontend_goal,
+            const general_utils::Vec3f &robot_pos,
+            double current_yaw,
+            double committed_remaining,
+            double stamp,
+            bool new_task);
+
+    bool refreshGlobalTaskGraph(
+            const ExplorationCandidateSet &candidate_set,
+            const general_utils::Vec3f &robot_pos,
+            double current_yaw,
+            double stamp,
+            bool new_task,
+            std::string &reason);
+
     void recordDecision(const ExplorationGoal &goal,
                         const general_utils::Vec3f &robot_pos,
                         double stamp);

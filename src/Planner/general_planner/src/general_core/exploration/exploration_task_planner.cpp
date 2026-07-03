@@ -293,15 +293,29 @@ void ExplorationTaskPlanner::solveObjectTour(
         const FrontierObject &object = objects[static_cast<size_t>(i)];
         const ExplorationGoal goal = representativeGoal(object);
         problem.candidates.push_back(exploration::ATSPCandidate{i});
+        const double gain_reward =
+                reward_weight * std::min(object.total_gain, reward_saturation);
+        const double breadth_reward =
+                std::max(0.0, cfg_.exploration_task_planner_breadth_bonus_weight) *
+                std::log1p(static_cast<double>(std::max(0, object.candidate_count)));
+        const double coverage_reward =
+                cfg_.exploration_coverage_intent_enable
+                        ? std::max(0.0, cfg_.exploration_coverage_intent_weight) *
+                                  std::max(0.0, object.coverage_intent)
+                        : 0.0;
         problem.node_reward.push_back(
-                reward_weight * std::min(object.total_gain, reward_saturation));
+                std::max(0.0, gain_reward + breadth_reward + coverage_reward));
         const double start_cost =
                 request.start_cost ? request.start_cost(goal)
                                    : (request.robot_pos.allFinite()
                                               ? (goal.position - request.robot_pos).norm()
                                               : clampPositiveFinite(goal.travel_cost));
+        const double expansion_penalty =
+                object.expansion_only
+                        ? std::max(0.0, cfg_.exploration_task_planner_expansion_penalty)
+                        : 0.0;
         problem.directed_cost_matrix(0, i + 1) =
-                clampPositiveFinite(start_cost) + std::max(0.0, objectScore(object));
+                clampPositiveFinite(start_cost) + expansion_penalty;
         problem.directed_cost_matrix(i + 1, 0) = 0.0;
     }
 
@@ -326,6 +340,10 @@ void ExplorationTaskPlanner::solveObjectTour(
                                           : (from.position - to.position).norm();
             if (same_frontier || same_region) {
                 cost += 1000.0;
+            }
+            if (objects[static_cast<size_t>(j)].expansion_only) {
+                cost += std::max(0.0,
+                                 cfg_.exploration_task_planner_expansion_penalty);
             }
             problem.directed_cost_matrix(i + 1, j + 1) =
                     clampPositiveFinite(cost, 1000.0);

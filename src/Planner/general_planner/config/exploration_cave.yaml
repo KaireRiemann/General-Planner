@@ -57,6 +57,9 @@ general_planner:
   exploration_keep_terminal_velocity: true
   exploration_terminal_velocity_ratio: 0.45
   exploration_keep_old_min_remaining: 0.8
+  exploration_task_graph_update_enable: true
+  exploration_task_graph_update_period: 1.5
+  exploration_task_graph_update_min_remaining: 1.8
   exploration_manager_frontier_merge_radius: 2.0
   exploration_manager_frontier_record_ttl: 120.0
   exploration_manager_frontier_failure_ttl: 15.0
@@ -82,7 +85,7 @@ general_planner:
   exploration_manager_completion_min_coverage_ratio: 0.70
   exploration_manager_completion_stable_cycles: 3
   exploration_manager_completion_max_active_frontiers: 0
-  exploration_frontier_source: "auto"
+  exploration_frontier_source: "planner_scan"
   exploration_frontier_search_radius: 18.0
   exploration_frontier_cluster_radius: 1.5
   exploration_frontier_sample_resolution: 0.6
@@ -360,7 +363,7 @@ rog_map:
   unk_inflation_step: 1
   map_size: [80, 80, 16]
   fix_map_origin: [5, 0, 2.0]
-  frontier_extraction_en: true
+  frontier_extraction_en: false
   virtual_ceil_height: 35.0
   virtual_ground_height: -8.0
   load_pcd_en: false

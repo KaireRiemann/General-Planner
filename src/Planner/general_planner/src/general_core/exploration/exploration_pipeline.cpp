@@ -62,6 +62,25 @@ namespace general_planner {
         frontend_cfg.enable = cfg_.exploration_enable;
         frontend_cfg.print_log = cfg_.exploration_print_log;
         frontend_cfg.frontier_source = cfg_.exploration_frontier_source;
+        frontend_cfg.global_box_enable = cfg_.exploration_global_box_enable;
+        if (cfg_.exploration_global_box_min.size() == 3 &&
+            cfg_.exploration_global_box_max.size() == 3) {
+            frontend_cfg.global_box_min =
+                    Vec3f(cfg_.exploration_global_box_min[0],
+                          cfg_.exploration_global_box_min[1],
+                          cfg_.exploration_global_box_min[2]);
+            frontend_cfg.global_box_max =
+                    Vec3f(cfg_.exploration_global_box_max[0],
+                          cfg_.exploration_global_box_max[1],
+                          cfg_.exploration_global_box_max[2]);
+            for (int axis = 0; axis < 3; ++axis) {
+                if (frontend_cfg.global_box_min(axis) >
+                    frontend_cfg.global_box_max(axis)) {
+                    std::swap(frontend_cfg.global_box_min(axis),
+                              frontend_cfg.global_box_max(axis));
+                }
+            }
+        }
         frontend_cfg.map_resolution = std::max(0.2, cfg_.resolution);
         frontend_cfg.frontier_search_radius = cfg_.exploration_frontier_search_radius;
         frontend_cfg.frontier_cluster_radius = cfg_.exploration_frontier_cluster_radius;
@@ -438,7 +457,7 @@ namespace general_planner {
     RET_CODE GeneralPlanner::PlanExplorationFromRest(const bool &new_task) {
         TimeConsuming total_t("PlanExplorationFromRest", false);
         ExplorationGoal goal;
-        bool goal_selected_from_active_tour = false;
+        bool goal_ready_after_frontend_failure = false;
         {
             std::lock_guard<std::mutex> guard(replan_lock_);
             latest_replan.reset();
@@ -468,6 +487,7 @@ namespace general_planner {
                     exploration_manager_->reset();
                 }
                 exploration_runtime_manager_->reset();
+                exploration_task_graph_last_update_stamp_ = -1.0;
             }
             exploration_runtime_manager_->onSelectingGoal();
 
@@ -477,18 +497,26 @@ namespace general_planner {
                 latest_replan.setGoal(robot_state_.p, robot_state_.yaw, robot_state_);
                 ExplorationGoal recovery_goal;
                 std::string recovery_validation;
-                const ExplorationRuntimeManager::SelectionDecision tour_decision =
-                        exploration_runtime_manager_->selectGoalFromActiveTour(
+                ExplorationCandidateSet candidate_set;
+                const bool has_candidate_set =
+                        exploration_frontend_->getLastCandidateSet(candidate_set);
+                const ExplorationRuntimeManager::SelectionDecision manager_decision =
+                        exploration_runtime_manager_->selectGoalForExecution(
+                                candidate_set,
+                                has_candidate_set,
+                                ExplorationGoal{},
                                 robot_state_.p,
+                                robot_state_.yaw,
                                 0.0,
                                 now,
                                 new_task);
-                if (tour_decision.ready) {
-                    goal = tour_decision.goal;
-                    goal_selected_from_active_tour = true;
+                if (manager_decision.ready) {
+                    goal = manager_decision.goal;
+                    goal_ready_after_frontend_failure = true;
                     exploration_runtime_manager_->onGoalSelected(goal);
-                    ros_ptr_->info(" -- [Exploration] Use active tour after frontend failure: reason={}, candidate_id={}, frontier_id={}, goal_reason={}.",
-                                   tour_decision.reason,
+                    ros_ptr_->info(" -- [Exploration] Use manager goal after frontend failure: reason={}, keep_current={}, candidate_id={}, frontier_id={}, goal_reason={}.",
+                                   manager_decision.reason,
+                                   static_cast<int>(manager_decision.keep_current),
                                    goal.candidate_id,
                                    goal.frontier_id,
                                    goal.reason);
@@ -496,6 +524,7 @@ namespace general_planner {
                     exploration_runtime_manager_->shouldDelayFinish(now) &&
                     selectValidatedExplorationRecoveryGoal(robot_state_.p, now, recovery_goal, &recovery_validation)) {
                     goal = recovery_goal;
+                    goal_ready_after_frontend_failure = true;
                     exploration_runtime_manager_->onGoalSelected(goal);
                     ros_ptr_->info(" -- [Exploration] Delay finish and use memory recovery goal: candidate_id={}, frontier_id={}, reason={}, validation={}.",
                                    goal.candidate_id,
@@ -504,6 +533,7 @@ namespace general_planner {
                                    recovery_validation);
                 } else if (selectValidatedExplorationRecoveryGoal(robot_state_.p, now, recovery_goal, &recovery_validation)) {
                     goal = recovery_goal;
+                    goal_ready_after_frontend_failure = true;
                     exploration_runtime_manager_->onGoalSelected(goal);
                     ros_ptr_->info(" -- [Exploration] Use memory recovery goal after frontend failure: candidate_id={}, frontier_id={}, reason={}, validation={}.",
                                    goal.candidate_id,
@@ -524,6 +554,7 @@ namespace general_planner {
                                                         robot_state_.p,
                                                         &latest_validation)) {
                         goal = latest_goal;
+                        goal_ready_after_frontend_failure = true;
                         goal.reason += " plan_from_rest_latest_goal_recovery";
                         exploration_runtime_manager_->onGoalSelected(goal);
                         ros_ptr_->info(" -- [Exploration] Reuse validated latest goal after frontend failure: candidate_id={}, frontier_id={}, validation={}.",
@@ -563,24 +594,20 @@ namespace general_planner {
                     }
                 }
             }
-            if (!goal_selected_from_active_tour) {
+            if (!goal_ready_after_frontend_failure) {
                 ExplorationCandidateSet candidate_set;
                 const bool has_candidate_set =
                         exploration_frontend_->getLastCandidateSet(candidate_set);
                 const ExplorationRuntimeManager::SelectionDecision decision =
-                        has_candidate_set
-                                ? exploration_runtime_manager_->selectGoalFromCandidates(
-                                          candidate_set,
-                                          robot_state_.p,
-                                          robot_state_.yaw,
-                                          0.0,
-                                          now,
-                                          new_task)
-                                : exploration_runtime_manager_->stabilizeCandidate(goal,
-                                                                                   robot_state_.p,
-                                                                                   0.0,
-                                                                                   now,
-                                                                                   new_task);
+                        exploration_runtime_manager_->selectGoalForExecution(
+                                candidate_set,
+                                has_candidate_set,
+                                goal,
+                                robot_state_.p,
+                                robot_state_.yaw,
+                                0.0,
+                                now,
+                                new_task);
                 if (!decision.ready) {
                     ExplorationGoal recovery_goal;
                     std::string recovery_validation;
@@ -709,16 +736,118 @@ namespace general_planner {
                     exploration_manager_->reset();
                 }
                 exploration_runtime_manager_->reset();
+                exploration_task_graph_last_update_stamp_ = -1.0;
             }
             exploration_runtime_manager_->onSelectingGoal();
 
             const double remaining = getCommittedTrajectoryRemainingDuration();
             const double now = ros_ptr_->getSimTime();
+            if (!selected_goal_ready &&
+                exploration_runtime_manager_->shouldReuseLatestGoal(robot_state_.p, remaining, new_task) &&
+                exploration_runtime_manager_->getLatestGoal(selected_goal)) {
+                goal_switched = false;
+                selected_goal_ready = true;
+                exploration_runtime_manager_->onKeepCurrentGoal();
+                const double refresh_period =
+                        std::max(0.0, cfg_.exploration_task_graph_update_period);
+                const double refresh_min_remaining =
+                        std::max(cfg_.exploration_keep_old_min_remaining,
+                                 cfg_.exploration_task_graph_update_min_remaining);
+                const bool refresh_due =
+                        cfg_.exploration_task_graph_update_enable &&
+                        remaining >= refresh_min_remaining &&
+                        (exploration_task_graph_last_update_stamp_ < 0.0 ||
+                         now - exploration_task_graph_last_update_stamp_ >= refresh_period);
+                if (refresh_due) {
+                    exploration_task_graph_last_update_stamp_ = now;
+                    ExplorationGoal background_goal;
+                    const StatePVAJ background_head_state = makeTaskHeadState(false);
+                    const bool frontend_ready =
+                            exploration_frontend_->planNextGoal(background_head_state,
+                                                               robot_state_.yaw,
+                                                               background_goal,
+                                                               now);
+                    ExplorationCandidateSet background_candidate_set;
+                    const bool has_background_candidate_set =
+                            exploration_frontend_->getLastCandidateSet(background_candidate_set);
+                    bool refreshed = false;
+                    std::string refresh_reason;
+                    if (has_background_candidate_set) {
+                        refreshed =
+                                exploration_runtime_manager_->refreshGlobalTaskGraph(
+                                        background_candidate_set,
+                                        robot_state_.p,
+                                        robot_state_.yaw,
+                                        now,
+                                        false,
+                                        refresh_reason);
+                    } else {
+                        refresh_reason =
+                                background_goal.reason.empty()
+                                        ? "task_graph_refresh_no_candidate_set"
+                                        : "task_graph_refresh_no_candidate_set:" +
+                                                  background_goal.reason;
+                    }
+                    exploration_runtime_manager_->onKeepCurrentGoal();
+                    if (cfg_.exploration_print_log) {
+                        ros_ptr_->info(" -- [Exploration] Manager task graph refresh during hold: frontend_ready={}, has_candidates={}, refreshed={}, remaining={:.3f}, reason={}.",
+                                       static_cast<int>(frontend_ready),
+                                       static_cast<int>(has_background_candidate_set),
+                                       static_cast<int>(refreshed),
+                                       remaining,
+                                       refresh_reason);
+                    }
+                }
+                latest_replan.setGoal(selected_goal.position, selected_goal.yaw, robot_state_);
+                latest_replan.setRetCode(GENERAL_RET_CODE::GENERAL_SUCCESS_NO_BACKUP);
+                if (cfg_.exploration_print_log) {
+                    ros_ptr_->info(" -- [Exploration] Manager execution hold: skip frontend update, remaining={:.3f}, candidate_id={}, frontier_id={}, reason={}.",
+                                   remaining,
+                                   selected_goal.candidate_id,
+                                   selected_goal.frontier_id,
+                                   selected_goal.reason);
+                }
+                time_consuming_[TOTAL_REPLAN] = total_t.stop();
+                return NO_NEED;
+            }
+
             ExplorationGoal candidate;
             const StatePVAJ head_state = makeTaskHeadState(false);
-            if (!exploration_frontend_->planNextGoal(head_state, robot_state_.yaw, candidate, now)) {
+            if (!selected_goal_ready &&
+                !exploration_frontend_->planNextGoal(head_state, robot_state_.yaw, candidate, now)) {
                 latest_replan.setGoal(robot_state_.p, robot_state_.yaw, robot_state_);
-                if (exploration_frontend_->isExplorationFinished()) {
+                ExplorationCandidateSet candidate_set;
+                const bool has_candidate_set =
+                        exploration_frontend_->getLastCandidateSet(candidate_set);
+                if (!selected_goal_ready) {
+                    const ExplorationRuntimeManager::SelectionDecision manager_decision =
+                            exploration_runtime_manager_->selectGoalForExecution(
+                                    candidate_set,
+                                    has_candidate_set,
+                                    ExplorationGoal{},
+                                    robot_state_.p,
+                                    robot_state_.yaw,
+                                    remaining,
+                                    now,
+                                    new_task);
+                    if (manager_decision.ready) {
+                        selected_goal = manager_decision.goal;
+                        goal_switched = !manager_decision.keep_current;
+                        selected_goal_ready = true;
+                        if (manager_decision.keep_current) {
+                            exploration_runtime_manager_->onKeepCurrentGoal();
+                        } else {
+                            exploration_runtime_manager_->onGoalSelected(selected_goal);
+                        }
+                        ros_ptr_->info(" -- [Exploration] Use manager goal after frontend failure: reason={}, keep_current={}, candidate_id={}, frontier_id={}, goal_reason={}.",
+                                       manager_decision.reason,
+                                       static_cast<int>(manager_decision.keep_current),
+                                       selected_goal.candidate_id,
+                                       selected_goal.frontier_id,
+                                       selected_goal.reason);
+                    }
+                }
+                if (!selected_goal_ready && exploration_frontend_->isExplorationFinished()) {
                     ExplorationGoal recovery_goal;
                     std::string recovery_validation;
                     if (exploration_runtime_manager_->shouldDelayFinish(now) &&
@@ -738,30 +867,6 @@ namespace general_planner {
                         ros_ptr_->info(" -- [Exploration] Exploration finished: {}.", candidate.reason);
                         time_consuming_[TOTAL_REPLAN] = total_t.stop();
                         return FINISH;
-                    }
-                }
-                if (!selected_goal_ready) {
-                    const ExplorationRuntimeManager::SelectionDecision tour_decision =
-                            exploration_runtime_manager_->selectGoalFromActiveTour(
-                                    robot_state_.p,
-                                    remaining,
-                                    now,
-                                    new_task);
-                    if (tour_decision.ready) {
-                        selected_goal = tour_decision.goal;
-                        goal_switched = !tour_decision.keep_current;
-                        selected_goal_ready = true;
-                        if (tour_decision.keep_current) {
-                            exploration_runtime_manager_->onKeepCurrentGoal();
-                        } else {
-                            exploration_runtime_manager_->onGoalSelected(selected_goal);
-                        }
-                        ros_ptr_->info(" -- [Exploration] Use active tour after frontend failure: reason={}, keep_current={}, candidate_id={}, frontier_id={}, goal_reason={}.",
-                                       tour_decision.reason,
-                                       static_cast<int>(tour_decision.keep_current),
-                                       selected_goal.candidate_id,
-                                       selected_goal.frontier_id,
-                                       selected_goal.reason);
                     }
                 }
                 if (!selected_goal_ready &&
@@ -796,24 +901,20 @@ namespace general_planner {
                         return FAILED;
                     }
                 }
-            } else {
+            } else if (!selected_goal_ready) {
                 ExplorationCandidateSet candidate_set;
                 const bool has_candidate_set =
                         exploration_frontend_->getLastCandidateSet(candidate_set);
                 const ExplorationRuntimeManager::SelectionDecision decision =
-                        has_candidate_set
-                                ? exploration_runtime_manager_->selectGoalFromCandidates(
-                                          candidate_set,
-                                          robot_state_.p,
-                                          robot_state_.yaw,
-                                          remaining,
-                                          now,
-                                          new_task)
-                                : exploration_runtime_manager_->stabilizeCandidate(candidate,
-                                                                                   robot_state_.p,
-                                                                                   remaining,
-                                                                                   now,
-                                                                                   new_task);
+                        exploration_runtime_manager_->selectGoalForExecution(
+                                candidate_set,
+                                has_candidate_set,
+                                candidate,
+                                robot_state_.p,
+                                robot_state_.yaw,
+                                remaining,
+                                now,
+                                new_task);
                 if (decision.ready && decision.keep_current) {
                     selected_goal = decision.goal;
                     goal_switched = false;

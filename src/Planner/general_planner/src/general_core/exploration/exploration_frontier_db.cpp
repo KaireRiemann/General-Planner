@@ -20,6 +20,26 @@ double clampPositive(const double value)
     return std::max(0.0, finiteOr(value));
 }
 
+double managerStaleTime(const Config &cfg)
+{
+    return std::max(1.0, cfg.exploration_frontier_manager_stale_time);
+}
+
+double terminalKeepTime(const Config &cfg)
+{
+    const double stale_time = managerStaleTime(cfg);
+    return std::max({2.0 * stale_time,
+                     cfg.exploration_frontier_manager_dormant_time,
+                     10.0});
+}
+
+double coveredHoldTime(const Config &cfg)
+{
+    return std::max({cfg.exploration_frontier_manager_dormant_time,
+                     0.5 * cfg.exploration_frontier_manager_recent_selection_window,
+                     2.0});
+}
+
 } // namespace
 
 ExplorationFrontierDB::ExplorationFrontierDB(const Config &cfg)
@@ -115,13 +135,22 @@ void ExplorationFrontierDB::markFailed(const ExplorationGoal &goal,
     }
     ++record->failure_count;
     record->last_state_stamp = stamp;
+    const int stale_threshold =
+            std::max(2, cfg_.exploration_frontier_manager_no_view_threshold + 1);
+    if (record->failure_count >= stale_threshold) {
+        record->state = State::STALE;
+        record->block_until = 0.0;
+        return;
+    }
     record->state = State::BLOCKED;
     const double failure_ttl =
             std::max({cfg_.exploration_frontier_memory_failure_ttl,
                       cfg_.exploration_local_trap_cooldown,
                       cfg_.exploration_frontier_manager_dormant_time,
                       1.0});
-    record->block_until = stamp + failure_ttl;
+    const double failure_scale =
+            std::clamp(0.5 * static_cast<double>(record->failure_count), 1.0, 4.0);
+    record->block_until = stamp + failure_scale * failure_ttl;
 }
 
 void ExplorationFrontierDB::markCoveredNear(
@@ -159,6 +188,62 @@ bool ExplorationFrontierDB::goalActive(const ExplorationGoal &goal,
         return true;
     }
     return recordActive(*record, stamp);
+}
+
+int ExplorationFrontierDB::recordCount() const
+{
+    return static_cast<int>(records_.size());
+}
+
+int ExplorationFrontierDB::activeObjectCount(const double stamp) const
+{
+    int count = 0;
+    for (const auto &entry : records_) {
+        if (recordActive(entry.second, stamp)) {
+            ++count;
+        }
+    }
+    return count;
+}
+
+int ExplorationFrontierDB::blockedObjectCount(const double stamp) const
+{
+    int count = 0;
+    for (const auto &entry : records_) {
+        const Record &record = entry.second;
+        if (record.state == State::BLOCKED && stamp < record.block_until) {
+            ++count;
+        }
+    }
+    return count;
+}
+
+int ExplorationFrontierDB::coveredObjectCount() const
+{
+    int count = 0;
+    for (const auto &entry : records_) {
+        if (entry.second.state == State::COVERED) {
+            ++count;
+        }
+    }
+    return count;
+}
+
+int ExplorationFrontierDB::staleObjectCount(const double stamp) const
+{
+    int count = 0;
+    const double stale_time = managerStaleTime(cfg_);
+    for (const auto &entry : records_) {
+        const Record &record = entry.second;
+        if (record.state == State::STALE ||
+            (record.state != State::COVERED &&
+             record.state != State::BLOCKED &&
+             record.last_seen_stamp > 0.0 &&
+             stamp - record.last_seen_stamp > stale_time)) {
+            ++count;
+        }
+    }
+    return count;
 }
 
 std::string ExplorationFrontierDB::objectKeyForGoal(
@@ -204,14 +289,8 @@ bool ExplorationFrontierDB::enabled() const
 
 void ExplorationFrontierDB::prune(const double stamp)
 {
-    const double stale_time =
-            std::max({cfg_.exploration_frontier_manager_stale_time,
-                      cfg_.exploration_frontier_memory_ttl,
-                      1.0});
-    const double terminal_keep_time =
-            std::max({4.0 * stale_time,
-                      2.0 * cfg_.exploration_frontier_manager_dormant_time,
-                      10.0});
+    const double stale_time = managerStaleTime(cfg_);
+    const double terminal_keep_time = terminalKeepTime(cfg_);
     for (auto it = records_.begin(); it != records_.end();) {
         Record &record = it->second;
         if (record.state == State::BLOCKED && stamp >= record.block_until) {
@@ -278,6 +357,12 @@ void ExplorationFrontierDB::observeCandidate(
         record.first_seen_stamp = context.stamp;
         record.last_state_stamp = context.stamp;
         record.state = State::ACTIVE;
+    }
+
+    if (record.state == State::COVERED &&
+        record.last_completed_stamp > 0.0 &&
+        context.stamp - record.last_completed_stamp < coveredHoldTime(cfg_)) {
+        return;
     }
 
     const bool first_observation_this_stamp =
@@ -365,10 +450,7 @@ void ExplorationFrontierDB::insertViewpoint(Record &record,
 bool ExplorationFrontierDB::recordActive(const Record &record,
                                          const double stamp) const
 {
-    const double stale_time =
-            std::max({cfg_.exploration_frontier_manager_stale_time,
-                      cfg_.exploration_frontier_memory_ttl,
-                      1.0});
+    const double stale_time = managerStaleTime(cfg_);
     if (record.state == State::BLOCKED) {
         return stamp >= record.block_until;
     }

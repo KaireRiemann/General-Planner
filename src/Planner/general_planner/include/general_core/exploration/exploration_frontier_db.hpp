@@ -81,6 +81,12 @@ public:
 
     bool goalActive(const ExplorationGoal &goal, double stamp) const;
 
+    int recordCount() const;
+    int activeObjectCount(double stamp) const;
+    int blockedObjectCount(double stamp) const;
+    int coveredObjectCount() const;
+    int staleObjectCount(double stamp) const;
+
     std::string objectKeyForGoal(const ExplorationGoal &goal,
                                  const std::string &sector_key) const;
 

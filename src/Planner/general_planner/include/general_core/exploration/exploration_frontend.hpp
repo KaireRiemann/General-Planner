@@ -80,6 +80,9 @@ public:
         bool enable{false};
         bool print_log{false};
         std::string frontier_source{"fallback_scan"};
+        bool global_box_enable{false};
+        general_utils::Vec3f global_box_min{-50.0, -50.0, 0.0};
+        general_utils::Vec3f global_box_max{50.0, 50.0, 3.0};
 
         double map_resolution{0.2};
         double frontier_search_radius{12.0};
@@ -450,6 +453,8 @@ private:
 
     bool clipTaskSearchBox(general_utils::Vec3f &box_min,
                            general_utils::Vec3f &box_max) const;
+
+    void clampViewpointToTaskRegion(general_utils::Vec3f &viewpoint) const;
 
     static double wrapAngleDiff(double lhs, double rhs);
 

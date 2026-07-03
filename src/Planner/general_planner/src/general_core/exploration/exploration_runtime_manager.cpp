@@ -814,6 +814,164 @@ ExplorationRuntimeManager::selectGoalFromActiveTour(
     return decision;
 }
 
+ExplorationRuntimeManager::SelectionDecision
+ExplorationRuntimeManager::selectGoalForExecution(
+        const ExplorationCandidateSet &candidate_set,
+        const bool has_candidate_set,
+        const ExplorationGoal &frontend_goal,
+        const general_utils::Vec3f &robot_pos,
+        const double current_yaw,
+        const double committed_remaining,
+        const double stamp,
+        const bool new_task)
+{
+    phase_ = Phase::UPDATE_BELIEF;
+    updateRecoveryLock(robot_pos, stamp);
+
+    if (has_candidate_set && candidate_set.valid && !candidate_set.candidates.empty()) {
+        SelectionDecision decision =
+                selectGoalFromCandidates(candidate_set,
+                                         robot_pos,
+                                         current_yaw,
+                                         committed_remaining,
+                                         stamp,
+                                         new_task);
+        if (decision.ready || decision.recovery_requested || decision.reject) {
+            return decision;
+        }
+    }
+
+    SelectionDecision tour_decision =
+            selectGoalFromActiveTour(robot_pos,
+                                     committed_remaining,
+                                     stamp,
+                                     new_task);
+    if (tour_decision.ready || tour_decision.recovery_requested) {
+        tour_decision.reason =
+                "manager_active_tour_fallback:" + tour_decision.reason;
+        return tour_decision;
+    }
+
+    if (frontend_goal.valid) {
+        SelectionDecision fallback =
+                stabilizeCandidate(frontend_goal,
+                                   robot_pos,
+                                   committed_remaining,
+                                   stamp,
+                                   new_task);
+        if (fallback.ready) {
+            fallback.reason =
+                    "manager_frontend_single_goal_fallback:" + fallback.reason;
+        }
+        return fallback;
+    }
+
+    SelectionDecision out;
+    out.reject = true;
+    out.ndo = navigation_memory_.diagnose(stamp);
+    out.reason =
+            has_candidate_set && !candidate_set.reason.empty()
+                    ? "manager_no_executable_goal:" + candidate_set.reason
+                    : "manager_no_executable_goal:" + tour_decision.reason;
+    return out;
+}
+
+bool ExplorationRuntimeManager::refreshGlobalTaskGraph(
+        const ExplorationCandidateSet &candidate_set,
+        const general_utils::Vec3f &robot_pos,
+        const double current_yaw,
+        const double stamp,
+        const bool new_task,
+        std::string &reason)
+{
+    reason.clear();
+    (void)new_task;
+    phase_ = Phase::UPDATE_BELIEF;
+    updateRecoveryLock(robot_pos, stamp);
+
+    if (!activeTourEnabled()) {
+        reason = "task_graph_refresh_disabled";
+        return false;
+    }
+    if (!candidate_set.valid || candidate_set.candidates.empty()) {
+        reason = candidate_set.reason.empty()
+                         ? "task_graph_refresh_empty_candidate_set"
+                         : "task_graph_refresh_empty_candidate_set:" +
+                                   candidate_set.reason;
+        return false;
+    }
+
+    updateSectorMemoryFromCandidates(candidate_set, stamp);
+    ExplorationFrontierDB::ObservationContext frontier_db_context;
+    frontier_db_context.robot_pos = robot_pos;
+    frontier_db_context.stamp = stamp;
+    frontier_db_context.node_penalty =
+            [this, stamp](const ExplorationGoal &goal) {
+                const std::string sector_key = sectorKeyForGoal(goal);
+                return std::max(0.0, cfg_.exploration_tour_coverage_penalty_weight) *
+                               coverage_grid_.revisitPenalty(sectorReference(goal), stamp) +
+                       sectorMemoryPenalty(sector_key, stamp);
+            };
+    frontier_db_context.coverage_intent_reward =
+            [this, stamp](const ExplorationGoal &goal) {
+                if (!cfg_.exploration_coverage_intent_enable) {
+                    return 0.0;
+                }
+                return coverage_grid_.intentReward(sectorReference(goal), stamp);
+            };
+    frontier_db_context.sector_key =
+            [this](const ExplorationGoal &goal) {
+                return sectorKeyForGoal(goal);
+            };
+    frontier_db_context.sector_reference =
+            [this](const ExplorationGoal &goal) {
+                return sectorReference(goal);
+            };
+    frontier_db_.observeCandidates(candidate_set, frontier_db_context);
+    const bool advanced = advanceCompletedTourNodes(robot_pos, stamp);
+
+    std::string repair_reason;
+    const bool repaired =
+            repairActiveTourFromCandidates(candidate_set,
+                                           robot_pos,
+                                           stamp,
+                                           repair_reason);
+    bool rebuilt = false;
+    std::string rebuild_reason;
+    const bool needs_rebuild =
+            !active_tour_.valid || pendingTourNodeCount() <= 0;
+    const bool rebuild_allowed =
+            !active_tour_.valid ||
+            cfg_.exploration_active_tour_rebuild_min_interval <= 0.0 ||
+            stamp - active_tour_.last_rebuild_stamp >=
+                    cfg_.exploration_active_tour_rebuild_min_interval;
+    if (!repaired && needs_rebuild && rebuild_allowed) {
+        rebuilt = rebuildActiveTour(candidate_set,
+                                    robot_pos,
+                                    current_yaw,
+                                    stamp,
+                                    rebuild_reason);
+    }
+
+    std::ostringstream oss;
+    oss << "task_graph_refresh"
+        << ":raw=" << candidate_set.candidates.size()
+        << ",tour_valid=" << static_cast<int>(active_tour_.valid)
+        << ",pending=" << pendingTourNodeCount()
+        << ",executing=" << executingTourNodeCount()
+        << ",advanced=" << static_cast<int>(advanced)
+        << ",repaired=" << static_cast<int>(repaired)
+        << ",rebuilt=" << static_cast<int>(rebuilt);
+    if (!repair_reason.empty()) {
+        oss << ",repair=" << repair_reason;
+    }
+    if (!rebuild_reason.empty()) {
+        oss << ",rebuild=" << rebuild_reason;
+    }
+    reason = oss.str();
+    return advanced || repaired || rebuilt;
+}
+
 void ExplorationRuntimeManager::recordDecision(const ExplorationGoal &goal,
                                                const general_utils::Vec3f &robot_pos,
                                                const double stamp)

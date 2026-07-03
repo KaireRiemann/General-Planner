@@ -4,8 +4,11 @@
 #include <array>
 #include <chrono>
 #include <cmath>
+#include <fstream>
+#include <iomanip>
 #include <iostream>
 #include <limits>
+#include <mutex>
 #include <queue>
 #include <sstream>
 #include <string>
@@ -14,6 +17,7 @@
 #include <utility>
 
 #include <Eigen/Eigenvalues>
+#include <boost/filesystem.hpp>
 
 #include <general_core/exploration/exploration_manager.hpp>
 #include <general_core/utils/string_utils.hpp>
@@ -84,16 +88,18 @@ double pathLength(const vec_E<Vec3f> &path) {
 }
 
 bool sourceAllowsRogMap(const std::string &source) {
-    return source == "auto" ||
-           source == "rog_map" ||
-           source == "rog_map_frontier" ||
-           source == "frontier";
+    return source == "rog_map" ||
+           source == "rog_map_frontier";
 }
 
 bool sourceAllowsFallback(const std::string &source) {
     return source == "auto" ||
+           source == "frontier" ||
            source == "fallback" ||
            source == "fallback_scan" ||
+           source == "planner_scan" ||
+           source == "map_query" ||
+           source == "frontier_scan" ||
            source == "local_scan";
 }
 
@@ -152,6 +158,61 @@ int sampledCount(const size_t count, const int max_samples) {
     return static_cast<int>((count + static_cast<size_t>(stride) - 1U) /
                             static_cast<size_t>(stride));
 }
+
+std::string csvEscape(const std::string &value) {
+    bool needs_quotes = false;
+    std::string escaped;
+    escaped.reserve(value.size());
+    for (const char c : value) {
+        if (c == '"' || c == ',' || c == '\n' || c == '\r') {
+            needs_quotes = true;
+        }
+        if (c == '"') {
+            escaped.push_back('"');
+        }
+        escaped.push_back(c);
+    }
+    return needs_quotes ? "\"" + escaped + "\"" : escaped;
+}
+
+std::mutex &explorationFrontendLogMutex() {
+    static std::mutex mutex;
+    return mutex;
+}
+
+std::ofstream &explorationFrontendLogStream() {
+    static std::ofstream stream;
+    static bool initialized = false;
+    if (!initialized) {
+        initialized = true;
+        const std::string path =
+                std::string(ROOT_DIR) + "log/diagnostic_events/exploration_frontend.csv";
+        const boost::filesystem::path log_path(path);
+        const boost::filesystem::path parent = log_path.parent_path();
+        boost::system::error_code ec;
+        if (!parent.empty()) {
+            boost::filesystem::create_directories(parent, ec);
+        }
+        stream.open(path, std::ios::out | std::ios::trunc);
+        if (stream.is_open()) {
+            stream << "stamp,event,reason,robot_x,robot_y,robot_z,"
+                   << "goal_valid,goal_x,goal_y,goal_z,goal_yaw,"
+                   << "candidate_id,frontier_id,score,information_gain,travel_cost,"
+                   << "yaw_cost,curvature_cost,visible_cells,visible_ratio,frontier_area,"
+                   << "candidate_count,checked,astar_checks,reachable,clusters,raw_clusters,"
+                   << "frontiers,raw_frontiers,source,fallback,object_records,object_active,"
+                   << "object_dormant,object_covered,object_stale,dormant_bootstrap,"
+                   << "bootstrap_used,bootstrap_attempts,bootstrap_reject_bounds,"
+                   << "bootstrap_reject_occupied,bootstrap_reject_unknown,"
+                   << "bootstrap_reject_inflated,bootstrap_reject_esdf,"
+                   << "bootstrap_reject_near,bootstrap_reject_unreachable,"
+                   << "expansion_attempts,expansion_added,expansion_memory_added,"
+                   << "sample_budget_hit,plan_ms"
+                   << std::endl;
+        }
+    }
+    return stream;
+}
 }  // namespace
 
 class ExplorationFrontend::FrontierObjectManager {
@@ -203,6 +264,20 @@ public:
             record.last_seen_stamp = stamp;
             record.last_state_stamp = stamp;
             ++record.seen_count;
+            const int unknown_near_count = countUnknownNear(
+                    record.reference,
+                    std::max(map_manager_->getResolution(),
+                             cfg_.frontier_manager_covered_unknown_radius),
+                    std::max(map_manager_->getResolution(), cfg_.map_resolution));
+            const bool low_unknown_evidence =
+                    unknown_near_count <=
+                    std::max(1, cfg_.min_unknown_neighbor_count / 2);
+            if (low_unknown_evidence &&
+                (record.selection_count > 0 || record.seen_count > 2)) {
+                ++record.low_unknown_count;
+            } else {
+                record.low_unknown_count = 0;
+            }
             if (record.state == FrontierState::COVERED ||
                 record.state == FrontierState::STALE) {
                 record.state = FrontierState::ACTIVE;
@@ -213,14 +288,17 @@ public:
                 continue;
             }
 
-            if (!frontierStillUseful(record.cluster)) {
+            if (record.low_unknown_count >= 2 ||
+                !frontierStillUseful(record.cluster)) {
                 record.state = FrontierState::COVERED;
                 record.blocked_until = stamp + std::max(cfg_.frontier_manager_stale_time,
                                                         cfg_.frontier_manager_dormant_time);
+                record.last_state_stamp = stamp;
                 continue;
             }
 
             record.state = FrontierState::ACTIVE;
+            record.no_view_count = 0;
             FrontierCluster annotated = record.cluster;
             annotateCluster(record, stamp, annotated);
             active_clusters.push_back(std::move(annotated));
@@ -266,8 +344,16 @@ public:
         ++record->no_view_count;
         if (cfg_.frontier_manager_no_view_threshold > 0 &&
             record->no_view_count >= cfg_.frontier_manager_no_view_threshold) {
-            record->state = FrontierState::DORMANT;
-            record->dormant_until = stamp + std::max(0.0, cfg_.frontier_manager_dormant_time);
+            const int stale_threshold =
+                    std::max(2, 2 * cfg_.frontier_manager_no_view_threshold);
+            if (record->no_view_count >= stale_threshold) {
+                record->state = FrontierState::STALE;
+                record->dormant_until = 0.0;
+            } else {
+                record->state = FrontierState::DORMANT;
+                record->dormant_until =
+                        stamp + std::max(0.0, cfg_.frontier_manager_dormant_time);
+            }
             record->last_state_stamp = stamp;
         }
     }
@@ -298,8 +384,21 @@ public:
             return;
         }
         ++record->failure_count;
-        record->state = FrontierState::DORMANT;
-        record->dormant_until = stamp + std::max(0.0, cfg_.frontier_manager_dormant_time);
+        const int stale_threshold =
+                std::max(2, cfg_.frontier_manager_no_view_threshold + 1);
+        if (record->failure_count >= stale_threshold) {
+            record->state = FrontierState::STALE;
+            record->dormant_until = 0.0;
+        } else {
+            record->state = FrontierState::DORMANT;
+            const double failure_scale =
+                    std::clamp(0.5 * static_cast<double>(record->failure_count),
+                               1.0,
+                               4.0);
+            record->dormant_until =
+                    stamp + failure_scale *
+                                    std::max(0.0, cfg_.frontier_manager_dormant_time);
+        }
         record->last_state_stamp = stamp;
     }
 
@@ -320,6 +419,7 @@ private:
         int selection_count{0};
         int failure_count{0};
         int no_view_count{0};
+        int low_unknown_count{0};
         double first_seen_stamp{0.0};
         double last_seen_stamp{0.0};
         double last_state_stamp{0.0};
@@ -635,7 +735,22 @@ bool ExplorationFrontend::planNextGoal(const StatePVAJ &robot_state,
     vec_E<FrontierCell> frontier_cells;
     vec_E<FrontierCluster> clusters;
     FrontierSearchStats search_stats;
+    FrontierObjectStats object_stats;
     bool clusters_from_incremental_cache = false;
+    size_t raw_cluster_count = 0U;
+    bool using_dormant_bootstrap_clusters = false;
+    bool used_bootstrap_candidates = false;
+    int bootstrap_attempt_count = 0;
+    int bootstrap_reject_bounds = 0;
+    int bootstrap_reject_occupied = 0;
+    int bootstrap_reject_unknown = 0;
+    int bootstrap_reject_inflated = 0;
+    int bootstrap_reject_esdf = 0;
+    int bootstrap_reject_near = 0;
+    int bootstrap_reject_unreachable = 0;
+    int expansion_attempt_count = 0;
+    int expansion_added_count = 0;
+    int expansion_memory_added_count = 0;
 
     std::string source = core_utils::normalizeToken(cfg_.frontier_source);
     if (source.empty()) {
@@ -678,6 +793,77 @@ bool ExplorationFrontend::planNextGoal(const StatePVAJ &robot_state,
             clusters_from_incremental_cache
                     ? search_stats.frontier_cells
                     : static_cast<int>(frontier_cells.size());
+    const auto log_frontend_decision =
+            [&](const std::string &event,
+                const std::string &reason,
+                const ExplorationGoal *selected_goal,
+                const int candidate_count,
+                const int checked_count,
+                const int astar_checked_count,
+                const int reachable_count) {
+                std::lock_guard<std::mutex> lock(explorationFrontendLogMutex());
+                std::ofstream &stream = explorationFrontendLogStream();
+                if (!stream.is_open()) {
+                    return;
+                }
+                const bool goal_valid =
+                        selected_goal != nullptr && selected_goal->valid;
+                const Vec3f goal_pos =
+                        goal_valid ? selected_goal->position : Vec3f::Zero();
+                stream << std::fixed << std::setprecision(9)
+                       << stamp << ","
+                       << csvEscape(event) << ","
+                       << csvEscape(reason) << ","
+                       << robot_pos.x() << ","
+                       << robot_pos.y() << ","
+                       << robot_pos.z() << ","
+                       << static_cast<int>(goal_valid) << ","
+                       << goal_pos.x() << ","
+                       << goal_pos.y() << ","
+                       << goal_pos.z() << ","
+                       << (goal_valid ? selected_goal->yaw : 0.0) << ","
+                       << (goal_valid ? selected_goal->candidate_id : -1) << ","
+                       << (goal_valid ? selected_goal->frontier_id : -1) << ","
+                       << (goal_valid ? selected_goal->score : 0.0) << ","
+                       << (goal_valid ? selected_goal->information_gain : 0.0) << ","
+                       << (goal_valid ? selected_goal->travel_cost : 0.0) << ","
+                       << (goal_valid ? selected_goal->yaw_cost : 0.0) << ","
+                       << (goal_valid ? selected_goal->curvature_cost : 0.0) << ","
+                       << (goal_valid ? selected_goal->visible_frontier_cell_count : 0) << ","
+                       << (goal_valid ? selected_goal->visible_frontier_ratio : 0.0) << ","
+                       << (goal_valid ? selected_goal->frontier_area : 0.0) << ","
+                       << candidate_count << ","
+                       << checked_count << ","
+                       << astar_checked_count << ","
+                       << reachable_count << ","
+                       << clusters.size() << ","
+                       << raw_cluster_count << ","
+                       << frontier_output_count << ","
+                       << search_stats.raw_frontier_cells << ","
+                       << csvEscape(search_stats.source) << ","
+                       << static_cast<int>(search_stats.fallback_used) << ","
+                       << object_stats.records << ","
+                       << object_stats.active << ","
+                       << object_stats.dormant << ","
+                       << object_stats.covered << ","
+                       << object_stats.stale << ","
+                       << static_cast<int>(using_dormant_bootstrap_clusters) << ","
+                       << static_cast<int>(used_bootstrap_candidates) << ","
+                       << bootstrap_attempt_count << ","
+                       << bootstrap_reject_bounds << ","
+                       << bootstrap_reject_occupied << ","
+                       << bootstrap_reject_unknown << ","
+                       << bootstrap_reject_inflated << ","
+                       << bootstrap_reject_esdf << ","
+                       << bootstrap_reject_near << ","
+                       << bootstrap_reject_unreachable << ","
+                       << expansion_attempt_count << ","
+                       << expansion_added_count << ","
+                       << expansion_memory_added_count << ","
+                       << static_cast<int>(candidate_sampling_budget_hit) << ","
+                       << plan_elapsed_ms()
+                       << std::endl;
+            };
     if ((clusters_from_incremental_cache && clusters.empty()) ||
         (!clusters_from_incremental_cache && frontier_cells.empty())) {
         const bool observation_ready = mapObservationReady(search_stats);
@@ -698,6 +884,7 @@ bool ExplorationFrontend::planNextGoal(const StatePVAJ &robot_state,
                 std::cout << " -- [ExplorationFrontend] Waiting for usable map: "
                           << goal.reason << "." << std::endl;
             }
+            log_frontend_decision("wait_map", goal.reason, nullptr, 0, 0, 0, 0);
             return false;
         }
 
@@ -726,6 +913,14 @@ bool ExplorationFrontend::planNextGoal(const StatePVAJ &robot_state,
                           << ", occupied=" << search_stats.occupied_cells
                           << "." << std::endl;
             }
+            log_frontend_decision(exploration_finished_ ? "finished_no_frontier"
+                                                        : "no_frontier",
+                                  goal.reason,
+                                  nullptr,
+                                  0,
+                                  0,
+                                  0,
+                                  0);
             return false;
         }
 
@@ -763,6 +958,13 @@ bool ExplorationFrontend::planNextGoal(const StatePVAJ &robot_state,
                           << ", min_cluster_size=" << cfg_.min_frontier_cluster_size
                           << "." << std::endl;
             }
+            log_frontend_decision("no_frontier_cluster",
+                                  goal.reason,
+                                  nullptr,
+                                  0,
+                                  0,
+                                  0,
+                                  0);
             return false;
         }
         if (cfg_.print_log) {
@@ -776,7 +978,7 @@ bool ExplorationFrontend::planNextGoal(const StatePVAJ &robot_state,
         }
     }
 
-    const size_t raw_cluster_count = clusters.size();
+    raw_cluster_count = clusters.size();
     vec_E<FrontierCluster> split_clusters;
     splitLargeFrontierClusters(clusters, robot_pos, split_clusters);
     if (!split_clusters.empty()) {
@@ -784,8 +986,6 @@ bool ExplorationFrontend::planNextGoal(const StatePVAJ &robot_state,
     }
 
     const vec_E<FrontierCluster> unmanaged_clusters = clusters;
-    FrontierObjectStats object_stats;
-    bool using_dormant_bootstrap_clusters = false;
     if (frontier_object_manager_ != nullptr) {
         vec_E<FrontierCluster> managed_clusters;
         frontier_object_manager_->update(clusters,
@@ -866,18 +1066,6 @@ bool ExplorationFrontend::planNextGoal(const StatePVAJ &robot_state,
         }
     }
 
-    bool used_bootstrap_candidates = false;
-    int bootstrap_attempt_count = 0;
-    int bootstrap_reject_bounds = 0;
-    int bootstrap_reject_occupied = 0;
-    int bootstrap_reject_unknown = 0;
-    int bootstrap_reject_inflated = 0;
-    int bootstrap_reject_esdf = 0;
-    int bootstrap_reject_near = 0;
-    int bootstrap_reject_unreachable = 0;
-    int expansion_attempt_count = 0;
-    int expansion_added_count = 0;
-    int expansion_memory_added_count = 0;
     if (candidates.empty()) {
         const int bootstrap_limit = std::min(max_candidate_num,
                                              std::max(4,
@@ -934,6 +1122,7 @@ bool ExplorationFrontend::planNextGoal(const StatePVAJ &robot_state,
                 return;
             }
             viewpoint.z() = robot_pos.z() + cfg_.viewpoint_height_offset;
+            clampViewpointToTaskRegion(viewpoint);
             const double distance_to_robot = (viewpoint - robot_pos).norm();
             if (distance_to_robot <= std::max(0.2, 0.5 * cfg_.goal_reached_distance)) {
                 ++bootstrap_reject_near;
@@ -1177,6 +1366,14 @@ bool ExplorationFrontend::planNextGoal(const StatePVAJ &robot_state,
                       << ", expansion_memory_added=" << expansion_memory_added_count
                       << ")." << std::endl;
         }
+        log_frontend_decision(exploration_finished_ ? "finished_no_valid_viewpoint"
+                                                    : "no_valid_viewpoint",
+                              goal.reason,
+                              nullptr,
+                              0,
+                              0,
+                              0,
+                              0);
         return false;
     }
 
@@ -1417,6 +1614,13 @@ bool ExplorationFrontend::planNextGoal(const StatePVAJ &robot_state,
                   << ", raw_clusters=" << raw_cluster_count
                   << ", candidates=" << candidates.size() << std::endl;
         }
+        log_frontend_decision("no_reachable_frontier",
+                              goal.reason,
+                              nullptr,
+                              static_cast<int>(candidates.size()),
+                              checked,
+                              astar_checked,
+                              0);
         return false;
     }
 
@@ -1495,6 +1699,13 @@ bool ExplorationFrontend::planNextGoal(const StatePVAJ &robot_state,
                   << ", fallback=" << static_cast<int>(search_stats.fallback_used)
                   << std::endl;
     }
+    log_frontend_decision("goal_selected",
+                          goal.reason,
+                          &goal,
+                          static_cast<int>(candidates.size()),
+                          checked,
+                          astar_checked,
+                          static_cast<int>(reachable_candidates.size()));
     return true;
 }
 
@@ -1604,7 +1815,7 @@ bool ExplorationFrontend::collectFallbackFrontierCells(const Vec3f &robot_pos,
                                                        FrontierSearchStats &stats) const {
     frontier_cells.clear();
     stats = FrontierSearchStats{};
-    stats.source = "fallback_scan";
+    stats.source = "planner_scan";
     if (map_manager_ == nullptr || !map_manager_->ready()) {
         return false;
     }
@@ -1635,21 +1846,9 @@ bool ExplorationFrontend::collectFallbackFrontierCells(const Vec3f &robot_pos,
 
     const double radius_sq = cfg_.frontier_search_radius * cfg_.frontier_search_radius;
     std::unordered_set<GridKey, GridKeyHasher> inserted;
-    const int max_frontier_cells = cfg_.max_frontier_cells > 0
-                                           ? cfg_.max_frontier_cells
-                                           : std::numeric_limits<int>::max();
     for (int ix = min_id.x(); ix <= max_id.x(); ix += index_step) {
-        if (static_cast<int>(frontier_cells.size()) >= max_frontier_cells) {
-            break;
-        }
         for (int iy = min_id.y(); iy <= max_id.y(); iy += index_step) {
-            if (static_cast<int>(frontier_cells.size()) >= max_frontier_cells) {
-                break;
-            }
             for (int iz = min_id.z(); iz <= max_id.z(); iz += index_step) {
-                if (static_cast<int>(frontier_cells.size()) >= max_frontier_cells) {
-                    break;
-                }
                 FrontierCell cell;
                 cell.index = Vec3i(ix, iy, iz);
                 map_manager_->probMapGlobalIndexToPos(cell.index, cell.position);
@@ -1673,12 +1872,42 @@ bool ExplorationFrontend::collectFallbackFrontierCells(const Vec3f &robot_pos,
 
                 if (isFrontierCell(cell, grid_type)) {
                     inserted.insert(makeKey(cell.index));
-                    ++stats.frontier_cells;
+                    ++stats.raw_frontier_cells;
                     frontier_cells.push_back(cell);
                 }
             }
         }
     }
+
+    const int max_frontier_cells =
+            cfg_.max_frontier_cells > 0
+                    ? cfg_.max_frontier_cells
+                    : std::numeric_limits<int>::max();
+    if (static_cast<int>(frontier_cells.size()) > max_frontier_cells) {
+        const double preferred_distance =
+                std::max(cfg_.min_goal_distance, cfg_.preferred_goal_distance);
+        std::sort(frontier_cells.begin(),
+                  frontier_cells.end(),
+                  [&robot_pos, preferred_distance](const FrontierCell &lhs,
+                                                   const FrontierCell &rhs) {
+                      const double lhs_distance =
+                              (lhs.position - robot_pos).norm();
+                      const double rhs_distance =
+                              (rhs.position - robot_pos).norm();
+                      const double lhs_score =
+                              std::abs(lhs_distance - preferred_distance) +
+                              0.01 * lhs_distance;
+                      const double rhs_score =
+                              std::abs(rhs_distance - preferred_distance) +
+                              0.01 * rhs_distance;
+                      if (std::abs(lhs_score - rhs_score) > 1.0e-6) {
+                          return lhs_score < rhs_score;
+                      }
+                      return lhs_distance > rhs_distance;
+                  });
+        frontier_cells.resize(static_cast<size_t>(max_frontier_cells));
+    }
+    stats.frontier_cells = static_cast<int>(frontier_cells.size());
     return true;
 }
 
@@ -2451,6 +2680,7 @@ void ExplorationFrontend::sampleViewpointsForCluster(const FrontierCluster &clus
                 Vec3f viewpoint =
                         cluster.center + radius * Vec3f(std::cos(angle), std::sin(angle), 0.0);
                 viewpoint.z() = robot_pos.z() + cfg_.viewpoint_height_offset + z_offset;
+                clampViewpointToTaskRegion(viewpoint);
                 if (!insideTaskRegion(viewpoint)) {
                     continue;
                 }
@@ -2601,6 +2831,7 @@ void ExplorationFrontend::appendExpansionFallbackCandidates(
                 Vec3f viewpoint =
                         robot_pos + radius * Vec3f(std::cos(angle), std::sin(angle), 0.0);
                 viewpoint.z() = robot_pos.z() + cfg_.viewpoint_height_offset + z_offset;
+                clampViewpointToTaskRegion(viewpoint);
 
                 ExplorationGoal candidate;
                 if (!makeExpansionCandidate(robot_state,
@@ -3716,13 +3947,47 @@ bool ExplorationFrontend::isFreeLike(const rog_map::GridType type) const {
 }
 
 bool ExplorationFrontend::insideTaskRegion(const Vec3f &position) const {
-    return mission_manager_ == nullptr ||
-           mission_manager_->insideTaskBox(position);
+    if (!position.allFinite()) {
+        return false;
+    }
+    if (mission_manager_ != nullptr) {
+        return mission_manager_->insideTaskBox(position);
+    }
+    if (!cfg_.global_box_enable) {
+        return true;
+    }
+    return (position.array() >= cfg_.global_box_min.array()).all() &&
+           (position.array() <= cfg_.global_box_max.array()).all();
 }
 
 bool ExplorationFrontend::clipTaskSearchBox(Vec3f &box_min, Vec3f &box_max) const {
-    return mission_manager_ == nullptr ||
-           mission_manager_->clipSearchBox(box_min, box_max);
+    if (mission_manager_ != nullptr) {
+        return mission_manager_->clipSearchBox(box_min, box_max);
+    }
+    if (!cfg_.global_box_enable) {
+        return true;
+    }
+    box_min = box_min.cwiseMax(cfg_.global_box_min);
+    box_max = box_max.cwiseMin(cfg_.global_box_max);
+    return (box_max.array() >= box_min.array()).all();
+}
+
+void ExplorationFrontend::clampViewpointToTaskRegion(Vec3f &viewpoint) const {
+    if (!viewpoint.allFinite() || !cfg_.global_box_enable) {
+        return;
+    }
+    const double map_res =
+            map_manager_ != nullptr && map_manager_->ready()
+                    ? std::max(1.0e-3, map_manager_->getResolution())
+                    : std::max(1.0e-3, cfg_.map_resolution);
+    const double min_z = std::min(cfg_.global_box_min.z(), cfg_.global_box_max.z());
+    const double max_z = std::max(cfg_.global_box_min.z(), cfg_.global_box_max.z());
+    const double margin = 0.5 * map_res;
+    if (max_z - min_z > 2.0 * margin) {
+        viewpoint.z() = std::clamp(viewpoint.z(), min_z + margin, max_z - margin);
+    } else {
+        viewpoint.z() = 0.5 * (min_z + max_z);
+    }
 }
 
 double ExplorationFrontend::wrapAngleDiff(const double lhs, const double rhs) {
