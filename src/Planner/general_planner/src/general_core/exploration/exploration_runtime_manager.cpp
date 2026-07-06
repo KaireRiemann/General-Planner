@@ -573,16 +573,21 @@ ExplorationRuntimeManager::selectGoalFromCandidates(
         return out;
     }
 
+    const auto best_fallback_goal =
+            [](const ExplorationCandidateSet &set) {
+                if (set.suggested_goal.valid) {
+                    return set.suggested_goal;
+                }
+                return *std::min_element(set.candidates.begin(),
+                                         set.candidates.end(),
+                                         [](const ExplorationGoal &lhs,
+                                            const ExplorationGoal &rhs) {
+                                             return lhs.score < rhs.score;
+                                         });
+            };
+
     if (!activeTourEnabled()) {
-        const ExplorationGoal fallback =
-                candidate_set.suggested_goal.valid
-                        ? candidate_set.suggested_goal
-                        : *std::min_element(candidate_set.candidates.begin(),
-                                            candidate_set.candidates.end(),
-                                            [](const ExplorationGoal &lhs,
-                                               const ExplorationGoal &rhs) {
-                                                return lhs.score < rhs.score;
-                                            });
+        const ExplorationGoal fallback = best_fallback_goal(candidate_set);
         return stabilizeCandidate(fallback,
                                   robot_pos,
                                   committed_remaining,
@@ -694,8 +699,8 @@ ExplorationRuntimeManager::selectGoalFromCandidates(
             cfg_.exploration_active_tour_rebuild_min_interval > 0.0 &&
             stamp - active_tour_.last_rebuild_stamp <
                     cfg_.exploration_active_tour_rebuild_min_interval;
-    if (rebuild_throttled && decision_candidates.suggested_goal.valid) {
-        ExplorationGoal throttled_goal = decision_candidates.suggested_goal;
+    if (rebuild_throttled && !decision_candidates.candidates.empty()) {
+        ExplorationGoal throttled_goal = best_fallback_goal(decision_candidates);
         throttled_goal.reason += " active_sector=" + sector_reason +
                                  " active_tour_rebuild_throttled";
         return stabilizeCandidate(throttled_goal,
@@ -710,10 +715,7 @@ ExplorationRuntimeManager::selectGoalFromCandidates(
                            current_yaw,
                            stamp,
                            rebuild_reason)) {
-        const ExplorationGoal fallback =
-                decision_candidates.suggested_goal.valid
-                        ? decision_candidates.suggested_goal
-                        : decision_candidates.candidates.front();
+        const ExplorationGoal fallback = best_fallback_goal(decision_candidates);
         return stabilizeCandidate(fallback,
                                   robot_pos,
                                   committed_remaining,
@@ -755,10 +757,7 @@ ExplorationRuntimeManager::selectGoalFromCandidates(
             invalidateActiveSector("tour_nodes_rejected");
         }
     }
-    const ExplorationGoal fallback =
-            decision_candidates.suggested_goal.valid
-                    ? decision_candidates.suggested_goal
-                    : decision_candidates.candidates.front();
+    const ExplorationGoal fallback = best_fallback_goal(decision_candidates);
     return stabilizeCandidate(fallback,
                               robot_pos,
                               committed_remaining,

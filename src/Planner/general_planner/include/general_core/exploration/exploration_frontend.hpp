@@ -59,7 +59,6 @@ struct ExplorationGoal {
 struct ExplorationCandidateSet {
     bool valid{false};
     bool exploration_finished{false};
-    std::string reason;
     ExplorationGoal suggested_goal;
     general_utils::vec_E<ExplorationGoal> candidates;
 
@@ -70,6 +69,8 @@ struct ExplorationCandidateSet {
     int raw_cluster_count{0};
     int frontier_cell_count{0};
     int raw_frontier_cell_count{0};
+    std::string source;
+    std::string reason;
 };
 
 class ExplorationFrontend {
@@ -191,6 +192,11 @@ public:
                         const path_search::Astar::Ptr &astar);
 
     ~ExplorationFrontend();
+
+    bool generateCandidates(const general_utils::StatePVAJ &robot_state,
+                            double current_yaw,
+                            double stamp,
+                            ExplorationCandidateSet &out);
 
     bool planNextGoal(const general_utils::StatePVAJ &robot_state,
                       double current_yaw,

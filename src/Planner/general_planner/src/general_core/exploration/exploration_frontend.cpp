@@ -694,31 +694,44 @@ ExplorationFrontend::ExplorationFrontend(const Config &cfg,
 
 ExplorationFrontend::~ExplorationFrontend() = default;
 
-bool ExplorationFrontend::planNextGoal(const StatePVAJ &robot_state,
-                                       const double current_yaw,
-                                       ExplorationGoal &goal,
-                                       const double stamp) {
-    goal = ExplorationGoal{};
+bool ExplorationFrontend::generateCandidates(const StatePVAJ &robot_state,
+                                             const double current_yaw,
+                                             const double stamp,
+                                             ExplorationCandidateSet &out) {
+    out = ExplorationCandidateSet{};
+    out.source = core_utils::normalizeToken(cfg_.frontier_source);
+    if (out.source.empty()) {
+        out.source = "fallback_scan";
+    }
+    ExplorationGoal goal;
     last_candidate_set_ = ExplorationCandidateSet{};
     exploration_finished_ = false;
 
+    const auto finish_failure = [&](const std::string &reason) {
+        out.valid = false;
+        out.exploration_finished = exploration_finished_;
+        out.reason = reason;
+        last_candidate_set_ = out;
+        return false;
+    };
+
     if (!cfg_.enable) {
         goal.reason = "exploration disabled";
-        return false;
+        return finish_failure(goal.reason);
     }
     if (map_manager_ == nullptr || !map_manager_->ready()) {
         goal.reason = "map manager not ready";
-        return false;
+        return finish_failure(goal.reason);
     }
 
     const Vec3f robot_pos = robot_state.col(0);
     if (!robot_pos.allFinite()) {
         goal.reason = "robot state is not finite";
-        return false;
+        return finish_failure(goal.reason);
     }
     if (!map_manager_->insideLocalMap(robot_pos)) {
         goal.reason = "robot is outside local map";
-        return false;
+        return finish_failure(goal.reason);
     }
     const auto plan_start = std::chrono::steady_clock::now();
     const auto plan_elapsed_ms = [&]() {
@@ -752,17 +765,14 @@ bool ExplorationFrontend::planNextGoal(const StatePVAJ &robot_state,
     int expansion_added_count = 0;
     int expansion_memory_added_count = 0;
 
-    std::string source = core_utils::normalizeToken(cfg_.frontier_source);
-    if (source.empty()) {
-        source = "fallback_scan";
-    }
+    std::string source = out.source;
     const bool allow_rog = sourceAllowsRogMap(source);
     const bool allow_fallback = sourceAllowsFallback(source);
     FrontierSearchStats rog_stats;
     if (allow_rog && map_manager_->getMapConfig().frontier_extraction_en) {
         if (!collectRogMapFrontierClusters(robot_pos, clusters, rog_stats)) {
             goal.reason = "frontier search failed";
-            return false;
+            return finish_failure(goal.reason);
         }
         if (!clusters.empty() || !allow_fallback) {
             search_stats = rog_stats;
@@ -778,7 +788,7 @@ bool ExplorationFrontend::planNextGoal(const StatePVAJ &robot_state,
                         : collectFrontierCells(robot_pos, frontier_cells, search_stats);
         if (!fallback_ok) {
             goal.reason = "frontier search failed";
-            return false;
+            return finish_failure(goal.reason);
         }
         if (allow_rog) {
             search_stats.fallback_used = true;
@@ -787,6 +797,9 @@ bool ExplorationFrontend::planNextGoal(const StatePVAJ &robot_state,
                 search_stats.source = rog_stats.source + "+fallback_scan";
             }
         }
+    }
+    if (!search_stats.source.empty()) {
+        out.source = search_stats.source;
     }
 
     const int frontier_output_count =
@@ -885,7 +898,7 @@ bool ExplorationFrontend::planNextGoal(const StatePVAJ &robot_state,
                           << goal.reason << "." << std::endl;
             }
             log_frontend_decision("wait_map", goal.reason, nullptr, 0, 0, 0, 0);
-            return false;
+            return finish_failure(goal.reason);
         }
 
         if (!cfg_.expansion_fallback_enable) {
@@ -921,7 +934,7 @@ bool ExplorationFrontend::planNextGoal(const StatePVAJ &robot_state,
                                   0,
                                   0,
                                   0);
-            return false;
+            return finish_failure(goal.reason);
         }
 
         exploration_finished_ = false;
@@ -965,7 +978,7 @@ bool ExplorationFrontend::planNextGoal(const StatePVAJ &robot_state,
                                   0,
                                   0,
                                   0);
-            return false;
+            return finish_failure(goal.reason);
         }
         if (cfg_.print_log) {
             std::cout << " -- [ExplorationFrontend] No frontier cluster; using expansion fallback. "
@@ -1374,7 +1387,7 @@ bool ExplorationFrontend::planNextGoal(const StatePVAJ &robot_state,
                               0,
                               0,
                               0);
-        return false;
+        return finish_failure(goal.reason);
     }
 
     vec_E<ExplorationGoal> candidate_pool = candidates;
@@ -1621,58 +1634,42 @@ bool ExplorationFrontend::planNextGoal(const StatePVAJ &robot_state,
                               checked,
                               astar_checked,
                               0);
-        return false;
+        return finish_failure(goal.reason);
     }
 
-    ExplorationGoal best_goal;
-    if (cfg_.use_atsp && reachable_candidates.size() > 1) {
-        best_goal = selectGoalWithAtsp(robot_pos, current_yaw, reachable_candidates);
-    } else {
-        best_goal = *std::min_element(reachable_candidates.begin(), reachable_candidates.end(),
-                                      [](const ExplorationGoal &lhs, const ExplorationGoal &rhs) {
-                                          return lhs.score < rhs.score;
-                                      });
+    for (ExplorationGoal &candidate : reachable_candidates) {
+        candidate.valid = true;
+        candidate.checked_candidate_count = checked;
+        candidate.astar_check_count = astar_checked;
+        candidate.reachable_candidate_count =
+                static_cast<int>(reachable_candidates.size());
+        candidate.cluster_count = static_cast<int>(clusters.size());
+        candidate.raw_cluster_count = static_cast<int>(raw_cluster_count);
+        candidate.frontier_cell_count = frontier_output_count;
+        candidate.raw_frontier_cell_count = search_stats.raw_frontier_cells;
     }
 
-    best_goal.valid = true;
-    best_goal.checked_candidate_count = checked;
-    best_goal.astar_check_count = astar_checked;
-    best_goal.reachable_candidate_count = static_cast<int>(reachable_candidates.size());
-    best_goal.cluster_count = static_cast<int>(clusters.size());
-    best_goal.raw_cluster_count = static_cast<int>(raw_cluster_count);
-    best_goal.frontier_cell_count = frontier_output_count;
-    best_goal.raw_frontier_cell_count = search_stats.raw_frontier_cells;
-    goal = best_goal;
     exploration_finished_ = false;
-    last_candidate_set_.valid = true;
-    last_candidate_set_.exploration_finished = false;
-    last_candidate_set_.reason = "reachable_frontier_candidates";
-    last_candidate_set_.suggested_goal = best_goal;
-    last_candidate_set_.candidates = reachable_candidates;
-    last_candidate_set_.checked_candidate_count = checked;
-    last_candidate_set_.astar_check_count = astar_checked;
-    last_candidate_set_.reachable_candidate_count =
+    out.valid = true;
+    out.exploration_finished = false;
+    out.reason = "reachable_frontier_candidates";
+    out.suggested_goal = ExplorationGoal{};
+    out.candidates = reachable_candidates;
+    out.checked_candidate_count = checked;
+    out.astar_check_count = astar_checked;
+    out.reachable_candidate_count =
             static_cast<int>(reachable_candidates.size());
-    last_candidate_set_.cluster_count = static_cast<int>(clusters.size());
-    last_candidate_set_.raw_cluster_count = static_cast<int>(raw_cluster_count);
-    last_candidate_set_.frontier_cell_count = frontier_output_count;
-    last_candidate_set_.raw_frontier_cell_count = search_stats.raw_frontier_cells;
+    out.cluster_count = static_cast<int>(clusters.size());
+    out.raw_cluster_count = static_cast<int>(raw_cluster_count);
+    out.frontier_cell_count = frontier_output_count;
+    out.raw_frontier_cell_count = search_stats.raw_frontier_cells;
+    out.source = search_stats.source;
+    last_candidate_set_ = out;
 
     if (cfg_.print_log) {
-        std::cout << " -- [ExplorationFrontend] Goal selected: p=["
-                  << goal.position.transpose() << "], yaw=" << goal.yaw
-                  << ", candidate_id=" << goal.candidate_id
-                  << ", frontier_id=" << goal.frontier_id
-                  << ", key=" << goal.memory_key
-                  << ", reason=" << goal.reason
-                  << ", score=" << goal.score
-                  << ", info=" << goal.information_gain
-                  << ", area=" << goal.frontier_area
-                  << ", visible=" << goal.visible_frontier_cell_count
-                  << ", visible_ratio=" << goal.visible_frontier_ratio
-                  << ", travel=" << goal.travel_cost
-                  << ", yaw_cost=" << goal.yaw_cost
-                  << ", curvature=" << goal.curvature_cost
+        std::cout << " -- [ExplorationFrontend] Candidate set generated: count="
+                  << out.candidates.size()
+                  << ", source=" << out.source
                   << ", checked=" << checked
                   << ", astar_checks=" << astar_checked
                   << ", reachable=" << reachable_candidates.size()
@@ -1694,18 +1691,156 @@ bool ExplorationFrontend::planNextGoal(const StatePVAJ &robot_state,
                   << ", expansion_added=" << expansion_added_count
                   << ", expansion_memory_added=" << expansion_memory_added_count
                   << ", frontiers=" << frontier_output_count
-                  << ", source=" << search_stats.source
                   << ", raw_frontiers=" << search_stats.raw_frontier_cells
                   << ", fallback=" << static_cast<int>(search_stats.fallback_used)
                   << std::endl;
     }
-    log_frontend_decision("goal_selected",
-                          goal.reason,
-                          &goal,
+    log_frontend_decision("candidates_generated",
+                          out.reason,
+                          nullptr,
                           static_cast<int>(candidates.size()),
                           checked,
                           astar_checked,
                           static_cast<int>(reachable_candidates.size()));
+    return true;
+}
+
+bool ExplorationFrontend::planNextGoal(const StatePVAJ &robot_state,
+                                       const double current_yaw,
+                                       ExplorationGoal &goal,
+                                       const double stamp) {
+    goal = ExplorationGoal{};
+
+    ExplorationCandidateSet candidate_set;
+    if (!generateCandidates(robot_state, current_yaw, stamp, candidate_set)) {
+        goal.reason = candidate_set.reason.empty()
+                              ? "no exploration candidates"
+                              : candidate_set.reason;
+        return false;
+    }
+    if (candidate_set.candidates.empty()) {
+        goal.reason = candidate_set.reason.empty()
+                              ? "no exploration candidates"
+                              : candidate_set.reason;
+        return false;
+    }
+
+    const Vec3f robot_pos = robot_state.col(0);
+    ExplorationGoal best_goal;
+    if (cfg_.use_atsp && candidate_set.candidates.size() > 1) {
+        best_goal = selectGoalWithAtsp(robot_pos,
+                                       current_yaw,
+                                       candidate_set.candidates);
+    } else {
+        best_goal =
+                *std::min_element(candidate_set.candidates.begin(),
+                                  candidate_set.candidates.end(),
+                                  [](const ExplorationGoal &lhs,
+                                     const ExplorationGoal &rhs) {
+                                      return lhs.score < rhs.score;
+                                  });
+    }
+
+    best_goal.valid = true;
+    best_goal.checked_candidate_count = candidate_set.checked_candidate_count;
+    best_goal.astar_check_count = candidate_set.astar_check_count;
+    best_goal.reachable_candidate_count =
+            candidate_set.reachable_candidate_count;
+    best_goal.cluster_count = candidate_set.cluster_count;
+    best_goal.raw_cluster_count = candidate_set.raw_cluster_count;
+    best_goal.frontier_cell_count = candidate_set.frontier_cell_count;
+    best_goal.raw_frontier_cell_count =
+            candidate_set.raw_frontier_cell_count;
+    goal = best_goal;
+
+    candidate_set.suggested_goal = best_goal;
+    last_candidate_set_ = candidate_set;
+    exploration_finished_ = false;
+
+    if (cfg_.print_log) {
+        std::cout << " -- [ExplorationFrontend] Goal selected: p=["
+                  << goal.position.transpose() << "], yaw=" << goal.yaw
+                  << ", candidate_id=" << goal.candidate_id
+                  << ", frontier_id=" << goal.frontier_id
+                  << ", key=" << goal.memory_key
+                  << ", reason=" << goal.reason
+                  << ", score=" << goal.score
+                  << ", info=" << goal.information_gain
+                  << ", area=" << goal.frontier_area
+                  << ", visible=" << goal.visible_frontier_cell_count
+                  << ", visible_ratio=" << goal.visible_frontier_ratio
+                  << ", travel=" << goal.travel_cost
+                  << ", yaw_cost=" << goal.yaw_cost
+                  << ", curvature=" << goal.curvature_cost
+                  << ", checked=" << goal.checked_candidate_count
+                  << ", astar_checks=" << goal.astar_check_count
+                  << ", reachable=" << goal.reachable_candidate_count
+                  << ", clusters=" << goal.cluster_count
+                  << ", raw_clusters=" << goal.raw_cluster_count
+                  << ", frontiers=" << goal.frontier_cell_count
+                  << ", source=" << candidate_set.source
+                  << ", raw_frontiers=" << goal.raw_frontier_cell_count
+                  << std::endl;
+    }
+    {
+        std::lock_guard<std::mutex> lock(explorationFrontendLogMutex());
+        std::ofstream &stream = explorationFrontendLogStream();
+        if (stream.is_open()) {
+            stream << std::fixed << std::setprecision(9)
+                   << stamp << ","
+                   << "goal_selected" << ","
+                   << csvEscape(goal.reason) << ","
+                   << robot_pos.x() << ","
+                   << robot_pos.y() << ","
+                   << robot_pos.z() << ","
+                   << 1 << ","
+                   << goal.position.x() << ","
+                   << goal.position.y() << ","
+                   << goal.position.z() << ","
+                   << goal.yaw << ","
+                   << goal.candidate_id << ","
+                   << goal.frontier_id << ","
+                   << goal.score << ","
+                   << goal.information_gain << ","
+                   << goal.travel_cost << ","
+                   << goal.yaw_cost << ","
+                   << goal.curvature_cost << ","
+                   << goal.visible_frontier_cell_count << ","
+                   << goal.visible_frontier_ratio << ","
+                   << goal.frontier_area << ","
+                   << candidate_set.candidates.size() << ","
+                   << candidate_set.checked_candidate_count << ","
+                   << candidate_set.astar_check_count << ","
+                   << candidate_set.reachable_candidate_count << ","
+                   << candidate_set.cluster_count << ","
+                   << candidate_set.raw_cluster_count << ","
+                   << candidate_set.frontier_cell_count << ","
+                   << candidate_set.raw_frontier_cell_count << ","
+                   << csvEscape(candidate_set.source) << ","
+                   << 0 << ","
+                   << 0 << ","
+                   << 0 << ","
+                   << 0 << ","
+                   << 0 << ","
+                   << 0 << ","
+                   << 0 << ","
+                   << 0 << ","
+                   << 0 << ","
+                   << 0 << ","
+                   << 0 << ","
+                   << 0 << ","
+                   << 0 << ","
+                   << 0 << ","
+                   << 0 << ","
+                   << 0 << ","
+                   << 0 << ","
+                   << 0 << ","
+                   << 0 << ","
+                   << 0 << ","
+                   << 0.0
+                   << std::endl;
+        }
+    }
     return true;
 }
 

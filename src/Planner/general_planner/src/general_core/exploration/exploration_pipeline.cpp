@@ -493,13 +493,19 @@ namespace general_planner {
 
             const double now = ros_ptr_->getSimTime();
             const StatePVAJ head_state = makeTaskHeadState(true);
-            if (!exploration_frontend_->planNextGoal(head_state, robot_state_.yaw, goal, now)) {
+            ExplorationCandidateSet candidate_set;
+            const bool frontend_ready =
+                    exploration_frontend_->generateCandidates(head_state,
+                                                              robot_state_.yaw,
+                                                              now,
+                                                              candidate_set);
+            const bool has_candidate_set =
+                    candidate_set.valid && !candidate_set.candidates.empty();
+            goal.reason = candidate_set.reason;
+            if (!frontend_ready) {
                 latest_replan.setGoal(robot_state_.p, robot_state_.yaw, robot_state_);
                 ExplorationGoal recovery_goal;
                 std::string recovery_validation;
-                ExplorationCandidateSet candidate_set;
-                const bool has_candidate_set =
-                        exploration_frontend_->getLastCandidateSet(candidate_set);
                 const ExplorationRuntimeManager::SelectionDecision manager_decision =
                         exploration_runtime_manager_->selectGoalForExecution(
                                 candidate_set,
@@ -595,14 +601,11 @@ namespace general_planner {
                 }
             }
             if (!goal_ready_after_frontend_failure) {
-                ExplorationCandidateSet candidate_set;
-                const bool has_candidate_set =
-                        exploration_frontend_->getLastCandidateSet(candidate_set);
                 const ExplorationRuntimeManager::SelectionDecision decision =
                         exploration_runtime_manager_->selectGoalForExecution(
                                 candidate_set,
                                 has_candidate_set,
-                                goal,
+                                ExplorationGoal{},
                                 robot_state_.p,
                                 robot_state_.yaw,
                                 0.0,
@@ -621,15 +624,6 @@ namespace general_planner {
                                        recovery_goal.frontier_id,
                                        recovery_goal.reason,
                                        recovery_validation);
-                    } else if ((decision.allow_candidate_fallback ||
-                                goal.reason.find("bootstrap") != std::string::npos) &&
-                               goal.valid) {
-                        goal.reason += " nhbp_recovery_unavailable=" + decision.reason;
-                        exploration_runtime_manager_->onGoalSelected(goal);
-                        ros_ptr_->warn(" -- [Exploration] NHBP requested recovery but no validated recovery goal was found, fallback to frontend candidate: reason={}, candidate_id={}, frontier_id={}.",
-                                       decision.reason,
-                                       goal.candidate_id,
-                                       goal.frontier_id);
                     } else {
                         exploration_runtime_manager_->onTemporaryFailure(goal);
                         latest_replan.setRetCode(GENERAL_RET_CODE::GENERAL_UNDEFINED);
@@ -760,16 +754,16 @@ namespace general_planner {
                          now - exploration_task_graph_last_update_stamp_ >= refresh_period);
                 if (refresh_due) {
                     exploration_task_graph_last_update_stamp_ = now;
-                    ExplorationGoal background_goal;
                     const StatePVAJ background_head_state = makeTaskHeadState(false);
-                    const bool frontend_ready =
-                            exploration_frontend_->planNextGoal(background_head_state,
-                                                               robot_state_.yaw,
-                                                               background_goal,
-                                                               now);
                     ExplorationCandidateSet background_candidate_set;
+                    const bool frontend_ready =
+                            exploration_frontend_->generateCandidates(background_head_state,
+                                                                      robot_state_.yaw,
+                                                                      now,
+                                                                      background_candidate_set);
                     const bool has_background_candidate_set =
-                            exploration_frontend_->getLastCandidateSet(background_candidate_set);
+                            background_candidate_set.valid &&
+                            !background_candidate_set.candidates.empty();
                     bool refreshed = false;
                     std::string refresh_reason;
                     if (has_background_candidate_set) {
@@ -783,10 +777,10 @@ namespace general_planner {
                                         refresh_reason);
                     } else {
                         refresh_reason =
-                                background_goal.reason.empty()
+                                background_candidate_set.reason.empty()
                                         ? "task_graph_refresh_no_candidate_set"
                                         : "task_graph_refresh_no_candidate_set:" +
-                                                  background_goal.reason;
+                                                  background_candidate_set.reason;
                     }
                     exploration_runtime_manager_->onKeepCurrentGoal();
                     if (cfg_.exploration_print_log) {
@@ -813,12 +807,18 @@ namespace general_planner {
 
             ExplorationGoal candidate;
             const StatePVAJ head_state = makeTaskHeadState(false);
+            ExplorationCandidateSet candidate_set;
+            const bool frontend_ready =
+                    exploration_frontend_->generateCandidates(head_state,
+                                                              robot_state_.yaw,
+                                                              now,
+                                                              candidate_set);
+            const bool has_candidate_set =
+                    candidate_set.valid && !candidate_set.candidates.empty();
+            candidate.reason = candidate_set.reason;
             if (!selected_goal_ready &&
-                !exploration_frontend_->planNextGoal(head_state, robot_state_.yaw, candidate, now)) {
+                !frontend_ready) {
                 latest_replan.setGoal(robot_state_.p, robot_state_.yaw, robot_state_);
-                ExplorationCandidateSet candidate_set;
-                const bool has_candidate_set =
-                        exploration_frontend_->getLastCandidateSet(candidate_set);
                 if (!selected_goal_ready) {
                     const ExplorationRuntimeManager::SelectionDecision manager_decision =
                             exploration_runtime_manager_->selectGoalForExecution(
@@ -902,14 +902,11 @@ namespace general_planner {
                     }
                 }
             } else if (!selected_goal_ready) {
-                ExplorationCandidateSet candidate_set;
-                const bool has_candidate_set =
-                        exploration_frontend_->getLastCandidateSet(candidate_set);
                 const ExplorationRuntimeManager::SelectionDecision decision =
                         exploration_runtime_manager_->selectGoalForExecution(
                                 candidate_set,
                                 has_candidate_set,
-                                candidate,
+                                ExplorationGoal{},
                                 robot_state_.p,
                                 robot_state_.yaw,
                                 remaining,
@@ -920,12 +917,12 @@ namespace general_planner {
                     goal_switched = false;
                     exploration_runtime_manager_->onKeepCurrentGoal();
                     if (cfg_.exploration_print_log) {
-                        ros_ptr_->info(" -- [Exploration] NHBP keep current goal: reason={}, ndo={}, remaining={:.3f}, current_score={:.3f}, candidate_score={:.3f}.",
+                        ros_ptr_->info(" -- [Exploration] NHBP keep current goal: reason={}, ndo={}, remaining={:.3f}, current_score={:.3f}, candidate_count={}.",
                                        decision.reason,
                                        nhbp::toString(decision.ndo.state),
                                        remaining,
                                        selected_goal.score,
-                                       candidate.score);
+                                       candidate_set.candidates.size());
                     }
                 } else if (decision.ready) {
                     selected_goal = decision.goal;
@@ -947,33 +944,20 @@ namespace general_planner {
                         selected_goal = recovery_goal;
                         goal_switched = true;
                         exploration_runtime_manager_->onGoalSelected(selected_goal);
-                        ros_ptr_->info(" -- [Exploration] Use memory recovery goal after NHBP decision: reject_reason={}, recovery_requested={}, candidate_id={}, frontier_id={}, recovery_candidate_id={}, recovery_frontier_id={}, validation={}.",
+                        ros_ptr_->info(" -- [Exploration] Use memory recovery goal after NHBP decision: reject_reason={}, recovery_requested={}, candidate_count={}, recovery_candidate_id={}, recovery_frontier_id={}, validation={}.",
                                        decision.reason,
                                        static_cast<int>(decision.recovery_requested),
-                                       candidate.candidate_id,
-                                       candidate.frontier_id,
+                                       candidate_set.candidates.size(),
                                        selected_goal.candidate_id,
                                        selected_goal.frontier_id,
                                        recovery_validation);
-                    } else if ((decision.allow_candidate_fallback ||
-                                candidate.reason.find("bootstrap") != std::string::npos) &&
-                               candidate.valid) {
-                        selected_goal = candidate;
-                        selected_goal.reason += " nhbp_recovery_unavailable=" + decision.reason;
-                        goal_switched = true;
-                        exploration_runtime_manager_->onGoalSelected(selected_goal);
-                        ros_ptr_->warn(" -- [Exploration] NHBP requested recovery but no validated recovery goal was found, fallback to frontend candidate: reason={}, candidate_id={}, frontier_id={}.",
-                                       decision.reason,
-                                       selected_goal.candidate_id,
-                                       selected_goal.frontier_id);
                     } else {
                         exploration_runtime_manager_->onTemporaryFailure(candidate);
                         latest_replan.setRetCode(GENERAL_RET_CODE::GENERAL_UNDEFINED);
-                        ros_ptr_->warn(" -- [Exploration] NHBP rejected replan goal: reason={}, ndo={}, candidate_id={}, frontier_id={}.",
+                        ros_ptr_->warn(" -- [Exploration] NHBP rejected replan candidates: reason={}, ndo={}, candidate_count={}.",
                                        decision.reason,
                                        nhbp::toString(decision.ndo.state),
-                                       candidate.candidate_id,
-                                       candidate.frontier_id);
+                                       candidate_set.candidates.size());
                         time_consuming_[TOTAL_REPLAN] = total_t.stop();
                         return FAILED;
                     }
