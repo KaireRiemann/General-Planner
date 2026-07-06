@@ -3341,10 +3341,27 @@ bool ExplorationRuntimeManager::rebuildActiveTour(
 
     std::ostringstream key;
     key << "tour:" << rebuilt.generation << ":" << reason;
+    std::unordered_set<std::string> used_goal_keys;
+    int duplicate_goal_count = 0;
     for (int rank = 0; rank < static_cast<int>(ordered_goals.size()); ++rank) {
         ExplorationGoal goal = ordered_goals[static_cast<size_t>(rank)];
-        goal.identity.tour_rank = rank;
         const std::string goal_key = tourGoalKey(goal);
+        const std::string stable_goal_key =
+                goal_key.empty()
+                        ? nhbp::quantizedPositionKey(
+                                  goal.position,
+                                  std::max(0.25, cfg_.exploration_coverage_grid_resolution),
+                                  "goal")
+                        : goal_key;
+        if (!stable_goal_key.empty() &&
+            used_goal_keys.find(stable_goal_key) != used_goal_keys.end()) {
+            ++duplicate_goal_count;
+            continue;
+        }
+        if (!stable_goal_key.empty()) {
+            used_goal_keys.insert(stable_goal_key);
+        }
+        goal.identity.tour_rank = static_cast<int>(rebuilt.goals.size());
         key << "|" << (goal_key.empty() ? std::to_string(goal.candidate_id) : goal_key);
         rebuilt.goals.push_back(goal);
         rebuilt.node_status.push_back(ActiveTour::NodeStatus::PENDING);
@@ -3369,6 +3386,9 @@ bool ExplorationRuntimeManager::rebuildActiveTour(
                     rebuilt.tour_key;
             rebuilt.goals[static_cast<size_t>(rank)].identity.tour_rank = rank;
         }
+    }
+    if (duplicate_goal_count > 0) {
+        reason += ",dedup=" + std::to_string(duplicate_goal_count);
     }
 
     active_tour_ = rebuilt;

@@ -4,6 +4,7 @@
 #include <cmath>
 #include <limits>
 #include <sstream>
+#include <unordered_map>
 #include <vector>
 
 using namespace general_utils;
@@ -33,7 +34,14 @@ std::string stateName(const ExplorationManager::Diagnostics &diag) {
         << ",coverage_cells=" << diag.coverage_cells
         << ",unknown=" << diag.unknown_voxels
         << ",coverage_ratio=" << diag.coverage_ratio
-        << ",stable_finish=" << diag.stable_finish_cycles;
+        << ",stable_finish=" << diag.stable_finish_cycles
+        << ",candidates=" << diag.last_input_candidates
+        << "->" << diag.last_output_candidates
+        << ",reject_box=" << diag.last_reject_outside_box
+        << ",reject_blocked=" << diag.last_reject_blocked
+        << ",reject_covered=" << diag.last_reject_covered
+        << ",reject_low_unknown=" << diag.last_reject_low_unknown
+        << ",reject_duplicate=" << diag.last_reject_duplicate;
     return oss.str();
 }
 } // namespace
@@ -70,8 +78,12 @@ ExplorationManager::Config ExplorationManager::makeConfig(
             std::max(0.5, planner_cfg.exploration_manager_unknown_gain_radius);
     cfg.unknown_gain_resolution =
             std::max(0.2, planner_cfg.exploration_manager_unknown_gain_resolution);
+    cfg.min_unknown_gain =
+            std::max(0, planner_cfg.exploration_manager_min_unknown_gain);
     cfg.unknown_gain_score_weight =
             planner_cfg.exploration_manager_unknown_gain_score_weight;
+    cfg.max_viewpoints_per_frontier =
+            std::max(1, planner_cfg.exploration_manager_max_viewpoints_per_frontier);
     cfg.revisit_score_weight =
             planner_cfg.exploration_manager_revisit_score_weight;
     cfg.covered_score_weight =
@@ -122,6 +134,13 @@ void ExplorationManager::reset() {
     stable_finish_cycles_ = 0;
     last_unknown_voxels_ = 0;
     last_coverage_ratio_ = 0.0;
+    last_input_candidates_ = 0;
+    last_output_candidates_ = 0;
+    last_reject_outside_box_ = 0;
+    last_reject_blocked_ = 0;
+    last_reject_covered_ = 0;
+    last_reject_low_unknown_ = 0;
+    last_reject_duplicate_ = 0;
 }
 
 bool ExplorationManager::enabled() const {
@@ -168,15 +187,25 @@ void ExplorationManager::filterAndScoreCandidates(const Vec3f &robot_pos,
         return;
     }
     beginCycle(robot_pos, stamp);
-    vec_E<ExplorationGoal> filtered;
-    filtered.reserve(candidates.size());
+    last_input_candidates_ = static_cast<int>(candidates.size());
+    last_output_candidates_ = 0;
+    last_reject_outside_box_ = 0;
+    last_reject_blocked_ = 0;
+    last_reject_covered_ = 0;
+    last_reject_low_unknown_ = 0;
+    last_reject_duplicate_ = 0;
+
+    vec_E<ExplorationGoal> scored;
+    scored.reserve(candidates.size());
 
     for (ExplorationGoal candidate : candidates) {
         if (!candidate.valid || !candidate.position.allFinite()) {
+            ++last_reject_blocked_;
             continue;
         }
         const Vec3f reference = frontierReference(candidate);
         if (!insideTaskBox(candidate.position) || !insideTaskBox(reference)) {
+            ++last_reject_outside_box_;
             continue;
         }
 
@@ -184,15 +213,18 @@ void ExplorationManager::filterAndScoreCandidates(const Vec3f &robot_pos,
         if (existing != nullptr) {
             if (existing->state == FrontierState::FAILED &&
                 existing->blocked_until > stamp) {
+                ++last_reject_blocked_;
                 continue;
             }
             if (existing->state == FrontierState::COVERED &&
                 !recordExpired(*existing, stamp)) {
+                ++last_reject_covered_;
                 continue;
             }
             if (cfg_.max_commits_before_cooldown > 0 &&
                 existing->commit_count >= cfg_.max_commits_before_cooldown &&
                 existing->blocked_until > stamp) {
+                ++last_reject_blocked_;
                 continue;
             }
         }
@@ -209,6 +241,7 @@ void ExplorationManager::filterAndScoreCandidates(const Vec3f &robot_pos,
             covered.state = FrontierState::COVERED;
             covered.last_state_stamp = stamp;
             covered.blocked_until = stamp + cfg_.frontier_record_ttl;
+            ++last_reject_covered_;
             continue;
         }
 
@@ -216,6 +249,17 @@ void ExplorationManager::filterAndScoreCandidates(const Vec3f &robot_pos,
         const int unknown_gain = countUnknownNear(reference,
                                                  cfg_.unknown_gain_radius,
                                                  cfg_.unknown_gain_resolution);
+        if (!bootstrap_candidate &&
+            !expansion_candidate &&
+            unknown_gain < cfg_.min_unknown_gain) {
+            if (unknown_gain <= 0) {
+                record.state = FrontierState::COVERED;
+                record.last_state_stamp = stamp;
+                record.blocked_until = stamp + cfg_.frontier_record_ttl;
+            }
+            ++last_reject_low_unknown_;
+            continue;
+        }
         const int revisit_count = countCoverageNear(reference, cfg_.frontier_covered_radius);
         const double repeat_penalty =
                 cfg_.stale_frontier_score_weight *
@@ -243,10 +287,60 @@ void ExplorationManager::filterAndScoreCandidates(const Vec3f &robot_pos,
                             " mission_revisit=" + std::to_string(revisit_count) +
                             " mission_commits=" + std::to_string(record.commit_count);
         record.goal = candidate;
-        filtered.push_back(candidate);
+        scored.push_back(candidate);
     }
 
+    std::unordered_map<std::string, vec_E<ExplorationGoal>> grouped_candidates;
+    grouped_candidates.reserve(scored.size());
+    for (const ExplorationGoal &candidate : scored) {
+        const Vec3f reference = frontierReference(candidate);
+        std::ostringstream oss;
+        if (candidate.frontier_id >= 0) {
+            oss << "frontier:" << candidate.frontier_id;
+        } else {
+            const Key key = keyForPosition(reference, cfg_.frontier_merge_radius);
+            oss << "spatial:" << key.x << ":" << key.y << ":" << key.z;
+        }
+        grouped_candidates[oss.str()].push_back(candidate);
+    }
+
+    vec_E<ExplorationGoal> filtered;
+    filtered.reserve(scored.size());
+    const int max_per_frontier = std::max(1, cfg_.max_viewpoints_per_frontier);
+    for (auto &entry : grouped_candidates) {
+        vec_E<ExplorationGoal> &group = entry.second;
+        std::sort(group.begin(),
+                  group.end(),
+                  [](const ExplorationGoal &lhs, const ExplorationGoal &rhs) {
+                      if (lhs.score != rhs.score) {
+                          return lhs.score < rhs.score;
+                      }
+                      if (lhs.information_gain != rhs.information_gain) {
+                          return lhs.information_gain > rhs.information_gain;
+                      }
+                      return lhs.travel_cost < rhs.travel_cost;
+                  });
+        const int keep_count =
+                std::min(max_per_frontier, static_cast<int>(group.size()));
+        for (int i = 0; i < keep_count; ++i) {
+            group[static_cast<size_t>(i)].reason +=
+                    " mission_group_rank=" + std::to_string(i) +
+                    " mission_group_size=" + std::to_string(group.size());
+            filtered.push_back(group[static_cast<size_t>(i)]);
+        }
+        last_reject_duplicate_ += static_cast<int>(group.size()) - keep_count;
+    }
+
+    std::sort(filtered.begin(),
+              filtered.end(),
+              [](const ExplorationGoal &lhs, const ExplorationGoal &rhs) {
+                  if (lhs.score != rhs.score) {
+                      return lhs.score < rhs.score;
+                  }
+                  return lhs.information_gain > rhs.information_gain;
+              });
     candidates.swap(filtered);
+    last_output_candidates_ = static_cast<int>(candidates.size());
     updateFinishState(robot_pos, stamp, !candidates.empty(), true);
 }
 
@@ -256,6 +350,13 @@ void ExplorationManager::updateNoFrontier(const Vec3f &robot_pos,
     if (!cfg_.enable) {
         return;
     }
+    last_input_candidates_ = 0;
+    last_output_candidates_ = 0;
+    last_reject_outside_box_ = 0;
+    last_reject_blocked_ = 0;
+    last_reject_covered_ = 0;
+    last_reject_low_unknown_ = 0;
+    last_reject_duplicate_ = 0;
     beginCycle(robot_pos, stamp);
     updateFinishState(robot_pos, stamp, false, map_observation_ready);
 }
@@ -366,6 +467,13 @@ ExplorationManager::Diagnostics ExplorationManager::diagnostics(const double sta
     diag.unknown_voxels = last_unknown_voxels_;
     diag.coverage_ratio = last_coverage_ratio_;
     diag.stable_finish_cycles = stable_finish_cycles_;
+    diag.last_input_candidates = last_input_candidates_;
+    diag.last_output_candidates = last_output_candidates_;
+    diag.last_reject_outside_box = last_reject_outside_box_;
+    diag.last_reject_blocked = last_reject_blocked_;
+    diag.last_reject_covered = last_reject_covered_;
+    diag.last_reject_low_unknown = last_reject_low_unknown_;
+    diag.last_reject_duplicate = last_reject_duplicate_;
     return diag;
 }
 

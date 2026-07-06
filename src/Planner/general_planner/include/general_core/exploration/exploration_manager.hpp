@@ -35,7 +35,9 @@ public:
 
         double unknown_gain_radius{4.0};
         double unknown_gain_resolution{0.8};
+        int min_unknown_gain{1};
         double unknown_gain_score_weight{-0.04};
+        int max_viewpoints_per_frontier{8};
         double revisit_score_weight{2.0};
         double covered_score_weight{20.0};
         double stale_frontier_score_weight{0.25};
@@ -60,6 +62,13 @@ public:
         int unknown_voxels{0};
         double coverage_ratio{0.0};
         int stable_finish_cycles{0};
+        int last_input_candidates{0};
+        int last_output_candidates{0};
+        int last_reject_outside_box{0};
+        int last_reject_blocked{0};
+        int last_reject_covered{0};
+        int last_reject_low_unknown{0};
+        int last_reject_duplicate{0};
     };
 
     static Config makeConfig(const general_planner::Config &planner_cfg);
@@ -206,6 +215,13 @@ private:
     int stable_finish_cycles_{0};
     mutable int last_unknown_voxels_{0};
     mutable double last_coverage_ratio_{0.0};
+    int last_input_candidates_{0};
+    int last_output_candidates_{0};
+    int last_reject_outside_box_{0};
+    int last_reject_blocked_{0};
+    int last_reject_covered_{0};
+    int last_reject_low_unknown_{0};
+    int last_reject_duplicate_{0};
 };
 
 } // namespace general_planner

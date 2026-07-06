@@ -196,7 +196,9 @@ namespace general_planner {
         int exploration_manager_max_coverage_cells{200000};
         double exploration_manager_unknown_gain_radius{4.0};
         double exploration_manager_unknown_gain_resolution{0.8};
+        int exploration_manager_min_unknown_gain{1};
         double exploration_manager_unknown_gain_score_weight{-0.04};
+        int exploration_manager_max_viewpoints_per_frontier{8};
         double exploration_manager_revisit_score_weight{2.0};
         double exploration_manager_covered_score_weight{20.0};
         double exploration_manager_stale_frontier_score_weight{0.25};
@@ -880,8 +882,12 @@ namespace general_planner {
                              exploration_manager_unknown_gain_radius, 4.0);
             loader.LoadParam("general_planner/exploration_manager_unknown_gain_resolution",
                              exploration_manager_unknown_gain_resolution, 0.8);
+            loader.LoadParam("general_planner/exploration_manager_min_unknown_gain",
+                             exploration_manager_min_unknown_gain, 1);
             loader.LoadParam("general_planner/exploration_manager_unknown_gain_score_weight",
                              exploration_manager_unknown_gain_score_weight, -0.04);
+            loader.LoadParam("general_planner/exploration_manager_max_viewpoints_per_frontier",
+                             exploration_manager_max_viewpoints_per_frontier, 8);
             loader.LoadParam("general_planner/exploration_manager_revisit_score_weight",
                              exploration_manager_revisit_score_weight, 2.0);
             loader.LoadParam("general_planner/exploration_manager_covered_score_weight",
