@@ -52,8 +52,8 @@ general_planner:
   exploration_enable: true
   exploration_manager_enable: true
   exploration_global_box_enable: true
-  exploration_global_box_min: [-60.0, -60.0, 0.0]
-  exploration_global_box_max: [60.0, 60.0, 3.0]
+  exploration_global_box_min: [-10.0, -6.0, -0.2]
+  exploration_global_box_max: [182.0, 150.2, 3.8]
   exploration_keep_terminal_velocity: true
   exploration_terminal_velocity_ratio: 0.45
   exploration_keep_old_min_remaining: 0.8
@@ -111,6 +111,9 @@ general_planner:
   exploration_frontier_manager_recent_selection_penalty: 16.0
   exploration_frontier_manager_recent_selection_window: 12.0
   exploration_frontier_manager_no_view_threshold: 2
+  exploration_frontier_manager_retire_after_selections: 3
+  exploration_frontier_manager_min_gain_improvement_ratio: 0.12
+  exploration_frontier_manager_low_gain_hold_time: 30.0
   exploration_viewpoint_min_distance: 2.0
   exploration_viewpoint_max_distance: 8.0
   exploration_viewpoint_height_offset: 0.0
@@ -164,6 +167,9 @@ general_planner:
   exploration_weight_yaw: 0.5
   exploration_weight_curvature: 0.8
   exploration_weight_info_gain: -2.4
+  exploration_weight_viewpoint_unknown_gain: -1.2
+  exploration_weight_frontier_visibility: -2.5
+  exploration_low_visibility_penalty_weight: 18.0
   exploration_weight_unknown_risk: 1.0
   exploration_weight_progress: -1.25
   exploration_weight_short_goal: 10.0

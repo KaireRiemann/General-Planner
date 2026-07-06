@@ -1,7 +1,7 @@
 <launch>
     <!-- Big-field exploration simulation with perfect_drone. -->
     <arg name="planner_config_path" default="$(find general_planner)/config/exploration.yaml"/>
-    <arg name="sim_config_path" default="$(find task_planner)/config/exploration_big_field_sim.yaml"/>
+    <arg name="sim_config_path" default="$(find perfect_drone_sim)/config/exploration.yaml"/>
 
     <arg name="marsim" default="true"/>
     <arg name="rviz" default="true"/>
