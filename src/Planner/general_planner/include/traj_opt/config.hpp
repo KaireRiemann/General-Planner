@@ -57,7 +57,7 @@ namespace traj_opt {
         // Limit conditions.
         double max_vel{0}, max_acc{0}, max_jerk{0}, max_omg{0}, max_acc_thr{0}, min_acc_thr{0};
         // Penalty cost.
-        double penna_scale{-1}, penna_vel{0}, penna_acc{0}, penna_jerk{0}, penna_omg{0}, penna_thr{0};
+        double penna_scale{-1}, penna_vel{0}, penna_acc{0}, penna_jerk{0}, penna_omg{0}, penna_theta{0}, penna_thr{0};
         // penna_t; penna_pos only for corridor based method.
         double penna_t{0}, penna_pos{0}, penna_attract{0}, penna_guide_path{0}, penna_guide_vel{0};
         double penna_guide_z_tube{0}, guide_z_tube_radius{0};
@@ -149,6 +149,7 @@ namespace traj_opt {
                 penna_guide_vel = penna_guide_vel * penna_scale;
                 penna_guide_z_tube = penna_guide_z_tube * penna_scale;
                 penna_omg = penna_omg * penna_scale;
+                penna_theta = penna_theta * penna_scale;
                 penna_thr = penna_thr * penna_scale;
             }
 

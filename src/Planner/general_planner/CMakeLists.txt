@@ -27,23 +27,30 @@ find_package(catkin REQUIRED COMPONENTS
         pcl_ros
         geometry_msgs
         nav_msgs
+        sensor_msgs
         message_generation
         quadrotor_msgs
         visualization_msgs
         message_filters
+        cv_bridge
         rog_map
         lkh_tsp_solver
+        traj_utils
         yaml-cpp
         tf
 )
+find_package(OpenMP REQUIRED)
+find_package(OpenCV REQUIRED)
 find_package(yaml-cpp REQUIRED)
 find_package(Boost REQUIRED COMPONENTS system filesystem regex iostreams)
 find_package(Eigen3 REQUIRED)
 find_package(PCL REQUIRED)
 catkin_package(
-        INCLUDE_DIRS
-        LIBRARIES general_planner_core
-        CATKIN_DEPENDS roscpp rospy std_msgs
+        INCLUDE_DIRS include
+        LIBRARIES general_planner_core general_planner_exploration_utils general_planner_exploration
+        CATKIN_DEPENDS roscpp rospy std_msgs geometry_msgs nav_msgs sensor_msgs
+                       visualization_msgs message_filters cv_bridge rog_map
+                       lkh_tsp_solver traj_utils tf
         #  DEPENDS system_lib
 )
 
@@ -55,12 +62,14 @@ include_directories(
         ${catkin_INCLUDE_DIRS}
         ${Eigen3_INCLUDE_DIRS}
         ${PCL_INCLUDE_DIRS}
+        ${OpenCV_INCLUDE_DIRS}
 )
 
 
 set(THIRD_PARTY
         ${catkin_LIBRARIES}
         ${PCL_LIBRARIES}
+        ${OpenCV_LIBS}
         ${Boost_LIBRARIES}
         #        general_planner
         yaml-cpp
@@ -68,6 +77,7 @@ set(THIRD_PARTY
 )
 
 file(GLOB_RECURSE srcs CONFIGURE_DEPENDS src/*.cpp include/*.h include/*.hpp)
+list(FILTER srcs EXCLUDE REGEX ".*/(src|include)/general_core/exploration/(highspeed|exploration_utils)/.*$")
 list(FILTER srcs EXCLUDE REGEX ".*/src/traj_opt/exp_traj_optimizer_s4\\.cpp$")
 list(FILTER srcs EXCLUDE REGEX ".*/src/traj_opt/backup_traj_optimizer_s4\\.cpp$")
 list(FILTER srcs EXCLUDE REGEX ".*/src/traj_opt/yaw_traj_opt\\.cpp$")
@@ -81,6 +91,96 @@ add_dependencies(general_planner_core
         ${catkin_EXPORTED_TARGETS}
 )
 target_link_libraries(general_planner_core PUBLIC
+)
+
+set(GENERAL_PLANNER_EXPLORATION_DIR
+        src/general_core/exploration/highspeed)
+set(GENERAL_PLANNER_EXPLORATION_UTILS_DIR
+        src/general_core/exploration/exploration_utils)
+
+add_library(general_planner_exploration_utils STATIC
+        ${GENERAL_PLANNER_EXPLORATION_UTILS_DIR}/lidar_map/ikd_Tree.cpp
+        ${GENERAL_PLANNER_EXPLORATION_UTILS_DIR}/lidar_map/lidar_map_interface.cpp
+        ${GENERAL_PLANNER_EXPLORATION_UTILS_DIR}/lidar_map/sim_lio.cpp
+        ${GENERAL_PLANNER_EXPLORATION_UTILS_DIR}/pointcloud_topo/parallel_bubble_astar.cpp
+        ${GENERAL_PLANNER_EXPLORATION_UTILS_DIR}/pointcloud_topo/topo_skeleton_graph.cpp
+        ${GENERAL_PLANNER_EXPLORATION_UTILS_DIR}/pointcloud_topo/historical_odom_graph.cpp
+        ${GENERAL_PLANNER_EXPLORATION_UTILS_DIR}/pointcloud_topo/bubble_split.cpp
+        ${GENERAL_PLANNER_EXPLORATION_UTILS_DIR}/path_searching/bubble_astar.cpp
+        ${GENERAL_PLANNER_EXPLORATION_UTILS_DIR}/frontier_manager/frontier_manager.cpp
+        ${GENERAL_PLANNER_EXPLORATION_UTILS_DIR}/frontier_manager/global_planning.cpp
+        ${GENERAL_PLANNER_EXPLORATION_UTILS_DIR}/frontier_manager/raycast.cpp
+        ${GENERAL_PLANNER_EXPLORATION_UTILS_DIR}/frontier_manager/frontier_visualizer.cpp
+)
+add_dependencies(general_planner_exploration_utils
+        ${${PROJECT_NAME}_EXPORTED_TARGETS}
+        ${catkin_EXPORTED_TARGETS}
+)
+target_include_directories(general_planner_exploration_utils PUBLIC include)
+target_compile_options(general_planner_exploration_utils PRIVATE
+        -Wno-error=unused-variable
+        -Wno-error=unused-but-set-variable
+)
+target_link_libraries(general_planner_exploration_utils PUBLIC
+        ${catkin_LIBRARIES}
+        ${PCL_LIBRARIES}
+        ${OpenCV_LIBS}
+        OpenMP::OpenMP_CXX
+)
+
+add_library(general_planner_exploration STATIC
+        ${GENERAL_PLANNER_EXPLORATION_DIR}/fast_exploration_manager.cpp
+        ${GENERAL_PLANNER_EXPLORATION_DIR}/general_planner_adapter.cpp
+)
+add_dependencies(general_planner_exploration
+        ${${PROJECT_NAME}_EXPORTED_TARGETS}
+        ${catkin_EXPORTED_TARGETS}
+)
+target_include_directories(general_planner_exploration PUBLIC include)
+target_compile_options(general_planner_exploration PRIVATE
+        -Wno-error=unused-variable
+        -Wno-error=unused-but-set-variable
+)
+target_link_libraries(general_planner_exploration PUBLIC
+        general_planner_core
+        general_planner_exploration_utils
+        ${THIRD_PARTY}
+        OpenMP::OpenMP_CXX
+)
+
+add_executable(exploration_node
+        ${GENERAL_PLANNER_EXPLORATION_DIR}/exploration_node.cpp
+        ${GENERAL_PLANNER_EXPLORATION_DIR}/fast_exploration_fsm.cpp
+        ${GENERAL_PLANNER_EXPLORATION_DIR}/fsm_utils.cpp
+)
+add_dependencies(exploration_node
+        ${${PROJECT_NAME}_EXPORTED_TARGETS}
+        ${catkin_EXPORTED_TARGETS}
+)
+target_compile_options(exploration_node PRIVATE
+        -Wno-error=unused-variable
+        -Wno-error=unused-but-set-variable
+)
+target_link_libraries(exploration_node
+        general_planner_exploration
+        ${THIRD_PARTY}
+        OpenMP::OpenMP_CXX
+)
+
+add_executable(highspeed_traj_server
+        ${GENERAL_PLANNER_EXPLORATION_DIR}/traj_server.cpp
+)
+add_dependencies(highspeed_traj_server
+        ${${PROJECT_NAME}_EXPORTED_TARGETS}
+        ${catkin_EXPORTED_TARGETS}
+)
+target_compile_options(highspeed_traj_server PRIVATE
+        -Wno-error=unused-variable
+        -Wno-error=unused-but-set-variable
+)
+target_link_libraries(highspeed_traj_server
+        general_planner_core
+        ${THIRD_PARTY}
 )
 
 

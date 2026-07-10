@@ -42,6 +42,11 @@ namespace marsim {
         }
 
         glfwMakeContextCurrent(window);
+        // This is an off-screen sensor renderer, not a display animation.
+        // Driver-level VSync can otherwise block glfwSwapBuffers for hundreds
+        // of milliseconds (observed as an exact 1 Hz cloud stream despite a
+        // configured 10 Hz sensing rate).
+        glfwSwapInterval(0);
         // glfwSetFramebufferSizeCallback(window, framebuffer_size_callback);
         // glfwSetCursorPosCallback(window, mouse_callback);
         // glfwSetScrollCallback(window, scroll_callback);
@@ -171,7 +176,7 @@ namespace marsim {
     void MarsimRender::render_pointcloud(
         const Eigen::Vector3f& camera_pos,
         const Eigen::Quaternionf& camera_q,
-        const decimal_t& t_pattern_start,
+        const double& t_pattern_start,
         pcl::PointCloud<PointType>::Ptr output_pointcloud
     ) {
         ScopeTimer timer("TOTAL", cfg_.print_time_consumption);
@@ -185,10 +190,10 @@ namespace marsim {
                 decimal_t w2 = -488.41293788; // -4664.0*2.0*3.1415926/60.0
                 // int linestep = 2;
                 // decimal_t point_duration = 0.000025;
-                decimal_t point_duration = 0.000004167 * 6;
+                const double point_duration = 0.000004167 * 6;
 
-                decimal_t t_duration = 1.0 / cfg_.sensing_rate;
-                decimal_t t_start = t_pattern_start;
+                const double t_duration = 1.0 / cfg_.sensing_rate;
+                const double t_start = t_pattern_start;
 
                 decimal_t scale_x = 0.48 * cfg_.width / 2.0;
                 decimal_t scale_y = 0.43 * cfg_.height / 2.0;
@@ -196,7 +201,13 @@ namespace marsim {
                 int linestep = ceil(1.4 / 0.2);
                 // std::cout << "linestep = " << linestep << std::endl;
 
-                for (decimal_t t_i = t_start; t_i < t_start + t_duration; t_i = t_i + point_duration) {
+                // Use an integer sample index. With a floating loop variable,
+                // t_i += point_duration eventually stops changing t_i once
+                // the mission time grows beyond the float's local precision.
+                const int sample_count = std::max(
+                    1, static_cast<int>(std::ceil(t_duration / point_duration)));
+                for (int sample_idx = 0; sample_idx < sample_count; ++sample_idx) {
+                    const double t_i = t_start + sample_idx * point_duration;
                     int x = round(scale_x * (cos(w1 * t_i) + cos(w2 * t_i))) + round(0.5 * cfg_.width);
                     int y = round(scale_y * (sin(w1 * t_i) + sin(w2 * t_i))) + round(0.5 * cfg_.height);
 
@@ -236,16 +247,22 @@ namespace marsim {
             }
             else if (cfg_.lidar_type == MID_360) {
                 pattern_matrix.setConstant(0);
-                decimal_t point_duration = 1.0 / 200000.0;
+                const double point_duration = 1.0 / 200000.0;
 
-                decimal_t t_duration = 1.0 / cfg_.sensing_rate;
-                decimal_t t_start = t_pattern_start;
+                const double t_duration = 1.0 / cfg_.sensing_rate;
+                const double t_start = t_pattern_start;
 
                 //        decimal_t scale_x = 0.48 * cfg_.width / 2.0;
                 //        decimal_t scale_y = 0.43 * cfg_.height / 2.0;
                 decimal_t PI = 3.141519265357;
 
-                for (decimal_t t_i = t_start; t_i < t_start + t_duration; t_i = t_i + point_duration) {
+                // At t=128 s a float has a spacing of about 15.26 us. The old
+                // 5 us increment therefore rounded to zero and this loop never
+                // terminated, permanently stopping simulated point clouds.
+                const int sample_count = std::max(
+                    1, static_cast<int>(std::ceil(t_duration / point_duration)));
+                for (int sample_idx = 0; sample_idx < sample_count; ++sample_idx) {
+                    const double t_i = t_start + sample_idx * point_duration;
                     int x = (int(-round(-62050.63 * t_i + 3.11 * cos(314159.2 * t_i) * sin(628.318 * 2 * t_i))) % 360) /
                         cfg_.polar_resolution;
                     int y = round(

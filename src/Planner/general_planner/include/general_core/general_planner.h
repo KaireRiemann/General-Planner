@@ -44,9 +44,6 @@
 #include "general_core/corridor_generator.h"
 #include "general_core/dynamic_obstacle_layer.hpp"
 #include "general_core/fov_checker.h"
-#include "general_core/exploration/exploration_frontend.hpp"
-#include "general_core/exploration/exploration_manager.hpp"
-#include "general_core/exploration/exploration_runtime_manager.hpp"
 #include "general_core/tracking/tracking_perching_frontend.hpp"
 #include "general_core/tracking/tracking_runtime_manager.hpp"
 #include "general_core/perching/perching_runtime_manager.hpp"
@@ -148,11 +145,6 @@ namespace general_planner {
 	        std::unique_ptr<nhbp::FarGoalReasoner> far_goal_reasoner_;
 	        std::unique_ptr<nhbp::TopologicalMemory> topological_memory_;
 	        double sparse_global_map_last_update_wt_{-1.0};
-		        std::unique_ptr<ExplorationFrontend> exploration_frontend_;
-		        std::unique_ptr<ExplorationManager> exploration_manager_;
-		        std::unique_ptr<ExplorationRuntimeManager> exploration_runtime_manager_;
-        double exploration_task_graph_last_update_stamp_{-1.0};
-
         vector<double> time_consuming_;
 
         int tracking_consecutive_keep_old_{0};
@@ -396,12 +388,6 @@ namespace general_planner {
         RET_CODE ReplanDynamicTakeoffOnce(const traj_opt::PerchingSurfaceState &surface,
                                           const bool &new_task);
 
-        RET_CODE PlanExplorationFromRest(const bool &new_task);
-
-        RET_CODE ReplanExplorationOnce(const bool &new_task);
-
-        bool getLatestExplorationGoal(ExplorationGoal &goal) const;
-
         RET_CODE PlanSE3AggressiveFromRest(const Vec3f &goal_p,
                                            double goal_yaw,
                                            bool new_task);
@@ -629,16 +615,6 @@ namespace general_planner {
         PerchingFrontend::Config makePerchingFrontendConfig() const;
 
         TakeoffFrontend::Config makeTakeoffFrontendConfig() const;
-
-        ExplorationFrontend::Config makeExplorationFrontendConfig() const;
-        bool validateExplorationRecoveryGoal(const ExplorationGoal &goal,
-                                             const Vec3f &robot_pos,
-                                             std::string *reason = nullptr);
-        bool selectValidatedExplorationRecoveryGoal(const Vec3f &robot_pos,
-                                                    double stamp,
-                                                    ExplorationGoal &goal,
-                                                    std::string *reason = nullptr);
-        bool commitExplorationYawScanTrajectory(const ExplorationGoal &goal);
 
         RET_CODE tryCommitPerchingFromTracking(
             const traj_opt::DynamicTargetStates &target_prediction,

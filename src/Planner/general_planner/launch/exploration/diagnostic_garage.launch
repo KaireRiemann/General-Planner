@@ -1,0 +1,34 @@
+<launch>
+  <arg name="dynamic_velocity_enable" default="true" />
+  <arg name="backup_traj_enable" default="true" />
+  <arg name="odom_topic" default="/quad_0/lidar_slam/odom" />
+  <arg name="cloud_topic" default="/quad0_pcl_render_node/cloud" />
+  <arg name="rviz" default="true" />
+  <arg name="simulation" default="false" />
+
+  <arg name="fsm_replan_time" default="0.25" />
+  <arg name="fsm_replan_time_after_traj_start" default="0.25" />
+  <arg name="fsm_replan_time_before_traj_end" default="1.0" />
+  <arg name="bubble_astar_resolution" default="0.40" />
+  <arg name="bubble_topo_cube_discrete_size" default="0.50" />
+
+  <include file="$(find general_planner)/launch/exploration/general_exploration.launch">
+    <arg name="scene" value="garage" />
+    <arg name="config_file" value="garage.yaml" />
+    <arg name="odom_topic" value="$(arg odom_topic)" />
+    <arg name="cloud_topic" value="$(arg cloud_topic)" />
+    <arg name="fsm_replan_time" value="$(arg fsm_replan_time)" />
+    <arg name="fsm_replan_time_after_traj_start" value="$(arg fsm_replan_time_after_traj_start)" />
+    <arg name="fsm_replan_time_before_traj_end" value="$(arg fsm_replan_time_before_traj_end)" />
+    <arg name="bubble_astar_resolution" value="$(arg bubble_astar_resolution)" />
+    <arg name="bubble_topo_cube_discrete_size" value="$(arg bubble_topo_cube_discrete_size)" />
+    <arg name="rviz" value="$(arg rviz)" />
+  </include>
+
+  <param name="/exploration_node/DynamicVelocityEnable" value="$(arg dynamic_velocity_enable)" type="bool" />
+  <param name="/exploration_node/BackupTrajEnable" value="$(arg backup_traj_enable)" type="bool" />
+  <include if="$(arg simulation)" file="$(find general_planner)/launch/exploration/simulation_garage.launch">
+    <arg name="odom_topic" value="$(arg odom_topic)" />
+    <arg name="rviz" value="false" />
+  </include>
+</launch>

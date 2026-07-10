@@ -1,0 +1,64 @@
+<launch>
+    <arg name="scene" default="garage"/>
+    <arg name="config_file" default="$(arg scene).yaml"/>
+    <arg name="odom_topic" default="/lidar_slam/odom"/>
+    <arg name="cloud_topic" default="/cloud_registered"/>
+    <arg name="auto_start" default="true"/>
+    <arg name="auto_start_delay" default="2.0"/>
+    <arg name="rviz" default="true"/>
+    <arg name="simulation" default="true"/>
+    <arg name="sim_config"
+         default="$(eval find('general_planner') + ('/config/exploration_sim.yaml' if arg('scene') == 'garage' else '/config/exploration/highspeed/perfect_drone_' + arg('scene') + '.yaml'))"/>
+    <arg name="traj_server" default="true"/>
+    <arg name="view_graph" default="false"/>
+    <arg name="view_frontier" default="false"/>
+    <arg name="view_cluster" default="false"/>
+    <arg name="fsm_replan_time" default="0.25"/>
+    <arg name="fsm_replan_time_after_traj_start" default="0.35"/>
+    <arg name="fsm_replan_time_before_traj_end" default="1.0"/>
+    <arg name="bubble_astar_resolution" default="0.40"/>
+    <arg name="bubble_topo_cube_discrete_size" default="0.50"/>
+    <arg name="global_path_update_min_interval" default="0.2"/>
+    <arg name="original_frontend_compatibility" default="true"/>
+    <arg name="use_lkh" default="true"/>
+    <arg name="tsp_dir" default="/tmp"/>
+    <arg name="cloud_subscriber_queue" default="1"/>
+    <arg name="odom_subscriber_queue" default="50"/>
+    <arg name="sync_queue" default="20"/>
+    <arg name="max_cloud_age" default="0.5"/>
+    <arg name="heartbeat_timeout" default="1.5"/>
+    <arg name="rog_map_enable" default="true"/>
+
+    <include if="$(arg simulation)" file="$(find general_planner)/launch/exploration/perfect_drone_sim.launch">
+        <arg name="sim_config" value="$(arg sim_config)"/>
+    </include>
+
+    <include file="$(find general_planner)/launch/exploration/general_exploration.launch">
+        <arg name="scene" value="$(arg scene)"/>
+        <arg name="config_file" value="$(arg config_file)"/>
+        <arg name="odom_topic" value="$(arg odom_topic)"/>
+        <arg name="cloud_topic" value="$(arg cloud_topic)"/>
+        <arg name="auto_start" value="$(arg auto_start)"/>
+        <arg name="auto_start_delay" value="$(arg auto_start_delay)"/>
+        <arg name="rviz" value="$(arg rviz)"/>
+        <arg name="traj_server" value="$(arg traj_server)"/>
+        <arg name="view_graph" value="$(arg view_graph)"/>
+        <arg name="view_frontier" value="$(arg view_frontier)"/>
+        <arg name="view_cluster" value="$(arg view_cluster)"/>
+        <arg name="fsm_replan_time" value="$(arg fsm_replan_time)"/>
+        <arg name="fsm_replan_time_after_traj_start" value="$(arg fsm_replan_time_after_traj_start)"/>
+        <arg name="fsm_replan_time_before_traj_end" value="$(arg fsm_replan_time_before_traj_end)"/>
+        <arg name="bubble_astar_resolution" value="$(arg bubble_astar_resolution)"/>
+        <arg name="bubble_topo_cube_discrete_size" value="$(arg bubble_topo_cube_discrete_size)"/>
+        <arg name="global_path_update_min_interval" value="$(arg global_path_update_min_interval)"/>
+        <arg name="original_frontend_compatibility" value="$(arg original_frontend_compatibility)"/>
+        <arg name="use_lkh" value="$(arg use_lkh)"/>
+        <arg name="tsp_dir" value="$(arg tsp_dir)"/>
+        <arg name="cloud_subscriber_queue" value="$(arg cloud_subscriber_queue)"/>
+        <arg name="odom_subscriber_queue" value="$(arg odom_subscriber_queue)"/>
+        <arg name="sync_queue" value="$(arg sync_queue)"/>
+        <arg name="max_cloud_age" value="$(arg max_cloud_age)"/>
+        <arg name="heartbeat_timeout" value="$(arg heartbeat_timeout)"/>
+        <arg name="rog_map_enable" value="$(arg rog_map_enable)"/>
+    </include>
+</launch>

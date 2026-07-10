@@ -130,29 +130,6 @@ namespace general_planner {
             return result.rejected();
         }
 
-        bool isYawRateLimitFailure(const checker::CheckResult &result) {
-            return result.rejected() &&
-                   result.code.find("YAW_RATE_LIMIT") != std::string::npos;
-        }
-
-        bool buildConstantYawTrajectory(const double yaw,
-                                        const double duration,
-                                        const double start_wt,
-                                        Trajectory &traj) {
-            if (!std::isfinite(yaw) ||
-                !std::isfinite(duration) ||
-                duration <= 1.0e-5 ||
-                !std::isfinite(start_wt)) {
-                return false;
-            }
-            Eigen::MatrixXd coeff = Eigen::MatrixXd::Zero(3, 8);
-            coeff(0, 7) = yaw;
-            traj.clear();
-            traj.emplace_back(duration, coeff);
-            traj.start_WT = start_wt;
-            return !traj.empty();
-        }
-
         bool currentTrajectorySafeForNoNeed(state2state_task::StateToStateExpBackendServices &services,
                                             const Trajectory &traj,
                                             const double start_t) {
@@ -164,12 +141,7 @@ namespace general_planner {
                 return false;
             }
             if (start_t >= total_duration) {
-                return !services.cfg.exploration_enable;
-            }
-            const double remaining = std::max(0.0, total_duration - std::max(0.0, start_t));
-            if (services.cfg.exploration_enable &&
-                remaining <= std::max(0.0, services.cfg.exploration_keep_old_min_remaining)) {
-                return false;
+                return true;
             }
             CommittedTrajectorySafetyReport report;
             const double now_wt = traj.start_WT + std::clamp(start_t, 0.0, total_duration);
@@ -266,26 +238,12 @@ namespace general_planner {
                     return FAILED;
                 }
 
-                const bool can_continue_exploration =
-                        services.cfg.exploration_enable &&
-                        std::isfinite(cmd_total_duration) &&
-                        replan_process_start_TT >= 0.0 &&
-                        replan_process_start_TT < cmd_total_duration;
-                if (can_continue_exploration) {
-                    replan_state_TT = std::clamp(replan_process_start_TT,
-                                                 0.0,
-                                                 std::max(0.0, cmd_total_duration - 1.0e-3));
-                    if (services.cfg.print_log) {
-                        services.ros_ptr->warn(
-                                " -- [generateExpTraj] exploration replan forward point exceeds current trajectory, continue from current state.");
-                    }
-                } else {
-                    if (services.cfg.print_log) {
-                        services.ros_ptr->warn(
-                                " -- [generateExpTraj] replan_state_TT >= services.cmd_traj_info.pos_traj.getTotalDuration(), return NONEED and wait for plan form rest.");
-                    }
-                    return NO_NEED;
+                if (services.cfg.print_log) {
+                    services.ros_ptr->warn(
+                            " -- [generateExpTraj] replan_state_TT >= services.cmd_traj_info.pos_traj.getTotalDuration(), return NONEED and wait for plan form rest.");
                 }
+
+                return NO_NEED;
 	            }
 
             if (!last_exp_traj_info.empty()) {
@@ -299,27 +257,12 @@ namespace general_planner {
                         }
                         return FAILED;
                     }
-                    const bool can_continue_exploration =
-                            services.cfg.exploration_enable &&
-                            std::isfinite(last_exp_total_duration) &&
-                            replan_process_start_TT >= 0.0 &&
-                            replan_process_start_TT < last_exp_total_duration;
-                    if (can_continue_exploration) {
-                        replan_state_TT = std::clamp(replan_process_start_TT,
-                                                     0.0,
-                                                     std::max(0.0,
-                                                              last_exp_total_duration - 1.0e-3));
-                        if (services.cfg.print_log) {
-                            services.ros_ptr->warn(
-                                    " -- [generateExpTraj] exploration replan point exceeds last exp trajectory, continue from current state.");
-                        }
-                    } else {
-                        if (services.cfg.print_log) {
-                            services.ros_ptr->warn(
-                                    " -- [generateExpTraj] replan_state_TT >= last_exp_traj.getTotalDuration(), return NONEED and wait for plan form rest.");
-                        }
-                        return NO_NEED;
+                    if (services.cfg.print_log) {
+                        services.ros_ptr->warn(
+                                " -- [generateExpTraj] replan_state_TT >= last_exp_traj.getTotalDuration(), return NONEED and wait for plan form rest.");
                     }
+
+                    return NO_NEED;
                 }
 
                 if (!services.new_goal &&
@@ -589,28 +532,6 @@ namespace general_planner {
         if (local_endpoint_is_global_goal) {
             pos_fina_state.col(0) = services.goal_p;
             pos_fina_state.col(1).setZero();
-            const double goal_distance = (services.goal_p - services.robot_state.p).norm();
-            const double keep_vel_min_distance =
-                    std::max(1.0, services.cfg.exploration_goal_reached_distance * 2.0);
-            if (services.cfg.exploration_enable &&
-                services.cfg.exploration_keep_terminal_velocity &&
-                goal_distance > keep_vel_min_distance) {
-                Vec3f terminal_dir = Vec3f::Zero();
-                if (guide_path.size() >= 2) {
-                    terminal_dir = guide_path.back() - guide_path[guide_path.size() - 2];
-                }
-                if (!terminal_dir.allFinite() || terminal_dir.norm() < 1.0e-3) {
-                    terminal_dir = services.goal_p - services.robot_state.p;
-                }
-                terminal_dir.z() = 0.0;
-                if (terminal_dir.allFinite() && terminal_dir.norm() > 1.0e-3) {
-                    const double ratio = std::clamp(services.cfg.exploration_terminal_velocity_ratio,
-                                                    0.0,
-                                                    1.0);
-                    pos_fina_state.col(1) =
-                            terminal_dir.normalized() * services.cfg.exp_traj_cfg.max_vel * ratio;
-                }
-            }
         }
         auto copyZSummary = [](const LocalZSummary &src, State2StateZSummary &dst) {
             dst.valid = src.valid;
@@ -824,61 +745,11 @@ namespace general_planner {
                                             services.cfg,
                                             "state2state_exp_output");
         if (output_check.rejected()) {
-            if (services.cfg.exploration_enable && isYawRateLimitFailure(output_check)) {
-                const double hold_yaw =
-                        std::isfinite(init_yaw[0])
-                                ? init_yaw[0]
-                                : (std::isfinite(services.robot_state.yaw)
-                                           ? services.robot_state.yaw
-                                           : 0.0);
-                Trajectory hold_new_yaw_traj;
-                if (buildConstantYawTrajectory(hold_yaw,
-                                               out_traj.getTotalDuration(),
-                                               new_traj_WT,
-                                               hold_new_yaw_traj)) {
-                    const Trajectory hold_yaw_traj = old_traj + hold_new_yaw_traj;
-                    out_exp_traj_info.setTrajectory(new_traj_WT,
-                                                    temp_exp_traj,
-                                                    hold_yaw_traj,
-                                                    on_backup_start_TT,
-                                                    on_backup_end_TT);
-                    const checker::CheckResult hold_check =
-                            checker::checkExpTrajectory(out_exp_traj_info,
-                                                        services.cfg,
-                                                        "state2state_exp_output_yaw_hold_fallback");
-                    if (!hold_check.rejected()) {
-                        temp_yaw_traj = hold_yaw_traj;
-                        if (services.ros_ptr != nullptr) {
-                            services.ros_ptr->warn(
-                                    " -- [GeneralPlanner] Exploration yaw-rate fallback accepted: original_code={}, hold_yaw={:.3f}, duration={:.3f}.",
-                                    output_check.code,
-                                    hold_yaw,
-                                    out_traj.getTotalDuration());
-                        }
-                    } else {
-                        logCheckResult(services.ros_ptr,
-                                       "generateExpTraj yaw-hold fallback",
-                                       hold_check);
-                        logCheckResult(services.ros_ptr,
-                                       "generateExpTraj output",
-                                       output_check);
-                        out_exp_traj_info.setEmpty();
-                        return FAILED;
-                    }
-                } else {
-                    logCheckResult(services.ros_ptr,
-                                   "generateExpTraj output",
-                                   output_check);
-                    out_exp_traj_info.setEmpty();
-                    return FAILED;
-                }
-            } else {
-                logCheckResult(services.ros_ptr,
-                               "generateExpTraj output",
-                               output_check);
-                out_exp_traj_info.setEmpty();
-                return FAILED;
-            }
+            logCheckResult(services.ros_ptr,
+                           "generateExpTraj output",
+                           output_check);
+            out_exp_traj_info.setEmpty();
+            return FAILED;
         }
 
         if (out_exp_traj_info.empty()) {

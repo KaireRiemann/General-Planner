@@ -507,7 +507,7 @@ vec_E<Vec3f> estimateGuideVelocities(const vec_E<Vec3f> &path,
 }
 } // namespace
 
-ExpTrajOpt::ExpTrajOpt(const traj_opt::Config &cfg,
+ExplorationTrajOpt::ExplorationTrajOpt(const traj_opt::Config &cfg,
                        const ros_interface::RosInterface::Ptr &ros_ptr)
     : cfg_(cfg), ros_ptr_(ros_ptr)
 {
@@ -518,13 +518,12 @@ ExpTrajOpt::ExpTrajOpt(const traj_opt::Config &cfg,
   }
 
   opt_vars_.magnitude_bounds.resize(6);
-  opt_vars_.penalty_weights.resize(7);
-  opt_vars_.magnitude_bounds << cfg_.max_vel, cfg_.max_acc, cfg_.max_jerk,
-      cfg_.max_omg, cfg_.min_acc_thr * cfg_.mass, cfg_.max_acc_thr * cfg_.mass;
+  opt_vars_.penalty_weights.resize(6);
+  opt_vars_.magnitude_bounds << cfg_.max_vel, cfg_.max_acc,
+      cfg_.max_omg, std::numeric_limits<double>::infinity(),
+      cfg_.min_acc_thr * cfg_.mass, cfg_.max_acc_thr * cfg_.mass;
   opt_vars_.penalty_weights << cfg_.penna_pos, cfg_.penna_vel,
-      cfg_.penna_acc, cfg_.penna_jerk,
-      cfg_.penna_attract, cfg_.penna_omg,
-      cfg_.penna_thr;
+      cfg_.penna_acc, cfg_.penna_omg, cfg_.penna_theta, cfg_.penna_thr;
   opt_vars_.rho = cfg_.penna_t;
   opt_vars_.pos_constraint_type = cfg_.pos_constraint_type;
   opt_vars_.block_energy_cost = cfg_.block_energy_cost;
@@ -548,7 +547,7 @@ ExpTrajOpt::ExpTrajOpt(const traj_opt::Config &cfg,
   optimizer_.setSamplesPerPiece(opt_vars_.integral_res);
 }
 
-ExpTrajOpt::~ExpTrajOpt()
+ExplorationTrajOpt::~ExplorationTrajOpt()
 {
   if (failed_traj_log_.is_open())
   {
@@ -560,22 +559,73 @@ ExpTrajOpt::~ExpTrajOpt()
   }
 }
 
-void ExpTrajOpt::setSwarmConfig(const SwarmPenaltyConfig &config)
+void ExplorationTrajOpt::clearPieceVelocityBounds()
+{
+  opt_vars_.piece_velocity_bounds.resize(0);
+  opt_vars_.use_piece_velocity_bounds = false;
+}
+
+void ExplorationTrajOpt::setPieceVelocityBounds(const VecDf &piece_velocity_bounds)
+{
+  opt_vars_.piece_velocity_bounds = piece_velocity_bounds;
+  opt_vars_.use_piece_velocity_bounds = piece_velocity_bounds.size() > 0;
+}
+
+void ExplorationTrajOpt::normalizePieceVelocityBounds()
+{
+  if (!opt_vars_.use_piece_velocity_bounds)
+  {
+    return;
+  }
+  if (opt_vars_.piece_num <= 0)
+  {
+    clearPieceVelocityBounds();
+    return;
+  }
+
+  if (opt_vars_.piece_velocity_bounds.size() == 1)
+  {
+    const double bound = opt_vars_.piece_velocity_bounds(0);
+    opt_vars_.piece_velocity_bounds = VecDf::Constant(opt_vars_.piece_num, bound);
+  }
+  else if (opt_vars_.piece_velocity_bounds.size() != opt_vars_.piece_num)
+  {
+    const VecDf old_bounds = opt_vars_.piece_velocity_bounds;
+    opt_vars_.piece_velocity_bounds =
+        VecDf::Constant(opt_vars_.piece_num, std::max(1.0e-3, cfg_.max_vel));
+    const int copy_num = std::min<int>(old_bounds.size(), opt_vars_.piece_num);
+    for (int i = 0; i < copy_num; ++i)
+    {
+      opt_vars_.piece_velocity_bounds(i) = old_bounds(i);
+    }
+  }
+
+  for (int i = 0; i < opt_vars_.piece_velocity_bounds.size(); ++i)
+  {
+    double &bound = opt_vars_.piece_velocity_bounds(i);
+    if (!std::isfinite(bound) || bound <= 1.0e-3)
+    {
+      bound = std::max(1.0e-3, cfg_.max_vel);
+    }
+  }
+}
+
+void ExplorationTrajOpt::setSwarmConfig(const SwarmPenaltyConfig &config)
 {
   swarm_config_ = config;
 }
 
-void ExpTrajOpt::setSwarmTrajectories(const SwarmTrajectoriesConstPtr &trajectories)
+void ExplorationTrajOpt::setSwarmTrajectories(const SwarmTrajectoriesConstPtr &trajectories)
 {
   swarm_trajs_ = trajectories;
 }
 
-void ExpTrajOpt::setSwarmCurrentWallTime(double wall_time)
+void ExplorationTrajOpt::setSwarmCurrentWallTime(double wall_time)
 {
   swarm_current_wall_time_ = wall_time;
 }
 
-SnapBoundaryState ExpTrajOpt::toSnapBoundary(const StatePVAJ &state)
+SnapBoundaryState ExplorationTrajOpt::toSnapBoundary(const StatePVAJ &state)
 {
   SnapBoundaryState out;
   out.col(0) = state.col(0);
@@ -585,7 +635,7 @@ SnapBoundaryState ExpTrajOpt::toSnapBoundary(const StatePVAJ &state)
   return out;
 }
 
-Trajectory ExpTrajOpt::toGeometryTrajectory(const SnapTraj &traj)
+Trajectory ExplorationTrajOpt::toGeometryTrajectory(const SnapTraj &traj)
 {
   Trajectory out;
   const auto &durations = traj.getDurations();
@@ -597,7 +647,7 @@ Trajectory ExpTrajOpt::toGeometryTrajectory(const SnapTraj &traj)
   return out;
 }
 
-bool ExpTrajOpt::processCorridor()
+bool ExplorationTrajOpt::processCorridor()
 {
   const int size_corridor = static_cast<int>(opt_vars_.h_polytopes.size()) - 1;
   if (size_corridor < 0)
@@ -617,7 +667,7 @@ bool ExpTrajOpt::processCorridor()
   {
     if (!geometry_utils::enumerateVs(opt_vars_.h_polytopes[i], cur_v))
     {
-      std::cout << YELLOW << " -- [ExpTrajOpt] Failed to enumerate corridor vertices." << RESET << std::endl;
+      std::cout << YELLOW << " -- [ExplorationTrajOpt] Failed to enumerate corridor vertices." << RESET << std::endl;
       return false;
     }
     cur_v_local.resize(3, cur_v.cols());
@@ -661,7 +711,7 @@ bool ExpTrajOpt::processCorridor()
   return true;
 }
 
-bool ExpTrajOpt::processCorridorWithGuideTraj()
+bool ExplorationTrajOpt::processCorridorWithGuideTraj()
 {
   if (!processCorridor())
   {
@@ -717,13 +767,13 @@ bool ExpTrajOpt::processCorridorWithGuideTraj()
   }
   if (cfg_.print_optimizer_log && guide_overlap_fallback_count > 0)
   {
-    std::cout << YELLOW << " -- [ExpTrajOpt] Guide-overlap waypoint fallback count: "
+    std::cout << YELLOW << " -- [ExplorationTrajOpt] Guide-overlap waypoint fallback count: "
               << guide_overlap_fallback_count << RESET << std::endl;
   }
   return true;
 }
 
-void ExpTrajOpt::defaultInitialization()
+void ExplorationTrajOpt::defaultInitialization()
 {
   const VecDf dis = (opt_vars_.init_path.rightCols(opt_vars_.piece_num) -
                      opt_vars_.init_path.leftCols(opt_vars_.piece_num))
@@ -733,7 +783,7 @@ void ExpTrajOpt::defaultInitialization()
   opt_vars_.points = opt_vars_.waypoint_attractor;
 }
 
-bool ExpTrajOpt::setupProblemAndCheck()
+bool ExplorationTrajOpt::setupProblemAndCheck()
 {
   opt_vars_.piece_num = static_cast<int>(opt_vars_.h_polytopes.size());
   if (opt_vars_.piece_num <= 0)
@@ -777,17 +827,17 @@ bool ExpTrajOpt::setupProblemAndCheck()
   return true;
 }
 
-bool ExpTrajOpt::loadCorridors(PolytopeVec &sfcs)
+bool ExplorationTrajOpt::loadCorridors(PolytopeVec &sfcs)
 {
   if (sfcs.empty())
   {
-    std::cout << YELLOW << " -- [ExpTrajOpt] Empty SFC." << RESET << std::endl;
+    std::cout << YELLOW << " -- [ExplorationTrajOpt] Empty SFC." << RESET << std::endl;
     return false;
   }
 
   if (!geometry_utils::SimplifySFC(opt_vars_.head_pvaj.col(0), opt_vars_.tail_pvaj.col(0), sfcs))
   {
-    std::cout << YELLOW << " -- [ExpTrajOpt] Cannot simplify SFC." << RESET << std::endl;
+    std::cout << YELLOW << " -- [ExplorationTrajOpt] Cannot simplify SFC." << RESET << std::endl;
     return false;
   }
 
@@ -804,28 +854,26 @@ bool ExpTrajOpt::loadCorridors(PolytopeVec &sfcs)
   return true;
 }
 
-double ExpTrajOpt::costFunctional(void *ptr, const VecDf &x, VecDf &g)
+double ExplorationTrajOpt::costFunctional(void *ptr, const VecDf &x, VecDf &g)
 {
-  return static_cast<ExpTrajOpt *>(ptr)->evaluateMincoCost(x, g);
+  return static_cast<ExplorationTrajOpt *>(ptr)->evaluateMincoCost(x, g);
 }
 
-double ExpTrajOpt::evaluateMincoCost(const VecDf &x, VecDf &g)
+double ExplorationTrajOpt::evaluateMincoCost(const VecDf &x, VecDf &g)
 {
   opt_vars_.iter_num++;
-  const double cost = optimizer_.evaluate(x, g, linear_time_cost_, exp_cost_manager_);
-  opt_vars_.guide_integral_violation = exp_cost_manager_.guideIntegralViolation();
-  opt_vars_.guide_path_cost_log = exp_cost_manager_.guideCostLog();
-  opt_vars_.guide_path_max_abs_time_grad = exp_cost_manager_.guideMaxAbsTimeGrad();
-  opt_vars_.guide_path_out_of_time_range_samples = exp_cost_manager_.guideOutOfTimeRangeSamples();
+  const double cost = optimizer_.evaluate(x, g, linear_time_cost_, exploration_cost_manager_);
+  opt_vars_.guide_integral_violation = 0.0;
+  opt_vars_.guide_path_cost_log = 0.0;
+  opt_vars_.guide_path_max_abs_time_grad = 0.0;
+  opt_vars_.guide_path_out_of_time_range_samples = 0;
   opt_vars_.guide_z_tube_violation = 0.0;
   opt_vars_.penalty_log(0) = optimizer_.lastEnergyCost();
-  opt_vars_.penalty_log.tail(7) = exp_cost_manager_.getPenaltyLog().tail(7);
-  opt_vars_.penalty_log(5) = std::max({opt_vars_.penalty_log(5),
-                                       opt_vars_.guide_integral_violation});
+  opt_vars_.penalty_log.tail(7) = exploration_cost_manager_.getPenaltyLog().tail(7);
   return cost;
 }
 
-double ExpTrajOpt::optimize(Trajectory &traj, double rel_cost_tol)
+double ExplorationTrajOpt::optimize(Trajectory &traj, double rel_cost_tol)
 {
   opt_vars_.penalty_log.resize(8);
   opt_vars_.penalty_log.setZero();
@@ -880,24 +928,16 @@ double ExpTrajOpt::optimize(Trajectory &traj, double rel_cost_tol)
     return INFINITY;
   }
 
-  exp_cost_manager_.reset(&opt_vars_.h_polytopes,
-                          &opt_vars_.h_poly_idx,
-                          &opt_vars_.waypoint_attractor,
-                          &opt_vars_.waypoint_attractor_dead_d,
-                          opt_vars_.smooth_eps,
-                          opt_vars_.magnitude_bounds,
-                          opt_vars_.penalty_weights,
-                          &opt_vars_.quadrotor_flatness,
-                          swarm_config_,
-                          swarm_trajs_,
-                          swarm_current_wall_time_,
-                          &opt_vars_.guide_path,
-                          &opt_vars_.guide_t,
-                          opt_vars_.weight_guide_integral,
-                          opt_vars_.guide_path_tube_radius,
-                          opt_vars_.guide_path_z_tube_radius,
-                          opt_vars_.guide_path_huber_delta,
-                          opt_vars_.guide_path_time_gradient_en);
+  const VecDf *piece_velocity_bounds =
+      opt_vars_.use_piece_velocity_bounds ? &opt_vars_.piece_velocity_bounds : nullptr;
+
+  exploration_cost_manager_.reset(&opt_vars_.h_polytopes,
+                                  &opt_vars_.h_poly_idx,
+                                  piece_velocity_bounds,
+                                  opt_vars_.smooth_eps,
+                                  opt_vars_.magnitude_bounds,
+                                  opt_vars_.penalty_weights,
+                                  &opt_vars_.quadrotor_flatness);
 
   opt_vars_.iter_num = 0;
   double min_cost = 0.0;
@@ -908,11 +948,11 @@ double ExpTrajOpt::optimize(Trajectory &traj, double rel_cost_tol)
   params.g_epsilon = 0.0;
   params.delta = rel_cost_tol;
 
-  const int ret = lbfgs::lbfgs_optimize(x, min_cost, &ExpTrajOpt::costFunctional, nullptr, nullptr, this, params);
+  const int ret = lbfgs::lbfgs_optimize(x, min_cost, &ExplorationTrajOpt::costFunctional, nullptr, nullptr, this, params);
 
   if (cfg_.print_optimizer_log)
   {
-    std::cout << " -- [ExpTrajOpt] Opt finish, iter: " << opt_vars_.iter_num << "\n"
+    std::cout << " -- [ExplorationTrajOpt] Opt finish, iter: " << opt_vars_.iter_num << "\n"
               << "\tEnergy: " << opt_vars_.penalty_log(0) << "\n"
               << "\tPos: " << opt_vars_.penalty_log(1) << "\n"
               << "\tVel: " << opt_vars_.penalty_log(2) << "\n"
@@ -930,7 +970,7 @@ double ExpTrajOpt::optimize(Trajectory &traj, double rel_cost_tol)
   if (ret < 0)
   {
     traj.clear();
-    std::cout << YELLOW << " -- [ExpTrajOpt] Optimization failed: " << lbfgs::lbfgs_strerror(ret)
+    std::cout << YELLOW << " -- [ExplorationTrajOpt] Optimization failed: " << lbfgs::lbfgs_strerror(ret)
               << ", guide_excess=" << opt_vars_.guide_integral_violation
               << ", guide_cost_sample=" << opt_vars_.guide_path_cost_log
               << ", guide_max_abs_gt=" << opt_vars_.guide_path_max_abs_time_grad
@@ -946,7 +986,7 @@ double ExpTrajOpt::optimize(Trajectory &traj, double rel_cost_tol)
   return min_cost;
 }
 
-bool ExpTrajOpt::optimize(const StatePVAJ &headPVAJ,
+bool ExplorationTrajOpt::optimize(const StatePVAJ &headPVAJ,
                           const StatePVAJ &tailPVAJ,
                           PolytopeVec &sfcs,
                           Trajectory &out_traj)
@@ -957,10 +997,12 @@ bool ExpTrajOpt::optimize(const StatePVAJ &headPVAJ,
   opt_vars_.tail_pvaj = tailPVAJ;
   opt_vars_.guide_path.clear();
   opt_vars_.guide_t.clear();
+  clearPieceVelocityBounds();
   if (!loadCorridors(sfcs) || !setupProblemAndCheck())
   {
     return false;
   }
+  normalizePieceVelocityBounds();
   out_traj.clear();
   const bool success = !std::isinf(optimize(out_traj, cfg_.opt_accuracy));
   if (success)
@@ -970,7 +1012,7 @@ bool ExpTrajOpt::optimize(const StatePVAJ &headPVAJ,
   return success;
 }
 
-bool ExpTrajOpt::optimize(const StatePVAJ &headPVAJ,
+bool ExplorationTrajOpt::optimize(const StatePVAJ &headPVAJ,
                           const StatePVAJ &tailPVAJ,
                           const vec_E<Vec3f> &guide_path,
                           const std::vector<double> &guide_t,
@@ -987,10 +1029,12 @@ bool ExpTrajOpt::optimize(const StatePVAJ &headPVAJ,
   opt_vars_.tail_pvaj = tailPVAJ;
   opt_vars_.guide_path = guide_path;
   opt_vars_.guide_t = guide_t;
+  clearPieceVelocityBounds();
   if (!loadCorridors(sfcs) || !setupProblemAndCheck())
   {
     return false;
   }
+  normalizePieceVelocityBounds();
   out_traj.clear();
   const bool success = !std::isinf(optimize(out_traj, cfg_.opt_accuracy));
   if (success)
@@ -1004,7 +1048,44 @@ bool ExpTrajOpt::optimize(const StatePVAJ &headPVAJ,
   return success;
 }
 
-bool ExpTrajOpt::optimize(const StatePVAJ &headPVAJ,
+bool ExplorationTrajOpt::optimize(const StatePVAJ &headPVAJ,
+                                  const StatePVAJ &tailPVAJ,
+                                  const vec_E<Vec3f> &guide_path,
+                                  const std::vector<double> &guide_t,
+                                  PolytopeVec &sfcs,
+                                  const VecDf &piece_velocity_bounds,
+                                  Trajectory &out_traj)
+{
+  if (guide_path.size() != guide_t.size() || guide_path.empty())
+  {
+    return false;
+  }
+  opt_vars_.default_init = false;
+  opt_vars_.given_init_ts_and_ps = false;
+  opt_vars_.head_pvaj = headPVAJ;
+  opt_vars_.tail_pvaj = tailPVAJ;
+  opt_vars_.guide_path = guide_path;
+  opt_vars_.guide_t = guide_t;
+  setPieceVelocityBounds(piece_velocity_bounds);
+  if (!loadCorridors(sfcs) || !setupProblemAndCheck())
+  {
+    return false;
+  }
+  normalizePieceVelocityBounds();
+  out_traj.clear();
+  const bool success = !std::isinf(optimize(out_traj, cfg_.opt_accuracy));
+  if (success)
+  {
+    out_traj.start_WT = ros_ptr_->getSimTime();
+  }
+  if (penalty_log_.is_open())
+  {
+    penalty_log_ << opt_vars_.penalty_log.transpose() << std::endl;
+  }
+  return success;
+}
+
+bool ExplorationTrajOpt::optimize(const StatePVAJ &headPVAJ,
                           const StatePVAJ &tailPVAJ,
                           PolytopeVec &sfcs,
                           const vec_Vec3f &init_ps,
@@ -3896,7 +3977,7 @@ TrajManager::TrajManager(const traj_opt::Config &exp_cfg,
                          const ros_interface::RosInterface::Ptr &ros_ptr,
                          const general_planner::MapManager::Ptr &map_manager)
 {
-  exp_traj_opt_ = std::make_shared<ExpTrajOpt>(exp_cfg, ros_ptr);
+  exp_traj_opt_ = std::make_shared<ExplorationTrajOpt>(exp_cfg, ros_ptr);
   esdf_traj_opt_ = std::make_shared<ESDFTrajOpt>(esdf_cfg, ros_ptr);
   esdf_traj_opt_->setMapManager(map_manager);
   esdf_traj_opt_->setSafeDistance(esdf_safe_distance);

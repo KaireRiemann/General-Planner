@@ -1,0 +1,8 @@
+<launch>
+  <arg name="sim_config" default="$(find perfect_drone_sim)/config/exploration.yaml" />
+
+  <node pkg="perfect_drone_sim" type="perfect_drone"
+        name="perfect_drone" output="screen" clear_params="true">
+    <param name="config_path" value="$(arg sim_config)" type="string" />
+  </node>
+</launch>

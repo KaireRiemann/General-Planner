@@ -1,0 +1,4 @@
+<?xml version="1.0"?>
+<launch>
+  <include file="$(find general_planner)/launch/exploration/factory.launch" />
+</launch>

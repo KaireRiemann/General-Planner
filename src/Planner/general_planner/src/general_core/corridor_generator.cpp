@@ -74,9 +74,15 @@ namespace general_planner {
         int max_loop = 1000;
         int cnt_loop = 0;
         first_id = 0;
+        const int path_size = static_cast<int>(path.size());
 
-        while(first_id < path.size() && map_manager_->isOccupiedInflate(path[first_id])) {
+        while(first_id < path_size && map_manager_->isOccupiedInflate(path[first_id])) {
             first_id++;
+        }
+
+        if (first_id >= path_size) {
+            cout << YELLOW << " -- [GeneralPlanner] SearchPolytopeOnPath failed: all guide path points are occupied in inflated map." << RESET << endl;
+            return false;
         }
 
         if(first_id!=0){
@@ -88,7 +94,7 @@ namespace general_planner {
 
         while (cnt_loop++ < max_loop) {
             second_id = first_id;
-            for (int j = first_id + 1; j < path.size(); j++) {
+            for (int j = first_id + 1; j < path_size; j++) {
                 bool reach_segment = false;
                 if (!map_manager_->isLineFree(path[first_id], path[j], seed_line_max_length_,
                                           line_seed_neighbor_list)) {
@@ -104,7 +110,7 @@ namespace general_planner {
                 second_id = j;
             }
 
-            if (second_id == first_id && second_id + 1 < path.size()) {
+            if (second_id == first_id && second_id + 1 < path_size) {
                 second_id += 1;
             }
 
@@ -175,7 +181,7 @@ namespace general_planner {
             }
 
             sfcs.push_back(temp_poly);
-            if (second_id == path.size() - 1) {
+            if (second_id == path_size - 1) {
                 break;
             }
             first_id = second_id;

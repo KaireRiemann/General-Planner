@@ -1,0 +1,23 @@
+<launch>
+  <arg name="map_name" default="spiral" />
+  <arg name="config_file" default="$(arg map_name).yaml" />
+  <arg name="odom_topic" default="/lidar_slam/odom" />
+  <arg name="cloud_topic" default="/cloud_registered" />
+  <arg name="auto_start" default="false" />
+  <arg name="rviz" default="true" />
+  <arg name="simulation" default="true" />
+  <arg name="sim_config" default="$(eval find('general_planner') + '/config/exploration/highspeed/perfect_drone_' + arg('map_name') + '.yaml')" />
+
+  <include if="$(arg simulation)" file="$(find general_planner)/launch/exploration/perfect_drone_sim.launch">
+    <arg name="sim_config" value="$(arg sim_config)" />
+  </include>
+
+  <include file="$(find general_planner)/launch/exploration/general_exploration.launch">
+    <arg name="scene" value="$(arg map_name)" />
+    <arg name="config_file" value="$(arg config_file)" />
+    <arg name="odom_topic" value="$(arg odom_topic)" />
+    <arg name="cloud_topic" value="$(arg cloud_topic)" />
+    <arg name="auto_start" value="$(arg auto_start)" />
+    <arg name="rviz" value="$(arg rviz)" />
+  </include>
+</launch>

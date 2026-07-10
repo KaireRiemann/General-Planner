@@ -1,6 +1,5 @@
 #include <fsm/fsm.h>
 
-#include <general_core/exploration/exploration_mission_adapter.hpp>
 #include <general_core/perching/perching_planner.hpp>
 #include <general_core/state2state/state2state_planner.hpp>
 #include <general_core/takeoff/takeoff_planner.hpp>
@@ -460,43 +459,33 @@ public:
     }
 
     const char *name() const override {
-        return "exploration";
+        return "exploration_dedicated_node";
     }
 
     bool goalLike() const override {
         return true;
     }
 
-    bool ready(Fsm &fsm) override {
-        return fsm.started_ && !fsm.finish_plan;
+    bool ready(Fsm &) override {
+        return false;
     }
 
-    bool replanAllowed(const Fsm &fsm) const override {
-        return fsm.machine_state_ == Fsm::FOLLOW_TRAJ;
+    bool replanAllowed(const Fsm &) const override {
+        return false;
     }
 
     PlanResult plan(Fsm &fsm, const PlanRequest &request) override {
-        return planner(fsm).plan(
-                general_planner::architecture::ExplorationPlanRequest{
-                        request,
-                        fsm.task_new_});
+        return makeResult(fsm, request, FAILED, {},
+                          "exploration is provided by general_planner/exploration_node");
     }
 
     PlanResult replan(Fsm &fsm, const PlanRequest &request) override {
-        return planner(fsm).replan(
-                general_planner::architecture::ExplorationPlanRequest{
-                        request,
-                        fsm.task_new_});
+        return makeResult(fsm, request, FAILED, {},
+                          "exploration is provided by general_planner/exploration_node");
     }
 
-    bool shouldGenerateAfterTrajFinish(Fsm &fsm) override {
-        return fsm.started_ && !fsm.finish_plan;
-    }
-
-private:
-    general_planner::architecture::ExplorationMissionAdapter planner(Fsm &fsm) const {
-        return general_planner::architecture::ExplorationMissionAdapter(
-                fsm.makePlannerContext());
+    bool shouldGenerateAfterTrajFinish(Fsm &) override {
+        return false;
     }
 };
 

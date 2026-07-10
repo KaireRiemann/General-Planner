@@ -17,6 +17,7 @@
 #include <algorithm>
 #include <cmath>
 #include <functional>
+#include <limits>
 #include <fmt/format.h>
 #include <general_utils/scope_timer.hpp>
 
@@ -301,6 +302,7 @@ namespace general_planner {
                                                                resolution.planning_goal,
                                                                stamp);
             };
+
 
             if (!services.cfg.state2state_far_goal_enable ||
                 !services.cfg.far_goal_reasoner_enable ||

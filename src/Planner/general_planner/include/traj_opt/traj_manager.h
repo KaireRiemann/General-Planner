@@ -12,6 +12,7 @@
 #include "traj_opt/costfunctional/temporalcosts/linear_time_cost.hpp"
 #include "traj_opt/costfunctional/spatialmap/polytope_spatial_map.hpp"
 #include "traj_opt/costfunctional/temporalmap/quad_inv_time_map.hpp"
+#include "traj_opt/costfunctional_manager/exploration_cost_manager.hpp"
 #include "traj_opt/costfunctional_manager/exp_integal_cost_manager.hpp"
 #include "traj_opt/costfunctional_manager/backup_integal_cost_manager.hpp"
 #include "traj_opt/costfunctional_manager/esdf_integral_cost_manager.hpp"
@@ -364,14 +365,14 @@ private:
   std::string label_{"PlainTrajOpt"};
 };
 
-class ExpTrajOpt
+class ExplorationTrajOpt
 {
 public:
-  using Ptr = std::shared_ptr<ExpTrajOpt>;
+  using Ptr = std::shared_ptr<ExplorationTrajOpt>;
 
-  ExpTrajOpt(const traj_opt::Config &cfg,
-             const ros_interface::RosInterface::Ptr &ros_ptr);
-  ~ExpTrajOpt();
+  ExplorationTrajOpt(const traj_opt::Config &cfg,
+                     const ros_interface::RosInterface::Ptr &ros_ptr);
+  ~ExplorationTrajOpt();
 
   bool optimize(const StatePVAJ &headPVAJ,
                 const StatePVAJ &tailPVAJ,
@@ -383,6 +384,14 @@ public:
                 const vec_E<Vec3f> &guide_path,
                 const std::vector<double> &guide_t,
                 PolytopeVec &sfcs,
+                Trajectory &out_traj);
+
+  bool optimize(const StatePVAJ &headPVAJ,
+                const StatePVAJ &tailPVAJ,
+                const vec_E<Vec3f> &guide_path,
+                const std::vector<double> &guide_t,
+                PolytopeVec &sfcs,
+                const VecDf &piece_velocity_bounds,
                 Trajectory &out_traj);
 
   bool optimize(const StatePVAJ &headPVAJ,
@@ -418,8 +427,10 @@ private:
     int piece_num{0};
     Mat3Df points;
     VecDf times;
+    VecDf piece_velocity_bounds;
     VecDf magnitude_bounds;
     VecDf penalty_weights;
+    bool use_piece_velocity_bounds{false};
 
     PolyhedraV v_polytopes;
     PolyhedraH h_polytopes;
@@ -459,6 +470,9 @@ private:
   bool processCorridorWithGuideTraj();
   void defaultInitialization();
   bool setupProblemAndCheck();
+  void clearPieceVelocityBounds();
+  void setPieceVelocityBounds(const VecDf &piece_velocity_bounds);
+  void normalizePieceVelocityBounds();
   double optimize(Trajectory &traj, double rel_cost_tol);
   double evaluateMincoCost(const VecDf &x, VecDf &g);
   bool loadCorridors(PolytopeVec &sfcs);
@@ -476,12 +490,14 @@ private:
   temporal_map::QuadInvTimeMap time_map_;
   spatial_map::PolytopeSpatialMap spatial_map_;
   cost_functional::LinearTimeCost linear_time_cost_;
-  cost_functional_manager::ExpIntegralCostManager exp_cost_manager_;
+  cost_functional_manager::ExplorationCostManager exploration_cost_manager_;
   SwarmPenaltyConfig swarm_config_;
   SwarmTrajectoriesConstPtr swarm_trajs_;
   double swarm_current_wall_time_{0.0};
   OptimizationVariables opt_vars_;
 };
+
+using ExpTrajOpt = ExplorationTrajOpt;
 
 class BackupTrajOpt
 {
@@ -605,7 +621,7 @@ public:
               const ros_interface::RosInterface::Ptr &ros_ptr,
               const general_planner::MapManager::Ptr &map_manager);
 
-  ExpTrajOpt::Ptr exp() const { return exp_traj_opt_; }
+  ExplorationTrajOpt::Ptr exp() const { return exp_traj_opt_; }
   ESDFTrajOpt::Ptr esdf() const { return esdf_traj_opt_; }
   PlainTrajOpt::Ptr plain() const { return plain_traj_opt_; }
   BackupTrajOpt::Ptr backup() const { return backup_traj_opt_; }
@@ -621,7 +637,7 @@ public:
   void setSwarmCurrentWallTime(double wall_time);
 
 private:
-  ExpTrajOpt::Ptr exp_traj_opt_;
+  ExplorationTrajOpt::Ptr exp_traj_opt_;
   ESDFTrajOpt::Ptr esdf_traj_opt_;
   PlainTrajOpt::Ptr plain_traj_opt_;
   BackupTrajOpt::Ptr backup_traj_opt_;

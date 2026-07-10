@@ -1,0 +1,30 @@
+#############| General Planner garage exploration simulation |######
+pcd_name: "garage.pcd"
+mesh_resource: "package://perfect_drone_sim/meshes/yunque-M.dae"
+cmd_topic: "/planning/pos_cmd"
+odom_topic: "/lidar_slam/odom"
+pose_topic: "/lidar_slam/pose"
+local_pc_topic: "/cloud_registered"
+global_pc_topic: "/global_pc"
+robot_frame_id: "perfect_drone"
+init_position:
+  x: 5.0
+  y: 0.0
+  z: 2.0
+init_yaw: 0.0
+
+#############| For LiDAR perception simulation |#####################
+# Match the effective HighSpeedExp/MARSIM Mid360 input contract.  The
+# odometry remains the body pose; perfect_drone_sim applies this fixed sensor
+# pitch only while rendering the cloud.
+lidar_pitch: 40.0
+is_360lidar: true
+polar_resolution: 0.2
+downsample_res: 0.1
+vertical_fov: 90.0
+sensing_blind: 1.0
+sensing_horizon: 60.0
+sensing_rate: 10
+print_time_consumption: false
+lidar_type: 3
+depth_image_en: false

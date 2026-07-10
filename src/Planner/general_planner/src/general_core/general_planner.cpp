@@ -280,12 +280,6 @@ namespace general_planner {
                 std::make_unique<traj_opt::DynamicTakeoffSnapTrajOpt>(cfg_.esdf_traj_cfg, ros_ptr_);
         takeoff_optimizer_->setMapManager(map_manager_);
         takeoff_optimizer_->setSafeDistance(cfg_.esdf_safe_distance);
-        exploration_manager_ = std::make_unique<ExplorationManager>(
-                ExplorationManager::makeConfig(cfg_), map_manager_);
-        exploration_frontend_ = std::make_unique<ExplorationFrontend>(
-                makeExplorationFrontendConfig(), map_manager_, astar_ptr_);
-        exploration_frontend_->setMissionManager(exploration_manager_.get());
-        exploration_runtime_manager_ = std::make_unique<ExplorationRuntimeManager>(cfg_);
         const auto ellipsoid_optimizer_config =
                 optimization_utils::EllipsoidOptimizer::makeConfig(cfg_.ellipsoid_optimizer,
                                                                    cfg_.ellipsoid_optimizer_fallback);

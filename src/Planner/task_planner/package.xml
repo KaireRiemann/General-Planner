@@ -70,6 +70,11 @@
     <exec_depend>nav_msgs</exec_depend>
     <exec_depend>visualization_msgs</exec_depend>
     <exec_depend>mavros_msgs</exec_depend>
+    <!-- Runtime components started by launch/exploration.launch. -->
+    <exec_depend>general_planner</exec_depend>
+    <exec_depend>perfect_drone_sim</exec_depend>
+    <exec_depend>rviz</exec_depend>
+    <exec_depend>tf</exec_depend>
 
 
     <!-- The export tag contains other, unspecified, tags -->

@@ -137,14 +137,14 @@ namespace marsim {
 
         void renderOnceInWorld(const Eigen::Vector3f& camera_pos,
                                const Eigen::Quaternionf& camera_q,
-                               const decimal_t& t_pattern_start,
+                               const double& t_pattern_start,
                                pcl::PointCloud<PointType>::Ptr output_pointcloud) {
             render_pointcloud(camera_pos, camera_q, t_pattern_start, output_pointcloud);
         }
 
         void renderOnceInBody(const Eigen::Vector3f& camera_pos,
                                const Eigen::Quaternionf& camera_q,
-                               const decimal_t& t_pattern_start,
+                               const double& t_pattern_start,
                                pcl::PointCloud<PointType>::Ptr point_in_sensor) {
             pcl::PointCloud<PointType>::Ptr local_map(new pcl::PointCloud<PointType>);
             render_pointcloud(camera_pos, camera_q, t_pattern_start, local_map);
@@ -193,7 +193,7 @@ namespace marsim {
 
         void render_pointcloud(const Eigen::Vector3f& camera_pos,
                                const Eigen::Quaternionf& camera_q,
-                               const decimal_t& t_pattern_start,
+                               const double& t_pattern_start,
                                pcl::PointCloud<PointType>::Ptr output_pointcloud);
 
         void load_pcd_file(std::string file_name, pcl::PointCloud<PointType>& cloud_color_mesh);

@@ -1,4 +1,5 @@
-PROBLEM_FILE = /home/nv/GNF_WS/src/planner/lkh_tsp_solver/resource/single.tsp
+PROBLEM_FILE = /root/ws/real_planner/src/General-Planner/src/Planner/lkh_tsp_solver/resource/single.tsp
 GAIN23 = NO
-OUTPUT_TOUR_FILE =/home/nv/GNF_WS/src/planner/lkh_tsp_solver/resource/single.txt
-RUNS = 1
+MOVE_TYPE = 2
+OUTPUT_TOUR_FILE =/root/ws/real_planner/src/General-Planner/src/Planner/lkh_tsp_solver/resource/single.txt
+RUNS = 10
