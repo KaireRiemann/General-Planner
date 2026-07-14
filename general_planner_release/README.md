@@ -1,17 +1,30 @@
 # general_planner_release
 
-Binary-only ROS1 Noetic deployment package for General Planner tracking and state2state.
+Binary-only ROS1 Noetic deployment package for General Planner tracking,
+state2state and HighSpeedExp-based exploration.
 
 ## Contents
 
 - `src/general_planner_release/general_planner_runtime_node`: ROS wrapper entry.
 - `src/general_planner_release/bin/general_planner_runtime_node.bin`: planner runtime binary.
+- `src/general_planner_release/exploration_node` and
+  `src/general_planner_release/highspeed_traj_server`: exploration wrapper entries.
+- `src/general_planner_release/bin/exploration_node.bin` and
+  `src/general_planner_release/bin/highspeed_traj_server.bin`: exploration binaries.
+- `lib/liblkh_tsp_solver.so`: bundled global-tour solver used by exploration.
 - `src/general_planner_release/config/interface.yaml`: full tracking runtime config.
 - `src/general_planner_release/config/interface_state2state_*.yaml`: full state2state runtime configs.
+- `src/general_planner_release/config/exploration.yaml`: delivered garage exploration profile.
+- `src/general_planner_release/config/exploration_sim.yaml`: garage simulator and LiDAR profile.
+- `src/general_planner_release/config/exploration_rog_map.yaml`: exploration map-backend profile.
+- `src/general_planner_release/config/exploration.rviz`: exploration visualization profile.
 - `src/general_planner_release/launch/tracking.launch`: tracking launch entry.
 - `src/general_planner_release/launch/state2state.launch`: state2state launch entry.
 - `src/general_planner_release/launch/state2state_sim.launch`: optional development launch that also starts `perfect_drone_sim`.
+- `src/general_planner_release/launch/exploration.launch`: planner-only exploration entry for real sensors, rosbag or an external simulator.
+- `src/general_planner_release/launch/exploration_sim.launch`: garage simulator plus exploration entry.
 - `src/quadrotor_msgs/msg`: public message interface definitions.
+- `src/traj_utils/msg`: trajectory messages exchanged by the exploration nodes.
 - `lib/python3/dist-packages/quadrotor_msgs`: generated Python message package for tools such as `rostopic echo`.
 
 This package does not include planner source code. Runtime parameters are exposed through the full YAML files under `config/`.
@@ -65,6 +78,62 @@ roslaunch general_planner_release state2state_sim.launch planner_backend:=corrid
 rostopic pub -1 /goal geometry_msgs/PoseStamped "{header: {frame_id: world}, pose: {position: {x: 5.0, y: 0.0, z: 1.5}, orientation: {w: 1.0}}}"
 ```
 
+Run exploration with real sensors, rosbag or an externally started simulator:
+
+```bash
+roslaunch general_planner_release exploration.launch
+```
+
+Exploration starts in `WAIT_TRIGGER`. After odometry and point clouds are
+available, click RViz `2D Nav Goal` once. The click publishes a
+`geometry_msgs/PoseStamped` on `/move_base_simple/goal`; its position is used
+only as a start trigger, not as an exploration destination. To use another
+topic or restore automatic startup:
+
+```bash
+roslaunch general_planner_release exploration.launch \
+  trigger_topic:=/your/start_trigger
+
+roslaunch general_planner_release exploration.launch auto_start:=true
+```
+
+The default input topics are `/lidar_slam/odom` and `/cloud_registered`.
+Override them directly when the real robot uses different names:
+
+```bash
+roslaunch general_planner_release exploration.launch \
+  odom_topic:=/your/odom \
+  cloud_topic:=/your/world_frame_scan
+```
+
+The default `cloud_odom_mode:=approximate_sync` pairs messages by
+`header.stamp`. For an external simulator with a different timestamp
+convention, use the latest locally received odometry instead:
+
+```bash
+roslaunch general_planner_release exploration.launch \
+  cloud_odom_mode:=latest_odom \
+  latest_odom_timeout:=0.5
+```
+
+This changes only the internal pairing policy; topic names remain unchanged.
+Keep `/use_sim_time` false unless the simulator continuously publishes
+`/clock`. The point cloud must still be a current world-frame scan.
+
+Run the garage simulation in the development workspace:
+
+```bash
+roslaunch general_planner_release exploration_sim.launch rviz:=true
+```
+
+Wait for the garage point cloud to appear, select RViz `2D Nav Goal`, and
+click anywhere once to start exploration.
+
+Like `state2state_sim.launch`, `exploration_sim.launch` expects the
+`perfect_drone_sim` package and its garage map assets to be installed or
+available in the sourced workspace. The simulator itself is not copied into
+this binary-only planner archive.
+
 ## Runtime Config
 
 The launch files pass a complete runtime YAML into `general_planner_runtime_node`. Edit these files directly to tune planner behavior, map behavior, FSM behavior, trajectory optimization, and topics:
@@ -73,6 +142,9 @@ The launch files pass a complete runtime YAML into `general_planner_runtime_node
 - `config/interface_state2state_corridor.yaml`: state2state corridor/backup optimizer.
 - `config/interface_state2state_esdf.yaml`: state2state ESDF optimizer.
 - `config/interface_state2state_plain.yaml`: state2state plain optimizer.
+- `config/exploration.yaml`: exploration frontend, General Planner corridor and trajectory tuning.
+- `config/exploration_sim.yaml`: garage map, initial pose and simulated LiDAR contract.
+- `config/exploration_rog_map.yaml`: ROG-Map settings used by the exploration frontend.
 
 Tracking topics are configured in the full YAML:
 
@@ -117,7 +189,11 @@ cd /home/diffbot/ros1_ws/real_planner/src/General-Planner
 sh_files/build_general_planner_release.sh
 ```
 
-The script runs in the `ros1_noetic` Docker container by default, forces CMake reconfiguration so embedded presets are updated, copies the rebuilt runtime binary and message interfaces into this release folder, runs smoke tests, and regenerates `general_planner_release.tar.gz`.
+The script runs in the `ros1_noetic` Docker container by default, forces CMake
+reconfiguration so embedded presets are updated, copies all three planner
+binaries, the LKH runtime library, garage exploration configs and message
+interfaces into this release folder, runs smoke tests, and regenerates
+`general_planner_release.tar.gz`.
 
 Useful overrides:
 
@@ -151,6 +227,12 @@ rostopic echo /drone_1/planning_cmd/poly_traj
 ```
 
 For state2state with the default interface files, the required inputs are `/lidar_slam/odom`, `/cloud_registered`, and `/goal`; outputs are `/planning/pos_cmd` and `/planning_cmd/poly_traj`.
+
+For exploration, the required inputs are `/lidar_slam/odom` and a current
+world-frame scan on `/cloud_registered`. The exploration nodes exchange
+`traj_utils/PolyTraj` on `/planning/trajectory` and
+`/planning/yaw_trajectory`; `highspeed_traj_server` publishes the controller
+command on `/planning/pos_cmd`.
 
 The controller should consume `quadrotor_msgs/PositionCommand` and, if needed, `quadrotor_msgs/PolynomialTrajectory`.
 

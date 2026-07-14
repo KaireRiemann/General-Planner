@@ -1,0 +1,46 @@
+<launch>
+  <!-- Garage simulator + planner entry, parallel to state2state_sim.launch. -->
+  <arg name="exploration_config"
+       default="$(find general_planner_release)/config/exploration.yaml"/>
+  <arg name="sim_config"
+       default="$(find general_planner_release)/config/exploration_sim.yaml"/>
+  <arg name="rog_map_config"
+       default="$(find general_planner_release)/config/exploration_rog_map.yaml"/>
+  <arg name="rviz_config"
+       default="$(find general_planner_release)/config/exploration.rviz"/>
+
+  <arg name="odom_topic" default="/lidar_slam/odom"/>
+  <arg name="cloud_topic" default="/cloud_registered"/>
+  <arg name="auto_start" default="false"/>
+  <arg name="auto_start_delay" default="2.0"/>
+  <arg name="trigger_topic" default="/move_base_simple/goal"/>
+  <arg name="traj_server" default="true"/>
+  <arg name="rviz" default="true"/>
+
+  <node pkg="perfect_drone_sim"
+        type="perfect_drone"
+        name="perfect_drone"
+        output="screen"
+        clear_params="true">
+    <param name="config_path" value="$(arg sim_config)" type="string"/>
+  </node>
+
+  <include file="$(find general_planner_release)/launch/exploration.launch">
+    <arg name="exploration_config" value="$(arg exploration_config)"/>
+    <arg name="rog_map_config" value="$(arg rog_map_config)"/>
+    <arg name="odom_topic" value="$(arg odom_topic)"/>
+    <arg name="cloud_topic" value="$(arg cloud_topic)"/>
+    <arg name="auto_start" value="$(arg auto_start)"/>
+    <arg name="auto_start_delay" value="$(arg auto_start_delay)"/>
+    <arg name="trigger_topic" value="$(arg trigger_topic)"/>
+    <arg name="traj_server" value="$(arg traj_server)"/>
+  </include>
+
+  <group if="$(arg rviz)">
+    <node pkg="rviz" type="rviz" name="exploration_release"
+          args="-d $(arg rviz_config)" output="log"/>
+    <node pkg="tf" type="static_transform_publisher"
+          name="exploration_release_world_tf"
+          args="0 0 0 0 0 0 world navigation 100"/>
+  </group>
+</launch>

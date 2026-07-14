@@ -99,6 +99,9 @@ struct GcopterConfig
   double corridorVirtualGroundHeight{-0.10};
   double corridorVirtualCeilHeight{5.50};
   double minSegmentVel{2.5};
+  // MinSegmentVel is the nominal cruise floor.  Optimization retries must be
+  // allowed below it when a short/sharp path violates acceleration limits.
+  double trajectoryRetryMinVel{1.0};
   double openSegmentVel{6.0};
   double dynamicVelocityMinClearance{0.35};
   double dynamicVelocityOpenClearance{2.5};
@@ -238,6 +241,7 @@ struct EdgeSafetyCost
   double known_free_length{0.0};
   double min_clearance{std::numeric_limits<double>::infinity()};
   double turn_angle{0.0};
+  double initial_heading_delta{0.0};
   bool backup_feasible{false};
 };
 
@@ -391,6 +395,7 @@ public:
 
   void printTimeCost(double time_threshold, double time_cost, std::string print_info);
   bool planExploreTraj(const std::vector<Eigen::Vector3f> &path, bool is_static);
+  bool planControlledStopTrajectory();
   bool flyToSafeRegion(bool is_static);
   void polyTraj2ROSMsg(traj_utils::PolyTraj &poly_msg, const ros::Time &start_time);
   void polyYawTraj2ROSMsg(traj_utils::PolyTraj &poly_msg, const ros::Time &start_time);
@@ -402,6 +407,7 @@ public:
   bool checkTrajVelocity();
   bool hasCommittedTrajectory() const;
   bool hasCommittedBackup() const;
+  bool hasCommittedStopTrajectory() const;
   double timeToCommittedBackup() const;
   double committedTrajectoryRemainingTime() const;
   bool isOnCommittedBackup() const;
@@ -511,5 +517,6 @@ private:
   std::shared_ptr<geometry_utils::Trajectory> latest_exp_yaw_traj_;
   std::vector<Eigen::Vector3f> last_frontend_path_;
   bool rog_map_updated_{false};
+  bool committed_stop_active_{false};
 };
 } // namespace fast_planner

@@ -8,7 +8,7 @@
   <arg name="fsm_replan_time_before_traj_end" default="1.0" />
   <arg name="bubble_astar_resolution" default="0.40" />
   <arg name="bubble_topo_cube_discrete_size" default="0.50" />
-  <arg name="auto_start" default="true" />
+  <arg name="auto_start" default="false" />
   <arg name="auto_start_delay" default="2.0" />
   <arg name="global_path_update_min_interval" default="0.2" />
   <arg name="rviz" default="true" />

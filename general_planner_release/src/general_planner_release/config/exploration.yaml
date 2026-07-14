@@ -1,0 +1,235 @@
+# General Planner exploration profile (HighSpeedExp frontend, garage default).
+# Launch arguments can override both input topics for real-robot deployment.
+odometry_topic: /lidar_slam/odom
+cloud_topic: /cloud_registered
+global_planning/w_vdir: 0.3
+global_planning/w_yawdir: 0.0
+global_planning/w_firstnode: 0.2
+# Composite next-frontier objective.  All cost-like terms are positive and all
+# exploration rewards are subtracted in FastExplorationManager.
+global_planning/epic_simple_cost: false
+global_planning/composite_candidate_cost_enable: true
+global_planning/candidate_travel_weight: 1.0
+global_planning/candidate_turn_brake_weight: 1.0
+global_planning/candidate_future_return_weight: 0.55
+global_planning/candidate_information_gain_weight: 2.0
+global_planning/candidate_wait_weight: 1.5
+global_planning/candidate_debt_weight: 2.5
+global_planning/candidate_gain_saturation: 30.0
+global_planning/candidate_wait_saturation: 18.0
+global_planning/candidate_debt_saturation: 3.0
+global_planning/candidate_return_cost_cap: 12.0
+global_planning/candidate_return_horizon: 4
+global_planning/frontier_pass_radius: 10.0
+global_planning/frontier_pass_exit_margin: 2.0
+global_planning/frontier_pass_cooldown: 4.0
+global_planning/frontier_pass_debt_increment: 1.0
+global_planning/frontier_pass_debt_max: 4.0
+viewpoint_param/global_viewpoint_num: 14
+viewpoint_param/local_viewpoint_num: 6
+#viz
+view_graph: false
+FrontierManager/view_cluster: false
+FrontierManager/view_frt: false
+# graph
+bubble_topo/min_x: 0.6
+bubble_topo/min_y: 0.6
+bubble_topo/min_z: 0.3
+bubble_topo/bubble_min_radius: 0.61
+bubble_topo/init_region_size_x: 4.0
+bubble_topo/init_region_size_y: 4.0
+bubble_topo/init_region_size_z: 2.0
+bubble_topo/cube_discrete_size: 0.5
+bubble_topo/odom_node_distance: 5.0
+bubble_astar/safe_distance: 0.7
+# map param
+max_update_region_num: 99999999
+frontier/candidate_dphi: 0.26
+frontier/candidate_znum: 3
+lidar_perception/fov_up: 52.0
+lidar_perception/fov_down: -7.0
+lidar_perception/lidar_pitch: 40.0
+lidar_perception/fov_viewpoint_up: 48.0
+lidar_perception/fov_viewpoint_down: -5.0
+lidar_perception/max_ray_length: 36
+parallel_astar/update_connection_timeout: 0.004
+parallel_astar/insert_node_timeout: 0.004
+FrontierManager/cell_size: 0.6
+FrontierManager/noise_cell_range: 1
+FrontierManager/good_observation_direction_score: 0.65
+FrontierManager/good_observation_force_trust_length: 7.0
+FrontierManager/good_observation_trust_length: 28.0
+FrontierManager/update_length: 36.0 # 大空旷场景扩大更新半径，frontier/viewpoint 更远
+FrontierManager/cluster_max_size: 14.0
+FrontierManager/cluster_min_size: 4.0
+FrontierManager/cluster_min_radius: 2.0 # DBSCAN 判断邻居的阈值
+FrontierManager/cluster_direction_radius: 0.0 # cos(theta) > cluster_direction_radius
+FrontierManager/cluster_minmum_point_num: 10
+FrontierManager/cluster_min_observation_frames: 2
+FrontierManager/cluster_max_fov_edge_ratio: 0.65
+FrontierManager/cluster_max_gap_ratio: 0.85
+FrontierManager/cluster_match_radius: 3.0
+# 柱形采样
+ViewpointManager/sample_pillar_min_height: 1.0
+ViewpointManager/sample_pillar_max_height: 3.5
+ViewpointManager/sample_pillar_height_layer_num: 3
+ViewpointManager/sample_pillar_min_radius: 4.0
+ViewpointManager/sample_pillar_max_radius: 9.0
+ViewpointManager/sample_pillar_radius_layer_num: 3
+ViewpointManager/sample_pillar_circle_sample_num: 6
+ViewpointManager/consider_range: 20
+ViewpointManager/global_recluster_size: 36
+ViewpointManager/view_direction_range: 140.0
+ViewpointManager/local_tsp_size: 10
+ViewpointManager/top_candidate_num: 2
+# area
+box_num: 1
+box_0/down: [-10.0, -6.0, -0.2]
+box_0/up: [182.0, 150.2, 3.8]
+dead_area_num: 0
+# trajectory param
+fsm/path_densify_step: 2.5
+fsm/reorient_exit_speed: 0.45
+fsm/reorient_timeout: 6.0
+fsm/reorient_stop_retry_interval: 0.8
+fsm/max_odom_age: 0.5
+# Input pairing: keep approximate_sync for MARSIM; use latest_odom when an
+# external simulator cannot provide comparable cloud/odom header timestamps.
+fsm/cloud_odom_mode: latest_odom
+fsm/latest_odom_timeout: 0.5
+fsm/controlled_reorientation_enable: true
+fsm/plan_failure_retry_delay: 0.20
+fsm/plan_failure_refresh_count: 3
+max_traj_len: 26.0
+DilateRadiusSoft: 0.7 # minco threshold
+DilateRadiusHard: 0.45 # collision check threshold
+MaxCorridorSize: 7.0
+RogMapEnable: true
+GeneralCorridorEnable: true
+CorridorLineMaxLength: 3.0
+CorridorMinOverlapThreshold: 0.15
+CorridorRobotRadius: 0.45
+CorridorMaxStartShift: 0.45
+CorridorBoxSearchSkipNum: 2
+CorridorIrisIterNum: 2
+CorridorVirtualGroundHeight: -0.10
+CorridorVirtualCeilHeight: 5.50
+CorridorUseRogOccPoints: false
+RogKnownFreeFallbackToLio: true
+MaxVelMag: 5.0
+MaxAccMag: 10.0
+maxBdrMag: 10000.0
+MaxTiltAngle: 1.10 # 最大飞行姿态角度 60°:1.0472 45°:0.7854 30°:0.5236 10°:0.1745
+MinThrust: 6.0
+MaxThrust: 55.0
+VehicleMass: 1.9
+GravAcc: 9.8
+HorizDrag: 0.70
+VertDrag: 0.80
+ParasDrag: 0.01
+SpeedEps: 0.0001
+WeightT: 1500.0
+WeightSafeT: 260.0
+EnergyWeight: 0.15
+# [pos_weight, vel_weight, acc_weight, omg_weight, theta_weight, thrust_weight]
+ChiVec: [2.0e+5, 2.0e+4, 8.0e+3, 1.1e+4, 8.0e+4, 3.0e+5]
+SmoothingEps: 0.015
+IntegralIntervs: 40
+RelCostTol: 1.0e-6
+DynamicVelocityEnable: false
+MinSegmentVel: 3.0
+# Lower bound used only after an optimized candidate violates the real commit
+# dynamics.  It does not reduce the normal 3 m/s cruise floor.
+TrajectoryRetryMinVel: 1.0
+OpenSegmentVel: 10.0
+DynamicVelocityMinClearance: 0.25
+DynamicVelocityOpenClearance: 2.2
+DynamicVelocityClearanceMargin: 0.45
+TurnVelocityEnable: true
+TurnLateralAcceleration: 5.0
+TurnSoftAngle: 0.35
+TurnHardAngle: 1.05
+TurnSoftVelocity: 7.0
+TurnHardVelocity: 3.5
+ReorientationHeadingAngle: 1.75
+NonstopTerminalVelocityEnable: false
+NonstopTerminalVelocityRatio: 0.70
+NonstopTerminalMinPathLength: 8.0
+NonstopTerminalMaxTurnAngle: 0.65
+NonstopTerminalMaxYawDelta: 1.0
+BackupTrajEnable: true
+BackupStartRatio: 0.55
+BackupMinStartTime: 1.30
+BackupMaxStartTime: 2.4
+BackupSampleDt: 0.06
+BackupSearchMargin: 5.5
+BackupPieceNum: 2
+BackupMaxVel: 10.0
+BackupMaxAcc: 15.0
+ReplanCommitDelay: 0.45
+CommitMinDuration: 0.50
+CommitMaxDuration: 2.3
+CommitSampleDt: 0.05
+CommitKnownFreeSafeDistance: 0.45
+CommitBackupTimeBuffer: 0.18
+KnownFreeShortLength: 4.0
+KnownFreeMediumLength: 10.0
+KnownFreeLongLength: 18.0
+VelocityShortKnownFree: 4.0
+VelocityMediumKnownFree: 8.0
+VelocityLongKnownFree: 10.0
+SafetyMapQueryStep: 0.20
+SafetyMapUnknownAsOccupiedForCommit: true
+SafetyMapUnknownAsOccupiedForBackup: true
+SafetyMapUnknownAllowedForExplore: true
+BrakeAccel: 12.0
+PlannerLatency: 0.12
+ControlLatency: 0.08
+SafetyBrakeMargin: 0.8
+CurvatureMinRadius: 0.8
+VelocityLogEnable: true
+FinishNoFrontierMinCount: 4
+FinishNoFrontierMinDuration: 1.5
+FinishRequireVehicleSlow: true
+FinishSlowSpeed: 0.5
+FinishRecheckAfterGoalReached: true
+GoalLockEnable: true
+GoalSwitchMinInterval: 1.2
+GoalSwitchMinImprovement: 2.0
+GoalSwitchHighSpeedMultiplier: 1.8
+GoalKeepCostRatio: 1.35
+GoalLockMatchRadius: 1.0
+GoalReachedRadius: 0.35
+HighSpeedModeThreshold: 5.0
+HighSpeedModeExitThreshold: 3.0
+ViewScoreGainWeight: 1.0
+ViewScoreProgressWeight: 0.12
+ViewScoreVelocityAlignWeight: 2.0
+ViewScoreKnownFreeWeight: 0.20
+ViewScoreClearanceWeight: 0.45
+ViewScoreYawWeight: 0.25
+ViewScoreTurnWeight: 1.35
+ViewScoreBackupPenalty: 8.0
+ViewScoreKnownFreeMaxLen: 25.0
+ViewScoreHardGateEnable: true
+ViewScoreHardGateMinKnownFreeRatio: 1.0
+ViewScoreHardGateMaxTurnAngle: 1.40
+ViewScoreHardGateMaxYawDelta: 1.60
+ViewScoreHardGateMinClearance: 0.45
+ViewScoreTopCandidateNum: 2
+EdgeTurnPenaltyWeight: 1.10
+EdgeKnownFreePenaltyWeight: 0.45
+EdgeBackupPenaltyWeight: 14.0
+EdgeYawPenaltyWeight: 0.20
+CorridorCruiseEnable: true
+CorridorCruiseKnownFreeLength: 18.0
+CorridorCruiseMinAlignment: 0.70
+CorridorCruiseForwardWeight: 0.40
+CorridorCruiseLateralPenalty: 14.0
+CorridorCruiseMaxBacktrackDistance: 2.0
+CorridorCruiseMinProgress: 4.0
+CorridorCruiseMaxGoalDistance: 45.0
+#param for yaw opt
+yaw_max_vel: 5.0
+yaw_rho_vis: 10000.0
+yaw_time_fwd: 2.5

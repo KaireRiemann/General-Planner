@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+set -e
+
+_pkg_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+_release_dir="$(cd "${_pkg_dir}/../.." && pwd)"
+export LD_LIBRARY_PATH="${_release_dir}/lib:${LD_LIBRARY_PATH:-}"
+exec "${_pkg_dir}/bin/exploration_node.bin" "$@"

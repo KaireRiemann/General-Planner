@@ -928,6 +928,10 @@ void GcopterConfig::init(const ros::NodeHandle &nh_priv)
   nh_priv.param("CorridorVirtualCeilHeight", corridorVirtualCeilHeight, corridorVirtualCeilHeight);
   nh_priv.param("DynamicVelocityEnable", dynamicVelocityEnable, dynamicVelocityEnable);
   nh_priv.param("MinSegmentVel", minSegmentVel, minSegmentVel);
+  nh_priv.param("TrajectoryRetryMinVel", trajectoryRetryMinVel,
+                trajectoryRetryMinVel);
+  trajectoryRetryMinVel =
+      std::clamp(trajectoryRetryMinVel, 0.3, std::max(0.3, minSegmentVel));
   nh_priv.param("OpenSegmentVel", openSegmentVel, maxVelMag);
   nh_priv.param("DynamicVelocityMinClearance", dynamicVelocityMinClearance, dynamicVelocityMinClearance);
   nh_priv.param("DynamicVelocityOpenClearance", dynamicVelocityOpenClearance, dynamicVelocityOpenClearance);
@@ -1496,7 +1500,12 @@ bool FastPlannerManager::planExploreTraj(const std::vector<Eigen::Vector3f> &pat
     }
   }
   geometry_utils::Trajectory pos_traj;
-  const double min_opt_speed = std::max(0.2, gcopter_config_->minSegmentVel);
+  // Do not clamp retry attempts to MinSegmentVel.  That value is the nominal
+  // cruise floor; using it here made all four retries identical on sharp
+  // paths and caused an infinite acceleration_limit retry loop.
+  const double min_opt_speed =
+      std::clamp(gcopter_config_->trajectoryRetryMinVel, 0.3,
+                 std::max(0.3, gcopter_config_->minSegmentVel));
   const double max_opt_speed = std::max(min_opt_speed, gcopter_config_->maxVelMag);
   const double head_boundary_speed = head.col(1).norm();
   const double tail_boundary_speed = tail.col(1).norm();
@@ -1522,6 +1531,8 @@ bool FastPlannerManager::planExploreTraj(const std::vector<Eigen::Vector3f> &pat
   bool ok = false;
   double accepted_opt_speed = scheduled_speed;
   double accepted_velocity_bound = piece_velocity_profile.bounds.maxCoeff();
+  double accepted_max_speed = 0.0;
+  double accepted_max_acc = 0.0;
   int opt_attempt = 0;
   for (const double opt_speed : opt_speed_attempts)
   {
@@ -1557,8 +1568,32 @@ bool FastPlannerManager::planExploreTraj(const std::vector<Eigen::Vector3f> &pat
                                          pos_traj);
     if (ok && !pos_traj.empty())
     {
+      const double candidate_max_speed = pos_traj.getMaxVelRate();
+      const double candidate_max_acc = pos_traj.getMaxAccRate();
+      const double velocity_commit_limit =
+          1.03 * std::max(0.2, gcopter_config_->maxVelMag);
+      const double acceleration_commit_limit =
+          1.05 * std::max(0.2, gcopter_config_->maxAccMag);
+      if (!std::isfinite(candidate_max_speed) ||
+          !std::isfinite(candidate_max_acc) ||
+          candidate_max_speed > velocity_commit_limit + 1.0e-6 ||
+          candidate_max_acc > acceleration_commit_limit + 1.0e-6)
+      {
+        ROS_WARN_STREAM(
+            "[highspeed_exp adapter] optimized candidate violates commit "
+            "dynamics; retry slower: attempt="
+            << opt_attempt << " guide_speed=" << opt_speed
+            << " vel_bound=" << velocity_bound
+            << " max_v=" << candidate_max_speed
+            << " max_a=" << candidate_max_acc);
+        ok = false;
+        pos_traj.clear();
+        continue;
+      }
       accepted_opt_speed = opt_speed;
       accepted_velocity_bound = piece_velocity_bounds.maxCoeff();
+      accepted_max_speed = candidate_max_speed;
+      accepted_max_acc = candidate_max_acc;
       sfcs.swap(attempt_sfcs);
       break;
     }
@@ -2334,6 +2369,7 @@ bool FastPlannerManager::planExploreTraj(const std::vector<Eigen::Vector3f> &pat
     commit_store_->cmd_traj_info.setTrajectory(exp_traj_info);
   }
   commit_store_->last_exp_traj_info = exp_traj_info;
+  committed_stop_active_ = false;
 
   *committed_pos_traj_ = commit_store_->cmd_traj_info.posTraj();
   *committed_yaw_traj_ = commit_store_->cmd_traj_info.yawTraj();
@@ -2398,11 +2434,253 @@ bool FastPlannerManager::planExploreTraj(const std::vector<Eigen::Vector3f> &pat
 			                  << ", sched_v=" << scheduled_speed
                       << ", opt_v=" << accepted_opt_speed
                       << ", opt_bound=" << accepted_velocity_bound
+                      << ", suffix_max_v=" << accepted_max_speed
+                      << ", suffix_max_a=" << accepted_max_acc
                       << ", terminal_v=" << (terminal_velocity_used ? terminal_speed : 0.0)
                       << ", backup=" << (backup_available ? "yes" : "no")
                       << ", backup_start=" << local_data_.backup_start_t_
                       << ", backup_known_len=" << backup_known_len
 			                  << ", sched_reason=" << velocity_limit.reason);
+  return true;
+}
+
+bool FastPlannerManager::planControlledStopTrajectory()
+{
+  if (!gcopter_config_ || !commit_store_)
+  {
+    return false;
+  }
+  if (committed_stop_active_ && committedTrajectoryRemainingTime() > 0.05)
+  {
+    return true;
+  }
+
+  geometry_utils::Trajectory guide_pos;
+  geometry_utils::Trajectory guide_yaw;
+  double guide_start_wt = 0.0;
+  commit_store_->cmd_traj_info.lock();
+  const bool have_committed = !commit_store_->cmd_traj_info.empty();
+  if (have_committed)
+  {
+    guide_pos = commit_store_->cmd_traj_info.posTraj();
+    guide_yaw = commit_store_->cmd_traj_info.yawTraj();
+    guide_start_wt = commit_store_->cmd_traj_info.getStartWallTime();
+  }
+  commit_store_->cmd_traj_info.unlock();
+
+  const ros::Time commit_start_time = ros::Time::now();
+  general_utils::StatePVAJ head = general_utils::StatePVAJ::Zero();
+  head.col(0) = local_data_.curr_pos_;
+  if (local_data_.curr_vel_.allFinite())
+  {
+    head.col(1) = local_data_.curr_vel_;
+  }
+  double stop_yaw = local_data_.curr_yaw_;
+  geometry_utils::Trajectory pos_prefix;
+  geometry_utils::Trajectory yaw_prefix;
+  double prefix_duration = 0.0;
+
+  if (have_committed && !guide_pos.empty() && std::isfinite(guide_start_wt))
+  {
+    const double guide_duration = guide_pos.getTotalDuration();
+    const double now_tt = std::clamp(
+        commit_start_time.toSec() - guide_start_wt, 0.0, guide_duration);
+    const double remaining = guide_duration - now_tt;
+    if (remaining > 0.08)
+    {
+      const double switch_delay = std::min(
+          remaining - 0.02,
+          std::clamp(gcopter_config_->controlLatency, 0.03, 0.12));
+      const double switch_tt = now_tt + switch_delay;
+      general_utils::StatePVAJ committed_head = general_utils::StatePVAJ::Zero();
+      if (switch_delay > 1.0e-4 &&
+          guide_pos.getState(switch_tt, committed_head) &&
+          committed_head.allFinite() &&
+          guide_pos.getPartialTrajectoryByTime(now_tt, switch_tt, pos_prefix) &&
+          !pos_prefix.empty())
+      {
+        head = committed_head;
+        prefix_duration = pos_prefix.getTotalDuration();
+        const double yaw_duration = guide_yaw.getTotalDuration();
+        if (!guide_yaw.empty() && std::isfinite(yaw_duration) &&
+            now_tt < yaw_duration - 1.0e-4)
+        {
+          const double yaw_end_tt = std::min(switch_tt, yaw_duration);
+          if (yaw_end_tt > now_tt + 1.0e-4)
+          {
+            guide_yaw.getPartialTrajectoryByTime(now_tt, yaw_end_tt, yaw_prefix);
+            stop_yaw = guide_yaw.getPos(yaw_end_tt).x();
+          }
+        }
+        if (yaw_prefix.empty() ||
+            yaw_prefix.getTotalDuration() + 1.0e-4 < prefix_duration)
+        {
+          double initial_yaw = local_data_.curr_yaw_;
+          if (!guide_yaw.empty() && yaw_duration > 1.0e-4)
+          {
+            initial_yaw = guide_yaw.getPos(std::min(now_tt, yaw_duration)).x();
+          }
+          yaw_prefix = makeHoldYawTrajectory(initial_yaw, prefix_duration);
+          stop_yaw = initial_yaw;
+        }
+      }
+    }
+  }
+
+  if (!head.allFinite() || !std::isfinite(stop_yaw))
+  {
+    return false;
+  }
+
+  const double speed = head.col(1).norm();
+  const bool already_stopped =
+      speed <= 0.05 && head.col(2).norm() <= 0.10 &&
+      head.col(3).norm() <= 0.30;
+  const double brake_acc = std::max(1.0, gcopter_config_->brakeAccel);
+  const double base_duration = std::max(0.65, 2.0 * speed / brake_acc);
+  const double sample_dt =
+      std::max(0.02, gcopter_config_->commitSampleDt);
+  geometry_utils::Trajectory accepted_pos;
+  geometry_utils::Trajectory accepted_yaw;
+  std::string last_reject_reason = "no_candidate";
+
+  for (const double duration_scale : {1.0, 1.25, 1.60, 2.10, 2.80})
+  {
+    const double stop_duration =
+        already_stopped ? 0.50 : duration_scale * base_duration;
+    geometry_utils::Trajectory stop_suffix;
+    if (already_stopped)
+    {
+      Eigen::MatrixXd coeff = Eigen::MatrixXd::Zero(3, 8);
+      coeff.col(7) = head.col(0);
+      stop_suffix.emplace_back(stop_duration, coeff);
+    }
+    else
+    {
+      general_utils::StatePVAJ tail = general_utils::StatePVAJ::Zero();
+      // A zero-terminal-velocity seventh-order segment has approximately half
+      // the initial speed as its average speed.  This target is deliberately
+      // conservative compared with v^2/(2a), leaving room for zero terminal
+      // acceleration and jerk.
+      tail.col(0) = head.col(0) + 0.5 * stop_duration * head.col(1) +
+                    (stop_duration * stop_duration / 12.0) * head.col(2);
+      Eigen::Matrix<double, 3, Eigen::Dynamic> no_waypoints(3, 0);
+      general_utils::VecDf times(1);
+      times(0) = stop_duration;
+      stop_suffix =
+          geometry_utils::poly_interpo::minimumSnapInterpolation<3>(
+              head, tail, no_waypoints, times);
+    }
+    if (stop_suffix.empty())
+    {
+      last_reject_reason = "empty_stop_suffix";
+      continue;
+    }
+
+    geometry_utils::Trajectory candidate_pos =
+        pos_prefix.empty() ? stop_suffix : pos_prefix + stop_suffix;
+    geometry_utils::Trajectory yaw_suffix =
+        makeHoldYawTrajectory(stop_yaw, stop_suffix.getTotalDuration());
+    geometry_utils::Trajectory candidate_yaw =
+        yaw_prefix.empty() ? makeHoldYawTrajectory(
+                                 stop_yaw, candidate_pos.getTotalDuration())
+                           : yaw_prefix + yaw_suffix;
+    candidate_pos.start_WT = commit_start_time.toSec();
+    candidate_yaw.start_WT = commit_start_time.toSec();
+
+    if (!validateTrajectoryForCommit(
+            candidate_pos, candidate_yaw,
+            std::max(gcopter_config_->maxVelMag, speed + 0.30),
+            std::max(gcopter_config_->maxAccMag, brake_acc),
+            gcopter_config_->yaw_max_vel, sample_dt,
+            last_reject_reason))
+    {
+      continue;
+    }
+
+    bool known_free = true;
+    Eigen::Vector3d previous = candidate_pos.getPos(0.0);
+    for (double t = sample_dt;
+         t <= candidate_pos.getTotalDuration() + 1.0e-6; t += sample_dt)
+    {
+      const double tt = std::min(t, candidate_pos.getTotalDuration());
+      const Eigen::Vector3d point = candidate_pos.getPos(tt);
+      const RaycastSafetyInfo ray = raycastSafety(
+          previous, point, true,
+          std::max(0.05, gcopter_config_->commitKnownFreeSafeDistance),
+          std::max(0.05,
+                   sample_dt * std::max(1.0, candidate_pos.getVel(tt).norm())));
+      if (ray.blocked_by_occupied || ray.blocked_by_unknown)
+      {
+        known_free = false;
+        last_reject_reason = std::string("stop_not_known_free_") +
+                             safetyStateName(ray.first_blocked_state);
+        break;
+      }
+      previous = point;
+    }
+    const double terminal_t = candidate_pos.getTotalDuration();
+    if (!known_free || candidate_pos.getVel(terminal_t).norm() > 0.10 ||
+        candidate_pos.getAcc(terminal_t).norm() > 0.20)
+    {
+      if (known_free)
+      {
+        last_reject_reason = "nonzero_stop_terminal_state";
+      }
+      continue;
+    }
+    accepted_pos = candidate_pos;
+    accepted_yaw = candidate_yaw;
+    break;
+  }
+
+  if (accepted_pos.empty() || accepted_yaw.empty())
+  {
+    ROS_ERROR_STREAM_THROTTLE(
+        0.5, "[controlled stop] no valid braking polynomial: speed="
+                 << speed << " prefix=" << prefix_duration
+                 << " reason=" << last_reject_reason);
+    return false;
+  }
+
+  general_planner::ExpTraj stop_info;
+  stop_info.setGoalConnectedFlag(false);
+  stop_info.setWholeTrajKnownFreeFlag(true);
+  stop_info.setTrajectory(commit_start_time.toSec(), accepted_pos, accepted_yaw);
+  commit_store_->cmd_traj_info.setTrajectory(stop_info);
+  commit_store_->last_exp_traj_info = stop_info;
+  *committed_pos_traj_ = accepted_pos;
+  *committed_yaw_traj_ = accepted_yaw;
+  *latest_exp_pos_traj_ = accepted_pos;
+  *latest_exp_yaw_traj_ = accepted_yaw;
+
+  local_data_.start_time_ = commit_start_time;
+  local_data_.duration_ = accepted_pos.getTotalDuration();
+  local_data_.traj_id_ += 1;
+  local_data_.start_pos_ = accepted_pos.getPos(0.0);
+  local_data_.end_yaw_ = stop_yaw;
+  local_data_.backup_available_ = false;
+  local_data_.backup_start_t_ = std::numeric_limits<double>::infinity();
+  local_data_.minco_traj_.setGeometryTrajectory(accepted_pos);
+  local_data_.minco_yaw_traj_.setGeometryTrajectory(accepted_yaw);
+  local_data_.exp_traj_.setGeometryTrajectory(accepted_pos);
+  local_data_.exp_yaw_traj_.setGeometryTrajectory(accepted_yaw);
+  local_data_.backup_traj_.clear();
+  local_data_.backup_yaw_traj_.clear();
+  committed_stop_active_ = true;
+
+  ROS_WARN_STREAM("[controlled stop] committed braking trajectory: id="
+                  << local_data_.traj_id_
+                  << " speed=" << speed
+                  << " prefix=" << prefix_duration
+                  << " duration=" << accepted_pos.getTotalDuration()
+                  << " distance="
+                  << (accepted_pos.getPos(accepted_pos.getTotalDuration()) -
+                      accepted_pos.getPos(0.0)).norm()
+                  << " terminal_v="
+                  << accepted_pos.getVel(accepted_pos.getTotalDuration()).norm()
+                  << " terminal_a="
+                  << accepted_pos.getAcc(accepted_pos.getTotalDuration()).norm());
   return true;
 }
 
@@ -2674,6 +2952,12 @@ bool FastPlannerManager::hasCommittedBackup() const
 {
   return commit_store_ && !commit_store_->cmd_traj_info.empty() &&
          commit_store_->cmd_traj_info.backupTrajAvilibale();
+}
+
+bool FastPlannerManager::hasCommittedStopTrajectory() const
+{
+  return committed_stop_active_ && hasCommittedTrajectory() &&
+         committedTrajectoryRemainingTime() > 0.0;
 }
 
 double FastPlannerManager::timeToCommittedBackup() const
@@ -3175,6 +3459,7 @@ SegmentSafetyInfo FastPlannerManager::evaluatePathSegmentSafety(const std::vecto
       info.current_speed * latency +
       info.current_speed * info.current_speed / (2.0 * brake_acc) +
       std::max(0.0, gcopter_config_->safetyBrakeMargin);
+
   info.backup_feasible =
       info.known_free_length >=
       std::max(gcopter_config_->knownFreeShortLength, stop_distance);
@@ -3374,6 +3659,7 @@ EdgeSafetyCost FastPlannerManager::estimateHighSpeedEdgeCost(const std::vector<E
   cost.known_free_length = safety.known_free_length;
   cost.min_clearance = safety.min_clearance;
   cost.turn_angle = safety.turn_angle;
+  cost.initial_heading_delta = safety.initial_heading_delta;
   cost.backup_feasible = safety.backup_feasible;
 
   const double acc = std::max(1.0, gcopter_config_->maxAccMag);

@@ -26,7 +26,12 @@ Environment overrides:
 
 What is synced:
   - devel/lib/general_planner/general_planner_runtime_node
+  - devel/lib/general_planner/exploration_node
+  - devel/lib/general_planner/highspeed_traj_server
+  - devel/lib/liblkh_tsp_solver.so
+  - General Planner garage exploration YAML/RViz configs
   - src/Utils/quadrotor_msgs/msg
+  - traj_utils message interfaces used by exploration
   - devel/include/quadrotor_msgs
   - devel/lib/python3/dist-packages/quadrotor_msgs
   - general_planner_release.tar.gz unless GP_SKIP_ARCHIVE=1
@@ -118,8 +123,22 @@ fi
 echo "[build_release] Build command: ${catkin_cmd[*]}"
 "${catkin_cmd[@]}"
 
-BINARY_SRC="${WORKSPACE_ROOT}/devel/lib/general_planner/general_planner_runtime_node"
-BINARY_DST="${RELEASE_ROOT}/src/general_planner_release/bin/general_planner_runtime_node.bin"
+RUNTIME_BINARY_SRC="${WORKSPACE_ROOT}/devel/lib/general_planner/general_planner_runtime_node"
+RUNTIME_BINARY_DST="${RELEASE_ROOT}/src/general_planner_release/bin/general_planner_runtime_node.bin"
+EXPLORATION_BINARY_SRC="${WORKSPACE_ROOT}/devel/lib/general_planner/exploration_node"
+EXPLORATION_BINARY_DST="${RELEASE_ROOT}/src/general_planner_release/bin/exploration_node.bin"
+TRAJ_SERVER_BINARY_SRC="${WORKSPACE_ROOT}/devel/lib/general_planner/highspeed_traj_server"
+TRAJ_SERVER_BINARY_DST="${RELEASE_ROOT}/src/general_planner_release/bin/highspeed_traj_server.bin"
+LKH_LIBRARY_SRC="${WORKSPACE_ROOT}/devel/lib/liblkh_tsp_solver.so"
+LKH_LIBRARY_DST="${RELEASE_ROOT}/lib/liblkh_tsp_solver.so"
+
+PLANNER_CONFIG_DIR="${REPO_ROOT}/src/Planner/general_planner/config"
+RELEASE_CONFIG_DIR="${RELEASE_ROOT}/src/general_planner_release/config"
+EXPLORATION_CONFIG_SRC="${PLANNER_CONFIG_DIR}/exploration.yaml"
+EXPLORATION_SIM_CONFIG_SRC="${PLANNER_CONFIG_DIR}/exploration_sim.yaml"
+EXPLORATION_ROG_MAP_CONFIG_SRC="${PLANNER_CONFIG_DIR}/exploration_rog_map.yaml"
+EXPLORATION_RVIZ_CONFIG_SRC="${PLANNER_CONFIG_DIR}/exploration/highspeed/traj.rviz"
+
 MSG_SRC="${REPO_ROOT}/src/Utils/quadrotor_msgs/msg"
 MSG_DST="${RELEASE_ROOT}/src/quadrotor_msgs/msg"
 CPP_MSG_SRC="${WORKSPACE_ROOT}/devel/include/quadrotor_msgs"
@@ -127,20 +146,64 @@ CPP_MSG_DST="${RELEASE_ROOT}/include/quadrotor_msgs"
 PY_MSG_SRC="${WORKSPACE_ROOT}/devel/lib/python3/dist-packages/quadrotor_msgs"
 PY_MSG_DST="${RELEASE_ROOT}/lib/python3/dist-packages/quadrotor_msgs"
 
-for required in "${BINARY_SRC}" "${MSG_SRC}" "${CPP_MSG_SRC}" "${PY_MSG_SRC}"; do
+TRAJ_MSG_SRC="${REPO_ROOT}/src/Controller/mpc/ommpc_controller/traj_utils/msg"
+TRAJ_MSG_DST="${RELEASE_ROOT}/src/traj_utils/msg"
+TRAJ_CPP_MSG_SRC="${WORKSPACE_ROOT}/devel/include/traj_utils"
+TRAJ_CPP_MSG_DST="${RELEASE_ROOT}/include/traj_utils"
+TRAJ_PY_MSG_SRC="${WORKSPACE_ROOT}/devel/lib/python3/dist-packages/traj_utils"
+TRAJ_PY_MSG_DST="${RELEASE_ROOT}/lib/python3/dist-packages/traj_utils"
+
+for required in \
+  "${RUNTIME_BINARY_SRC}" \
+  "${EXPLORATION_BINARY_SRC}" \
+  "${TRAJ_SERVER_BINARY_SRC}" \
+  "${LKH_LIBRARY_SRC}" \
+  "${EXPLORATION_CONFIG_SRC}" \
+  "${EXPLORATION_SIM_CONFIG_SRC}" \
+  "${EXPLORATION_ROG_MAP_CONFIG_SRC}" \
+  "${EXPLORATION_RVIZ_CONFIG_SRC}" \
+  "${MSG_SRC}" \
+  "${CPP_MSG_SRC}" \
+  "${PY_MSG_SRC}" \
+  "${TRAJ_MSG_SRC}" \
+  "${TRAJ_CPP_MSG_SRC}" \
+  "${TRAJ_PY_MSG_SRC}"; do
   if [[ ! -e "${required}" ]]; then
     echo "[build_release] Required build artifact missing: ${required}" >&2
     exit 1
   fi
 done
 
-echo "[build_release] Sync runtime binary"
-mkdir -p "$(dirname "${BINARY_DST}")"
-cp "${BINARY_SRC}" "${BINARY_DST}"
-chmod 755 "${BINARY_DST}"
+sync_binary() {
+  local src="$1"
+  local dst="$2"
+  mkdir -p "$(dirname "${dst}")"
+  cp "${src}" "${dst}"
+  chmod 755 "${dst}"
+  if [[ "${GP_NO_STRIP:-0}" != "1" ]] && command -v strip >/dev/null 2>&1; then
+    strip "${dst}"
+  fi
+}
+
+echo "[build_release] Sync planner runtime binaries"
+sync_binary "${RUNTIME_BINARY_SRC}" "${RUNTIME_BINARY_DST}"
+sync_binary "${EXPLORATION_BINARY_SRC}" "${EXPLORATION_BINARY_DST}"
+sync_binary "${TRAJ_SERVER_BINARY_SRC}" "${TRAJ_SERVER_BINARY_DST}"
+
+echo "[build_release] Sync exploration runtime library"
+mkdir -p "$(dirname "${LKH_LIBRARY_DST}")"
+cp "${LKH_LIBRARY_SRC}" "${LKH_LIBRARY_DST}"
+chmod 755 "${LKH_LIBRARY_DST}"
 if [[ "${GP_NO_STRIP:-0}" != "1" ]] && command -v strip >/dev/null 2>&1; then
-  strip "${BINARY_DST}"
+  strip "${LKH_LIBRARY_DST}"
 fi
+
+echo "[build_release] Sync garage exploration configs"
+mkdir -p "${RELEASE_CONFIG_DIR}"
+cp "${EXPLORATION_CONFIG_SRC}" "${RELEASE_CONFIG_DIR}/exploration.yaml"
+cp "${EXPLORATION_SIM_CONFIG_SRC}" "${RELEASE_CONFIG_DIR}/exploration_sim.yaml"
+cp "${EXPLORATION_ROG_MAP_CONFIG_SRC}" "${RELEASE_CONFIG_DIR}/exploration_rog_map.yaml"
+cp "${EXPLORATION_RVIZ_CONFIG_SRC}" "${RELEASE_CONFIG_DIR}/exploration.rviz"
 
 echo "[build_release] Sync quadrotor_msgs source definitions"
 rm -rf "${MSG_DST}"
@@ -157,7 +220,23 @@ rm -rf "${PY_MSG_DST}"
 mkdir -p "$(dirname "${PY_MSG_DST}")"
 cp -a "${PY_MSG_SRC}" "${PY_MSG_DST}"
 
-chmod +x "${RELEASE_ROOT}/src/general_planner_release/general_planner_runtime_node"
+echo "[build_release] Sync traj_utils message interfaces"
+rm -rf "${TRAJ_MSG_DST}"
+mkdir -p "${TRAJ_MSG_DST}"
+cp -a "${TRAJ_MSG_SRC}/." "${TRAJ_MSG_DST}/"
+
+rm -rf "${TRAJ_CPP_MSG_DST}"
+mkdir -p "$(dirname "${TRAJ_CPP_MSG_DST}")"
+cp -a "${TRAJ_CPP_MSG_SRC}" "${TRAJ_CPP_MSG_DST}"
+
+rm -rf "${TRAJ_PY_MSG_DST}"
+mkdir -p "$(dirname "${TRAJ_PY_MSG_DST}")"
+cp -a "${TRAJ_PY_MSG_SRC}" "${TRAJ_PY_MSG_DST}"
+
+chmod +x \
+  "${RELEASE_ROOT}/src/general_planner_release/general_planner_runtime_node" \
+  "${RELEASE_ROOT}/src/general_planner_release/exploration_node" \
+  "${RELEASE_ROOT}/src/general_planner_release/highspeed_traj_server"
 
 run_smoke_tests() {
   echo "[build_release] Run release smoke tests"
@@ -171,15 +250,31 @@ run_smoke_tests() {
 
   rospack find general_planner_release >/dev/null
   rospack find quadrotor_msgs >/dev/null
+  rospack find traj_utils >/dev/null
 
   python3 - <<'PY'
 import quadrotor_msgs.msg
+import traj_utils.msg
 print("quadrotor_msgs python import ok")
+print("traj_utils python import ok")
 PY
 
   roslaunch --files general_planner_release tracking.launch >/dev/null
   for backend in corridor esdf plain; do
     roslaunch --files general_planner_release state2state.launch planner_backend:="${backend}" >/dev/null
+  done
+  roslaunch --files general_planner_release exploration.launch >/dev/null
+  roslaunch --files general_planner_release exploration_sim.launch rviz:=false >/dev/null
+
+  for binary in \
+    "${RUNTIME_BINARY_DST}" \
+    "${EXPLORATION_BINARY_DST}" \
+    "${TRAJ_SERVER_BINARY_DST}"; do
+    if ldd "${binary}" | grep -q 'not found'; then
+      echo "[build_release] Unresolved runtime dependency in ${binary}:" >&2
+      ldd "${binary}" | grep 'not found' >&2 || true
+      exit 1
+    fi
   done
 
   local roscore_log="/tmp/general_planner_release_build_roscore.log"
@@ -211,6 +306,18 @@ PY
       exit 1
     fi
   done
+
+  local exploration_log="/tmp/general_planner_release_exploration.log"
+  rm -f "${exploration_log}"
+  timeout --signal=INT --kill-after=2s 6s \
+    roslaunch general_planner_release exploration.launch \
+      auto_start:=false >"${exploration_log}" 2>&1 || true
+  if grep -Eqi 'process has died|error while loading shared libraries|No such file|cannot open shared object' \
+      "${exploration_log}"; then
+    echo "[build_release] Exploration release launch failed" >&2
+    cat "${exploration_log}" >&2
+    exit 1
+  fi
 
   python3 - <<'PY'
 import pathlib

@@ -37,17 +37,42 @@ roslaunch task_planner exploration.launch rviz:=true
 
 The default compatibility settings are:
 
+- `auto_start:=false`: after odometry arrives the FSM remains in
+  `WAIT_TRIGGER`. Click RViz `2D Nav Goal` once to publish a
+  `geometry_msgs/PoseStamped` on `/move_base_simple/goal` and start
+  exploration. The clicked position is only a trigger and is not used as the
+  exploration target. Use `trigger_topic:=...` to select another PoseStamped
+  topic, or `auto_start:=true` to restore automatic startup.
 - `original_frontend_compatibility:=true`: instantaneous high-speed gating and
   original frontier/LKH semantics. Controlled reorientation is deliberately
   kept enabled: a target behind a moving vehicle is held while the vehicle
   brakes, then planned from rest instead of clearing the goal and selecting a
   different target on every retry.
+- `global_planning/epic_simple_cost: false` and
+  `global_planning/composite_candidate_cost_enable: true`: choose the next
+  frontier with `travel + turn/brake + future return - information gain - wait
+  age - pass debt`. Rewards are used only for the next-goal decision (putting a
+  fixed reward on every node of an all-node TSP would be a constant). The
+  directed TSP then orders the remaining clusters with the selected cluster
+  forced first.
+- Global routing contains one representative viewpoint per frontier cluster.
+  Alternate viewpoints remain attached to the cluster for local use; they are
+  no longer inserted as separate mandatory TSP visits.
+- `frontier_pass_*` parameters implement an event-based side-room debt. A
+  cluster earns debt only after the vehicle enters its pass radius and later
+  leaves it without selecting that cluster, preventing callback frequency from
+  inflating the reward.
 - `use_lkh:=true`: LKH solves the directed global tour. A deterministic exact
   or directed-insertion fallback is used if LKH cannot run.
 - `cloud_subscriber_queue:=1`, `odom_subscriber_queue:=50`, `sync_queue:=20`:
   old point clouds are not allowed to build a long callback backlog.
+- `cloud_odom_mode:=approximate_sync` preserves timestamp-based pairing.
+  `latest_odom` instead processes each cloud with the most recently received
+  odometry and is intended for external simulators whose header timestamps are
+  not comparable. `latest_odom_timeout` uses local wall-clock receive time.
 - `max_cloud_age:=0.5`: synchronized clouds older than 0.5 seconds are dropped.
-  Set it to `0` to disable age filtering.
+  Set it to `0` to disable age filtering. The header-age gate is not applied in
+  `latest_odom` mode.
 
 Each process writes LKH files to a private directory below `tsp_dir` (default
 `/tmp`), so simultaneous robots do not overwrite each other's tours.
@@ -77,6 +102,11 @@ Each process writes LKH files to a private directory below `tsp_dir` (default
 - Failed plans use a bounded retry delay and keep any still-safe committed
   trajectory. Goal refresh is allowed only after the vehicle has stopped and
   no safe command remains.
+- A candidate that passes MINCO but exceeds the exact committed speed or
+  acceleration limit is rejected and retried with progressively lower guide
+  speeds down to `TrajectoryRetryMinVel`. `MinSegmentVel` remains the normal
+  cruise floor, so safety retries no longer get accidentally clamped back to
+  the same speed on every attempt.
 - Live FSM odometry is subscribed independently from cloud/odometry pairing.
   A delayed or dropped synchronized cloud can no longer freeze the speed used
   by controlled reorientation. Stop requests are retried at a bounded interval
@@ -84,11 +114,16 @@ Each process writes LKH files to a private directory below `tsp_dir` (default
 - The trajectory server samples the exact mathematical endpoint and enters an
   explicit zero-derivative HOLD; it no longer holds the previous 100 Hz sample
   and hard-zeros from the wrong position.
+- Reorientation and ordinary stop requests commit a known-free seventh-order
+  braking polynomial with zero terminal velocity, acceleration and jerk. The
+  old `/planning/replan` duration truncation is retained only as an emergency
+  fallback when no valid braking segment can be constructed.
 
-The main garage tuning parameters are `TurnLateralAcceleration`,
+The main garage tuning parameters are `candidate_*`, `frontier_pass_*`,
+`TurnLateralAcceleration`,
 `TurnSoftAngle`, `TurnHardAngle`, `TurnSoftVelocity`, `TurnHardVelocity`,
-`ReorientationHeadingAngle`, `ReplanCommitDelay`, `BackupMinStartTime`, and
-`fsm/replan_time_before_traj_end`.
+`TrajectoryRetryMinVel`, `ReorientationHeadingAngle`, `ReplanCommitDelay`,
+`BackupMinStartTime`, and `fsm/replan_time_before_traj_end`.
 
 ## Simulator input contract
 
@@ -126,6 +161,20 @@ roslaunch task_planner exploration.launch \
   odom_topic:=/lidar_slam/odom \
   cloud_topic:=/cloud_registered
 ```
+
+If an external simulator cannot publish cloud and odometry with comparable
+header timestamps, select receive-order pairing explicitly:
+
+```bash
+roslaunch task_planner exploration.launch \
+  marsim:=false \
+  cloud_odom_mode:=latest_odom \
+  latest_odom_timeout:=0.5
+```
+
+This mode changes only internal pairing; input and output topic names do not
+change. Point clouds must still be current world-frame scans. Also keep
+`/use_sim_time` false unless a continuously advancing `/clock` is published.
 
 Before flight, verify:
 

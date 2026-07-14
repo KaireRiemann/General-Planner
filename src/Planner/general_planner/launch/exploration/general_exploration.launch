@@ -5,8 +5,9 @@
        default="$(eval find('general_planner') + ('/config/exploration.yaml' if arg('scene') == 'garage' and arg('config_file') == 'garage.yaml' else '/config/exploration/highspeed/' + arg('config_file')))" />
   <arg name="odom_topic" default="/lidar_slam/odom" />
   <arg name="cloud_topic" default="/cloud_registered" />
-  <arg name="auto_start" default="true" />
+  <arg name="auto_start" default="false" />
   <arg name="auto_start_delay" default="2.0" />
+  <arg name="trigger_topic" default="/move_base_simple/goal" />
   <arg name="rviz" default="true" />
   <arg name="traj_server" default="true" />
   <arg name="view_graph" default="false" />
@@ -26,6 +27,8 @@
   <arg name="cloud_subscriber_queue" default="1" />
   <arg name="odom_subscriber_queue" default="50" />
   <arg name="sync_queue" default="20" />
+  <arg name="cloud_odom_mode" default="approximate_sync" />
+  <arg name="latest_odom_timeout" default="0.5" />
   <arg name="max_cloud_age" default="0.5" />
   <arg name="heartbeat_timeout" default="1.5" />
   <arg name="rog_map_enable" default="true" />
@@ -43,6 +46,7 @@
     <arg name="bubble_topo_cube_discrete_size" value="$(arg bubble_topo_cube_discrete_size)" />
     <arg name="auto_start" value="$(arg auto_start)" />
     <arg name="auto_start_delay" value="$(arg auto_start_delay)" />
+    <arg name="trigger_topic" value="$(arg trigger_topic)" />
     <arg name="global_path_update_min_interval" value="$(arg global_path_update_min_interval)" />
     <arg name="original_frontend_compatibility" value="$(arg original_frontend_compatibility)" />
     <arg name="use_lkh" value="$(arg use_lkh)" />
@@ -50,6 +54,8 @@
     <arg name="cloud_subscriber_queue" value="$(arg cloud_subscriber_queue)" />
     <arg name="odom_subscriber_queue" value="$(arg odom_subscriber_queue)" />
     <arg name="sync_queue" value="$(arg sync_queue)" />
+    <arg name="cloud_odom_mode" value="$(arg cloud_odom_mode)" />
+    <arg name="latest_odom_timeout" value="$(arg latest_odom_timeout)" />
     <arg name="max_cloud_age" value="$(arg max_cloud_age)" />
     <arg name="rog_map_enable" value="$(arg rog_map_enable)" />
     <arg name="view_graph" value="$(arg view_graph)" />

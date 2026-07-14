@@ -534,22 +534,60 @@ int FastExplorationFSM::callExplorationPlanner() {
 }
 
 void FastExplorationFSM::triggerCallback(const nav_msgs::PathConstPtr &msg) {
-  if (msg->poses[0].pose.position.z < -0.1)
+  if (!msg || msg->poses.empty()) {
+    ROS_WARN("[exploration trigger] ignore empty legacy waypoint path");
+    return;
+  }
+  if (msg->poses.front().pose.position.z < -0.1)
     return;
 
-  if (state_ != WAIT_TRIGGER)
+  acceptManualTrigger("legacy waypoint path");
+}
+
+void FastExplorationFSM::navGoalTriggerCallback(
+    const geometry_msgs::PoseStampedConstPtr &msg) {
+  if (!msg) {
     return;
+  }
+  ROS_INFO_STREAM("[exploration trigger] received 2D Nav Goal at ["
+                  << msg->pose.position.x << ", " << msg->pose.position.y
+                  << ", " << msg->pose.position.z
+                  << "]; position is used only as a start trigger");
+  acceptManualTrigger("2D Nav Goal");
+}
+
+void FastExplorationFSM::acceptManualTrigger(const string &source) {
+  if (state_ != INIT && state_ != WAIT_TRIGGER) {
+    ROS_WARN_STREAM("[exploration trigger] ignore " << source
+                    << " while state=" << fd_->state_str_[state_]);
+    return;
+  }
   fd_->trigger_ = true;
-  cout << "Triggered!" << endl;
+  if (state_ == INIT) {
+    ROS_INFO_STREAM("[exploration trigger] queued " << source
+                    << "; waiting for first odometry sample");
+    return;
+  }
+
+  ROS_INFO_STREAM("[exploration trigger] accepted " << source);
   total_time_ = ros::Time::now().toSec();
-  resetFinishGate("trigger");
-  transitState(PLAN_TRAJ, "triggerCallback");
+  resetFinishGate(source);
+  transitState(PLAN_TRAJ, source);
 }
 
 void FastExplorationFSM::odometryCallback(
     const nav_msgs::OdometryConstPtr &msg) {
   if (!msg) {
     return;
+  }
+
+  // Keep the complete message for latest_odom mode.  Wall time deliberately
+  // measures local transport freshness and is independent of /clock or of the
+  // timestamp convention used by an external simulator.
+  {
+    std::lock_guard<std::mutex> lock(latest_odom_mutex_);
+    latest_odom_msg_ = msg;
+    latest_odom_receive_wall_time_ = ros::WallTime::now();
   }
 
   fd_->odom_pos_ = Eigen::Vector3f(msg->pose.pose.position.x,
@@ -579,9 +617,58 @@ void FastExplorationFSM::odometryCallback(
   }
 }
 
+void FastExplorationFSM::latestCloudCallback(
+    const sensor_msgs::PointCloud2ConstPtr &msg) {
+  if (!msg) {
+    return;
+  }
+
+  nav_msgs::OdometryConstPtr odom;
+  ros::WallTime odom_receive_time;
+  {
+    std::lock_guard<std::mutex> lock(latest_odom_mutex_);
+    odom = latest_odom_msg_;
+    odom_receive_time = latest_odom_receive_wall_time_;
+  }
+
+  if (!odom || odom_receive_time.isZero()) {
+    ROS_WARN_THROTTLE(
+        1.0, "[cloud input] latest_odom mode: no odometry received yet");
+    return;
+  }
+
+  const double odom_receive_age =
+      (ros::WallTime::now() - odom_receive_time).toSec();
+  if (fp_->latest_odom_timeout_ > 0.0 &&
+      odom_receive_age > fp_->latest_odom_timeout_) {
+    ROS_WARN_STREAM_THROTTLE(
+        1.0, "[cloud input] latest_odom mode: odometry receive timeout age="
+                 << odom_receive_age << "s max="
+                 << fp_->latest_odom_timeout_ << "s");
+    return;
+  }
+
+  if (!msg->header.stamp.isZero() && !odom->header.stamp.isZero()) {
+    const double stamp_delta =
+        std::abs((msg->header.stamp - odom->header.stamp).toSec());
+    if (stamp_delta > 0.1) {
+      ROS_WARN_STREAM_THROTTLE(
+          1.0, "[cloud input] latest_odom mode tolerating header stamp delta="
+                   << stamp_delta << "s");
+    }
+  }
+
+  CloudOdomCallback(msg, odom);
+}
+
 void FastExplorationFSM::CloudOdomCallback(
     const sensor_msgs::PointCloud2ConstPtr &msg,
     const nav_msgs::Odometry::ConstPtr &odom_) {
+  if (!msg || !odom_) {
+    ROS_WARN_THROTTLE(1.0, "[cloud input] null cloud or odometry message");
+    return;
+  }
+
   const ros::Time now = ros::Time::now();
   const bool valid_age = !now.isZero() && !msg->header.stamp.isZero();
   const double cloud_age =
@@ -590,7 +677,9 @@ void FastExplorationFSM::CloudOdomCallback(
       static_cast<std::uint64_t>(msg->width) *
       static_cast<std::uint64_t>(msg->height);
   static std::uint64_t dropped_stale_clouds = 0;
-  if (fp_->max_cloud_age_ > 0.0 && valid_age &&
+  const bool enforce_header_age =
+      fp_->cloud_odom_mode_ == "approximate_sync";
+  if (enforce_header_age && fp_->max_cloud_age_ > 0.0 && valid_age &&
       cloud_age > fp_->max_cloud_age_) {
     ++dropped_stale_clouds;
     ROS_WARN_STREAM_THROTTLE(
@@ -601,7 +690,8 @@ void FastExplorationFSM::CloudOdomCallback(
     return;
   }
   ROS_INFO_STREAM_THROTTLE(
-      1.0, "[cloud input] points=" << point_count
+      1.0, "[cloud input] mode=" << fp_->cloud_odom_mode_
+                                   << " points=" << point_count
                                    << " age="
                                    << (valid_age ? cloud_age : -1.0)
                                    << "s stamp_valid=" << valid_age);
@@ -621,9 +711,9 @@ void FastExplorationFSM::CloudOdomCallback(
 
   if (planner_manager_->lidar_map_interface_->ld_->lidar_cloud_.points.empty())
     return;
-  // Do not overwrite current FSM state with the older odometry selected by
-  // ApproximateTime. odometryCallback owns the live vehicle state; this
-  // callback owns only the synchronized map/frontier update.
+  // Do not overwrite current FSM state with the odometry selected for this map
+  // update. odometryCallback owns the live vehicle state; this callback owns
+  // only the map/frontier update.
   vector<ClusterInfo::Ptr> new_clusters;
   vector<int> cluster_removed;
   expl_manager_->frontier_manager_ptr_->updateFrontierClusters(new_clusters, cluster_removed);
@@ -654,6 +744,35 @@ void FastExplorationFSM::transitState(EXPL_STATE new_state, string pos_call, boo
 }
 
 void FastExplorationFSM::stopTraj() {
+  // A replan notification only shortens the polynomial in traj_server.  Its
+  // mathematical endpoint can still carry several m/s of velocity, after which
+  // traj_server switches directly to position HOLD.  Commit and publish an
+  // actual dynamically feasible braking polynomial first.
+  if (planner_manager_->planControlledStopTrajectory()) {
+    traj_utils::PolyTraj stop_pos_msg;
+    traj_utils::PolyTraj stop_yaw_msg;
+    auto *info = &planner_manager_->local_data_;
+    planner_manager_->polyTraj2ROSMsg(stop_pos_msg, info->start_time_);
+    planner_manager_->polyYawTraj2ROSMsg(stop_yaw_msg, info->start_time_);
+    if (!stop_pos_msg.duration.empty() && !stop_yaw_msg.duration.empty()) {
+      fd_->newest_traj_ = stop_pos_msg;
+      fd_->newest_yaw_traj_ = stop_yaw_msg;
+      poly_yaw_traj_pub_.publish(fd_->newest_yaw_traj_);
+      poly_traj_pub_.publish(fd_->newest_traj_);
+      fd_->static_state_ = false;
+      ROS_WARN_STREAM_THROTTLE(
+          0.5, "[controlled stop] published braking trajectory id="
+                   << info->traj_id_ << " duration=" << info->duration_);
+      return;
+    }
+  }
+
+  // Retain the legacy emergency path only as a last resort when no collision-
+  // free braking trajectory can be constructed.  REORIENT in known-free space
+  // should never take this branch.
+  ROS_ERROR_THROTTLE(
+      1.0, "[controlled stop] braking trajectory generation failed; use "
+           "legacy emergency truncation");
   replan_pub_.publish(std_msgs::Empty());
   ros::Time time_now = ros::Time::now();
   ros::Time start_time = planner_manager_->local_data_.start_time_;

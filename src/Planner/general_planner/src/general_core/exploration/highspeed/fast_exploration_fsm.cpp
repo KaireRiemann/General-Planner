@@ -27,9 +27,11 @@ FastExplorationFSM::~FastExplorationFSM() {
   global_path_update_timer_.stop();
 
   trigger_sub_.shutdown();
+  nav_goal_trigger_sub_.shutdown();
   map_update_sub_.shutdown();
   battary_sub_.shutdown();
   raw_odom_sub_.shutdown();
+  latest_cloud_sub_.shutdown();
 
   if (cloud_sub_)
     cloud_sub_->unsubscribe();
@@ -54,6 +56,15 @@ void FastExplorationFSM::FSMCallback(const ros::TimerEvent &e) {
   }
 
   case WAIT_TRIGGER: {
+    // A 2D Nav Goal may arrive before the first odometry sample. In that case
+    // acceptManualTrigger() latches fd_->trigger_ while the FSM is still INIT,
+    // and exploration starts as soon as INIT advances to WAIT_TRIGGER.
+    if (fd_->trigger_) {
+      total_time_ = ros::Time::now().toSec();
+      resetFinishGate("queued manual trigger");
+      transitState(PLAN_TRAJ, "queued manual trigger");
+      break;
+    }
     if (fp_->auto_trigger_enable_ && fd_->have_odom_ &&
         !fd_->auto_triggered_) {
       if (fd_->first_odom_time_.isZero()) {
@@ -250,7 +261,9 @@ void FastExplorationFSM::FSMCallback(const ros::TimerEvent &e) {
     double collision_time = 0.0;
     const bool safe = planner_manager_->checkTrajCollision(collision_time);
     const bool backup_braking =
-        safe && planner_manager_->hasCommittedBackup() &&
+        safe &&
+        (planner_manager_->hasCommittedBackup() ||
+         planner_manager_->hasCommittedStopTrajectory()) &&
         planner_manager_->committedTrajectoryRemainingTime() > 0.05;
 
     // A stale non-zero velocity used to trap the FSM here forever. Conversely,
@@ -375,15 +388,30 @@ void FastExplorationFSM::init(ros::NodeHandle &nh,
            fp_->finish_recheck_after_goal_reached_);
   nh.param("fsm/auto_trigger", fp_->auto_trigger_enable_, false);
   nh.param("fsm/auto_trigger_delay", fp_->auto_trigger_delay_, 2.0);
+  nh.param<string>("fsm/trigger_topic", fp_->trigger_topic_,
+                   "/move_base_simple/goal");
+  nh.param<string>("fsm/legacy_trigger_topic", fp_->legacy_trigger_topic_,
+                   "/waypoint_generator/waypoints");
   nh.param("fsm/global_path_update_min_interval",
            fp_->global_path_update_min_interval_, 0.2);
   nh.param("fsm/cloud_subscriber_queue", fp_->cloud_subscriber_queue_, 1);
   nh.param("fsm/odom_subscriber_queue", fp_->odom_subscriber_queue_, 50);
   nh.param("fsm/sync_queue", fp_->sync_queue_, 20);
+  nh.param<string>("fsm/cloud_odom_mode", fp_->cloud_odom_mode_,
+                   "approximate_sync");
+  nh.param("fsm/latest_odom_timeout", fp_->latest_odom_timeout_, 0.5);
   nh.param("fsm/max_cloud_age", fp_->max_cloud_age_, 0.5);
   fp_->cloud_subscriber_queue_ = std::max(1, fp_->cloud_subscriber_queue_);
   fp_->odom_subscriber_queue_ = std::max(1, fp_->odom_subscriber_queue_);
   fp_->sync_queue_ = std::max(1, fp_->sync_queue_);
+  fp_->latest_odom_timeout_ = std::max(0.0, fp_->latest_odom_timeout_);
+  if (fp_->cloud_odom_mode_ != "approximate_sync" &&
+      fp_->cloud_odom_mode_ != "latest_odom") {
+    ROS_WARN_STREAM("[cloud input] unsupported cloud_odom_mode='"
+                    << fp_->cloud_odom_mode_
+                    << "'; fall back to approximate_sync");
+    fp_->cloud_odom_mode_ = "approximate_sync";
+  }
   nh.param("fsm/reorient_exit_speed", fp_->reorient_exit_speed_, 0.45);
   nh.param("fsm/reorient_timeout", fp_->reorient_timeout_, 6.0);
   nh.param("fsm/reorient_stop_retry_interval",
@@ -428,6 +456,8 @@ void FastExplorationFSM::init(ros::NodeHandle &nh,
   fd_->use_bubble_a_star_ = false;
   last_plan_traj_global_update_time_ = ros::Time(0);
   last_global_callback_wall_time_ = ros::WallTime();
+  latest_odom_msg_.reset();
+  latest_odom_receive_wall_time_ = ros::WallTime();
   battary_sub_ =
       nh.subscribe("/mavros/battery", 10, &FastExplorationFSM::battaryCallback,
                    this, ros::TransportHints().tcpNoDelay());
@@ -443,8 +473,18 @@ void FastExplorationFSM::init(ros::NodeHandle &nh,
   global_path_update_timer_ = nh.createTimer(
       ros::Duration(std::max(0.02, fp_->global_path_update_min_interval_)),
       &FastExplorationFSM::globalPathUpdateCallback, this);
-  trigger_sub_ = nh.subscribe("/waypoint_generator/waypoints", 1,
-                              &FastExplorationFSM::triggerCallback, this);
+  if (!fp_->legacy_trigger_topic_.empty()) {
+    trigger_sub_ = nh.subscribe(fp_->legacy_trigger_topic_, 1,
+                                &FastExplorationFSM::triggerCallback, this);
+  }
+  if (!fp_->trigger_topic_.empty()) {
+    nav_goal_trigger_sub_ =
+        nh.subscribe(fp_->trigger_topic_, 1,
+                     &FastExplorationFSM::navGoalTriggerCallback, this);
+  }
+  ROS_INFO_STREAM("[exploration trigger] auto=" << fp_->auto_trigger_enable_
+                  << " nav_goal_topic=" << fp_->trigger_topic_
+                  << " legacy_path_topic=" << fp_->legacy_trigger_topic_);
   replan_pub_ = nh.advertise<std_msgs::Empty>("/planning/replan", 10);
 
   heartbeat_pub_ = nh.advertise<std_msgs::Empty>("/planning/heartbeat", 10);
@@ -470,20 +510,36 @@ void FastExplorationFSM::init(ros::NodeHandle &nh,
       odom_topic, fp_->odom_subscriber_queue_,
       &FastExplorationFSM::odometryCallback, this,
       ros::TransportHints().tcpNoDelay());
-  cloud_sub_.reset(new message_filters::Subscriber<sensor_msgs::PointCloud2>(
-      nh, cloud_topic, fp_->cloud_subscriber_queue_));
-  odom_sub_.reset(new message_filters::Subscriber<nav_msgs::Odometry>(
-      nh, odom_topic, fp_->odom_subscriber_queue_));
-  sync_cloud_odom_.reset(new message_filters::Synchronizer<SyncPolicyCloudOdom>(
-      SyncPolicyCloudOdom(fp_->sync_queue_), *cloud_sub_, *odom_sub_));
-  sync_cloud_odom_->registerCallback(
-      boost::bind(&FastExplorationFSM::CloudOdomCallback, this, _1, _2));
-  ROS_INFO_STREAM("[cloud sync] cloud_queue=" << fp_->cloud_subscriber_queue_
-                  << " odom_queue=" << fp_->odom_subscriber_queue_
-                  << " sync_queue=" << fp_->sync_queue_
-                  << " max_cloud_age=" << fp_->max_cloud_age_ << "s"
-                  << " independent_odom=1"
-                  << " max_odom_age=" << fp_->max_odom_age_ << "s");
+  if (fp_->cloud_odom_mode_ == "latest_odom") {
+    latest_cloud_sub_ = nh.subscribe(
+        cloud_topic, fp_->cloud_subscriber_queue_,
+        &FastExplorationFSM::latestCloudCallback, this,
+        ros::TransportHints().tcpNoDelay());
+    ROS_INFO_STREAM("[cloud input] mode=latest_odom cloud_topic="
+                    << cloud_topic << " odom_topic=" << odom_topic
+                    << " cloud_queue=" << fp_->cloud_subscriber_queue_
+                    << " odom_queue=" << fp_->odom_subscriber_queue_
+                    << " latest_odom_timeout=" << fp_->latest_odom_timeout_
+                    << "s header_age_gate=disabled");
+  } else {
+    cloud_sub_.reset(new message_filters::Subscriber<sensor_msgs::PointCloud2>(
+        nh, cloud_topic, fp_->cloud_subscriber_queue_));
+    odom_sub_.reset(new message_filters::Subscriber<nav_msgs::Odometry>(
+        nh, odom_topic, fp_->odom_subscriber_queue_));
+    sync_cloud_odom_.reset(
+        new message_filters::Synchronizer<SyncPolicyCloudOdom>(
+            SyncPolicyCloudOdom(fp_->sync_queue_), *cloud_sub_, *odom_sub_));
+    sync_cloud_odom_->registerCallback(
+        boost::bind(&FastExplorationFSM::CloudOdomCallback, this, _1, _2));
+    ROS_INFO_STREAM("[cloud sync] mode=approximate_sync cloud_topic="
+                    << cloud_topic << " odom_topic=" << odom_topic
+                    << " cloud_queue=" << fp_->cloud_subscriber_queue_
+                    << " odom_queue=" << fp_->odom_subscriber_queue_
+                    << " sync_queue=" << fp_->sync_queue_
+                    << " max_cloud_age=" << fp_->max_cloud_age_ << "s"
+                    << " independent_odom=1"
+                    << " max_odom_age=" << fp_->max_odom_age_ << "s");
+  }
 }
 
 void FastExplorationFSM::battaryCallback(

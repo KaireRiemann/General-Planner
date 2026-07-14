@@ -5,6 +5,26 @@ cloud_topic: /cloud_registered
 global_planning/w_vdir: 0.3
 global_planning/w_yawdir: 0.0
 global_planning/w_firstnode: 0.2
+# Composite next-frontier objective.  All cost-like terms are positive and all
+# exploration rewards are subtracted in FastExplorationManager.
+global_planning/epic_simple_cost: false
+global_planning/composite_candidate_cost_enable: true
+global_planning/candidate_travel_weight: 1.0
+global_planning/candidate_turn_brake_weight: 1.0
+global_planning/candidate_future_return_weight: 0.55
+global_planning/candidate_information_gain_weight: 2.0
+global_planning/candidate_wait_weight: 1.5
+global_planning/candidate_debt_weight: 2.5
+global_planning/candidate_gain_saturation: 30.0
+global_planning/candidate_wait_saturation: 18.0
+global_planning/candidate_debt_saturation: 3.0
+global_planning/candidate_return_cost_cap: 12.0
+global_planning/candidate_return_horizon: 4
+global_planning/frontier_pass_radius: 10.0
+global_planning/frontier_pass_exit_margin: 2.0
+global_planning/frontier_pass_cooldown: 4.0
+global_planning/frontier_pass_debt_increment: 1.0
+global_planning/frontier_pass_debt_max: 4.0
 viewpoint_param/global_viewpoint_num: 14
 viewpoint_param/local_viewpoint_num: 6
 #viz
@@ -73,6 +93,10 @@ fsm/reorient_exit_speed: 0.45
 fsm/reorient_timeout: 6.0
 fsm/reorient_stop_retry_interval: 0.8
 fsm/max_odom_age: 0.5
+# Input pairing: keep approximate_sync for MARSIM; use latest_odom when an
+# external simulator cannot provide comparable cloud/odom header timestamps.
+fsm/cloud_odom_mode: approximate_sync
+fsm/latest_odom_timeout: 0.5
 fsm/controlled_reorientation_enable: true
 fsm/plan_failure_retry_delay: 0.20
 fsm/plan_failure_refresh_count: 3
@@ -114,6 +138,9 @@ IntegralIntervs: 40
 RelCostTol: 1.0e-6
 DynamicVelocityEnable: false
 MinSegmentVel: 3.0
+# Lower bound used only after an optimized candidate violates the real commit
+# dynamics.  It does not reduce the normal 3 m/s cruise floor.
+TrajectoryRetryMinVel: 1.0
 OpenSegmentVel: 10.0
 DynamicVelocityMinClearance: 0.25
 DynamicVelocityOpenClearance: 2.2

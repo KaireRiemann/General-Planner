@@ -111,6 +111,13 @@ public:
   bool is_viewpoint_ = false;
   bool is_history_odom_node_ = false;
   int frontier_cluster_id_ = -1;
+  // Planning-only frontier metadata.  Keeping it on the temporary viewpoint
+  // node lets the global selector consume information gain and lifecycle state
+  // without coupling the topological graph to FrontierManager internals.
+  double frontier_information_gain_ = 0.0;
+  double frontier_wait_age_ = 0.0;
+  double frontier_pass_debt_ = 0.0;
+  int frontier_pass_count_ = 0;
   float yaw_;
   Eigen::Vector3f center_;
   vector<BubbleNode::Ptr> bubbles_; // 过程量，计算出topoNode后会清空

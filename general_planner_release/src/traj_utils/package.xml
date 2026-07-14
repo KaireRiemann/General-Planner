@@ -1,0 +1,14 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>traj_utils</name>
+  <version>0.0.0</version>
+  <description>Message-only runtime interface bundled with General Planner exploration.</description>
+  <maintainer email="release@example.com">general_planner_release</maintainer>
+  <license>See upstream traj_utils package.</license>
+
+  <buildtool_depend>catkin</buildtool_depend>
+  <build_depend>message_generation</build_depend>
+  <depend>geometry_msgs</depend>
+  <depend>std_msgs</depend>
+  <exec_depend>message_runtime</exec_depend>
+</package>

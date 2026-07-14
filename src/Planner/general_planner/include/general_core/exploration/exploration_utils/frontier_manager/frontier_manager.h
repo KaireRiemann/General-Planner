@@ -210,8 +210,22 @@ struct ClusterInfo {
   int selected_count_;
   ros::Time last_seen_time_;
   ros::Time last_selected_time_;
+  // These timestamps/counts describe actual global-planning lifecycle.  They
+  // intentionally do not reuse last_selected_time_/selected_count_, which are
+  // updated whenever a viewpoint is re-scored rather than when the robot
+  // selects the frontier as its navigation goal.
+  ros::Time first_reachable_time_;
+  ros::Time last_goal_time_;
+  ros::Time last_pass_time_;
+  int goal_selected_count_;
+  int pass_count_;
+  double pass_debt_;
+  bool inside_pass_zone_;
+  double pass_zone_min_distance_;
   double last_score_;
   double stable_score_;
+  double last_visible_gain_;
+  double stable_visible_gain_;
   double fov_edge_ratio_;
   double gap_ratio_;
 
@@ -346,6 +360,18 @@ public:
   void forceGlobalRefresh(vector<ClusterInfo::Ptr> &cluster_updated,
                           vector<int> &cluster_removed);
   bool markClusterVisitedNear(const Eigen::Vector3f &goal, float radius);
+  void updateExplorationDebt(const Eigen::Vector3f &robot_pos,
+                             int selected_cluster_id,
+                             const Eigen::Vector3f &selected_goal,
+                             double selected_match_radius,
+                             double pass_radius,
+                             double pass_exit_margin,
+                             double pass_cooldown,
+                             double debt_increment,
+                             double debt_max);
+  void markClusterGoalSelected(int cluster_id,
+                               const Eigen::Vector3f &goal,
+                               double match_radius);
   int activeClusterCount() const;
   int reachableClusterCount() const;
   void setHighSpeedViewScoreContext(const HighSpeedViewScoreContext &ctx);

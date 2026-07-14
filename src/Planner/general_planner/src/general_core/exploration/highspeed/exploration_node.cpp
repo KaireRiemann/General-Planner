@@ -42,7 +42,10 @@ int main(int argc, char **argv) {
   explore_manager->initialize(nh, frontier_manager, planner_manager);
   expl_fsm.init(nh, explore_manager);
 
-  ros::Duration(1.0).sleep();
+  // Startup must not depend on simulated time.  With /use_sim_time=true and
+  // no /clock publisher, ros::Duration::sleep() blocks before ros::spin() and
+  // no odometry or point-cloud callback can ever run.
+  ros::WallDuration(1.0).sleep();
   ros::spin();
   ros::shutdown();
   return 0;

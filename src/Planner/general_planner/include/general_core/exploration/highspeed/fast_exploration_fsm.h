@@ -11,8 +11,10 @@
 
 #include <Eigen/Eigen>
 #include <algorithm>
+#include <geometry_msgs/PoseStamped.h>
 #include <general_core/exploration/highspeed/fast_exploration_manager.h>
 #include <iostream>
+#include <mutex>
 #include <memory>
 #include <nav_msgs/Odometry.h>
 #include <nav_msgs/Path.h>
@@ -77,7 +79,8 @@ private:
   /* ROS utils */
   ros::NodeHandle node_;
   ros::Timer exec_timer_, global_path_update_timer_;
-  ros::Subscriber trigger_sub_, map_update_sub_, battary_sub_, raw_odom_sub_;
+  ros::Subscriber trigger_sub_, nav_goal_trigger_sub_, map_update_sub_,
+      battary_sub_, raw_odom_sub_, latest_cloud_sub_;
   ros::Publisher stop_pub_, new_pub_, replan_pub_, poly_traj_pub_, heartbeat_pub_, time_cost_pub_, poly_yaw_traj_pub_, static_pub_, state_pub_,
   speed_pub_, land_pub_;
   double total_time_;
@@ -89,7 +92,11 @@ private:
   SynchronizerCloudOdom sync_cloud_odom_;
   shared_ptr<message_filters::Subscriber<sensor_msgs::PointCloud2>> cloud_sub_;
   shared_ptr<message_filters::Subscriber<nav_msgs::Odometry>> odom_sub_;
+  nav_msgs::OdometryConstPtr latest_odom_msg_;
+  ros::WallTime latest_odom_receive_wall_time_;
+  std::mutex latest_odom_mutex_;
   void CloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr &msg, const nav_msgs::Odometry::ConstPtr &odom_);
+  void latestCloudCallback(const sensor_msgs::PointCloud2ConstPtr &msg);
 
   /* helper functions */
   int callExplorationPlanner();
@@ -108,6 +115,8 @@ private:
   void updateTopoAndGlobalPath();
   void globalPathUpdateCallback(const ros::TimerEvent &e);
   void triggerCallback(const nav_msgs::PathConstPtr &msg);
+  void navGoalTriggerCallback(const geometry_msgs::PoseStampedConstPtr &msg);
+  void acceptManualTrigger(const string &source);
   void odometryCallback(const nav_msgs::OdometryConstPtr &msg);
   void stopTraj();
 

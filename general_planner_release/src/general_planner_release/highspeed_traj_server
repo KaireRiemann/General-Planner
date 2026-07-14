@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+set -e
+
+_pkg_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+exec "${_pkg_dir}/bin/highspeed_traj_server.bin" "$@"

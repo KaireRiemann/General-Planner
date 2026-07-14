@@ -65,8 +65,18 @@ void inheritClusterLifecycle(ClusterInfo::Ptr &cluster,
   cluster->visible_fail_count_ = best_old->visible_fail_count_;
   cluster->reachable_fail_count_ = best_old->reachable_fail_count_;
   cluster->last_selected_time_ = best_old->last_selected_time_;
+  cluster->first_reachable_time_ = best_old->first_reachable_time_;
+  cluster->last_goal_time_ = best_old->last_goal_time_;
+  cluster->last_pass_time_ = best_old->last_pass_time_;
+  cluster->goal_selected_count_ = best_old->goal_selected_count_;
+  cluster->pass_count_ = best_old->pass_count_;
+  cluster->pass_debt_ = best_old->pass_debt_;
+  cluster->inside_pass_zone_ = best_old->inside_pass_zone_;
+  cluster->pass_zone_min_distance_ = best_old->pass_zone_min_distance_;
   cluster->last_score_ = best_old->last_score_;
   cluster->stable_score_ = best_old->stable_score_;
+  cluster->last_visible_gain_ = best_old->last_visible_gain_;
+  cluster->stable_visible_gain_ = best_old->stable_visible_gain_;
   cluster->best_vp_ = best_old->best_vp_;
   cluster->best_vp_yaw_ = best_old->best_vp_yaw_;
   cluster->candidate_vps_ = best_old->candidate_vps_;
@@ -104,6 +114,9 @@ void markClusterActive(ClusterInfo::Ptr &cluster) {
   cluster->is_reachable_ = true;
   cluster->visible_fail_count_ = 0;
   cluster->reachable_fail_count_ = 0;
+  if (cluster->first_reachable_time_.isZero()) {
+    cluster->first_reachable_time_ = ros::Time::now();
+  }
   if (!cluster->is_dormant_) {
     cluster->state_ = FrontierState::ACTIVE;
   }
@@ -165,9 +178,123 @@ bool FrontierManager::markClusterVisitedNear(const Eigen::Vector3f &goal,
   best_cluster->is_reachable_ = false;
   best_cluster->is_dormant_ = true;
   best_cluster->last_selected_time_ = ros::Time::now();
+  best_cluster->inside_pass_zone_ = false;
+  best_cluster->pass_debt_ = 0.0;
   ROS_INFO_STREAM("[frontier lifecycle] mark visited cluster="
                   << best_cluster->id_ << " distance=" << best_distance);
   return true;
+}
+
+void FrontierManager::updateExplorationDebt(
+    const Eigen::Vector3f &robot_pos, const int selected_cluster_id,
+    const Eigen::Vector3f &selected_goal, const double selected_match_radius,
+    const double pass_radius, const double pass_exit_margin,
+    const double pass_cooldown, const double debt_increment,
+    const double debt_max) {
+  const ros::Time now = ros::Time::now();
+  const double enter_radius = std::max(0.5, pass_radius);
+  const double exit_radius = enter_radius + std::max(0.1, pass_exit_margin);
+  const double cooldown = std::max(0.0, pass_cooldown);
+  const double increment = std::max(0.0, debt_increment);
+  const double max_debt = std::max(increment, debt_max);
+  const double goal_match_radius = std::max(0.1, selected_match_radius);
+
+  for (auto &cluster : cluster_list_) {
+    if (!cluster || cluster->is_dormant_ || !cluster->is_reachable_ ||
+        isTerminalFrontierState(cluster->state_)) {
+      if (cluster) {
+        cluster->inside_pass_zone_ = false;
+        cluster->pass_zone_min_distance_ =
+            std::numeric_limits<double>::infinity();
+      }
+      continue;
+    }
+    if (cluster->first_reachable_time_.isZero()) {
+      cluster->first_reachable_time_ = now;
+    }
+
+    const Eigen::Vector3f reference =
+        cluster->candidate_vps_.empty() ? cluster->center_
+                                        : cluster->candidate_vps_.front();
+    const double distance = (reference - robot_pos).norm();
+    const bool selected =
+        cluster->id_ == selected_cluster_id ||
+        (selected_cluster_id >= 0 &&
+         (reference - selected_goal).norm() <= goal_match_radius);
+    if (selected) {
+      cluster->inside_pass_zone_ = false;
+      cluster->pass_zone_min_distance_ =
+          std::numeric_limits<double>::infinity();
+      continue;
+    }
+
+    if (distance <= enter_radius) {
+      cluster->inside_pass_zone_ = true;
+      cluster->pass_zone_min_distance_ =
+          std::min(cluster->pass_zone_min_distance_, distance);
+      continue;
+    }
+
+    if (cluster->inside_pass_zone_ && distance >= exit_radius) {
+      const bool cooldown_elapsed =
+          cluster->last_pass_time_.isZero() ||
+          (now - cluster->last_pass_time_).toSec() >= cooldown;
+      if (cooldown_elapsed &&
+          cluster->pass_zone_min_distance_ <= enter_radius) {
+        cluster->pass_count_++;
+        cluster->pass_debt_ =
+            std::min(max_debt, cluster->pass_debt_ + increment);
+        cluster->last_pass_time_ = now;
+        ROS_INFO_STREAM("[frontier debt] passed cluster=" << cluster->id_
+                        << " count=" << cluster->pass_count_
+                        << " debt=" << cluster->pass_debt_
+                        << " closest=" << cluster->pass_zone_min_distance_);
+      }
+      cluster->inside_pass_zone_ = false;
+      cluster->pass_zone_min_distance_ =
+          std::numeric_limits<double>::infinity();
+    }
+  }
+}
+
+void FrontierManager::markClusterGoalSelected(
+    const int cluster_id, const Eigen::Vector3f &goal,
+    const double match_radius) {
+  ClusterInfo::Ptr matched;
+  double best_distance = std::numeric_limits<double>::infinity();
+  for (auto &cluster : cluster_list_) {
+    if (!cluster || isTerminalFrontierState(cluster->state_)) {
+      continue;
+    }
+    const Eigen::Vector3f reference =
+        cluster->candidate_vps_.empty() ? cluster->best_vp_
+                                        : cluster->candidate_vps_.front();
+    const double distance = (reference - goal).norm();
+    if (cluster->id_ == cluster_id) {
+      matched = cluster;
+      best_distance = distance;
+      break;
+    }
+    if (distance < best_distance) {
+      best_distance = distance;
+      matched = cluster;
+    }
+  }
+  if (!matched || (matched->id_ != cluster_id &&
+                   best_distance > std::max(0.1, match_radius))) {
+    return;
+  }
+  const ros::Time now = ros::Time::now();
+  matched->goal_selected_count_++;
+  matched->last_goal_time_ = now;
+  matched->first_reachable_time_ = now;
+  matched->pass_debt_ = 0.0;
+  matched->inside_pass_zone_ = false;
+  matched->pass_zone_min_distance_ =
+      std::numeric_limits<double>::infinity();
+  ROS_INFO_STREAM("[frontier lifecycle] selected cluster=" << matched->id_
+                  << " selected_count=" << matched->goal_selected_count_
+                  << " match_distance=" << best_distance);
 }
 
 int FrontierManager::activeClusterCount() const {
@@ -1172,8 +1299,20 @@ void FrontierManager::compute_cluster_info(
   cluster->selected_count_ = 0;
   cluster->last_seen_time_ = ros::Time::now();
   cluster->last_selected_time_ = ros::Time(0);
+  cluster->first_reachable_time_ =
+      cluster->is_dormant_ ? ros::Time(0) : ros::Time::now();
+  cluster->last_goal_time_ = ros::Time(0);
+  cluster->last_pass_time_ = ros::Time(0);
+  cluster->goal_selected_count_ = 0;
+  cluster->pass_count_ = 0;
+  cluster->pass_debt_ = 0.0;
+  cluster->inside_pass_zone_ = false;
+  cluster->pass_zone_min_distance_ =
+      std::numeric_limits<double>::infinity();
   cluster->last_score_ = 0.0;
   cluster->stable_score_ = 0.0;
+  cluster->last_visible_gain_ = 0.0;
+  cluster->stable_visible_gain_ = 0.0;
   cluster->fov_edge_ratio_ =
       frt_pts.empty() ? 0.0
                       : static_cast<double>(fov_edge_count) / frt_pts.size();
@@ -1516,11 +1655,17 @@ void FrontierManager::selectBestViewpoint(ClusterInfo::Ptr &cluster) {
     cluster->selected_count_++;
     cluster->last_selected_time_ = ros::Time::now();
     cluster->last_score_ = score[best_vp_idx];
+    cluster->last_visible_gain_ = visible_gain[best_vp_idx];
     cluster->stable_score_ =
         cluster->stable_score_ <= 1.0e-6
             ? cluster->last_score_
             : kStableScoreAlpha * cluster->stable_score_ +
                   (1.0 - kStableScoreAlpha) * cluster->last_score_;
+    cluster->stable_visible_gain_ =
+        cluster->stable_visible_gain_ <= 1.0e-6
+            ? cluster->last_visible_gain_
+            : kStableScoreAlpha * cluster->stable_visible_gain_ +
+                  (1.0 - kStableScoreAlpha) * cluster->last_visible_gain_;
     auto viewpointClusterDistance = [&](const int vp_idx) {
       int tmp_idx = vp_idx;
       for (auto &vpc : cluster->vp_clusters_) {
