@@ -7,6 +7,7 @@
  * @Copyright (c) 2024 by ning-zelin, All Rights Reserved.
  */
 #include <general_core/exploration/exploration_utils/frontier_manager/frontier_manager.h>
+#include <general_core/exploration/exploration_utils/frontier_manager/yaw_candidate_selector.h>
 #include <pcl/filters/voxel_grid.h>
 #include <visualization_msgs/MarkerArray.h>
 size_t ByteArrayRaw::size = 0;
@@ -17,13 +18,7 @@ constexpr int kReachableFailBeforeSuspend = 3;
 constexpr double kStableScoreAlpha = 0.65;
 
 float normalizeYawDiff(float angle) {
-  while (angle > static_cast<float>(M_PI)) {
-    angle -= static_cast<float>(2.0 * M_PI);
-  }
-  while (angle < -static_cast<float>(M_PI)) {
-    angle += static_cast<float>(2.0 * M_PI);
-  }
-  return angle;
+  return viewpoint_yaw_selector::normalizeYaw(angle);
 }
 
 bool isTerminalFrontierState(const FrontierState state) {
@@ -1423,6 +1418,10 @@ void FrontierManager::selectBestViewpoint(ClusterInfo::Ptr &cluster) {
                                std::numeric_limits<double>::quiet_NaN());
   vector<double> turn_angle_arr(vps.size(), 0.0);
   vector<double> yaw_change_arr(vps.size(), 0.0);
+  vector<bool> known_free_rejected(vps.size(), false);
+  vector<bool> clearance_rejected(vps.size(), false);
+  vector<bool> turn_rejected(vps.size(), false);
+  vector<bool> yaw_rejected(vps.size(), false);
   vector<PointVector> occ_free_frts; // raycast成功，但没有考虑视角
   occ_free_frts.resize(vps.size(), PointVector());
   const HighSpeedViewScoreContext ctx = high_speed_view_ctx_;
@@ -1495,38 +1494,51 @@ void FrontierManager::selectBestViewpoint(ClusterInfo::Ptr &cluster) {
       continue;
     }
     Eigen::Vector3f vp = vps[i].getVector3fMap();
-    vector<int> yaw_score = vector<int>(8, 0);
-    for (int j = -4; j < 4; j++) {
-      float yaw = (45.0 * j + 22.5) * M_PI / 180.0;
-      if (yaw > M_PI)
-        yaw -= 2 * M_PI;
-      if (yaw < -M_PI)
-        yaw += 2 * M_PI;
+    const float reference_yaw = normalizeYawDiff(ctx.curr_yaw);
+    const vector<float> yaw_candidates =
+        viewpoint_yaw_selector::buildCandidates(reference_yaw);
+    vector<int> yaw_score(yaw_candidates.size(), 0);
+    for (int yaw_idx = 0;
+         yaw_idx < static_cast<int>(yaw_candidates.size()); ++yaw_idx) {
+      const float candidate_yaw = yaw_candidates[yaw_idx];
       Eigen::Isometry3f transform = Eigen::Isometry3f::Identity();
       transform.rotate(Eigen::AngleAxisf(-vpp_.lidar_pitch_ * M_PI / 180.0,
                                          Eigen::Vector3f::UnitY()));
-      transform.rotate(Eigen::AngleAxisf(-yaw, Eigen::Vector3f::UnitZ()));
+      transform.rotate(
+          Eigen::AngleAxisf(-candidate_yaw, Eigen::Vector3f::UnitZ()));
       for (auto &pt : occ_free_frts[i]) {
         Eigen::Vector3f pt2see = transform * (pt.getVector3fMap() - vp);
         float pitch = atan2(pt2see.z(), sqrt(pt2see.x() * pt2see.x() +
                                              pt2see.y() * pt2see.y()));
         if (pitch > vpp_.fov_up_ || pitch < vpp_.fov_down_)
           continue;
-        yaw_score[j + 4]++;
+        yaw_score[yaw_idx]++;
       }
     }
-    int max_yaw_idx = distance(yaw_score.begin(),
-                               max_element(yaw_score.begin(), yaw_score.end()));
-    // if (yaw_score[max_yaw_idx] == 0)
-    //   continue;
-    visible_gain[i] = yaw_score[max_yaw_idx];
+
+    const float yaw_limit =
+        hard_gate_active
+            ? static_cast<float>(ctx.hard_gate_max_yaw_delta)
+            : std::numeric_limits<float>::infinity();
+    auto yaw_selection = viewpoint_yaw_selector::select(
+        yaw_score, yaw_candidates, reference_yaw, yaw_limit);
+    if (!yaw_selection.valid() && hard_gate_active) {
+      // Preserve an unconstrained positive-gain result so that the hard-gate
+      // diagnostics below report yaw as the actual rejection reason.
+      yaw_selection = viewpoint_yaw_selector::select(
+          yaw_score, yaw_candidates, reference_yaw);
+    }
+    if (!yaw_selection.valid()) {
+      continue;
+    }
+    visible_gain[i] = yaw_selection.visible_gain;
     score[i] = visible_gain[i];
     // Eigen::Vector4f hs = cluster->view_halfspace_;
     // Eigen::Vector4f vp_h(vp.x(), vp.y(), vp.z(), 1.0);
     // if (vp_h.dot(hs) < -0.1) {
     //   score[i] *= (1.5 - vp_h.dot(hs));
     // }
-    yaw[i] = (45.0 * (max_yaw_idx - 4) + 22.5) / 180.0 * M_PI;
+    yaw[i] = yaw_candidates[yaw_selection.index];
 
     if (use_high_speed_score && visible_gain[i] > 0) {
       Eigen::Vector3f to_vp = vp - ctx.curr_pos;
@@ -1572,11 +1584,14 @@ void FrontierManager::selectBestViewpoint(ClusterInfo::Ptr &cluster) {
               std::max(0.0, ctx.hard_gate_min_known_free_ratio);
           const double required_clearance =
               std::max(ctx.min_clearance, ctx.hard_gate_min_clearance);
-          hard_rejected[i] =
-              known_free_len + 1.0e-3 < required_known ||
-              clearance < required_clearance ||
-              turn_angle > ctx.hard_gate_max_turn_angle ||
-              yaw_change > ctx.hard_gate_max_yaw_delta;
+          known_free_rejected[i] =
+              known_free_len + 1.0e-3 < required_known;
+          clearance_rejected[i] = clearance < required_clearance;
+          turn_rejected[i] = turn_angle > ctx.hard_gate_max_turn_angle;
+          yaw_rejected[i] = yaw_change > ctx.hard_gate_max_yaw_delta;
+          hard_rejected[i] = known_free_rejected[i] ||
+                             clearance_rejected[i] || turn_rejected[i] ||
+                             yaw_rejected[i];
         }
         score[i] = ctx.gain_weight * visible_gain[i] +
                    ctx.progress_weight * forward_progress +
@@ -1607,12 +1622,20 @@ void FrontierManager::selectBestViewpoint(ClusterInfo::Ptr &cluster) {
   vector<int> candidate_indices;
   candidate_indices.reserve(vps.size());
   int hard_rejected_count = 0;
+  int known_free_rejected_count = 0;
+  int clearance_rejected_count = 0;
+  int turn_rejected_count = 0;
+  int yaw_rejected_count = 0;
   for (int i = 0; i < static_cast<int>(vps.size()); ++i) {
     if (visible_gain[i] == 0) {
       continue;
     }
     if (hard_gate_active && hard_rejected[i]) {
       ++hard_rejected_count;
+      known_free_rejected_count += known_free_rejected[i] ? 1 : 0;
+      clearance_rejected_count += clearance_rejected[i] ? 1 : 0;
+      turn_rejected_count += turn_rejected[i] ? 1 : 0;
+      yaw_rejected_count += yaw_rejected[i] ? 1 : 0;
       continue;
     }
     candidate_indices.push_back(i);
@@ -1631,6 +1654,10 @@ void FrontierManager::selectBestViewpoint(ClusterInfo::Ptr &cluster) {
                    << cluster->id_ << " visible_rejected="
                    << hard_rejected_count << " speed=" << current_speed
                    << " obs=" << cluster->observation_count_
+                   << " reasons{known_free=" << known_free_rejected_count
+                   << ",clearance=" << clearance_rejected_count
+                   << ",turn=" << turn_rejected_count
+                   << ",yaw=" << yaw_rejected_count << "}"
                    << " fov_edge_ratio=" << cluster->fov_edge_ratio_
                    << " gap_ratio=" << cluster->gap_ratio_);
     }
@@ -1644,7 +1671,8 @@ void FrontierManager::selectBestViewpoint(ClusterInfo::Ptr &cluster) {
     cluster->best_vp_yaw_ = yaw[best_vp_idx];
     cluster->best_vp_ = vps[best_vp_idx].getVector3fMap();
     if (((cluster->best_vp_ - graph_->odom_node_->center_).norm() < 1e-2) &&
-        (fabs(cluster->best_vp_yaw_ - graph_->odom_node_->yaw_) < 1e-2)) {
+        (fabs(normalizeYawDiff(cluster->best_vp_yaw_ -
+                              graph_->odom_node_->yaw_)) < 1e-2)) {
       cluster->candidate_vps_.clear();
       cluster->candidate_yaws_.clear();
       cluster->candidate_scores_.clear();
@@ -1709,6 +1737,8 @@ void FrontierManager::selectBestViewpoint(ClusterInfo::Ptr &cluster) {
                                   << clearance_arr[best_vp_idx]
                                   << " turn="
                                   << turn_angle_arr[best_vp_idx]
+                                  << " selected_yaw=" << yaw[best_vp_idx]
+                                  << " current_yaw=" << ctx.curr_yaw
                                   << " yaw_delta="
                                   << yaw_change_arr[best_vp_idx]
                                   << " heading_known_free="

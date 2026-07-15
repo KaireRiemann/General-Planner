@@ -11,3 +11,5 @@ src/Localization/FAST_LIO/PCD
 *.bag
 __pycache__/
 *.pyc
+*.tar.gz
+*.zip

@@ -196,6 +196,10 @@ target_link_libraries(coverage_guidance_self_test
         ${THIRD_PARTY}
 )
 
+add_executable(yaw_candidate_selector_self_test
+        ${GENERAL_PLANNER_EXPLORATION_UTILS_DIR}/frontier_manager/yaw_candidate_selector_self_test.cpp
+)
+target_include_directories(yaw_candidate_selector_self_test PRIVATE include)
 
 add_executable(fsm_node
         Apps/fsm_node_ros1.cpp
