@@ -77,6 +77,58 @@ The default compatibility settings are:
 Each process writes LKH files to a private directory below `tsp_dir` (default
 `/tmp`), so simultaneous robots do not overwrite each other's tours.
 
+## Long-horizon coverage guidance
+
+The garage profile enables `coverage_guidance/mode: full`. This layer keeps a
+persistent coarse map from the raw ROG state (it intentionally does not use the
+LIO known-free safety fallback), splits free and unknown voxels into connected
+zones inside fine cells, and builds a free/unknown adjacency graph. Active-free
+zones are anchored by current HighSpeedExp frontiers; reachable unknown zones
+are aggregated at a coarser scale when they are far away. A deterministic open
+coverage route then supplies a priority for each existing frontier.
+
+Coverage guidance never creates a flight goal in unknown space. It only adds a
+bounded set of frontiers from the current and next coverage zones to the old
+nearest-cluster shortlist. The existing viewpoint visibility, topology search,
+safety gates, General corridor, MINCO, backup and trajectory server remain the
+owners of execution. Map sampling is rate-limited and route construction runs
+on a latest-wins worker thread. Missing, invalid or stale coverage results
+therefore fall back to the existing frontier objective without blocking the
+sensor callback.
+
+The launch argument `coverage_guidance_mode:=off|shadow|soft|full` controls the
+integration:
+
+- `off`: legacy frontend behavior and no coverage worker;
+- `shadow`: persistent map/route, logging and visualization only;
+- `soft`: add a bounded coverage priority to the composite candidate cost;
+- `full`: use the stronger route rank. A persistent unknown macro zone can
+  delay `FINISH` only while the frontend still has a reachable executable
+  viewpoint; coverage guidance does not synthesize goals itself, so an
+  unknown-only map target cannot deadlock the FSM.
+
+The persistent resolution and fine/macro scales are configured under
+`coverage_guidance/*` in `config/exploration.yaml`. The route, active-free
+anchors and reachable-unknown anchors are published on
+`/exploration_node/coverage_guidance/route`. For a new scene, set `box_num`,
+`box_i/down`, `box_i/up` and dead areas first; these bounds define both frontier
+processing and the persistent coverage domain.
+
+`full_rank_weight` converts the normalized active-frontier visit order into a
+candidate cost. The normalization is over active frontier order only; unknown
+macro nodes in the coverage route must not inflate this value. The optional
+`rank_penalty_cap` bounds the per-candidate coverage term (`0` disables the
+cap). On the garage full-mission test, `cap=8` improved mid-run coverage AUC but
+increased total finish time and path length, so the delivered finish-time
+profile leaves it disabled.
+
+The final same-binary garage A/B run used eight consecutive `Finished.` reports
+as the terminal condition. `shadow` finished in 977.9 s at 60.00% observed
+coverage over 2390.8 m. The delivered `full` profile finished in 791.8 s at
+60.34% over 2057.6 m (19.0% less time and 13.9% less path). The stronger global
+order was faster to complete but had lower mean time-integrated coverage in
+this single run; use `shadow`/`full` repeated trials when tuning for a new map.
+
 ## First-delivery trajectory safety behaviour
 
 - The FSM no longer prepends a future switch point to an A* path rooted at
@@ -102,6 +154,11 @@ Each process writes LKH files to a private directory below `tsp_dir` (default
 - Failed plans use a bounded retry delay and keep any still-safe committed
   trajectory. Goal refresh is allowed only after the vehicle has stopped and
   no safe command remains.
+- Failed goals enter a bounded cooldown set so several bad candidates can be
+  bypassed instead of repeatedly selecting only the most recent one.
+- A short topology spur that returns to its incoming branch is collapsed
+  before MINCO. A genuine non-returning hairpin is still truncated to a safe
+  rolling horizon.
 - A candidate that passes MINCO but exceeds the exact committed speed or
   acceleration limit is rejected and retried with progressively lower guide
   speeds down to `TrajectoryRetryMinVel`. `MinSegmentVel` remains the normal
@@ -118,6 +175,10 @@ Each process writes LKH files to a private directory below `tsp_dir` (default
   braking polynomial with zero terminal velocity, acceleration and jerk. The
   old `/planning/replan` duration truncation is retained only as an emergency
   fallback when no valid braking segment can be constructed.
+- `FINISH` requires repeated executable-frontier-empty observations, elapsed
+  debounce time, a slow vehicle and an ended committed trajectory. Raw
+  clusters that repeatedly produce no reachable viewpoint no longer cause an
+  infinite retry, while a newly executable frontier still resumes planning.
 
 The main garage tuning parameters are `candidate_*`, `frontier_pass_*`,
 `TurnLateralAcceleration`,
@@ -198,5 +259,5 @@ rosbag play --clock input.bag
 ```
 
 Useful runtime diagnostics are emitted as `[cloud input]`,
-`cloud odom callback cost`, `[global update]`, `[frontend compatibility]` and
-`tour solver cost`.
+`cloud odom callback cost`, `[global update]`, `[coverage guidance]`,
+`[candidate cost]`, `[frontend compatibility]` and `tour solver cost`.

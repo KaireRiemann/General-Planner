@@ -188,6 +188,7 @@ void FastExplorationFSM::FSMCallback(const ros::TimerEvent &e) {
           fd_->consecutive_plan_failures_ >= fp_->plan_failure_refresh_count_ &&
           fd_->odom_vel_.norm() <= fp_->reorient_exit_speed_;
       if (may_refresh_goal) {
+        expl_manager_->deferCurrentGoalAfterPlanningFailure();
         expl_manager_->ed_->has_goal_lock_ = false;
         expl_manager_->ed_->locked_goal_cluster_id_ = -1;
         expl_manager_->ed_->global_tour_.clear();
@@ -365,6 +366,16 @@ void FastExplorationFSM::init(ros::NodeHandle &nh,
   nh.param("fsm/replan_time_before_traj_end", fp_->replan_time_before_traj_end_,
            0.5);
   nh.param("fsm/path_densify_step", fp_->path_densify_step_, 1.0);
+  nh.param("fsm/adaptive_tight_path_horizon_enable",
+           fp_->adaptive_tight_path_horizon_enable_, true);
+  nh.param("fsm/tight_path_turn_threshold",
+           fp_->tight_path_turn_threshold_, 2.5);
+  nh.param("fsm/tight_path_min_horizon",
+           fp_->tight_path_min_horizon_, 7.0);
+  fp_->tight_path_turn_threshold_ =
+      std::clamp(fp_->tight_path_turn_threshold_, 0.5, 6.0);
+  fp_->tight_path_min_horizon_ =
+      std::clamp(fp_->tight_path_min_horizon_, 3.0, 15.0);
   nh.param("FinishNoFrontierMinCount", fp_->finish_no_frontier_min_count_, 4);
   nh.param("fsm/FinishNoFrontierMinCount",
            fp_->finish_no_frontier_min_count_,

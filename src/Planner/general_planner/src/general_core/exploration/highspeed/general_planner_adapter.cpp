@@ -1534,6 +1534,46 @@ bool FastPlannerManager::planExploreTraj(const std::vector<Eigen::Vector3f> &pat
   double accepted_max_speed = 0.0;
   double accepted_max_acc = 0.0;
   int opt_attempt = 0;
+  const double check_dt = std::max(0.03, gcopter_config_->commitSampleDt);
+  auto trajectoryPassesSafetyCheck =
+      [&](const geometry_utils::Trajectory &candidate,
+          const int attempt,
+          const double guide_speed) -> bool {
+    double last_t = 0.0;
+    Eigen::Vector3d last_p = candidate.getPos(0.0);
+    for (double t = check_dt;
+         t <= candidate.getTotalDuration() + 1.0e-6; t += check_dt)
+    {
+      const double tt = std::min(t, candidate.getTotalDuration());
+      const Eigen::Vector3d p = candidate.getPos(tt);
+      const double step = std::max(
+          0.05, (tt - last_t) * std::max(1.0, candidate.getVel(tt).norm()));
+      const RaycastSafetyInfo safety = raycastSafety(
+          last_p,
+          p,
+          !gcopter_config_->safetyMapUnknownAllowedForExplore,
+          std::max(0.05, gcopter_config_->commitKnownFreeSafeDistance),
+          step);
+      if (safety.blocked_by_occupied ||
+          (!gcopter_config_->safetyMapUnknownAllowedForExplore &&
+           safety.blocked_by_unknown))
+      {
+        ROS_WARN_STREAM(
+            "[highspeed_exp adapter] optimized trajectory safety check "
+            "failed; retry slower: attempt="
+            << attempt << " guide_speed=" << guide_speed << " t=" << tt
+            << " state=" << safetyStateName(safety.first_blocked_state));
+        return false;
+      }
+      last_t = tt;
+      last_p = p;
+      if (tt >= candidate.getTotalDuration())
+      {
+        break;
+      }
+    }
+    return true;
+  };
   for (const double opt_speed : opt_speed_attempts)
   {
     ++opt_attempt;
@@ -1590,6 +1630,12 @@ bool FastPlannerManager::planExploreTraj(const std::vector<Eigen::Vector3f> &pat
         pos_traj.clear();
         continue;
       }
+      if (!trajectoryPassesSafetyCheck(pos_traj, opt_attempt, opt_speed))
+      {
+        ok = false;
+        pos_traj.clear();
+        continue;
+      }
       accepted_opt_speed = opt_speed;
       accepted_velocity_bound = piece_velocity_bounds.maxCoeff();
       accepted_max_speed = candidate_max_speed;
@@ -1620,39 +1666,6 @@ bool FastPlannerManager::planExploreTraj(const std::vector<Eigen::Vector3f> &pat
     {
       ROS_WARN("[highspeed_exp adapter] yaw trajectory generation failed.");
       return false;
-    }
-  }
-
-  // Exploration is allowed to extend into unknown space. Only collision with
-  // occupied map cells is rejected here; the committed prefix is checked
-  // strictly after its backup trajectory has been attached.
-  const double check_dt = std::max(0.03, gcopter_config_->commitSampleDt);
-  double last_t = 0.0;
-  Eigen::Vector3d last_p = pos_traj.getPos(0.0);
-  for (double t = check_dt; t <= pos_traj.getTotalDuration() + 1.0e-6; t += check_dt)
-  {
-    const double tt = std::min(t, pos_traj.getTotalDuration());
-    const Eigen::Vector3d p = pos_traj.getPos(tt);
-    const double step = std::max(0.05, (tt - last_t) * std::max(1.0, pos_traj.getVel(tt).norm()));
-    const RaycastSafetyInfo safety =
-        raycastSafety(last_p,
-                      p,
-                      !gcopter_config_->safetyMapUnknownAllowedForExplore,
-                      std::max(0.05, gcopter_config_->commitKnownFreeSafeDistance),
-                      step);
-    if (safety.blocked_by_occupied ||
-        (!gcopter_config_->safetyMapUnknownAllowedForExplore &&
-         safety.blocked_by_unknown))
-    {
-      ROS_WARN_STREAM("[highspeed_exp adapter] optimized trajectory safety check failed at t="
-                      << tt << ", state=" << safetyStateName(safety.first_blocked_state));
-      return false;
-    }
-    last_t = tt;
-    last_p = p;
-    if (tt >= pos_traj.getTotalDuration())
-    {
-      break;
     }
   }
 
@@ -3046,6 +3059,86 @@ bool FastPlannerManager::updateRogMap(const sensor_msgs::PointCloud2ConstPtr &cl
   return true;
 }
 
+bool FastPlannerManager::sampleCoverageMap(const CoverageMapSpec &spec,
+                                           CoverageMapDelta &delta) const
+{
+  delta.samples.clear();
+  if (!spec.valid() || !map_manager_ || !rog_map_updated_)
+  {
+    return false;
+  }
+
+  rog_map::Vec3f updated_min;
+  rog_map::Vec3f updated_max;
+  if (!map_manager_->getUpdatedBox(updated_min, updated_max))
+  {
+    return false;
+  }
+  Eigen::Vector3d bounded_min = updated_min.cast<double>();
+  Eigen::Vector3d bounded_max = updated_max.cast<double>();
+  bounded_min = bounded_min.cwiseMax(spec.min);
+  bounded_max = bounded_max.cwiseMin(spec.max);
+  if ((bounded_min.array() > bounded_max.array()).any())
+  {
+    return false;
+  }
+
+  Eigen::Vector3i min_index = spec.positionToIndex(bounded_min);
+  Eigen::Vector3i max_index = spec.positionToIndex(
+      bounded_max - Eigen::Vector3d::Constant(1.0e-6));
+  min_index = min_index.cwiseMax(Eigen::Vector3i::Zero());
+  max_index = max_index.cwiseMin(spec.dims - Eigen::Vector3i::Ones());
+  if ((min_index.array() > max_index.array()).any())
+  {
+    return false;
+  }
+
+  const int estimated_count =
+      (max_index - min_index + Eigen::Vector3i::Ones()).prod();
+  delta.samples.reserve(std::max(0, estimated_count / 3));
+  for (int z = min_index.z(); z <= max_index.z(); ++z)
+  {
+    for (int y = min_index.y(); y <= max_index.y(); ++y)
+    {
+      for (int x = min_index.x(); x <= max_index.x(); ++x)
+      {
+        const Eigen::Vector3i index(x, y, z);
+        const Eigen::Vector3d position = spec.indexToPosition(index);
+        const general_utils::Vec3f position_f = position;
+        if (!map_manager_->insideLocalMap(position_f))
+        {
+          continue;
+        }
+        const rog_map::GridType raw_state =
+            map_manager_->getGridType(position_f);
+        CoverageVoxelState coverage_state = CoverageVoxelState::UNKNOWN;
+        if (raw_state == rog_map::GridType::OCCUPIED)
+        {
+          coverage_state = CoverageVoxelState::OCCUPIED;
+        }
+        else if (raw_state == rog_map::GridType::KNOWN_FREE)
+        {
+          const rog_map::GridType inflated_state =
+              map_manager_->getInfGridType(position_f);
+          coverage_state =
+              inflated_state == rog_map::GridType::OCCUPIED ||
+                      map_manager_->isOccupiedInflate(position_f)
+                  ? CoverageVoxelState::UNSAFE_FREE
+                  : CoverageVoxelState::KNOWN_FREE;
+        }
+        // Persistent coverage starts unknown. Omitting unknown samples both
+        // reduces the cross-thread copy and prevents a sliding local map from
+        // erasing previously observed global evidence.
+        if (coverage_state != CoverageVoxelState::UNKNOWN)
+        {
+          delta.samples.push_back({spec.flatten(index), coverage_state});
+        }
+      }
+    }
+  }
+  return true;
+}
+
 bool FastPlannerManager::isSafetyMapReady() const
 {
   const bool lio_ready = lidar_map_interface_ && lidar_map_interface_->ld_ &&
@@ -3460,9 +3553,18 @@ SegmentSafetyInfo FastPlannerManager::evaluatePathSegmentSafety(const std::vecto
       info.current_speed * info.current_speed / (2.0 * brake_acc) +
       std::max(0.0, gcopter_config_->safetyBrakeMargin);
 
+  const bool entire_short_path_known_free =
+      info.path_length > 0.05 &&
+      info.known_free_length + std::max(0.05, step) >= info.path_length;
+  // A stationary vehicle does not need a full cruise-speed braking runway.
+  // Requiring knownFreeShortLength here rejects safe rolling steps that end at
+  // a nearby junction and can deadlock the planner after a path reversal is
+  // truncated. Once moving, retain the conservative braking requirement.
   info.backup_feasible =
-      info.known_free_length >=
-      std::max(gcopter_config_->knownFreeShortLength, stop_distance);
+      info.current_speed <= 0.20
+          ? entire_short_path_known_free
+          : info.known_free_length >=
+                std::max(gcopter_config_->knownFreeShortLength, stop_distance);
   return info;
 }
 

@@ -42,6 +42,9 @@ struct FSMParam {
   double emergency_replan_control_error;
   double bubble_a_star_resolution;
   double path_densify_step_;
+  bool adaptive_tight_path_horizon_enable_;
+  double tight_path_turn_threshold_;
+  double tight_path_min_horizon_;
   int finish_no_frontier_min_count_;
   double finish_no_frontier_min_duration_;
   bool finish_require_vehicle_slow_;
@@ -128,6 +131,8 @@ struct ExplorationParam {
   double frontier_pass_cooldown_;
   double frontier_pass_debt_increment_;
   double frontier_pass_debt_max_;
+  double failed_goal_cooldown_;
+  double failed_goal_penalty_;
   bool use_lkh_;
   bool view_graph_;
   string tsp_dir_; // Per-process writable directory used by the LKH solver.

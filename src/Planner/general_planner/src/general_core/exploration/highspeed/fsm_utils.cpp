@@ -151,14 +151,9 @@ bool FastExplorationFSM::trajectoryEnded() const {
 }
 
 bool FastExplorationFSM::finishGateSatisfied(const string &reason) const {
-  if (expl_manager_->last_plan_no_reachable_) {
-    ROS_WARN_STREAM_THROTTLE(
-        1.0, "[finish gate] blocked by non-empty but unreachable/gated "
-             "frontier after "
-                 << reason);
-    return false;
-  }
-  if (!expl_manager_->last_plan_empty_frontier_) {
+  const bool no_raw_frontier = expl_manager_->last_plan_empty_frontier_;
+  const bool no_executable_frontier = expl_manager_->last_plan_no_reachable_;
+  if (!no_raw_frontier && !no_executable_frontier) {
     return false;
   }
   if (finish_gate_.no_frontier_count <
@@ -176,7 +171,10 @@ bool FastExplorationFSM::finishGateSatisfied(const string &reason) const {
   const bool vehicle_slow =
       fd_->odom_vel_.norm() <= fp_->finish_slow_speed_;
   const bool traj_ended = trajectoryEnded();
-  if (fp_->finish_require_vehicle_slow_ && !vehicle_slow && !traj_ended) {
+  if (fp_->finish_require_vehicle_slow_ && !vehicle_slow) {
+    return false;
+  }
+  if (!traj_ended) {
     return false;
   }
   if (expl_manager_->frontier_manager_ptr_) {
@@ -184,13 +182,27 @@ bool FastExplorationFSM::finishGateSatisfied(const string &reason) const {
         expl_manager_->frontier_manager_ptr_->activeClusterCount();
     const int reachable_clusters =
         expl_manager_->frontier_manager_ptr_->reachableClusterCount();
-    if (active_clusters > 0 || reachable_clusters > 0) {
+    if (reachable_clusters > 0) {
       ROS_WARN_STREAM_THROTTLE(
           1.0, "[finish gate] blocked by unresolved clusters after "
                    << reason << " active=" << active_clusters
                    << " reachable=" << reachable_clusters);
       return false;
     }
+    if (active_clusters > 0 && no_executable_frontier) {
+      ROS_WARN_STREAM_THROTTLE(
+          1.0, "[finish gate] accept stable non-executable raw frontiers after "
+                   << reason << " active=" << active_clusters
+                   << " reachable=0 confirmations="
+                   << finish_gate_.no_reachable_count);
+    }
+  }
+  if (expl_manager_->coverageGuidanceBlocksFinish()) {
+    ROS_WARN_STREAM_THROTTLE(
+        1.0, "[finish gate] blocked by persistent coverage map after "
+                 << reason
+                 << ": reachable unknown coverage zones still exist");
+    return false;
   }
   return true;
 }
@@ -232,6 +244,14 @@ void FastExplorationFSM::requestFrontierRecheck(const string &reason) {
 
 void FastExplorationFSM::handleNoFrontierResult(const string &source) {
   const ros::Time now = ros::Time::now();
+  // A NO_FRONTIER result invalidates the previous navigation goal. Keeping
+  // the old tour here lets PLAN_TRAJ optimize that stale path successfully on
+  // the next tick, which resets the finish gate before its count/duration can
+  // ever be satisfied.
+  expl_manager_->ed_->global_tour_.clear();
+  expl_manager_->ed_->path_next_goal_.clear();
+  expl_manager_->ed_->has_goal_lock_ = false;
+  expl_manager_->ed_->locked_goal_cluster_id_ = -1;
   if (finish_gate_.no_frontier_count == 0 ||
       finish_gate_.first_no_frontier_time.isZero()) {
     finish_gate_.first_no_frontier_time = now;
@@ -423,14 +443,124 @@ int FastExplorationFSM::callExplorationPlanner() {
   if (path_d.size() < 2) {
     return FAIL;
   }
-  double horizon_end_yaw = planner_manager_->local_data_.curr_yaw_;
-  Eigen::Vector3d horizon_tail = path_d.back() - path_d[path_d.size() - 2];
-  if (std::hypot(horizon_tail.x(), horizon_tail.y()) > 1.0e-3) {
-    horizon_end_yaw = std::atan2(horizon_tail.y(), horizon_tail.x());
+  // Topological paths can contain a local out-and-back loop when the current
+  // odom node is attached to both sides of the same skeleton branch. Collapse
+  // the spur if the returning leg reaches the point before the reversal. The
+  // previous implementation always truncated at the spur tip; for a 2--3 m
+  // spur that produced a two-point zero-duration MINCO trajectory and retried
+  // the same goal forever.
+  for (std::size_t i = 1; i + 1 < path_d.size(); ++i) {
+    const Eigen::Vector3d incoming = path_d[i] - path_d[i - 1];
+    const Eigen::Vector3d outgoing = path_d[i + 1] - path_d[i];
+    if (incoming.norm() < 0.20 || outgoing.norm() < 0.20) {
+      continue;
+    }
+    const double angle = std::acos(std::clamp(
+        incoming.normalized().dot(outgoing.normalized()), -1.0, 1.0));
+    if (angle > 2.60 && (path_d[i] - path_d.front()).norm() > 0.75) {
+      const double return_radius =
+          std::max(0.75, 0.60 * static_cast<double>(path_step));
+      std::size_t return_index = path_d.size();
+      for (std::size_t j = i + 1; j < path_d.size(); ++j) {
+        if ((path_d[j] - path_d[i - 1]).norm() <= return_radius) {
+          return_index = j;
+          break;
+        }
+        // A real hairpin does not return to the incoming branch. Limit the
+        // loop search so it cannot erase a large intentional detour.
+        if ((path_d[j] - path_d[i]).norm() >
+            2.5 * incoming.norm() + return_radius) {
+          break;
+        }
+      }
+      if (return_index < path_d.size()) {
+        vector<Eigen::Vector3d> collapsed;
+        collapsed.reserve(path_d.size() - (return_index - i));
+        collapsed.insert(collapsed.end(), path_d.begin(), path_d.begin() + i);
+        for (std::size_t j = return_index; j < path_d.size(); ++j) {
+          if (collapsed.empty() ||
+              (path_d[j] - collapsed.back()).norm() > 0.10) {
+            collapsed.push_back(path_d[j]);
+          }
+        }
+        if (collapsed.size() >= 2) {
+          ROS_WARN_STREAM_THROTTLE(
+              0.5, "[path horizon] collapse local out-and-back loop: angle="
+                       << angle << " removed_pts="
+                       << (return_index - i + 1)
+                       << " remaining_pts=" << collapsed.size());
+          path_d.swap(collapsed);
+          // Re-scan because a topological path may contain adjacent spurs.
+          i = 0;
+          continue;
+        }
+      }
+
+      path_d.resize(i + 1);
+      expl_manager_->ed_->path_next_goal_.clear();
+      expl_manager_->ed_->path_next_goal_.reserve(path_d.size());
+      for (const auto &point : path_d) {
+        expl_manager_->ed_->path_next_goal_.push_back(point.cast<float>());
+      }
+      ROS_WARN_STREAM_THROTTLE(
+          0.5, "[path horizon] truncate before local reversal: angle="
+                   << angle << " prefix_pts=" << path_d.size()
+                   << " displacement="
+                   << (path_d.back() - path_d.front()).norm());
+      break;
+    }
   }
-  const auto safety = planner_manager_->evaluatePathSegmentSafety(
-      path_d, planner_manager_->local_data_.curr_yaw_,
-      horizon_end_yaw);
+  // Keep the frontend path consistent with either a collapsed loop or a
+  // truncated prefix before handing it to the adapter.
+  expl_manager_->ed_->path_next_goal_.clear();
+  expl_manager_->ed_->path_next_goal_.reserve(path_d.size());
+  for (const auto &point : path_d) {
+    expl_manager_->ed_->path_next_goal_.push_back(point.cast<float>());
+  }
+  auto pathEndYaw = [&](const vector<Eigen::Vector3d> &candidate) {
+    double yaw = planner_manager_->local_data_.curr_yaw_;
+    if (candidate.size() >= 2) {
+      const Eigen::Vector3d tail =
+          candidate.back() - candidate[candidate.size() - 2];
+      if (std::hypot(tail.x(), tail.y()) > 1.0e-3) {
+        yaw = std::atan2(tail.y(), tail.x());
+      }
+    }
+    return yaw;
+  };
+  double horizon_end_yaw = pathEndYaw(path_d);
+  auto safety = planner_manager_->evaluatePathSegmentSafety(
+      path_d, planner_manager_->local_data_.curr_yaw_, horizon_end_yaw);
+  if (fp_->adaptive_tight_path_horizon_enable_ &&
+      (safety.turn_angle > fp_->tight_path_turn_threshold_ ||
+       safety.max_local_turn > 0.5 * fp_->tight_path_turn_threshold_)) {
+    const double original_horizon = planner_manager_->max_traj_len_;
+    const double turn_excess =
+        std::max(0.0, safety.turn_angle - fp_->tight_path_turn_threshold_);
+    const double minimum_horizon =
+        std::min(fp_->tight_path_min_horizon_, original_horizon);
+    const double tight_horizon = std::clamp(
+        original_horizon / (1.0 + 0.35 * turn_excess),
+        minimum_horizon, original_horizon);
+    vector<Eigen::Vector3d> tight_path = truncatePathHorizon(
+        expl_manager_->ed_->path_next_goal_, tight_horizon);
+    if (tight_path.size() >= 2 && tight_path.size() < path_d.size()) {
+      path_d.swap(tight_path);
+      horizon_end_yaw = pathEndYaw(path_d);
+      safety = planner_manager_->evaluatePathSegmentSafety(
+          path_d, planner_manager_->local_data_.curr_yaw_, horizon_end_yaw);
+      expl_manager_->ed_->path_next_goal_.clear();
+      expl_manager_->ed_->path_next_goal_.reserve(path_d.size());
+      for (const auto &point : path_d) {
+        expl_manager_->ed_->path_next_goal_.push_back(point.cast<float>());
+      }
+      ROS_INFO_STREAM_THROTTLE(
+          0.5, "[path horizon] shorten high-curvature local path: horizon="
+                   << tight_horizon << "m pts=" << path_d.size()
+                   << " turn=" << safety.turn_angle
+                   << " max_local_turn=" << safety.max_local_turn);
+    }
+  }
   const auto limit = planner_manager_->computeSegmentVelocityLimit(safety);
   const double current_speed = planner_manager_->local_data_.curr_vel_.norm();
   if (expl_manager_->ep_->original_frontend_compatibility_) {
@@ -726,6 +856,10 @@ void FastExplorationFSM::CloudOdomCallback(
   for (auto &cls : new_clusters) {
     cls->odom_id_ = odom_id;
   }
+  // Copy a rate-limited raw-ROG delta and the just-updated frontier snapshot.
+  // The coverage graph is built on its own worker; this sensor callback never
+  // waits for global coverage optimization.
+  expl_manager_->updateCoverageGuidance(fd_->odom_pos_.cast<double>());
   ros::Time t4 = ros::Time::now();
 
   ROS_INFO_STREAM_THROTTLE(1.0, "cloud odom callback cost: " << "map update:" << (t2 - t1).toSec() * 1000 << "ms  "

@@ -111,6 +111,7 @@ add_library(general_planner_exploration_utils STATIC
         ${GENERAL_PLANNER_EXPLORATION_UTILS_DIR}/frontier_manager/global_planning.cpp
         ${GENERAL_PLANNER_EXPLORATION_UTILS_DIR}/frontier_manager/raycast.cpp
         ${GENERAL_PLANNER_EXPLORATION_UTILS_DIR}/frontier_manager/frontier_visualizer.cpp
+        ${GENERAL_PLANNER_EXPLORATION_UTILS_DIR}/coverage_guidance/coverage_guidance_manager.cpp
 )
 add_dependencies(general_planner_exploration_utils
         ${${PROJECT_NAME}_EXPORTED_TARGETS}
@@ -180,6 +181,18 @@ target_compile_options(highspeed_traj_server PRIVATE
 )
 target_link_libraries(highspeed_traj_server
         general_planner_core
+        ${THIRD_PARTY}
+)
+
+add_executable(coverage_guidance_self_test
+        ${GENERAL_PLANNER_EXPLORATION_UTILS_DIR}/coverage_guidance/coverage_guidance_self_test.cpp
+)
+add_dependencies(coverage_guidance_self_test
+        ${${PROJECT_NAME}_EXPORTED_TARGETS}
+        ${catkin_EXPORTED_TARGETS}
+)
+target_link_libraries(coverage_guidance_self_test
+        general_planner_exploration_utils
         ${THIRD_PARTY}
 )
 

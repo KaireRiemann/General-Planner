@@ -377,4 +377,7 @@ public:
   void setHighSpeedViewScoreContext(const HighSpeedViewScoreContext &ctx);
   void generateTSPViewpoints(Eigen::Vector3f &center_pose,
                              vector<TopoNode::Ptr> &viewpoints);
+  void generateTSPViewpoints(
+      Eigen::Vector3f &center_pose, vector<TopoNode::Ptr> &viewpoints,
+      const std::unordered_set<int> &preferred_cluster_ids);
 };

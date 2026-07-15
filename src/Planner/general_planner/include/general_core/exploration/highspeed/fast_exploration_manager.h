@@ -12,6 +12,7 @@
 
 #include <Eigen/Eigen>
 #include <general_core/exploration/exploration_utils/frontier_manager/frontier_manager.h>
+#include <general_core/exploration/exploration_utils/coverage_guidance/coverage_guidance_manager.h>
 #include <memory>
 #include <omp.h>
 #include <opencv2/opencv.hpp>
@@ -49,6 +50,7 @@ public:
   bool high_speed_mode_active_{false};
 
   shared_ptr<FastPlannerManager> planner_manager_;
+  CoverageGuidanceManager::Ptr coverage_guidance_;
   // ViewpointForest::Ptr vps_forest_;
   double getPathCost(TopoNode::Ptr &n1, Eigen::Vector3d v1, float &yaw1, TopoNode::Ptr &n2, float &yaw2);
   EdgeSafetyCost getPathEdgeCost(TopoNode::Ptr &n1,
@@ -60,6 +62,9 @@ public:
   void initialize(ros::NodeHandle &nh, FrontierManager::Ptr frt_manager,
                   FastPlannerManager::Ptr planner_manager);
   int planGlobalPath(const Vector3d &pos, const Vector3d &vel);
+  void updateCoverageGuidance(const Vector3d &pos);
+  bool coverageGuidanceBlocksFinish() const;
+  void deferCurrentGoalAfterPlanningFailure();
   int selectStableGoalIndex(const vector<TopoNode::Ptr> &viewpoints,
                             const vector<double> &distance_odom2vp,
                             int candidate_idx,
@@ -72,6 +77,18 @@ public:
   void surfaceFrtCalllback(const ros::TimerEvent &e);
   void goalCallback(const geometry_msgs::PoseStampedConstPtr &msg);
   void updateGoalNode();
+
+private:
+  struct DeferredGoal {
+    int cluster_id{-1};
+    Eigen::Vector3f position{Eigen::Vector3f::Zero()};
+    ros::Time until;
+  };
+
+  std::uint64_t coverage_map_version_{0};
+  vector<DeferredGoal> deferred_goals_;
+
+  double failedGoalPenalty(const TopoNode::Ptr &viewpoint) const;
 };
 
 } // namespace fast_planner

@@ -117,7 +117,55 @@ void FastExplorationManager::initialize(
            ep_->frontier_pass_debt_increment_, 1.0);
   nh.param("global_planning/frontier_pass_debt_max",
            ep_->frontier_pass_debt_max_, 4.0);
+  nh.param("global_planning/failed_goal_cooldown",
+           ep_->failed_goal_cooldown_, 30.0);
+  nh.param("global_planning/failed_goal_penalty",
+           ep_->failed_goal_penalty_, 2000.0);
+  ep_->failed_goal_cooldown_ =
+      std::clamp(ep_->failed_goal_cooldown_, 1.0, 120.0);
+  ep_->failed_goal_penalty_ = std::max(0.0, ep_->failed_goal_penalty_);
   nh.param("exploration/use_lkh", ep_->use_lkh_, true);
+
+  // FALCON-style global coverage guidance is deliberately a separate data
+  // layer. It remembers raw ROG free/occupied evidence globally but can only
+  // rank frontier IDs produced by the existing HighSpeedExp frontend.
+  double coverage_resolution = 0.6;
+  nh.param("coverage_guidance/voxel_resolution", coverage_resolution,
+           coverage_resolution);
+  coverage_resolution = std::max(0.2, coverage_resolution);
+  CoverageMapSpec coverage_spec;
+  if (planner_manager_->lidar_map_interface_ &&
+      planner_manager_->lidar_map_interface_->lp_) {
+    const auto &lio = planner_manager_->lidar_map_interface_->lp_;
+    coverage_spec.min = lio->global_box_min_boundary_.cast<double>();
+    coverage_spec.max = lio->global_box_max_boundary_.cast<double>();
+    coverage_spec.resolution = coverage_resolution;
+    coverage_spec.dims =
+        ((coverage_spec.max - coverage_spec.min) / coverage_resolution)
+            .array()
+            .ceil()
+            .cast<int>()
+            .matrix()
+            .cwiseMax(Eigen::Vector3i::Ones());
+    for (int i = 0;
+         i < static_cast<int>(lio->global_box_min_boundary_vec_.size()) &&
+         i < static_cast<int>(lio->global_box_max_boundary_vec_.size());
+         ++i) {
+      coverage_spec.valid_boxes.push_back(
+          {lio->global_box_min_boundary_vec_[i].cast<double>(),
+           lio->global_box_max_boundary_vec_[i].cast<double>()});
+    }
+    for (int i = 0;
+         i < static_cast<int>(lio->dead_area_min_boundary_vec_.size()) &&
+         i < static_cast<int>(lio->dead_area_max_boundary_vec_.size());
+         ++i) {
+      coverage_spec.dead_boxes.push_back(
+          {lio->dead_area_min_boundary_vec_[i].cast<double>(),
+           lio->dead_area_max_boundary_vec_[i].cast<double>()});
+    }
+  }
+  coverage_guidance_ = std::make_shared<CoverageGuidanceManager>();
+  coverage_guidance_->initialize(nh, coverage_spec);
 
   string tsp_base_dir;
   nh.param("exploration/tsp_dir", tsp_base_dir,
@@ -172,6 +220,69 @@ void FastExplorationManager::initialize(
                   << ep_->composite_candidate_cost_enable_
                   << " lkh=" << ep_->use_lkh_
                   << (ep_->use_lkh_ ? " work_dir=" + ep_->tsp_dir_ : ""));
+}
+
+void FastExplorationManager::updateCoverageGuidance(
+    const Eigen::Vector3d &pos) {
+  if (!coverage_guidance_ || !coverage_guidance_->samplingDue() ||
+      !frontier_manager_ptr_ || !planner_manager_) {
+    return;
+  }
+  CoverageMapDelta delta;
+  delta.version = ++coverage_map_version_;
+  if (!planner_manager_->sampleCoverageMap(coverage_guidance_->mapSpec(),
+                                           delta)) {
+    --coverage_map_version_;
+    ROS_WARN_STREAM_THROTTLE(
+        2.0, "[coverage guidance] raw ROG map snapshot unavailable; keep "
+             "legacy frontier selection");
+    return;
+  }
+
+  std::vector<CoverageFrontier> frontiers;
+  frontiers.reserve(frontier_manager_ptr_->cluster_list_.size());
+  const ros::Time now = ros::Time::now();
+  for (const ClusterInfo::Ptr &cluster :
+       frontier_manager_ptr_->cluster_list_) {
+    if (!cluster || cluster->state_ == FrontierState::VISITED ||
+        cluster->state_ == FrontierState::BLACKLISTED ||
+        cluster->state_ == FrontierState::SUSPENDED) {
+      continue;
+    }
+    CoverageFrontier frontier;
+    frontier.cluster_id = cluster->id_;
+    frontier.position =
+        (!cluster->candidate_vps_.empty()
+             ? cluster->candidate_vps_.front()
+             : cluster->center_)
+            .cast<double>();
+    frontier.yaw = !cluster->candidate_yaws_.empty()
+                       ? cluster->candidate_yaws_.front()
+                       : cluster->best_vp_yaw_;
+    frontier.information_gain =
+        std::max(cluster->last_visible_gain_, cluster->stable_visible_gain_);
+    frontier.wait_age =
+        cluster->first_reachable_time_.isZero()
+            ? 0.0
+            : std::max(0.0,
+                       (now - cluster->first_reachable_time_).toSec());
+    frontier.pass_debt = std::max(0.0, cluster->pass_debt_);
+    frontiers.emplace_back(frontier);
+  }
+  coverage_guidance_->submit(std::move(delta), std::move(frontiers), pos);
+}
+
+bool FastExplorationManager::coverageGuidanceBlocksFinish() const {
+  if (!coverage_guidance_ || !frontier_manager_ptr_ ||
+      frontier_manager_ptr_->reachableClusterCount() == 0) {
+    // Coverage guidance currently ranks frontend-produced viewpoints; it does
+    // not synthesize a trajectory target directly from an unknown macro zone.
+    // Therefore a persistent-map target without any executable frontier must
+    // not hold the FSM forever.  Once direct macro-target synthesis is added,
+    // that target's reachability can be included in this actionability gate.
+    return false;
+  }
+  return coverage_guidance_->blocksFinish();
 }
 
 EdgeSafetyCost FastExplorationManager::getPathEdgeCost(
@@ -393,6 +504,68 @@ int FastExplorationManager::selectStableGoalIndex(
   return chosen_idx;
 }
 
+void FastExplorationManager::deferCurrentGoalAfterPlanningFailure() {
+  if (!ed_ || !ep_ || !ed_->has_goal_lock_) {
+    return;
+  }
+  const ros::Time now = ros::Time::now();
+  deferred_goals_.erase(
+      std::remove_if(deferred_goals_.begin(), deferred_goals_.end(),
+                     [&](const DeferredGoal &goal) {
+                       return goal.until.isZero() || goal.until <= now;
+                     }),
+      deferred_goals_.end());
+  DeferredGoal *matched = nullptr;
+  for (auto &goal : deferred_goals_) {
+    if ((goal.cluster_id >= 0 &&
+         goal.cluster_id == ed_->locked_goal_cluster_id_) ||
+        (goal.position - ed_->locked_goal_).norm() <=
+            std::max(0.2, ep_->goal_lock_match_radius_)) {
+      matched = &goal;
+      break;
+    }
+  }
+  if (!matched) {
+    if (deferred_goals_.size() >= 64U) {
+      deferred_goals_.erase(deferred_goals_.begin());
+    }
+    deferred_goals_.push_back(
+        {ed_->locked_goal_cluster_id_, ed_->locked_goal_, ros::Time(0)});
+    matched = &deferred_goals_.back();
+  }
+  matched->cluster_id = ed_->locked_goal_cluster_id_;
+  matched->position = ed_->locked_goal_;
+  matched->until = now + ros::Duration(ep_->failed_goal_cooldown_);
+  ROS_WARN_STREAM("[plan recovery] temporarily defer failed goal cluster="
+                  << matched->cluster_id << " goal=("
+                  << matched->position.transpose() << ") cooldown="
+                  << ep_->failed_goal_cooldown_ << "s penalty="
+                  << ep_->failed_goal_penalty_
+                  << " active_deferred=" << deferred_goals_.size());
+}
+
+double FastExplorationManager::failedGoalPenalty(
+    const TopoNode::Ptr &viewpoint) const {
+  if (!viewpoint || !ep_ || deferred_goals_.empty()) {
+    return 0.0;
+  }
+  const ros::Time now = ros::Time::now();
+  for (const auto &goal : deferred_goals_) {
+    if (goal.until.isZero() || now >= goal.until) {
+      continue;
+    }
+    const bool same_cluster = goal.cluster_id >= 0 &&
+        viewpoint->frontier_cluster_id_ == goal.cluster_id;
+    const bool same_position =
+        (viewpoint->center_ - goal.position).norm() <=
+        std::max(0.2, ep_->goal_lock_match_radius_);
+    if (same_cluster || same_position) {
+      return ep_->failed_goal_penalty_;
+    }
+  }
+  return 0.0;
+}
+
 int FastExplorationManager::planGlobalPath(const Eigen::Vector3d &pos,
                                            const Eigen::Vector3d &vel) {
   last_plan_empty_frontier_ = false;
@@ -523,20 +696,35 @@ int FastExplorationManager::planGlobalPath(const Eigen::Vector3d &pos,
       ep_->frontier_pass_cooldown_, ep_->frontier_pass_debt_increment_,
       ep_->frontier_pass_debt_max_);
   planner_manager_->printSafetyMapSummary();
+  const std::unordered_set<int> coverage_preferred =
+      coverage_guidance_ ? coverage_guidance_->preferredClusterIds()
+                         : std::unordered_set<int>();
   frontier_manager_ptr_->generateTSPViewpoints(
-      planner_manager_->topo_graph_->odom_node_->center_, viewpoints);
+      planner_manager_->topo_graph_->odom_node_->center_, viewpoints,
+      coverage_preferred);
+  if (coverage_guidance_) {
+    coverage_guidance_->publishVisualization();
+  }
 
   if (viewpoints.empty()) {
     const int active_clusters = frontier_manager_ptr_->activeClusterCount();
     const int reachable_clusters = frontier_manager_ptr_->reachableClusterCount();
     last_plan_empty_frontier_ = active_clusters == 0 && reachable_clusters == 0;
-    last_plan_no_reachable_ = !last_plan_empty_frontier_;
+    last_plan_no_reachable_ = active_clusters > 0 && reachable_clusters == 0;
     planner_manager_->graph_visualizer_->vizTour({}, VizColor::RED, "global");
-    if (!last_plan_empty_frontier_) {
+    if (last_plan_no_reachable_) {
       ROS_WARN_STREAM_THROTTLE(
           0.5, "[frontier gate] viewpoint generation empty but frontier "
                "clusters remain: active="
                    << active_clusters << " reachable=" << reachable_clusters);
+      // These clusters have survived a forced global refresh but still have no
+      // safe/reachable viewpoint.  Treat this as an executable-frontier-empty
+      // observation and let the FSM's count/time debounce decide FINISH.
+      // Returning FAIL here retries forever because an inactive raw cluster
+      // cannot become a trajectory target without a map change.
+      return NO_FRONTIER;
+    }
+    if (!last_plan_empty_frontier_) {
       return FAIL;
     }
     return NO_FRONTIER;
@@ -619,6 +807,8 @@ int FastExplorationManager::planGlobalPath(const Eigen::Vector3d &pos,
     double gain_norm{0.0};
     double wait_norm{0.0};
     double debt_norm{0.0};
+    double coverage{0.0};
+    double failed_goal{0.0};
     double total{0.0};
   };
   vector<CandidateCostBreakdown> candidate_terms(viewpoint_reachable.size());
@@ -641,11 +831,18 @@ int FastExplorationManager::planGlobalPath(const Eigen::Vector3d &pos,
         viewpoint->frontier_pass_debt_ /
             std::max(1.0, ep_->candidate_debt_saturation_),
         0.0, 1.0);
+    terms.coverage = coverage_guidance_
+                         ? coverage_guidance_->clusterPenalty(
+                               viewpoint->frontier_cluster_id_,
+                               viewpoint->center_.cast<double>())
+                         : 0.0;
+    terms.failed_goal = failedGoalPenalty(viewpoint);
   };
   auto finishCompositeCost = [&](const int i) {
     CandidateCostBreakdown &terms = candidate_terms[i];
     if (!ep_->composite_candidate_cost_enable_) {
-      terms.total = viewpoint_reachable_distance[i];
+      terms.total = viewpoint_reachable_distance[i] + terms.coverage +
+                    terms.failed_goal;
       return;
     }
     terms.total =
@@ -654,7 +851,8 @@ int FastExplorationManager::planGlobalPath(const Eigen::Vector3d &pos,
         ep_->candidate_future_return_weight_ * terms.future_return -
         ep_->candidate_information_gain_weight_ * terms.gain_norm -
         ep_->candidate_wait_weight_ * terms.wait_norm -
-        ep_->candidate_debt_weight_ * terms.debt_norm;
+        ep_->candidate_debt_weight_ * terms.debt_norm + terms.coverage +
+        terms.failed_goal;
   };
   for (int i = 0; i < static_cast<int>(candidate_terms.size()); ++i) {
     fillStaticTerms(i);
@@ -675,7 +873,10 @@ int FastExplorationManager::planGlobalPath(const Eigen::Vector3d &pos,
                  << " future_return=0 gain="
                  << candidate_terms[goal_idx].gain_norm
                  << " wait=" << candidate_terms[goal_idx].wait_norm
-                 << " debt=" << candidate_terms[goal_idx].debt_norm);
+                 << " debt=" << candidate_terms[goal_idx].debt_norm
+                 << " coverage=" << candidate_terms[goal_idx].coverage
+                 << " failed_goal="
+                 << candidate_terms[goal_idx].failed_goal);
     ed_->global_tour_.clear();
     ed_->global_tour_.emplace_back(pos.cast<float>());
     ed_->global_tour_.emplace_back(viewpoint_reachable[goal_idx]->center_);
@@ -793,7 +994,10 @@ int FastExplorationManager::planGlobalPath(const Eigen::Vector3d &pos,
              << " J=" << term.total << " T=" << term.travel
              << " TB=" << term.turn_brake << " R=" << term.future_return
              << " G=" << term.gain_norm << " W=" << term.wait_norm
-             << " D=" << term.debt_norm;
+             << " D=" << term.debt_norm << " C=" << term.coverage;
+    if (term.failed_goal > 0.0) {
+      cost_log << " F=" << term.failed_goal;
+    }
   }
   ROS_INFO_STREAM_THROTTLE(0.5, cost_log.str());
 

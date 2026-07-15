@@ -11,6 +11,7 @@
 #include <geometry_msgs/PoseStamped.h>
 #include <data_structure/base/trajectory.h>
 #include <general_core/exploration/exploration_utils/lidar_map/lidar_map.h>
+#include <general_core/exploration/exploration_utils/coverage_guidance/coverage_types.h>
 #include <nav_msgs/Odometry.h>
 #include <general_core/exploration/exploration_utils/path_searching/bubble_astar.h>
 #include <general_core/exploration/exploration_utils/pointcloud_topo/graph.h>
@@ -418,6 +419,8 @@ public:
                                    double *switch_delay = nullptr);
   bool updateRogMap(const sensor_msgs::PointCloud2ConstPtr &cloud_msg,
                     const nav_msgs::Odometry::ConstPtr &odom_msg);
+  bool sampleCoverageMap(const CoverageMapSpec &spec,
+                         CoverageMapDelta &delta) const;
   bool isSafetyMapReady() const;
   MapVoxelState querySafetyState(const Eigen::Vector3d &pos) const;
   const char *safetyStateName(MapVoxelState state) const;

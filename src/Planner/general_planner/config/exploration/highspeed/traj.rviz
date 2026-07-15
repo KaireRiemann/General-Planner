@@ -118,6 +118,16 @@ Visualization Manager:
             global_path_order: true
           Queue Size: 100
           Value: true
+        - Class: rviz/MarkerArray
+          Enabled: true
+          Marker Topic: /exploration_node/coverage_guidance/route
+          Name: coverage_guidance
+          Namespaces:
+            coverage_active_free: true
+            coverage_reachable_unknown: true
+            coverage_route: true
+          Queue Size: 10
+          Value: true
         - Class: rviz/Group
           Displays:
             - Class: rviz/MarkerArray

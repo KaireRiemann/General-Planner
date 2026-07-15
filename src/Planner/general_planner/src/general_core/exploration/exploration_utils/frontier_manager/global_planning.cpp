@@ -67,7 +67,15 @@ private:
 
 
 
-void FrontierManager::generateTSPViewpoints(Eigen::Vector3f&center,  vector<TopoNode::Ptr> &viewpoints) {
+void FrontierManager::generateTSPViewpoints(
+    Eigen::Vector3f &center, vector<TopoNode::Ptr> &viewpoints) {
+  static const std::unordered_set<int> no_preference;
+  generateTSPViewpoints(center, viewpoints, no_preference);
+}
+
+void FrontierManager::generateTSPViewpoints(
+    Eigen::Vector3f&center, vector<TopoNode::Ptr> &viewpoints,
+    const std::unordered_set<int> &preferred_cluster_ids) {
 
   unordered_set<ClusterInfo::Ptr> revp_clusters_set; // (re)-generate viewpoints clusters
   struct CandidateCluster {
@@ -124,6 +132,17 @@ void FrontierManager::generateTSPViewpoints(Eigen::Vector3f&center,  vector<Topo
       continue;
     }
     candidate_clusters.push_back({cluster, computeCandidateDistance(cluster)});
+  }
+
+  // The legacy frontend regenerated only the nearest local_tsp_size clusters.
+  // Coverage guidance may identify a side-room cluster outside that Euclidean
+  // shortlist, so inject only its bounded current/next-region set. The normal
+  // reachability and safety gates below still decide whether it is executable.
+  for (const CandidateCluster &candidate : candidate_clusters) {
+    if (preferred_cluster_ids.count(candidate.cluster->id_)) {
+      candidate.cluster->is_new_cluster_ = false;
+      revp_clusters_set.insert(candidate.cluster);
+    }
   }
 
   vector<int> idx;

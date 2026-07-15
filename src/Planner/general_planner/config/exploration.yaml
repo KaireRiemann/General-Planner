@@ -2,6 +2,30 @@
 # Launch arguments can override both input topics for real-robot deployment.
 odometry_topic: /lidar_slam/odom
 cloud_topic: /cloud_registered
+# Persistent long-horizon coverage guidance.  It only ranks executable
+# HighSpeedExp frontiers; corridor/MINCO/backup/traj_server remain unchanged.
+# Modes: off (legacy), shadow (compute/log only), soft (cost bias), full
+# (coverage order + finish guard). Any missing/stale result falls back to the
+# legacy frontier objective automatically.
+coverage_guidance/mode: full
+coverage_guidance/voxel_resolution: 0.60
+coverage_guidance/fine_cell_size: 4.8
+coverage_guidance/macro_cell_size: 14.4
+coverage_guidance/near_expand_radius: 36.0
+coverage_guidance/update_period: 1.0
+coverage_guidance/stale_timeout: 3.0
+coverage_guidance/unknown_edge_penalty: 1.8
+coverage_guidance/unknown_first_penalty: 1000.0
+coverage_guidance/min_unknown_voxels: 8
+coverage_guidance/max_cp_nodes: 160
+coverage_guidance/max_preferred_clusters: 16
+coverage_guidance/soft_weight: 3.0
+coverage_guidance/full_rank_weight: 12.0
+# 0 disables the optional per-candidate cap. Garage full-mission A/B showed
+# that cap=8 improves mid-run AUC but increases finish time and path length.
+coverage_guidance/rank_penalty_cap: 0.0
+coverage_guidance/finish_guard_enable: true
+coverage_guidance/visualization_enable: true
 global_planning/w_vdir: 0.3
 global_planning/w_yawdir: 0.0
 global_planning/w_firstnode: 0.2
@@ -15,6 +39,8 @@ global_planning/candidate_future_return_weight: 0.55
 global_planning/candidate_information_gain_weight: 2.0
 global_planning/candidate_wait_weight: 1.5
 global_planning/candidate_debt_weight: 2.5
+global_planning/failed_goal_cooldown: 30.0
+global_planning/failed_goal_penalty: 2000.0
 global_planning/candidate_gain_saturation: 30.0
 global_planning/candidate_wait_saturation: 18.0
 global_planning/candidate_debt_saturation: 3.0
@@ -89,6 +115,9 @@ box_0/up: [182.0, 150.2, 3.8]
 dead_area_num: 0
 # trajectory param
 fsm/path_densify_step: 2.5
+fsm/adaptive_tight_path_horizon_enable: true
+fsm/tight_path_turn_threshold: 2.5
+fsm/tight_path_min_horizon: 7.0
 fsm/reorient_exit_speed: 0.45
 fsm/reorient_timeout: 6.0
 fsm/reorient_stop_retry_interval: 0.8

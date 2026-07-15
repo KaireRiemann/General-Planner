@@ -97,6 +97,26 @@ roslaunch general_planner_release exploration.launch \
 roslaunch general_planner_release exploration.launch auto_start:=true
 ```
 
+The delivered garage profile enables persistent long-horizon coverage
+guidance. It only orders existing, executable HighSpeedExp frontiers; unknown
+coverage anchors are never sent to the trajectory planner. To compare or roll
+back behavior without changing the YAML, select one of the four launch modes:
+
+```bash
+roslaunch general_planner_release exploration_sim.launch \
+  coverage_guidance_mode:=shadow rviz:=true
+
+roslaunch general_planner_release exploration_sim.launch \
+  coverage_guidance_mode:=off rviz:=true
+```
+
+`shadow` computes and displays the route without changing frontier selection;
+`soft` adds a bounded cost bias; `full` (default) uses the coverage order and
+guards `FINISH` while reachable unknown coverage remains. A stale or invalid
+coverage result automatically falls back to the original frontier objective.
+The visualization topic is
+`/exploration_node/coverage_guidance/route`.
+
 The default input topics are `/lidar_slam/odom` and `/cloud_registered`.
 Override them directly when the real robot uses different names:
 

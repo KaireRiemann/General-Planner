@@ -14,6 +14,7 @@
   <arg name="auto_start" default="false"/>
   <arg name="auto_start_delay" default="2.0"/>
   <arg name="trigger_topic" default="/move_base_simple/goal"/>
+  <arg name="coverage_guidance_mode" default="full"/>
   <arg name="traj_server" default="true"/>
   <arg name="rviz" default="true"/>
 
@@ -33,6 +34,7 @@
     <arg name="auto_start" value="$(arg auto_start)"/>
     <arg name="auto_start_delay" value="$(arg auto_start_delay)"/>
     <arg name="trigger_topic" value="$(arg trigger_topic)"/>
+    <arg name="coverage_guidance_mode" value="$(arg coverage_guidance_mode)"/>
     <arg name="traj_server" value="$(arg traj_server)"/>
   </include>
 
