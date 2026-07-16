@@ -149,6 +149,57 @@ void FastExplorationFSM::FSMCallback(const ros::TimerEvent &e) {
     if (res == SUCCEED) {
       fd_->consecutive_plan_failures_ = 0;
       fd_->next_plan_retry_time_ = ros::Time(0);
+      const bool used_backup_fallback =
+          planner_manager_->local_data_.backup_fallback_used_;
+      if (used_backup_fallback) {
+        const int current_cluster =
+            expl_manager_->ed_->locked_goal_cluster_id_;
+        const Eigen::Vector3f current_goal =
+            expl_manager_->ed_->locked_goal_;
+        const bool same_fallback_goal =
+            fd_->has_backup_fallback_goal_ &&
+            ((current_cluster >= 0 &&
+              current_cluster == fd_->backup_fallback_goal_cluster_id_) ||
+             (current_goal - fd_->backup_fallback_goal_).norm() <=
+                 fp_->backup_fallback_goal_match_radius_);
+        fd_->consecutive_backup_fallbacks_ =
+            same_fallback_goal ? fd_->consecutive_backup_fallbacks_ + 1 : 1;
+        fd_->has_backup_fallback_goal_ = true;
+        fd_->backup_fallback_goal_cluster_id_ = current_cluster;
+        fd_->backup_fallback_goal_ = current_goal;
+        ROS_WARN_STREAM(
+            "[plan recovery] accepted known-free backup fallback: count="
+            << fd_->consecutive_backup_fallbacks_
+            << " cluster=" << current_cluster
+            << " same_goal=" << same_fallback_goal
+            << " progress="
+            << planner_manager_->local_data_.backup_fallback_progress_);
+        if (fd_->consecutive_backup_fallbacks_ >=
+            fp_->backup_fallback_defer_count_) {
+          // A fallback changes the local sensing geometry, but repeatedly
+          // falling back for one logical frontier means that the frontier and
+          // backup constraints are jointly incompatible.  Defer it by spatial
+          // identity before the next global update instead of oscillating on
+          // regenerated cluster IDs.
+          expl_manager_->deferCurrentGoalAfterPlanningFailure();
+          expl_manager_->ed_->has_goal_lock_ = false;
+          expl_manager_->ed_->locked_goal_cluster_id_ = -1;
+          expl_manager_->ed_->global_tour_.clear();
+          expl_manager_->ed_->path_next_goal_.clear();
+          expl_manager_->updateGoalNode();
+          fd_->consecutive_backup_fallbacks_ = 0;
+          fd_->has_backup_fallback_goal_ = false;
+          fd_->backup_fallback_goal_cluster_id_ = -1;
+          ROS_WARN_STREAM(
+              "[plan recovery] defer frontier after repeated backup "
+              "fallback commits; threshold="
+              << fp_->backup_fallback_defer_count_);
+        }
+      } else {
+        fd_->consecutive_backup_fallbacks_ = 0;
+        fd_->has_backup_fallback_goal_ = false;
+        fd_->backup_fallback_goal_cluster_id_ = -1;
+      }
       resetFinishGate("PLAN_TRAJ succeed");
       poly_yaw_traj_pub_.publish(fd_->newest_yaw_traj_);
       poly_traj_pub_.publish(fd_->newest_traj_);
@@ -163,6 +214,9 @@ void FastExplorationFSM::FSMCallback(const ros::TimerEvent &e) {
       fd_->half_resolution = false;
 
     } else if (res == NO_FRONTIER) {
+      fd_->consecutive_backup_fallbacks_ = 0;
+      fd_->has_backup_fallback_goal_ = false;
+      fd_->backup_fallback_goal_cluster_id_ = -1;
       handleNoFrontierResult("PLAN_TRAJ: no frontier");
     } else if (res == FAIL) {
       ++fd_->consecutive_plan_failures_;
@@ -180,9 +234,8 @@ void FastExplorationFSM::FSMCallback(const ros::TimerEvent &e) {
       }
       double collision_time = 0.0;
       const bool safe = planner_manager_->checkTrajCollision(collision_time);
-      const double remaining = planner_manager_->committedTrajectoryRemainingTime();
       const bool have_safe_committed =
-          safe && planner_manager_->hasCommittedTrajectory() && remaining > 0.08;
+          safe && planner_manager_->hasActiveCommittedTrajectory();
       const bool may_refresh_goal =
           !have_safe_committed &&
           fd_->consecutive_plan_failures_ >= fp_->plan_failure_refresh_count_ &&
@@ -434,6 +487,10 @@ void FastExplorationFSM::init(ros::NodeHandle &nh,
            fp_->plan_failure_retry_delay_, 0.20);
   nh.param("fsm/plan_failure_refresh_count",
            fp_->plan_failure_refresh_count_, 3);
+  nh.param("fsm/backup_fallback_defer_count",
+           fp_->backup_fallback_defer_count_, 3);
+  nh.param("fsm/backup_fallback_goal_match_radius",
+           fp_->backup_fallback_goal_match_radius_, 3.0);
   fp_->reorient_exit_speed_ = std::max(0.05, fp_->reorient_exit_speed_);
   fp_->reorient_timeout_ = std::max(1.0, fp_->reorient_timeout_);
   fp_->reorient_stop_retry_interval_ =
@@ -443,6 +500,10 @@ void FastExplorationFSM::init(ros::NodeHandle &nh,
       std::clamp(fp_->plan_failure_retry_delay_, 0.05, 2.0);
   fp_->plan_failure_refresh_count_ =
       std::max(1, fp_->plan_failure_refresh_count_);
+  fp_->backup_fallback_defer_count_ =
+      std::max(1, fp_->backup_fallback_defer_count_);
+  fp_->backup_fallback_goal_match_radius_ =
+      std::clamp(fp_->backup_fallback_goal_match_radius_, 0.2, 20.0);
   /* Initialize main modules */
   // expl_manager_.reset(new FastExplorationManager);
   // expl_manager_->initialize(nh);
@@ -459,6 +520,10 @@ void FastExplorationFSM::init(ros::NodeHandle &nh,
   fd_->reorientation_required_ = false;
   fd_->reorientation_stop_requested_ = false;
   fd_->consecutive_plan_failures_ = 0;
+  fd_->consecutive_backup_fallbacks_ = 0;
+  fd_->has_backup_fallback_goal_ = false;
+  fd_->backup_fallback_goal_cluster_id_ = -1;
+  fd_->backup_fallback_goal_.setZero();
   fd_->first_odom_time_ = ros::Time(0);
   fd_->last_odom_receive_time_ = ros::Time(0);
   fd_->reorientation_start_time_ = ros::Time(0);
@@ -593,7 +658,7 @@ void FastExplorationFSM::updateTopoAndGlobalPath() {
 
   if (planner_manager_->topo_graph_->odom_node_->neighbors_.empty()) {
     double time;
-    if (planner_manager_->hasCommittedTrajectory()) {
+    if (planner_manager_->hasActiveCommittedTrajectory()) {
       bool safe = planner_manager_->checkTrajCollision(time);
       if (!safe) {
         transitState(CAUTION, "odom_node no nbrs");
@@ -607,7 +672,7 @@ void FastExplorationFSM::updateTopoAndGlobalPath() {
     global_path_update_timer_.start();
     return;
   }
-  if (planner_manager_->hasCommittedTrajectory()) {
+  if (planner_manager_->hasActiveCommittedTrajectory()) {
 
     double curr_time =
         (ros::Time::now() - planner_manager_->local_data_.start_time_).toSec();

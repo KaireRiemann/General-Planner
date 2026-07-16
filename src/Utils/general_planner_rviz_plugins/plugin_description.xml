@@ -1,0 +1,9 @@
+<library path="lib/libgeneral_planner_rviz_plugins">
+  <class name="general_planner_rviz_plugins/Goal3DTool"
+         type="general_planner_rviz_plugins::Goal3DTool"
+         base_class_type="rviz::Tool">
+    <description>
+      Select an XYZ position and yaw in RViz and publish it as a PoseStamped goal.
+    </description>
+  </class>
+</library>

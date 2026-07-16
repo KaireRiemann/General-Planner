@@ -201,6 +201,11 @@ add_executable(yaw_candidate_selector_self_test
 )
 target_include_directories(yaw_candidate_selector_self_test PRIVATE include)
 
+add_executable(goal_height_policy_self_test
+        tests/goal_height_policy_self_test.cpp
+)
+target_include_directories(goal_height_policy_self_test PRIVATE include)
+
 add_executable(fsm_node
         Apps/fsm_node_ros1.cpp
 )

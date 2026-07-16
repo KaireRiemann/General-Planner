@@ -1761,7 +1761,9 @@ namespace fsm {
         return true;
     }
 
-    void Fsm::setGoalPosiAndYaw(const Vec3f &p, const Quatf &q) {
+    void Fsm::setGoalPosiAndYaw(const Vec3f &p,
+                                const Quatf &q,
+                                const GoalHeightMode height_mode) {
 
         if (!p.allFinite()) {
             recordDiagnosticEvent("WARN",
@@ -1787,15 +1789,14 @@ namespace fsm {
         }
 
         auto click_point = p;
-        if (cfg_.click_height > -5) {
-            click_point.z() = cfg_.click_height;
-        }
+        click_point.z() = resolveGoalHeight(p.z(), cfg_.click_height, height_mode);
         recordDiagnosticEvent("INFO",
                               "goal_received",
-                              fmt::format("raw=[{:.3f},{:.3f},{:.3f}];click_height={:.3f};adjusted=[{:.3f},{:.3f},{:.3f}]",
+                              fmt::format("raw=[{:.3f},{:.3f},{:.3f}];click_height={:.3f};adjusted=[{:.3f},{:.3f},{:.3f}];height_source={}",
                                           p.x(), p.y(), p.z(),
                                           cfg_.click_height,
-                                          click_point.x(), click_point.y(), click_point.z()),
+                                          click_point.x(), click_point.y(), click_point.z(),
+                                          goalHeightSourceName(cfg_.click_height, height_mode)),
                               -1,
                               -1,
                               false,

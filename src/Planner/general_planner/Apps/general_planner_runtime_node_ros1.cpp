@@ -298,6 +298,8 @@ std::vector<OverlayRule> releaseOverlayRules() {
             "timer_en",
             "click_goal_en",
             "click_goal_topic",
+            "click_goal_3d_en",
+            "click_goal_3d_topic",
             "click_height",
             "click_yaw_en",
             "replan_rate",
@@ -738,6 +740,10 @@ bool buildRuntimeConfig(const std::string &interface_config_path,
                                 "fsm/click_goal_topic");
     applyIfPresent<bool>(root, interface, "click_goal_en",
                          "fsm/click_goal_en");
+    applyIfPresent<bool>(root, interface, "click_goal_3d_en",
+                         "fsm/click_goal_3d_en");
+    applyIfPresent<std::string>(root, interface, "click_goal_3d_topic",
+                                "fsm/click_goal_3d_topic");
     applyIfPresent<double>(root, interface, "click_height",
                            "fsm/click_height");
     applyIfPresent<bool>(root, interface, "click_yaw_en",

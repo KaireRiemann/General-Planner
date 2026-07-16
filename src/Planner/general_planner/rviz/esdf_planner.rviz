@@ -517,6 +517,9 @@ Visualization Manager:
     - Class: rviz/MoveCamera
     - Class: rviz/SetGoal
       Topic: /goal
+    - Class: general_planner_rviz_plugins/Goal3DTool
+      3D Topic: /goal_3d
+      Fallback 2D Topic: /goal
   Value: true
   Views:
     Current:

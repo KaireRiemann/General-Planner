@@ -970,6 +970,19 @@ void GcopterConfig::init(const ros::NodeHandle &nh_priv)
   nh_priv.param("BackupPieceNum", backupPieceNum, backupPieceNum);
   nh_priv.param("BackupMaxVel", backupMaxVel, std::min(maxVelMag, backupMaxVel));
   nh_priv.param("BackupMaxAcc", backupMaxAcc, maxAccMag);
+  nh_priv.param("BackupFallbackEnable", backupFallbackEnable,
+                backupFallbackEnable);
+  nh_priv.param("BackupFallbackMaxSpeed", backupFallbackMaxSpeed,
+                backupFallbackMaxSpeed);
+  nh_priv.param("BackupFallbackMinProgress", backupFallbackMinProgress,
+                backupFallbackMinProgress);
+  nh_priv.param("BackupFallbackMaxProgress", backupFallbackMaxProgress,
+                backupFallbackMaxProgress);
+  backupFallbackMaxSpeed =
+      std::clamp(backupFallbackMaxSpeed, 0.3, std::max(0.3, maxVelMag));
+  backupFallbackMinProgress = std::max(0.20, backupFallbackMinProgress);
+  backupFallbackMaxProgress = std::max(
+      backupFallbackMinProgress + 0.20, backupFallbackMaxProgress);
   nh_priv.param("ReplanCommitDelay", replanCommitDelay, replanCommitDelay);
   nh_priv.param("CommitMinDuration", commitMinDuration, commitMinDuration);
   nh_priv.param("CommitMaxDuration", commitMaxDuration, commitMaxDuration);
@@ -1233,6 +1246,8 @@ bool FastPlannerManager::getCommittedReplanHeadState(Eigen::Vector3d &pos,
 bool FastPlannerManager::planExploreTraj(const std::vector<Eigen::Vector3f> &path, bool is_static)
 {
   const ros::Time plan_process_start = ros::Time::now();
+  local_data_.backup_fallback_used_ = false;
+  local_data_.backup_fallback_progress_ = 0.0;
   last_frontend_path_ = path;
   if (!exploration_traj_opt_ || !yaw_traj_opt_)
   {
@@ -1477,7 +1492,7 @@ bool FastPlannerManager::planExploreTraj(const std::vector<Eigen::Vector3f> &pat
   double terminal_speed = 0.0;
   if (gcopter_config_->nonstopTerminalVelocityEnable &&
       gcopter_config_->backupTrajEnable &&
-      !is_static && hasCommittedTrajectory() &&
+      !is_static && hasActiveCommittedTrajectory() &&
       local_path.size() >= 2 &&
       segment_safety.path_length >=
           std::max(0.0, gcopter_config_->nonstopTerminalMinPathLength) &&
@@ -2274,6 +2289,282 @@ bool FastPlannerManager::planExploreTraj(const std::vector<Eigen::Vector3f> &pat
     return false;
   };
 
+  auto buildKnownFreeTerminalFallback =
+      [&](geometry_utils::Trajectory &fallback_pos,
+          geometry_utils::Trajectory &fallback_yaw,
+          geometry_utils::PolytopeVec &fallback_sfcs,
+          double &fallback_progress) -> bool {
+    fallback_pos.clear();
+    fallback_yaw.clear();
+    fallback_sfcs.clear();
+    fallback_progress = 0.0;
+    if (!gcopter_config_->backupFallbackEnable || committed_pos.empty() ||
+        !corridor_generator_ || !rog_map_updated_ || !exploration_traj_opt_)
+    {
+      return false;
+    }
+
+    double known_length = 0.0;
+    const double known_end_t =
+        estimateKnownFreeEndTime(committed_pos, known_length);
+    const double sample_dt =
+        std::max(0.03, gcopter_config_->backupSampleDt);
+    const double safe_end_t = known_end_t -
+        std::max(gcopter_config_->commitBackupTimeBuffer, 2.0 * sample_dt);
+    if (!std::isfinite(safe_end_t) || safe_end_t <= 2.0 * sample_dt)
+    {
+      ROS_WARN_STREAM_THROTTLE(
+          0.5,
+          "[backup fallback] no usable known-free prefix: known_end_t="
+              << known_end_t << " known_len=" << known_length);
+      return false;
+    }
+
+    const general_utils::StatePVAJ fallback_head =
+        committed_pos.getState(0.0);
+    if (!fallback_head.allFinite())
+    {
+      return false;
+    }
+    const Eigen::Vector3d start = fallback_head.col(0);
+    const double safe_distance =
+        std::max(0.05, gcopter_config_->commitKnownFreeSafeDistance);
+    std::string last_reason = "no_progress_candidate";
+
+    for (const double horizon_scale : {1.0, 0.80, 0.60, 0.40})
+    {
+      double requested_t = std::max(2.0 * sample_dt,
+                                    horizon_scale * safe_end_t);
+      requested_t = std::min(requested_t, safe_end_t);
+
+      // Cap the recovery motion by travelled arc length.  The fallback should
+      // reveal a new local view, not silently become another long exploration
+      // trajectory with the same backup requirement.
+      double target_t = 0.0;
+      double arc_length = 0.0;
+      Eigen::Vector3d previous = start;
+      for (double t = sample_dt; t <= requested_t + 1.0e-6;
+           t += sample_dt)
+      {
+        const double tt = std::min(t, requested_t);
+        const Eigen::Vector3d point = committed_pos.getPos(tt);
+        const double segment = (point - previous).norm();
+        if (arc_length + segment >
+            gcopter_config_->backupFallbackMaxProgress)
+        {
+          break;
+        }
+        arc_length += segment;
+        target_t = tt;
+        previous = point;
+        if (tt >= requested_t)
+        {
+          break;
+        }
+      }
+      if (target_t <= sample_dt ||
+          arc_length < gcopter_config_->backupFallbackMinProgress)
+      {
+        last_reason = "known_free_prefix_too_short";
+        continue;
+      }
+
+      const Eigen::Vector3d target = committed_pos.getPos(target_t);
+      const double direct_progress = (target - start).norm();
+      if (direct_progress < gcopter_config_->backupFallbackMinProgress)
+      {
+        last_reason = "insufficient_direct_progress";
+        continue;
+      }
+
+      const int sample_count = std::clamp(
+          static_cast<int>(std::ceil(arc_length / 0.75)), 1, 6);
+      std::vector<Eigen::Vector3d> fallback_path;
+      fallback_path.reserve(sample_count + 1);
+      fallback_path.emplace_back(start);
+      for (int i = 1; i <= sample_count; ++i)
+      {
+        const Eigen::Vector3d point = committed_pos.getPos(
+            target_t * static_cast<double>(i) /
+            static_cast<double>(sample_count));
+        if ((point - fallback_path.back()).norm() > 0.05)
+        {
+          fallback_path.emplace_back(point);
+        }
+      }
+      if (fallback_path.size() < 2U)
+      {
+        last_reason = "degenerate_fallback_path";
+        continue;
+      }
+      fallback_path.back() = target;
+
+      bool guide_known_free = true;
+      for (std::size_t i = 1; i < fallback_path.size(); ++i)
+      {
+        const RaycastSafetyInfo ray = raycastSafety(
+            fallback_path[i - 1], fallback_path[i], true, safe_distance,
+            std::max(0.05, gcopter_config_->safetyMapQueryStep));
+        if (ray.blocked_by_occupied || ray.blocked_by_unknown)
+        {
+          guide_known_free = false;
+          last_reason = std::string("guide_") +
+                        safetyStateName(ray.first_blocked_state);
+          break;
+        }
+      }
+      if (!guide_known_free)
+      {
+        continue;
+      }
+
+      geometry_utils::PolytopeVec candidate_sfcs;
+      general_utils::Vec3f shifted_start = fallback_path.front();
+      const general_utils::vec_E<general_utils::Vec3f> fallback_guide =
+          toVec3fPath(fallback_path);
+      bool corridor_ok = false;
+      try
+      {
+        corridor_ok = corridor_generator_->SearchPolytopeOnPath(
+            fallback_guide, candidate_sfcs, shifted_start, false);
+      }
+      catch (const std::exception &e)
+      {
+        last_reason = std::string("corridor_exception:") + e.what();
+        corridor_ok = false;
+      }
+      if (!corridor_ok || candidate_sfcs.empty() ||
+          !geometry_utils::SimplifySFC(start, target, candidate_sfcs) ||
+          candidate_sfcs.empty())
+      {
+        last_reason = "fallback_corridor_failed";
+        continue;
+      }
+      std::string sfc_reason;
+      if (!validateSfcSequence(start, target, candidate_sfcs,
+                               std::max(1.0e-3, 0.25 *
+                                   gcopter_config_->corridorMinOverlapThreshold),
+                               sfc_reason))
+      {
+        last_reason = std::string("fallback_sfc:") + sfc_reason;
+        continue;
+      }
+
+      general_utils::StatePVAJ fallback_tail =
+          general_utils::StatePVAJ::Zero();
+      fallback_tail.col(0) = target;
+      const double fallback_speed = std::clamp(
+          std::max(gcopter_config_->backupFallbackMaxSpeed,
+                   fallback_head.col(1).norm() + 0.25),
+          0.3, std::max(0.3, gcopter_config_->maxVelMag));
+      std::vector<double> guide_times;
+      guide_times.reserve(fallback_path.size());
+      guide_times.emplace_back(0.0);
+      for (std::size_t i = 1; i < fallback_path.size(); ++i)
+      {
+        guide_times.emplace_back(
+            guide_times.back() +
+            std::max(0.10, (fallback_path[i] - fallback_path[i - 1]).norm() /
+                               std::max(0.3, fallback_speed)));
+      }
+      general_utils::VecDf velocity_bounds(candidate_sfcs.size());
+      velocity_bounds.setConstant(fallback_speed);
+      geometry_utils::Trajectory candidate_pos;
+      geometry_utils::PolytopeVec optimizer_sfcs = candidate_sfcs;
+      if (!exploration_traj_opt_->optimize(
+              fallback_head, fallback_tail, fallback_guide, guide_times,
+              optimizer_sfcs, velocity_bounds, candidate_pos) ||
+          candidate_pos.empty())
+      {
+        last_reason = "fallback_exploration_opt_failed";
+        continue;
+      }
+
+      candidate_pos.start_WT = commit_start_time.toSec();
+      double fallback_start_yaw = local_data_.curr_yaw_;
+      if (!committed_yaw.empty())
+      {
+        fallback_start_yaw = committed_yaw.getPos(0.0).x();
+      }
+      geometry_utils::Trajectory candidate_yaw = makeHoldYawTrajectory(
+          fallback_start_yaw, candidate_pos.getTotalDuration());
+      candidate_yaw.start_WT = commit_start_time.toSec();
+
+      std::string commit_reason;
+      if (candidate_yaw.empty() ||
+          !validateTrajectoryForCommit(
+              candidate_pos, candidate_yaw,
+              std::max(fallback_speed * 1.10,
+                       fallback_head.col(1).norm() + 0.30),
+              std::max(gcopter_config_->maxAccMag,
+                       gcopter_config_->brakeAccel),
+              gcopter_config_->yaw_max_vel,
+              std::max(0.02, gcopter_config_->commitSampleDt),
+              commit_reason))
+      {
+        last_reason = std::string("fallback_commit:") + commit_reason;
+        continue;
+      }
+
+      bool candidate_known_free = true;
+      previous = candidate_pos.getPos(0.0);
+      for (double t = sample_dt;
+           t <= candidate_pos.getTotalDuration() + 1.0e-6;
+           t += sample_dt)
+      {
+        const double tt = std::min(t, candidate_pos.getTotalDuration());
+        const Eigen::Vector3d point = candidate_pos.getPos(tt);
+        const RaycastSafetyInfo ray = raycastSafety(
+            previous, point, true, safe_distance,
+            std::max(0.05, sample_dt *
+                std::max(1.0, candidate_pos.getVel(tt).norm())));
+        if (ray.blocked_by_occupied || ray.blocked_by_unknown)
+        {
+          candidate_known_free = false;
+          last_reason = std::string("optimized_") +
+                        safetyStateName(ray.first_blocked_state);
+          break;
+        }
+        previous = point;
+        if (tt >= candidate_pos.getTotalDuration())
+        {
+          break;
+        }
+      }
+      const double terminal_t = candidate_pos.getTotalDuration();
+      if (!candidate_known_free ||
+          candidate_pos.getVel(terminal_t).norm() > 0.20 ||
+          candidate_pos.getAcc(terminal_t).norm() > 0.30)
+      {
+        if (candidate_known_free)
+        {
+          last_reason = "fallback_nonzero_terminal_state";
+        }
+        continue;
+      }
+
+      fallback_pos = candidate_pos;
+      fallback_yaw = candidate_yaw;
+      fallback_sfcs = optimizer_sfcs;
+      fallback_progress =
+          (candidate_pos.getPos(terminal_t) - start).norm();
+      ROS_WARN_STREAM(
+          "[backup fallback] commit low-speed known-free terminal-stop: progress="
+              << fallback_progress << " duration=" << terminal_t
+              << " max_v=" << candidate_pos.getMaxVelRate()
+              << " known_end_t=" << known_end_t
+              << " source_arc=" << arc_length);
+      return true;
+    }
+
+    ROS_WARN_STREAM_THROTTLE(
+        0.5,
+        "[backup fallback] unable to build known-free terminal-stop: reason="
+            << last_reason << " known_end_t=" << known_end_t
+            << " known_len=" << known_length);
+    return false;
+  };
+
   general_planner::ExpTraj exp_traj_info;
   exp_traj_info.setSFC(sfcs);
   exp_traj_info.setGoalConnectedFlag(true);
@@ -2322,8 +2613,38 @@ bool FastPlannerManager::planExploreTraj(const std::vector<Eigen::Vector3f> &pat
       committed_pos.getTotalDuration() > gcopter_config_->backupMinStartTime + 0.2 &&
       !backup_available && !known_free_terminal_stop)
   {
-    ROS_WARN("[highspeed_exp adapter] backup is required for a highspeed committed trajectory.");
-    return false;
+    geometry_utils::Trajectory fallback_pos;
+    geometry_utils::Trajectory fallback_yaw;
+    geometry_utils::PolytopeVec fallback_sfcs;
+    double fallback_progress = 0.0;
+    if (buildKnownFreeTerminalFallback(
+            fallback_pos, fallback_yaw, fallback_sfcs,
+            fallback_progress))
+    {
+      committed_pos = fallback_pos;
+      committed_yaw = fallback_yaw;
+      sfcs = fallback_sfcs;
+      exp_traj_info.setSFC(sfcs);
+      exp_traj_info.setGoalConnectedFlag(false);
+      exp_traj_info.setWholeTrajKnownFreeFlag(true);
+      exp_traj_info.setTrajectory(
+          commit_start_time.toSec(), committed_pos, committed_yaw);
+      known_free_terminal_stop = true;
+      terminal_velocity_used = false;
+      terminal_speed = 0.0;
+      backup_known_len = fallback_progress;
+      local_data_.backup_fallback_used_ = true;
+      local_data_.backup_fallback_progress_ = fallback_progress;
+      ROS_WARN_STREAM(
+          "[highspeed_exp adapter] backup unavailable; submit bounded "
+          "known-free exploration fallback instead of rejecting goal: progress="
+              << fallback_progress);
+    }
+    else
+    {
+      ROS_WARN("[highspeed_exp adapter] backup required and known-free fallback failed; keep prior safe command.");
+      return false;
+    }
   }
 
   general_planner::CmdTraj candidate_cmd;
@@ -2459,6 +2780,8 @@ bool FastPlannerManager::planExploreTraj(const std::vector<Eigen::Vector3f> &pat
 
 bool FastPlannerManager::planControlledStopTrajectory()
 {
+  local_data_.backup_fallback_used_ = false;
+  local_data_.backup_fallback_progress_ = 0.0;
   if (!gcopter_config_ || !commit_store_)
   {
     return false;
@@ -2959,6 +3282,13 @@ bool FastPlannerManager::hasCommittedTrajectory() const
 {
   return commit_store_ && !commit_store_->cmd_traj_info.empty() &&
          local_data_.duration_ > 1.0e-4;
+}
+
+bool FastPlannerManager::hasActiveCommittedTrajectory(
+    double min_remaining) const
+{
+  return hasCommittedTrajectory() &&
+         committedTrajectoryRemainingTime() > std::max(0.0, min_remaining);
 }
 
 bool FastPlannerManager::hasCommittedBackup() const

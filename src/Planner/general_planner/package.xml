@@ -27,5 +27,7 @@
   <depend>rog_map</depend>
   <depend>traj_utils</depend>
 
+  <exec_depend>general_planner_rviz_plugins</exec_depend>
+
   <export/>
 </package>

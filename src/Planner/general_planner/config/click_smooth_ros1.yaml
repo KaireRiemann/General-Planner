@@ -1,6 +1,8 @@
 fsm:
   click_goal_en: true
   click_goal_topic: "/goal"
+  click_goal_3d_en: true
+  click_goal_3d_topic: "/goal_3d"
   click_height: 1.25
   click_yaw_en: true
   state2state_plan_from_rest_max_failures: 5

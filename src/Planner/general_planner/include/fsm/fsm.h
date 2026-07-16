@@ -34,6 +34,7 @@
 #include <fmt/color.h>
 #include <cereal/archives/binary_file_handler.hpp>
 #include <fsm/config.hpp>
+#include <fsm/goal_height_policy.hpp>
 #include <general_core/commit_governor.hpp>
 #include <general_core/general_planner.h>
 #include <general_core/mission_orchestrator.hpp>
@@ -363,7 +364,10 @@ namespace fsm {
 
         bool closeToGoal(const double &thresh_dis);
 
-        void setGoalPosiAndYaw(const Vec3f &p, const Quatf &q);
+        void setGoalPosiAndYaw(
+                const Vec3f &p,
+                const Quatf &q,
+                GoalHeightMode height_mode = GoalHeightMode::CONFIGURED_CLICK_HEIGHT);
 
         bool state2stateMode() const;
 

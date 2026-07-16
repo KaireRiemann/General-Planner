@@ -129,13 +129,13 @@ namespace fsm {
         bool timer_en{true};
 
         // Fsm Params
-        bool click_goal_en{},visualization_en{};
+        bool click_goal_en{}, click_goal_3d_en{}, visualization_en{};
         bool auto_start{false};
         double replan_rate{}, resolution{};
         double click_height{};
 
         bool click_yaw_en{};
-        string cmd_topic, mpc_cmd_topic, so3_cmd_topic, click_goal_topic;
+        string cmd_topic, mpc_cmd_topic, so3_cmd_topic, click_goal_topic, click_goal_3d_topic;
         bool publish_so3_cmd{false};
         vector<double> so3_kR{0.0, 0.0, 0.0};
         vector<double> so3_kOm{0.0, 0.0, 0.0};
@@ -221,6 +221,7 @@ namespace fsm {
             loader.LoadParam("fsm/timer_en", timer_en, false);
             loader.LoadParam("fsm/auto_start", auto_start, false);
             loader.LoadParam("fsm/click_goal_en", click_goal_en, false);
+            loader.LoadParam("fsm/click_goal_3d_en", click_goal_3d_en, false);
             loader.LoadParam("fsm/click_yaw_en", click_yaw_en, false);
             loader.LoadParam("fsm/replan_rate", replan_rate, 10.0);
             loader.LoadParam("fsm/click_height", click_height, 1.5);
@@ -243,6 +244,7 @@ namespace fsm {
                 so3_kOm = vector<double>{0.0, 0.0, 0.0};
             }
             loader.LoadParam("fsm/click_goal_topic", click_goal_topic, string("/planning/click_goal_topic"));
+            loader.LoadParam("fsm/click_goal_3d_topic", click_goal_3d_topic, string("/goal_3d"));
             loader.LoadParam("fsm/task_mode", task_mode_str, string("state2state"));
             const string raw_task_mode_str = task_mode_str;
             task_mode_str = normalizeTaskMode(task_mode_str);

@@ -59,6 +59,7 @@ namespace fsm {
     class FsmRos1 : public Fsm {
         ros::NodeHandle nh_;
         ros::Subscriber goal_sub_;
+        ros::Subscriber goal_3d_sub_;
         ros::Subscriber task_mode_sub_;
         ros::Subscriber tracking_target_sub_;
         ros::Subscriber tracking_prediction_sub_;
@@ -805,6 +806,41 @@ namespace fsm {
             setGoalPosiAndYaw(goal_p, goal_q);
         }
 
+        void goal3DCallback(const geometry_msgs::PoseStampedConstPtr &msg) {
+            general_utils::Vec3f goal_p = Vec3f{msg->pose.position.x, msg->pose.position.y,
+                                                msg->pose.position.z};
+            general_utils::Quatf goal_q = general_utils::Quatf{msg->pose.orientation.w,
+                                                                msg->pose.orientation.x,
+                                                                msg->pose.orientation.y,
+                                                                msg->pose.orientation.z};
+            setGoalPosiAndYaw(goal_p, goal_q, GoalHeightMode::MESSAGE_HEIGHT);
+        }
+
+        bool subscribe3DGoal(const uint32_t queue_size,
+                             const bool fixed_height_goal_active) {
+            if (!cfg_.click_goal_3d_en) {
+                return false;
+            }
+            if (cfg_.click_goal_3d_topic.empty()) {
+                ROS_WARN(" -- [Fsm] 3D click goal is enabled but its topic is empty; skip it.");
+                return false;
+            }
+            if (fixed_height_goal_active &&
+                nh_.resolveName(cfg_.click_goal_3d_topic) ==
+                nh_.resolveName(cfg_.click_goal_topic)) {
+                ROS_WARN_STREAM(" -- [Fsm] 3D click goal topic resolves to the 2D goal topic "
+                                << nh_.resolveName(cfg_.click_goal_topic)
+                                << "; skip the ambiguous 3D subscriber.");
+                return false;
+            }
+            goal_3d_sub_ = nh_.subscribe(cfg_.click_goal_3d_topic, queue_size,
+                                         &FsmRos1::goal3DCallback, this);
+            cout << YELLOW << " -- [Fsm] 3D CLICK GOAL ENABLED: "
+                 << nh_.resolveName(cfg_.click_goal_3d_topic)
+                 << " (message z is preserved)." << RESET << endl;
+            return true;
+        }
+
         void dynamicObstacleCloudCallback(const sensor_msgs::PointCloud2ConstPtr &msg) {
             if (!cfg_.dynamic_obstacle_layer_enable || planner_ptr_ == nullptr) {
                 return;
@@ -1240,6 +1276,7 @@ namespace fsm {
                                                &FsmRos1::taskModeCallback, this);
                 goal_sub_ = nh_.subscribe(cfg_.click_goal_topic, 10,
                                           &FsmRos1::goalCallback, this);
+                subscribe3DGoal(10, true);
                 tracking_target_sub_ = nh_.subscribe(cfg_.tracking_target_odom_topic, 10,
                                                      &FsmRos1::trackingTargetCallback, this);
                 if (cfg_.tracking_use_target_prediction_path && !cfg_.tracking_target_prediction_topic.empty()) {
@@ -1259,10 +1296,22 @@ namespace fsm {
                          << cfg_.tracking_target_prediction_topic << RESET << endl;
                 }
                 cmd_cnt++;
-            } else if ((state2stateMode() || se3AggressiveMode()) && cfg_.click_goal_en) {
-                goal_sub_ = nh_.subscribe(cfg_.click_goal_topic, 1, &FsmRos1::goalCallback, this);
-                cout << YELLOW << " -- [Fsm] CLICKGOAL ENABLE." << RESET << endl;
-                cmd_cnt++;
+            } else if ((state2stateMode() || se3AggressiveMode()) &&
+                       (cfg_.click_goal_en || cfg_.click_goal_3d_en)) {
+                bool goal_input_ready = false;
+                if (cfg_.click_goal_en) {
+                    goal_sub_ = nh_.subscribe(cfg_.click_goal_topic, 1,
+                                              &FsmRos1::goalCallback, this);
+                    cout << YELLOW << " -- [Fsm] 2D CLICK GOAL ENABLED: "
+                         << nh_.resolveName(cfg_.click_goal_topic)
+                         << " (z falls back to click_height=" << cfg_.click_height
+                         << ")." << RESET << endl;
+                    goal_input_ready = true;
+                }
+                goal_input_ready = subscribe3DGoal(1, cfg_.click_goal_en) || goal_input_ready;
+                if (goal_input_ready) {
+                    cmd_cnt++;
+                }
             } else if (trackingMode() || trackingPerchingMode()) {
                 tracking_target_sub_ = nh_.subscribe(cfg_.tracking_target_odom_topic, 10,
                                                      &FsmRos1::trackingTargetCallback, this);

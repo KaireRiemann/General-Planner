@@ -350,6 +350,9 @@ void FrontierManager::init(ros::NodeHandle &nh, LIOInterface::Ptr &lio_interface
            frtp_.cluster_max_gap_ratio_, 0.85f);
   nh.param("FrontierManager/cluster_match_radius",
            frtp_.cluster_match_radius_, frtp_.cluster_min_radius_ * 1.5f);
+  nh.param("FrontierManager/boundary_ignore_cells",
+           frtp_.boundary_ignore_cells_, 1);
+  frtp_.boundary_ignore_cells_ = std::max(0, frtp_.boundary_ignore_cells_);
 
   // frt_cluster_ptr_.reset(new FrontierCluster);
   // frt_cluster_ptr_->init(nh);
@@ -503,6 +506,20 @@ CELL_STATE FrontierManager::get_state(const Eigen::Vector3i &idx) {
     return UNKNOWN;
   else
     return (CELL_STATE)frtd_.label_map_[bytes];
+}
+
+bool FrontierManager::is_boundary_cell(const Eigen::Vector3i &idx) const {
+  const int margin = frtp_.boundary_ignore_cells_;
+  if (margin <= 0) {
+    return false;
+  }
+  for (int axis = 0; axis < 3; ++axis) {
+    if (idx(axis) < margin ||
+        idx(axis) >= frtp_.cell_max_cnt_(axis) - margin) {
+      return true;
+    }
+  }
+  return false;
 }
 
 void FrontierManager::get_cells_2_update(
@@ -1146,6 +1163,14 @@ void FrontierManager::updateFrontierClusters(
   for (auto &cell : cells_2_box_search) {
     ByteArrayRaw bytes;
     idx2bytes(cell, bytes);
+    if (is_boundary_cell(cell)) {
+      // The outermost exploration-box layer is a configured task boundary,
+      // not an observable surface objective.  Keeping it as FRONTIER_DIR made
+      // vertical FOV edge returns at the box ceiling persist indefinitely.
+      frtd_.label_map_[bytes] = SPARSE;
+      frtd_.frt_map_.erase(bytes);
+      continue;
+    }
     if (get_state(cell) == SPARSE && has_dense_nbr(cell)) {
       if (bad_dis_set.count(cell)) {
         frtd_.label_map_[bytes] = FRONTIER_DIS;

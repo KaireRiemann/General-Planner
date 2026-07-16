@@ -1,6 +1,8 @@
 fsm:
   click_goal_en: true
   click_goal_topic: "/goal"
+  click_goal_3d_en: true
+  click_goal_3d_topic: "/goal_3d"
   click_height: 1.5
   click_yaw_en: true
   replan_rate: 10.0

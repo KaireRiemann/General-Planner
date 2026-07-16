@@ -51,6 +51,7 @@ struct FrontierParam {
   float cluster_max_fov_edge_ratio_;
   float cluster_max_gap_ratio_;
   float cluster_match_radius_;
+  int boundary_ignore_cells_;
   Eigen::Vector3f map_min_;
   Eigen::Vector3f map_max_;
   Eigen::Vector3i cell_max_cnt_;
@@ -321,6 +322,7 @@ private:
                          const Eigen::Vector3f &pos, Eigen::Vector2i &id);
   CELL_STATE get_state(const PointType &pt);
   CELL_STATE get_state(const Eigen::Vector3i &idx);
+  bool is_boundary_cell(const Eigen::Vector3i &idx) const;
   bool is_gap_point(const PointType &pt);
   bool is_fov_edge(const PointType &pt);
   void get_cells_2_update(const PointVector &points,

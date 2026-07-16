@@ -47,6 +47,7 @@ namespace fsm {
         rclcpp::Publisher<mars_quadrotor_msgs::msg::PolynomialTrajectory>::SharedPtr mpc_cmd_pub_;
         rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr path_pub_;
         rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr goal_sub_;
+        rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr goal_3d_sub_;
 
         rclcpp::TimerBase::SharedPtr execution_timer_, replan_timer_, cmd_timer_;
         rclcpp::CallbackGroup::SharedPtr exec_cbk_group_, replan_cbk_group_, cmd_cbk_group_, goal_cbk_group_;
@@ -293,6 +294,16 @@ namespace fsm {
             setGoalPosiAndYaw(goal_p, goal_q);
         }
 
+        void goal3DCallback(const geometry_msgs::msg::PoseStamped::SharedPtr msg) {
+            general_utils::Vec3f goal_p = Vec3f{msg->pose.position.x, msg->pose.position.y,
+                                                msg->pose.position.z};
+            general_utils::Quatf goal_q = general_utils::Quatf{msg->pose.orientation.w,
+                                                                msg->pose.orientation.x,
+                                                                msg->pose.orientation.y,
+                                                                msg->pose.orientation.z};
+            setGoalPosiAndYaw(goal_p, goal_q, GoalHeightMode::MESSAGE_HEIGHT);
+        }
+
         void init(const rclcpp::Node::SharedPtr nh, const std::string &cfg_path) {
             // TODO: The current implementation uses a lenient QoS configuration for message transmission.
             const rclcpp::QoS qos(rclcpp::QoS(1)
@@ -314,17 +325,49 @@ namespace fsm {
 
             int cmd_cnt = 0;
 
-            if (cfg_.click_goal_en) {
+            if (cfg_.click_goal_en || cfg_.click_goal_3d_en) {
+                const std::string resolved_goal_topic = cfg_.click_goal_topic.empty()
+                                                        ? std::string()
+                                                        : nh_->get_node_topics_interface()->resolve_topic_name(
+                                                                cfg_.click_goal_topic);
+                const std::string resolved_goal_3d_topic = cfg_.click_goal_3d_topic.empty()
+                                                           ? std::string()
+                                                           : nh_->get_node_topics_interface()->resolve_topic_name(
+                                                                   cfg_.click_goal_3d_topic);
                 goal_cbk_group_ = nh_->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
                 rclcpp::SubscriptionOptions so;
                 so.callback_group = goal_cbk_group_;
-                goal_sub_ = nh_->create_subscription<geometry_msgs::msg::PoseStamped>(
-                        cfg_.click_goal_topic,
-                        qos,
-                        std::bind(&FsmRos2::goalCallback, this, std::placeholders::_1),
-                        so);
-                cout << YELLOW << " -- [Fsm] CLICKGOAL ENABLE." << RESET << endl;
-                cmd_cnt++;
+                bool goal_input_ready = false;
+                if (cfg_.click_goal_en) {
+                    goal_sub_ = nh_->create_subscription<geometry_msgs::msg::PoseStamped>(
+                            cfg_.click_goal_topic,
+                            qos,
+                            std::bind(&FsmRos2::goalCallback, this, std::placeholders::_1),
+                            so);
+                    cout << YELLOW << " -- [Fsm] 2D CLICK GOAL ENABLED: "
+                         << resolved_goal_topic << " (z falls back to click_height="
+                         << cfg_.click_height << ")." << RESET << endl;
+                    goal_input_ready = true;
+                }
+                if (cfg_.click_goal_3d_en && !resolved_goal_3d_topic.empty() &&
+                    (!cfg_.click_goal_en || resolved_goal_3d_topic != resolved_goal_topic)) {
+                    goal_3d_sub_ = nh_->create_subscription<geometry_msgs::msg::PoseStamped>(
+                            cfg_.click_goal_3d_topic,
+                            qos,
+                            std::bind(&FsmRos2::goal3DCallback, this, std::placeholders::_1),
+                            so);
+                    cout << YELLOW << " -- [Fsm] 3D CLICK GOAL ENABLED: "
+                         << resolved_goal_3d_topic << " (message z is preserved)."
+                         << RESET << endl;
+                    goal_input_ready = true;
+                } else if (cfg_.click_goal_3d_en) {
+                    cout << YELLOW
+                         << " -- [Fsm] Invalid or ambiguous 3D click goal topic; skip it."
+                         << RESET << endl;
+                }
+                if (goal_input_ready) {
+                    cmd_cnt++;
+                }
             }
 
             if (cmd_cnt != 1) {
