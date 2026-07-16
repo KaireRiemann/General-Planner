@@ -3,7 +3,7 @@ set -euo pipefail
 
 usage() {
     cat <<'EOF'
-Run the final exploration/NHBP closure validation.
+Run the final exploration closure validation.
 
 Default usage from the host:
   sh_files/test_exploration_final_closure.sh

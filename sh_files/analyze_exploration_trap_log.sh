@@ -54,7 +54,6 @@ float_ge() {
 GOAL_SELECTED_COUNT="$(count_regex "ExplorationFrontend] Goal selected")"
 LOCAL_TRAP_COUNT="$(count_regex "local_trap_escape_requested")"
 MEMORY_RECOVERY_COUNT="$(count_regex "Use memory recovery goal|Delay finish and use memory recovery goal")"
-NHBP_REJECT_COUNT="$(count_regex "NHBP rejected")"
 MAX_ASTAR_CHECKS="$(max_metric "astar_checks")"
 MAX_INFO="$(max_metric "info")"
 MAX_RAW_FRONTIERS="$(max_metric "raw_frontiers")"
@@ -85,7 +84,6 @@ cat <<SUMMARY
 [exploration_trap_log] max_raw_frontiers=${MAX_RAW_FRONTIERS}
 [exploration_trap_log] local_trap=${LOCAL_TRAP_COUNT}
 [exploration_trap_log] memory_recovery=${MEMORY_RECOVERY_COUNT}
-[exploration_trap_log] nhbp_reject=${NHBP_REJECT_COUNT}
 SUMMARY
 
 if [[ "${REQUIRE_RESPONSE}" -ne 0 &&

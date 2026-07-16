@@ -13,7 +13,6 @@ MAX_ODOM_STALE="${GP_EXPLORATION_MAX_ODOM_STALE:-0}"
 MIN_GOAL_SELECTED="${GP_EXPLORATION_MIN_GOAL_SELECTED:-5}"
 MIN_PLAN_SUCCESS="${GP_EXPLORATION_MIN_PLAN_SUCCESS:-3}"
 MAX_PLAN_FAILED="${GP_EXPLORATION_MAX_PLAN_FAILED:-20}"
-MAX_NHBP_REJECT="${GP_EXPLORATION_MAX_NHBP_REJECT:-8}"
 MAX_FRONTIERS="${GP_EXPLORATION_MAX_FRONTIERS:-1600}"
 MAX_ASTAR_TIMEOUT="${GP_EXPLORATION_MAX_ASTAR_TIMEOUT:-300}"
 
@@ -53,7 +52,6 @@ max_metric() {
 
 ODOM_STALE_COUNT="$(count_regex "ODOM_STALE")"
 ASTAR_TIMEOUT_COUNT="$(count_regex "time limit exceeded")"
-NHBP_REJECT_COUNT="$(count_regex "NHBP rejected")"
 LOCAL_TRAP_COUNT="$(count_regex "local_trap_escape_requested")"
 MEMORY_RECOVERY_COUNT="$(count_regex "Use memory recovery goal|Delay finish and use memory recovery goal")"
 PLAN_SUCCESS_COUNT="$(count_regex "ReplanOnce succeed|PlanFromRest succeed|GenerateExpTrajectory SUCCESS")"
@@ -71,7 +69,6 @@ cat <<SUMMARY
 [exploration_guard] plan_success=${PLAN_SUCCESS_COUNT}
 [exploration_guard] plan_failed=${PLAN_FAILED_COUNT}
 [exploration_guard] odom_stale=${ODOM_STALE_COUNT}
-[exploration_guard] nhbp_reject=${NHBP_REJECT_COUNT}
 [exploration_guard] local_trap=${LOCAL_TRAP_COUNT}
 [exploration_guard] memory_recovery=${MEMORY_RECOVERY_COUNT}
 [exploration_guard] astar_timeout=${ASTAR_TIMEOUT_COUNT}
@@ -112,10 +109,6 @@ if [[ "${PLAN_SUCCESS_COUNT}" -lt "${MIN_PLAN_SUCCESS}" ]]; then
 fi
 if [[ "${PLAN_FAILED_COUNT}" -gt "${MAX_PLAN_FAILED}" ]]; then
     echo "[exploration_guard] FAIL: Plan failed ${PLAN_FAILED_COUNT} > ${MAX_PLAN_FAILED}."
-    FAILED=1
-fi
-if [[ "${NHBP_REJECT_COUNT}" -gt "${MAX_NHBP_REJECT}" ]]; then
-    echo "[exploration_guard] FAIL: NHBP rejected ${NHBP_REJECT_COUNT} > ${MAX_NHBP_REJECT}."
     FAILED=1
 fi
 if [[ "${MAX_FRONTIERS_SEEN}" -gt "${MAX_FRONTIERS}" ]]; then

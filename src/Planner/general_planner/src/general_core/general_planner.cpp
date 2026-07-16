@@ -23,10 +23,6 @@
 
 #include <general_core/general_planner.h>
 #include <checker/state2state_checker.hpp>
-#include <general_core/nhbp/far_goal_reasoner.hpp>
-#include <general_core/nhbp/sparse_global_map.hpp>
-#include <general_core/nhbp/state2state_nhbp_adapter.hpp>
-#include <general_core/nhbp/topological_memory.hpp>
 #include <cmath>
 #include <stdexcept>
 #include <memory>
@@ -188,56 +184,6 @@ namespace general_planner {
         takeoff_runtime_manager_ = std::make_unique<TakeoffRuntimeManager>(cfg_, map_manager_);
         tracking_perching_manager_ = std::make_unique<TrackingPerchingTransitionManager>();
         tracking_to_perching_initializer_ = std::make_unique<TrackingToPerchingInitializer>();
-        nhbp::State2StateNHBPAdapter::Config state2state_nhbp_cfg;
-        state2state_nhbp_cfg.enable = cfg_.state2state_nhbp_enable;
-        state2state_nhbp_cfg.decision_history = cfg_.state2state_nhbp_decision_history;
-        state2state_nhbp_cfg.blacklist_ttl = cfg_.state2state_nhbp_blacklist_ttl;
-        state2state_nhbp_cfg.min_commit_time = cfg_.state2state_nhbp_min_commit_time;
-        state2state_nhbp_cfg.min_commit_interval = cfg_.state2state_nhbp_min_commit_interval;
-        state2state_nhbp_cfg.min_progress_distance = cfg_.state2state_nhbp_min_progress_distance;
-        state2state_nhbp_cfg.switch_margin = cfg_.state2state_nhbp_switch_margin;
-        state2state_nhbp_cfg.same_branch_margin = cfg_.state2state_nhbp_same_branch_margin;
-        state2state_nhbp_cfg.endpoint_change_threshold = cfg_.state2state_nhbp_endpoint_change_threshold;
-        state2state_nhbp_cfg.lateral_oscillation_threshold = cfg_.state2state_nhbp_lateral_oscillation_threshold;
-        state2state_nhbp_cfg.commit_churn_window = cfg_.state2state_nhbp_commit_churn_window;
-        state2state_nhbp_cfg.max_commits_in_window = cfg_.state2state_nhbp_max_commits_in_window;
-        state2state_nhbp_cfg.max_switches = cfg_.state2state_nhbp_max_switches;
-        state2state_nhbp_cfg.no_progress_time = cfg_.state2state_nhbp_no_progress_time;
-        state2state_nhbp_cfg.branch_lateral_threshold = cfg_.state2state_nhbp_branch_lateral_threshold;
-        state2state_nhbp_cfg.signature_horizon = cfg_.state2state_nhbp_signature_horizon;
-        state2state_nhbp_cfg.safety_check_horizon = cfg_.state2state_nhbp_safety_check_horizon;
-        state2state_nhbp_cfg.reuse_safety_check_horizon =
-                cfg_.state2state_nhbp_reuse_safety_check_horizon;
-        state2state_nhbp_cfg.reuse_safety_consecutive_hits =
-                cfg_.state2state_nhbp_reuse_safety_consecutive_hits;
-        state2state_nhbp_cfg.goal_key_resolution = cfg_.state2state_nhbp_goal_key_resolution;
-        state2state_nhbp_cfg.goal_progress_weight = cfg_.state2state_nhbp_goal_progress_weight;
-        state2state_nhbp_adapter_ =
-                std::make_unique<nhbp::State2StateNHBPAdapter>(state2state_nhbp_cfg);
-        sparse_global_map_ = std::make_unique<nhbp::SparseGlobalMap>(
-                nhbp::SparseGlobalMap::Config{
-                        cfg_.sparse_global_map_enable,
-                        cfg_.sparse_global_map_resolution,
-                        cfg_.sparse_global_map_max_records,
-                        cfg_.sparse_global_map_stale_time});
-        far_goal_reasoner_ = std::make_unique<nhbp::FarGoalReasoner>(
-                nhbp::FarGoalReasoner::Config{
-                        cfg_.far_goal_reasoner_enable,
-                        cfg_.far_goal_direct_radius,
-                        cfg_.far_goal_frontier_search_radius,
-                        cfg_.far_goal_max_frontier_candidates,
-                        cfg_.far_goal_travel_weight,
-                        cfg_.far_goal_goal_weight});
-        topological_memory_ = std::make_unique<nhbp::TopologicalMemory>(
-                nhbp::TopologicalMemory::Config{
-                        cfg_.topological_memory_enable,
-                        cfg_.topological_memory_max_nodes,
-                        cfg_.topological_memory_max_edges,
-                        cfg_.topological_memory_node_merge_radius,
-                        cfg_.topological_memory_node_blacklist_ttl,
-                        cfg_.topological_memory_edge_blacklist_ttl,
-                        cfg_.topological_memory_recovery_min_distance,
-                        cfg_.topological_memory_recovery_max_distance});
         traj_manager_ = std::make_shared<traj_opt::TrajManager>(cfg_.exp_traj_cfg,
                                                                 cfg_.esdf_traj_cfg,
                                                                 cfg_.plain_traj_cfg,

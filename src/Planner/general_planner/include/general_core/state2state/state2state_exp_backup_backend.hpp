@@ -33,10 +33,6 @@ class FOVChecker;
 class LogOneReplan;
 class MapManager;
 
-namespace nhbp {
-class State2StateNHBPAdapter;
-}
-
 namespace state2state_task {
 
 struct State2StateZSummary {
@@ -84,8 +80,6 @@ struct StateToStateExpBackendServices {
     double &goal_yaw;
     bool &new_goal;
     State2StateZDebug &z_debug;
-    nhbp::State2StateNHBPAdapter *nhbp_adapter{nullptr};
-    std::string *latest_nhbp_debug_info{nullptr};
 };
 
 struct StateToStateBackupBackendServices {

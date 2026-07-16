@@ -97,11 +97,14 @@ namespace general_utils{
     }
 
     struct RobotState {
-        Vec3f p, v, a, j;
-        double yaw;
-        double rcv_time;
+        Vec3f p{Vec3f::Zero()};
+        Vec3f v{Vec3f::Zero()};
+        Vec3f a{Vec3f::Zero()};
+        Vec3f j{Vec3f::Zero()};
+        double yaw{0.0};
+        double rcv_time{-1.0};
         bool rcv{false};
-        Quatf q;
+        Quatf q{Quatf::Identity()};
     };
 
 

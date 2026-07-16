@@ -178,7 +178,6 @@ namespace fsm {
 
             cmd_traj.start_WT_pos = ros::Time(pos_traj.start_WT);
             cmd_traj.debug_info += makeCommittedZDebugInfo(pos_traj);
-            cmd_traj.debug_info += planner_ptr_->getLatestState2StateNhbpDebugInfo();
 
             cmd_traj.piece_num_pos = pos_traj.getPieceNum();
             cmd_traj.order_pos = 7;

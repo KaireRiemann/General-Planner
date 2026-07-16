@@ -172,13 +172,8 @@ The current task plugin boundary is:
 - `TakeoffPlanner`: dynamic takeoff/unperching compatibility adapter.
 - `ExplorationMissionAdapter`: exploration mission compatibility adapter.
   Exploration-specific headers and sources now live under
-  `general_core/exploration`. ATSP ordering is isolated under
-  `general_core/exploration/atsp`, exploration memory now includes
-  `FrontierMemory` and `CoverageGrid`, and anti-NDO decision memory lives under
-  `general_core/nhbp`. Complete exploration, ATSP ordering, and NHBP anti-NDO
-  behavior are specified in `exploration_nhbp_architecture.md`. That work should
-  extend the exploration task plugin and planner memory layers without adding a
-  second top-level ROS/FSM.
+  `general_core/exploration`. That work should extend the exploration task
+  plugin without adding a second top-level ROS/FSM.
 
 Combined missions compose these plugins. `TrackingPerching` should remain a
 mission behavior:
@@ -319,32 +314,12 @@ Completed in the current migration step:
   The `fy_node` `lkh_tsp_solver` package has been migrated into this workspace,
   so `solver=fy_node_lkh` directly calls `solveTSPLKH()`, with external-command
   and deterministic greedy directed-tour fallbacks.
-- NHBP now has a dedicated `general_core/nhbp` module. `NavigationMemory`
-  records decision history, TTL failure blacklist entries, and initial NDO
-  diagnoses for repeated switching / no-progress detection. `DecisionStabilizer`
-  is now wired into exploration replanning before local trajectory optimization,
-  applying blacklist checks, switch-margin hysteresis, minimum commit-time
-  hysteresis, and NDO keep-current suppression.
-- NHBP is no longer exploration-only. `State2StateNHBPAdapter` is wired into
-  ordinary state2state replanning before candidate trajectory commit. It builds
-  a branch signature for the candidate and committed trajectory, detects
-  straight/left/right branch switching under the same long-range goal, and keeps
-  the current trajectory when it remains safe and the candidate does not improve
-  over the configured switch margin.
-- Long-range navigation architecture is now fixed in
-  `long_range_nhbp_architecture.md`. The current code includes a BDM-like
-  optional `SparseGlobalMap` for sparse boundary/frontier memory, a
-  `FarGoalReasoner` for direct-goal/frontier/topology subgoal selection, and
-  topology node typing for branch, frontier, failure, and vertical-connector
-  memory. In ordinary state2state planning the far-goal layer can be enabled to
-  choose a temporary local subgoal while preserving the original FSM/task goal.
-  These are intentionally separated from the local ROG safety map.
 - Exploration anti-trap handling now uses frontier-selection diagnostics
   exported by `ExplorationFrontend`, saturated information gain for both normal
   scoring and ATSP entry costs, and a local-trap detector in
   `ExplorationRuntimeManager`. Repeated low-diversity, high-A* local attractors
-  are written back to frontier, topology, and NHBP failure memory before the
-  pipeline asks for a validated recovery goal.
+  are written back to frontier failure memory before the pipeline asks for a
+  validated recovery goal.
 - Frontier failure memory now blocks a spatial region around failed candidates,
   not only the exact memory key. Recovery selection also filters the latest
   local-trap region, and the exploration guard runs an offline trap-signature
@@ -370,9 +345,9 @@ Validation for this step:
   `lkh_tsp_solver`, confirming a generated `single.txt` tour.
 - Docker `ros1_noetic`: 90s `big_field` perfect-drone exploration guard after
   the diagnostic closure update: 218 selected goals, 218 planning successes, 0
-  counted planning failures, 0 odom-stale events, 0 NHBP rejects, 0 local-trap
-  triggers in the normal open-field case, 3 validated memory recoveries,
-  `trap_signature=0`, and PASS.
+  counted planning failures, 0 odom-stale events, 0 local-trap triggers in the
+  normal open-field case, 3 validated memory recoveries, `trap_signature=0`,
+  and PASS.
 - Docker `ros1_noetic`: offline trap-log guard on the fresh big-field log with
   expected `trap_signature=0`: PASS. Offline trap-log guard on the provided
   pasted problem log with expected `trap_signature=1`: PASS.

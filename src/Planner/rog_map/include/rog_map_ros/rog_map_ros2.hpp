@@ -92,6 +92,9 @@ namespace rog_map {
                                                   odom_msg->pose.pose.orientation.x,
                                                   odom_msg->pose.pose.orientation.y,
                                                   odom_msg->pose.pose.orientation.z)));
+            robot_state_.v = Vec3f(odom_msg->twist.twist.linear.x,
+                                   odom_msg->twist.twist.linear.y,
+                                   odom_msg->twist.twist.linear.z);
 
 
             geometry_msgs::msg::TransformStamped transformStamped;

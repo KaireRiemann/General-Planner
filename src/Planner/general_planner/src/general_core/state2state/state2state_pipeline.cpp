@@ -7,17 +7,11 @@
 */
 
 #include <general_core/general_planner.h>
-#include <general_core/nhbp/far_goal_reasoner.hpp>
-#include <general_core/nhbp/sparse_global_map.hpp>
-#include <general_core/nhbp/state2state_nhbp_adapter.hpp>
-#include <general_core/nhbp/topological_memory.hpp>
 #include <general_core/state2state/state2state_path_utils.hpp>
 #include <checker/state2state_checker.hpp>
 #include <checker/trajectory_checker.hpp>
 #include <algorithm>
 #include <cmath>
-#include <functional>
-#include <limits>
 #include <fmt/format.h>
 #include <general_utils/scope_timer.hpp>
 
@@ -41,13 +35,7 @@ namespace general_planner {
                 ft_cnt,
                 bt,
                 bt_cnt,
-                *state2state_backend_context_,
-                state2state_nhbp_adapter_.get(),
-                sparse_global_map_.get(),
-                far_goal_reasoner_.get(),
-                topological_memory_.get(),
-                &sparse_global_map_last_update_wt_,
-                &latest_state2state_nhbp_debug_info_
+                *state2state_backend_context_
         };
         return services;
     }
@@ -89,9 +77,7 @@ namespace general_planner {
                 gi_.goal_p,
                 gi_.goal_yaw,
                 gi_.new_goal,
-                latest_state2state_z_debug_,
-                state2state_nhbp_adapter_.get(),
-                &latest_state2state_nhbp_debug_info_
+                latest_state2state_z_debug_
         };
         return services;
     }
@@ -159,343 +145,6 @@ namespace general_planner {
                 logCheckResult(ros_ptr, context, result);
             }
         }
-
-        nhbp::SparseCellState sparseStateFromGrid(const rog_map::GridType grid_type) {
-            if (grid_type == rog_map::OCCUPIED) {
-                return nhbp::SparseCellState::OCCUPIED_BOUNDARY;
-            }
-            if (grid_type == rog_map::UNKNOWN || grid_type == rog_map::OUT_OF_MAP) {
-                return nhbp::SparseCellState::FRONTIER_BOUNDARY;
-            }
-            return nhbp::SparseCellState::FREE_BOUNDARY;
-        }
-
-        void updateSparseGlobalMapFromLocalBoundary(state2state_task::StateToStateTaskServices &services,
-                                                    const double stamp) {
-            if (!services.cfg.sparse_global_map_enable ||
-                services.sparse_global_map == nullptr ||
-                services.map_manager == nullptr ||
-                !services.map_manager->ready()) {
-                return;
-            }
-            if (services.sparse_global_map_last_update_wt != nullptr &&
-                *services.sparse_global_map_last_update_wt >= 0.0 &&
-                stamp - *services.sparse_global_map_last_update_wt <
-                        std::max(0.0, services.cfg.sparse_global_map_update_period)) {
-                return;
-            }
-
-            rog_map::Vec3f box_min = rog_map::Vec3f::Zero();
-            rog_map::Vec3f box_max = rog_map::Vec3f::Zero();
-            services.map_manager->boundBoxByLocalMap(box_min, box_max);
-
-            const double step = std::max({services.cfg.sparse_global_map_sample_resolution,
-                                          services.map_manager->getResolution(),
-                                          1.0e-3});
-            const int max_samples = std::max(0, services.cfg.sparse_global_map_max_boundary_samples);
-            int sample_count = 0;
-
-            const auto observe = [&](const rog_map::Vec3f &pos) {
-                if (sample_count >= max_samples || !pos.allFinite()) {
-                    return;
-                }
-                if (!services.map_manager->insideLocalMap(pos)) {
-                    return;
-                }
-                const auto grid_type = services.map_manager->getGridType(pos);
-                services.sparse_global_map->observeBoundaryCell(pos,
-                                                                sparseStateFromGrid(grid_type),
-                                                                stamp);
-                ++sample_count;
-            };
-
-            const auto forRange = [](const double min_v,
-                                     const double max_v,
-                                     const double step_v,
-                                     const std::function<void(double)> &fn) {
-                if (max_v < min_v || step_v <= 0.0) {
-                    return;
-                }
-                for (double value = min_v; value <= max_v + 1.0e-6; value += step_v) {
-                    fn(std::min(value, max_v));
-                }
-            };
-
-            forRange(box_min.x(), box_max.x(), step, [&](const double x) {
-                forRange(box_min.y(), box_max.y(), step, [&](const double y) {
-                    observe(rog_map::Vec3f(x, y, box_min.z()));
-                    observe(rog_map::Vec3f(x, y, box_max.z()));
-                });
-            });
-            forRange(box_min.x(), box_max.x(), step, [&](const double x) {
-                forRange(box_min.z(), box_max.z(), step, [&](const double z) {
-                    observe(rog_map::Vec3f(x, box_min.y(), z));
-                    observe(rog_map::Vec3f(x, box_max.y(), z));
-                });
-            });
-            forRange(box_min.y(), box_max.y(), step, [&](const double y) {
-                forRange(box_min.z(), box_max.z(), step, [&](const double z) {
-                    observe(rog_map::Vec3f(box_min.x(), y, z));
-                    observe(rog_map::Vec3f(box_max.x(), y, z));
-                });
-            });
-
-            if (services.sparse_global_map_last_update_wt != nullptr) {
-                *services.sparse_global_map_last_update_wt = stamp;
-            }
-            if (services.cfg.print_log) {
-                services.ros_ptr->info(" -- [SparseGlobalMap] boundary samples={}, records={}, frontiers={}.",
-                                       sample_count,
-                                       services.sparse_global_map->recordCount(),
-                                       services.sparse_global_map->frontierCount(stamp));
-            }
-        }
-
-        struct LongRangeGoalResolution {
-            Vec3f planning_goal{Vec3f::Zero()};
-            bool using_subgoal{false};
-            nhbp::FarGoalDecision decision;
-        };
-
-        void setState2StateNhbpDebug(
-                state2state_task::StateToStateTaskServices &services,
-                const std::string &debug_info) {
-            if (services.latest_nhbp_debug_info != nullptr) {
-                *services.latest_nhbp_debug_info = debug_info;
-            }
-        }
-
-        bool state2StateNhbpDebugEmpty(
-                const state2state_task::StateToStateTaskServices &services) {
-            return services.latest_nhbp_debug_info == nullptr ||
-                   services.latest_nhbp_debug_info->empty();
-        }
-
-        LongRangeGoalResolution resolveState2StatePlanningGoal(
-                state2state_task::StateToStateTaskServices &services,
-                const Vec3f &requested_goal,
-                const double stamp) {
-            LongRangeGoalResolution resolution;
-            resolution.planning_goal = requested_goal;
-
-            updateSparseGlobalMapFromLocalBoundary(services, stamp);
-
-            const Vec3f robot_pos = services.robot_state.p;
-            if (services.topological_memory != nullptr) {
-                services.topological_memory->observePose(robot_pos, stamp);
-            }
-
-            const auto observePlanningGoalInTopology = [&]() {
-                if (services.topological_memory == nullptr ||
-                    !resolution.planning_goal.allFinite() ||
-                    services.map_manager == nullptr ||
-                    !services.map_manager->ready() ||
-                    !services.map_manager->insideLocalMap(resolution.planning_goal)) {
-                    return;
-                }
-                services.topological_memory->observePose(
-                        resolution.planning_goal,
-                        stamp,
-                        resolution.using_subgoal ? nhbp::TopoNodeType::FRONTIER
-                                                 : nhbp::TopoNodeType::BRANCH);
-                services.topological_memory->observeTransition(robot_pos,
-                                                               resolution.planning_goal,
-                                                               stamp);
-            };
-
-
-            if (!services.cfg.state2state_far_goal_enable ||
-                !services.cfg.far_goal_reasoner_enable ||
-                services.far_goal_reasoner == nullptr ||
-                !robot_pos.allFinite() ||
-                !requested_goal.allFinite()) {
-                observePlanningGoalInTopology();
-                return resolution;
-            }
-
-            const double goal_distance = (requested_goal - robot_pos).norm();
-            const bool far_enough =
-                    goal_distance >= std::max(0.0, services.cfg.state2state_far_goal_min_distance);
-            const bool outside_local =
-                    services.map_manager == nullptr ||
-                    !services.map_manager->ready() ||
-                    !services.map_manager->insideLocalMap(requested_goal);
-            if (!far_enough && !outside_local) {
-                observePlanningGoalInTopology();
-                return resolution;
-            }
-
-            resolution.decision =
-                    services.far_goal_reasoner->selectSubgoal(robot_pos,
-                                                              requested_goal,
-                                                              stamp,
-                                                              services.sparse_global_map,
-                                                              services.topological_memory);
-            if (resolution.decision.ready &&
-                resolution.decision.type != nhbp::FarGoalDecisionType::DIRECT_GOAL &&
-                resolution.decision.local_goal.allFinite() &&
-                services.map_manager != nullptr &&
-                services.map_manager->ready() &&
-                services.map_manager->insideLocalMap(resolution.decision.local_goal)) {
-                const auto grid_type = services.map_manager->getInfGridType(resolution.decision.local_goal);
-                if (grid_type != rog_map::OCCUPIED && grid_type != rog_map::OUT_OF_MAP) {
-                    resolution.planning_goal = resolution.decision.local_goal;
-                    resolution.using_subgoal = true;
-                }
-            }
-
-            observePlanningGoalInTopology();
-
-            if (resolution.using_subgoal && services.cfg.print_log) {
-                services.ros_ptr->warn(" -- [FarGoalReasoner] Use local subgoal [{:.2f}, {:.2f}, {:.2f}] for far goal [{:.2f}, {:.2f}, {:.2f}], type={}, reason={}, score={:.3f}.",
-                                       resolution.planning_goal.x(),
-                                       resolution.planning_goal.y(),
-                                       resolution.planning_goal.z(),
-                                       requested_goal.x(),
-                                       requested_goal.y(),
-                                       requested_goal.z(),
-                                       nhbp::toString(resolution.decision.type),
-                                       resolution.decision.reason,
-                                       resolution.decision.score);
-            }
-            return resolution;
-        }
-
-        class ScopedState2StateGoal {
-        public:
-            ScopedState2StateGoal(state2state_task::StateToStateExpBackendServices &services,
-                                  const Vec3f &planning_goal)
-                    : services_(services),
-                      original_goal_(services.goal_p) {
-                if ((planning_goal - services_.goal_p).norm() > 1.0e-5) {
-                    services_.goal_p = planning_goal;
-                    changed_ = true;
-                }
-            }
-
-            ~ScopedState2StateGoal() {
-                if (changed_) {
-                    services_.goal_p = original_goal_;
-                }
-            }
-
-        private:
-            state2state_task::StateToStateExpBackendServices &services_;
-            Vec3f original_goal_;
-            bool changed_{false};
-        };
-
-        RET_CODE generateExpTrajectoryForPlanningGoal(
-                state2state_task::StateToStateExpBackendServices &services,
-                const Vec3f &planning_goal,
-                ExpTraj &last_exp_traj_info,
-                ExpTraj &out_exp_traj_info) {
-            ScopedState2StateGoal scoped_goal(services, planning_goal);
-            return state2state_task::generateExpTrajectory(services,
-                                                           last_exp_traj_info,
-                                                           out_exp_traj_info);
-        }
-
-        bool copyCommittedTrajectory(CmdTraj &cmd_traj_info,
-                                     Trajectory &pos_traj,
-                                     Trajectory &yaw_traj,
-                                     bool &backup_available,
-                                     double &backup_start_t) {
-            cmd_traj_info.lock();
-            const bool empty = cmd_traj_info.empty();
-            if (!empty) {
-                pos_traj = cmd_traj_info.posTraj();
-                yaw_traj = cmd_traj_info.yawTraj();
-                backup_available = cmd_traj_info.backupTrajAvilibale();
-                backup_start_t = cmd_traj_info.getBackupTrajStartTT();
-            }
-            cmd_traj_info.unlock();
-            return !empty && !pos_traj.empty();
-        }
-
-        void recordState2StateNhbpCommit(state2state_task::StateToStateTaskServices &services,
-                                         const Vec3f &goal_p,
-                                         const std::string &source) {
-            if (services.nhbp_adapter == nullptr) {
-                return;
-            }
-            Trajectory committed_pos;
-            Trajectory committed_yaw;
-            bool backup_available = false;
-            double backup_start_t = -1.0;
-            if (!copyCommittedTrajectory(services.cmd_traj_info,
-                                         committed_pos,
-                                         committed_yaw,
-                                         backup_available,
-                                         backup_start_t)) {
-                return;
-            }
-            services.nhbp_adapter->recordCommitted(committed_pos,
-                                                   services.robot_state,
-                                                   goal_p,
-                                                   services.ros_ptr->getSimTime(),
-                                                   source);
-            if (state2StateNhbpDebugEmpty(services)) {
-                setState2StateNhbpDebug(
-                        services,
-                        fmt::format(";nhbp_action=COMMIT;nhbp_reason={};{}",
-                                    source,
-                                    services.nhbp_adapter->diagnosticSummary(
-                                            services.ros_ptr->getSimTime())));
-            }
-            (void)committed_yaw;
-            (void)backup_available;
-            (void)backup_start_t;
-        }
-
-        RET_CODE keepCurrentTrajectoryForNhbp(
-                state2state_task::StateToStateTaskServices &services,
-                const Vec3f &goal_p,
-                const nhbp::State2StateNHBPDecision &decision) {
-            Trajectory current_pos;
-            Trajectory current_yaw;
-            bool backup_available = false;
-            double backup_start_t = -1.0;
-            if (!copyCommittedTrajectory(services.cmd_traj_info,
-                                         current_pos,
-                                         current_yaw,
-                                         backup_available,
-                                         backup_start_t)) {
-                return FAILED;
-            }
-            services.latest_replan.setExpTraj(current_pos);
-            services.latest_replan.setExpYawTraj(current_yaw);
-            services.latest_replan.setRetCode(GENERAL_SUCCESS_NO_BACKUP);
-            services.backend_context.markGoalConsumed();
-            if (services.nhbp_adapter != nullptr) {
-                setState2StateNhbpDebug(services,
-                                        services.nhbp_adapter->formatDecisionDiagnostic(decision));
-            }
-            {
-                TimeConsuming t_viz("tviz", false);
-                services.ros_ptr->vizCommittedTraj(current_pos,
-                                                   backup_available ? backup_start_t : -1.0);
-                services.time_consuming[VISUALIZATION] += t_viz.stop();
-            }
-            if (services.cfg.print_log) {
-                services.ros_ptr->warn(" -- [State2StateNHBP] Keep committed trajectory: reason={}, candidate_branch={}, current_branch={}, candidate_score={:.3f}, current_score={:.3f}, remaining={:.3f}, ndo={}.",
-                                       decision.reason,
-                                       decision.candidate.branch_id,
-                                       decision.current.branch_id,
-                                       decision.candidate_score,
-                                       decision.current_score,
-                                       decision.current_remaining,
-                                       nhbp::toString(decision.ndo.state));
-            }
-            if (services.nhbp_adapter != nullptr) {
-                services.nhbp_adapter->recordCommitted(current_pos,
-                                                       services.robot_state,
-                                                       goal_p,
-                                                       services.ros_ptr->getSimTime(),
-                                                       "keep_current");
-            }
-            return NO_NEED;
-        }
     }
 
     RET_CODE state2state_task::planFromRest(StateToStateTaskServices &services,
@@ -506,7 +155,6 @@ namespace general_planner {
                                             const bool new_goal) {
         std::lock_guard<std::mutex> guard(services.replan_lock);
         services.latest_replan.reset();
-        setState2StateNhbpDebug(services, "");
         const auto input_check = checker::checkState2StateInput(goal_p,
                                                                 goal_yaw,
                                                                 services.robot_state,
@@ -531,14 +179,7 @@ namespace general_planner {
         }
         services.backend_context.setGoalInfo(goal_p, goal_yaw, new_goal, true);
         services.latest_replan.setGoal(goal_p, goal_yaw, services.robot_state);
-        const double planning_stamp = services.ros_ptr->getSimTime();
-        const LongRangeGoalResolution goal_resolution =
-                resolveState2StatePlanningGoal(services, goal_p, planning_stamp);
-        const Vec3f planning_goal_p = goal_resolution.planning_goal;
-        vec_Vec3f viz_pts{planning_goal_p, services.robot_state.p};
-        if (goal_resolution.using_subgoal) {
-            viz_pts.insert(viz_pts.begin(), goal_p);
-        }
+        vec_Vec3f viz_pts{goal_p, services.robot_state.p};
 
         {
             TimeConsuming t_viz("viz goal path", false);
@@ -562,18 +203,13 @@ namespace general_planner {
         BackupTraj back_traj_info;
         services.last_exp_traj_info.setEmpty();
         services.local_start_p = local_star_pt;
-        RET_CODE exp_ret_code = generateExpTrajectoryForPlanningGoal(
+        RET_CODE exp_ret_code = generateExpTrajectory(
                 exp_services,
-                planning_goal_p,
                 services.last_exp_traj_info,
                 exp_traj_info);
         if (exp_ret_code == FAILED) {
             services.ros_ptr->warn(" -- [GeneralPlanner] in [PlanFromRest] GenerateExpTrajectory failed with {}.",
                                    RET_CODE_STR[exp_ret_code].c_str());
-            if (services.topological_memory != nullptr) {
-                services.topological_memory->recordFailureNear(planning_goal_p,
-                                                               services.ros_ptr->getSimTime());
-            }
             return FAILED;
         } else {
             services.ros_ptr->info(" -- [GeneralPlanner] in [PlanFromRest] GenerateExpTrajectory SUCCESS.");
@@ -597,7 +233,6 @@ namespace general_planner {
                 services.time_consuming[VISUALIZATION] += t_viz.stop();
             }
             services.latest_replan.setRetCode(GENERAL_RET_CODE::GENERAL_SUCCESS_NO_BACKUP);
-            recordState2StateNhbpCommit(services, goal_p, "plan_from_rest_exp");
             return SUCCESS;
         }
 
@@ -636,7 +271,6 @@ namespace general_planner {
                 services.latest_replan.setRetCode(GENERAL_RET_CODE::GENERAL_SUCCESS_WITH_BACKUP);
             }
 
-            recordState2StateNhbpCommit(services, goal_p, "plan_from_rest_exp_backup");
             return SUCCESS;
         } else if (back_ret_code == FINISH || back_ret_code == NO_NEED) {
             if (services.cfg.print_log) {
@@ -660,7 +294,6 @@ namespace general_planner {
                 services.time_consuming[VISUALIZATION] += t_viz.stop();
             }
             services.latest_replan.setRetCode(GENERAL_RET_CODE::GENERAL_SUCCESS_NO_BACKUP);
-            recordState2StateNhbpCommit(services, goal_p, "plan_from_rest_exp_only");
             return SUCCESS;
         }
         services.ros_ptr->warn(" -- [GeneralPlanner] in [PlanFromRest] generateBackupTrajectory return [{}], force return",
@@ -676,7 +309,6 @@ namespace general_planner {
                                           const bool new_goal) {
         TimeConsuming replan_total_t("ReplanOnce", false);
         std::lock_guard<std::mutex> guard(services.replan_lock);
-        setState2StateNhbpDebug(services, "");
 
         const auto input_check = checker::checkState2StateInput(goal_p,
                                                                 goal_yaw,
@@ -700,14 +332,7 @@ namespace general_planner {
         services.latest_replan.reset();
         services.latest_replan.setGoal(goal_p, goal_yaw, services.robot_state);
 
-        const double planning_stamp = services.ros_ptr->getSimTime();
-        const LongRangeGoalResolution goal_resolution =
-                resolveState2StatePlanningGoal(services, goal_p, planning_stamp);
-        const Vec3f planning_goal_p = goal_resolution.planning_goal;
-        vec_Vec3f viz_pts{planning_goal_p, services.robot_state.p};
-        if (goal_resolution.using_subgoal) {
-            viz_pts.insert(viz_pts.begin(), goal_p);
-        }
+        vec_Vec3f viz_pts{goal_p, services.robot_state.p};
 
         {
             TimeConsuming t_viz("tviz", false);
@@ -717,33 +342,14 @@ namespace general_planner {
 
         ExpTraj exp_traj_info;
         TimeConsuming t_exp("t_exp", false);
-        RET_CODE exp_ret_code = generateExpTrajectoryForPlanningGoal(
+        RET_CODE exp_ret_code = generateExpTrajectory(
                 exp_services,
-                planning_goal_p,
                 services.last_exp_traj_info,
                 exp_traj_info);
         services.time_consuming[GENERATE_EXP_TRAJ] = t_exp.stop();
 
         if (exp_ret_code == FAILED) {
             services.ros_ptr->warn(" -- [GeneralPlanner] in [ReplanOnce]: GenerateExpTrajectory failed, force return");
-            if (services.nhbp_adapter != nullptr) {
-                services.nhbp_adapter->recordFailure(nullptr,
-                                                     services.robot_state,
-                                                     goal_p,
-                                                     services.ros_ptr->getSimTime(),
-                                                     nhbp::FailureReason::OPTIMIZATION_FAIL);
-                setState2StateNhbpDebug(
-                        services,
-                        fmt::format(";nhbp_action=RECORD_FAILURE;nhbp_reason=exp_generation_failed;"
-                                    "nhbp_failure={};{}",
-                                    nhbp::toString(nhbp::FailureReason::OPTIMIZATION_FAIL),
-                                    services.nhbp_adapter->diagnosticSummary(
-                                            services.ros_ptr->getSimTime())));
-            }
-            if (services.topological_memory != nullptr) {
-                services.topological_memory->recordFailureNear(planning_goal_p,
-                                                               services.ros_ptr->getSimTime());
-            }
             return FAILED;
         } else if (exp_ret_code == NEW_TRAJ) {
             if (services.cfg.print_log) {
@@ -762,45 +368,7 @@ namespace general_planner {
                 services.ros_ptr->info(" -- [GeneralPlanner] in [ReplanOnce]: No need to replan a new exp traj, use last one.");
             }
             services.latest_replan.setRetCode(GENERAL_SUCCESS_NO_BACKUP);
-            setState2StateNhbpDebug(
-                    services,
-                    ";nhbp_action=KEEP_CURRENT;nhbp_reason=exp_no_need");
             return NO_NEED;
-        }
-
-        if (exp_ret_code == SUCCESS && services.nhbp_adapter != nullptr) {
-            Trajectory current_pos;
-            Trajectory current_yaw;
-            bool backup_available = false;
-            double backup_start_t = -1.0;
-            if (copyCommittedTrajectory(services.cmd_traj_info,
-                                        current_pos,
-                                        current_yaw,
-                                        backup_available,
-                                        backup_start_t)) {
-                const nhbp::State2StateNHBPDecision nhbp_decision =
-                        services.nhbp_adapter->evaluateReplan(
-                                exp_traj_info.posTraj(),
-                                current_pos,
-                                backup_available ? backup_start_t : -1.0,
-                                services.robot_state,
-                                goal_p,
-                                services.ros_ptr->getSimTime(),
-                                new_goal,
-                                exp_services.runtime_safety,
-                                services.cfg);
-                setState2StateNhbpDebug(
-                        services,
-                        services.nhbp_adapter->formatDecisionDiagnostic(nhbp_decision));
-                if (nhbp_decision.action == nhbp::State2StateGateAction::KEEP_CURRENT) {
-                    return keepCurrentTrajectoryForNhbp(services, goal_p, nhbp_decision);
-                }
-            }
-            else {
-                setState2StateNhbpDebug(
-                        services,
-                        ";nhbp_action=SKIP;nhbp_reason=no_committed_current_trajectory");
-            }
         }
 
         {
@@ -827,7 +395,6 @@ namespace general_planner {
                 services.time_consuming[VISUALIZATION] += t_viz.stop();
             }
             services.latest_replan.setRetCode(GENERAL_SUCCESS_NO_BACKUP);
-            recordState2StateNhbpCommit(services, goal_p, "replan_exp");
             return SUCCESS;
         }
 
@@ -949,7 +516,6 @@ namespace general_planner {
 
             services.latest_replan.setRetCode(GENERAL_SUCCESS_NO_BACKUP);
             services.ros_ptr->warn(" -- [GeneralPlanner] Backup generation failed near goal; commit checked exp-only trajectory to avoid running old command past goal.");
-            recordState2StateNhbpCommit(services, goal_p, "replan_exp_only_near_goal");
             return true;
         };
 
@@ -981,7 +547,6 @@ namespace general_planner {
             if (services.cfg.print_log) {
                 services.ros_ptr->info(" -- [GeneralPlanner] in [ReplanOnce]: Replan a new back traj success, all replan success.");
             }
-            recordState2StateNhbpCommit(services, goal_p, "replan_exp_backup");
             return SUCCESS;
         } else if (back_ret_code == NO_NEED) {
             services.robot_on_backup_traj = false;
@@ -998,7 +563,6 @@ namespace general_planner {
                 services.ros_ptr->info(" -- [GeneralPlanner] in [ReplanOnce]: No need back traj success, all replan success.");
             }
             services.latest_replan.setRetCode(GENERAL_SUCCESS_NO_BACKUP);
-            recordState2StateNhbpCommit(services, goal_p, "replan_backup_no_need");
             return SUCCESS;
         } else if (back_ret_code == FINISH) {
             if (rejectOnCheckFailure(services.ros_ptr,
@@ -1023,7 +587,6 @@ namespace general_planner {
                 services.ros_ptr->info(" -- [GeneralPlanner] in [ReplanOnce]: No need back traj success, all replan success.");
             }
             services.latest_replan.setRetCode(GENERAL_SUCCESS_NO_BACKUP);
-            recordState2StateNhbpCommit(services, goal_p, "replan_finish_exp");
             return SUCCESS;
         }
         if (acceptExpWithoutBackupNearGoal()) {
@@ -1031,24 +594,6 @@ namespace general_planner {
         }
         services.ros_ptr->warn(" -- [GeneralPlanner] in [ReplanOnce]: generateBackupTrajectory return {}, replan Failed return",
                                RET_CODE_STR[back_ret_code].c_str());
-        if (services.nhbp_adapter != nullptr) {
-            services.nhbp_adapter->recordFailure(&exp_traj_info.posTraj(),
-                                                 services.robot_state,
-                                                 goal_p,
-                                                 services.ros_ptr->getSimTime(),
-                                                 nhbp::FailureReason::BACKUP_TRIGGERED);
-            setState2StateNhbpDebug(
-                    services,
-                    fmt::format(";nhbp_action=RECORD_FAILURE;nhbp_reason=backup_generation_failed;"
-                                "nhbp_failure={};{}",
-                                nhbp::toString(nhbp::FailureReason::BACKUP_TRIGGERED),
-                                services.nhbp_adapter->diagnosticSummary(
-                                        services.ros_ptr->getSimTime())));
-        }
-        if (services.topological_memory != nullptr) {
-            services.topological_memory->recordFailureNear(planning_goal_p,
-                                                           services.ros_ptr->getSimTime());
-        }
         return FAILED;
     }
 

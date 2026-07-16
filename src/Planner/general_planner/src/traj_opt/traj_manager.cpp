@@ -1675,13 +1675,6 @@ void ESDFTrajOpt::setShortcutGuide(bool shortcut_guide)
   opt_vars_.shortcut_guide = shortcut_guide;
 }
 
-void ESDFTrajOpt::setGuideConsistencyScale(double position_scale,
-                                           double velocity_scale)
-{
-  guide_consistency_position_scale_ = std::clamp(position_scale, 0.0, 1.0);
-  guide_consistency_velocity_scale_ = std::clamp(velocity_scale, 0.0, 1.0);
-}
-
 void ESDFTrajOpt::setLabel(const std::string &label)
 {
   label_ = label;
@@ -2141,8 +2134,8 @@ double ESDFTrajOpt::optimize(Trajectory &traj, double rel_cost_tol)
                            &opt_vars_.guide_velocities,
                            &opt_vars_.guide_points,
                            opt_vars_.weight_guide,
-                           opt_vars_.weight_guide_integral * guide_consistency_position_scale_,
-                           opt_vars_.weight_guide_vel_integral * guide_consistency_velocity_scale_,
+                           opt_vars_.weight_guide_integral,
+                           opt_vars_.weight_guide_vel_integral,
                            opt_vars_.integral_res);
 
   opt_vars_.iter_num = 0;
@@ -2431,13 +2424,6 @@ void PlainTrajOpt::setSafeDistance(double safe_distance)
 void PlainTrajOpt::setShortcutGuide(bool shortcut_guide)
 {
   opt_vars_.shortcut_guide = shortcut_guide;
-}
-
-void PlainTrajOpt::setGuideConsistencyScale(double position_scale,
-                                            double velocity_scale)
-{
-  guide_consistency_position_scale_ = std::clamp(position_scale, 0.0, 1.0);
-  guide_consistency_velocity_scale_ = std::clamp(velocity_scale, 0.0, 1.0);
 }
 
 void PlainTrajOpt::setSwarmConfig(const SwarmPenaltyConfig &config)
@@ -3629,9 +3615,9 @@ double PlainTrajOpt::optimize(Trajectory &traj, double rel_cost_tol)
                             &opt_vars_.guide_velocities,
                             &opt_vars_.guide_points,
                             opt_vars_.weight_guide,
-                            opt_vars_.weight_guide_integral * guide_consistency_position_scale_,
-                            opt_vars_.weight_guide_vel_integral * guide_consistency_velocity_scale_,
-                            opt_vars_.weight_guide_tube * guide_consistency_position_scale_,
+                            opt_vars_.weight_guide_integral,
+                            opt_vars_.weight_guide_vel_integral,
+                            opt_vars_.weight_guide_tube,
                             opt_vars_.guide_tube_radius,
                             opt_vars_.guide_tube_radius_sqr,
                             opt_vars_.integral_res);

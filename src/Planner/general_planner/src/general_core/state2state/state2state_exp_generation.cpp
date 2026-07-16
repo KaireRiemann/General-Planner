@@ -24,9 +24,6 @@ using namespace geometry_utils;
 #include <general_core/config.hpp>
 #include <general_core/corridor_generator.h>
 #include <general_core/map_manager.hpp>
-#include <general_core/nhbp/guide_consistency_policy.hpp>
-#include <general_core/nhbp/nav_identity.hpp>
-#include <general_core/nhbp/state2state_nhbp_adapter.hpp>
 #include <ros_interface/ros1/ros1_interface.hpp>
 #include <traj_opt/traj_manager.h>
 #include <general_core/log_utils.hpp>
@@ -551,47 +548,6 @@ namespace general_planner {
                 (pos_fina_state.col(0).head<2>() - services.goal_p.head<2>()).norm();
         services.z_debug.local_target_goal_z_err = pos_fina_state(2, 0) - services.goal_p.z();
         services.z_debug.local_target_is_global_goal = local_endpoint_is_global_goal;
-
-        nhbp::GuideConsistencyContext guide_context;
-        guide_context.guide_path_key =
-                nhbp::makeGuidePathKey(
-                        guide_path,
-                        std::max(0.25, services.cfg.state2state_nhbp_goal_key_resolution));
-        if (services.nhbp_adapter != nullptr && services.cfg.state2state_nhbp_enable) {
-            const nhbp::NdoDiagnosis ndo =
-                    services.nhbp_adapter->diagnose(services.ros_ptr->getSimTime());
-            nhbp::GuideConsistencyPolicy policy(
-                    nhbp::GuideConsistencyPolicy::Config{
-                            true,
-                            0.5,
-                            0.0,
-                            0.0,
-                            1.0,
-                            services.cfg.plain_traj_cfg.guide_path_tube_radius,
-                            services.cfg.plain_traj_cfg.guide_path_z_tube_radius});
-            guide_context = policy.decide(ndo,
-                                          false,
-                                          true,
-                                          false,
-                                          guide_context.guide_path_key);
-        }
-        const double guide_position_scale =
-                guide_context.enabled ? guide_context.weight_scale : 0.0;
-        if (services.traj_manager->esdf()) {
-            services.traj_manager->esdf()->setGuideConsistencyScale(guide_position_scale,
-                                                                    guide_position_scale);
-        }
-        if (services.traj_manager->plain()) {
-            services.traj_manager->plain()->setGuideConsistencyScale(guide_position_scale,
-                                                                     guide_position_scale);
-        }
-        if (services.latest_nhbp_debug_info != nullptr) {
-            *services.latest_nhbp_debug_info +=
-                    fmt::format(";guide_policy={};guide_scale={:.2f};guide_key={}",
-                                guide_context.reason,
-                                guide_position_scale,
-                                guide_context.guide_path_key);
-        }
 
         bool temp_ret;
         Trajectory out_traj;
