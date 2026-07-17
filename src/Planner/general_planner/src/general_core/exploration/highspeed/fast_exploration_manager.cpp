@@ -121,13 +121,9 @@ void FastExplorationManager::initialize(
            ep_->failed_goal_cooldown_, 30.0);
   nh.param("global_planning/failed_goal_penalty",
            ep_->failed_goal_penalty_, 2000.0);
-  nh.param("global_planning/failed_goal_match_radius",
-           ep_->failed_goal_match_radius_, 3.0);
   ep_->failed_goal_cooldown_ =
       std::clamp(ep_->failed_goal_cooldown_, 1.0, 120.0);
   ep_->failed_goal_penalty_ = std::max(0.0, ep_->failed_goal_penalty_);
-  ep_->failed_goal_match_radius_ =
-      std::clamp(ep_->failed_goal_match_radius_, 0.2, 20.0);
   nh.param("exploration/use_lkh", ep_->use_lkh_, true);
 
   // FALCON-style global coverage guidance is deliberately a separate data
@@ -524,7 +520,7 @@ void FastExplorationManager::deferCurrentGoalAfterPlanningFailure() {
     if ((goal.cluster_id >= 0 &&
          goal.cluster_id == ed_->locked_goal_cluster_id_) ||
         (goal.position - ed_->locked_goal_).norm() <=
-            ep_->failed_goal_match_radius_) {
+            std::max(0.2, ep_->goal_lock_match_radius_)) {
       matched = &goal;
       break;
     }
@@ -562,7 +558,7 @@ double FastExplorationManager::failedGoalPenalty(
         viewpoint->frontier_cluster_id_ == goal.cluster_id;
     const bool same_position =
         (viewpoint->center_ - goal.position).norm() <=
-        ep_->failed_goal_match_radius_;
+        std::max(0.2, ep_->goal_lock_match_radius_);
     if (same_cluster || same_position) {
       return ep_->failed_goal_penalty_;
     }

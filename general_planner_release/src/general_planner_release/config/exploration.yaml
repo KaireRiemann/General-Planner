@@ -39,9 +39,8 @@ global_planning/candidate_future_return_weight: 0.55
 global_planning/candidate_information_gain_weight: 2.0
 global_planning/candidate_wait_weight: 1.5
 global_planning/candidate_debt_weight: 2.5
-global_planning/failed_goal_cooldown: 60.0
+global_planning/failed_goal_cooldown: 30.0
 global_planning/failed_goal_penalty: 2000.0
-global_planning/failed_goal_match_radius: 3.0
 global_planning/candidate_gain_saturation: 30.0
 global_planning/candidate_wait_saturation: 18.0
 global_planning/candidate_debt_saturation: 3.0
@@ -131,8 +130,6 @@ fsm/latest_odom_timeout: 0.5
 fsm/controlled_reorientation_enable: true
 fsm/plan_failure_retry_delay: 0.20
 fsm/plan_failure_refresh_count: 3
-fsm/backup_fallback_defer_count: 3
-fsm/backup_fallback_goal_match_radius: 3.0
 max_traj_len: 26.0
 DilateRadiusSoft: 0.7 # minco threshold
 DilateRadiusHard: 0.45 # collision check threshold
@@ -199,10 +196,6 @@ BackupSearchMargin: 5.5
 BackupPieceNum: 2
 BackupMaxVel: 10.0
 BackupMaxAcc: 15.0
-BackupFallbackEnable: true
-BackupFallbackMaxSpeed: 1.2
-BackupFallbackMinProgress: 0.5
-BackupFallbackMaxProgress: 3.0
 ReplanCommitDelay: 0.45
 CommitMinDuration: 0.50
 CommitMaxDuration: 2.3
@@ -231,7 +224,7 @@ FinishRequireVehicleSlow: true
 FinishSlowSpeed: 0.5
 FinishRecheckAfterGoalReached: true
 GoalLockEnable: true
-GoalSwitchMinInterval: 3.0
+GoalSwitchMinInterval: 1.2
 GoalSwitchMinImprovement: 2.0
 GoalSwitchHighSpeedMultiplier: 1.8
 GoalKeepCostRatio: 1.35

@@ -15,15 +15,12 @@ struct FSMData {
   bool trigger_, have_odom_, static_state_, emergency_replan_,
       use_bubble_a_star_, half_resolution, auto_triggered_;
   bool reorientation_required_, reorientation_stop_requested_;
-  bool has_backup_fallback_goal_;
-  int consecutive_plan_failures_, consecutive_backup_fallbacks_;
-  int backup_fallback_goal_cluster_id_;
+  int consecutive_plan_failures_;
   vector<string> state_str_;
   int bb_astar_fail_cnt_, fast_search_fial_cnt_;
   double bb_astar_time_out, fast_search_time_out;
   Eigen::Vector3f odom_pos_, odom_vel_; // odometry state
   Eigen::Quaterniond odom_orient_;
-  Eigen::Vector3f backup_fallback_goal_;
   float odom_yaw_;
   ros::Time first_odom_time_;
   ros::Time last_odom_receive_time_;
@@ -71,8 +68,6 @@ struct FSMParam {
   bool controlled_reorientation_enable_;
   double plan_failure_retry_delay_;
   int plan_failure_refresh_count_;
-  int backup_fallback_defer_count_;
-  double backup_fallback_goal_match_radius_;
 };
 
 struct ExplorationData {
@@ -138,7 +133,6 @@ struct ExplorationParam {
   double frontier_pass_debt_max_;
   double failed_goal_cooldown_;
   double failed_goal_penalty_;
-  double failed_goal_match_radius_;
   bool use_lkh_;
   bool view_graph_;
   string tsp_dir_; // Per-process writable directory used by the LKH solver.

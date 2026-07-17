@@ -128,10 +128,6 @@ struct GcopterConfig
   int backupPieceNum{2};
   double backupMaxVel{6.0};
   double backupMaxAcc{8.0};
-  bool backupFallbackEnable{true};
-  double backupFallbackMaxSpeed{1.2};
-  double backupFallbackMinProgress{0.50};
-  double backupFallbackMaxProgress{3.0};
   double replanCommitDelay{0.60};
   double commitMinDuration{0.45};
   double commitMaxDuration{2.2};
@@ -388,8 +384,6 @@ struct LocalTrajData
   Trajectory<5> backup_yaw_traj_;
   bool backup_available_{false};
   double backup_start_t_{std::numeric_limits<double>::infinity()};
-  bool backup_fallback_used_{false};
-  double backup_fallback_progress_{0.0};
 };
 
 class FastPlannerManager
@@ -413,7 +407,6 @@ public:
   bool checkTrajCollision(double &collision_time);
   bool checkTrajVelocity();
   bool hasCommittedTrajectory() const;
-  bool hasActiveCommittedTrajectory(double min_remaining = 0.08) const;
   bool hasCommittedBackup() const;
   bool hasCommittedStopTrajectory() const;
   double timeToCommittedBackup() const;
