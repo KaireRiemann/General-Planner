@@ -187,6 +187,28 @@ void FastExplorationFSM::FSMCallback(const ros::TimerEvent &e) {
           !have_safe_committed &&
           fd_->consecutive_plan_failures_ >= fp_->plan_failure_refresh_count_ &&
           fd_->odom_vel_.norm() <= fp_->reorient_exit_speed_;
+      const double current_clearance =
+          planner_manager_->lidar_map_interface_->getDisToOcc(fd_->odom_pos_);
+      const double recovery_trigger_clearance =
+          std::max(planner_manager_->gcopter_config_->dilateRadiusSoft,
+                   planner_manager_->gcopter_config_
+                       ->commitKnownFreeSafeDistance) +
+          0.10;
+      const bool needs_clearance_recovery =
+          may_refresh_goal && std::isfinite(current_clearance) &&
+          current_clearance <= recovery_trigger_clearance;
+      if (needs_clearance_recovery) {
+        fd_->consecutive_plan_failures_ = 0;
+        fd_->next_plan_retry_time_ = ros::Time(0);
+        ROS_WARN_STREAM("[plan recovery] enter safe-region recovery after "
+                        "repeated stationary failures: clearance="
+                        << current_clearance
+                        << " trigger=" << recovery_trigger_clearance);
+        transitState(CAUTION,
+                     "PLAN_TRAJ: repeated failure near clearance boundary",
+                     true);
+        break;
+      }
       if (may_refresh_goal) {
         expl_manager_->deferCurrentGoalAfterPlanningFailure();
         expl_manager_->ed_->has_goal_lock_ = false;
@@ -323,6 +345,12 @@ void FastExplorationFSM::FSMCallback(const ros::TimerEvent &e) {
       fd_->newest_traj_ = poly_traj_msg;
       poly_traj_pub_.publish(fd_->newest_traj_);
       ros::Duration(0.2).sleep();
+      fd_->static_state_ = false;
+      fd_->consecutive_plan_failures_ = 0;
+      fd_->next_plan_retry_time_ = ros::Time(0);
+      exec_timer_.start();
+      transitState(EXEC_TRAJ, "CAUTION: safe-region recovery published", true);
+      break;
     }
     exec_timer_.start();
     double dis2occ =
@@ -562,7 +590,12 @@ void FastExplorationFSM::battaryCallback(
 
 void FastExplorationFSM::updateTopoAndGlobalPath() {
   if (!(state_ == WAIT_TRIGGER || state_ == PLAN_TRAJ || state_ == EXEC_TRAJ ||
-        state_ == REORIENT || state_ == FINISH)) {
+        state_ == REORIENT)) {
+    // FINISH is terminal after the debounced frontier, coverage-plateau and
+    // exhausted-target checks have all passed. EPIC/FALCON likewise stop
+    // global replanning in their terminal state. Continuing to call
+    // planGlobalPath here repeatedly re-entered the finish gate and could even
+    // leave FINISH if a stale target was synthesized.
     global_path_update_timer_.stop();
     // expl_manager_->frontier_manager_ptr_->viz_pocc();
     expl_manager_->frontier_manager_ptr_->visfrtcluster();

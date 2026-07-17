@@ -73,6 +73,8 @@ public:
   void IndexToPos(Eigen::Vector3f &pt, Eigen::Vector3i &idx);
   bool isNodeSafe(Node::Ptr node, const Eigen::Vector3f &bbox_min, const Eigen::Vector3f &bbox_max,
                   unordered_set<Eigen::Vector3i, v3i_hash> &safe_set, unordered_set<Eigen::Vector3i, v3i_hash> &danger_set);
+  bool segmentInValidBoxes(const Eigen::Vector3f &start,
+                           const Eigen::Vector3f &end) const;
 
   void init(ros::NodeHandle &nh, const LIOInterface::Ptr &lidar_map);
   void reset();

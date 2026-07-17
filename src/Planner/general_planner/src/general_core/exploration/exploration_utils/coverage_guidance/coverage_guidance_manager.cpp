@@ -201,6 +201,10 @@ bool CoverageGuidanceManager::fullMode() const {
   return config_.mode == "full";
 }
 
+bool CoverageGuidanceManager::finishGuardEnabled() const {
+  return fullMode() && config_.finish_guard_enable;
+}
+
 const std::string &CoverageGuidanceManager::modeName() const {
   return config_.mode;
 }
@@ -310,6 +314,43 @@ bool CoverageGuidanceManager::blocksFinish() const {
   }
   const CoveragePlan::Ptr plan = latestUsablePlan();
   return plan && plan->reachable_unknown_count > 0;
+}
+
+std::vector<CoverageTarget>
+CoverageGuidanceManager::unknownApproachTargets(
+    const Eigen::Vector3d &robot_position,
+    int max_targets,
+    double min_travel_distance) const {
+  std::vector<CoverageTarget> result;
+  const CoveragePlan::Ptr plan = latestUsablePlan();
+  if (!fullMode() || !plan || !robot_position.allFinite()) {
+    return result;
+  }
+  max_targets = std::max(1, max_targets);
+  min_travel_distance = std::max(0.0, min_travel_distance);
+  for (const CoverageTarget &target : plan->ordered_targets) {
+    if (target.type != CoverageTargetType::REACHABLE_UNKNOWN ||
+        !target.has_approach || !target.approach_position.allFinite() ||
+        (target.approach_position - robot_position).norm() <
+            min_travel_distance) {
+      continue;
+    }
+    bool duplicate = false;
+    for (const CoverageTarget &kept : result) {
+      if ((kept.approach_position - target.approach_position).norm() <
+          0.5 * config_.fine_cell_size) {
+        duplicate = true;
+        break;
+      }
+    }
+    if (!duplicate) {
+      result.emplace_back(target);
+      if (static_cast<int>(result.size()) >= max_targets) {
+        break;
+      }
+    }
+  }
+  return result;
 }
 
 bool CoverageGuidanceManager::voxelIsValid(
@@ -681,8 +722,39 @@ CoveragePlan CoverageGuidanceManager::buildPlan(const WorkItem &work) {
         representative = zone_id;
       }
     }
-    unknown_targets.push_back({CoverageTargetType::REACHABLE_UNKNOWN, center,
-                               representative, group.voxel_count, -1});
+    CoverageTarget target;
+    target.type = CoverageTargetType::REACHABLE_UNKNOWN;
+    target.position = center;
+    target.zone_id = representative;
+    target.voxel_count = group.voxel_count;
+
+    // Select the cheapest known-free zone touching this unknown component.
+    // The unknown center remains the observation direction/visualization
+    // target; only this adjacent free point is eligible for navigation.
+    int best_free_zone = -1;
+    double best_free_score = kInfinity;
+    for (const int unknown_zone : group.zones) {
+      for (const auto &edge : zones[unknown_zone].edges) {
+        const int neighbor = edge.first;
+        if (neighbor < 0 || neighbor >= static_cast<int>(zones.size()) ||
+            zones[neighbor].state != CoverageVoxelState::KNOWN_FREE ||
+            !std::isfinite(start_distance[neighbor])) {
+          continue;
+        }
+        const double score =
+            start_distance[neighbor] +
+            0.1 * (zones[neighbor].center - center).norm();
+        if (score < best_free_score) {
+          best_free_score = score;
+          best_free_zone = neighbor;
+        }
+      }
+    }
+    if (best_free_zone >= 0) {
+      target.approach_position = zones[best_free_zone].center;
+      target.has_approach = true;
+    }
+    unknown_targets.emplace_back(target);
   }
   const int remaining_capacity =
       std::max(0, config_.max_cp_nodes - static_cast<int>(targets.size()));

@@ -976,6 +976,10 @@ void GcopterConfig::init(const ros::NodeHandle &nh_priv)
   nh_priv.param("CommitSampleDt", commitSampleDt, commitSampleDt);
   nh_priv.param("CommitKnownFreeSafeDistance", commitKnownFreeSafeDistance,
                 std::max(commitKnownFreeSafeDistance, dilateRadiusHard + 0.15));
+  nh_priv.param("SafetyClearanceTolerance", safetyClearanceTolerance,
+                safetyClearanceTolerance);
+  safetyClearanceTolerance =
+      std::clamp(safetyClearanceTolerance, 0.0, 0.05);
   nh_priv.param("CommitBackupTimeBuffer", commitBackupTimeBuffer, commitBackupTimeBuffer);
   nh_priv.param("KnownFreeShortLength", knownFreeShortLength, knownFreeShortLength);
   nh_priv.param("KnownFreeMediumLength", knownFreeMediumLength, knownFreeMediumLength);
@@ -1230,7 +1234,10 @@ bool FastPlannerManager::getCommittedReplanHeadState(Eigen::Vector3d &pos,
   return true;
 }
 
-bool FastPlannerManager::planExploreTraj(const std::vector<Eigen::Vector3f> &path, bool is_static)
+bool FastPlannerManager::planExploreTraj(
+    const std::vector<Eigen::Vector3f> &path,
+    bool is_static,
+    bool clearance_recovery)
 {
   const ros::Time plan_process_start = ros::Time::now();
   last_frontend_path_ = path;
@@ -1539,6 +1546,14 @@ bool FastPlannerManager::planExploreTraj(const std::vector<Eigen::Vector3f> &pat
       [&](const geometry_utils::Trajectory &candidate,
           const int attempt,
           const double guide_speed) -> bool {
+    const double normal_safe_distance =
+        std::max(0.05, gcopter_config_->commitKnownFreeSafeDistance);
+    const double recovery_target_distance =
+        std::max(normal_safe_distance, gcopter_config_->dilateRadiusSoft);
+    double previous_clearance = safetyDistanceToOcc(candidate.getPos(0.0));
+    bool escaping_clearance =
+        clearance_recovery && std::isfinite(previous_clearance) &&
+        previous_clearance < recovery_target_distance;
     double last_t = 0.0;
     Eigen::Vector3d last_p = candidate.getPos(0.0);
     for (double t = check_dt;
@@ -1548,22 +1563,62 @@ bool FastPlannerManager::planExploreTraj(const std::vector<Eigen::Vector3f> &pat
       const Eigen::Vector3d p = candidate.getPos(tt);
       const double step = std::max(
           0.05, (tt - last_t) * std::max(1.0, candidate.getVel(tt).norm()));
+      // A dedicated safe-region recovery may legitimately start inside the
+      // normal soft/commit clearance.  In that mode, first prove that the
+      // segment contains no occupied/unknown voxel, then require clearance to
+      // stay non-decreasing until the normal clearance has been recovered.
+      // Ordinary exploration trajectories still use the strict commit
+      // distance below without any relaxation.
+      const double ray_safe_distance =
+          escaping_clearance ? 0.0 : normal_safe_distance;
       const RaycastSafetyInfo safety = raycastSafety(
           last_p,
           p,
           !gcopter_config_->safetyMapUnknownAllowedForExplore,
-          std::max(0.05, gcopter_config_->commitKnownFreeSafeDistance),
+          ray_safe_distance,
           step);
+      const double point_clearance = safetyDistanceToOcc(p);
+      const double monotone_tolerance = 0.02;
+      const bool recovery_clearance_regressed =
+          escaping_clearance &&
+          (!std::isfinite(point_clearance) ||
+           !std::isfinite(safety.min_clearance) ||
+           point_clearance + monotone_tolerance <
+               std::min(previous_clearance, recovery_target_distance) ||
+           safety.min_clearance + monotone_tolerance <
+               std::min(previous_clearance, recovery_target_distance));
+      const bool left_exploration_boxes =
+          safety.first_blocked_state == MapVoxelState::OUT_OF_MAP ||
+          !lidar_map_interface_->IsInBox(p.cast<float>());
       if (safety.blocked_by_occupied ||
           (!gcopter_config_->safetyMapUnknownAllowedForExplore &&
-           safety.blocked_by_unknown))
+           safety.blocked_by_unknown) ||
+          recovery_clearance_regressed ||
+          left_exploration_boxes)
       {
+        const double blocked_clearance =
+            safetyDistanceToOcc(safety.first_blocked_pos);
         ROS_WARN_STREAM(
             "[highspeed_exp adapter] optimized trajectory safety check "
             "failed; retry slower: attempt="
             << attempt << " guide_speed=" << guide_speed << " t=" << tt
-            << " state=" << safetyStateName(safety.first_blocked_state));
+            << " state=" << safetyStateName(safety.first_blocked_state)
+            << " start_clearance="
+            << safetyDistanceToOcc(candidate.getPos(0.0))
+            << " segment_min_clearance=" << safety.min_clearance
+            << " blocked_clearance=" << blocked_clearance
+            << " recovery=" << clearance_recovery
+            << " clearance_regressed=" << recovery_clearance_regressed
+            << " left_exploration_boxes=" << left_exploration_boxes);
         return false;
+      }
+      if (escaping_clearance)
+      {
+        previous_clearance = point_clearance;
+        if (point_clearance >= recovery_target_distance)
+        {
+          escaping_clearance = false;
+        }
       }
       last_t = tt;
       last_p = p;
@@ -2818,7 +2873,7 @@ bool FastPlannerManager::flyToSafeRegion(bool is_static)
     recovery_path.reserve(2);
     recovery_path.emplace_back(start.cast<float>());
     recovery_path.emplace_back(candidates[i].pos.cast<float>());
-    if (planExploreTraj(recovery_path, is_static))
+    if (planExploreTraj(recovery_path, is_static, true))
     {
       ROS_WARN_STREAM("[highspeed_exp adapter] safe-region recovery planned: start=("
                       << start.transpose() << ") goal=("
@@ -2901,7 +2956,8 @@ bool FastPlannerManager::checkTrajCollision(double &collision_time)
   double probe_t = now_t;
   Eigen::Vector3d sphere_center = committed_pos.getPos(probe_t);
   double sphere_radius = safetyDistanceToOcc(sphere_center) -
-                         gcopter_config_->dilateRadiusHard;
+                         gcopter_config_->dilateRadiusHard +
+                         gcopter_config_->safetyClearanceTolerance;
   if (!std::isfinite(sphere_radius) || sphere_radius <= 0.0)
   {
     collision_time = 0.0;
@@ -3152,12 +3208,25 @@ MapVoxelState FastPlannerManager::querySafetyState(const Eigen::Vector3d &pos) c
   {
     return MapVoxelState::OUT_OF_MAP;
   }
+  // IsInMap() is the enclosing AABB of all configured boxes.  With a low
+  // outdoor box and a tall indoor box, that envelope contains invalid high
+  // exterior air.  Every final safety query must use the actual box union.
+  if (!lidar_map_interface_ ||
+      !lidar_map_interface_->IsInBox(pos.cast<float>()))
+  {
+    return MapVoxelState::OUT_OF_MAP;
+  }
 
   const double safe_distance =
       gcopter_config_ ? std::max(0.05, gcopter_config_->commitKnownFreeSafeDistance)
                       : 0.45;
   const double lio_dist = safetyDistanceToOcc(pos);
-  const bool lio_safe = std::isfinite(lio_dist) && lio_dist >= safe_distance;
+  const bool lio_safe =
+      std::isfinite(lio_dist) &&
+      lio_dist + (gcopter_config_
+                      ? gcopter_config_->safetyClearanceTolerance
+                      : 0.0) >=
+          safe_distance;
 
   if (!map_manager_ || !rog_map_updated_)
   {
@@ -3285,10 +3354,15 @@ RaycastSafetyInfo FastPlannerManager::raycastSafety(const Eigen::Vector3d &start
     }
 
     const bool too_close =
-        std::isfinite(clearance) && clearance < std::max(0.0, safe_distance);
+        std::isfinite(clearance) &&
+        clearance +
+                (gcopter_config_
+                     ? gcopter_config_->safetyClearanceTolerance
+                     : 0.0) <
+            std::max(0.0, safe_distance);
     const bool unknown_block =
-        unknown_as_occupied &&
-        (state == MapVoxelState::UNKNOWN || state == MapVoxelState::OUT_OF_MAP);
+        state == MapVoxelState::OUT_OF_MAP ||
+        (unknown_as_occupied && state == MapVoxelState::UNKNOWN);
     const bool occupied_block = state == MapVoxelState::OCCUPIED || too_close;
     if (occupied_block || unknown_block)
     {

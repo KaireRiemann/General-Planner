@@ -10,7 +10,7 @@
   <arg name="traj_server" default="true" />
 
   <arg name="exploration_config"
-       default="$(find general_planner)/config/exploration.yaml" />
+       default="$(find general_planner)/config/exploration_house.yaml" />
   <arg name="sim_config"
        default="$(find general_planner)/config/exploration_sim.yaml" />
   <arg name="rog_map_config"
@@ -44,12 +44,17 @@
   <arg name="rog_map_enable" default="true" />
   <arg name="bubble_astar_allocate_num" default="1000000" />
   <arg name="bubble_astar_lambda_heu" default="100.0" />
-  <arg name="bubble_astar_resolution" default="0.40" />
-  <arg name="bubble_topo_cube_discrete_size" default="0.50" />
+  <!-- House-profile defaults preserve the villa doorway in the discrete
+       topology.  They remain launch arguments so wider/open scenes can
+       override them without changing the YAML. -->
+  <arg name="bubble_astar_resolution" default="0.25" />
+  <arg name="bubble_topo_cube_discrete_size" default="0.30" />
 
+  <!-- Frontier markers remain available for bags; the dense full graph is
+       opt-in because it materially slows long two-floor runs. -->
   <arg name="view_graph" default="false" />
-  <arg name="view_frontier" default="false" />
-  <arg name="view_cluster" default="false" />
+  <arg name="view_frontier" default="true" />
+  <arg name="view_cluster" default="true" />
 
   <!-- Garage simulation. This node is omitted entirely on the real robot. -->
   <node if="$(arg marsim)" pkg="perfect_drone_sim" type="perfect_drone"

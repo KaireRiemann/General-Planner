@@ -85,6 +85,11 @@ struct CoverageTarget {
   int zone_id{-1};
   int voxel_count{0};
   int route_rank{-1};
+  // For an unknown target, this is a known-free zone adjacent to the unknown
+  // component.  It turns the persistent coverage plan into an executable
+  // observation action without ever commanding a trajectory into unknown.
+  Eigen::Vector3d approach_position{Eigen::Vector3d::Zero()};
+  bool has_approach{false};
 };
 
 struct CoveragePlan {

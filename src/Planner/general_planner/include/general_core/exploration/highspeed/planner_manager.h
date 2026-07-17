@@ -133,6 +133,7 @@ struct GcopterConfig
   double commitMaxDuration{2.2};
   double commitSampleDt{0.05};
   double commitKnownFreeSafeDistance{0.50};
+  double safetyClearanceTolerance{0.0};
   double commitBackupTimeBuffer{0.15};
   double knownFreeShortLength{4.0};
   double knownFreeMediumLength{10.0};
@@ -395,7 +396,9 @@ public:
   ~FastPlannerManager();
 
   void printTimeCost(double time_threshold, double time_cost, std::string print_info);
-  bool planExploreTraj(const std::vector<Eigen::Vector3f> &path, bool is_static);
+  bool planExploreTraj(const std::vector<Eigen::Vector3f> &path,
+                       bool is_static,
+                       bool clearance_recovery = false);
   bool planControlledStopTrajectory();
   bool flyToSafeRegion(bool is_static);
   void polyTraj2ROSMsg(traj_utils::PolyTraj &poly_msg, const ros::Time &start_time);

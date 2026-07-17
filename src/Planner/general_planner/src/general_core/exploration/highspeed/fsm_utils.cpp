@@ -197,12 +197,39 @@ bool FastExplorationFSM::finishGateSatisfied(const string &reason) const {
                    << finish_gate_.no_reachable_count);
     }
   }
-  if (expl_manager_->coverageGuidanceBlocksFinish()) {
+  const CoverageFinishStatus coverage_finish =
+      expl_manager_->coverageFinishStatus();
+  if (!coverage_finish.ready()) {
     ROS_WARN_STREAM_THROTTLE(
-        1.0, "[finish gate] blocked by persistent coverage map after "
-                 << reason
-                 << ": reachable unknown coverage zones still exist");
+        1.0, "[finish gate] wait for coverage convergence after "
+                 << reason << ": plan_valid="
+                 << coverage_finish.plan_valid
+                 << " coverage=" << std::fixed << std::setprecision(4)
+                 << coverage_finish.coverage_ratio
+                 << " observed=" << coverage_finish.observed_voxels
+                 << "/" << coverage_finish.valid_voxels
+                 << " plateau="
+                 << coverage_finish.plateau_reached
+                 << " plateau_duration="
+                 << std::setprecision(1)
+                 << coverage_finish.plateau_duration
+                 << "s targets_exhausted="
+                 << coverage_finish.targets_exhausted
+                 << " exhausted="
+                 << coverage_finish.exhausted_targets << "/"
+                 << coverage_finish.actionable_targets);
     return false;
+  }
+  if (coverage_finish.guard_enabled) {
+    ROS_WARN_STREAM("[finish gate] coverage converged after "
+                    << reason << ": coverage=" << std::fixed
+                    << std::setprecision(4)
+                    << coverage_finish.coverage_ratio
+                    << " plateau_duration=" << std::setprecision(1)
+                    << coverage_finish.plateau_duration
+                    << "s exhausted="
+                    << coverage_finish.exhausted_targets << "/"
+                    << coverage_finish.actionable_targets);
   }
   return true;
 }

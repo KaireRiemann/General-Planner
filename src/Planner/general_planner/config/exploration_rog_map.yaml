@@ -48,4 +48,5 @@ rog_map:
     local_update_box: [70.0, 70.0, 6.0]
 
   virtual_ground_height: -0.10
-  virtual_ceil_height: 5.50
+  # The villa has a second navigable floor between z=3.0 and z=6.0.
+  virtual_ceil_height: 6.40

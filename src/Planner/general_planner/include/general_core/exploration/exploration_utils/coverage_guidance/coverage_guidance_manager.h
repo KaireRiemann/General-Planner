@@ -22,6 +22,7 @@ public:
   bool enabled() const;
   bool affectsPlanning() const;
   bool fullMode() const;
+  bool finishGuardEnabled() const;
   const std::string &modeName() const;
   const CoverageMapSpec &mapSpec() const;
   bool samplingDue() const;
@@ -34,6 +35,10 @@ public:
   double clusterPenalty(int cluster_id,
                         const Eigen::Vector3d &position) const;
   bool blocksFinish() const;
+  std::vector<CoverageTarget> unknownApproachTargets(
+      const Eigen::Vector3d &robot_position,
+      int max_targets = 8,
+      double min_travel_distance = 0.8) const;
   void publishVisualization() const;
 
   static bool runDeterministicSelfTest(std::string *error = nullptr);

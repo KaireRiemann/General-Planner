@@ -24,7 +24,12 @@ void ParallelBubbleAstar::init(ros::NodeHandle &nh, const LIOInterface::Ptr &lid
 bool ParallelBubbleAstar::isNodeSafe(Node::Ptr node, const Eigen::Vector3f &bbox_min, const Eigen::Vector3f &bbox_max,
                                      unordered_set<Eigen::Vector3i, v3i_hash> &safe_set, unordered_set<Eigen::Vector3i, v3i_hash> &danger_set) {
 
-  if (!lidar_map_interface_->IsInMap(node->position))
+  // IsInMap() only checks the axis-aligned envelope of every exploration
+  // box.  For a stacked two-floor profile that envelope also contains the
+  // high exterior space between the low outdoor box and the indoor upper
+  // box, allowing an invalid "climb outside the house" A* path.  Enforce the
+  // actual union of valid boxes (and dead areas) at every search node.
+  if (!lidar_map_interface_->IsInBox(node->position))
     return false;
 
   if (node->position.x() < bbox_min.x() || node->position.y() < bbox_min.y() || node->position.z() < bbox_min.z() ||
@@ -56,10 +61,40 @@ bool ParallelBubbleAstar::isNodeSafe(Node::Ptr node, const Eigen::Vector3f &bbox
   return false;
 }
 
+bool ParallelBubbleAstar::segmentInValidBoxes(
+    const Eigen::Vector3f &start,
+    const Eigen::Vector3f &end) const {
+  if (!lidar_map_interface_ || !start.allFinite() || !end.allFinite())
+    return false;
+
+  const double length = (end - start).norm();
+  const double sample_step =
+      std::clamp(0.5 * resolution_, 0.05, 0.20);
+  const int sample_num =
+      std::max(1, static_cast<int>(std::ceil(length / sample_step)));
+  for (int i = 0; i <= sample_num; ++i) {
+    const float ratio =
+        static_cast<float>(i) / static_cast<float>(sample_num);
+    if (!lidar_map_interface_->IsInBox(start + ratio * (end - start)))
+      return false;
+  }
+  return true;
+}
+
 int ParallelBubbleAstar::search(const Eigen::Vector3f &start, const Eigen::Vector3f &goal, vector<Eigen::Vector3f> &path, double timeout,
                                 bool best_result, bool only_raycast, const Eigen::Vector3f &bbox_min, const Eigen::Vector3f &bbox_max) {
   // step 1 one-shot
   vector<Eigen::Vector3f>().swap(path);
+  auto point_in_search_region = [&](const Eigen::Vector3f &point) {
+    return lidar_map_interface_->IsInBox(point) &&
+           (point.array() >= bbox_min.array()).all() &&
+           (point.array() <= bbox_max.array()).all();
+  };
+  if (!point_in_search_region(start))
+    return ParallelBubbleAstar::START_FAIL;
+  if (!point_in_search_region(goal))
+    return ParallelBubbleAstar::END_FAIL;
+
   double goal_r;
   goal_r = min(1.5, lidar_map_interface_->getDisToOcc(goal) - safe_distance_ - 1e-3);
   if (goal_r <= 1e-2) {
@@ -76,13 +111,18 @@ int ParallelBubbleAstar::search(const Eigen::Vector3f &start, const Eigen::Vecto
     if (step <= 1e-2)
       break;
     if (step + goal_r > (goal - curr_pos).norm()) {
+      if (!segmentInValidBoxes(curr_pos, goal))
+        break;
       path.swap(path_tmp);
       path.push_back((goal + curr_pos) / 2.0);
       path.push_back(goal);
       // ROS_INFO("one shot! reach goal");
       return ParallelBubbleAstar::REACH_END;
     } else {
-      curr_pos += step * dir;
+      const Eigen::Vector3f next_pos = curr_pos + step * dir;
+      if (!segmentInValidBoxes(curr_pos, next_pos))
+        break;
+      curr_pos = next_pos;
       path_tmp.push_back(curr_pos);
     }
     len -= step;
@@ -293,7 +333,8 @@ bool ParallelBubbleAstar::collisionCheck_shortenPath(vector<Eigen::Vector3f> &pa
     for (int j = 0; j < i; j++) {
       double j_raduis = raduis_lis[j];
       double distance = (path[i] - path[j]).norm();
-      if (i_raduis + j_raduis + 1e-3 > distance) {
+      if (i_raduis + j_raduis + 1e-3 > distance &&
+          segmentInValidBoxes(path[j], path[i])) {
         indices.push_front(j);
         connected = true;
         i = j + 1;
