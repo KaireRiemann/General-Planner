@@ -291,6 +291,7 @@ void ProbMap::updateOccPointCloud(const PointCloud& input_cloud) {
         local_map_bound_min_d_ = localmap_min;
     }
     probabilisticMapFromCache();
+    notifyStateChangeCallback();
     map_empty_ = false;
 }
 
@@ -302,6 +303,49 @@ void ProbMap::slideAllMap(const rog_map::Vec3f& pos) {
     }
     if (cfg_.esdf_en) {
         esdf_map_->mapSliding(pos);
+    }
+}
+
+void ProbMap::setStateChangeTrackingEnabled(const bool enabled) {
+    std::lock_guard<std::mutex> lock(state_changes_mtx_);
+    state_change_tracking_enabled_ = enabled;
+    if (!enabled) {
+        state_changes_.clear();
+    }
+}
+
+std::vector<ProbMap::CellStateChange> ProbMap::drainStateChanges() {
+    std::lock_guard<std::mutex> lock(state_changes_mtx_);
+    std::vector<CellStateChange> output;
+    output.swap(state_changes_);
+    return output;
+}
+
+void ProbMap::setStateChangeCallback(std::function<void()> callback) {
+    std::lock_guard<std::mutex> lock(state_changes_mtx_);
+    state_change_callback_ = std::move(callback);
+}
+
+void ProbMap::notifyStateChangeCallback() {
+    std::function<void()> callback;
+    {
+        std::lock_guard<std::mutex> lock(state_changes_mtx_);
+        callback = state_change_callback_;
+    }
+    if (callback) {
+        callback();
+    }
+}
+
+void ProbMap::recordStateChange(const Vec3i& id_g,
+                                const GridType from_type,
+                                const GridType to_type) {
+    if (from_type == to_type) {
+        return;
+    }
+    std::lock_guard<std::mutex> lock(state_changes_mtx_);
+    if (state_change_tracking_enabled_) {
+        state_changes_.push_back({id_g, from_type, to_type});
     }
 }
 
@@ -372,6 +416,7 @@ void ProbMap::updateProbMap(const PointCloud& cloud, const Pose& pose) {
             }
         }
     }
+    notifyStateChangeCallback();
 }
 
 GridType ProbMap::getGridType(Vec3i& id_g) const {
@@ -624,6 +669,7 @@ void ProbMap::hitPointUpdate(const Vec3f& pos, const int& hash_id, const int& hi
         Vec3i id_g;
         posToGlobalIndex(pos, id_g);
         globalIndexToPos(id_g, center_pos);
+        recordStateChange(id_g, from_type, to_type);
         inf_map_->updateGridCounter(center_pos, from_type, to_type);
         if (cfg_.esdf_en) {
             esdf_map_->updateGridCounter(center_pos, from_type, to_type);
@@ -669,6 +715,7 @@ void ProbMap::missPointUpdate(const Vec3f& pos, const int& hash_id, const int& h
         Vec3i id_g;
         posToGlobalIndex(pos, id_g);
         globalIndexToPos(id_g, center_pos);
+        recordStateChange(id_g, from_type, to_type);
         // Update inf map
         inf_map_->updateGridCounter(center_pos, from_type, to_type);
         if (cfg_.esdf_en) {

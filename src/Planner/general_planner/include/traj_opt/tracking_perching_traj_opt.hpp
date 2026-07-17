@@ -9,7 +9,7 @@
 
 #include "data_structure/base/polytope.h"
 #include "data_structure/base/trajectory.h"
-#include "general_core/map_manager.hpp"
+#include <map_manager/map_manager.hpp>
 #include "traj_opt/config.hpp"
 #include "traj_opt/minco/boundary_mapping.hpp"
 #include "traj_opt/perching_surface_state.hpp"

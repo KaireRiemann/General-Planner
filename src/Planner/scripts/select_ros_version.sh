@@ -109,7 +109,7 @@ ROS_VERSION=$(echo "$1" | tr '[:upper:]' '[:lower:]')  # Normalize input to lowe
 # 批量处理配置 (只需指定包名和ROS版本)
 declare -a packages=(
   "general_planner:$ROS_VERSION"
-  "rog_map:$ROS_VERSION"
+  "map_manager:$ROS_VERSION"
   "mars_uav_sim/mars_quadrotor_msgs:$ROS_VERSION"
   "mars_uav_sim/marsim_render:$ROS_VERSION"
   "mars_uav_sim/perfect_drone_sim:$ROS_VERSION"

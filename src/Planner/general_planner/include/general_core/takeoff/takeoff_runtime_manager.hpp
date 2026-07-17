@@ -8,7 +8,7 @@
 
 #include "data_structure/base/trajectory.h"
 #include "general_core/config.hpp"
-#include "general_core/map_manager.hpp"
+#include <map_manager/map_manager.hpp>
 #include "traj_opt/tracking_perching_traj_opt.hpp"
 
 namespace general_planner

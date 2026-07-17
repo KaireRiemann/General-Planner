@@ -40,7 +40,7 @@
 #include "traj_opt/traj_manager.h"
 #include "path_search/astar.h"
 #include "rog_map/rog_map.h"
-#include "general_core/map_manager.hpp"
+#include <map_manager/map_manager.hpp>
 #include "general_core/corridor_generator.h"
 #include "general_core/dynamic_obstacle_layer.hpp"
 #include "general_core/fov_checker.h"

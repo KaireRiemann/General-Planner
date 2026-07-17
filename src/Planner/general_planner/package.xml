@@ -24,7 +24,7 @@
   <depend>quadrotor_msgs</depend>
 
   <depend>lkh_tsp_solver</depend>
-  <depend>rog_map</depend>
+  <depend>map_manager</depend>
   <depend>traj_utils</depend>
 
   <exec_depend>general_planner_rviz_plugins</exec_depend>

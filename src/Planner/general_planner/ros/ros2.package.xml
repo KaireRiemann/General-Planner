@@ -10,7 +10,7 @@
     <depend>geometry_msgs</depend>
     <depend>nav_msgs</depend>
     <depend>std_msgs</depend>
-    <depend>rog_map</depend>
+    <depend>map_manager</depend>
 
     <export>
         <build_type>ament_cmake</build_type>

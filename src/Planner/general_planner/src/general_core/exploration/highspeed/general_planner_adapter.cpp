@@ -1,7 +1,7 @@
 #include <data_structure/base/trajectory.h>
 #include <fmt/color.h>
 #include <general_core/corridor_generator.h>
-#include <general_core/map_manager.hpp>
+#include <map_manager/map_manager.hpp>
 #include <rog_map_ros/rog_map_ros1.hpp>
 #include <ros_interface/ros_interface.hpp>
 #include <traj_opt/traj_manager.h>

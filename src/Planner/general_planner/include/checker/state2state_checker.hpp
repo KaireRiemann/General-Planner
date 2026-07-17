@@ -9,7 +9,7 @@
 #include <checker/check_result.hpp>
 #include <checker/common_checker.hpp>
 #include <general_core/config.hpp>
-#include <general_core/map_manager.hpp>
+#include <map_manager/map_manager.hpp>
 #include <rog_map/rog_map.h>
 
 namespace general_planner::checker {

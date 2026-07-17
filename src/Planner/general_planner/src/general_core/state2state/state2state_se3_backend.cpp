@@ -3,7 +3,7 @@
 #include <algorithm>
 
 #include <general_core/config.hpp>
-#include <general_core/map_manager.hpp>
+#include <map_manager/map_manager.hpp>
 #include <general_core/state2state/se3_aggressive_manager.hpp>
 #include <ros_interface/ros1/ros1_interface.hpp>
 

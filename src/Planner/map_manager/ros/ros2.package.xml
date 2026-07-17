@@ -1,7 +1,7 @@
 <package format="2">
     <version>0.0.0</version>
-    <name>rog_map</name>
-    <description>rog_map</description>
+    <name>map_manager</name>
+    <description>Unified ROGMap and BoundaryMap package</description>
     <maintainer email="renyf@connect.hku.hk">Yunfan Ren</maintainer>
     <license>BSD</license>
     <buildtool_depend>ament_cmake</buildtool_depend>

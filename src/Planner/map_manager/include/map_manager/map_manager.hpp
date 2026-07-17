@@ -4,7 +4,9 @@
 #include <cmath>
 #include <limits>
 #include <memory>
+#include <vector>
 
+#include <map_manager/boundary_map.hpp>
 #include <rog_map/rog_map.h>
 #include <rog_map_ros/rog_map_ros1.hpp>
 #include <rog_map_ros/rog_map_ros2.hpp>
@@ -20,18 +22,45 @@ public:
     MapManager() = default;
 
     explicit MapManager(const rog_map::ROGMapROS::Ptr &map)
-        : map_(map)
     {
+        setMap(map);
     }
 
     void setMap(const rog_map::ROGMapROS::Ptr &map)
     {
+        if (map_) {
+            map_->setStateChangeCallback({});
+        }
         map_ = map;
+        boundary_map_.reset();
+        if (map_) {
+            // BoundaryMap consumes only sensor-driven discrete transitions.
+            // Any pending stream from a previous owner is not part of this
+            // manager's global history.
+            map_->setStateChangeTrackingEnabled(false);
+            map_->drainStateChanges();
+            boundary_map_ = std::make_shared<BoundaryMap>(map_->getResolution());
+            map_->setStateChangeTrackingEnabled(true);
+            const std::weak_ptr<rog_map::ROGMapROS> weak_map = map_;
+            const std::weak_ptr<BoundaryMap> weak_boundary = boundary_map_;
+            map_->setStateChangeCallback([weak_map, weak_boundary]() {
+                const auto map = weak_map.lock();
+                const auto boundary = weak_boundary.lock();
+                if (map && boundary) {
+                    syncBoundaryMapImpl(map, boundary);
+                }
+            });
+        }
     }
 
     bool ready() const
     {
         return map_ != nullptr;
+    }
+
+    bool boundaryReady() const
+    {
+        return boundary_map_ != nullptr;
     }
 
     const rog_map::ROGMap *rawMap() const
@@ -52,6 +81,12 @@ public:
     void updateMap(const rog_map::PointCloud &cloud, const general_utils::Pose &pose) const
     {
         map_->updateMap(cloud, pose);
+    }
+
+    /** Synchronize pending ROG discrete transitions into the sparse global map. */
+    void syncBoundaryMap() const
+    {
+        syncBoundaryMapImpl(map_, boundary_map_);
     }
 
     rog_map::RobotState getRobotState() const
@@ -82,6 +117,73 @@ public:
     rog_map::GridType getGridType(const rog_map::Vec3f &pos) const
     {
         return map_->getGridType(pos);
+    }
+
+    /** Persistent BoundaryMap state, without consulting the local ROG window. */
+    rog_map::GridType getBoundaryGridType(const rog_map::Vec3f &pos) const
+    {
+        syncBoundaryMap();
+        if (!boundary_map_) {
+            return rog_map::GridType::UNKNOWN;
+        }
+        return boundary_map_->getGridType(pos);
+    }
+
+    /**
+     * Global raw occupancy query for long-range planning.
+     *
+     * Current local ROG evidence has priority.  If the local ring-buffer cell
+     * is unknown after a slide, historical BoundaryMap evidence fills the gap.
+     * Local safety and trajectory code must continue using getGridType() and
+     * getInfGridType(), whose semantics remain strictly local.
+     */
+    rog_map::GridType getGlobalGridType(const rog_map::Vec3f &pos) const
+    {
+        if (!map_ || !pos.allFinite()) {
+            return rog_map::GridType::OUT_OF_MAP;
+        }
+        const rog_map::Config config = map_->getMapConfig();
+        if (pos.z() <= config.virtual_ground_height ||
+            pos.z() >= config.virtual_ceil_height) {
+            return rog_map::GridType::OCCUPIED;
+        }
+        if (map_->insideLocalMap(pos)) {
+            const rog_map::GridType local = map_->getGridType(pos);
+            if (local == rog_map::GridType::KNOWN_FREE ||
+                local == rog_map::GridType::OCCUPIED) {
+                return local;
+            }
+        }
+        return getBoundaryGridType(pos);
+    }
+
+    bool isGloballyKnownFree(const rog_map::Vec3f &pos) const
+    {
+        return getGlobalGridType(pos) == rog_map::GridType::KNOWN_FREE;
+    }
+
+    bool isGloballyOccupied(const rog_map::Vec3f &pos) const
+    {
+        return getGlobalGridType(pos) == rog_map::GridType::OCCUPIED;
+    }
+
+    rog_map::vec_Vec3f getGlobalFrontiers(std::size_t max_count = 0) const
+    {
+        syncBoundaryMap();
+        return boundary_map_ ? boundary_map_->frontierPositions(max_count)
+                             : rog_map::vec_Vec3f{};
+    }
+
+    BoundaryMap::Stats getBoundaryMapStats() const
+    {
+        syncBoundaryMap();
+        return boundary_map_ ? boundary_map_->stats() : BoundaryMap::Stats{};
+    }
+
+    BoundaryMap::Ptr rawBoundaryMap() const
+    {
+        syncBoundaryMap();
+        return boundary_map_;
     }
 
     rog_map::GridType getInfGridType(const rog_map::Vec3f &pos) const
@@ -270,6 +372,10 @@ public:
     }
 
 private:
+    static void syncBoundaryMapImpl(const rog_map::ROGMapROS::Ptr &map,
+                                    const BoundaryMap::Ptr &boundary_map);
+
     rog_map::ROGMapROS::Ptr map_;
+    BoundaryMap::Ptr boundary_map_;
 };
 } // namespace general_planner

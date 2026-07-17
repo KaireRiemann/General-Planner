@@ -1,30 +1,21 @@
 cmake_minimum_required(VERSION 3.5)
-project(rog_map)
+project(map_manager)
 
 set(CMAKE_CXX_STANDARD 17)
-#set(CMAKE_BUILD_TYPE "Debug")
 set(CMAKE_BUILD_TYPE "Release")
 set(CMAKE_CXX_FLAGS "-O3 -Wall -g -fPIC")
 add_compile_options(-DQT_NO_VERSION_TAGGING)
 add_compile_options(-Werror=unused-variable)
 add_compile_options(-Werror=return-type)
-
-# reduce warning
-add_compile_options(-Wno-dev)
 cmake_policy(SET CMP0057 NEW)
 cmake_policy(SET CMP0054 NEW)
 set(CMAKE_SUPPRESS_DEVELOPER_WARNINGS 1 CACHE BOOL "Suppress developer warnings")
 
+# Keep the established ROG voxel convention and public configuration paths.
 add_definitions(-DROOT_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/\")
-
-# Define the voxelize and raycasting method
 add_definitions(-DORIGIN_AT_CORNER)
-string(TOUPPER $ENV{ROS_DISTRO} ROS_VERSION)
-message(STATUS "ROS version: ${ROS_VERSION}")
-
-message("Using ROS1")
-# add a marco for ros1
 add_definitions(-DUSE_ROS1)
+
 find_package(catkin REQUIRED COMPONENTS
         roscpp
         std_msgs
@@ -41,9 +32,8 @@ find_package(yaml-cpp REQUIRED)
 
 catkin_package(
         INCLUDE_DIRS include
-        LIBRARIES rog_map
+        LIBRARIES map_manager
         CATKIN_DEPENDS roscpp rospy std_msgs
-        #  DEPENDS system_lib
 )
 
 include_directories(
@@ -55,16 +45,25 @@ include_directories(
         ${PCL_INCLUDE_DIRS}
 )
 
-set(THIRD_PARTY
+set(MAP_MANAGER_THIRD_PARTY
         ${catkin_LIBRARIES}
         ${PCL_LIBRARIES}
-        -ldw
         yaml-cpp
+        -ldw
 )
 
-file(GLOB_RECURSE srcs CONFIGURE_DEPENDS src/*.cpp include/*.h include/*.hpp include/*.cpp)
-add_library(rog_map STATIC ${srcs})
+# ROGMap is the local dense sliding backend. BoundaryMap and MapManager are
+# built into this same library so map ownership has one package boundary.
+file(GLOB_RECURSE MAP_MANAGER_SOURCES CONFIGURE_DEPENDS
+        src/*.cpp
+        include/rog_map/*.cpp
+)
+add_library(map_manager STATIC ${MAP_MANAGER_SOURCES})
+target_include_directories(map_manager PUBLIC include)
+target_link_libraries(map_manager PUBLIC ${MAP_MANAGER_THIRD_PARTY})
+add_dependencies(map_manager ${catkin_EXPORTED_TARGETS})
 
-target_include_directories(rog_map PUBLIC include)
-target_link_libraries(rog_map PUBLIC
-        ${THIRD_PARTY})
+add_executable(boundary_map_self_test tests/boundary_map_self_test.cpp)
+target_include_directories(boundary_map_self_test PRIVATE include)
+target_link_libraries(boundary_map_self_test map_manager)
+add_dependencies(boundary_map_self_test ${catkin_EXPORTED_TARGETS})

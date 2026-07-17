@@ -25,6 +25,8 @@
 #pragma once
 
 #include <cmath>
+#include <functional>
+#include <mutex>
 #include <queue>
 #include <rog_map/inf_map.h>
 #include <rog_map/free_cnt_map.h>
@@ -40,6 +42,12 @@ namespace rog_map {
     public:
         EIGEN_MAKE_ALIGNED_OPERATOR_NEW
         typedef std::shared_ptr<ProbMap> Ptr;
+
+        struct CellStateChange {
+            Vec3i id_g{Vec3i::Zero()};
+            GridType from_type{GridType::UNKNOWN};
+            GridType to_type{GridType::UNKNOWN};
+        };
 
         ProbMap() = default;
 
@@ -132,6 +140,19 @@ namespace rog_map {
 
         void updateProbMap(const PointCloud &cloud, const Pose &pose);
 
+        /** Enable the compact discrete-state delta stream used by a global map. */
+        void setStateChangeTrackingEnabled(bool enabled);
+
+        /**
+         * Move all accumulated sensor-driven state transitions to the caller.
+         * Sliding-map reset transitions are intentionally excluded: clearing a
+         * ring-buffer slot is not a new observation of unknown space.
+         */
+        std::vector<CellStateChange> drainStateChanges();
+
+        /** Register an observer invoked after each complete occupancy update. */
+        void setStateChangeCallback(std::function<void()> callback);
+
     protected:
         rog_map::Config cfg_;
         InfMap::Ptr inf_map_;
@@ -154,6 +175,11 @@ namespace rog_map {
         vector<double> time_consuming_;
         vector<string> time_consuming_name_{"Total", "Raycast", "Update_cache", "Inflation", "PointCloudNumber",
                                             "CacheNumber", "InflationNumber"};
+
+        bool state_change_tracking_enabled_{false};
+        std::vector<CellStateChange> state_changes_;
+        mutable std::mutex state_changes_mtx_;
+        std::function<void()> state_change_callback_;
 
         // standardization query
         // Known free < l_free
@@ -187,6 +213,10 @@ namespace rog_map {
         void hitPointUpdate(const Vec3f &pos, const int &hash_id, const int &hit_num);
 
         void missPointUpdate(const Vec3f &pos, const int &hash_id, const int &hit_num);
+
+        void recordStateChange(const Vec3i &id_g, GridType from_type, GridType to_type);
+
+        void notifyStateChangeCallback();
 
         void raycastProcess(const PointCloud &input_cloud, const Vec3f &cur_odom);
 

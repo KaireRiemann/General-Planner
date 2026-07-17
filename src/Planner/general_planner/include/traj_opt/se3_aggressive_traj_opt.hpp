@@ -7,7 +7,7 @@
 #include <Eigen/Core>
 
 #include "data_structure/base/trajectory.h"
-#include "general_core/map_manager.hpp"
+#include <map_manager/map_manager.hpp>
 #include "ros_interface/ros_interface.hpp"
 #include "traj_opt/config.hpp"
 #include "traj_opt/minco/minco_trajectory.hpp"

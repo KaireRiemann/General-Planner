@@ -6,7 +6,7 @@
 
 #include <data_structure/base/trajectory.h>
 #include <general_core/dynamic_obstacle_layer.hpp>
-#include <general_core/map_manager.hpp>
+#include <map_manager/map_manager.hpp>
 #include <rog_map/rog_map.h>
 
 namespace general_planner {

@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.5)
-project(rog_map)
+project(map_manager)
 
 set(CMAKE_CXX_STANDARD 17)
 #set(CMAKE_BUILD_TYPE "Debug")
@@ -10,7 +10,6 @@ add_compile_options(-Werror=unused-variable)
 add_compile_options(-Werror=return-type)
 
 # reduce warning
-add_compile_options(-Wno-dev)
 cmake_policy(SET CMP0057 NEW)
 cmake_policy(SET CMP0054 NEW)
 set(CMAKE_SUPPRESS_DEVELOPER_WARNINGS 1 CACHE BOOL "Suppress developer warnings")
@@ -63,10 +62,10 @@ include_directories(
 
 file(GLOB_RECURSE srcs CONFIGURE_DEPENDS src/*.cpp include/*.h include/*.hpp include/*.cpp)
 
-add_library(rog_map STATIC ${srcs})
+add_library(map_manager STATIC ${srcs})
 
-target_include_directories(rog_map PUBLIC include)
-target_link_libraries(rog_map PUBLIC
+target_include_directories(map_manager PUBLIC include)
+target_link_libraries(map_manager PUBLIC
         ${THIRD_PARTY})
 
 

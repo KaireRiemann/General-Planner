@@ -33,7 +33,7 @@ find_package(catkin REQUIRED COMPONENTS
         visualization_msgs
         message_filters
         cv_bridge
-        rog_map
+        map_manager
         lkh_tsp_solver
         traj_utils
         yaml-cpp
@@ -49,7 +49,7 @@ catkin_package(
         INCLUDE_DIRS include
         LIBRARIES general_planner_core general_planner_exploration_utils general_planner_exploration
         CATKIN_DEPENDS roscpp rospy std_msgs geometry_msgs nav_msgs sensor_msgs
-                       visualization_msgs message_filters cv_bridge rog_map
+                       visualization_msgs message_filters cv_bridge map_manager
                        lkh_tsp_solver traj_utils tf
         #  DEPENDS system_lib
 )

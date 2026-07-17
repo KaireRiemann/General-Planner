@@ -20,7 +20,7 @@
 #include "rog_map/rog_map.h"
 #include "rog_map_ros/rog_map_ros1.hpp"
 #include "ros_interface/ros1/ros1_interface.hpp"
-#include "general_core/map_manager.hpp"
+#include <map_manager/map_manager.hpp>
 #include "utils/header/color_msg_utils.hpp"
 
 #define CONFIG_FILE_DIR(name) (std::string(std::string(ROOT_DIR) + "config/" + name))

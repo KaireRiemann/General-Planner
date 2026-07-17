@@ -23,7 +23,7 @@ using namespace geometry_utils;
 #include <checker/trajectory_checker.hpp>
 #include <general_core/config.hpp>
 #include <general_core/corridor_generator.h>
-#include <general_core/map_manager.hpp>
+#include <map_manager/map_manager.hpp>
 #include <ros_interface/ros1/ros1_interface.hpp>
 #include <traj_opt/traj_manager.h>
 #include <general_core/log_utils.hpp>

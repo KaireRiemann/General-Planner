@@ -31,7 +31,7 @@ find_package(catkin REQUIRED COMPONENTS
         quadrotor_msgs
         visualization_msgs
         message_filters
-        rog_map
+        map_manager
         yaml-cpp
         tf
 )

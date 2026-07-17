@@ -23,7 +23,7 @@
 #include <data_structure/base/polytope.h>
 #include <data_structure/base/trajectory.h>
 #include <ros_interface/ros_interface.hpp>
-#include <general_core/map_manager.hpp>
+#include <map_manager/map_manager.hpp>
 #include <utils/header/type_utils.hpp>
 #include <utils/optimization/lbfgs.h>
 

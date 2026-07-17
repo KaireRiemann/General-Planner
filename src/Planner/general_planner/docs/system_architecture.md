@@ -301,8 +301,8 @@ Completed in the current migration step:
   concrete `JerkTrackingBackend` / `SnapTrackingBackend` dispatch classes in
   `tracking_backend.cpp`.
 - Utility naming has moved from `super_utils` to canonical `general_utils`.
-  The public `rog_map/include/general_utils` headers define the canonical
-  namespace, while `rog_map/include/super_utils` remains a compatibility
+  The public `map_manager/include/general_utils` headers define the canonical
+  namespace, while `map_manager/include/super_utils` remains a compatibility
   include path for older downstream code.
 - Exploration headers and sources now live under `general_core/exploration`.
   The exploration frontend has a configurable frontier source and can ingest
