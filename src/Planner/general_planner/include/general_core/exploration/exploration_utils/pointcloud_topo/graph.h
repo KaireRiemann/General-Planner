@@ -118,6 +118,14 @@ public:
   double frontier_wait_age_ = 0.0;
   double frontier_pass_debt_ = 0.0;
   int frontier_pass_count_ = 0;
+  // Synthetic coverage observation targets share the same topological and
+  // trajectory validation path as frontier viewpoints, but must retain their
+  // own stable identity and unknown observation direction.
+  bool is_coverage_target_ = false;
+  std::uint64_t coverage_target_id_ = 0;
+  Eigen::Vector3f coverage_unknown_ = Eigen::Vector3f::Zero();
+  int coverage_voxel_count_ = 0;
+  int coverage_route_rank_ = -1;
   float yaw_;
   Eigen::Vector3f center_;
   vector<BubbleNode::Ptr> bubbles_; // 过程量，计算出topoNode后会清空

@@ -1313,9 +1313,29 @@ bool FastPlannerManager::planExploreTraj(
     }
   }
 
+  if (clearance_recovery)
+  {
+    // CAUTION has already stopped the vehicle. A stale committed prefix may
+    // point back toward the obstacle and also makes the short escape problem
+    // numerically ill-conditioned. Always optimize recovery from current
+    // odometry with zero boundary velocity.
+    use_committed_replan_state = false;
+    useCurrentOdomHead();
+    head.col(1).setZero();
+    head.col(2).setZero();
+    head.col(3).setZero();
+    switch_delay = 0.0;
+  }
+
   if (!use_committed_replan_state)
   {
     useCurrentOdomHead();
+    if (clearance_recovery)
+    {
+      head.col(1).setZero();
+      head.col(2).setZero();
+      head.col(3).setZero();
+    }
   }
 
   std::vector<Eigen::Vector3d> local_path = shortenPath(path, max_traj_len_);
@@ -1475,9 +1495,13 @@ bool FastPlannerManager::planExploreTraj(
   // Map-adaptive velocity may be disabled for compatibility, but geometric
   // turn limits are a flight-dynamics constraint and must never be bypassed.
   const double scheduled_speed =
-      std::clamp(piece_velocity_profile.bounds.minCoeff(),
-                 std::max(0.1, gcopter_config_->minSegmentVel),
-                 std::max(0.2, gcopter_config_->maxVelMag));
+      clearance_recovery
+          ? std::clamp(piece_velocity_profile.bounds.minCoeff(), 0.30,
+                       std::min(1.0,
+                                std::max(0.30, gcopter_config_->maxVelMag)))
+          : std::clamp(piece_velocity_profile.bounds.minCoeff(),
+                       std::max(0.1, gcopter_config_->minSegmentVel),
+                       std::max(0.2, gcopter_config_->maxVelMag));
   general_utils::StatePVAJ tail = general_utils::StatePVAJ::Zero();
   tail.col(0) = local_path.back();
   bool terminal_velocity_used = false;
@@ -1511,9 +1535,15 @@ bool FastPlannerManager::planExploreTraj(
   // cruise floor; using it here made all four retries identical on sharp
   // paths and caused an infinite acceleration_limit retry loop.
   const double min_opt_speed =
-      std::clamp(gcopter_config_->trajectoryRetryMinVel, 0.3,
-                 std::max(0.3, gcopter_config_->minSegmentVel));
-  const double max_opt_speed = std::max(min_opt_speed, gcopter_config_->maxVelMag);
+      clearance_recovery
+          ? 0.30
+          : std::clamp(gcopter_config_->trajectoryRetryMinVel, 0.3,
+                       std::max(0.3, gcopter_config_->minSegmentVel));
+  const double max_opt_speed =
+      clearance_recovery
+          ? std::min(1.0, std::max(min_opt_speed,
+                                  gcopter_config_->maxVelMag))
+          : std::max(min_opt_speed, gcopter_config_->maxVelMag);
   const double head_boundary_speed = head.col(1).norm();
   const double tail_boundary_speed = tail.col(1).norm();
   const double boundary_speed =
@@ -1574,7 +1604,9 @@ bool FastPlannerManager::planExploreTraj(
       const RaycastSafetyInfo safety = raycastSafety(
           last_p,
           p,
-          !gcopter_config_->safetyMapUnknownAllowedForExplore,
+          clearance_recovery
+              ? true
+              : !gcopter_config_->safetyMapUnknownAllowedForExplore,
           ray_safe_distance,
           step);
       const double point_clearance = safetyDistanceToOcc(p);
@@ -1591,7 +1623,8 @@ bool FastPlannerManager::planExploreTraj(
           safety.first_blocked_state == MapVoxelState::OUT_OF_MAP ||
           !lidar_map_interface_->IsInBox(p.cast<float>());
       if (safety.blocked_by_occupied ||
-          (!gcopter_config_->safetyMapUnknownAllowedForExplore &&
+          ((clearance_recovery ||
+            !gcopter_config_->safetyMapUnknownAllowedForExplore) &&
            safety.blocked_by_unknown) ||
           recovery_clearance_regressed ||
           left_exploration_boxes)
@@ -2368,6 +2401,24 @@ bool FastPlannerManager::planExploreTraj(
   // whole command is already known-free and ends at rest. In shorter-sensing
   // or real-world unknown-space cases the backup path below remains mandatory.
   bool backup_available = false;
+  if (clearance_recovery && !terminal_velocity_used &&
+      !committed_pos.empty())
+  {
+    const double recovery_duration = committed_pos.getTotalDuration();
+    known_free_terminal_stop =
+        committed_pos.getVel(recovery_duration).norm() <= 0.30 &&
+        committed_pos.getAcc(recovery_duration).norm() <= 0.50;
+    if (known_free_terminal_stop)
+    {
+      backup_known_len =
+          (committed_pos.getPos(recovery_duration) -
+           committed_pos.getPos(0.0)).norm();
+      exp_traj_info.setWholeTrajKnownFreeFlag(true);
+      ROS_INFO_STREAM(
+          "[highspeed_exp adapter] clearance recovery is a verified "
+          "known-free terminal-stop command; no high-speed backup required");
+    }
+  }
   if (!known_free_terminal_stop)
   {
     backup_available = buildBackupTrajectory(
@@ -2752,7 +2803,8 @@ bool FastPlannerManager::planControlledStopTrajectory()
   return true;
 }
 
-bool FastPlannerManager::flyToSafeRegion(bool is_static)
+bool FastPlannerManager::flyToSafeRegion(bool is_static,
+                                         bool force_relocation)
 {
   if (!gcopter_config_ || !lidar_map_interface_ || !corridor_generator_ ||
       !exploration_traj_opt_ || !rog_map_updated_)
@@ -2775,10 +2827,14 @@ bool FastPlannerManager::flyToSafeRegion(bool is_static)
       std::max(gcopter_config_->dilateRadiusSoft,
                gcopter_config_->commitKnownFreeSafeDistance);
   const double start_clearance = safetyDistanceToOcc(start);
-  if (std::isfinite(start_clearance) && start_clearance > target_clearance)
+  const double restored_clearance =
+      target_clearance + gcopter_config_->safetyClearanceTolerance;
+  if (!force_relocation && std::isfinite(start_clearance) &&
+      start_clearance > restored_clearance)
   {
-    // CAUTION will leave the recovery state on this same condition.  Do not
-    // replace a valid committed trajectory when no escape motion is needed.
+    // Keep this threshold exactly aligned with the CAUTION exit gate. Using
+    // target_clearance alone leaves a dead band in which the FSM requests an
+    // escape but this backend reports that no escape is needed.
     return false;
   }
 
@@ -2820,7 +2876,9 @@ bool FastPlannerManager::flyToSafeRegion(bool is_static)
   for (const Eigen::Vector3d &dir : directions)
   {
     double previous_clearance = start_clearance;
-    for (double radius = radial_step;
+    const double first_radius =
+        force_relocation ? std::max(0.8, radial_step) : radial_step;
+    for (double radius = first_radius;
          radius <= kMaxRecoveryRadius + 1.0e-6;
          radius += radial_step)
     {
@@ -2843,11 +2901,14 @@ bool FastPlannerManager::flyToSafeRegion(bool is_static)
       }
       previous_clearance = clearance;
 
-      if (state == MapVoxelState::KNOWN_FREE && clearance >= target_clearance)
+      if (state == MapVoxelState::KNOWN_FREE &&
+          clearance >= restored_clearance)
       {
         SafeCandidate candidate;
         candidate.pos = pos;
-        candidate.score = radius - 0.20 * clearance;
+        candidate.score =
+            (force_relocation ? std::abs(radius - 1.2) : radius) -
+            0.20 * clearance;
         candidates.emplace_back(candidate);
         break;
       }
@@ -2875,7 +2936,10 @@ bool FastPlannerManager::flyToSafeRegion(bool is_static)
     recovery_path.emplace_back(candidates[i].pos.cast<float>());
     if (planExploreTraj(recovery_path, is_static, true))
     {
-      ROS_WARN_STREAM("[highspeed_exp adapter] safe-region recovery planned: start=("
+      ROS_WARN_STREAM("[highspeed_exp adapter] "
+                      << (force_relocation ? "spatial relocation" :
+                                             "safe-region recovery")
+                      << " planned: start=("
                       << start.transpose() << ") goal=("
                       << candidates[i].pos.transpose() << ") start_clearance="
                       << start_clearance << " target_clearance="

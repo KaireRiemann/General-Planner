@@ -125,6 +125,7 @@ void FrontierManager::setHighSpeedViewScoreContext(
 
 void FrontierManager::requestGlobalRecluster() {
   force_recluster_.clear();
+  global_audit_pending_ = true;
   for (auto &cluster : cluster_list_) {
     if (cluster->state_ == FrontierState::BLACKLISTED) {
       continue;
@@ -135,6 +136,7 @@ void FrontierManager::requestGlobalRecluster() {
     }
     if (!cluster->is_dormant_) {
       cluster->is_reachable_ = true;
+      cluster->needs_revalidation_ = true;
     }
   }
 }
@@ -142,7 +144,9 @@ void FrontierManager::requestGlobalRecluster() {
 void FrontierManager::forceGlobalRefresh(
     vector<ClusterInfo::Ptr> &cluster_updated, vector<int> &cluster_removed) {
   requestGlobalRecluster();
+  force_refresh_running_ = true;
   updateFrontierClusters(cluster_updated, cluster_removed);
+  force_refresh_running_ = false;
 }
 
 bool FrontierManager::markClusterVisitedNear(const Eigen::Vector3f &goal,
@@ -175,8 +179,13 @@ bool FrontierManager::markClusterVisitedNear(const Eigen::Vector3f &goal,
   best_cluster->last_selected_time_ = ros::Time::now();
   best_cluster->inside_pass_zone_ = false;
   best_cluster->pass_debt_ = 0.0;
+  vector<ViewpointCluster>().swap(best_cluster->vp_clusters_);
+  vector<Eigen::Vector3f>().swap(best_cluster->candidate_vps_);
+  vector<float>().swap(best_cluster->candidate_yaws_);
+  vector<double>().swap(best_cluster->candidate_scores_);
   ROS_INFO_STREAM("[frontier lifecycle] mark visited cluster="
                   << best_cluster->id_ << " distance=" << best_distance);
+  refreshSemanticRevision();
   return true;
 }
 
@@ -317,6 +326,107 @@ int FrontierManager::reachableClusterCount() const {
   return count;
 }
 
+bool FrontierManager::frontierAuditReady() const {
+  return !global_audit_pending_ &&
+         audited_frontier_revision_ == frontier_revision_;
+}
+
+uint64_t FrontierManager::computeSemanticSignature() const {
+  struct Entry {
+    int x;
+    int y;
+    int z;
+    int state;
+    int reachable;
+    int dormant;
+    int size_bucket;
+    bool operator<(const Entry &other) const {
+      return std::tie(x, y, z, state, reachable, dormant, size_bucket) <
+             std::tie(other.x, other.y, other.z, other.state,
+                      other.reachable, other.dormant, other.size_bucket);
+    }
+  };
+  const double quantization = std::max(
+      0.5, 2.0 * static_cast<double>(std::max(0.1f, frtp_.cell_size_)));
+  std::vector<Entry> entries;
+  entries.reserve(cluster_list_.size());
+  for (const auto &cluster : cluster_list_) {
+    if (!cluster || isTerminalFrontierState(cluster->state_)) {
+      continue;
+    }
+    entries.push_back(
+        {static_cast<int>(std::llround(cluster->center_.x() / quantization)),
+         static_cast<int>(std::llround(cluster->center_.y() / quantization)),
+         static_cast<int>(std::llround(cluster->center_.z() / quantization)),
+         static_cast<int>(cluster->state_), cluster->is_reachable_ ? 1 : 0,
+         cluster->is_dormant_ ? 1 : 0,
+         static_cast<int>(cluster->cells_.size() / 8U)});
+  }
+  std::sort(entries.begin(), entries.end());
+  uint64_t value = 1469598103934665603ULL;
+  auto mix = [&](const uint64_t item) {
+    value ^= item + 0x9e3779b97f4a7c15ULL + (value << 6) + (value >> 2);
+    value *= 1099511628211ULL;
+  };
+  mix(entries.size());
+  for (const Entry &entry : entries) {
+    mix(static_cast<uint32_t>(entry.x));
+    mix(static_cast<uint32_t>(entry.y));
+    mix(static_cast<uint32_t>(entry.z));
+    mix(static_cast<uint32_t>(entry.state));
+    mix(static_cast<uint32_t>(entry.reachable));
+    mix(static_cast<uint32_t>(entry.dormant));
+    mix(static_cast<uint32_t>(entry.size_bucket));
+  }
+  return value;
+}
+
+void FrontierManager::refreshSemanticRevision() {
+  const uint64_t signature = computeSemanticSignature();
+  if (!frontier_signature_initialized_) {
+    frontier_semantic_signature_ = signature;
+    frontier_signature_initialized_ = true;
+    return;
+  }
+  if (signature == frontier_semantic_signature_) {
+    return;
+  }
+  frontier_semantic_signature_ = signature;
+  ++frontier_revision_;
+  audited_frontier_revision_ = std::numeric_limits<uint64_t>::max();
+}
+
+void FrontierManager::releaseDerivedViewpointCache() {
+  // vp_clusters_ is a per-planning-cycle intermediate. The persistent
+  // candidate_vps_/candidate_yaws_ output remains available for goal locking,
+  // coverage association and lifecycle inheritance.
+  for (auto &cluster : cluster_list_) {
+    if (cluster && !cluster->vp_clusters_.empty()) {
+      vector<ViewpointCluster>().swap(cluster->vp_clusters_);
+    }
+  }
+}
+
+void FrontierManager::finishGlobalAuditIfComplete() {
+  if (!global_audit_pending_) {
+    return;
+  }
+  for (const auto &cluster : cluster_list_) {
+    if (!cluster || cluster->is_dormant_ ||
+        isTerminalFrontierState(cluster->state_)) {
+      continue;
+    }
+    if (cluster->needs_revalidation_) {
+      return;
+    }
+  }
+  audited_frontier_revision_ = frontier_revision_;
+  global_audit_pending_ = false;
+  ROS_INFO_STREAM("[frontier audit] complete revision=" << frontier_revision_
+                  << " active=" << activeClusterCount()
+                  << " reachable=" << reachableClusterCount());
+}
+
 void FrontierManager::init(ros::NodeHandle &nh, LIOInterface::Ptr &lio_interface,
                            TopoGraph::Ptr graph) {
   nh_ = nh;
@@ -403,6 +513,12 @@ void FrontierManager::init(ros::NodeHandle &nh, LIOInterface::Ptr &lio_interface
   frtp_.idx_byte_size_ =
       (frtp_.bits_need_.x() + frtp_.bits_need_.y() + frtp_.bits_need_.z() + 7) /
       8;
+  const int total_index_bits = frtp_.bits_need_.sum();
+  if (total_index_bits > 64 || frtp_.idx_byte_size_ > sizeof(uint64_t)) {
+    ROS_FATAL_STREAM("Frontier cell index needs " << total_index_bits
+                     << " bits, but the compact key supports at most 64");
+    throw std::runtime_error("frontier map dimensions exceed 64-bit key");
+  }
 
   float start_degree = 0;
   float degree_step = 2 * M_PI / vpp_.sample_pillar_circle_sample_num_;
@@ -429,6 +545,10 @@ void FrontierManager::init(ros::NodeHandle &nh, LIOInterface::Ptr &lio_interface
   }
   frtd_ = FrontierData(frtp_.idx_byte_size_);
   frtd_.label_map_.max_load_factor(1.5);
+  frtd_.frt_map_.max_load_factor(1.5);
+  ROS_INFO_STREAM("[frontier storage] compact inline key enabled, bits="
+                  << frtp_.bits_need_.transpose()
+                  << " bytes=" << static_cast<int>(frtp_.idx_byte_size_));
 }
 
 void FrontierManager::pos2idx(const PointType &pt, Eigen::Vector3i &idx) {
@@ -704,17 +824,17 @@ void FrontierManager::cluster_frts(const PointVector &frt_new,
         old_clusters.push_back(cluster);
         for (auto &pt : cluster->cells_) {
           if (get_state(pt) == FRONTIER_DIS || get_state(pt) == FRONTIER_DIR) {
-            frts2cluster.push_back(pt);
             ByteArrayRaw bytes;
             pos2bytes(pt, bytes);
             Eigen::Vector3f norm = frtd_.frt_map_[bytes];
-            // debug:
-            if (std::isnan(norm[0]) || std::isnan(norm[1]) ||
-                std::isnan(norm[2])) {
-              std::cout << "At least one element in the norm is NaN."
-                        << std::endl;
-              exit(1);
+            if (!norm.allFinite()) {
+              ROS_WARN_THROTTLE(
+                  1.0, "[frontier cluster] discard old cell with invalid normal");
+              frtd_.label_map_[bytes] = DENSE;
+              frtd_.frt_map_.erase(bytes);
+              continue;
             }
+            frts2cluster.push_back(pt);
             frts_norm.push_back(norm);
           }
         }
@@ -725,16 +845,18 @@ void FrontierManager::cluster_frts(const PointVector &frt_new,
     });
   }
 
-  frts2cluster.insert(frts2cluster.end(), frt_new.begin(), frt_new.end());
-  // debug:
   for (auto &pt : frt_new) {
     ByteArrayRaw bytes;
     pos2bytes(pt, bytes);
     Eigen::Vector3f norm = frtd_.frt_map_[bytes];
-    if (std::isnan(norm[0]) || std::isnan(norm[1]) || std::isnan(norm[2])) {
-      std::cout << "399 At least one element in the norm is NaN." << std::endl;
-      exit(1);
+    if (!norm.allFinite()) {
+      ROS_WARN_THROTTLE(
+          1.0, "[frontier cluster] discard new cell with invalid normal");
+      frtd_.label_map_[bytes] = DENSE;
+      frtd_.frt_map_.erase(bytes);
+      continue;
     }
+    frts2cluster.push_back(pt);
     frts_norm.push_back(norm);
   }
 
@@ -855,8 +977,9 @@ void FrontierManager::idx2pos(const Eigen::Vector3i &idx, PointType &pt) {
 void FrontierManager::computeNormal(const PointVector &local_pts,
                                     Eigen::Vector3f &normal) {
   if (local_pts.size() < 3) {
-    ROS_ERROR("computeNormal input size < 3");
-    exit(1);
+    ROS_WARN_THROTTLE(1.0, "computeNormal input size < 3");
+    normal = Eigen::Vector3f::UnitZ();
+    return;
   }
   Eigen::Vector3f center(0.0, 0.0, 0.0);
   for (int i = 0; i < local_pts.size(); i++) {
@@ -879,8 +1002,10 @@ void FrontierManager::computeNormalCell(const PointVector &local_pts,
                                         Eigen::Vector3f &normal,
                                         Eigen::Vector3f &center) {
   if (local_pts.size() < 3) {
-    ROS_ERROR("computeNormal input size < 3");
-    exit(1);
+    ROS_WARN_THROTTLE(1.0, "computeNormalCell input size < 3");
+    normal = Eigen::Vector3f::UnitZ();
+    center = Eigen::Vector3f::Zero();
+    return;
   }
   center = Eigen::Vector3f(0.0f, 0.0f, 0.0f);
   for (int i = 0; i < local_pts.size(); i++) {
@@ -1177,8 +1302,14 @@ void FrontierManager::updateFrontierClusters(
       } else if (bad_dir_set.count(cell)) {
         frtd_.label_map_[bytes] = FRONTIER_DIR;
       } else {
-        ROS_ERROR("wtf 885");
-        exit(1);
+        // The cell changed concurrently between classification passes. It has
+        // no trustworthy frontier cause, so keep it non-executable and let the
+        // next incremental update reconsider it.
+        ROS_WARN_THROTTLE(
+            1.0, "[frontier label] sparse/dense transition lost its cause");
+        frtd_.label_map_[bytes] = SPARSE;
+        frtd_.frt_map_.erase(bytes);
+        continue;
       }
       if (old_frt_set.count(cell) == 0) {
         PointType pt;
@@ -1207,6 +1338,13 @@ void FrontierManager::updateFrontierClusters(
   updated_pts.insert(updated_pts.end(), frt_new.begin(), frt_new.end());
   update_updating_aabb(updated_pts);
   cluster_frts(frt_new, cluster_updated, cluster_removed);
+  // Reconstructed cluster IDs change on nearly every sensor callback.  FINISH
+  // auditing cares about semantic frontier changes, not those transient IDs.
+  // A forced refresh temporarily marks clusters reachable and is finalized
+  // after viewpoint revalidation in generateTSPViewpoints().
+  if (!force_refresh_running_) {
+    refreshSemanticRevision();
+  }
 }
 
 int FrontierManager::surface_pos2idx(const PointType &pt) {
@@ -1338,6 +1476,7 @@ void FrontierManager::compute_cluster_info(
                       : static_cast<double>(fov_edge_count) / frt_pts.size();
   cluster->gap_ratio_ =
       frt_pts.empty() ? 0.0 : static_cast<double>(gap_count) / frt_pts.size();
+  cluster->needs_revalidation_ = global_audit_pending_;
   cluster->best_vp_ = Eigen::Vector3f::Zero();
   cluster->best_vp_yaw_ = 0.0f;
   cluster->candidate_vps_.clear();
@@ -1974,12 +2113,48 @@ void FrontierManager::removeUnreachableViewpoints(
 }
 
 void FrontierManager::printMemoryCost() {
-  int label_map_size = frtd_.label_map_.size();
-  int frt_map_size = frtd_.frt_map_.size();
-  cout << "label_map_size: "
-       << "(" << to_string(frtp_.idx_byte_size_) << " + 2) * " << label_map_size
-       << " = " << (float(label_map_size * (frtp_.idx_byte_size_ + 2)) / 1024.0)
-       << "KB" << endl;
+  const size_t label_map_size = frtd_.label_map_.size();
+  const size_t frt_map_size = frtd_.frt_map_.size();
+  size_t cluster_cells = 0;
+  size_t candidate_count = 0;
+  size_t cached_viewpoints = 0;
+  size_t terminal_clusters = 0;
+  for (const auto &cluster : cluster_list_) {
+    if (!cluster) {
+      continue;
+    }
+    cluster_cells += cluster->cells_.capacity();
+    candidate_count += cluster->candidate_vps_.capacity();
+    for (const auto &vp_cluster : cluster->vp_clusters_) {
+      cached_viewpoints += vp_cluster.vps_.capacity();
+    }
+    if (isTerminalFrontierState(cluster->state_)) {
+      ++terminal_clusters;
+    }
+  }
+  const size_t map_bytes =
+      label_map_size * (sizeof(ByteArrayRaw) + sizeof(uint8_t)) +
+      frt_map_size * (sizeof(ByteArrayRaw) + sizeof(Eigen::Vector3f)) +
+      (frtd_.label_map_.bucket_count() + frtd_.frt_map_.bucket_count()) *
+          sizeof(void *);
+  const size_t cluster_payload_bytes =
+      cluster_cells * (sizeof(PointType) + sizeof(Eigen::Vector3f)) +
+      candidate_count *
+          (sizeof(Eigen::Vector3f) + sizeof(float) + sizeof(double)) +
+      cached_viewpoints * sizeof(PointType);
+  ROS_INFO_STREAM("[frontier storage] labels=" << label_map_size
+                  << "/" << frtd_.label_map_.bucket_count()
+                  << " normals=" << frt_map_size
+                  << "/" << frtd_.frt_map_.bucket_count()
+                  << " clusters=" << cluster_list_.size()
+                  << " terminal=" << terminal_clusters
+                  << " cluster_cells(cap)=" << cluster_cells
+                  << " candidates(cap)=" << candidate_count
+                  << " derived_viewpoints(cap)=" << cached_viewpoints
+                  << " estimated_kb="
+                  << (map_bytes + cluster_payload_bytes) / 1024.0
+                  << " revision=" << frontier_revision_
+                  << " audit_ready=" << frontierAuditReady());
   static ros::Publisher mem_pub =
       nh_.advertise<std_msgs::Float32>("/mem_cost", 1);
   static ros::Publisher mem_pub_2 =
@@ -1987,18 +2162,11 @@ void FrontierManager::printMemoryCost() {
   static ros::Publisher mem_pub_3 =
       nh_.advertise<std_msgs::Float32>("/mem_cost_3", 1);
   std_msgs::Float32 msg, msg_2, msg_3;
-  msg.data = (float(label_map_size * (frtp_.idx_byte_size_ + 2)) / 1024.0);
+  msg.data = static_cast<float>(map_bytes) / 1024.0f;
   mem_pub.publish(msg);
-  // 4+2 -> 4+1+8
-  msg_2.data =
-      (float(label_map_size * (frtp_.idx_byte_size_ + 1 + 8)) / 1024.0);
-  //
-  msg_3.data = (float(label_map_size * (frtp_.idx_byte_size_ + 1 + 8) +
-                      frtd_.label_map_.bucket_count() * sizeof(void *)) /
-                1024.0);
-
-  cout << "frt_map_size2 = " << msg_2.data << endl;
-  cout << "frt_map_size3 = " << msg_3.data << endl;
+  msg_2.data = static_cast<float>(cluster_payload_bytes) / 1024.0f;
+  msg_3.data =
+      static_cast<float>(map_bytes + cluster_payload_bytes) / 1024.0f;
   mem_pub_2.publish(msg_2);
   mem_pub_3.publish(msg_3);
 }

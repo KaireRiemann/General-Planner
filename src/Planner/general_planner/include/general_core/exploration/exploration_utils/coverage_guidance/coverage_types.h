@@ -81,6 +81,10 @@ struct CoverageFrontier {
 
 struct CoverageTarget {
   CoverageTargetType type{CoverageTargetType::REACHABLE_UNKNOWN};
+  // Deterministic identity of the persistent fine/macro coverage component.
+  // Recovery bookkeeping must not depend only on a center that moves whenever
+  // a few voxels are observed.
+  std::uint64_t stable_id{0};
   Eigen::Vector3d position{Eigen::Vector3d::Zero()};
   int zone_id{-1};
   int voxel_count{0};
@@ -90,6 +94,10 @@ struct CoverageTarget {
   // observation action without ever commanding a trajectory into unknown.
   Eigen::Vector3d approach_position{Eigen::Vector3d::Zero()};
   bool has_approach{false};
+  // A component commonly touches several known-free zones. Keep a bounded set
+  // so the executable planner can reject an occluded/unsafe side without
+  // exhausting the whole component.
+  std::vector<Eigen::Vector3d> approach_candidates;
 };
 
 struct CoveragePlan {

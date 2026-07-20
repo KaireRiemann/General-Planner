@@ -2,10 +2,8 @@
 # Launch arguments can override both input topics for real-robot deployment.
 odometry_topic: /lidar_slam/odom
 cloud_topic: /cloud_registered
-# Persistent long-horizon coverage guidance. It ranks HighSpeedExp frontiers
-# and, when the frontend becomes sparse/slow, contributes a bounded number of
-# known-free observation candidates to the same topology/cost pipeline.
-# Corridor/MINCO/backup/traj_server remain unchanged.
+# Persistent long-horizon coverage guidance.  It only ranks executable
+# HighSpeedExp frontiers; corridor/MINCO/backup/traj_server remain unchanged.
 # Modes: off (legacy), shadow (compute/log only), soft (cost bias), full
 # (coverage order + finish guard). Any missing/stale result falls back to the
 # legacy frontier objective automatically.
@@ -49,18 +47,6 @@ coverage_guidance/finish_min_progress_voxels: 12
 coverage_guidance/recovery_min_gain_voxels: 12
 coverage_guidance/recovery_max_no_gain_attempts: 2
 coverage_guidance/recovery_max_failure_attempts: 2
-# Avoid the old bespoke recovery path when frontend exploration is exhausted.
-# Coverage is a strict fallback: the post-cooldown executable frontier set must
-# remain empty for four planning cycles and at least 1.5 s. A normal frontier
-# is never mixed with a coverage observation. During fallback, expose a bounded
-# near-field set to the real topology cost instead of blindly executing the
-# first two long-horizon CP nodes.
-coverage_guidance/executable_candidate_enable: true
-coverage_guidance/executable_candidate_max_count: 8
-coverage_guidance/executable_empty_min_count: 4
-coverage_guidance/executable_empty_min_duration: 1.5
-coverage_guidance/executable_candidate_max_speed: 0.50
-coverage_guidance/executable_candidate_bonus: 3.0
 global_planning/w_vdir: 0.3
 global_planning/w_yawdir: 0.0
 global_planning/w_firstnode: 0.2
@@ -192,10 +178,6 @@ fsm/latest_odom_timeout: 0.5
 fsm/controlled_reorientation_enable: true
 fsm/plan_failure_retry_delay: 0.20
 fsm/plan_failure_refresh_count: 3
-# Four stationary goal-refresh cycles (12 local failures with the setting
-# above) indicate a spatial local minimum even when clearance itself is safe.
-# Relocate about 1.2 m inside known-free space before trying global goals again.
-fsm/stationary_relocation_refresh_count: 4
 max_traj_len: 26.0
 DilateRadiusSoft: 0.60 # narrow-door soft penalty; hard collision radius remains 0.45 m
 DilateRadiusHard: 0.45 # collision check threshold

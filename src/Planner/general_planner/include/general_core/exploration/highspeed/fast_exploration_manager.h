@@ -83,6 +83,10 @@ public:
   void updateCoverageGuidance(const Vector3d &pos);
   CoverageFinishStatus coverageFinishStatus();
   void deferCurrentGoalAfterPlanningFailure();
+  bool completeActiveCoverageGoalIfReached(const Vector3d &pos);
+  bool hasActiveCoverageRecoveryGoal() const {
+    return has_active_coverage_goal_;
+  }
   int selectStableGoalIndex(const vector<TopoNode::Ptr> &viewpoints,
                             const vector<double> &distance_odom2vp,
                             int candidate_idx,
@@ -104,7 +108,10 @@ private:
   };
 
   struct DeferredCoverageGoal {
+    std::uint64_t stable_id{0};
     Eigen::Vector3d approach{Eigen::Vector3d::Zero()};
+    Eigen::Vector3d unknown_position{Eigen::Vector3d::Zero()};
+    int voxel_count{0};
     ros::Time until;
     int no_gain_attempts{0};
     int failure_attempts{0};
@@ -125,7 +132,7 @@ private:
   vector<DeferredGoal> deferred_goals_;
   vector<DeferredCoverageGoal> deferred_coverage_goals_;
   bool has_active_coverage_goal_{false};
-  Eigen::Vector3d active_coverage_approach_{Eigen::Vector3d::Zero()};
+  CoverageTarget active_coverage_target_;
   ros::Time active_coverage_goal_start_;
   int active_coverage_observed_voxels_{-1};
   int coverage_finish_progress_observed_voxels_{-1};
@@ -139,12 +146,21 @@ private:
   int coverage_recovery_min_gain_voxels_{12};
   int coverage_recovery_max_no_gain_attempts_{2};
   int coverage_recovery_max_failure_attempts_{2};
+  bool coverage_executable_candidate_enable_{true};
+  int coverage_executable_candidate_max_count_{8};
+  int coverage_executable_empty_min_count_{4};
+  int coverage_executable_empty_count_{0};
+  double coverage_executable_empty_min_duration_{1.5};
+  ros::Time coverage_executable_empty_since_;
+  bool force_coverage_fallback_once_{false};
+  double coverage_executable_candidate_max_speed_{0.50};
+  double coverage_executable_candidate_bonus_{3.0};
 
   double failedGoalPenalty(const TopoNode::Ptr &viewpoint) const;
-  bool coverageRecoveryDeferred(const Eigen::Vector3d &approach,
+  bool coverageRecoveryDeferred(const CoverageTarget &target,
                                 const ros::Time &now) const;
-  bool coverageRecoveryExhausted(const Eigen::Vector3d &approach) const;
-  void deferCoverageRecovery(const Eigen::Vector3d &approach,
+  bool coverageRecoveryExhausted(const CoverageTarget &target) const;
+  void deferCoverageRecovery(const CoverageTarget &target,
                              CoverageRecoveryOutcome outcome);
   void pruneDeferredCoverageGoals(const ros::Time &now);
   int latestCoverageObservedVoxels() const;

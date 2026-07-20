@@ -50,6 +50,17 @@ std::string groupKey(const Eigen::Vector3d &position,
          std::to_string(index.z());
 }
 
+std::uint64_t stableGroupId(const std::string &key) {
+  // FNV-1a is deterministic across processes, unlike std::hash whose result is
+  // not part of the C++ stability contract.
+  std::uint64_t value = 1469598103934665603ULL;
+  for (const unsigned char byte : key) {
+    value ^= static_cast<std::uint64_t>(byte);
+    value *= 1099511628211ULL;
+  }
+  return value == 0 ? 1 : value;
+}
+
 std::vector<double> shortestDistances(const std::vector<Zone> &zones,
                                       int source) {
   std::vector<double> distance(zones.size(), kInfinity);
@@ -656,12 +667,19 @@ CoveragePlan CoverageGuidanceManager::buildPlan(const WorkItem &work) {
   }
 
   std::vector<CoverageTarget> targets;
-  targets.push_back({CoverageTargetType::CURRENT, work.robot_position,
-                     start_zone, 1, 0});
+  CoverageTarget current_target;
+  current_target.type = CoverageTargetType::CURRENT;
+  current_target.position = work.robot_position;
+  current_target.zone_id = start_zone;
+  current_target.voxel_count = 1;
+  current_target.route_rank = 0;
+  targets.emplace_back(std::move(current_target));
   std::unordered_map<int, int> active_target_by_zone;
   for (const auto &entry : zone_frontiers) {
     CoverageTarget target;
     target.type = CoverageTargetType::ACTIVE_FREE;
+    target.stable_id =
+        stableGroupId("active:" + std::to_string(entry.first));
     target.zone_id = entry.first;
     target.position = Eigen::Vector3d::Zero();
     for (const CoverageFrontier &frontier : entry.second) {
@@ -724,6 +742,7 @@ CoveragePlan CoverageGuidanceManager::buildPlan(const WorkItem &work) {
     }
     CoverageTarget target;
     target.type = CoverageTargetType::REACHABLE_UNKNOWN;
+    target.stable_id = stableGroupId(entry.first);
     target.position = center;
     target.zone_id = representative;
     target.voxel_count = group.voxel_count;
@@ -731,8 +750,7 @@ CoveragePlan CoverageGuidanceManager::buildPlan(const WorkItem &work) {
     // Select the cheapest known-free zone touching this unknown component.
     // The unknown center remains the observation direction/visualization
     // target; only this adjacent free point is eligible for navigation.
-    int best_free_zone = -1;
-    double best_free_score = kInfinity;
+    std::vector<std::pair<double, int>> free_candidates;
     for (const int unknown_zone : group.zones) {
       for (const auto &edge : zones[unknown_zone].edges) {
         const int neighbor = edge.first;
@@ -744,14 +762,32 @@ CoveragePlan CoverageGuidanceManager::buildPlan(const WorkItem &work) {
         const double score =
             start_distance[neighbor] +
             0.1 * (zones[neighbor].center - center).norm();
-        if (score < best_free_score) {
-          best_free_score = score;
-          best_free_zone = neighbor;
-        }
+        free_candidates.emplace_back(score, neighbor);
       }
     }
-    if (best_free_zone >= 0) {
-      target.approach_position = zones[best_free_zone].center;
+    std::stable_sort(free_candidates.begin(), free_candidates.end());
+    std::unordered_set<int> used_free_zones;
+    for (const auto &candidate : free_candidates) {
+      if (!used_free_zones.insert(candidate.second).second) {
+        continue;
+      }
+      const Eigen::Vector3d approach = zones[candidate.second].center;
+      bool spatial_duplicate = false;
+      for (const Eigen::Vector3d &kept : target.approach_candidates) {
+        if ((kept - approach).norm() < 0.5 * config_.fine_cell_size) {
+          spatial_duplicate = true;
+          break;
+        }
+      }
+      if (!spatial_duplicate) {
+        target.approach_candidates.emplace_back(approach);
+      }
+      if (target.approach_candidates.size() >= 4U) {
+        break;
+      }
+    }
+    if (!target.approach_candidates.empty()) {
+      target.approach_position = target.approach_candidates.front();
       target.has_approach = true;
     }
     unknown_targets.emplace_back(target);
@@ -1066,6 +1102,43 @@ bool CoverageGuidanceManager::runDeterministicSelfTest(std::string *error) {
       *error = stream.str();
     }
     return false;
+  }
+  std::unordered_map<std::uint64_t, std::size_t> first_unknown_targets;
+  bool found_actionable_unknown = false;
+  for (const CoverageTarget &target : plan.ordered_targets) {
+    if (target.type != CoverageTargetType::REACHABLE_UNKNOWN) {
+      continue;
+    }
+    if (target.stable_id == 0 ||
+        target.has_approach != !target.approach_candidates.empty()) {
+      if (error) {
+        *error = "reachable unknown has invalid identity/approach state";
+      }
+      return false;
+    }
+    found_actionable_unknown =
+        found_actionable_unknown || target.has_approach;
+    first_unknown_targets[target.stable_id] =
+        target.approach_candidates.size();
+  }
+  if (!found_actionable_unknown) {
+    if (error) {
+      *error = "test map produced no executable unknown observation target";
+    }
+    return false;
+  }
+  WorkItem repeated_work = work;
+  repeated_work.delta.version = 2;
+  repeated_work.frontier_version = 2;
+  const CoveragePlan repeated_plan = manager.buildPlan(repeated_work);
+  for (const CoverageTarget &target : repeated_plan.ordered_targets) {
+    if (target.type == CoverageTargetType::REACHABLE_UNKNOWN &&
+        !first_unknown_targets.count(target.stable_id)) {
+      if (error) {
+        *error = "coverage target identity changed without a map change";
+      }
+      return false;
+    }
   }
 
   // A complete occupied wall must disconnect unknown space behind it. This

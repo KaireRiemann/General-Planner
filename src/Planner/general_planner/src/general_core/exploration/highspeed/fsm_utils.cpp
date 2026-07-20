@@ -178,6 +178,12 @@ bool FastExplorationFSM::finishGateSatisfied(const string &reason) const {
     return false;
   }
   if (expl_manager_->frontier_manager_ptr_) {
+    if (!expl_manager_->frontier_manager_ptr_->frontierAuditReady()) {
+      ROS_WARN_STREAM_THROTTLE(
+          1.0, "[finish gate] wait for full frontier reachability audit after "
+                   << reason);
+      return false;
+    }
     const int active_clusters =
         expl_manager_->frontier_manager_ptr_->activeClusterCount();
     const int reachable_clusters =
@@ -279,6 +285,8 @@ void FastExplorationFSM::handleNoFrontierResult(const string &source) {
   expl_manager_->ed_->path_next_goal_.clear();
   expl_manager_->ed_->has_goal_lock_ = false;
   expl_manager_->ed_->locked_goal_cluster_id_ = -1;
+  expl_manager_->ed_->locked_goal_is_coverage_ = false;
+  expl_manager_->ed_->locked_goal_coverage_id_ = 0;
   if (finish_gate_.no_frontier_count == 0 ||
       finish_gate_.first_no_frontier_time.isZero()) {
     finish_gate_.first_no_frontier_time = now;
@@ -287,7 +295,13 @@ void FastExplorationFSM::handleNoFrontierResult(const string &source) {
   if (expl_manager_->last_plan_no_reachable_) {
     finish_gate_.no_reachable_count++;
   }
-  requestFrontierRecheck(source);
+  // A force refresh starts a two-phase audit: rebuild every cached frontier
+  // cluster now, then validate viewpoints/reachability in the following global
+  // planning pass. Do not restart that audit once the current revision has
+  // already been fully validated.
+  if (!expl_manager_->frontier_manager_ptr_->frontierAuditReady()) {
+    requestFrontierRecheck(source);
+  }
 
   if (finishGateSatisfied(source)) {
     fd_->static_state_ = true;
@@ -318,17 +332,26 @@ bool FastExplorationFSM::handleGoalReached() {
     return false;
   }
 
-  const float visited_radius = static_cast<float>(
-      std::max(expl_manager_->ep_->goal_lock_match_radius_,
-               2.0 * reached_radius));
-  const bool marked = expl_manager_->frontier_manager_ptr_->markClusterVisitedNear(
-      goal, visited_radius);
+  const bool coverage_reached =
+      expl_manager_->completeActiveCoverageGoalIfReached(
+          fd_->odom_pos_.cast<double>());
+  bool marked = false;
+  if (!coverage_reached) {
+    const float visited_radius = static_cast<float>(
+        std::max(expl_manager_->ep_->goal_lock_match_radius_,
+                 2.0 * reached_radius));
+    marked = expl_manager_->frontier_manager_ptr_->markClusterVisitedNear(
+        goal, visited_radius);
+  }
   expl_manager_->ed_->has_goal_lock_ = false;
   expl_manager_->ed_->locked_goal_cluster_id_ = -1;
+  expl_manager_->ed_->locked_goal_is_coverage_ = false;
+  expl_manager_->ed_->locked_goal_coverage_id_ = 0;
   if (expl_manager_->ep_->goal_lock_enable_) {
     ROS_INFO_STREAM("[goal reached] goal=(" << goal.x() << ", " << goal.y()
                                            << ", " << goal.z()
-                                           << ") marked=" << marked);
+                                           << ") coverage=" << coverage_reached
+                                           << " marked=" << marked);
   }
 
   if (fp_->finish_recheck_after_goal_reached_) {
@@ -896,6 +919,10 @@ void FastExplorationFSM::CloudOdomCallback(
 
 void FastExplorationFSM::transitState(EXPL_STATE new_state, string pos_call, bool red) {
   int pre_s = int(state_);
+  if (new_state == CAUTION && state_ != CAUTION) {
+    fd_->caution_last_stop_request_time_ = ros::Time(0);
+    fd_->caution_last_recovery_attempt_time_ = ros::Time(0);
+  }
   state_ = new_state;
   if (!red) {
     cout << "\033[32m[" + pos_call + "]\033[0m: from " + fd_->state_str_[pre_s] + " to " + fd_->state_str_[int(new_state)] << endl;

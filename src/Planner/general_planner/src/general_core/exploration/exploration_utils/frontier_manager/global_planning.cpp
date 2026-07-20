@@ -139,7 +139,8 @@ void FrontierManager::generateTSPViewpoints(
   // shortlist, so inject only its bounded current/next-region set. The normal
   // reachability and safety gates below still decide whether it is executable.
   for (const CandidateCluster &candidate : candidate_clusters) {
-    if (preferred_cluster_ids.count(candidate.cluster->id_)) {
+    if (global_audit_pending_ ||
+        preferred_cluster_ids.count(candidate.cluster->id_)) {
       candidate.cluster->is_new_cluster_ = false;
       revp_clusters_set.insert(candidate.cluster);
     }
@@ -216,6 +217,9 @@ void FrontierManager::generateTSPViewpoints(
     }
     mtx.unlock();
   }
+  for (auto &cluster : revp_clusters_vec) {
+    cluster->needs_revalidation_ = false;
+  }
   // 飞到但看不到，说明odom漂了，这篇工作不处理，直接跳过
   cluster_list_.remove_if([&](ClusterInfo::Ptr cluster) {
     bool remove = cluster2remove.count(cluster->id_);
@@ -230,6 +234,8 @@ void FrontierManager::generateTSPViewpoints(
     }
     return remove;
   });
+  refreshSemanticRevision();
+  finishGlobalAuditIfComplete();
   ros::Time t4 = ros::Time::now();
   // cout << "select best viewpoint cost: " << (t4 - t3).toSec() * 1000 << "ms" << endl;
   // 重新topK
@@ -242,6 +248,7 @@ void FrontierManager::generateTSPViewpoints(
   }
   if (idx2.empty()) {
     viewpoints.clear();
+    releaseDerivedViewpointCache();
     ROS_INFO("vp cluster cost: %fms  ,remove unreachable cost: %fms, select vp cost: %fms",
              (t2 - t1).toSec() * 1000, (t3 - t2).toSec() * 1000,
              (t4 - t3).toSec() * 1000);
@@ -289,4 +296,5 @@ void FrontierManager::generateTSPViewpoints(
   ROS_INFO("vp cluster cost: %fms  ,remove unreachable cost: %fms, select vp cost: %fms",
            (t2 - t1).toSec() * 1000, (t3 - t2).toSec() * 1000,
            (t4 - t3).toSec() * 1000);
+  releaseDerivedViewpointCache();
 }

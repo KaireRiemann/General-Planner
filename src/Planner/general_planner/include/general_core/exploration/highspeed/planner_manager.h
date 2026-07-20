@@ -400,7 +400,7 @@ public:
                        bool is_static,
                        bool clearance_recovery = false);
   bool planControlledStopTrajectory();
-  bool flyToSafeRegion(bool is_static);
+  bool flyToSafeRegion(bool is_static, bool force_relocation = false);
   void polyTraj2ROSMsg(traj_utils::PolyTraj &poly_msg, const ros::Time &start_time);
   void polyYawTraj2ROSMsg(traj_utils::PolyTraj &poly_msg, const ros::Time &start_time);
   void initPlanModules(ros::NodeHandle &nh,

@@ -71,79 +71,25 @@ struct ViewpointParam {
   int top_candidate_num_;
 };
 struct ByteArrayRaw {
-  uint8_t *data;
+  // Frontier indices already fit in <= 64 bits. Keeping the packed bytes
+  // inline removes one heap allocation and one pointer indirection per hash
+  // entry without changing the key representation or lookup semantics.
+  union {
+    uint64_t value;
+    uint8_t data[sizeof(uint64_t)];
+  };
   static size_t size;
 
-  ByteArrayRaw() { data = new uint8_t[size]; }
-
-  ByteArrayRaw(const ByteArrayRaw &other) {
-    data = new uint8_t[size];
-    memcpy(data, other.data, size);
-  }
-
-  ByteArrayRaw &operator=(const ByteArrayRaw &other) {
-    if (this != &other) {
-      memcpy(data, other.data, size);
-    }
-    return *this;
-  }
-
-  ~ByteArrayRaw() { delete[] data; }
+  ByteArrayRaw() : value(0) {}
 
   bool operator==(const ByteArrayRaw &other) const {
-    return memcmp(data, other.data, size) == 0;
+    return value == other.value;
   }
 };
 
 struct ByteArrayRawHasher {
   size_t operator()(const ByteArrayRaw &arr) const {
-    const uint64_t seed = 0xc3a5c85c97cb3127ULL;
-    const uint64_t m = 0xc6a4a7935bd1e995ULL;
-    const int r = 47;
-
-    size_t h = seed ^ (ByteArrayRaw::size * m);
-
-    // 处理8字节对齐的数据
-    const uint64_t *data = reinterpret_cast<const uint64_t *>(arr.data);
-    const uint64_t *end = data + (ByteArrayRaw::size / 8);
-
-    while (data != end) {
-      uint64_t k = *data++;
-
-      k *= m;
-      k ^= k >> r;
-      k *= m;
-
-      h ^= k;
-      h *= m;
-    }
-
-    // 处理剩余字节
-    const unsigned char *tail = reinterpret_cast<const unsigned char *>(data);
-
-    switch (ByteArrayRaw::size & 7) {
-    case 7:
-      h ^= uint64_t(tail[6]) << 48;
-    case 6:
-      h ^= uint64_t(tail[5]) << 40;
-    case 5:
-      h ^= uint64_t(tail[4]) << 32;
-    case 4:
-      h ^= uint64_t(tail[3]) << 24;
-    case 3:
-      h ^= uint64_t(tail[2]) << 16;
-    case 2:
-      h ^= uint64_t(tail[1]) << 8;
-    case 1:
-      h ^= uint64_t(tail[0]);
-      h *= m;
-    }
-
-    h ^= h >> r;
-    h *= m;
-    h ^= h >> r;
-
-    return h;
+    return std::hash<uint64_t>{}(arr.value);
   }
 };
 struct FrontierData {
@@ -229,6 +175,7 @@ struct ClusterInfo {
   double stable_visible_gain_;
   double fov_edge_ratio_;
   double gap_ratio_;
+  bool needs_revalidation_;
 
   // bbox
   Eigen::Vector3f box_max_;
@@ -283,6 +230,12 @@ private:
   FrontierData frtd_;
   ViewpointParam vpp_;
   unordered_set<int> force_recluster_;
+  uint64_t frontier_revision_{0};
+  uint64_t audited_frontier_revision_{std::numeric_limits<uint64_t>::max()};
+  uint64_t frontier_semantic_signature_{0};
+  bool frontier_signature_initialized_{false};
+  bool global_audit_pending_{false};
+  bool force_refresh_running_{false};
   LIOInterface::Ptr
       lidar_map_interface_; // TODO: 改成
                             // sim_lio,去掉不必要的接口,ikd-treeh和odom存储在里面
@@ -338,6 +291,10 @@ private:
   bool isInBox(const Eigen::Vector3f &pt);
   bool computeSuperClusterInfo(SuperClusterInfo::Ptr &super_cluster);
   void reclusterSuperCluster(SuperClusterInfo::Ptr &super_cluster);
+  void releaseDerivedViewpointCache();
+  void finishGlobalAuditIfComplete();
+  uint64_t computeSemanticSignature() const;
+  void refreshSemanticRevision();
 
 public:
   typedef std::shared_ptr<FrontierManager> Ptr;
@@ -376,6 +333,7 @@ public:
                                double match_radius);
   int activeClusterCount() const;
   int reachableClusterCount() const;
+  bool frontierAuditReady() const;
   void setHighSpeedViewScoreContext(const HighSpeedViewScoreContext &ctx);
   void generateTSPViewpoints(Eigen::Vector3f &center_pose,
                              vector<TopoNode::Ptr> &viewpoints);

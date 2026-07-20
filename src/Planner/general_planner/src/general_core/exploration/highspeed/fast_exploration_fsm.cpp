@@ -148,6 +148,7 @@ void FastExplorationFSM::FSMCallback(const ros::TimerEvent &e) {
 
     if (res == SUCCEED) {
       fd_->consecutive_plan_failures_ = 0;
+      fd_->stationary_failure_refreshes_ = 0;
       fd_->next_plan_retry_time_ = ros::Time(0);
       resetFinishGate("PLAN_TRAJ succeed");
       poly_yaw_traj_pub_.publish(fd_->newest_yaw_traj_);
@@ -166,6 +167,21 @@ void FastExplorationFSM::FSMCallback(const ros::TimerEvent &e) {
       handleNoFrontierResult("PLAN_TRAJ: no frontier");
     } else if (res == FAIL) {
       ++fd_->consecutive_plan_failures_;
+      // Coverage recovery goals are synthesized outside the normal frontier
+      // goal-lock path. A successful global-path refresh used to reset the
+      // generic consecutive failure counter before the local trajectory could
+      // reach its threshold, so an unreachable observation goal was selected
+      // forever and targets_exhausted could never become true. Record each
+      // failed local trajectory directly against the active coverage target.
+      if (expl_manager_->hasActiveCoverageRecoveryGoal()) {
+        expl_manager_->deferCurrentGoalAfterPlanningFailure();
+        expl_manager_->ed_->global_tour_.clear();
+        expl_manager_->ed_->path_next_goal_.clear();
+        expl_manager_->updateGoalNode();
+        ROS_WARN_STREAM(
+            "[coverage recovery] local trajectory failed; account target "
+            "failure immediately and select another observation target");
+      }
       const double retry_delay = fp_->plan_failure_retry_delay_ *
           std::min(3, fd_->consecutive_plan_failures_);
       fd_->next_plan_retry_time_ = ros::Time::now() +
@@ -197,22 +213,39 @@ void FastExplorationFSM::FSMCallback(const ros::TimerEvent &e) {
       const bool needs_clearance_recovery =
           may_refresh_goal && std::isfinite(current_clearance) &&
           current_clearance <= recovery_trigger_clearance;
-      if (needs_clearance_recovery) {
+      const bool needs_spatial_relocation =
+          may_refresh_goal &&
+          fd_->stationary_failure_refreshes_ + 1 >=
+              fp_->stationary_relocation_refresh_count_;
+      if (needs_clearance_recovery || needs_spatial_relocation) {
         fd_->consecutive_plan_failures_ = 0;
+        fd_->stationary_failure_refreshes_ = 0;
+        fd_->caution_force_relocation_ =
+            needs_spatial_relocation && !needs_clearance_recovery;
         fd_->next_plan_retry_time_ = ros::Time(0);
-        ROS_WARN_STREAM("[plan recovery] enter safe-region recovery after "
-                        "repeated stationary failures: clearance="
+        ROS_WARN_STREAM("[plan recovery] enter "
+                        << (fd_->caution_force_relocation_
+                                ? "known-free spatial relocation"
+                                : "safe-region recovery")
+                        << " after repeated stationary failures: clearance="
                         << current_clearance
-                        << " trigger=" << recovery_trigger_clearance);
+                        << " trigger=" << recovery_trigger_clearance
+                        << " refresh_limit="
+                        << fp_->stationary_relocation_refresh_count_);
         transitState(CAUTION,
-                     "PLAN_TRAJ: repeated failure near clearance boundary",
+                     fd_->caution_force_relocation_
+                         ? "PLAN_TRAJ: repeated stationary failure relocation"
+                         : "PLAN_TRAJ: repeated failure near clearance boundary",
                      true);
         break;
       }
       if (may_refresh_goal) {
+        ++fd_->stationary_failure_refreshes_;
         expl_manager_->deferCurrentGoalAfterPlanningFailure();
         expl_manager_->ed_->has_goal_lock_ = false;
         expl_manager_->ed_->locked_goal_cluster_id_ = -1;
+        expl_manager_->ed_->locked_goal_is_coverage_ = false;
+        expl_manager_->ed_->locked_goal_coverage_id_ = 0;
         expl_manager_->ed_->global_tour_.clear();
         expl_manager_->ed_->path_next_goal_.clear();
         expl_manager_->updateGoalNode();
@@ -335,9 +368,71 @@ void FastExplorationFSM::FSMCallback(const ros::TimerEvent &e) {
   }
 
   case CAUTION: {
-    stopTraj();
+    const ros::Time now = ros::Time::now();
+    const double speed = fd_->odom_vel_.norm();
+    const double odom_age =
+        fd_->last_odom_receive_time_.isZero()
+            ? std::numeric_limits<double>::infinity()
+            : (now - fd_->last_odom_receive_time_).toSec();
+    if (odom_age > fp_->max_odom_age_) {
+      ROS_ERROR_STREAM_THROTTLE(
+          1.0, "[safe-region recovery] odometry stale; hold CAUTION: age="
+                   << odom_age << "s max=" << fp_->max_odom_age_ << "s");
+      break;
+    }
+
+    // Recovery must start from a genuinely stationary odometry state. Calling
+    // stopTraj() unconditionally at 100 Hz caused a zero-motion hold at an
+    // already low-clearance point to fail the normal commit-clearance gate,
+    // followed by an endless emergency-truncation/MINCO loop.
+    const double recovery_stop_speed =
+        std::clamp(0.25 * fp_->reorient_exit_speed_, 0.05, 0.15);
+    if (speed > recovery_stop_speed) {
+      const bool stop_retry_due =
+          fd_->caution_last_stop_request_time_.isZero() ||
+          (now - fd_->caution_last_stop_request_time_).toSec() >=
+              fp_->caution_stop_retry_interval_;
+      if (!planner_manager_->hasCommittedStopTrajectory() && stop_retry_due) {
+        stopTraj();
+        fd_->caution_last_stop_request_time_ = now;
+      }
+      fd_->static_state_ = false;
+      ROS_WARN_STREAM_THROTTLE(
+          0.5, "[safe-region recovery] wait for controlled stop: speed="
+                   << speed << " threshold=" << recovery_stop_speed);
+      break;
+    }
+
+    fd_->static_state_ = true;
+    const double dis2occ =
+        planner_manager_->lidar_map_interface_->getDisToOcc(fd_->odom_pos_);
+    const double target_clearance =
+        std::max(planner_manager_->gcopter_config_->dilateRadiusSoft,
+                 planner_manager_->gcopter_config_
+                     ->commitKnownFreeSafeDistance);
+    if (!fd_->caution_force_relocation_ && std::isfinite(dis2occ) &&
+        dis2occ > target_clearance +
+                      planner_manager_->gcopter_config_
+                          ->safetyClearanceTolerance) {
+      fd_->consecutive_plan_failures_ = 0;
+      fd_->next_plan_retry_time_ = ros::Time(0);
+      transitState(PLAN_TRAJ, "CAUTION: safe clearance restored");
+      break;
+    }
+
+    const bool recovery_retry_due =
+        fd_->caution_last_recovery_attempt_time_.isZero() ||
+        (now - fd_->caution_last_recovery_attempt_time_).toSec() >=
+            fp_->caution_recovery_retry_interval_;
+    if (!recovery_retry_due) {
+      break;
+    }
+    fd_->caution_last_recovery_attempt_time_ = now;
     exec_timer_.stop();
-    bool success = planner_manager_->flyToSafeRegion(fd_->static_state_);
+    // The stop gate above has independently established a stationary state;
+    // do not stitch a stale committed prefix into the escape trajectory.
+    bool success = planner_manager_->flyToSafeRegion(
+        true, fd_->caution_force_relocation_);
     if (success) {
       traj_utils::PolyTraj poly_traj_msg;
       auto info = &planner_manager_->local_data_;
@@ -347,16 +442,20 @@ void FastExplorationFSM::FSMCallback(const ros::TimerEvent &e) {
       ros::Duration(0.2).sleep();
       fd_->static_state_ = false;
       fd_->consecutive_plan_failures_ = 0;
+      fd_->stationary_failure_refreshes_ = 0;
+      fd_->caution_force_relocation_ = false;
       fd_->next_plan_retry_time_ = ros::Time(0);
       exec_timer_.start();
       transitState(EXEC_TRAJ, "CAUTION: safe-region recovery published", true);
       break;
     }
     exec_timer_.start();
-    double dis2occ =
-        planner_manager_->lidar_map_interface_->getDisToOcc(fd_->odom_pos_);
-    if (dis2occ > planner_manager_->gcopter_config_->dilateRadiusSoft)
-      transitState(PLAN_TRAJ, "safe now");
+    ROS_WARN_STREAM_THROTTLE(
+        1.0, "[safe-region recovery] no valid escape trajectory; remain in "
+                 "CAUTION and retry after "
+                 << fp_->caution_recovery_retry_interval_
+                 << "s clearance=" << dis2occ
+                 << " target=" << target_clearance);
     break;
   }
   case LAND: {
@@ -455,6 +554,10 @@ void FastExplorationFSM::init(ros::NodeHandle &nh,
   nh.param("fsm/reorient_timeout", fp_->reorient_timeout_, 6.0);
   nh.param("fsm/reorient_stop_retry_interval",
            fp_->reorient_stop_retry_interval_, 0.8);
+  nh.param("fsm/caution_stop_retry_interval",
+           fp_->caution_stop_retry_interval_, 0.8);
+  nh.param("fsm/caution_recovery_retry_interval",
+           fp_->caution_recovery_retry_interval_, 0.75);
   nh.param("fsm/max_odom_age", fp_->max_odom_age_, 0.5);
   nh.param("fsm/controlled_reorientation_enable",
            fp_->controlled_reorientation_enable_, true);
@@ -462,15 +565,23 @@ void FastExplorationFSM::init(ros::NodeHandle &nh,
            fp_->plan_failure_retry_delay_, 0.20);
   nh.param("fsm/plan_failure_refresh_count",
            fp_->plan_failure_refresh_count_, 3);
+  nh.param("fsm/stationary_relocation_refresh_count",
+           fp_->stationary_relocation_refresh_count_, 4);
   fp_->reorient_exit_speed_ = std::max(0.05, fp_->reorient_exit_speed_);
   fp_->reorient_timeout_ = std::max(1.0, fp_->reorient_timeout_);
   fp_->reorient_stop_retry_interval_ =
       std::clamp(fp_->reorient_stop_retry_interval_, 0.2, 5.0);
+  fp_->caution_stop_retry_interval_ =
+      std::clamp(fp_->caution_stop_retry_interval_, 0.2, 5.0);
+  fp_->caution_recovery_retry_interval_ =
+      std::clamp(fp_->caution_recovery_retry_interval_, 0.25, 5.0);
   fp_->max_odom_age_ = std::clamp(fp_->max_odom_age_, 0.1, 5.0);
   fp_->plan_failure_retry_delay_ =
       std::clamp(fp_->plan_failure_retry_delay_, 0.05, 2.0);
   fp_->plan_failure_refresh_count_ =
       std::max(1, fp_->plan_failure_refresh_count_);
+  fp_->stationary_relocation_refresh_count_ =
+      std::clamp(fp_->stationary_relocation_refresh_count_, 2, 20);
   /* Initialize main modules */
   // expl_manager_.reset(new FastExplorationManager);
   // expl_manager_->initialize(nh);
@@ -487,10 +598,14 @@ void FastExplorationFSM::init(ros::NodeHandle &nh,
   fd_->reorientation_required_ = false;
   fd_->reorientation_stop_requested_ = false;
   fd_->consecutive_plan_failures_ = 0;
+  fd_->stationary_failure_refreshes_ = 0;
+  fd_->caution_force_relocation_ = false;
   fd_->first_odom_time_ = ros::Time(0);
   fd_->last_odom_receive_time_ = ros::Time(0);
   fd_->reorientation_start_time_ = ros::Time(0);
   fd_->reorientation_last_stop_request_time_ = ros::Time(0);
+  fd_->caution_last_stop_request_time_ = ros::Time(0);
+  fd_->caution_last_recovery_attempt_time_ = ros::Time(0);
   fd_->next_plan_retry_time_ = ros::Time(0);
   fd_->use_bubble_a_star_ = false;
   last_plan_traj_global_update_time_ = ros::Time(0);

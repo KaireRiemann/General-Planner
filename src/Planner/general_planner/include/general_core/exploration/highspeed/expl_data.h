@@ -16,6 +16,8 @@ struct FSMData {
       use_bubble_a_star_, half_resolution, auto_triggered_;
   bool reorientation_required_, reorientation_stop_requested_;
   int consecutive_plan_failures_;
+  int stationary_failure_refreshes_;
+  bool caution_force_relocation_;
   vector<string> state_str_;
   int bb_astar_fail_cnt_, fast_search_fial_cnt_;
   double bb_astar_time_out, fast_search_time_out;
@@ -26,6 +28,8 @@ struct FSMData {
   ros::Time last_odom_receive_time_;
   ros::Time reorientation_start_time_;
   ros::Time reorientation_last_stop_request_time_;
+  ros::Time caution_last_stop_request_time_;
+  ros::Time caution_last_recovery_attempt_time_;
   ros::Time next_plan_retry_time_;
 
   Eigen::Vector3d start_pt_, start_vel_, start_acc_, start_yaw_; // start state
@@ -64,10 +68,13 @@ struct FSMParam {
   double reorient_exit_speed_;
   double reorient_timeout_;
   double reorient_stop_retry_interval_;
+  double caution_stop_retry_interval_;
+  double caution_recovery_retry_interval_;
   double max_odom_age_;
   bool controlled_reorientation_enable_;
   double plan_failure_retry_delay_;
   int plan_failure_refresh_count_;
+  int stationary_relocation_refresh_count_;
 };
 
 struct ExplorationData {
@@ -86,7 +93,9 @@ struct ExplorationData {
   TopoNode::Ptr next_goal_node_;
   vector<Eigen::Vector3f> path_next_goal_;
   bool has_goal_lock_{false};
+  bool locked_goal_is_coverage_{false};
   int locked_goal_cluster_id_{-1};
+  std::uint64_t locked_goal_coverage_id_{0};
   Eigen::Vector3f locked_goal_{Eigen::Vector3f::Zero()};
   double locked_goal_yaw_{0.0};
   ros::Time locked_goal_time_;
