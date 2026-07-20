@@ -834,6 +834,20 @@ public:
 	  double getTotalDuration() const { return durations_.sum(); }
 	  const CoeffMat &getCoefficients() const { return coeffs_; }
 
+	  /**
+	   * Update a fixed-topology convex-hull workspace from this trajectory.
+	   *
+	   * HullWorkspace is a template so the MINCO core remains independent from
+	   * a particular hull implementation. A compatible workspace provides
+	   * update(coefficients, durations, start_time).
+	   */
+	  template <typename HullWorkspace>
+	  void updateConvexHull(HullWorkspace &workspace,
+	                        double start_time = 0.0) const
+	  {
+	    workspace.update(coeffs_, durations_, start_time);
+	  }
+
 	  bool setFromCoefficients(const Eigen::VectorXd &durations,
 	                           const CoeffMat &coeffs)
 	  {

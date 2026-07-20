@@ -97,6 +97,37 @@ namespace optimizer_traits
                                                decltype(std::declval<T>().beginEvaluation())>> : std::true_type
   {
   };
+
+  /**
+   * Optional direct coefficient/time cost interface:
+   *
+   * double evaluateCoefficient(const Trajectory &trajectory,
+   *                            Coefficients &grad_coefficients,
+   *                            Eigen::VectorXd &grad_durations) const;
+   *
+   * The callback uses additive partial gradients and runs before the single
+   * MINCO propagateGradFull() call.
+   */
+  template <typename T,
+            typename Trajectory,
+            typename Coefficients,
+            typename = void>
+  struct HasCoefficientCostInterface : std::false_type
+  {
+  };
+
+  template <typename T, typename Trajectory, typename Coefficients>
+  struct HasCoefficientCostInterface<
+      T,
+      Trajectory,
+      Coefficients,
+      void_t<decltype(static_cast<double>(
+          std::declval<const T &>().evaluateCoefficient(
+              std::declval<const Trajectory &>(),
+              std::declval<Coefficients &>(),
+              std::declval<Eigen::VectorXd &>())))>> : std::true_type
+  {
+  };
 } // namespace optimizer_traits
 
 template <int DIM, int S, typename TimeMap, typename SpatialMap>
@@ -150,6 +181,9 @@ public:
     CoeffMat gdC_sample;
     Eigen::VectorXd gdT_sample;
 
+    CoeffMat gdC_coefficient;
+    Eigen::VectorXd gdT_coefficient;
+
     Eigen::VectorXd gdT_time;
 
     InnerPointsMat grad_by_points;
@@ -171,6 +205,8 @@ public:
       gdT_integral.resize(piece_num);
       gdC_sample.resize(piece_num * TrajType::COEFF_NUM, DIM);
       gdT_sample.resize(piece_num);
+      gdC_coefficient.resize(piece_num * TrajType::COEFF_NUM, DIM);
+      gdT_coefficient.resize(piece_num);
       gdT_time.resize(piece_num);
       grad_by_points.resize(DIM, std::max(0, piece_num - 1));
       grad_by_times.resize(piece_num);
@@ -509,15 +545,27 @@ public:
     accumulateSampleCost(cost_manager, sample_cost);
     total_cost += sample_cost;
 
+    double coefficient_cost = 0.0;
+    accumulateCoefficientCost(cost_manager, coefficient_cost);
+    total_cost += coefficient_cost;
+
     last_energy_cost_ = rho_energy_ * energy_cost;
     last_time_cost_ = time_cost;
     last_integral_cost_ = integral_cost;
     last_sample_cost_ = sample_cost;
+    last_coefficient_cost_ = coefficient_cost;
 
     const CoeffMat gdC_total =
-        rho_energy_ * workspace_->gdC_energy + workspace_->gdC_integral + workspace_->gdC_sample;
+        rho_energy_ * workspace_->gdC_energy +
+        workspace_->gdC_integral +
+        workspace_->gdC_sample +
+        workspace_->gdC_coefficient;
     const Eigen::VectorXd gdT_direct_total =
-        rho_energy_ * workspace_->gdT_energy + workspace_->gdT_time + workspace_->gdT_integral + workspace_->gdT_sample;
+        rho_energy_ * workspace_->gdT_energy +
+        workspace_->gdT_time +
+        workspace_->gdT_integral +
+        workspace_->gdT_sample +
+        workspace_->gdT_coefficient;
 
     traj_.propagateGradFull(gdC_total,
                             gdT_direct_total,
@@ -567,6 +615,7 @@ public:
   double lastTimeCost() const { return last_time_cost_; }
   double lastIntegralCost() const { return last_integral_cost_; }
   double lastSampleCost() const { return last_sample_cost_; }
+  double lastCoefficientCost() const { return last_coefficient_cost_; }
 
 private:
   int getTimeDecisionDim() const
@@ -795,6 +844,29 @@ private:
     }
   }
 
+  template <typename CostManager>
+  void accumulateCoefficientCost(CostManager &&cost_manager,
+                                 double &cost)
+  {
+    workspace_->gdC_coefficient.setZero();
+    workspace_->gdT_coefficient.setZero();
+
+    using Manager = typename std::decay<CostManager>::type;
+    if constexpr (
+        optimizer_traits::HasCoefficientCostInterface<
+            Manager, TrajType, CoeffMat>::value)
+    {
+      cost += cost_manager.evaluateCoefficient(
+          traj_,
+          workspace_->gdC_coefficient,
+          workspace_->gdT_coefficient);
+    }
+    else
+    {
+      (void)cost_manager;
+    }
+  }
+
   void buildAbsoluteTimeSamples(const std::vector<double> &sample_times,
                                 SampleBuffer &samples) const
   {
@@ -898,6 +970,7 @@ private:
   double last_time_cost_{0.0};
   double last_integral_cost_{0.0};
   double last_sample_cost_{0.0};
+  double last_coefficient_cost_{0.0};
 
   std::vector<double> ref_times_;
   WaypointsType ref_waypoints_;

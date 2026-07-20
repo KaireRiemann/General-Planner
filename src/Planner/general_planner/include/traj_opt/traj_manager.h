@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "traj_opt/config.hpp"
+#include "traj_opt/convex_hull/convex_hull.hpp"
 #include "traj_opt/minco/minco_trajectory.hpp"
 #include "traj_opt/minco/minco_optimizer.hpp"
 #include "traj_opt/costfunctional/temporalcosts/linear_time_cost.hpp"
@@ -412,6 +413,10 @@ private:
     bool block_energy_cost{false};
     double smooth_eps{0.0};
     int integral_res{1};
+    bool convex_hull_enabled{false};
+    traj_opt::convex_hull::Basis convex_hull_basis{
+        traj_opt::convex_hull::Basis::Bezier};
+    int convex_hull_subdivision_depth{2};
     flatness::FlatnessMap quadrotor_flatness;
 
     bool default_init{true};

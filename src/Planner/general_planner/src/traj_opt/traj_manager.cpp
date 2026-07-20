@@ -529,6 +529,13 @@ ExplorationTrajOpt::ExplorationTrajOpt(const traj_opt::Config &cfg,
   opt_vars_.block_energy_cost = cfg_.block_energy_cost;
   opt_vars_.smooth_eps = cfg_.smooth_eps;
   opt_vars_.integral_res = std::max(1, cfg_.integral_reso);
+  opt_vars_.convex_hull_enabled = cfg_.convex_hull_en;
+  opt_vars_.convex_hull_basis =
+      cfg_.convex_hull_basis == 1
+          ? traj_opt::convex_hull::Basis::MINVO
+          : traj_opt::convex_hull::Basis::Bezier;
+  opt_vars_.convex_hull_subdivision_depth =
+      std::clamp(cfg_.convex_hull_subdivision_depth, 0, 8);
   opt_vars_.quadrotor_flatness = cfg_.quadrotot_flatness;
   opt_vars_.guide_z_tube_radius = std::max(0.0, cfg_.guide_z_tube_radius);
   // Guide-path integral cost is disabled until its planner-level semantics are redesigned.
@@ -938,6 +945,10 @@ double ExplorationTrajOpt::optimize(Trajectory &traj, double rel_cost_tol)
                                   opt_vars_.magnitude_bounds,
                                   opt_vars_.penalty_weights,
                                   &opt_vars_.quadrotor_flatness);
+  exploration_cost_manager_.configureConvexHull(
+      opt_vars_.convex_hull_enabled,
+      opt_vars_.convex_hull_basis,
+      opt_vars_.convex_hull_subdivision_depth);
 
   opt_vars_.iter_num = 0;
   double min_cost = 0.0;
