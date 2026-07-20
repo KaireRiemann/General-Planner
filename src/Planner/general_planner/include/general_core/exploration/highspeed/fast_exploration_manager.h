@@ -13,6 +13,7 @@
 #include <Eigen/Eigen>
 #include <general_core/exploration/exploration_utils/frontier_manager/frontier_manager.h>
 #include <general_core/exploration/exploration_utils/coverage_guidance/coverage_guidance_manager.h>
+#include <limits>
 #include <memory>
 #include <omp.h>
 #include <opencv2/opencv.hpp>
@@ -118,6 +119,17 @@ private:
     bool exhausted{false};
   };
 
+  struct NormalGoalProgress {
+    bool valid{false};
+    int cluster_id{-1};
+    Eigen::Vector3f goal{Eigen::Vector3f::Zero()};
+    double best_route_cost{std::numeric_limits<double>::infinity()};
+    double best_goal_distance{std::numeric_limits<double>::infinity()};
+    ros::Time last_progress_time;
+    ros::Time last_sample_time;
+    int samples{0};
+  };
+
   enum class CoverageRecoveryOutcome {
     REACHED,
     TIMEOUT,
@@ -155,8 +167,17 @@ private:
   bool force_coverage_fallback_once_{false};
   double coverage_executable_candidate_max_speed_{0.50};
   double coverage_executable_candidate_bonus_{3.0};
+  NormalGoalProgress normal_goal_progress_;
+  bool frontier_progress_watchdog_enable_{true};
+  double frontier_progress_timeout_{12.0};
+  double frontier_progress_min_cost_drop_{0.75};
+  double frontier_progress_min_distance_drop_{0.75};
 
   double failedGoalPenalty(const TopoNode::Ptr &viewpoint) const;
+  bool updateNormalGoalProgress(const TopoNode::Ptr &viewpoint,
+                                double route_cost,
+                                const Eigen::Vector3d &robot_position);
+  void resetNormalGoalProgress();
   bool coverageRecoveryDeferred(const CoverageTarget &target,
                                 const ros::Time &now) const;
   bool coverageRecoveryExhausted(const CoverageTarget &target) const;

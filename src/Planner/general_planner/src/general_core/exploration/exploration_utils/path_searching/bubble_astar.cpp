@@ -8,6 +8,9 @@
  */
 #include <general_core/exploration/exploration_utils/path_searching/bubble_astar.h>
 #include <pcl/registration/distances.h>
+#include <algorithm>
+#include <cmath>
+#include <limits>
 using namespace std;
 using namespace Eigen;
 
@@ -742,42 +745,154 @@ int FastSearcher::search(const TopoNode::Ptr &start_node,
                          std::vector<Eigen::Vector3f> &path) {
   // 用bubble_astar让start和end往外搜，构建拓扑节点
 
-  // 用topo_astar拓扑路径
-  // 沿线理出path
-  static std::vector<TopoNode::Ptr> topo_path;
-  bool success;
-  if (!topo_path.empty()) {
+  if (start_node == nullptr || end_node == nullptr) {
+    clearPathCache();
+    return start_node == nullptr ? BubbleAstar::START_FAIL
+                                 : BubbleAstar::END_FAIL;
+  }
+  path.clear();
+
+  // A frontier cluster may keep its numeric ID while its best observation
+  // point moves by several metres.  Such a spatial retarget is not the same
+  // route and must not inherit the previous topological bias.
+  constexpr float kSameGoalRadius = 1.0f;
+  const bool same_spatial_goal =
+      cached_goal_valid_ &&
+      (end_node->center_ - cached_goal_center_).norm() <= kSameGoalRadius;
+  if (cached_goal_valid_ && !same_spatial_goal) {
+    ROS_INFO_STREAM_THROTTLE(
+        0.5, "[topology continuity] reset for spatial goal change: old=("
+                 << cached_goal_center_.transpose() << ") new=("
+                 << end_node->center_.transpose() << ")");
+    clearPathCache();
+  }
+
+  std::vector<TopoNode::Ptr> preferred_path;
+  bool preferred_success = false;
+  if (same_spatial_goal && cached_topo_path_.size() >= 3) {
     unordered_set<pair<TopoNode::Ptr, TopoNode::Ptr>, PairPtrHash>
         last_path_set;
-    for (int i = 0; i < topo_path.size() - 1; i++) {
-      last_path_set.insert({topo_path[i], topo_path[i + 1]});
+    // The first and last edges belong to the moving odometry/goal attachment.
+    // Reusing only interior graph edges avoids pulling the new start back to
+    // an obsolete attachment point.
+    for (std::size_t i = 1; i + 2 < cached_topo_path_.size(); ++i) {
+      last_path_set.insert(
+          {cached_topo_path_[i], cached_topo_path_[i + 1]});
     }
-    success = topo_graph_->graphSearch(start_node, end_node, topo_path,
-                                       max_time, true, last_path_set);
-  } else {
-    success = topo_graph_->graphSearch(start_node, end_node, topo_path,
-                                       max_time, false);
+    if (!last_path_set.empty()) {
+      // Continuity is optional; bound its extra work tightly so the unbiased
+      // route retains the original planning budget and exploration cadence.
+      const double continuity_budget =
+          std::clamp(0.10 * max_time, 0.003, 0.010);
+      preferred_success =
+          topo_graph_->graphSearch(start_node, end_node, preferred_path,
+                                   continuity_budget, true,
+                                   last_path_set);
+    }
   }
-  // topo_graph_->removeNodes(end_node_vec);
 
-  if (!success) {
+  // Always compute the unbiased current shortest route.  A continuity-biased
+  // route is accepted only when its real (unscaled) cost remains near-optimal.
+  std::vector<TopoNode::Ptr> shortest_path;
+  const bool shortest_success =
+      topo_graph_->graphSearch(start_node, end_node, shortest_path,
+                               max_time, false);
+  if (!preferred_success && !shortest_success) {
+    clearPathCache();
     return BubbleAstar::NO_PATH;
   }
-  // if (topo_path.size() <= 2) {
-  //   path.emplace_back(start_node->center_);
-  //   path.emplace_back(end_node->center_);
-  //   return BubbleAstar::REACH_END;
-  // }
-  for (int i = 0; i < topo_path.size() - 1; i++) {
-    auto back = topo_path[i];
-    auto front = topo_path[i + 1];
-    for (auto &pt : back->paths_[front]) {
-      path.emplace_back(pt);
+
+  auto routeCost = [](const std::vector<TopoNode::Ptr> &route) {
+    double cost = 0.0;
+    if (route.size() < 2) {
+      return std::numeric_limits<double>::infinity();
+    }
+    for (std::size_t i = 0; i + 1 < route.size(); ++i) {
+      const auto found = route[i]->weight_.find(route[i + 1]);
+      if (found == route[i]->weight_.end() || !std::isfinite(found->second)) {
+        return std::numeric_limits<double>::infinity();
+      }
+      cost += found->second;
+    }
+    return cost;
+  };
+  auto buildGeometricPath =
+      [](const std::vector<TopoNode::Ptr> &route,
+         std::vector<Eigen::Vector3f> &result) {
+        result.clear();
+        for (std::size_t i = 0; i + 1 < route.size(); ++i) {
+          const auto found = route[i]->paths_.find(route[i + 1]);
+          if (found == route[i]->paths_.end()) {
+            result.clear();
+            return false;
+          }
+          for (const auto &point : found->second) {
+            if (result.empty() || (point - result.back()).norm() > 1.0e-3f) {
+              result.emplace_back(point);
+            }
+          }
+        }
+        return result.size() >= 2;
+      };
+  auto geometricLength = [](const std::vector<Eigen::Vector3f> &route) {
+    double length = 0.0;
+    for (std::size_t i = 1; i < route.size(); ++i) {
+      length += (route[i] - route[i - 1]).norm();
+    }
+    return length;
+  };
+
+  std::vector<Eigen::Vector3f> shortest_geometry;
+  std::vector<Eigen::Vector3f> preferred_geometry;
+  const bool shortest_geometry_ok =
+      shortest_success && buildGeometricPath(shortest_path, shortest_geometry);
+  const bool preferred_geometry_ok =
+      preferred_success &&
+      buildGeometricPath(preferred_path, preferred_geometry);
+
+  bool use_preferred = preferred_geometry_ok && !shortest_geometry_ok;
+  if (preferred_geometry_ok && shortest_geometry_ok) {
+    constexpr double kMaximumContinuityDetour = 1.08;
+    const double preferred_cost = routeCost(preferred_path);
+    const double shortest_cost = routeCost(shortest_path);
+    const double preferred_length = geometricLength(preferred_geometry);
+    const double shortest_length = geometricLength(shortest_geometry);
+    use_preferred =
+        preferred_cost <= kMaximumContinuityDetour * shortest_cost + 1.0e-3 &&
+        preferred_length <=
+            kMaximumContinuityDetour * shortest_length + 1.0e-3;
+    if (!use_preferred) {
+      ROS_WARN_STREAM_THROTTLE(
+          0.5, "[topology continuity] reject stale detour: cost="
+                   << preferred_cost << "/" << shortest_cost
+                   << " length=" << preferred_length << "/"
+                   << shortest_length);
     }
   }
+
+  const std::vector<TopoNode::Ptr> &chosen_topology =
+      use_preferred ? preferred_path : shortest_path;
+  path = use_preferred ? preferred_geometry : shortest_geometry;
+  if (path.size() < 2) {
+    clearPathCache();
+    return BubbleAstar::NO_PATH;
+  }
+  cached_topo_path_ = chosen_topology;
+  cached_goal_center_ = end_node->center_;
+  cached_goal_valid_ = true;
   return BubbleAstar::REACH_END;
 }
 
+void FastSearcher::clearPathCache() {
+  cached_topo_path_.clear();
+  cached_goal_center_.setZero();
+  cached_goal_valid_ = false;
+}
+
+/*
+ * Stateless topology search is retained for edge-cost evaluation.  It must not
+ * share the execution-route continuity cache above.
+ */
 int FastSearcher::topoSearch(const TopoNode::Ptr &start_node,
                              const TopoNode::Ptr &end_node, double max_time,
                              std::vector<Eigen::Vector3f> &path) {
@@ -793,11 +908,6 @@ int FastSearcher::topoSearch(const TopoNode::Ptr &start_node,
   if (!success) {
     return BubbleAstar::NO_PATH;
   }
-  // if (topo_path.size() <= 2) {
-  //   path.emplace_back(start_node->center_);
-  //   path.emplace_back(end_node->center_);
-  //   return BubbleAstar::REACH_END;
-  // }
   for (int i = 0; i < topo_path.size() - 1; i++) {
     auto back = topo_path[i];
     auto front = topo_path[i + 1];

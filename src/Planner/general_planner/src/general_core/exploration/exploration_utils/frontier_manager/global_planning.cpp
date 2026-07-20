@@ -7,6 +7,7 @@
  * @Copyright (c) 2024 by ning-zelin, All Rights Reserved.
  */
 #include <general_core/exploration/exploration_utils/frontier_manager/frontier_manager.h>
+#include <cmath>
 
 namespace {
 enum class PlanningRejectReason {
@@ -254,7 +255,25 @@ void FrontierManager::generateTSPViewpoints(
              (t4 - t3).toSec() * 1000);
     return;
   }
-  sort(idx2.begin(), idx2.end(), [&](int a, int b) { return distance2odom2[a] < distance2odom2[b]; });
+  sort(idx2.begin(), idx2.end(), [&](int a, int b) {
+    constexpr float kDistanceTieEpsilon = 1.0e-4f;
+    const float delta = distance2odom2[a] - distance2odom2[b];
+    if (std::fabs(delta) > kDistanceTieEpsilon) {
+      return delta < 0.0f;
+    }
+    // tsp_clusters is filled by OpenMP workers and its insertion order is not
+    // stable.  Resolve equal-cost candidates by spatial identity so a hash
+    // layout or thread scheduling change cannot silently select another goal.
+    const Eigen::Vector3f &first = tsp_clusters[a]->center_;
+    const Eigen::Vector3f &second = tsp_clusters[b]->center_;
+    if (first.x() != second.x())
+      return first.x() < second.x();
+    if (first.y() != second.y())
+      return first.y() < second.y();
+    if (first.z() != second.z())
+      return first.z() < second.z();
+    return tsp_clusters[a]->id_ < tsp_clusters[b]->id_;
+  });
   viewpoints.clear();
   for (int i = 0; i < (int)idx2.size(); i++) {
     // 剔除异常值

@@ -203,8 +203,14 @@ bool TopoGraph::graphSearch(const TopoNode::Ptr &start_node, const TopoNode::Ptr
       float tentative_g_score;
       if (kino) {
         if (last_path.find({cur_node, neighbor}) != last_path.end()) {
-          // tentative_g_score = g_score[cur_node] + 1e-3 * cur_node->weight_[neighbor];
-          tentative_g_score = g_score[cur_node] + 0 * cur_node->weight_[neighbor];
+          // Preserve route continuity only as a bounded tie-breaker.  Giving
+          // every previous-path edge zero cost can make an arbitrarily long
+          // stale route beat the current shortest path and creates persistent
+          // out-and-back trajectories after the robot or goal has moved.
+          constexpr float kPreviousPathCostScale = 0.90f;
+          tentative_g_score =
+              g_score[cur_node] +
+              kPreviousPathCostScale * cur_node->weight_[neighbor];
         } else
           tentative_g_score = g_score[cur_node] + cur_node->weight_[neighbor];
       } else {

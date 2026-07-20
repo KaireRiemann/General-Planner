@@ -76,6 +76,15 @@ global_planning/candidate_wait_weight: 1.5
 global_planning/candidate_debt_weight: 2.5
 global_planning/failed_goal_cooldown: 30.0
 global_planning/failed_goal_penalty: 2000.0
+# A locally valid trajectory is not necessarily exploration progress. If the
+# same ordinary frontier is selected for 12 s without reducing either topology
+# travel cost or spatial goal distance, defer it and clear route continuity.
+# This closes the "successful short loop forever" liveness gap while allowing
+# normal doorway/stair routes to reset the watchdog as their graph cost drops.
+global_planning/frontier_progress_watchdog_enable: true
+global_planning/frontier_progress_timeout: 12.0
+global_planning/frontier_progress_min_cost_drop: 0.75
+global_planning/frontier_progress_min_distance_drop: 0.75
 global_planning/candidate_gain_saturation: 30.0
 global_planning/candidate_wait_saturation: 18.0
 global_planning/candidate_debt_saturation: 3.0

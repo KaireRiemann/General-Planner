@@ -167,10 +167,18 @@ class FastSearcher {
 private:
   TopoGraph::Ptr topo_graph_;
   BubbleAstar::Ptr bubble_astar_searcher_;
+  // Continuity is useful only while planning to the same spatial goal.  The
+  // previous implementation kept this state in a function-static vector, so
+  // every FastSearcher instance and every frontier goal shared one stale
+  // route.  Keep it instance-local and explicitly key it by goal position.
+  std::vector<TopoNode::Ptr> cached_topo_path_;
+  Eigen::Vector3f cached_goal_center_{Eigen::Vector3f::Zero()};
+  bool cached_goal_valid_{false};
 
 public:
   typedef std::shared_ptr<FastSearcher> Ptr;
   void init(TopoGraph::Ptr topo_graph, BubbleAstar::Ptr bubble_astar_searcher);
+  void clearPathCache();
   TopoNode::Ptr createTopoNode(const Eigen::Vector3f &pose, const Eigen::Vector3f &curr_vel, bool connect_nei_region = true, bool nei_must_known = false,
                                bool is_odom_node = false);
   void removeTopoNode(TopoNode::Ptr node);

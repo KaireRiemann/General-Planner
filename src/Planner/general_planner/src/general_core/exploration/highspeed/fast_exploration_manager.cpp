@@ -121,9 +121,26 @@ void FastExplorationManager::initialize(
            ep_->failed_goal_cooldown_, 30.0);
   nh.param("global_planning/failed_goal_penalty",
            ep_->failed_goal_penalty_, 2000.0);
+  nh.param("global_planning/frontier_progress_watchdog_enable",
+           frontier_progress_watchdog_enable_,
+           frontier_progress_watchdog_enable_);
+  nh.param("global_planning/frontier_progress_timeout",
+           frontier_progress_timeout_, frontier_progress_timeout_);
+  nh.param("global_planning/frontier_progress_min_cost_drop",
+           frontier_progress_min_cost_drop_,
+           frontier_progress_min_cost_drop_);
+  nh.param("global_planning/frontier_progress_min_distance_drop",
+           frontier_progress_min_distance_drop_,
+           frontier_progress_min_distance_drop_);
   ep_->failed_goal_cooldown_ =
       std::clamp(ep_->failed_goal_cooldown_, 1.0, 120.0);
   ep_->failed_goal_penalty_ = std::max(0.0, ep_->failed_goal_penalty_);
+  frontier_progress_timeout_ =
+      std::clamp(frontier_progress_timeout_, 4.0, 60.0);
+  frontier_progress_min_cost_drop_ =
+      std::clamp(frontier_progress_min_cost_drop_, 0.1, 5.0);
+  frontier_progress_min_distance_drop_ =
+      std::clamp(frontier_progress_min_distance_drop_, 0.1, 5.0);
   nh.param("coverage_guidance/recovery_target_cooldown",
            coverage_recovery_cooldown_, coverage_recovery_cooldown_);
   nh.param("coverage_guidance/recovery_target_timeout",
@@ -534,10 +551,16 @@ int FastExplorationManager::selectStableGoalIndex(
         if (!viewpoints[i]->is_coverage_target_ &&
             viewpoints[i]->frontier_cluster_id_ ==
             ed_->locked_goal_cluster_id_) {
-          locked_idx = i;
-          locked_match_distance =
+          const double distance =
               (viewpoints[i]->center_ - ed_->locked_goal_).norm();
-          break;
+          // A globally cached cluster may retain its numeric ID while its best
+          // observation point moves to another doorway/side of a room.  Do not
+          // force that spatially different target through the old goal lock.
+          if (distance <= ep_->goal_lock_match_radius_) {
+            locked_idx = i;
+            locked_match_distance = distance;
+            break;
+          }
         }
       }
     }
@@ -611,7 +634,9 @@ int FastExplorationManager::selectStableGoalIndex(
            ? viewpoints[chosen_idx]->coverage_target_id_ ==
                  ed_->locked_goal_coverage_id_
            : viewpoints[chosen_idx]->frontier_cluster_id_ ==
-                 ed_->locked_goal_cluster_id_);
+                     ed_->locked_goal_cluster_id_ &&
+                 (viewpoints[chosen_idx]->center_ - ed_->locked_goal_).norm() <=
+                     ep_->goal_lock_match_radius_);
   const bool new_lock =
       !same_identity &&
       (!ed_->has_goal_lock_ ||
@@ -641,6 +666,9 @@ int FastExplorationManager::selectStableGoalIndex(
 }
 
 void FastExplorationManager::deferCurrentGoalAfterPlanningFailure() {
+  if (planner_manager_ && planner_manager_->fast_searcher_) {
+    planner_manager_->fast_searcher_->clearPathCache();
+  }
   if (has_active_coverage_goal_) {
     deferCoverageRecovery(active_coverage_target_,
                           CoverageRecoveryOutcome::TRAJECTORY_FAILURE);
@@ -688,6 +716,95 @@ void FastExplorationManager::deferCurrentGoalAfterPlanningFailure() {
                   << ep_->failed_goal_cooldown_ << "s penalty="
                   << ep_->failed_goal_penalty_
                   << " active_deferred=" << deferred_goals_.size());
+  resetNormalGoalProgress();
+}
+
+void FastExplorationManager::resetNormalGoalProgress() {
+  normal_goal_progress_ = NormalGoalProgress();
+}
+
+bool FastExplorationManager::updateNormalGoalProgress(
+    const TopoNode::Ptr &viewpoint, const double route_cost,
+    const Eigen::Vector3d &robot_position) {
+  if (!frontier_progress_watchdog_enable_ || !viewpoint ||
+      viewpoint->is_coverage_target_ ||
+      viewpoint->frontier_cluster_id_ < 0 || !std::isfinite(route_cost)) {
+    if (viewpoint && viewpoint->is_coverage_target_) {
+      resetNormalGoalProgress();
+    }
+    return false;
+  }
+
+  const ros::Time now = ros::Time::now();
+  const double goal_distance =
+      (viewpoint->center_.cast<double>() - robot_position).norm();
+  const bool sample_gap =
+      normal_goal_progress_.valid &&
+      !normal_goal_progress_.last_sample_time.isZero() &&
+      (now - normal_goal_progress_.last_sample_time).toSec() >
+          std::max(3.0, 0.5 * frontier_progress_timeout_);
+  if (sample_gap) {
+    resetNormalGoalProgress();
+  }
+  const bool same_cluster =
+      normal_goal_progress_.valid &&
+      normal_goal_progress_.cluster_id == viewpoint->frontier_cluster_id_;
+  const bool nearby_reclustered_goal =
+      normal_goal_progress_.valid &&
+      (normal_goal_progress_.goal - viewpoint->center_).norm() <=
+          std::max(0.2, ep_->goal_lock_match_radius_);
+  if (!same_cluster && !nearby_reclustered_goal) {
+    normal_goal_progress_.valid = true;
+    normal_goal_progress_.cluster_id = viewpoint->frontier_cluster_id_;
+    normal_goal_progress_.goal = viewpoint->center_;
+    normal_goal_progress_.best_route_cost = route_cost;
+    normal_goal_progress_.best_goal_distance = goal_distance;
+    normal_goal_progress_.last_progress_time = now;
+    normal_goal_progress_.last_sample_time = now;
+    normal_goal_progress_.samples = 1;
+    return false;
+  }
+
+  normal_goal_progress_.cluster_id = viewpoint->frontier_cluster_id_;
+  normal_goal_progress_.goal = viewpoint->center_;
+  normal_goal_progress_.last_sample_time = now;
+  ++normal_goal_progress_.samples;
+  const bool route_progress =
+      route_cost <= normal_goal_progress_.best_route_cost -
+                        frontier_progress_min_cost_drop_;
+  const bool spatial_progress =
+      goal_distance <= normal_goal_progress_.best_goal_distance -
+                           frontier_progress_min_distance_drop_;
+  if (route_progress || spatial_progress) {
+    normal_goal_progress_.best_route_cost =
+        std::min(normal_goal_progress_.best_route_cost, route_cost);
+    normal_goal_progress_.best_goal_distance =
+        std::min(normal_goal_progress_.best_goal_distance, goal_distance);
+    normal_goal_progress_.last_progress_time = now;
+    return false;
+  }
+
+  if (normal_goal_progress_.last_progress_time.isZero()) {
+    normal_goal_progress_.last_progress_time = now;
+    return false;
+  }
+  const double stalled_duration =
+      (now - normal_goal_progress_.last_progress_time).toSec();
+  if (normal_goal_progress_.samples < 4 ||
+      stalled_duration < frontier_progress_timeout_) {
+    return false;
+  }
+
+  ROS_WARN_STREAM(
+      "[frontier progress] defer non-progressing ordinary frontier: cluster="
+      << viewpoint->frontier_cluster_id_ << " goal=("
+      << viewpoint->center_.transpose() << ") stalled=" << stalled_duration
+      << "s route=" << route_cost
+      << " best_route=" << normal_goal_progress_.best_route_cost
+      << " distance=" << goal_distance
+      << " best_distance=" << normal_goal_progress_.best_goal_distance
+      << " samples=" << normal_goal_progress_.samples);
+  return true;
 }
 
 bool FastExplorationManager::coverageRecoveryDeferred(
@@ -1416,6 +1533,7 @@ int FastExplorationManager::planGlobalPath(const Eigen::Vector3d &pos,
       }
       return;
     }
+    resetNormalGoalProgress();
     CoverageTarget target;
     target.type = CoverageTargetType::REACHABLE_UNKNOWN;
     target.stable_id = selected->coverage_target_id_;
@@ -1435,6 +1553,28 @@ int FastExplorationManager::planGlobalPath(const Eigen::Vector3d &pos,
       active_coverage_observed_voxels_ = latestCoverageObservedVoxels();
     }
   };
+  auto deferStalledNormalGoal =
+      [&](const TopoNode::Ptr &selected, const double route_cost) {
+        if (!updateNormalGoalProgress(selected, route_cost, pos)) {
+          return false;
+        }
+        // selectStableGoalIndex() has already populated the lock with this
+        // selected ordinary frontier, so the existing cooldown mechanism can
+        // defer exactly that goal.  Clear every continuity owner before the
+        // replacement planning pass.
+        ed_->has_goal_lock_ = true;
+        ed_->locked_goal_is_coverage_ = false;
+        ed_->locked_goal_cluster_id_ = selected->frontier_cluster_id_;
+        ed_->locked_goal_coverage_id_ = 0;
+        ed_->locked_goal_ = selected->center_;
+        ed_->locked_goal_yaw_ = selected->yaw_;
+        deferCurrentGoalAfterPlanningFailure();
+        ed_->has_goal_lock_ = false;
+        ed_->locked_goal_cluster_id_ = -1;
+        ed_->locked_goal_is_coverage_ = false;
+        ed_->locked_goal_coverage_id_ = 0;
+        return true;
+      };
 
   struct CandidateCostBreakdown {
     double travel{0.0};
@@ -1513,6 +1653,12 @@ int FastExplorationManager::planGlobalPath(const Eigen::Vector3d &pos,
     const int goal_idx =
         selectStableGoalIndex(viewpoint_reachable, composite_costs,
                               0, vel);
+    if (deferStalledNormalGoal(
+            viewpoint_reachable[goal_idx],
+            candidate_terms[goal_idx].travel)) {
+      planner_manager_->topo_graph_->removeNodes(viewpoints);
+      return planGlobalPath(pos, vel);
+    }
     activateSelectedGoal(viewpoint_reachable[goal_idx]);
     ROS_INFO_STREAM_THROTTLE(
         0.5, "[candidate cost] chosen_cluster="
@@ -1616,23 +1762,52 @@ int FastExplorationManager::planGlobalPath(const Eigen::Vector3d &pos,
 
   vector<double> composite_costs(candidate_terms.size(), 0.0);
   int candidate_goal_idx = 0;
+  auto deterministicCandidateLess = [&](const int first, const int second) {
+    constexpr double kCostTieEpsilon = 1.0e-6;
+    const double delta =
+        candidate_terms[first].total - candidate_terms[second].total;
+    if (std::fabs(delta) > kCostTieEpsilon) {
+      return delta < 0.0;
+    }
+    const Eigen::Vector3f &first_center =
+        viewpoint_reachable[first]->center_;
+    const Eigen::Vector3f &second_center =
+        viewpoint_reachable[second]->center_;
+    if (first_center.x() != second_center.x())
+      return first_center.x() < second_center.x();
+    if (first_center.y() != second_center.y())
+      return first_center.y() < second_center.y();
+    if (first_center.z() != second_center.z())
+      return first_center.z() < second_center.z();
+    if (viewpoint_reachable[first]->is_coverage_target_ !=
+        viewpoint_reachable[second]->is_coverage_target_) {
+      return !viewpoint_reachable[first]->is_coverage_target_;
+    }
+    return viewpoint_reachable[first]->frontier_cluster_id_ <
+           viewpoint_reachable[second]->frontier_cluster_id_;
+  };
   for (int i = 0; i < static_cast<int>(candidate_terms.size()); ++i) {
     composite_costs[i] = candidate_terms[i].total;
-    if (candidate_terms[i].total < candidate_terms[candidate_goal_idx].total) {
+    if (deterministicCandidateLess(i, candidate_goal_idx)) {
       candidate_goal_idx = i;
     }
   }
   const int stable_goal_idx = selectStableGoalIndex(
       viewpoint_reachable, composite_costs, candidate_goal_idx, vel);
+  if (deferStalledNormalGoal(
+          viewpoint_reachable[stable_goal_idx],
+          candidate_terms[stable_goal_idx].travel)) {
+    planner_manager_->topo_graph_->removeNodes(viewpoints);
+    return planGlobalPath(pos, vel);
+  }
   activateSelectedGoal(viewpoint_reachable[stable_goal_idx]);
 
   vector<int> debug_order(candidate_terms.size());
   for (int i = 0; i < static_cast<int>(debug_order.size()); ++i) {
     debug_order[i] = i;
   }
-  std::stable_sort(debug_order.begin(), debug_order.end(), [&](int a, int b) {
-    return candidate_terms[a].total < candidate_terms[b].total;
-  });
+  std::stable_sort(debug_order.begin(), debug_order.end(),
+                   deterministicCandidateLess);
   std::ostringstream cost_log;
   cost_log << "[candidate cost] chosen_cluster="
            << viewpoint_reachable[stable_goal_idx]->frontier_cluster_id_
