@@ -223,7 +223,12 @@ bool FastExplorationFSM::finishGateSatisfied(const string &reason) const {
                  << coverage_finish.targets_exhausted
                  << " exhausted="
                  << coverage_finish.exhausted_targets << "/"
-                 << coverage_finish.actionable_targets);
+                 << coverage_finish.actionable_targets
+                 << " eligible=" << coverage_finish.eligible_targets
+                 << " cooling=" << coverage_finish.cooling_targets
+                 << " retry_after="
+                 << std::setprecision(1)
+                 << coverage_finish.next_retry_duration << "s");
     return false;
   }
   if (coverage_finish.guard_enabled) {
@@ -879,12 +884,16 @@ void FastExplorationFSM::CloudOdomCallback(
   ros::Time t1 = ros::Time::now();
   planner_manager_->lidar_map_interface_->updateCloudMapOdometry(msg, odom_);
   planner_manager_->updateRogMap(msg, odom_);
+  // The topology timer runs faster than the point-cloud input. Track accepted
+  // map updates so the same cloud does not rebuild the skeleton and historical
+  // graph two or three times.
+  ++topology_map_revision_;
   double collision_time;
   bool safe = planner_manager_->checkTrajCollision(collision_time);
   if (!safe) {
     transitState(PLAN_TRAJ, "safetyCallback: not safe, time:" + to_string(collision_time), true);
     if (collision_time < fp_->replan_time_ + 0.2)
-      stopTraj();
+      stopTraj("cloud-map collision update");
   }
   ros::Time t2 = ros::Time::now();
   ros::Time t3 = ros::Time::now();
@@ -931,7 +940,53 @@ void FastExplorationFSM::transitState(EXPL_STATE new_state, string pos_call, boo
   }
 }
 
-void FastExplorationFSM::stopTraj() {
+void FastExplorationFSM::stopTraj(const string &reason) {
+  const ros::Time now = ros::Time::now();
+  const double speed = fd_->odom_vel_.norm();
+  const double odom_age =
+      fd_->last_odom_receive_time_.isZero()
+          ? std::numeric_limits<double>::infinity()
+          : (now - fd_->last_odom_receive_time_).toSec();
+  const bool odom_fresh = odom_age <= fp_->max_odom_age_;
+
+  // At near-zero speed a new braking polynomial has no safety benefit. It can
+  // instead overwrite a valid replanned trajectory a few milliseconds after
+  // publication, producing the repeated stop/no-trajectory chatter observed
+  // in narrow rooms. Truncate the unsafe command and hold the current pose.
+  if (odom_fresh && speed <= fp_->controlled_stop_min_speed_) {
+    const int current_traj_id = planner_manager_->local_data_.traj_id_;
+    const bool hold_retry_due =
+        current_traj_id != last_near_stationary_hold_traj_id_ ||
+        last_near_stationary_hold_time_.isZero() ||
+        (now - last_near_stationary_hold_time_).toSec() >=
+            fp_->stationary_hold_retry_interval_;
+    if (hold_retry_due) {
+      replan_pub_.publish(std_msgs::Empty());
+      last_near_stationary_hold_time_ = now;
+      last_near_stationary_hold_traj_id_ = current_traj_id;
+      const ros::Time start_time = planner_manager_->local_data_.start_time_;
+      const double elapsed =
+          std::max(0.0, (now - start_time).toSec());
+      planner_manager_->local_data_.duration_ =
+          std::min(planner_manager_->local_data_.duration_, elapsed);
+      fd_->static_state_ = true;
+      ROS_WARN_STREAM(
+          "[controlled stop] near-stationary hold without braking trajectory: "
+          "reason="
+          << reason << " speed=" << speed
+          << " traj_id=" << current_traj_id
+          << " threshold=" << fp_->controlled_stop_min_speed_
+          << " odom_age=" << odom_age);
+    } else {
+      ROS_WARN_STREAM_THROTTLE(
+          0.5, "[controlled stop] suppress duplicate near-stationary hold: "
+                   "reason="
+                   << reason << " speed=" << speed
+                   << " traj_id=" << current_traj_id);
+    }
+    return;
+  }
+
   // A replan notification only shortens the polynomial in traj_server.  Its
   // mathematical endpoint can still carry several m/s of velocity, after which
   // traj_server switches directly to position HOLD.  Commit and publish an
@@ -950,7 +1005,8 @@ void FastExplorationFSM::stopTraj() {
       fd_->static_state_ = false;
       ROS_WARN_STREAM_THROTTLE(
           0.5, "[controlled stop] published braking trajectory id="
-                   << info->traj_id_ << " duration=" << info->duration_);
+                   << info->traj_id_ << " duration=" << info->duration_
+                   << " reason=" << reason << " odom_speed=" << speed);
       return;
     }
   }

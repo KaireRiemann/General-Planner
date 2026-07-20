@@ -11,6 +11,7 @@
 
 #include <Eigen/Eigen>
 #include <algorithm>
+#include <cstdint>
 #include <geometry_msgs/PoseStamped.h>
 #include <general_core/exploration/highspeed/fast_exploration_manager.h>
 #include <iostream>
@@ -72,7 +73,17 @@ private:
   EXPL_STATE state_;
   FinishGate finish_gate_;
   ros::Time last_plan_traj_global_update_time_;
+  ros::Time last_near_stationary_hold_time_;
+  int last_near_stationary_hold_traj_id_{-1};
   ros::WallTime last_global_callback_wall_time_;
+  ros::Time last_topology_update_time_;
+  ros::Time last_historical_topology_update_time_;
+  Eigen::Vector3f last_historical_topology_update_pos_{
+      Eigen::Vector3f::Zero()};
+  bool historical_topology_update_initialized_{false};
+  std::uint64_t topology_map_revision_{0};
+  std::uint64_t topology_applied_revision_{0};
+  bool topology_revision_applied_{false};
 
   bool classic_;
 
@@ -118,7 +129,7 @@ private:
   void navGoalTriggerCallback(const geometry_msgs::PoseStampedConstPtr &msg);
   void acceptManualTrigger(const string &source);
   void odometryCallback(const nav_msgs::OdometryConstPtr &msg);
-  void stopTraj();
+  void stopTraj(const string &reason);
 
   // void goal_cb(const geometry_msgs::PoseStamped::ConstPtr &msg);
   void visualize();

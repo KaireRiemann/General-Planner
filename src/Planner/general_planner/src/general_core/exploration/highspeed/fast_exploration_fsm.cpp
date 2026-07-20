@@ -97,7 +97,7 @@ void FastExplorationFSM::FSMCallback(const ros::TimerEvent &e) {
     double collision_time = 0.0;
     bool safe = planner_manager_->checkTrajCollision(collision_time);
     if (!safe) {
-      stopTraj();
+      stopTraj("FINISH collision guard");
     }
     ROS_WARN_THROTTLE(1.0, "Finished.");
     break;
@@ -205,11 +205,22 @@ void FastExplorationFSM::FSMCallback(const ros::TimerEvent &e) {
           fd_->odom_vel_.norm() <= fp_->reorient_exit_speed_;
       const double current_clearance =
           planner_manager_->lidar_map_interface_->getDisToOcc(fd_->odom_pos_);
-      const double recovery_trigger_clearance =
+      // Use exactly the same boundary as CAUTION's "safe clearance restored"
+      // test below. The old fixed +0.10 m entry margin was wider than the
+      // configured tolerance used to leave CAUTION. At intermediate
+      // clearances the FSM therefore entered CAUTION, immediately left it,
+      // reset the failure counter, and retried the identical infeasible MINCO
+      // path forever. Clearances outside this common boundary now continue
+      // through the normal failed-goal refresh counter and eventually request
+      // the bounded known-free spatial relocation.
+      const double recovery_target_clearance =
           std::max(planner_manager_->gcopter_config_->dilateRadiusSoft,
                    planner_manager_->gcopter_config_
-                       ->commitKnownFreeSafeDistance) +
-          0.10;
+                       ->commitKnownFreeSafeDistance);
+      const double recovery_trigger_clearance =
+          recovery_target_clearance +
+          std::max(0.0, planner_manager_->gcopter_config_
+                            ->safetyClearanceTolerance);
       const bool needs_clearance_recovery =
           may_refresh_goal && std::isfinite(current_clearance) &&
           current_clearance <= recovery_trigger_clearance;
@@ -262,7 +273,7 @@ void FastExplorationFSM::FSMCallback(const ros::TimerEvent &e) {
                      true);
       } else {
         if (fd_->odom_vel_.norm() > fp_->reorient_exit_speed_) {
-          stopTraj();
+          stopTraj("PLAN_TRAJ failed without safe committed trajectory");
         }
         transitState(PLAN_TRAJ, "PLAN_TRAJ: plan failed", true);
       }
@@ -284,7 +295,7 @@ void FastExplorationFSM::FSMCallback(const ros::TimerEvent &e) {
           PLAN_TRAJ,
           "safetyCallback: not safe, time:" + to_string(collision_time), true);
       if (collision_time < fp_->replan_time_ + 0.2)
-        stopTraj();
+        stopTraj("EXEC_TRAJ imminent collision");
     } else if (!planner_manager_->checkTrajVelocity()) {
       transitState(PLAN_TRAJ, "velocity too fast", true);
     } else if (planner_manager_->committedTrajectoryRemainingTime() <=
@@ -342,7 +353,7 @@ void FastExplorationFSM::FSMCallback(const ros::TimerEvent &e) {
             fp_->reorient_stop_retry_interval_;
     if (!backup_braking && stop_retry_due) {
       const bool retry = fd_->reorientation_stop_requested_;
-      stopTraj();
+      stopTraj("REORIENT goal reversal");
       fd_->reorientation_stop_requested_ = true;
       fd_->reorientation_last_stop_request_time_ = now;
       ROS_WARN_STREAM("[reorient] request controlled stop"
@@ -393,7 +404,7 @@ void FastExplorationFSM::FSMCallback(const ros::TimerEvent &e) {
           (now - fd_->caution_last_stop_request_time_).toSec() >=
               fp_->caution_stop_retry_interval_;
       if (!planner_manager_->hasCommittedStopTrajectory() && stop_retry_due) {
-        stopTraj();
+        stopTraj("CAUTION controlled stop");
         fd_->caution_last_stop_request_time_ = now;
       }
       fd_->static_state_ = false;
@@ -459,7 +470,7 @@ void FastExplorationFSM::FSMCallback(const ros::TimerEvent &e) {
     break;
   }
   case LAND: {
-    stopTraj();
+    stopTraj("LAND");
     exec_timer_.stop();
     global_path_update_timer_.stop();
     // 没电了！！再飞就会炸鸡，降落！！！
@@ -561,6 +572,10 @@ void FastExplorationFSM::init(ros::NodeHandle &nh,
   nh.param("fsm/max_odom_age", fp_->max_odom_age_, 0.5);
   nh.param("fsm/controlled_reorientation_enable",
            fp_->controlled_reorientation_enable_, true);
+  nh.param("fsm/controlled_stop_min_speed",
+           fp_->controlled_stop_min_speed_, 0.10);
+  nh.param("fsm/stationary_hold_retry_interval",
+           fp_->stationary_hold_retry_interval_, 0.75);
   nh.param("fsm/plan_failure_retry_delay",
            fp_->plan_failure_retry_delay_, 0.20);
   nh.param("fsm/plan_failure_refresh_count",
@@ -576,6 +591,10 @@ void FastExplorationFSM::init(ros::NodeHandle &nh,
   fp_->caution_recovery_retry_interval_ =
       std::clamp(fp_->caution_recovery_retry_interval_, 0.25, 5.0);
   fp_->max_odom_age_ = std::clamp(fp_->max_odom_age_, 0.1, 5.0);
+  fp_->controlled_stop_min_speed_ =
+      std::clamp(fp_->controlled_stop_min_speed_, 0.02, 0.30);
+  fp_->stationary_hold_retry_interval_ =
+      std::clamp(fp_->stationary_hold_retry_interval_, 0.2, 5.0);
   fp_->plan_failure_retry_delay_ =
       std::clamp(fp_->plan_failure_retry_delay_, 0.05, 2.0);
   fp_->plan_failure_refresh_count_ =
@@ -717,19 +736,64 @@ void FastExplorationFSM::updateTopoAndGlobalPath() {
     global_path_update_timer_.start();
     return;
   }
+
+  // PLAN_TRAJ may request an immediate global update while a timer callback
+  // from the same period is already queued. Coalesce those callbacks here so
+  // one map revision cannot trigger two complete topology/global-plan passes.
+  const ros::Time update_now = ros::Time::now();
+  const double coalesce_interval =
+      0.8 * std::max(0.02, fp_->global_path_update_min_interval_);
+  if (!last_topology_update_time_.isZero() &&
+      (update_now - last_topology_update_time_).toSec() <
+          coalesce_interval) {
+    return;
+  }
+  last_topology_update_time_ = update_now;
+
   static int cnt = 0;
   cnt++;
 
   global_path_update_timer_.stop();
   ros::Time t2 = ros::Time::now();
-  planner_manager_->topo_graph_->getRegionsToUpdate();
-  // cout << "getRegionsToUpdate time cost:" << (ros::Time::now() - t2).toSec()
-  // * 1000 << "ms" << endl;
-  planner_manager_->topo_graph_->updateSkeleton();
-
+  const bool map_revision_changed =
+      !topology_revision_applied_ ||
+      topology_applied_revision_ != topology_map_revision_;
+  if (map_revision_changed) {
+    planner_manager_->topo_graph_->getRegionsToUpdate();
+    planner_manager_->topo_graph_->updateSkeleton();
+  }
   ros::Time t3 = ros::Time::now();
   planner_manager_->topo_graph_->updateOdomNode(fd_->odom_pos_, fd_->odom_yaw_);
-  planner_manager_->topo_graph_->updateHistoricalOdoms();
+  ros::Time t4 = ros::Time::now();
+  // A stationary robot still receives slightly different point clouds and
+  // therefore new map revisions. Revalidating every historical graph edge at
+  // sensor rate during the terminal coverage-plateau hold is pure work: the
+  // current odom root and the local skeleton above are already refreshed.
+  // Keep historical maintenance motion-driven, with a one-second watchdog so
+  // genuine map changes are never left stale indefinitely.
+  const double historical_motion =
+      historical_topology_update_initialized_
+          ? (fd_->odom_pos_ - last_historical_topology_update_pos_).norm()
+          : std::numeric_limits<double>::infinity();
+  const double historical_age =
+      historical_topology_update_initialized_
+          ? (t4 - last_historical_topology_update_time_).toSec()
+          : std::numeric_limits<double>::infinity();
+  const bool historical_update_due =
+      map_revision_changed &&
+      (!historical_topology_update_initialized_ ||
+       historical_motion >= 0.50 || historical_age >= 1.0);
+  if (historical_update_due) {
+    planner_manager_->topo_graph_->updateHistoricalOdoms();
+    last_historical_topology_update_time_ = ros::Time::now();
+    last_historical_topology_update_pos_ = fd_->odom_pos_;
+    historical_topology_update_initialized_ = true;
+  }
+  if (map_revision_changed) {
+    topology_applied_revision_ = topology_map_revision_;
+    topology_revision_applied_ = true;
+  }
+  ros::Time t_hist = ros::Time::now();
 
   if (state_ == WAIT_TRIGGER) {
     planner_manager_->graph_visualizer_->vizBox(planner_manager_->topo_graph_);
@@ -774,14 +838,19 @@ void FastExplorationFSM::updateTopoAndGlobalPath() {
   cout << "\033[1;33m------------- <" << cnt
        << "> Plan Global Path start---------------" << "\033[0m" << endl;
   planner_manager_->topo_graph_->log << "<" << cnt << ">" << endl;
-  ros::Time t4 = ros::Time::now();
   // cout << "updateSkeleton time cost:" << (t3 - t2).toSec() * 1000 << "ms" <<
   // endl; if( (t3 - t1).toSec() * 1000 > 100){
   //   ROS_ERROR("time too long");
   //   exit(0);
   // }
-  ROS_INFO("update topo skeleton cost: %fms, update odom vertex cost:%fms ",
-           (t3 - t2).toSec() * 1000, (t4 - t3).toSec() * 1000);
+  ROS_INFO("[topology update] map_revision=%lu rebuilt=%d history_due=%d "
+           "skeleton=%0.3fms odom=%0.3fms history=%0.3fms",
+           static_cast<unsigned long>(topology_map_revision_),
+           map_revision_changed,
+           historical_update_due,
+           (t3 - t2).toSec() * 1000.0,
+           (t4 - t3).toSec() * 1000.0,
+           (t_hist - t4).toSec() * 1000.0);
   Eigen::Vector3d vel = fd_->odom_vel_.cast<double>();
   Eigen::Vector3d odom = fd_->odom_pos_.cast<double>();
   int res = expl_manager_->planGlobalPath(odom, vel);

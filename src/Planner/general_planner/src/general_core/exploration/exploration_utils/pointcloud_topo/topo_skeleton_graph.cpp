@@ -38,6 +38,20 @@ void TopoGraph::init(ros::NodeHandle &nh, LIOInterface::Ptr &lidar_map, Parallel
 
   nh.getParam("parallel_astar/update_connection_timeout", update_connection_timeout);
   nh.getParam("parallel_astar/insert_node_timeout", insert_node_timeout);
+  nh.param("bubble_topo/odom_connection_candidate_max",
+           odom_connection_candidate_max_, odom_connection_candidate_max_);
+  nh.param("bubble_topo/odom_direct_connection_target",
+           odom_direct_connection_target_, odom_direct_connection_target_);
+  nh.param("bubble_topo/odom_astar_fallback_max",
+           odom_astar_fallback_max_, odom_astar_fallback_max_);
+  odom_connection_candidate_max_ =
+      std::clamp(odom_connection_candidate_max_, 8, 256);
+  odom_direct_connection_target_ =
+      std::clamp(odom_direct_connection_target_, 1,
+                 odom_connection_candidate_max_);
+  odom_astar_fallback_max_ =
+      std::clamp(odom_astar_fallback_max_, 0,
+                 odom_connection_candidate_max_);
 
   nh.getParam("max_update_region_num", max_update_region_num_);
   update_idx_vec_.reserve(100);
@@ -852,6 +866,7 @@ void TopoGraph::updateOdomNode(Eigen::Vector3f &odom_pos, float &yaw) {
   Eigen::Vector3i idx;
   getIndex(lidar_map_interface_->ld_->lidar_pose_, idx);
   vector<TopoNode::Ptr> pre_nbrs;
+  unordered_set<TopoNode::Ptr> unique_pre_nbrs;
   for (int i = -1; i <= 1; i++)
     for (int j = -1; j <= 1; j++)
       for (int k = -1; k <= 1; k++) {
@@ -868,25 +883,83 @@ void TopoGraph::updateOdomNode(Eigen::Vector3f &odom_pos, float &yaw) {
               continue;
             // if(topo->is_viewpoint_)
             //   continue;
-            pre_nbrs.emplace_back(topo);
+            if (unique_pre_nbrs.insert(topo).second)
+              pre_nbrs.emplace_back(topo);
           }
         }
       }
+  std::stable_sort(
+      pre_nbrs.begin(), pre_nbrs.end(),
+      [&](const TopoNode::Ptr &first, const TopoNode::Ptr &second) {
+        return (first->center_ - odom_pos).squaredNorm() <
+               (second->center_ - odom_pos).squaredNorm();
+      });
+  if (static_cast<int>(pre_nbrs.size()) >
+      odom_connection_candidate_max_) {
+    pre_nbrs.resize(odom_connection_candidate_max_);
+  }
+
   std::unordered_map<std::pair<TopoNode::Ptr, TopoNode::Ptr>, vector<Eigen::Vector3f>, PairPtrHash> edge2insert;
   mutex edge2insert_mtx;
+  vector<uint8_t> direct_connected(pre_nbrs.size(), 0U);
   omp_set_num_threads(4);
   // clang-format off
   #pragma omp parallel for
   // clang-format on
-  for (auto &nbr : pre_nbrs) {
+  for (int i = 0; i < static_cast<int>(pre_nbrs.size()); ++i) {
+    const auto &nbr = pre_nbrs[i];
     vector<Eigen::Vector3f> path;
-    int res = parallel_bubble_astar_->search(odom_pos, nbr->center_, path, update_connection_timeout, true);
+    const int res = parallel_bubble_astar_->search(
+        odom_pos, nbr->center_, path, update_connection_timeout,
+        true, true);
     if (res == ParallelBubbleAstar::REACH_END && parallel_bubble_astar_->collisionCheck_shortenPath(path)) {
-      edge2insert_mtx.lock();
+      std::lock_guard<mutex> lock(edge2insert_mtx);
       edge2insert.insert({std::make_pair(odom_node_, nbr), path});
-      edge2insert_mtx.unlock();
+      direct_connected[i] = 1U;
     }
   }
+
+  // A direct local edge is preferable for the moving odometry root. Only
+  // when too few such edges exist do we spend the timeout-bounded A* budget,
+  // and then only on the nearest failed candidates. This preserves doorway
+  // and staircase connectivity without probing every occluded node.
+  const int direct_count = static_cast<int>(edge2insert.size());
+  const int fallback_budget =
+      direct_count >= odom_direct_connection_target_
+          ? 0
+          : odom_astar_fallback_max_;
+  vector<int> fallback_indices;
+  fallback_indices.reserve(fallback_budget);
+  for (int i = 0;
+       i < static_cast<int>(pre_nbrs.size()) &&
+       static_cast<int>(fallback_indices.size()) < fallback_budget;
+       ++i) {
+    if (!direct_connected[i]) {
+      fallback_indices.emplace_back(i);
+    }
+  }
+  // clang-format off
+  #pragma omp parallel for
+  // clang-format on
+  for (int j = 0; j < static_cast<int>(fallback_indices.size()); ++j) {
+    const int i = fallback_indices[j];
+    const auto &nbr = pre_nbrs[i];
+    vector<Eigen::Vector3f> path;
+    const int res = parallel_bubble_astar_->search(
+        odom_pos, nbr->center_, path, update_connection_timeout, true);
+    if (res == ParallelBubbleAstar::REACH_END &&
+        parallel_bubble_astar_->collisionCheck_shortenPath(path)) {
+      std::lock_guard<mutex> lock(edge2insert_mtx);
+      edge2insert.insert({std::make_pair(odom_node_, nbr), path});
+    }
+  }
+  ROS_INFO_STREAM_THROTTLE(
+      1.0, "[topology odom] candidates=" << pre_nbrs.size()
+                                         << " direct=" << direct_count
+                                         << " fallback="
+                                         << fallback_indices.size()
+                                         << " connected="
+                                         << edge2insert.size());
   if (edge2insert.empty())
     return;
   // 更新odom节点

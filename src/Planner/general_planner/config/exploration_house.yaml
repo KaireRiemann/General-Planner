@@ -49,6 +49,12 @@ coverage_guidance/finish_min_progress_voxels: 12
 coverage_guidance/recovery_min_gain_voxels: 12
 coverage_guidance/recovery_max_no_gain_attempts: 2
 coverage_guidance/recovery_max_failure_attempts: 2
+# Keep the normal 45 s room/floor rotation while another observation is
+# executable. Once the frontend and normal coverage pools are both empty,
+# retry cooling non-terminal targets after a short bounded interval so FINISH
+# cannot be blocked by an execution-ineligible cooldown set.
+coverage_guidance/terminal_retry_enable: true
+coverage_guidance/terminal_retry_interval: 2.0
 # Avoid the old bespoke recovery path when frontend exploration is exhausted.
 # Coverage is a strict fallback: the post-cooldown executable frontier set must
 # remain empty for four planning cycles and at least 1.5 s. A normal frontier
@@ -60,6 +66,22 @@ coverage_guidance/executable_candidate_max_count: 8
 coverage_guidance/executable_empty_min_count: 4
 coverage_guidance/executable_empty_min_duration: 1.5
 coverage_guidance/executable_candidate_max_speed: 0.50
+# Preselect the next coverage goal while the current safe command is still
+# moving. Reversal candidates remain protected by the existing heading gate
+# and controlled REORIENT state, so a normal same-direction handoff no longer
+# waits for the terminal-stop endpoint.
+coverage_guidance/moving_handoff_enable: true
+# Preserve the persistent CP ordering inside the bounded execution shortlist.
+coverage_guidance/route_rank_weight: 0.15
+# House-specific two-floor phase: once normal frontiers are empty, drain
+# executable second-floor observations before returning to the much larger
+# lower outdoor perimeter.
+coverage_guidance/floor_priority_enable: true
+coverage_guidance/floor_priority_min_z: 3.80
+# While below the upper floor, keep the CP nodes immediately preceding its
+# first target so the executable pool contains the staircase transition
+# instead of trying to connect directly to a high endpoint.
+coverage_guidance/floor_transition_rank_window: 4
 coverage_guidance/executable_candidate_bonus: 3.0
 global_planning/w_vdir: 0.3
 global_planning/w_yawdir: 0.0
@@ -116,6 +138,12 @@ bubble_topo/init_region_size_y: 4.0
 bubble_topo/init_region_size_z: 2.0
 bubble_topo/cube_discrete_size: 0.30
 bubble_topo/odom_node_distance: 2.5
+# Odom only needs a well-connected local root, not an A* edge to every
+# skeleton node in 27 surrounding regions. Direct visible edges are retained;
+# at most twelve nearest occluded candidates receive a full A* fallback.
+bubble_topo/odom_connection_candidate_max: 64
+bubble_topo/odom_direct_connection_target: 8
+bubble_topo/odom_astar_fallback_max: 12
 # ParallelBubbleAstar internally adds another 0.1 m clearance.  Keeping this at
 # the 0.45 m hard vehicle radius gives an effective 0.55 m planning clearance
 # without declaring a 1.2 m doorway geometrically closed.
@@ -199,6 +227,11 @@ fsm/max_odom_age: 0.5
 fsm/cloud_odom_mode: approximate_sync
 fsm/latest_odom_timeout: 0.5
 fsm/controlled_reorientation_enable: true
+# At near-zero odometry speed, truncate an invalid command into HOLD instead
+# of publishing another 0.73 s braking polynomial over a fresh exploration
+# trajectory. Repeated map callbacks are rate-limited.
+fsm/controlled_stop_min_speed: 0.10
+fsm/stationary_hold_retry_interval: 0.75
 fsm/plan_failure_retry_delay: 0.20
 fsm/plan_failure_refresh_count: 3
 # Four stationary goal-refresh cycles (12 local failures with the setting

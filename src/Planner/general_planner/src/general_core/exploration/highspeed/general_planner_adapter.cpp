@@ -3017,13 +3017,21 @@ bool FastPlannerManager::checkTrajCollision(double &collision_time)
   // every 30--50 ms segment over the complete remaining horizon and this
   // function is called both by the 100 Hz FSM and every cloud callback.
   constexpr double kTrajectorySampleDt = 0.05;
+  const double collision_clearance =
+      std::max(0.05, gcopter_config_->dilateRadiusHard -
+                         gcopter_config_->safetyClearanceTolerance);
   double probe_t = now_t;
   Eigen::Vector3d sphere_center = committed_pos.getPos(probe_t);
-  double sphere_radius = safetyDistanceToOcc(sphere_center) -
-                         gcopter_config_->dilateRadiusHard +
-                         gcopter_config_->safetyClearanceTolerance;
+  double sphere_radius =
+      safetyDistanceToOcc(sphere_center) - collision_clearance;
   if (!std::isfinite(sphere_radius) || sphere_radius <= 0.0)
   {
+    ROS_WARN_STREAM_THROTTLE(
+        0.5, "[trajectory collision] committed start is no longer safe: "
+                 "clearance="
+                 << safetyDistanceToOcc(sphere_center)
+                 << " required=" << collision_clearance
+                 << " remaining=" << collision_time);
     collision_time = 0.0;
     return false;
   }
@@ -3038,10 +3046,22 @@ bool FastPlannerManager::checkTrajCollision(double &collision_time)
     }
 
     sphere_center = pos;
-    sphere_radius = safetyDistanceToOcc(pos) - gcopter_config_->dilateRadiusHard;
+    const double clearance = safetyDistanceToOcc(pos);
+    // Apply the configured map-quantization tolerance uniformly. The previous
+    // checker applied it only to the first sphere and silently switched to the
+    // hard radius later in the same trajectory, so an unchanged boundary
+    // clearance could flip from safe to unsafe solely because a new sphere
+    // was seeded.
+    sphere_radius = clearance - collision_clearance;
     if (!std::isfinite(sphere_radius) || sphere_radius <= 0.0)
     {
       collision_time = std::max(0.0, probe_t - now_t);
+      ROS_WARN_STREAM_THROTTLE(
+          0.5, "[trajectory collision] committed trajectory invalidated: "
+                   "time_to_collision="
+                   << collision_time << " clearance=" << clearance
+                   << " required=" << collision_clearance
+                   << " probe_t=" << probe_t << "/" << horizon);
       return false;
     }
   }

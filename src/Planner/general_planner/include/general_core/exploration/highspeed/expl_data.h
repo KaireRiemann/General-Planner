@@ -72,6 +72,8 @@ struct FSMParam {
   double caution_recovery_retry_interval_;
   double max_odom_age_;
   bool controlled_reorientation_enable_;
+  double controlled_stop_min_speed_;
+  double stationary_hold_retry_interval_;
   double plan_failure_retry_delay_;
   int plan_failure_refresh_count_;
   int stationary_relocation_refresh_count_;

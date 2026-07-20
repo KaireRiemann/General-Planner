@@ -43,9 +43,12 @@ struct CoverageFinishStatus {
   int observed_voxels{0};
   int valid_voxels{0};
   int actionable_targets{0};
+  int eligible_targets{0};
+  int cooling_targets{0};
   int exhausted_targets{0};
   double coverage_ratio{0.0};
   double plateau_duration{0.0};
+  double next_retry_duration{0.0};
 
   bool ready() const {
     return !guard_enabled ||
@@ -158,6 +161,8 @@ private:
   int coverage_recovery_min_gain_voxels_{12};
   int coverage_recovery_max_no_gain_attempts_{2};
   int coverage_recovery_max_failure_attempts_{2};
+  bool coverage_terminal_retry_enable_{true};
+  double coverage_terminal_retry_interval_{2.0};
   bool coverage_executable_candidate_enable_{true};
   int coverage_executable_candidate_max_count_{8};
   int coverage_executable_empty_min_count_{4};
@@ -166,6 +171,11 @@ private:
   ros::Time coverage_executable_empty_since_;
   bool force_coverage_fallback_once_{false};
   double coverage_executable_candidate_max_speed_{0.50};
+  bool coverage_moving_handoff_enable_{false};
+  double coverage_route_rank_weight_{0.15};
+  bool coverage_floor_priority_enable_{false};
+  double coverage_floor_priority_min_z_{3.8};
+  int coverage_floor_transition_rank_window_{4};
   double coverage_executable_candidate_bonus_{3.0};
   NormalGoalProgress normal_goal_progress_;
   bool frontier_progress_watchdog_enable_{true};
@@ -181,6 +191,12 @@ private:
   bool coverageRecoveryDeferred(const CoverageTarget &target,
                                 const ros::Time &now) const;
   bool coverageRecoveryExhausted(const CoverageTarget &target) const;
+  bool coverageRecoveryCooling(const CoverageTarget &target,
+                               const ros::Time &now,
+                               double *remaining = nullptr) const;
+  bool coverageTerminalRetryReady(const CoverageTarget &target,
+                                  const ros::Time &now,
+                                  double *retry_after = nullptr) const;
   void deferCoverageRecovery(const CoverageTarget &target,
                              CoverageRecoveryOutcome outcome);
   void pruneDeferredCoverageGoals(const ros::Time &now);

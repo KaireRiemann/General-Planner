@@ -272,6 +272,13 @@ private:
   int max_update_region_num_;
   bool use_prior_map_;
   double update_connection_timeout, insert_node_timeout;
+  // Connecting the live odometry node to every skeleton node in the
+  // surrounding 3x3x3 regions made each global refresh run hundreds of
+  // timeout-bounded A* searches. Prefer cheap line-of-sight edges and keep a
+  // small, nearest fallback set for the genuinely occluded cases.
+  int odom_connection_candidate_max_{64};
+  int odom_direct_connection_target_{8};
+  int odom_astar_fallback_max_{12};
   bool hasOverlapWithBox(const Eigen::Vector3f &low_bd, const Eigen::Vector3f &high_bd);
 
   void generateBubble(const Eigen::Vector3f &low_bd, const Eigen::Vector3f &high_bd, vector<BubbleNode::Ptr> &bubble_node_vec,
