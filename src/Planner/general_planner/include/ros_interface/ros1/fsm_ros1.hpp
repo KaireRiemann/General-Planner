@@ -716,11 +716,37 @@ namespace fsm {
                         average_compt_t += rp.getTotalCompT();
                     }
                 }
-                fmt::print("[{}] Total replan num: {}, total length: {}, average computation time: {} ms\n",
-                           stream_name,
-                           total_replan_num,
-                           total_length,
-                           average_compt_t / (total_replan_num == 0 ? 1 : total_replan_num) * 1000);
+                const double average_computation_ms =
+                        average_compt_t /
+                        static_cast<double>(total_replan_num == 0 ? 1 : total_replan_num) *
+                        1000.0;
+                if (!tracking_stream && state2stateMode() &&
+                    cfg_.backend_type == general_planner::architecture::BackendType::CORRIDOR) {
+                    const auto timing = planner_ptr_->getCumulativeExpTimingReport();
+                    const double total_optimization_ms = timing.optimization_seconds * 1000.0;
+                    const double dense_share =
+                            timing.optimization_seconds > 0.0
+                            ? timing.dense_integral_seconds / timing.optimization_seconds * 100.0
+                            : 0.0;
+                    const double control_point_share =
+                            timing.optimization_seconds > 0.0
+                            ? timing.control_point_seconds / timing.optimization_seconds * 100.0
+                            : 0.0;
+                    fmt::print("[{}] Total replan num: {}, total length: {}, average computation time: {} ms, total optimization time: {} ms, dense sampling share: {}%, control point share: {}%\n",
+                               stream_name,
+                               total_replan_num,
+                               total_length,
+                               average_computation_ms,
+                               total_optimization_ms,
+                               dense_share,
+                               control_point_share);
+                } else {
+                    fmt::print("[{}] Total replan num: {}, total length: {}, average computation time: {} ms\n",
+                               stream_name,
+                               total_replan_num,
+                               total_length,
+                               average_computation_ms);
+                }
 
                 const std::string base_name = makeBaseName(tracking_stream);
                 const std::string replan_dir =
@@ -1378,15 +1404,35 @@ namespace fsm {
                 }
             }
 
-            const std::string time_log_file =
-                    useTrackingLogStream() ? "tracking_time_consuming.csv" : "time_consuming.csv";
+            std::string time_log_file;
+            if (useTrackingLogStream()) {
+                time_log_file = "tracking_time_consuming.csv";
+            } else if (state2stateMode() &&
+                       cfg_.backend_type == general_planner::architecture::BackendType::CORRIDOR) {
+                const auto timing_report = planner_ptr_->getLatestExpTimingReport();
+                time_log_file = "time_consuming_" + timing_report.mode + ".csv";
+            } else {
+                time_log_file = "time_consuming.csv";
+            }
             write_time_.open(DEBUG_FILE_DIR(time_log_file), std::ios::out | std::ios::trunc);
             log_module_time.resize(9);
+            const bool write_exp_timing =
+                    state2stateMode() &&
+                    cfg_.backend_type == general_planner::architecture::BackendType::CORRIDOR;
             for (int i = 0; i < 9; i++) {
                 write_time_ << log_time_str[i];
-                if (i != 8) {
+                if (i != 8 || write_exp_timing) {
                     write_time_ << ",";
                 }
+            }
+            if (write_exp_timing) {
+                write_time_ << "EXP_COST_MODE,EXP_EVALUATIONS,EXP_POLYNOMIAL_PIECES,"
+                               "EXP_DENSE_NODES_PER_EVAL,EXP_HULL_CONTROL_CHECKS_PER_EVAL,"
+                               "EXP_DENSE_INTEGRAL_MS,EXP_CONTROL_POINT_FUNCTIONAL_MS,"
+                               "EXP_MINCO_EVALUATION_MS,EXP_LBFGS_MS,"
+                               "EXP_DENSE_SHARE_MINCO_PERCENT,EXP_CONTROL_POINT_SHARE_MINCO_PERCENT,"
+                               "EXP_DENSE_SHARE_OPT_PERCENT,"
+                               "EXP_LBFGS_SHARE_MODULE_PERCENT,EXP_MODULE_SHARE_REPLAN_PERCENT";
             }
             write_time_ << endl;
             machine_state_ = INIT;

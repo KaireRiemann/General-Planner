@@ -65,9 +65,10 @@ trajectory start time.
 
 ## Optimization use
 
-Create one `Representation<DIM>` for each required derivative order, and call
-`resetTopology()` only when the number of segments, polynomial order, basis, or
-subdivision depth changes. In a cost manager, implement the optional callback
+The generic API permits one `Representation<DIM>` for any requested derivative
+order. The optimized state2state cost path instead creates only the position
+Bezier representation and obtains all derivatives using the hodograph
+difference operator. In a cost manager, implement the optional callback
 
 ```cpp
 double evaluateCoefficient(const Trajectory &trajectory,
@@ -77,10 +78,12 @@ double evaluateCoefficient(const Trajectory &trajectory,
 
 Within it:
 
-1. update the cached representation with `trajectory.updateConvexHull(hull)`;
-2. evaluate corridor or derivative-bound penalties on `hull.controls()`;
-3. accumulate `dJ/dQ`;
-4. call `hull.backwardAdd(dJ_dQ, grad_coefficients, grad_durations)`.
+1. update the cached position representation once with
+   `trajectory.updateConvexHull(hull)`;
+2. generate derivative controls by repeated Bezier differences;
+3. evaluate corridor and derivative-bound penalties on the controls;
+4. reverse the difference chain into the position-control gradient;
+5. call `hull.backwardAdd()` once.
 
 For a convex safe corridor, requiring every position control point of a leaf to
 lie in that leaf's half-space polytope certifies the whole continuous leaf. For
@@ -91,3 +94,44 @@ local hull while preserving this guarantee.
 
 Bezier and MINVO conversion data and licensing are documented in
 `THIRD_PARTY_NOTICES.md`.
+
+## State2state corridor integration
+
+The planner keeps the ordinary state2state and high-speed exploration paths
+separate:
+
+- `ExpTrajOpt` uses `ExpIntegralCostManager` by default and optionally
+  `ExpConvexCostManager` for the state2state corridor backend.
+- `ExplorationTrajOpt` continues to use `ExplorationCostManager`; the
+  exploration path does not read or use the convex-hull switch.
+
+The state2state mode is selected under the existing `exp_traj` namespace:
+
+```yaml
+traj_opt:
+  exp_traj:
+    convex_hull_en: false              # false: original dense integral
+    convex_hull_basis: 0               # 0: Bezier, 1: MINVO
+    convex_hull_subdivision_depth: 0   # 2^depth leaves per MINCO piece
+```
+
+In convex mode, position, velocity, acceleration and jerk polynomial bounds
+use continuous control-point hulls. Attractor, guide-path, swarm, angular-rate
+and thrust costs retain the original dense integral because they are not all
+polynomial convex functions of the flat output.
+
+For a seventh-degree MINCO piece, depth zero converts eight position controls
+once. Its velocity, acceleration and jerk hodographs contain seven, six and
+five derived controls. Uniform subdivision multiplies every count by
+`2^depth`, so it should not be enabled globally merely to reduce occasional
+conservatism; selective/adaptive leaf subdivision is the intended follow-up.
+
+When no residual dense term is active, `ExpConvexCostManager::usesDenseSampling()`
+allows `MINCOOptimizer` to bypass the integral nodes and basis construction
+entirely. Timing reports separate the dense residual and control-point
+functional so hybrid configurations remain visible.
+
+`MINCOOptimizer` can collect timing only when explicitly enabled. `ExpTrajOpt`
+enables it and reports the accumulated dense-integral time, total MINCO cost
+evaluation time, LBFGS wall time, and both corresponding percentages when
+`print_optimizer_log` is enabled. Other optimizers leave timing disabled.

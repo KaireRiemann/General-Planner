@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <iomanip>
 #include <limits>
@@ -507,6 +508,691 @@ vec_E<Vec3f> estimateGuideVelocities(const vec_E<Vec3f> &path,
 }
 } // namespace
 
+ExpTrajOpt::ExpTrajOpt(const traj_opt::Config &cfg,
+                       const ros_interface::RosInterface::Ptr &ros_ptr)
+    : cfg_(cfg), ros_ptr_(ros_ptr)
+{
+  if (cfg_.save_log_en)
+  {
+    failed_traj_log_.open(DEBUG_FILE_DIR("exp_opt_log.csv"), std::ios::out | std::ios::trunc);
+    penalty_log_.open(DEBUG_FILE_DIR("exp_opt_penna.csv"), std::ios::out | std::ios::trunc);
+  }
+
+  opt_vars_.magnitude_bounds.resize(6);
+  opt_vars_.penalty_weights.resize(7);
+  opt_vars_.magnitude_bounds << cfg_.max_vel, cfg_.max_acc, cfg_.max_jerk,
+      cfg_.max_omg, cfg_.min_acc_thr * cfg_.mass, cfg_.max_acc_thr * cfg_.mass;
+  opt_vars_.penalty_weights << cfg_.penna_pos, cfg_.penna_vel,
+      cfg_.penna_acc, cfg_.penna_jerk,
+      cfg_.penna_attract, cfg_.penna_omg,
+      cfg_.penna_thr;
+  opt_vars_.rho = cfg_.penna_t;
+  opt_vars_.pos_constraint_type = cfg_.pos_constraint_type;
+  opt_vars_.block_energy_cost = cfg_.block_energy_cost;
+  opt_vars_.smooth_eps = cfg_.smooth_eps;
+  opt_vars_.integral_res = std::max(1, cfg_.integral_reso);
+  opt_vars_.convex_hull_enabled = cfg_.convex_hull_en;
+  opt_vars_.convex_hull_basis =
+      cfg_.convex_hull_basis == 1
+          ? traj_opt::convex_hull::Basis::MINVO
+          : traj_opt::convex_hull::Basis::Bezier;
+  opt_vars_.convex_hull_subdivision_depth =
+      std::clamp(cfg_.convex_hull_subdivision_depth, 0, 8);
+  opt_vars_.quadrotor_flatness = cfg_.quadrotot_flatness;
+  opt_vars_.guide_z_tube_radius = std::max(0.0, cfg_.guide_z_tube_radius);
+  // Guide-path integral cost is disabled until its planner-level semantics are redesigned.
+  opt_vars_.weight_guide_integral = 0.0;
+  opt_vars_.guide_path_tube_radius = std::max(0.0, cfg_.guide_path_tube_radius);
+  opt_vars_.guide_path_z_tube_radius = std::max(0.0, cfg_.guide_path_z_tube_radius);
+  opt_vars_.guide_path_huber_delta = std::max(0.0, cfg_.guide_path_huber_delta);
+  opt_vars_.guide_path_time_gradient_en = cfg_.guide_path_time_gradient_en;
+  opt_vars_.weight_guide_z_tube =
+      opt_vars_.guide_z_tube_radius > 0.0 ? std::max(0.0, cfg_.penna_guide_z_tube) : 0.0;
+
+  linear_time_cost_.weight = opt_vars_.rho;
+  optimizer_.setTimeMap(&time_map_);
+  optimizer_.setSpatialMap(&spatial_map_);
+  optimizer_.setEnergyWeight(opt_vars_.block_energy_cost ? 0.0 : 1.0);
+  optimizer_.setSamplesPerPiece(opt_vars_.integral_res);
+  optimizer_.setTimingEnabled(true);
+  exp_convex_cost_manager_.configure(
+      opt_vars_.convex_hull_basis,
+      opt_vars_.convex_hull_subdivision_depth);
+  last_timing_report_.mode =
+      opt_vars_.convex_hull_enabled
+          ? (opt_vars_.convex_hull_basis == traj_opt::convex_hull::Basis::MINVO
+                 ? "convex_minvo_d" +
+                       std::to_string(opt_vars_.convex_hull_subdivision_depth)
+                 : "convex_bezier_d" +
+                       std::to_string(opt_vars_.convex_hull_subdivision_depth))
+          : "dense";
+}
+
+ExpTrajOpt::~ExpTrajOpt()
+{
+  if (failed_traj_log_.is_open())
+  {
+    failed_traj_log_.close();
+  }
+  if (penalty_log_.is_open())
+  {
+    penalty_log_.close();
+  }
+}
+
+void ExpTrajOpt::setSwarmConfig(const SwarmPenaltyConfig &config)
+{
+  swarm_config_ = config;
+}
+
+void ExpTrajOpt::setSwarmTrajectories(const SwarmTrajectoriesConstPtr &trajectories)
+{
+  swarm_trajs_ = trajectories;
+}
+
+void ExpTrajOpt::setSwarmCurrentWallTime(double wall_time)
+{
+  swarm_current_wall_time_ = wall_time;
+}
+
+SnapBoundaryState ExpTrajOpt::toSnapBoundary(const StatePVAJ &state)
+{
+  SnapBoundaryState out;
+  out.col(0) = state.col(0);
+  out.col(1) = state.col(1);
+  out.col(2) = state.col(2);
+  out.col(3) = state.col(3);
+  return out;
+}
+
+Trajectory ExpTrajOpt::toGeometryTrajectory(const SnapTraj &traj)
+{
+  Trajectory out;
+  const auto &durations = traj.getDurations();
+  out.reserve(static_cast<int>(durations.size()));
+  for (int i = 0; i < durations.size(); ++i)
+  {
+    out.emplace_back(durations(i), traj.getPieceCoeffMat(i));
+  }
+  return out;
+}
+
+bool ExpTrajOpt::processCorridor()
+{
+  const int size_corridor = static_cast<int>(opt_vars_.h_polytopes.size()) - 1;
+  if (size_corridor < 0)
+  {
+    return false;
+  }
+
+  opt_vars_.v_polytopes.clear();
+  opt_vars_.v_polytopes.reserve(2 * size_corridor + 1);
+  opt_vars_.waypoint_attractor.resize(3, size_corridor);
+  opt_vars_.waypoint_attractor_dead_d.resize(size_corridor);
+  opt_vars_.h_overlap_polytopes.resize(size_corridor);
+
+  PolyhedronH overlap;
+  PolyhedronV cur_v, cur_v_local;
+  for (int i = 0; i < size_corridor; ++i)
+  {
+    if (!geometry_utils::enumerateVs(opt_vars_.h_polytopes[i], cur_v))
+    {
+      std::cout << YELLOW << " -- [ExpTrajOpt] Failed to enumerate corridor vertices." << RESET << std::endl;
+      return false;
+    }
+    cur_v_local.resize(3, cur_v.cols());
+    cur_v_local.col(0) = cur_v.col(0);
+    cur_v_local.rightCols(cur_v.cols() - 1) = cur_v.rightCols(cur_v.cols() - 1).colwise() - cur_v.col(0);
+    opt_vars_.v_polytopes.push_back(cur_v_local);
+
+    overlap.resize(opt_vars_.h_polytopes[i].rows() + opt_vars_.h_polytopes[i + 1].rows(), 4);
+    overlap.topRows(opt_vars_.h_polytopes[i].rows()) = opt_vars_.h_polytopes[i];
+    overlap.bottomRows(opt_vars_.h_polytopes[i + 1].rows()) = opt_vars_.h_polytopes[i + 1];
+    opt_vars_.h_overlap_polytopes[i] = overlap;
+
+    Vec3f interior;
+    const double dis = geometry_utils::findInteriorDist(overlap, interior) / 2.0;
+    if (dis < 0.0 || std::isinf(dis))
+    {
+      return false;
+    }
+    geometry_utils::enumerateVs(overlap, interior, cur_v);
+    if (!std::isfinite(cur_v.sum()))
+    {
+      return false;
+    }
+    opt_vars_.waypoint_attractor.col(i) = interior;
+    opt_vars_.waypoint_attractor_dead_d(i) = dis;
+
+    cur_v_local.resize(3, cur_v.cols());
+    cur_v_local.col(0) = cur_v.col(0);
+    cur_v_local.rightCols(cur_v.cols() - 1) = cur_v.rightCols(cur_v.cols() - 1).colwise() - cur_v.col(0);
+    opt_vars_.v_polytopes.push_back(cur_v_local);
+  }
+
+  if (!geometry_utils::enumerateVs(opt_vars_.h_polytopes.back(), cur_v))
+  {
+    return false;
+  }
+  cur_v_local.resize(3, cur_v.cols());
+  cur_v_local.col(0) = cur_v.col(0);
+  cur_v_local.rightCols(cur_v.cols() - 1) = cur_v.rightCols(cur_v.cols() - 1).colwise() - cur_v.col(0);
+  opt_vars_.v_polytopes.push_back(cur_v_local);
+  return true;
+}
+
+bool ExpTrajOpt::processCorridorWithGuideTraj()
+{
+  if (!processCorridor())
+  {
+    return false;
+  }
+
+  VecDf time_stamps(opt_vars_.waypoint_attractor.cols() + 2);
+  time_stamps(0) = 0.0;
+  time_stamps(time_stamps.size() - 1) = opt_vars_.guide_t.back();
+  int guide_overlap_fallback_count = 0;
+  for (int j = 0; j < opt_vars_.waypoint_attractor.cols(); ++j)
+  {
+    const Vec3f chebyshev_center = opt_vars_.waypoint_attractor.col(j);
+    const double chebyshev_dead_d = opt_vars_.waypoint_attractor_dead_d(j);
+    GuideOverlapSample guide_sample;
+    if (findGuidePointInOverlap(opt_vars_.guide_path,
+                                opt_vars_.guide_t,
+                                opt_vars_.h_overlap_polytopes[j],
+                                chebyshev_center,
+                                time_stamps(j),
+                                guide_sample))
+    {
+      opt_vars_.waypoint_attractor.col(j) = guide_sample.position;
+      opt_vars_.points.col(j) = guide_sample.position;
+      opt_vars_.waypoint_attractor_dead_d(j) =
+          std::min(chebyshev_dead_d, std::max(1.0e-3, 0.5 * guide_sample.clearance));
+      time_stamps(j + 1) = std::clamp(guide_sample.time,
+                                      time_stamps(0),
+                                      time_stamps(time_stamps.size() - 1));
+    }
+    else
+    {
+      double min_dis = std::numeric_limits<double>::max();
+      int min_id = 0;
+      for (int i = 0; i < static_cast<int>(opt_vars_.guide_path.size()); ++i)
+      {
+        const double dis = (opt_vars_.guide_path[i] - chebyshev_center).norm();
+        if (dis < min_dis)
+        {
+          min_dis = dis;
+          min_id = i;
+        }
+      }
+      opt_vars_.points.col(j) = chebyshev_center;
+      time_stamps(j + 1) = opt_vars_.guide_t[min_id];
+      ++guide_overlap_fallback_count;
+    }
+  }
+
+  for (int i = 1; i < time_stamps.size(); ++i)
+  {
+    opt_vars_.times(i - 1) = std::max(0.01, time_stamps(i) - time_stamps(i - 1));
+  }
+  if (cfg_.print_optimizer_log && guide_overlap_fallback_count > 0)
+  {
+    std::cout << YELLOW << " -- [ExpTrajOpt] Guide-overlap waypoint fallback count: "
+              << guide_overlap_fallback_count << RESET << std::endl;
+  }
+  return true;
+}
+
+void ExpTrajOpt::defaultInitialization()
+{
+  const VecDf dis = (opt_vars_.init_path.rightCols(opt_vars_.piece_num) -
+                     opt_vars_.init_path.leftCols(opt_vars_.piece_num))
+                        .colwise()
+                        .norm();
+  opt_vars_.times = (dis.array() / std::max(1.0e-3, cfg_.max_vel)).max(0.01);
+  opt_vars_.points = opt_vars_.waypoint_attractor;
+}
+
+bool ExpTrajOpt::setupProblemAndCheck()
+{
+  opt_vars_.piece_num = static_cast<int>(opt_vars_.h_polytopes.size());
+  if (opt_vars_.piece_num <= 0)
+  {
+    return false;
+  }
+  opt_vars_.times.resize(opt_vars_.piece_num);
+  opt_vars_.points.resize(3, opt_vars_.piece_num - 1);
+
+  const bool ok = opt_vars_.default_init ? processCorridor() : processCorridorWithGuideTraj();
+  if (!ok)
+  {
+    return false;
+  }
+
+  opt_vars_.init_path = waypointsToMatrix(opt_vars_.head_pvaj, opt_vars_.waypoint_attractor, opt_vars_.tail_pvaj);
+  if (opt_vars_.default_init)
+  {
+    defaultInitialization();
+  }
+  else
+  {
+    opt_vars_.times *= 0.8;
+  }
+
+  if (!opt_vars_.times.allFinite() || opt_vars_.times.minCoeff() <= 1.0e-6)
+  {
+    return false;
+  }
+
+  opt_vars_.v_poly_idx.resize(opt_vars_.piece_num - 1);
+  opt_vars_.h_poly_idx.resize(opt_vars_.piece_num);
+  for (int i = 0; i < opt_vars_.piece_num; ++i)
+  {
+    opt_vars_.h_poly_idx(i) = i;
+    if (i < opt_vars_.piece_num - 1)
+    {
+      opt_vars_.v_poly_idx(i) = 2 * i + 1;
+    }
+  }
+  return true;
+}
+
+bool ExpTrajOpt::loadCorridors(PolytopeVec &sfcs)
+{
+  if (sfcs.empty())
+  {
+    std::cout << YELLOW << " -- [ExpTrajOpt] Empty SFC." << RESET << std::endl;
+    return false;
+  }
+
+  if (!geometry_utils::SimplifySFC(opt_vars_.head_pvaj.col(0), opt_vars_.tail_pvaj.col(0), sfcs))
+  {
+    std::cout << YELLOW << " -- [ExpTrajOpt] Cannot simplify SFC." << RESET << std::endl;
+    return false;
+  }
+
+  opt_vars_.h_polytopes.resize(sfcs.size());
+  for (int i = 0; i < static_cast<int>(sfcs.size()); ++i)
+  {
+    opt_vars_.h_polytopes[i] = sfcs[i].GetPlanes();
+    normalizeHPoly(opt_vars_.h_polytopes[i]);
+    if (!std::isfinite(opt_vars_.h_polytopes[i].sum()))
+    {
+      return false;
+    }
+  }
+  return true;
+}
+
+double ExpTrajOpt::costFunctional(void *ptr, const VecDf &x, VecDf &g)
+{
+  return static_cast<ExpTrajOpt *>(ptr)->evaluateMincoCost(x, g);
+}
+
+double ExpTrajOpt::evaluateMincoCost(const VecDf &x, VecDf &g)
+{
+  opt_vars_.iter_num++;
+  double cost = 0.0;
+  if (opt_vars_.convex_hull_enabled)
+  {
+    cost = optimizer_.evaluate(
+        x, g, linear_time_cost_, exp_convex_cost_manager_);
+    opt_vars_.guide_integral_violation =
+        exp_convex_cost_manager_.guideIntegralViolation();
+    opt_vars_.guide_path_cost_log =
+        exp_convex_cost_manager_.guideCostLog();
+    opt_vars_.guide_path_max_abs_time_grad =
+        exp_convex_cost_manager_.guideMaxAbsTimeGrad();
+    opt_vars_.guide_path_out_of_time_range_samples =
+        exp_convex_cost_manager_.guideOutOfTimeRangeSamples();
+    opt_vars_.penalty_log.tail(7) =
+        exp_convex_cost_manager_.getPenaltyLog().segment(1, 7);
+  }
+  else
+  {
+    cost = optimizer_.evaluate(x, g, linear_time_cost_, exp_cost_manager_);
+    opt_vars_.guide_integral_violation = exp_cost_manager_.guideIntegralViolation();
+    opt_vars_.guide_path_cost_log = exp_cost_manager_.guideCostLog();
+    opt_vars_.guide_path_max_abs_time_grad = exp_cost_manager_.guideMaxAbsTimeGrad();
+    opt_vars_.guide_path_out_of_time_range_samples =
+        exp_cost_manager_.guideOutOfTimeRangeSamples();
+    opt_vars_.penalty_log.tail(7) =
+        exp_cost_manager_.getPenaltyLog().segment(1, 7);
+  }
+  opt_vars_.guide_z_tube_violation = 0.0;
+  opt_vars_.penalty_log(0) = optimizer_.lastEnergyCost();
+  opt_vars_.penalty_log(5) = std::max({opt_vars_.penalty_log(5),
+                                       opt_vars_.guide_integral_violation});
+  return cost;
+}
+
+double ExpTrajOpt::optimize(Trajectory &traj, double rel_cost_tol)
+{
+  opt_vars_.penalty_log.resize(8);
+  opt_vars_.penalty_log.setZero();
+
+  if (opt_vars_.given_init_ts_and_ps)
+  {
+    opt_vars_.times = opt_vars_.init_ts;
+    for (int i = 0; i < static_cast<int>(opt_vars_.init_ps.size()); ++i)
+    {
+      opt_vars_.points.col(i) = opt_vars_.init_ps[i];
+    }
+  }
+
+  if (!opt_vars_.times.allFinite() || opt_vars_.times.minCoeff() < 1.0e-3)
+  {
+    return INFINITY;
+  }
+
+  spatial_map_.reset(&opt_vars_.v_polytopes,
+                     &opt_vars_.v_poly_idx,
+                     opt_vars_.piece_num - 1,
+                     opt_vars_.pos_constraint_type == 1);
+
+  const Mat3Df waypoints = waypointsToMatrix(opt_vars_.head_pvaj, opt_vars_.points, opt_vars_.tail_pvaj);
+  opt_vars_.init_ts = opt_vars_.times;
+  opt_vars_.init_ps.clear();
+  for (int col = 0; col < opt_vars_.points.cols(); ++col)
+  {
+    opt_vars_.init_ps.emplace_back(opt_vars_.points.col(col));
+  }
+  for (int i = 0; i < opt_vars_.waypoint_attractor_dead_d.size(); ++i)
+  {
+    truncateToSixDecimals(opt_vars_.waypoint_attractor_dead_d(i));
+    truncateToSixDecimals(opt_vars_.waypoint_attractor(0, i));
+    truncateToSixDecimals(opt_vars_.waypoint_attractor(1, i));
+    truncateToSixDecimals(opt_vars_.waypoint_attractor(2, i));
+  }
+
+  optimizer_.setUniformTimeMode(false);
+  optimizer_.setEnergyWeight(opt_vars_.block_energy_cost ? 0.0 : 1.0);
+  optimizer_.setSamplesPerPiece(opt_vars_.integral_res);
+  if (!optimizer_.setInitState(toStdVector(opt_vars_.times),
+                               toOptimizerWaypoints(waypoints),
+                               toSnapBoundary(opt_vars_.head_pvaj),
+                               toSnapBoundary(opt_vars_.tail_pvaj)))
+  {
+    return INFINITY;
+  }
+  VecDf x = optimizer_.generateInitialGuess();
+  if (x.size() <= 0 || !x.allFinite())
+  {
+    return INFINITY;
+  }
+
+  exp_cost_manager_.reset(&opt_vars_.h_polytopes,
+                          &opt_vars_.h_poly_idx,
+                          &opt_vars_.waypoint_attractor,
+                          &opt_vars_.waypoint_attractor_dead_d,
+                          opt_vars_.smooth_eps,
+                          opt_vars_.magnitude_bounds,
+                          opt_vars_.penalty_weights,
+                          &opt_vars_.quadrotor_flatness,
+                          swarm_config_,
+                          swarm_trajs_,
+                          swarm_current_wall_time_,
+                          &opt_vars_.guide_path,
+                          &opt_vars_.guide_t,
+                          opt_vars_.weight_guide_integral,
+                          opt_vars_.guide_path_tube_radius,
+                          opt_vars_.guide_path_z_tube_radius,
+                          opt_vars_.guide_path_huber_delta,
+                          opt_vars_.guide_path_time_gradient_en);
+
+  exp_convex_cost_manager_.reset(&opt_vars_.h_polytopes,
+                                 &opt_vars_.h_poly_idx,
+                                 &opt_vars_.waypoint_attractor,
+                                 &opt_vars_.waypoint_attractor_dead_d,
+                                 opt_vars_.smooth_eps,
+                                 opt_vars_.magnitude_bounds,
+                                 opt_vars_.penalty_weights,
+                                 &opt_vars_.quadrotor_flatness,
+                                 swarm_config_,
+                                 swarm_trajs_,
+                                 swarm_current_wall_time_,
+                                 &opt_vars_.guide_path,
+                                 &opt_vars_.guide_t,
+                                 opt_vars_.weight_guide_integral,
+                                 opt_vars_.guide_path_tube_radius,
+                                 opt_vars_.guide_path_z_tube_radius,
+                                 opt_vars_.guide_path_huber_delta,
+                                 opt_vars_.guide_path_time_gradient_en);
+
+  opt_vars_.iter_num = 0;
+  double min_cost = 0.0;
+  lbfgs::lbfgs_parameter_t params;
+  params.mem_size = 256;
+  params.past = 3;
+  params.min_step = 1.0e-32;
+  params.g_epsilon = 0.0;
+  params.delta = rel_cost_tol;
+
+  optimizer_.resetTimingStatistics();
+  const auto optimization_begin = std::chrono::steady_clock::now();
+  const int ret = lbfgs::lbfgs_optimize(x, min_cost, &ExpTrajOpt::costFunctional, nullptr, nullptr, this, params);
+  const double optimization_seconds =
+      std::chrono::duration<double>(std::chrono::steady_clock::now() -
+                                    optimization_begin)
+          .count();
+  const auto &timing = optimizer_.cumulativeTimingStatistics();
+  const double dense_share_of_optimization =
+      optimization_seconds > 0.0
+          ? timing.dense_integral_seconds / optimization_seconds
+          : 0.0;
+  last_timing_report_.evaluations = timing.evaluations;
+  last_timing_report_.polynomial_pieces =
+      static_cast<std::size_t>(optimizer_.getPieceNum());
+  const bool dense_sampling_active =
+      !opt_vars_.convex_hull_enabled ||
+      exp_convex_cost_manager_.usesDenseSampling();
+  last_timing_report_.dense_nodes_per_evaluation =
+      dense_sampling_active
+          ? static_cast<std::size_t>(optimizer_.getPieceNum()) *
+                static_cast<std::size_t>(optimizer_.getSamplesPerPiece() + 1)
+          : 0;
+  last_timing_report_.hull_control_checks_per_evaluation =
+      opt_vars_.convex_hull_enabled
+          ? exp_convex_cost_manager_.activeControlPointChecksPerEvaluation()
+          : 0;
+  last_timing_report_.mode =
+      opt_vars_.convex_hull_enabled
+          ? (opt_vars_.convex_hull_basis == traj_opt::convex_hull::Basis::MINVO
+                 ? "convex_minvo_d" +
+                       std::to_string(opt_vars_.convex_hull_subdivision_depth)
+                 : "convex_bezier_d" +
+                       std::to_string(opt_vars_.convex_hull_subdivision_depth))
+          : "dense";
+  last_timing_report_.dense_integral_seconds =
+      timing.dense_integral_seconds;
+  last_timing_report_.control_point_seconds =
+      timing.coefficient_seconds;
+  last_timing_report_.minco_evaluation_seconds =
+      timing.evaluation_seconds;
+  last_timing_report_.optimization_seconds = optimization_seconds;
+  last_timing_report_.dense_share_of_minco_evaluation =
+      timing.denseIntegralShareOfEvaluation();
+  last_timing_report_.control_point_share_of_minco_evaluation =
+      timing.coefficientShareOfEvaluation();
+  last_timing_report_.dense_share_of_optimization =
+      dense_share_of_optimization;
+
+  cumulative_timing_report_.mode = last_timing_report_.mode;
+  cumulative_timing_report_.evaluations += last_timing_report_.evaluations;
+  cumulative_timing_report_.polynomial_pieces +=
+      last_timing_report_.polynomial_pieces;
+  cumulative_timing_report_.dense_nodes_per_evaluation =
+      last_timing_report_.dense_nodes_per_evaluation;
+  cumulative_timing_report_.hull_control_checks_per_evaluation =
+      last_timing_report_.hull_control_checks_per_evaluation;
+  cumulative_timing_report_.dense_integral_seconds +=
+      last_timing_report_.dense_integral_seconds;
+  cumulative_timing_report_.control_point_seconds +=
+      last_timing_report_.control_point_seconds;
+  cumulative_timing_report_.minco_evaluation_seconds +=
+      last_timing_report_.minco_evaluation_seconds;
+  cumulative_timing_report_.optimization_seconds +=
+      last_timing_report_.optimization_seconds;
+  if (cumulative_timing_report_.minco_evaluation_seconds > 0.0)
+  {
+    cumulative_timing_report_.dense_share_of_minco_evaluation =
+        cumulative_timing_report_.dense_integral_seconds /
+        cumulative_timing_report_.minco_evaluation_seconds;
+    cumulative_timing_report_.control_point_share_of_minco_evaluation =
+        cumulative_timing_report_.control_point_seconds /
+        cumulative_timing_report_.minco_evaluation_seconds;
+  }
+  if (cumulative_timing_report_.optimization_seconds > 0.0)
+  {
+    cumulative_timing_report_.dense_share_of_optimization =
+        cumulative_timing_report_.dense_integral_seconds /
+        cumulative_timing_report_.optimization_seconds;
+  }
+
+  if (cfg_.print_optimizer_log)
+  {
+    std::cout << " -- [ExpTrajOpt] Opt finish, mode="
+              << last_timing_report_.mode
+              << ", iter: " << opt_vars_.iter_num << "\n"
+              << "\tEnergy: " << opt_vars_.penalty_log(0) << "\n"
+              << "\tPos: " << opt_vars_.penalty_log(1) << "\n"
+              << "\tVel: " << opt_vars_.penalty_log(2) << "\n"
+              << "\tAcc: " << opt_vars_.penalty_log(3) << "\n"
+              << "\tJerk: " << opt_vars_.penalty_log(4) << "\n"
+              << "\tAttract: " << opt_vars_.penalty_log(5) << "\n"
+              << "\tOmg: " << opt_vars_.penalty_log(6) << "\n"
+              << "\tThr: " << opt_vars_.penalty_log(7) << "\n"
+              << "\tGuidePathCost(sample): " << opt_vars_.guide_path_cost_log << "\n"
+              << "\tGuidePathMaxExcess: " << opt_vars_.guide_integral_violation << "\n"
+              << "\tGuidePathMaxAbsTimeGrad: " << opt_vars_.guide_path_max_abs_time_grad << "\n"
+              << "\tGuidePathOutOfTimeSamples: " << opt_vars_.guide_path_out_of_time_range_samples << "\n"
+              << "\tTimingEvaluations: " << timing.evaluations << "\n"
+              << "\tPolynomialPieces: " << last_timing_report_.polynomial_pieces << "\n"
+              << "\tDenseNodesPerEvaluation: " << last_timing_report_.dense_nodes_per_evaluation << "\n"
+              << "\tHullControlChecksPerEvaluation: " << last_timing_report_.hull_control_checks_per_evaluation << "\n"
+              << "\tDenseIntegralMs: " << timing.dense_integral_seconds * 1.0e3 << "\n"
+              << "\tControlPointFunctionalMs: " << timing.coefficient_seconds * 1.0e3 << "\n"
+              << "\tMincoEvaluationMs: " << timing.evaluation_seconds * 1.0e3 << "\n"
+              << "\tLBFGSOptimizationMs: " << optimization_seconds * 1.0e3 << "\n"
+              << "\tDenseIntegralShareOfMincoEvaluation: "
+              << timing.denseIntegralShareOfEvaluation() * 100.0 << "%\n"
+              << "\tControlPointShareOfMincoEvaluation: "
+              << timing.coefficientShareOfEvaluation() * 100.0 << "%\n"
+              << "\tDenseIntegralShareOfOptimization: "
+              << dense_share_of_optimization * 100.0 << "%" << std::endl;
+  }
+
+  if (ret < 0)
+  {
+    traj.clear();
+    std::cout << YELLOW << " -- [ExpTrajOpt] Optimization failed: " << lbfgs::lbfgs_strerror(ret)
+              << ", guide_excess=" << opt_vars_.guide_integral_violation
+              << ", guide_cost_sample=" << opt_vars_.guide_path_cost_log
+              << ", guide_max_abs_gt=" << opt_vars_.guide_path_max_abs_time_grad
+              << ", guide_oob_samples=" << opt_vars_.guide_path_out_of_time_range_samples
+              << RESET << std::endl;
+    return INFINITY;
+  }
+
+  VecDf grad = VecDf::Zero(x.size());
+  min_cost = evaluateMincoCost(x, grad);
+
+  traj = toGeometryTrajectory(optimizer_.getTrajectory());
+  return min_cost;
+}
+
+bool ExpTrajOpt::optimize(const StatePVAJ &headPVAJ,
+                          const StatePVAJ &tailPVAJ,
+                          PolytopeVec &sfcs,
+                          Trajectory &out_traj)
+{
+  opt_vars_.default_init = true;
+  opt_vars_.given_init_ts_and_ps = false;
+  opt_vars_.head_pvaj = headPVAJ;
+  opt_vars_.tail_pvaj = tailPVAJ;
+  opt_vars_.guide_path.clear();
+  opt_vars_.guide_t.clear();
+  if (!loadCorridors(sfcs) || !setupProblemAndCheck())
+  {
+    return false;
+  }
+  out_traj.clear();
+  const bool success = !std::isinf(optimize(out_traj, cfg_.opt_accuracy));
+  if (success)
+  {
+    out_traj.start_WT = ros_ptr_->getSimTime();
+  }
+  return success;
+}
+
+bool ExpTrajOpt::optimize(const StatePVAJ &headPVAJ,
+                          const StatePVAJ &tailPVAJ,
+                          const vec_E<Vec3f> &guide_path,
+                          const std::vector<double> &guide_t,
+                          PolytopeVec &sfcs,
+                          Trajectory &out_traj)
+{
+  if (guide_path.size() != guide_t.size() || guide_path.empty())
+  {
+    return false;
+  }
+  opt_vars_.default_init = false;
+  opt_vars_.given_init_ts_and_ps = false;
+  opt_vars_.head_pvaj = headPVAJ;
+  opt_vars_.tail_pvaj = tailPVAJ;
+  opt_vars_.guide_path = guide_path;
+  opt_vars_.guide_t = guide_t;
+  if (!loadCorridors(sfcs) || !setupProblemAndCheck())
+  {
+    return false;
+  }
+  out_traj.clear();
+  const bool success = !std::isinf(optimize(out_traj, cfg_.opt_accuracy));
+  if (success)
+  {
+    out_traj.start_WT = ros_ptr_->getSimTime();
+  }
+  if (penalty_log_.is_open())
+  {
+    penalty_log_ << opt_vars_.penalty_log.transpose() << std::endl;
+  }
+  return success;
+}
+
+bool ExpTrajOpt::optimize(const StatePVAJ &headPVAJ,
+                          const StatePVAJ &tailPVAJ,
+                          PolytopeVec &sfcs,
+                          const vec_Vec3f &init_ps,
+                          const VecDf &init_ts,
+                          Trajectory &out_traj)
+{
+  vec_E<Vec3f> guide_path;
+  std::vector<double> guide_t;
+  guide_path.emplace_back(headPVAJ.col(0));
+  guide_t.emplace_back(0.0);
+  double acc_t = 0.0;
+  for (int i = 0; i < init_ts.size(); ++i)
+  {
+    if (i < static_cast<int>(init_ps.size()))
+    {
+      guide_path.emplace_back(init_ps[i]);
+    }
+    acc_t += init_ts(i);
+    guide_t.emplace_back(acc_t);
+  }
+  if (guide_path.size() < guide_t.size())
+  {
+    guide_path.emplace_back(tailPVAJ.col(0));
+  }
+
+  opt_vars_.init_ts = init_ts;
+  opt_vars_.init_ps = init_ps;
+  opt_vars_.given_init_ts_and_ps = true;
+  const bool success = optimize(headPVAJ, tailPVAJ, guide_path, guide_t, sfcs, out_traj);
+  opt_vars_.given_init_ts_and_ps = false;
+  return success;
+}
+
 ExplorationTrajOpt::ExplorationTrajOpt(const traj_opt::Config &cfg,
                        const ros_interface::RosInterface::Ptr &ros_ptr)
     : cfg_(cfg), ros_ptr_(ros_ptr)
@@ -529,13 +1215,6 @@ ExplorationTrajOpt::ExplorationTrajOpt(const traj_opt::Config &cfg,
   opt_vars_.block_energy_cost = cfg_.block_energy_cost;
   opt_vars_.smooth_eps = cfg_.smooth_eps;
   opt_vars_.integral_res = std::max(1, cfg_.integral_reso);
-  opt_vars_.convex_hull_enabled = cfg_.convex_hull_en;
-  opt_vars_.convex_hull_basis =
-      cfg_.convex_hull_basis == 1
-          ? traj_opt::convex_hull::Basis::MINVO
-          : traj_opt::convex_hull::Basis::Bezier;
-  opt_vars_.convex_hull_subdivision_depth =
-      std::clamp(cfg_.convex_hull_subdivision_depth, 0, 8);
   opt_vars_.quadrotor_flatness = cfg_.quadrotot_flatness;
   opt_vars_.guide_z_tube_radius = std::max(0.0, cfg_.guide_z_tube_radius);
   // Guide-path integral cost is disabled until its planner-level semantics are redesigned.
@@ -945,10 +1624,6 @@ double ExplorationTrajOpt::optimize(Trajectory &traj, double rel_cost_tol)
                                   opt_vars_.magnitude_bounds,
                                   opt_vars_.penalty_weights,
                                   &opt_vars_.quadrotor_flatness);
-  exploration_cost_manager_.configureConvexHull(
-      opt_vars_.convex_hull_enabled,
-      opt_vars_.convex_hull_basis,
-      opt_vars_.convex_hull_subdivision_depth);
 
   opt_vars_.iter_num = 0;
   double min_cost = 0.0;
@@ -3974,7 +4649,7 @@ TrajManager::TrajManager(const traj_opt::Config &exp_cfg,
                          const ros_interface::RosInterface::Ptr &ros_ptr,
                          const general_planner::MapManager::Ptr &map_manager)
 {
-  exp_traj_opt_ = std::make_shared<ExplorationTrajOpt>(exp_cfg, ros_ptr);
+  exp_traj_opt_ = std::make_shared<ExpTrajOpt>(exp_cfg, ros_ptr);
   esdf_traj_opt_ = std::make_shared<ESDFTrajOpt>(esdf_cfg, ros_ptr);
   esdf_traj_opt_->setMapManager(map_manager);
   esdf_traj_opt_->setSafeDistance(esdf_safe_distance);

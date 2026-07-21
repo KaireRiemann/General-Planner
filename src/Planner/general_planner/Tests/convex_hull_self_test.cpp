@@ -1,4 +1,5 @@
 #include "traj_opt/convex_hull/convex_hull.hpp"
+#include "traj_opt/costfunctional_manager/exp_convex_cost_manager.hpp"
 #include "traj_opt/minco/minco_optimizer.hpp"
 
 #include <Eigen/Dense>
@@ -645,6 +646,157 @@ void checkOptimizerGradient()
           "Coefficient cost was not recorded by MINCOOptimizer.");
 }
 
+void checkExpConvexCostManagerGradientAndTiming()
+{
+  using Optimizer =
+      minco::MINCOOptimizer<3, 4, ExpTimeMap, IdentitySpatialMap>;
+
+  Optimizer optimizer;
+  optimizer.setEnergyWeight(0.0);
+  optimizer.setSamplesPerPiece(10);
+  optimizer.setTimingEnabled(true);
+
+  std::vector<double> times{0.9, 1.1, 0.8};
+  Optimizer::WaypointsType waypoints(4, 3);
+  waypoints << 0.0, 0.0, 0.0,
+      0.8, 0.4, -0.1,
+      1.7, -0.2, 0.3,
+      2.5, 0.1, 0.0;
+  Optimizer::BoundaryState head =
+      Optimizer::BoundaryState::Zero();
+  Optimizer::BoundaryState tail =
+      Optimizer::BoundaryState::Zero();
+  head.col(0) = waypoints.row(0).transpose();
+  tail.col(0) = waypoints.row(3).transpose();
+  require(optimizer.setInitState(times, waypoints, head, tail),
+          "Failed to initialize ExpConvexCostManager test optimizer.");
+
+  general_utils::PolyhedraH corridors(1);
+  corridors[0].resize(6, 4);
+  corridors[0] <<
+      1.0, 0.0, 0.0, -0.5,
+      -1.0, 0.0, 0.0, -10.0,
+      0.0, 1.0, 0.0, -10.0,
+      0.0, -1.0, 0.0, -10.0,
+      0.0, 0.0, 1.0, -10.0,
+      0.0, 0.0, -1.0, -10.0;
+  Eigen::VectorXi corridor_indices(3);
+  corridor_indices.setZero();
+
+  general_utils::VecDf bounds(6);
+  bounds << 0.7, 0.8, 1.2, 20.0, 0.1, 100.0;
+  general_utils::VecDf weights(7);
+  weights << 1.0, 0.2, 0.15, 0.1, 0.0, 0.0, 0.0;
+  flatness::FlatnessMap flatness_map;
+  flatness_map.reset(1.0, 9.81, 0.0, 0.0, 0.0, 1.0e-4);
+  traj_opt::SwarmPenaltyConfig swarm_config;
+  traj_opt::SwarmTrajectoriesConstPtr swarm_trajectories;
+
+  cost_functional_manager::ExpIntegralCostManager dense_manager;
+  dense_manager.reset(&corridors,
+                      &corridor_indices,
+                      nullptr,
+                      nullptr,
+                      1.0e-2,
+                      bounds,
+                      weights,
+                      &flatness_map,
+                      swarm_config,
+                      swarm_trajectories,
+                      0.0);
+
+  Eigen::VectorXd x = optimizer.generateInitialGuess();
+  Eigen::VectorXd gradient = Eigen::VectorXd::Zero(x.size());
+  ZeroTimeCost time_cost;
+  optimizer.resetTimingStatistics();
+  for (int repetition = 0; repetition < 200; ++repetition)
+  {
+    optimizer.evaluate(x, gradient, time_cost, dense_manager);
+  }
+  const auto dense_timing = optimizer.cumulativeTimingStatistics();
+  require(optimizer.lastIntegralCost() > 1.0e-12,
+          "ExpIntegralCostManager dense cost was not active.");
+  require(std::abs(optimizer.lastCoefficientCost()) < 1.0e-12,
+          "Dense ExpIntegralCostManager unexpectedly produced coefficient cost.");
+
+  cost_functional_manager::ExpConvexCostManager convex_manager;
+  // Benchmark the production default: one Bezier hull per MINCO piece.
+  // Uniform depth two is covered by the representation tests above and would
+  // deliberately multiply all control-point checks by four.
+  convex_manager.configure(traj_opt::convex_hull::Basis::Bezier, 0);
+  convex_manager.reset(&corridors,
+                       &corridor_indices,
+                       nullptr,
+                       nullptr,
+                       1.0e-2,
+                       bounds,
+                       weights,
+                       &flatness_map,
+                       swarm_config,
+                       swarm_trajectories,
+                       0.0);
+
+  optimizer.resetTimingStatistics();
+  double convex_cost = 0.0;
+  for (int repetition = 0; repetition < 200; ++repetition)
+  {
+    convex_cost = optimizer.evaluate(x, gradient, time_cost, convex_manager);
+  }
+  require(convex_cost > 1.0e-12,
+          "ExpConvexCostManager did not produce a convex-hull cost.");
+  require(std::abs(optimizer.lastIntegralCost()) < 1.0e-12,
+          "Polynomial dense costs remained active in ExpConvexCostManager.");
+  require(optimizer.lastCoefficientCost() > 1.0e-12,
+          "ExpConvexCostManager coefficient cost was not recorded.");
+  require(!convex_manager.usesDenseSampling(),
+          "Pure polynomial hull costs should bypass dense sampling.");
+  // Production ExpTrajOpt uses seventh-degree MINCO_S4:
+  // (8+7+6+5) controls x 3 pieces.
+  require(convex_manager.activeControlPointChecksPerEvaluation() == 78,
+          "Unexpected depth-zero p/v/a/j control-point count.");
+  const auto timing = optimizer.cumulativeTimingStatistics();
+  require(timing.evaluations == 200 && timing.evaluation_seconds > 0.0 &&
+              timing.dense_integral_seconds >= 0.0,
+          "MINCO timing statistics were not recorded.");
+  std::cout << "timing_microbenchmark dense_integral_share="
+            << dense_timing.denseIntegralShareOfEvaluation() * 100.0
+            << "% convex_residual_integral_share="
+            << timing.denseIntegralShareOfEvaluation() * 100.0
+            << "% dense_eval_us="
+            << dense_timing.evaluation_seconds * 1.0e6 /
+                   static_cast<double>(dense_timing.evaluations)
+            << " convex_eval_us="
+            << timing.evaluation_seconds * 1.0e6 /
+                   static_cast<double>(timing.evaluations)
+            << std::endl;
+
+  constexpr double epsilon = 1.0e-6;
+  double max_error = 0.0;
+  for (Eigen::Index i = 0; i < x.size(); ++i)
+  {
+    Eigen::VectorXd plus = x;
+    Eigen::VectorXd minus = x;
+    plus(i) += epsilon;
+    minus(i) -= epsilon;
+    Eigen::VectorXd scratch_plus = Eigen::VectorXd::Zero(x.size());
+    Eigen::VectorXd scratch_minus = Eigen::VectorXd::Zero(x.size());
+    const double value_plus =
+        optimizer.evaluate(plus, scratch_plus, time_cost, convex_manager);
+    const double value_minus =
+        optimizer.evaluate(minus, scratch_minus, time_cost, convex_manager);
+    const double numerical =
+        (value_plus - value_minus) / (2.0 * epsilon);
+    max_error = std::max(
+        max_error,
+        std::abs(numerical - gradient(i)) /
+            std::max({1.0,
+                      std::abs(numerical),
+                      std::abs(gradient(i))}));
+  }
+  require(max_error < 8.0e-5,
+          "ExpConvexCostManager gradient failed finite differences.");
+}
+
 } // namespace
 
 int main()
@@ -668,6 +820,7 @@ int main()
     checkCompleteLinearOperator();
     checkPieceTimeBackward();
     checkOptimizerGradient();
+    checkExpConvexCostManagerGradientAndTiming();
     std::cout << "convex_hull_self_test passed" << std::endl;
   }
   catch (const std::exception &error)

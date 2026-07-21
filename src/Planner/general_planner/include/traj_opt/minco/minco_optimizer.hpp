@@ -5,6 +5,7 @@
 #include "traj_opt/minco/minco_trajectory.hpp"
 #include <Eigen/Dense>
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <functional>
 #include <limits>
@@ -99,6 +100,25 @@ namespace optimizer_traits
   };
 
   /**
+   * Optional dense-sampling gate. A cost manager returning false guarantees
+   * that both its integral and sample callbacks are inactive for the current
+   * configuration, allowing MINCO to avoid constructing any trajectory
+   * samples or basis rows.
+   */
+  template <typename T, typename = void>
+  struct HasDenseSamplingQuery : std::false_type
+  {
+  };
+
+  template <typename T>
+  struct HasDenseSamplingQuery<
+      T,
+      void_t<decltype(static_cast<bool>(
+          std::declval<const T &>().usesDenseSampling()))>> : std::true_type
+  {
+  };
+
+  /**
    * Optional direct coefficient/time cost interface:
    *
    * double evaluateCoefficient(const Trajectory &trajectory,
@@ -143,6 +163,28 @@ public:
   using VectorType = Eigen::Matrix<double, DIM, 1>;
   using BoundaryState = typename TrajType::BoundaryState;
   using WaypointsType = Eigen::Matrix<double, Eigen::Dynamic, DIM>;
+
+  struct TimingStatistics
+  {
+    std::size_t evaluations{0};
+    double evaluation_seconds{0.0};
+    double dense_integral_seconds{0.0};
+    double coefficient_seconds{0.0};
+
+    double denseIntegralShareOfEvaluation() const
+    {
+      return evaluation_seconds > 0.0
+                 ? dense_integral_seconds / evaluation_seconds
+                 : 0.0;
+    }
+
+    double coefficientShareOfEvaluation() const
+    {
+      return evaluation_seconds > 0.0
+                 ? coefficient_seconds / evaluation_seconds
+                 : 0.0;
+    }
+  };
   using InnerPointsMat = Eigen::Matrix<double, DIM, Eigen::Dynamic>;
   using CoeffMat = Eigen::Matrix<double, Eigen::Dynamic, DIM>;
 
@@ -480,6 +522,10 @@ public:
       return std::numeric_limits<double>::infinity();
     }
 
+    const auto evaluation_begin =
+        timing_enabled_ ? std::chrono::steady_clock::now()
+                        : std::chrono::steady_clock::time_point{};
+
     // Constraint elimination path:
     //   x = [tau, xi] -> (T, P_inner) through active time/spatial maps
     //   -> build MINCO trajectory in physical space
@@ -538,7 +584,13 @@ public:
     total_cost += time_cost;
 
     double integral_cost = 0.0;
+    const auto integral_begin =
+        timing_enabled_ ? std::chrono::steady_clock::now()
+                        : std::chrono::steady_clock::time_point{};
     accumulateIntegralCost(cost_manager, integral_cost);
+    const auto integral_end =
+        timing_enabled_ ? std::chrono::steady_clock::now()
+                        : std::chrono::steady_clock::time_point{};
     total_cost += integral_cost;
 
     double sample_cost = 0.0;
@@ -546,7 +598,19 @@ public:
     total_cost += sample_cost;
 
     double coefficient_cost = 0.0;
+    using ActiveCostManager = typename std::decay<CostManager>::type;
+    constexpr bool has_coefficient_cost =
+        optimizer_traits::HasCoefficientCostInterface<
+            ActiveCostManager, TrajType, CoeffMat>::value;
+    const auto coefficient_begin =
+        timing_enabled_ && has_coefficient_cost
+            ? std::chrono::steady_clock::now()
+            : std::chrono::steady_clock::time_point{};
     accumulateCoefficientCost(cost_manager, coefficient_cost);
+    const auto coefficient_end =
+        timing_enabled_ && has_coefficient_cost
+            ? std::chrono::steady_clock::now()
+            : std::chrono::steady_clock::time_point{};
     total_cost += coefficient_cost;
 
     last_energy_cost_ = rho_energy_ * energy_cost;
@@ -598,6 +662,26 @@ public:
                                                  extra_vars,
                                                  grad_out);
     }
+    if (timing_enabled_)
+    {
+      const auto evaluation_end = std::chrono::steady_clock::now();
+      const double integral_seconds =
+          std::chrono::duration<double>(integral_end - integral_begin).count();
+      const double coefficient_seconds =
+          has_coefficient_cost
+              ? std::chrono::duration<double>(coefficient_end - coefficient_begin).count()
+              : 0.0;
+      const double evaluation_seconds =
+          std::chrono::duration<double>(evaluation_end - evaluation_begin).count();
+      last_timing_.evaluations = 1;
+      last_timing_.evaluation_seconds = evaluation_seconds;
+      last_timing_.dense_integral_seconds = integral_seconds;
+      last_timing_.coefficient_seconds = coefficient_seconds;
+      cumulative_timing_.evaluations += 1;
+      cumulative_timing_.evaluation_seconds += evaluation_seconds;
+      cumulative_timing_.dense_integral_seconds += integral_seconds;
+      cumulative_timing_.coefficient_seconds += coefficient_seconds;
+    }
     return total_cost;
   }
 
@@ -611,11 +695,36 @@ public:
     return workspace_->cache_T;
   }
 
+  int getPieceNum() const { return piece_num_; }
+  int getSamplesPerPiece() const { return samples_per_piece_; }
+
   double lastEnergyCost() const { return last_energy_cost_; }
   double lastTimeCost() const { return last_time_cost_; }
   double lastIntegralCost() const { return last_integral_cost_; }
   double lastSampleCost() const { return last_sample_cost_; }
   double lastCoefficientCost() const { return last_coefficient_cost_; }
+
+  void resetTimingStatistics()
+  {
+    last_timing_ = TimingStatistics{};
+    cumulative_timing_ = TimingStatistics{};
+  }
+
+  void setTimingEnabled(bool enabled)
+  {
+    timing_enabled_ = enabled;
+    resetTimingStatistics();
+  }
+
+  const TimingStatistics &lastTimingStatistics() const
+  {
+    return last_timing_;
+  }
+
+  const TimingStatistics &cumulativeTimingStatistics() const
+  {
+    return cumulative_timing_;
+  }
 
 private:
   int getTimeDecisionDim() const
@@ -690,6 +799,16 @@ private:
     workspace_->gdC_integral.setZero();
     workspace_->gdT_integral.setZero();
     workspace_->samples.clear();
+
+    using Manager = typename std::decay<CostManager>::type;
+    if constexpr (optimizer_traits::HasDenseSamplingQuery<Manager>::value)
+    {
+      if (!cost_manager.usesDenseSampling())
+      {
+        return;
+      }
+    }
+
     workspace_->samples.reserve(piece_num_ * samples_per_piece_ + 1);
 
     const auto &coeffs = traj_.getCoefficients();
@@ -784,6 +903,15 @@ private:
   {
     workspace_->gdC_sample.setZero();
     workspace_->gdT_sample.setZero();
+
+    using Manager = typename std::decay<CostManager>::type;
+    if constexpr (optimizer_traits::HasDenseSamplingQuery<Manager>::value)
+    {
+      if (!cost_manager.usesDenseSampling())
+      {
+        return;
+      }
+    }
 
     SampleBuffer discrete_samples;
     const SampleBuffer *active_samples = &workspace_->samples;
@@ -971,6 +1099,9 @@ private:
   double last_integral_cost_{0.0};
   double last_sample_cost_{0.0};
   double last_coefficient_cost_{0.0};
+  TimingStatistics last_timing_;
+  TimingStatistics cumulative_timing_;
+  bool timing_enabled_{false};
 
   std::vector<double> ref_times_;
   WaypointsType ref_waypoints_;

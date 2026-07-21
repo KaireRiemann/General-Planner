@@ -274,6 +274,20 @@ namespace general_planner {
                    time_consuming_[LogTime::BACK_TRAJ_OPT];
         }
 
+        traj_opt::ExpTrajOpt::TimingReport getLatestExpTimingReport() const {
+            if (!traj_manager_ || !traj_manager_->exp()) {
+                return {};
+            }
+            return traj_manager_->exp()->lastTimingReport();
+        }
+
+        traj_opt::ExpTrajOpt::TimingReport getCumulativeExpTimingReport() const {
+            if (!traj_manager_ || !traj_manager_->exp()) {
+                return {};
+            }
+            return traj_manager_->exp()->cumulativeTimingReport();
+        }
+
         double getLatestExpFrontendTime() const {
             return time_consuming_.size() > LogTime::EPX_TRAJ_FRONTEND
                    ? time_consuming_[LogTime::EPX_TRAJ_FRONTEND]

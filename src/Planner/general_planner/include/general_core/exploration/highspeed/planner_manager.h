@@ -398,7 +398,8 @@ public:
   void printTimeCost(double time_threshold, double time_cost, std::string print_info);
   bool planExploreTraj(const std::vector<Eigen::Vector3f> &path,
                        bool is_static,
-                       bool clearance_recovery = false);
+                       bool clearance_recovery = false,
+                       bool rolling_horizon = false);
   bool planControlledStopTrajectory();
   bool flyToSafeRegion(bool is_static, bool force_relocation = false);
   void polyTraj2ROSMsg(traj_utils::PolyTraj &poly_msg, const ros::Time &start_time);

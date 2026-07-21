@@ -106,6 +106,15 @@ void FastExplorationFSM::pubState() {
   state_marker.color.r = 1.0;
   state_marker.color.a = 1.0;
   state_marker.text = fd_->state_str_[int(state_)];
+  if ((state_ == PLAN_TRAJ || state_ == EXEC_TRAJ) &&
+      finish_gate_.no_frontier_count > 0 &&
+      (expl_manager_->last_plan_empty_frontier_ ||
+       expl_manager_->last_plan_no_reachable_)) {
+    // During this state no new motion is expected: the planner is auditing
+    // persistent coverage targets and the plateau timer. Expose that fact in
+    // RViz instead of looking indistinguishable from a stalled PLAN_TRAJ.
+    state_marker.text = "TERMINAL_AUDIT";
+  }
   state_marker.header.frame_id = "world";
   state_marker.header.stamp = ros::Time::now();
 
@@ -493,11 +502,16 @@ int FastExplorationFSM::callExplorationPlanner() {
     }
   }
   expl_manager_->ed_->path_next_goal_.swap(path_next_goal_tmp);
+  const Eigen::Vector3d requested_goal =
+      expl_manager_->ed_->path_next_goal_.back().cast<double>();
   vector<Eigen::Vector3d> path_d = truncatePathHorizon(
       expl_manager_->ed_->path_next_goal_, planner_manager_->max_traj_len_);
   if (path_d.size() < 2) {
     return FAIL;
   }
+  bool rolling_horizon =
+      (path_d.back() - requested_goal).norm() > 0.10;
+  bool truncated_before_reversal = false;
   // Topological paths can contain a local out-and-back loop when the current
   // odom node is attached to both sides of the same skeleton branch. Collapse
   // the spur if the returning leg reaches the point before the reversal. The
@@ -552,6 +566,12 @@ int FastExplorationFSM::callExplorationPlanner() {
       }
 
       path_d.resize(i + 1);
+      // A prefix ending immediately before a reversal is a deliberate stop
+      // boundary, not a receding-horizon continuation. Giving this endpoint
+      // a non-zero velocity would recreate the out-and-back oscillation that
+      // this guard is meant to remove.
+      truncated_before_reversal = true;
+      rolling_horizon = false;
       expl_manager_->ed_->path_next_goal_.clear();
       expl_manager_->ed_->path_next_goal_.reserve(path_d.size());
       for (const auto &point : path_d) {
@@ -601,6 +621,10 @@ int FastExplorationFSM::callExplorationPlanner() {
         expl_manager_->ed_->path_next_goal_, tight_horizon);
     if (tight_path.size() >= 2 && tight_path.size() < path_d.size()) {
       path_d.swap(tight_path);
+      if (!truncated_before_reversal &&
+          (path_d.back() - requested_goal).norm() > 0.10) {
+        rolling_horizon = true;
+      }
       horizon_end_yaw = pathEndYaw(path_d);
       safety = planner_manager_->evaluatePathSegmentSafety(
           path_d, planner_manager_->local_data_.curr_yaw_, horizon_end_yaw);
@@ -702,10 +726,14 @@ int FastExplorationFSM::callExplorationPlanner() {
                                     << safety.initial_heading_delta
                                     << " backup_feasible="
                                     << safety.backup_feasible
+                                    << " rolling_horizon="
+                                    << rolling_horizon
                                     << " sched_v=" << limit.final_limit
                                     << " reason=" << limit.reason);
   }
-  if (planner_manager_->planExploreTraj(expl_manager_->ed_->path_next_goal_, fd_->static_state_)) {
+  if (planner_manager_->planExploreTraj(expl_manager_->ed_->path_next_goal_,
+                                        fd_->static_state_, false,
+                                        rolling_horizon)) {
     traj_utils::PolyTraj poly_traj_msg;
     planner_manager_->polyTraj2ROSMsg(poly_traj_msg, info->start_time_);
     fd_->newest_traj_ = poly_traj_msg;

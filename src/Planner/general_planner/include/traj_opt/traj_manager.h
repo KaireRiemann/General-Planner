@@ -7,7 +7,6 @@
 #include <vector>
 
 #include "traj_opt/config.hpp"
-#include "traj_opt/convex_hull/convex_hull.hpp"
 #include "traj_opt/minco/minco_trajectory.hpp"
 #include "traj_opt/minco/minco_optimizer.hpp"
 #include "traj_opt/costfunctional/temporalcosts/linear_time_cost.hpp"
@@ -15,6 +14,7 @@
 #include "traj_opt/costfunctional/temporalmap/quad_inv_time_map.hpp"
 #include "traj_opt/costfunctional_manager/exploration_cost_manager.hpp"
 #include "traj_opt/costfunctional_manager/exp_integal_cost_manager.hpp"
+#include "traj_opt/costfunctional_manager/exp_convex_cost_manager.hpp"
 #include "traj_opt/costfunctional_manager/backup_integal_cost_manager.hpp"
 #include "traj_opt/costfunctional_manager/esdf_integral_cost_manager.hpp"
 #include "traj_opt/costfunctional_manager/plain_integral_cost_manager.hpp"
@@ -358,6 +358,158 @@ private:
   std::string label_{"PlainTrajOpt"};
 };
 
+class ExpTrajOpt
+{
+public:
+  using Ptr = std::shared_ptr<ExpTrajOpt>;
+
+  struct TimingReport
+  {
+    std::string mode{"not_run"};
+    std::size_t evaluations{0};
+    std::size_t polynomial_pieces{0};
+    std::size_t dense_nodes_per_evaluation{0};
+    std::size_t hull_control_checks_per_evaluation{0};
+    double dense_integral_seconds{0.0};
+    double control_point_seconds{0.0};
+    double minco_evaluation_seconds{0.0};
+    double optimization_seconds{0.0};
+    double dense_share_of_minco_evaluation{0.0};
+    double control_point_share_of_minco_evaluation{0.0};
+    double dense_share_of_optimization{0.0};
+  };
+
+  ExpTrajOpt(const traj_opt::Config &cfg,
+             const ros_interface::RosInterface::Ptr &ros_ptr);
+  ~ExpTrajOpt();
+
+  bool optimize(const StatePVAJ &headPVAJ,
+                const StatePVAJ &tailPVAJ,
+                PolytopeVec &sfcs,
+                Trajectory &out_traj);
+
+  bool optimize(const StatePVAJ &headPVAJ,
+                const StatePVAJ &tailPVAJ,
+                const vec_E<Vec3f> &guide_path,
+                const std::vector<double> &guide_t,
+                PolytopeVec &sfcs,
+                Trajectory &out_traj);
+
+  bool optimize(const StatePVAJ &headPVAJ,
+                const StatePVAJ &tailPVAJ,
+                PolytopeVec &sfcs,
+                const vec_Vec3f &init_ps,
+                const VecDf &init_ts,
+                Trajectory &out_traj);
+
+  void getInitValue(VecDf &ts, vec_Vec3f &ps) const
+  {
+    ts = opt_vars_.init_ts;
+    ps = opt_vars_.init_ps;
+  }
+
+  void setSwarmConfig(const SwarmPenaltyConfig &config);
+  void setSwarmTrajectories(const SwarmTrajectoriesConstPtr &trajectories);
+  void setSwarmCurrentWallTime(double wall_time);
+
+  const TimingReport &lastTimingReport() const
+  {
+    return last_timing_report_;
+  }
+
+  const TimingReport &cumulativeTimingReport() const
+  {
+    return cumulative_timing_report_;
+  }
+
+private:
+  struct OptimizationVariables
+  {
+    double rho{0.0};
+    int iter_num{0};
+    int pos_constraint_type{0};
+    bool block_energy_cost{false};
+    double smooth_eps{0.0};
+    int integral_res{1};
+    bool convex_hull_enabled{false};
+    traj_opt::convex_hull::Basis convex_hull_basis{
+        traj_opt::convex_hull::Basis::Bezier};
+    int convex_hull_subdivision_depth{0};
+    flatness::FlatnessMap quadrotor_flatness;
+
+    bool default_init{true};
+    bool given_init_ts_and_ps{false};
+    int piece_num{0};
+    Mat3Df points;
+    VecDf times;
+    VecDf magnitude_bounds;
+    VecDf penalty_weights;
+
+    PolyhedraV v_polytopes;
+    PolyhedraH h_polytopes;
+    PolyhedraH h_overlap_polytopes;
+    Mat3Df init_path;
+    VecDf init_ts;
+    vec_Vec3f init_ps;
+    Mat3Df waypoint_attractor;
+    VecDf waypoint_attractor_dead_d;
+
+    VecDi v_poly_idx;
+    VecDi h_poly_idx;
+
+    StatePVAJ head_pvaj;
+    StatePVAJ tail_pvaj;
+    vec_E<Vec3f> guide_path;
+    std::vector<double> guide_t;
+    double weight_guide_integral{0.0};
+    double guide_integral_violation{0.0};
+    double guide_path_tube_radius{0.0};
+    double guide_path_z_tube_radius{0.0};
+    double guide_path_huber_delta{0.0};
+    bool guide_path_time_gradient_en{false};
+    double guide_path_cost_log{0.0};
+    double guide_path_max_abs_time_grad{0.0};
+    int guide_path_out_of_time_range_samples{0};
+    double weight_guide_z_tube{0.0};
+    double guide_z_tube_radius{0.0};
+    double guide_z_tube_violation{0.0};
+
+    VecDf penalty_log;
+  };
+
+  static double costFunctional(void *ptr, const VecDf &x, VecDf &g);
+
+  bool processCorridor();
+  bool processCorridorWithGuideTraj();
+  void defaultInitialization();
+  bool setupProblemAndCheck();
+  double optimize(Trajectory &traj, double rel_cost_tol);
+  double evaluateMincoCost(const VecDf &x, VecDf &g);
+  bool loadCorridors(PolytopeVec &sfcs);
+
+  static Trajectory toGeometryTrajectory(const SnapTraj &traj);
+  static SnapBoundaryState toSnapBoundary(const StatePVAJ &state);
+
+private:
+  traj_opt::Config cfg_;
+  std::ofstream failed_traj_log_;
+  std::ofstream penalty_log_;
+  ros_interface::RosInterface::Ptr ros_ptr_;
+
+  SnapOptimizer optimizer_;
+  temporal_map::QuadInvTimeMap time_map_;
+  spatial_map::PolytopeSpatialMap spatial_map_;
+  cost_functional::LinearTimeCost linear_time_cost_;
+  cost_functional_manager::ExpIntegralCostManager exp_cost_manager_;
+  cost_functional_manager::ExpConvexCostManager exp_convex_cost_manager_;
+  SwarmPenaltyConfig swarm_config_;
+  SwarmTrajectoriesConstPtr swarm_trajs_;
+  double swarm_current_wall_time_{0.0};
+  OptimizationVariables opt_vars_;
+  TimingReport last_timing_report_;
+  TimingReport cumulative_timing_report_;
+};
+
 class ExplorationTrajOpt
 {
 public:
@@ -413,10 +565,6 @@ private:
     bool block_energy_cost{false};
     double smooth_eps{0.0};
     int integral_res{1};
-    bool convex_hull_enabled{false};
-    traj_opt::convex_hull::Basis convex_hull_basis{
-        traj_opt::convex_hull::Basis::Bezier};
-    int convex_hull_subdivision_depth{2};
     flatness::FlatnessMap quadrotor_flatness;
 
     bool default_init{true};
@@ -493,8 +641,6 @@ private:
   double swarm_current_wall_time_{0.0};
   OptimizationVariables opt_vars_;
 };
-
-using ExpTrajOpt = ExplorationTrajOpt;
 
 class BackupTrajOpt
 {
@@ -618,7 +764,7 @@ public:
               const ros_interface::RosInterface::Ptr &ros_ptr,
               const general_planner::MapManager::Ptr &map_manager);
 
-  ExplorationTrajOpt::Ptr exp() const { return exp_traj_opt_; }
+  ExpTrajOpt::Ptr exp() const { return exp_traj_opt_; }
   ESDFTrajOpt::Ptr esdf() const { return esdf_traj_opt_; }
   PlainTrajOpt::Ptr plain() const { return plain_traj_opt_; }
   BackupTrajOpt::Ptr backup() const { return backup_traj_opt_; }
@@ -634,7 +780,7 @@ public:
   void setSwarmCurrentWallTime(double wall_time);
 
 private:
-  ExplorationTrajOpt::Ptr exp_traj_opt_;
+  ExpTrajOpt::Ptr exp_traj_opt_;
   ESDFTrajOpt::Ptr esdf_traj_opt_;
   PlainTrajOpt::Ptr plain_traj_opt_;
   BackupTrajOpt::Ptr backup_traj_opt_;

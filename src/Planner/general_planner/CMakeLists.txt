@@ -196,6 +196,11 @@ target_link_libraries(coverage_guidance_self_test
         ${THIRD_PARTY}
 )
 
+add_executable(coverage_recovery_identity_self_test
+        tests/coverage_recovery_identity_self_test.cpp
+)
+target_include_directories(coverage_recovery_identity_self_test PRIVATE include)
+
 add_executable(yaw_candidate_selector_self_test
         ${GENERAL_PLANNER_EXPLORATION_UTILS_DIR}/frontier_manager/yaw_candidate_selector_self_test.cpp
 )
@@ -210,6 +215,9 @@ add_executable(convex_hull_self_test
         Tests/convex_hull_self_test.cpp
 )
 target_include_directories(convex_hull_self_test PRIVATE include)
+target_link_libraries(convex_hull_self_test
+        general_planner_core
+)
 
 add_executable(fsm_node
         Apps/fsm_node_ros1.cpp

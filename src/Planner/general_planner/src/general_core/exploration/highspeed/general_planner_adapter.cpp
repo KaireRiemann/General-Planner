@@ -621,6 +621,115 @@ bool validateSfcSequence(const Eigen::Vector3d &head,
   return true;
 }
 
+geometry_utils::Polytope makeAxisAlignedBoxPolytope(
+    const Eigen::Vector3d &minimum, const Eigen::Vector3d &maximum)
+{
+  Eigen::MatrixX4d planes(6, 4);
+  planes.row(0) << 1.0, 0.0, 0.0, -maximum.x();
+  planes.row(1) << 0.0, 1.0, 0.0, -maximum.y();
+  planes.row(2) << 0.0, 0.0, 1.0, -maximum.z();
+  planes.row(3) << -1.0, 0.0, 0.0, minimum.x();
+  planes.row(4) << 0.0, -1.0, 0.0, minimum.y();
+  planes.row(5) << 0.0, 0.0, -1.0, minimum.z();
+  return geometry_utils::Polytope(planes);
+}
+
+bool constrainSfcsToExplorationBoxes(
+    const Eigen::Vector3d &head,
+    const Eigen::Vector3d &tail,
+    const LIOInterface::Ptr &lidar_map,
+    double min_overlap_depth,
+    geometry_utils::PolytopeVec &sfcs)
+{
+  if (!lidar_map || !lidar_map->lp_ || sfcs.empty() ||
+      lidar_map->lp_->box_num_ <= 0)
+  {
+    return false;
+  }
+
+  const double boundary_margin = 0.03;
+  geometry_utils::PolytopeVec bounded;
+  bounded.reserve(sfcs.size());
+  for (std::size_t i = 0; i < sfcs.size(); ++i)
+  {
+    geometry_utils::Polytope &source = sfcs[i];
+    Eigen::Vector3d representative = 0.5 * (head + tail);
+    if (source.HaveSeedLine())
+    {
+      representative =
+          0.5 * (source.seed_line.first.cast<double>() +
+                 source.seed_line.second.cast<double>());
+    }
+    else
+    {
+      general_utils::Vec3f interior = general_utils::Vec3f::Zero();
+      if (geometry_utils::findInterior(source.GetPlanes(), interior))
+      {
+        representative = interior.cast<double>();
+      }
+    }
+
+    bool found = false;
+    double best_depth = -std::numeric_limits<double>::infinity();
+    geometry_utils::Polytope best;
+    for (int box = 0; box < lidar_map->lp_->box_num_; ++box)
+    {
+      const Eigen::Vector3d minimum =
+          lidar_map->lp_->global_box_min_boundary_vec_[box].cast<double>() +
+          Eigen::Vector3d::Constant(boundary_margin);
+      const Eigen::Vector3d maximum =
+          lidar_map->lp_->global_box_max_boundary_vec_[box].cast<double>() -
+          Eigen::Vector3d::Constant(boundary_margin);
+      if ((minimum.array() >= maximum.array()).any() ||
+          (representative.array() < minimum.array()).any() ||
+          (representative.array() > maximum.array()).any())
+      {
+        continue;
+      }
+      geometry_utils::Polytope clipped = source.CrossWith(
+          makeAxisAlignedBoxPolytope(minimum, maximum));
+      if ((i == 0 && !pointInsideHPoly(clipped.GetPlanes(), head)) ||
+          (i + 1 == sfcs.size() &&
+           !pointInsideHPoly(clipped.GetPlanes(), tail)) ||
+          !pointInsideHPoly(clipped.GetPlanes(), representative))
+      {
+        continue;
+      }
+      general_utils::Vec3f interior = general_utils::Vec3f::Zero();
+      const double depth = geometry_utils::findInteriorDist(
+          clipped.GetPlanes(), interior);
+      if (!std::isfinite(depth) || depth <= 1.0e-4)
+      {
+        continue;
+      }
+      if (!bounded.empty() &&
+          !polytopesOverlap(bounded.back(), clipped, min_overlap_depth))
+      {
+        continue;
+      }
+      if (!found || depth > best_depth)
+      {
+        found = true;
+        best_depth = depth;
+        best = clipped;
+      }
+    }
+    if (!found)
+    {
+      return false;
+    }
+    bounded.emplace_back(best);
+  }
+
+  std::string reason;
+  if (!validateSfcSequence(head, tail, bounded, min_overlap_depth, reason))
+  {
+    return false;
+  }
+  sfcs.swap(bounded);
+  return true;
+}
+
 bool validateTrajectoryForCommit(const geometry_utils::Trajectory &pos_traj,
                                  const geometry_utils::Trajectory &yaw_traj,
                                  double max_vel,
@@ -1237,7 +1346,8 @@ bool FastPlannerManager::getCommittedReplanHeadState(Eigen::Vector3d &pos,
 bool FastPlannerManager::planExploreTraj(
     const std::vector<Eigen::Vector3f> &path,
     bool is_static,
-    bool clearance_recovery)
+    bool clearance_recovery,
+    bool rolling_horizon)
 {
   const ros::Time plan_process_start = ros::Time::now();
   last_frontend_path_ = path;
@@ -1445,12 +1555,32 @@ bool FastPlannerManager::planExploreTraj(
     return false;
   }
   const std::size_t simplified_sfc_count = sfcs.size();
+  const double required_overlap =
+      std::max(1.0e-3,
+               0.25 * gcopter_config_->corridorMinOverlapThreshold);
+  geometry_utils::PolytopeVec bounded_sfcs = sfcs;
+  const bool bounded_to_exploration_boxes =
+      constrainSfcsToExplorationBoxes(local_path.front(), local_path.back(),
+                                      lidar_map_interface_, required_overlap,
+                                      bounded_sfcs);
+  if (bounded_to_exploration_boxes)
+  {
+    sfcs.swap(bounded_sfcs);
+  }
+  else
+  {
+    ROS_WARN_STREAM_THROTTLE(
+        1.0,
+        "[highspeed_exp adapter] could not clip the complete corridor to one "
+        "connected sequence of exploration boxes; keep the original SFC and "
+        "retain the sampled commit boundary check");
+  }
   h_polys = hPolysFromSfcs(sfcs);
   std::string sfc_reject_reason;
   if (!validateSfcSequence(local_path.front(),
                            local_path.back(),
                            sfcs,
-                           std::max(1.0e-3, 0.25 * gcopter_config_->corridorMinOverlapThreshold),
+                           required_overlap,
                            sfc_reject_reason))
   {
     ROS_WARN_STREAM("[highspeed_exp adapter] invalid safe flight corridor after simplify/shortcut: "
@@ -1508,6 +1638,7 @@ bool FastPlannerManager::planExploreTraj(
   double terminal_speed = 0.0;
   if (gcopter_config_->nonstopTerminalVelocityEnable &&
       gcopter_config_->backupTrajEnable &&
+      rolling_horizon &&
       !is_static && hasCommittedTrajectory() &&
       local_path.size() >= 2 &&
       segment_safety.path_length >=
@@ -1515,17 +1646,26 @@ bool FastPlannerManager::planExploreTraj(
       segment_safety.turn_angle <=
           gcopter_config_->nonstopTerminalMaxTurnAngle &&
       segment_safety.yaw_delta <=
-          gcopter_config_->nonstopTerminalMaxYawDelta)
+          gcopter_config_->nonstopTerminalMaxYawDelta &&
+      segment_safety.backup_feasible &&
+      segment_safety.known_free_length + 0.10 >=
+          segment_safety.path_length)
   {
     const Eigen::Vector3d dir = local_path.back() - local_path[local_path.size() - 2U];
     if (dir.norm() > 1.0e-3)
     {
-      terminal_speed =
-          std::clamp(gcopter_config_->openSegmentVel * gcopter_config_->nonstopTerminalVelocityRatio,
-                     0.0,
-                     std::min(std::max(0.2, gcopter_config_->maxVelMag),
-                              piece_velocity_profile.bounds(
-                                  piece_velocity_profile.bounds.size() - 1)));
+      const double terminal_piece_limit =
+          piece_velocity_profile.bounds(
+              piece_velocity_profile.bounds.size() - 1);
+      // Scale the actual scheduled boundary. Scaling OpenSegmentVel (10 m/s
+      // in this profile) saturated at MaxVelMag even when curvature scheduled
+      // the segment at only 2 m/s.
+      terminal_speed = std::clamp(
+          std::min(scheduled_speed, terminal_piece_limit) *
+              gcopter_config_->nonstopTerminalVelocityRatio,
+          0.0,
+          std::min(std::max(0.2, gcopter_config_->maxVelMag),
+                   terminal_piece_limit));
       tail.col(1) = dir.normalized() * terminal_speed;
       terminal_velocity_used = terminal_speed > 1.0e-3;
     }
@@ -1636,6 +1776,9 @@ bool FastPlannerManager::planExploreTraj(
             "failed; retry slower: attempt="
             << attempt << " guide_speed=" << guide_speed << " t=" << tt
             << " state=" << safetyStateName(safety.first_blocked_state)
+            << " sample_pos=(" << p.transpose() << ")"
+            << " blocked_pos=(" << safety.first_blocked_pos.transpose()
+            << ")"
             << " start_clearance="
             << safetyDistanceToOcc(candidate.getPos(0.0))
             << " segment_min_clearance=" << safety.min_clearance
@@ -2545,6 +2688,8 @@ bool FastPlannerManager::planExploreTraj(
 		                  << ", sfc(raw/simplified/final)=" << raw_sfc_count
                       << "/" << simplified_sfc_count << "/" << sfcs.size()
 		                  << ", corridor=" << (used_general_corridor ? "general" : "box")
+                      << ", box_bounded="
+                      << (bounded_to_exploration_boxes ? "yes" : "fallback")
                       << ", prefix=" << (stitched_prefix ? "yes" : "no")
                       << ", prefix_dur=" << stitched_prefix_duration
                       << ", switch_delay=" << switch_delay
@@ -2556,6 +2701,7 @@ bool FastPlannerManager::planExploreTraj(
                       << ", suffix_max_v=" << accepted_max_speed
                       << ", suffix_max_a=" << accepted_max_acc
                       << ", terminal_v=" << (terminal_velocity_used ? terminal_speed : 0.0)
+                      << ", rolling_horizon=" << rolling_horizon
                       << ", backup=" << (backup_available ? "yes" : "no")
                       << ", backup_start=" << local_data_.backup_start_t_
                       << ", backup_known_len=" << backup_known_len

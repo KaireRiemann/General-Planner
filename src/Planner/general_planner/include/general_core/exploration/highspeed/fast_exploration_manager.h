@@ -13,6 +13,7 @@
 #include <Eigen/Eigen>
 #include <general_core/exploration/exploration_utils/frontier_manager/frontier_manager.h>
 #include <general_core/exploration/exploration_utils/coverage_guidance/coverage_guidance_manager.h>
+#include <general_core/exploration/exploration_utils/coverage_guidance/coverage_recovery_identity.h>
 #include <limits>
 #include <memory>
 #include <omp.h>
@@ -112,8 +113,7 @@ private:
   };
 
   struct DeferredCoverageGoal {
-    std::uint64_t stable_id{0};
-    Eigen::Vector3d approach{Eigen::Vector3d::Zero()};
+    CoverageRecoveryIdentity identity;
     Eigen::Vector3d unknown_position{Eigen::Vector3d::Zero()};
     int voxel_count{0};
     ros::Time until;
@@ -191,6 +191,7 @@ private:
   bool coverageRecoveryDeferred(const CoverageTarget &target,
                                 const ros::Time &now) const;
   bool coverageRecoveryExhausted(const CoverageTarget &target) const;
+  void rememberCoverageRecoveryAlias(const CoverageTarget &target);
   bool coverageRecoveryCooling(const CoverageTarget &target,
                                const ros::Time &now,
                                double *remaining = nullptr) const;
@@ -199,6 +200,8 @@ private:
                                   double *retry_after = nullptr) const;
   void deferCoverageRecovery(const CoverageTarget &target,
                              CoverageRecoveryOutcome outcome);
+  bool selectSafeCoverageApproach(CoverageTarget &target,
+                                  bool record_terminal_failure);
   void pruneDeferredCoverageGoals(const ros::Time &now);
   int latestCoverageObservedVoxels() const;
   static const char *coverageRecoveryOutcomeName(

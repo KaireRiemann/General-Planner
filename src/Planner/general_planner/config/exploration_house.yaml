@@ -293,7 +293,10 @@ TurnHardAngle: 1.05
 TurnSoftVelocity: 7.0
 TurnHardVelocity: 2.0
 ReorientationHeadingAngle: 1.75
-NonstopTerminalVelocityEnable: false
+# Only receding-horizon prefixes use a non-zero terminal velocity. True
+# observation goals, reversal prefixes, unknown tails, and paths without a
+# verified braking backup still end at rest.
+NonstopTerminalVelocityEnable: true
 NonstopTerminalVelocityRatio: 0.70
 NonstopTerminalMinPathLength: 8.0
 NonstopTerminalMaxTurnAngle: 0.65

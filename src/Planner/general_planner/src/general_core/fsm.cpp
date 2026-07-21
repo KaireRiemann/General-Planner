@@ -159,6 +159,41 @@ namespace fsm {
                 write_time_ << ", ";
             }
         }
+
+        if (state2stateMode() &&
+            cfg_.backend_type == general_planner::architecture::BackendType::CORRIDOR) {
+            traj_opt::ExpTrajOpt::TimingReport report;
+            if (log_module_time.size() > EXP_TRAJ_OPT &&
+                log_module_time[EXP_TRAJ_OPT] > 0.0) {
+                report = planner_ptr_->getLatestExpTimingReport();
+            }
+            const double exp_opt_seconds =
+                    log_module_time.size() > EXP_TRAJ_OPT
+                    ? log_module_time[EXP_TRAJ_OPT]
+                    : 0.0;
+            const double total_replan_seconds =
+                    log_module_time.size() > TOTAL_REPLAN
+                    ? log_module_time[TOTAL_REPLAN]
+                    : 0.0;
+            write_time_ << ", " << report.mode
+                        << ", " << report.evaluations
+                        << ", " << report.polynomial_pieces
+                        << ", " << report.dense_nodes_per_evaluation
+                        << ", " << report.hull_control_checks_per_evaluation
+                        << ", " << report.dense_integral_seconds * 1.0e3
+                        << ", " << report.control_point_seconds * 1.0e3
+                        << ", " << report.minco_evaluation_seconds * 1.0e3
+                        << ", " << report.optimization_seconds * 1.0e3
+                        << ", " << report.dense_share_of_minco_evaluation * 100.0
+                        << ", " << report.control_point_share_of_minco_evaluation * 100.0
+                        << ", " << report.dense_share_of_optimization * 100.0
+                        << ", " << (exp_opt_seconds > 0.0
+                                      ? report.optimization_seconds / exp_opt_seconds * 100.0
+                                      : 0.0)
+                        << ", " << (total_replan_seconds > 0.0
+                                      ? exp_opt_seconds / total_replan_seconds * 100.0
+                                      : 0.0);
+        }
         write_time_ << endl;
     }
 

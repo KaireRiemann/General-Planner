@@ -1,9 +1,6 @@
 #pragma once
 
-#include "traj_opt/convex_hull/convex_hull.hpp"
 #include "traj_opt/costfunctional/penalty_utils.hpp"
-#include "traj_opt/costfunctional/spatialcosts/polytope_position_penalty.hpp"
-#include "traj_opt/costfunctional/spatialcosts/squared_norm_bound_penalty.hpp"
 #include "utils/geometry/quadrotor_flatness.hpp"
 #include "utils/header/type_utils.hpp"
 
@@ -31,16 +28,6 @@ public:
     magnitude_bounds_ = magnitude_bounds;
     penalty_weights_ = penalty_weights;
     quadrotor_flatness_ = quadrotor_flatness;
-  }
-
-  void configureConvexHull(bool enabled,
-                           traj_opt::convex_hull::Basis basis,
-                           int subdivision_depth)
-  {
-    convex_hull_enabled_ = enabled;
-    convex_hull_basis_ = basis;
-    convex_hull_subdivision_depth_ =
-        std::max(0, subdivision_depth);
   }
 
   void beginEvaluation()
@@ -106,12 +93,9 @@ public:
     const double min_thrust = boundOrDefault(4, -std::numeric_limits<double>::infinity());
     const double max_thrust = boundOrDefault(5, std::numeric_limits<double>::infinity());
 
-    const double weight_pos =
-        convex_hull_enabled_ ? 0.0 : weightOrDefault(0);
-    const double weight_vel =
-        convex_hull_enabled_ ? 0.0 : weightOrDefault(1);
-    const double weight_acc =
-        convex_hull_enabled_ ? 0.0 : weightOrDefault(2);
+    const double weight_pos = weightOrDefault(0);
+    const double weight_vel = weightOrDefault(1);
+    const double weight_acc = weightOrDefault(2);
     const double weight_omg = weightOrDefault(3);
     const double weight_theta = weightOrDefault(4);
     const double weight_thrust = weightOrDefault(5);
@@ -251,189 +235,7 @@ public:
     return 0.0;
   }
 
-  /**
-   * Continuous position/velocity/acceleration constraints through convex
-   * hulls. The optional MINCO optimizer coefficient-cost channel detects this
-   * method and performs one common MINCO adjoint after all costs are added.
-   */
-  template <typename Trajectory>
-  double evaluateCoefficient(
-      const Trajectory &trajectory,
-      typename Trajectory::CoeffMat &grad_coefficients,
-      Eigen::VectorXd &grad_durations) const
-  {
-    if (!convex_hull_enabled_ || !ready())
-    {
-      return 0.0;
-    }
-
-    updateHull(trajectory, 0, position_hull_, position_control_gradients_);
-    updateHull(trajectory, 1, velocity_hull_, velocity_control_gradients_);
-    updateHull(trajectory, 2, acceleration_hull_, acceleration_control_gradients_);
-
-    double cost = 0.0;
-    cost += accumulatePositionHullCost(
-        trajectory.getDurations(),
-        position_hull_,
-        position_control_gradients_,
-        grad_durations);
-    cost += accumulateDerivativeHullCost(
-        trajectory.getDurations(),
-        velocity_hull_,
-        velocity_control_gradients_,
-        1,
-        grad_durations);
-    cost += accumulateDerivativeHullCost(
-        trajectory.getDurations(),
-        acceleration_hull_,
-        acceleration_control_gradients_,
-        2,
-        grad_durations);
-
-    position_hull_.backwardAdd(position_control_gradients_,
-                               grad_coefficients,
-                               grad_durations);
-    velocity_hull_.backwardAdd(velocity_control_gradients_,
-                               grad_coefficients,
-                               grad_durations);
-    acceleration_hull_.backwardAdd(acceleration_control_gradients_,
-                                   grad_coefficients,
-                                   grad_durations);
-    return cost;
-  }
-
 private:
-  using Hull = traj_opt::convex_hull::Representation<3>;
-  using HullMatrix = typename Hull::Matrix;
-
-  template <typename Trajectory>
-  void updateHull(const Trajectory &trajectory,
-                  int derivative_order,
-                  Hull &hull,
-                  HullMatrix &control_gradients) const
-  {
-    const bool topology_changed =
-        !hull.kernel() ||
-        hull.numSourceSegments() != trajectory.getPieceNum() ||
-        hull.sourceNumCoeffs() != Trajectory::COEFF_NUM ||
-        hull.basis() != convex_hull_basis_ ||
-        hull.derivativeOrder() != derivative_order ||
-        hull.subdivisionDepth() != convex_hull_subdivision_depth_;
-    if (topology_changed)
-    {
-      hull.resetTopology(trajectory.getPieceNum(),
-                         Trajectory::COEFF_NUM,
-                         convex_hull_basis_,
-                         derivative_order,
-                         convex_hull_subdivision_depth_);
-      control_gradients.resize(hull.controls().rows(), 3);
-    }
-    trajectory.updateConvexHull(hull);
-    control_gradients.setZero();
-  }
-
-  double accumulatePositionHullCost(
-      const Eigen::VectorXd &durations,
-      const Hull &hull,
-      HullMatrix &control_gradients,
-      Eigen::VectorXd &direct_duration_gradients) const
-  {
-    const double weight = weightOrDefault(0);
-    if (weight <= 0.0)
-    {
-      return 0.0;
-    }
-
-    double cost = 0.0;
-    const int cp = hull.controlsPerPiece();
-    for (int piece = 0; piece < hull.numPieces(); ++piece)
-    {
-      const int segment = hull.pieceInfo(piece).source_segment;
-      if (segment < 0 || segment >= h_poly_idx_->size())
-      {
-        continue;
-      }
-      const int poly_id = (*h_poly_idx_)(segment);
-      if (poly_id < 0 ||
-          poly_id >= static_cast<int>(h_polys_->size()))
-      {
-        continue;
-      }
-
-      const double integration_scale =
-          durations(segment) /
-          static_cast<double>(hull.piecesPerSegment() * cp);
-      for (int control = 0; control < cp; ++control)
-      {
-        const int row = piece * cp + control;
-        const Eigen::Vector3d value =
-            hull.controls().row(row).transpose();
-        Eigen::Vector3d gradient = Eigen::Vector3d::Zero();
-        const double local_cost =
-            cost_functional::accumulatePolytopePositionPenalty(
-                (*h_polys_)[poly_id],
-                value,
-                smooth_eps_,
-                weight * integration_scale,
-                gradient,
-                &max_violation_(1));
-        control_gradients.row(row) += gradient.transpose();
-        cost += local_cost;
-        direct_duration_gradients(segment) +=
-            local_cost / durations(segment);
-      }
-    }
-    return cost;
-  }
-
-  double accumulateDerivativeHullCost(
-      const Eigen::VectorXd &durations,
-      const Hull &hull,
-      HullMatrix &control_gradients,
-      int bound_index,
-      Eigen::VectorXd &direct_duration_gradients) const
-  {
-    const double weight = weightOrDefault(bound_index);
-    if (weight <= 0.0)
-    {
-      return 0.0;
-    }
-
-    double cost = 0.0;
-    const int cp = hull.controlsPerPiece();
-    for (int piece = 0; piece < hull.numPieces(); ++piece)
-    {
-      const int segment = hull.pieceInfo(piece).source_segment;
-      const double bound =
-          bound_index == 1
-              ? segmentVelocityBound(segment)
-              : boundOrDefault(1, 1.0);
-      const double integration_scale =
-          durations(segment) /
-          static_cast<double>(hull.piecesPerSegment() * cp);
-      for (int control = 0; control < cp; ++control)
-      {
-        const int row = piece * cp + control;
-        const Eigen::Vector3d value =
-            hull.controls().row(row).transpose();
-        Eigen::Vector3d gradient = Eigen::Vector3d::Zero();
-        const double local_cost =
-            cost_functional::accumulateSquaredNormBoundPenalty(
-                value,
-                bound * bound,
-                smooth_eps_,
-                weight * integration_scale,
-                gradient,
-                &max_violation_(bound_index + 1));
-        control_gradients.row(row) += gradient.transpose();
-        cost += local_cost;
-        direct_duration_gradients(segment) +=
-            local_cost / durations(segment);
-      }
-    }
-    return cost;
-  }
-
   bool ready() const
   {
     return h_polys_ != nullptr &&
@@ -484,16 +286,6 @@ private:
   general_utils::VecDf magnitude_bounds_;
   general_utils::VecDf penalty_weights_;
   flatness::FlatnessMap *quadrotor_flatness_{nullptr};
-  bool convex_hull_enabled_{false};
-  traj_opt::convex_hull::Basis convex_hull_basis_{
-      traj_opt::convex_hull::Basis::Bezier};
-  int convex_hull_subdivision_depth_{0};
-  mutable Hull position_hull_;
-  mutable Hull velocity_hull_;
-  mutable Hull acceleration_hull_;
-  mutable HullMatrix position_control_gradients_;
-  mutable HullMatrix velocity_control_gradients_;
-  mutable HullMatrix acceleration_control_gradients_;
   mutable general_utils::VecDf max_violation_{general_utils::VecDf::Zero(8)};
 };
 } // namespace cost_functional_manager

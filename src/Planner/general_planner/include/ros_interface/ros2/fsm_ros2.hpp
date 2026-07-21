@@ -400,11 +400,23 @@ namespace fsm {
 
             write_time_.open(DEBUG_FILE_DIR("time_consuming.csv"), std::ios::out | std::ios::trunc);
             log_module_time.resize(9);
+            const bool write_exp_timing =
+                    state2stateMode() &&
+                    cfg_.backend_type == general_planner::architecture::BackendType::CORRIDOR;
             for (int i = 0; i < 9; i++) {
                 write_time_ << log_time_str[i];
-                if (i != 8) {
+                if (i != 8 || write_exp_timing) {
                     write_time_ << ",";
                 }
+            }
+            if (write_exp_timing) {
+                write_time_ << "EXP_COST_MODE,EXP_EVALUATIONS,EXP_POLYNOMIAL_PIECES,"
+                               "EXP_DENSE_NODES_PER_EVAL,EXP_HULL_CONTROL_CHECKS_PER_EVAL,"
+                               "EXP_DENSE_INTEGRAL_MS,EXP_CONTROL_POINT_FUNCTIONAL_MS,"
+                               "EXP_MINCO_EVALUATION_MS,EXP_LBFGS_MS,"
+                               "EXP_DENSE_SHARE_MINCO_PERCENT,EXP_CONTROL_POINT_SHARE_MINCO_PERCENT,"
+                               "EXP_DENSE_SHARE_OPT_PERCENT,"
+                               "EXP_LBFGS_SHARE_MODULE_PERCENT,EXP_MODULE_SHARE_REPLAN_PERCENT";
             }
             write_time_ << endl;
             machine_state_ = INIT;
