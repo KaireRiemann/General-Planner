@@ -1,0 +1,189 @@
+#pragma once
+
+#include <cstddef>
+#include <cstdint>
+#include <functional>
+#include <memory>
+#include <mutex>
+#include <shared_mutex>
+#include <unordered_map>
+#include <unordered_set>
+#include <vector>
+
+#include <rog_map/rog_map_core/common_lib.hpp>
+
+namespace general_planner {
+
+/**
+ * Read-only map contract used by the topology core.
+ *
+ * The graph deliberately knows nothing about ROGMap, LIO or a planner FSM.
+ * MapManager and exploration may provide different adapters with identical
+ * traversability/clearance semantics.
+ */
+class TopologyMapView {
+public:
+    virtual ~TopologyMapView() = default;
+    virtual bool isTraversable(const rog_map::Vec3f &position) const = 0;
+    virtual bool getClearance(const rog_map::Vec3f &position,
+                              double &distance) const = 0;
+};
+
+/** Incremental persistent free-space topology owned by MapManager. */
+class IncrementalTopologyGraph {
+public:
+    using Ptr = std::shared_ptr<IncrementalTopologyGraph>;
+    using NodeId = std::uint64_t;
+
+    struct Config {
+        bool enabled{false};
+        double region_size{4.0};
+        double sample_spacing{1.0};
+        double min_clearance{0.45};
+        double max_clearance{2.5};
+        double candidate_separation{1.5};
+        double stable_match_distance{1.0};
+        double connection_radius{6.0};
+        double edge_sample_spacing{0.20};
+        double dirty_padding{2.5};
+        double bubble_overlap_margin{0.10};
+        bool unknown_as_free{false};
+        std::size_t max_nodes_per_region{4};
+        std::size_t max_bubbles_per_region{256};
+        std::size_t max_neighbors{8};
+        std::size_t max_regions_per_update{4};
+    };
+
+    struct Query final : TopologyMapView {
+        /** True only for free space satisfying the desired robot inflation. */
+        std::function<bool(const rog_map::Vec3f &)> traversable;
+        /** Optional ESDF/clearance query. Return false when unavailable. */
+        std::function<bool(const rog_map::Vec3f &, double &)> clearance;
+
+        bool isTraversable(const rog_map::Vec3f &position) const override {
+            return traversable && traversable(position);
+        }
+
+        bool getClearance(const rog_map::Vec3f &position,
+                          double &distance) const override {
+            return clearance && clearance(position, distance);
+        }
+    };
+
+    struct Node {
+        EIGEN_MAKE_ALIGNED_OPERATOR_NEW
+        NodeId id{0};
+        rog_map::Vec3f position{rog_map::Vec3f::Zero()};
+        double clearance{0.0};
+        std::uint64_t revision{0};
+    };
+
+    struct Edge {
+        NodeId from{0};
+        NodeId to{0};
+        double cost{0.0};
+    };
+
+    struct Snapshot {
+        std::vector<Node, Eigen::aligned_allocator<Node>> nodes;
+        std::vector<Edge> edges;
+        std::uint64_t revision{0};
+        std::size_t dirty_region_count{0};
+    };
+
+    struct Stats {
+        std::size_t node_count{0};
+        std::size_t edge_count{0};
+        std::size_t region_count{0};
+        std::size_t dirty_region_count{0};
+        std::size_t rebuilt_region_count{0};
+        std::uint64_t revision{0};
+    };
+
+    IncrementalTopologyGraph();
+    explicit IncrementalTopologyGraph(const Config &config);
+
+    Config config() const;
+    void configure(const Config &config);
+    void clear();
+
+    void markDirty(const rog_map::Vec3f &position);
+    void markDirtyBox(const rog_map::Vec3f &box_min,
+                      const rog_map::Vec3f &box_max);
+    void markDirtyVoxels(const std::vector<rog_map::Vec3i> &indices,
+                         double resolution);
+
+    /** Seed not-yet-observed regions along a successful navigation route. */
+    void observePlannedPath(const rog_map::vec_Vec3f &path);
+
+    /** Rebuild at most max_regions (or the configured budget when zero). */
+    std::size_t update(const TopologyMapView &map_view,
+                       std::size_t max_regions = 0,
+                       const rog_map::Vec3f *focus = nullptr);
+
+    Snapshot snapshot() const;
+    Stats stats() const;
+
+    /** Weighted shortest path. Failure never fabricates a direct connection. */
+    bool findPath(const rog_map::Vec3f &start,
+                  const rog_map::Vec3f &goal,
+                  const TopologyMapView &map_view,
+                  rog_map::vec_Vec3f &path,
+                  double attach_radius = 0.0) const;
+
+private:
+    struct RegionKey {
+        int x{0};
+        int y{0};
+        int z{0};
+
+        bool operator==(const RegionKey &other) const {
+            return x == other.x && y == other.y && z == other.z;
+        }
+    };
+
+    struct RegionKeyHash {
+        std::size_t operator()(const RegionKey &key) const;
+    };
+
+    struct NodeRecord {
+        EIGEN_MAKE_ALIGNED_OPERATOR_NEW
+        Node node;
+        RegionKey region;
+        std::unordered_map<NodeId, double> neighbors;
+    };
+
+    using NodeMap = std::unordered_map<NodeId, NodeRecord>;
+    using RegionMap = std::unordered_map<RegionKey,
+                                         std::vector<NodeId>,
+                                         RegionKeyHash>;
+
+    static Config sanitized(const Config &config);
+    RegionKey regionOf(const rog_map::Vec3f &position) const;
+    rog_map::Vec3f regionMin(const RegionKey &region) const;
+    bool lineTraversable(const rog_map::Vec3f &start,
+                         const rog_map::Vec3f &goal,
+                         const TopologyMapView &map_view) const;
+    double estimateClearance(const rog_map::Vec3f &position,
+                             const TopologyMapView &map_view) const;
+    std::vector<Node, Eigen::aligned_allocator<Node>> generateCandidates(
+        const RegionKey &region, const TopologyMapView &map_view) const;
+    bool popDirtyRegion(RegionKey &region, const rog_map::Vec3f *focus);
+    void rebuildRegion(const RegionKey &region, const TopologyMapView &map_view);
+    void rebuildIncidentEdges(const std::vector<NodeId> &source_ids,
+                              const TopologyMapView &map_view);
+
+    mutable std::shared_mutex graph_mutex_;
+    mutable std::mutex dirty_mutex_;
+    mutable std::mutex update_mutex_;
+    Config config_;
+    NodeMap nodes_;
+    RegionMap regions_;
+    std::unordered_set<RegionKey, RegionKeyHash> dirty_regions_;
+    std::unordered_set<RegionKey, RegionKeyHash> observed_route_regions_;
+    NodeId next_node_id_{1};
+    std::uint64_t revision_{0};
+    std::size_t rebuilt_region_count_{0};
+};
+
+} // namespace general_planner

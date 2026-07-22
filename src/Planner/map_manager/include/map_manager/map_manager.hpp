@@ -7,6 +7,7 @@
 #include <vector>
 
 #include <map_manager/boundary_map.hpp>
+#include <map_manager/incremental_topology_graph.hpp>
 #include <rog_map/rog_map.h>
 #include <rog_map_ros/rog_map_ros1.hpp>
 #include <rog_map_ros/rog_map_ros2.hpp>
@@ -33,6 +34,11 @@ public:
         }
         map_ = map;
         boundary_map_.reset();
+        if (!topology_graph_) {
+            topology_graph_ = std::make_shared<IncrementalTopologyGraph>();
+        } else {
+            topology_graph_->clear();
+        }
         if (map_) {
             // BoundaryMap consumes only sensor-driven discrete transitions.
             // Any pending stream from a previous owner is not part of this
@@ -43,11 +49,13 @@ public:
             map_->setStateChangeTrackingEnabled(true);
             const std::weak_ptr<rog_map::ROGMapROS> weak_map = map_;
             const std::weak_ptr<BoundaryMap> weak_boundary = boundary_map_;
-            map_->setStateChangeCallback([weak_map, weak_boundary]() {
+            const std::weak_ptr<IncrementalTopologyGraph> weak_topology = topology_graph_;
+            map_->setStateChangeCallback([weak_map, weak_boundary, weak_topology]() {
                 const auto map = weak_map.lock();
                 const auto boundary = weak_boundary.lock();
+                const auto topology = weak_topology.lock();
                 if (map && boundary) {
-                    syncBoundaryMapImpl(map, boundary);
+                    syncBoundaryMapImpl(map, boundary, topology);
                 }
             });
         }
@@ -86,7 +94,85 @@ public:
     /** Synchronize pending ROG discrete transitions into the sparse global map. */
     void syncBoundaryMap() const
     {
-        syncBoundaryMapImpl(map_, boundary_map_);
+        syncBoundaryMapImpl(map_, boundary_map_, topology_graph_);
+    }
+
+    void configureTopology(const IncrementalTopologyGraph::Config &config)
+    {
+        if (!topology_graph_) {
+            topology_graph_ = std::make_shared<IncrementalTopologyGraph>(config);
+        } else {
+            topology_graph_->configure(config);
+        }
+        if (map_ && config.enabled) {
+            rog_map::Vec3f box_min(-1.0e6, -1.0e6, -1.0e6);
+            rog_map::Vec3f box_max(1.0e6, 1.0e6, 1.0e6);
+            map_->boundBoxByLocalMap(box_min, box_max);
+            topology_graph_->markDirtyBox(box_min, box_max);
+        }
+    }
+
+    bool topologyReady() const
+    {
+        return topology_graph_ != nullptr && topology_graph_->config().enabled;
+    }
+
+    IncrementalTopologyGraph::Ptr topologyGraph() const
+    {
+        return topology_graph_;
+    }
+
+    std::size_t updateTopology(std::size_t max_regions = 0) const
+    {
+        if (!map_ || !topologyReady()) {
+            return 0;
+        }
+        syncBoundaryMap();
+        return topology_graph_->update(makeTopologyQuery(), max_regions);
+    }
+
+    /** Rebuild the dirty regions nearest a planning query first. */
+    std::size_t updateTopologyAround(const rog_map::Vec3f &focus,
+                                     std::size_t max_regions = 0) const
+    {
+        if (!map_ || !topologyReady()) {
+            return 0;
+        }
+        syncBoundaryMap();
+        return topology_graph_->update(makeTopologyQuery(), max_regions, &focus);
+    }
+
+    void observePlannedTopologyPath(const rog_map::vec_Vec3f &path) const
+    {
+        if (topologyReady()) {
+            topology_graph_->observePlannedPath(path);
+        }
+    }
+
+    IncrementalTopologyGraph::Snapshot topologySnapshot() const
+    {
+        return topology_graph_ ? topology_graph_->snapshot()
+                               : IncrementalTopologyGraph::Snapshot{};
+    }
+
+    IncrementalTopologyGraph::Stats topologyStats() const
+    {
+        return topology_graph_ ? topology_graph_->stats()
+                               : IncrementalTopologyGraph::Stats{};
+    }
+
+    bool findTopologyPath(const rog_map::Vec3f &start,
+                          const rog_map::Vec3f &goal,
+                          rog_map::vec_Vec3f &path,
+                          const double attach_radius = 0.0) const
+    {
+        if (!map_ || !topologyReady()) {
+            path.clear();
+            return false;
+        }
+        syncBoundaryMap();
+        return topology_graph_->findPath(start, goal, makeTopologyQuery(),
+                                         path, attach_radius);
     }
 
     rog_map::RobotState getRobotState() const
@@ -373,9 +459,61 @@ public:
 
 private:
     static void syncBoundaryMapImpl(const rog_map::ROGMapROS::Ptr &map,
-                                    const BoundaryMap::Ptr &boundary_map);
+                                    const BoundaryMap::Ptr &boundary_map,
+                                    const IncrementalTopologyGraph::Ptr &topology_graph);
+
+    IncrementalTopologyGraph::Query makeTopologyQuery() const
+    {
+        IncrementalTopologyGraph::Query query;
+        const bool unknown_as_free = topology_graph_ &&
+                                     topology_graph_->config().unknown_as_free;
+        query.traversable = [this, unknown_as_free](const rog_map::Vec3f &position) {
+            if (!map_ || !position.allFinite()) {
+                return false;
+            }
+            const rog_map::Config config = map_->getMapConfig();
+            if (position.z() <= config.virtual_ground_height ||
+                position.z() >= config.virtual_ceil_height) {
+                return false;
+            }
+            if (map_->insideLocalMap(position)) {
+                const rog_map::GridType raw = map_->getGridType(position);
+                if (raw == rog_map::GridType::KNOWN_FREE) {
+                    const rog_map::GridType inflated = map_->getInfGridType(position);
+                    return inflated != rog_map::GridType::OCCUPIED &&
+                           inflated != rog_map::GridType::OUT_OF_MAP &&
+                           (unknown_as_free || inflated == rog_map::GridType::KNOWN_FREE);
+                }
+                if (raw == rog_map::GridType::OCCUPIED) {
+                    return false;
+                }
+                // This option is explicit because ordinary state2state may be
+                // configured to plan through unknown cells. It is restricted
+                // to the current local map; unseen global space is never
+                // promoted to persistent free space.
+                if (unknown_as_free) {
+                    const rog_map::GridType inflated = map_->getInfGridType(position);
+                    return inflated != rog_map::GridType::OCCUPIED &&
+                           inflated != rog_map::GridType::OUT_OF_MAP;
+                }
+            }
+            return boundary_map_ &&
+                   boundary_map_->getGridType(position) ==
+                   rog_map::GridType::KNOWN_FREE;
+        };
+        query.clearance = [this](const rog_map::Vec3f &position, double &distance) {
+            if (!map_ || !map_->insideLocalMap(position) || !map_->hasESDF()) {
+                return false;
+            }
+            rog_map::Vec3f gradient = rog_map::Vec3f::Zero();
+            return map_->evaluateESDF(position, distance, gradient);
+        };
+        return query;
+    }
 
     rog_map::ROGMapROS::Ptr map_;
     BoundaryMap::Ptr boundary_map_;
+    IncrementalTopologyGraph::Ptr topology_graph_{
+        std::make_shared<IncrementalTopologyGraph>()};
 };
 } // namespace general_planner

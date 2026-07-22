@@ -554,7 +554,10 @@ namespace fsm {
     }
 
     void Fsm::callReplanOnce() {
-        std::unique_lock<std::mutex> tick_lock(fsm_tick_mutex_);
+        std::unique_lock<std::mutex> tick_lock(fsm_tick_mutex_, std::try_to_lock);
+        if (!tick_lock.owns_lock()) {
+            return;
+        }
         if (stop) {
             return;
         }
@@ -572,6 +575,22 @@ namespace fsm {
             plan_from_rest_ = false;
             return;
         }
+
+        const bool release_fsm_lock_during_replan = state2stateMode();
+        if (release_fsm_lock_during_replan &&
+            state2state_replan_in_progress_.exchange(true)) {
+            return;
+        }
+        struct State2StateReplanGuard {
+            std::atomic<bool> &in_progress;
+            bool active;
+            ~State2StateReplanGuard() {
+                if (active) {
+                    in_progress.store(false);
+                }
+            }
+        } replan_guard{state2state_replan_in_progress_,
+                       release_fsm_lock_during_replan};
 
         TimeConsuming replan_once_time("replan_once_time", false);
         active_replan_id_ = next_replan_id_++;
@@ -599,7 +618,20 @@ namespace fsm {
         replan_request.new_task = task_new_;
         replan_request.perception_trigger = perception_replan_trigger;
         replan_request.perception_emergency = perception_replan_emergency;
+
+        // The state-to-state backend already serializes planner calls with
+        // GeneralPlanner::replan_lock_. Holding fsm_tick_mutex_ here made a
+        // slow or stuck frontend search freeze the whole FSM, including the
+        // transition performed when the currently committed trajectory ends.
+        // Release only the FSM lock around the expensive planner call and
+        // reacquire it before applying the result to the state machine.
+        if (release_fsm_lock_during_replan) {
+            tick_lock.unlock();
+        }
         PlanResult plan_result = executor.replan(*this, replan_request);
+        if (release_fsm_lock_during_replan) {
+            tick_lock.lock();
+        }
         const TaskPlanContext &replan_context = plan_result.context;
         const RET_CODE ret_code = static_cast<RET_CODE>(plan_result.ret_code);
         if (replan_context.missing_input || replan_context.handled) {
@@ -912,6 +944,14 @@ namespace fsm {
                 break;
             }
             case GENERATE_TRAJ: {
+                // A state-to-state rolling replan can still be finishing after
+                // the command trajectory reaches its end. Do not start a
+                // concurrent plan-from-rest on the same planner; keep the FSM
+                // callback non-blocking until the rolling replan returns.
+                if (state2stateMode() &&
+                    state2state_replan_in_progress_.load()) {
+                    return;
+                }
                 active_replan_id_ = next_replan_id_++;
                 TaskExecutor &executor = taskExecutor();
                 if (executor.goalLike() && closeToGoal(0.1)) {

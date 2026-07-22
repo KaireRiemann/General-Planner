@@ -13,5 +13,6 @@ __pycache__/
 *.pyc
 *.tar.gz
 *.zip
+/src/Planner/general_planner/log
 /tmp
 /test_results

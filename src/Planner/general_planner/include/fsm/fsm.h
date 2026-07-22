@@ -27,6 +27,7 @@
 #include <queue>
 #include <memory>
 #include <fstream>
+#include <atomic>
 #include <mutex>
 #include <cstdint>
 #include <limits>
@@ -270,6 +271,10 @@ namespace fsm {
         vector<DiagnosticEvent> diagnostic_events_;
         vector<DiagnosticEvent> tracking_diagnostic_events_;
         mutable std::mutex fsm_tick_mutex_;
+        // State-to-state replanning may take longer than one FSM tick. Keep
+        // the FSM lock free while it runs, but do not allow a plan-from-rest
+        // request to enter the same planner concurrently.
+        std::atomic<bool> state2state_replan_in_progress_{false};
         mutable std::mutex replan_logs_mutex_;
         mutable std::mutex diagnostic_events_mutex_;
         std::ofstream diagnostic_event_log_;

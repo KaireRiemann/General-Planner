@@ -85,6 +85,20 @@ namespace general_planner {
         int dynamic_obstacle_layer_max_points_per_frame{30000};
         general_utils::Vec3f dynamic_obstacle_layer_local_half_size{10.0, 10.0, 3.0};
         bool state2state_direct_line_frontend_enable{true};
+        bool state2state_topology_enable{false};
+        bool state2state_topology_unknown_as_free{false};
+        double state2state_topology_min_query_distance{3.0};
+        int state2state_topology_update_budget{12};
+        double state2state_topology_region_size{4.0};
+        double state2state_topology_sample_spacing{1.0};
+        double state2state_topology_min_clearance{0.45};
+        double state2state_topology_max_clearance{2.5};
+        double state2state_topology_connection_radius{6.0};
+        double state2state_topology_dirty_padding{2.5};
+        double state2state_topology_bubble_overlap_margin{0.10};
+        int state2state_topology_max_nodes_per_region{4};
+        int state2state_topology_max_bubbles_per_region{256};
+        int state2state_topology_max_neighbors{8};
         bool state2state_altitude_guard_enable{false};
         double state2state_altitude_band{0.25};
         bool state2state_altitude_escape_enable{false};
@@ -446,6 +460,34 @@ namespace general_planner {
             }
             loader.LoadParam("general_planner/state2state/direct_line_frontend_enable",
                              state2state_direct_line_frontend_enable, true);
+            loader.LoadParam("general_planner/state2state/topology/enable",
+                             state2state_topology_enable, false);
+            loader.LoadParam("general_planner/state2state/topology/unknown_as_free",
+                             state2state_topology_unknown_as_free, false);
+            loader.LoadParam("general_planner/state2state/topology/min_query_distance",
+                             state2state_topology_min_query_distance, 3.0);
+            loader.LoadParam("general_planner/state2state/topology/update_budget",
+                             state2state_topology_update_budget, 12);
+            loader.LoadParam("general_planner/state2state/topology/region_size",
+                             state2state_topology_region_size, 4.0);
+            loader.LoadParam("general_planner/state2state/topology/sample_spacing",
+                             state2state_topology_sample_spacing, 1.0);
+            loader.LoadParam("general_planner/state2state/topology/min_clearance",
+                             state2state_topology_min_clearance, 0.45);
+            loader.LoadParam("general_planner/state2state/topology/max_clearance",
+                             state2state_topology_max_clearance, 2.5);
+            loader.LoadParam("general_planner/state2state/topology/connection_radius",
+                             state2state_topology_connection_radius, 6.0);
+            loader.LoadParam("general_planner/state2state/topology/dirty_padding",
+                             state2state_topology_dirty_padding, 2.5);
+            loader.LoadParam("general_planner/state2state/topology/bubble_overlap_margin",
+                             state2state_topology_bubble_overlap_margin, 0.10);
+            loader.LoadParam("general_planner/state2state/topology/max_nodes_per_region",
+                             state2state_topology_max_nodes_per_region, 4);
+            loader.LoadParam("general_planner/state2state/topology/max_bubbles_per_region",
+                             state2state_topology_max_bubbles_per_region, 256);
+            loader.LoadParam("general_planner/state2state/topology/max_neighbors",
+                             state2state_topology_max_neighbors, 8);
             loader.LoadParam("general_planner/state2state/altitude_guard_enable",
                              state2state_altitude_guard_enable, false);
             loader.LoadParam("general_planner/state2state/altitude_band",

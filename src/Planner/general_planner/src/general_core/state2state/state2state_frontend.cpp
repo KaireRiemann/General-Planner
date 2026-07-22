@@ -303,6 +303,128 @@ namespace state2state_task {
             return true;
         };
 
+        auto buildTopologyCandidate = [&](vec_Vec3f &candidate,
+                                          RET_CODE &candidate_ret) {
+            candidate.clear();
+            candidate_ret = FAILED;
+            const double query_distance = (goal - temp_start_point).norm();
+            if (!services.cfg.state2state_topology_enable ||
+                !services.map_manager->topologyReady() ||
+                query_distance < std::max(0.0,
+                    services.cfg.state2state_topology_min_query_distance)) {
+                return false;
+            }
+
+            const Vec3f focus = 0.5 * (temp_start_point + goal);
+            services.map_manager->updateTopologyAround(
+                focus,
+                static_cast<std::size_t>(std::max(
+                    1, services.cfg.state2state_topology_update_budget)));
+
+            vec_Vec3f topology_path;
+            auto routeUsable = [&](const vec_Vec3f &route) {
+                if (route.size() < 2) {
+                    return false;
+                }
+                for (std::size_t i = 1; i < route.size(); ++i) {
+                    if (!lineUsable(route[i - 1], route[i])) {
+                        return false;
+                    }
+                }
+                return true;
+            };
+
+            bool reaches_goal = services.map_manager->findTopologyPath(
+                                    temp_start_point, goal, topology_path) &&
+                                routeUsable(topology_path);
+
+            // A distant click goal can lie outside the rolling local map. In
+            // that case choose a reachable graph node which advances toward
+            // it; the next replanning cycle continues over the persistent map.
+            if (!reaches_goal) {
+                struct RouteTarget {
+                    Vec3f position;
+                    double score{0.0};
+                };
+                std::vector<RouteTarget> targets;
+                Vec3f direction = Vec3f::Zero();
+                if (query_distance > 1.0e-9) {
+                    direction = (goal - temp_start_point) / query_distance;
+                }
+                for (const auto &node : services.map_manager->topologySnapshot().nodes) {
+                    const Vec3f offset = node.position - temp_start_point;
+                    const double radial_distance = offset.norm();
+                    const double progress = offset.dot(direction);
+                    if (progress <= services.cfg.resolution ||
+                        radial_distance > searching_horizon * 1.35 ||
+                        !pointUsable(node.position)) {
+                        continue;
+                    }
+                    targets.push_back({node.position,
+                                       progress - 0.15 * std::abs(
+                                           radial_distance - searching_horizon)});
+                }
+                std::sort(targets.begin(), targets.end(),
+                          [](const RouteTarget &lhs, const RouteTarget &rhs) {
+                              return lhs.score > rhs.score;
+                          });
+
+                vec_Vec3f best_route;
+                double best_progress = -1.0;
+                const std::size_t attempts = std::min<std::size_t>(8, targets.size());
+                const double required_length = 0.65 * std::min(
+                    searching_horizon, query_distance);
+                for (std::size_t i = 0; i < attempts; ++i) {
+                    vec_Vec3f route;
+                    if (!services.map_manager->findTopologyPath(
+                            temp_start_point, targets[i].position, route) ||
+                        !routeUsable(route)) {
+                        continue;
+                    }
+                    double route_length = 0.0;
+                    for (std::size_t j = 1; j < route.size(); ++j) {
+                        route_length += (route[j] - route[j - 1]).norm();
+                    }
+                    const double progress =
+                        (route.back() - temp_start_point).dot(direction);
+                    if (route_length + services.cfg.resolution >= required_length &&
+                        progress > best_progress) {
+                        best_progress = progress;
+                        best_route = std::move(route);
+                    }
+                }
+                topology_path = std::move(best_route);
+                if (topology_path.size() < 2) {
+                    return false;
+                }
+            }
+
+            appendPathPointUnique(temp_start_point, candidate);
+            double remaining = std::max(0.0, searching_horizon);
+            for (std::size_t i = 1; i < topology_path.size(); ++i) {
+                const Vec3f segment = topology_path[i] - topology_path[i - 1];
+                const double length = segment.norm();
+                if (length <= 1.0e-9) {
+                    continue;
+                }
+                if (length <= remaining + 1.0e-9) {
+                    appendPathPointUnique(topology_path[i], candidate);
+                    remaining -= length;
+                    continue;
+                }
+                appendPathPointUnique(topology_path[i - 1] +
+                                      segment * (remaining / length), candidate);
+                candidate_ret = REACH_HORIZON;
+                return candidate.size() >= 2;
+            }
+
+            candidate_ret = reaches_goal ? REACH_GOAL : REACH_HORIZON;
+            if (reaches_goal) {
+                appendPathPointUnique(goal, candidate);
+            }
+            return candidate.size() >= 2;
+        };
+
         int flag = ON_INF_MAP |
                    (unknown_as_occupied_for_frontend ? UNKNOWN_AS_OCCUPIED : UNKNOWN_AS_FREE) |
                    DONT_USE_INF_NEIGHBOR;
@@ -311,16 +433,22 @@ namespace state2state_task {
         RET_CODE ret_code = FAILED;
         const bool direct_line_frontend =
                 buildDirectLineCandidate(normal_path, ret_code);
-        if (!direct_line_frontend) {
+        const bool topology_frontend = !direct_line_frontend &&
+                buildTopologyCandidate(normal_path, ret_code);
+        if (!direct_line_frontend && !topology_frontend) {
             ret_code = services.astar->pointToPointPathSearch(temp_start_point,
                                                           goal,
                                                           flag,
                                                           temp_plannning_horizon,
                                                           normal_path,
                                                           services.cfg.frontend_astar_time_out);
-        } else if (services.cfg.print_log) {
+        } else if (services.cfg.print_log && direct_line_frontend) {
             services.ros_ptr->info(" -- [GeneralPlanner] Use direct-line frontend candidate: ret={}.",
                            RET_CODE_STR[ret_code]);
+        } else if (services.cfg.print_log && topology_frontend) {
+            services.ros_ptr->info(
+                " -- [GeneralPlanner] Use incremental-topology frontend candidate: ret={}, points={}.",
+                RET_CODE_STR[ret_code], normal_path.size());
         }
 
         if(ret_code == INIT_ERROR){
@@ -330,7 +458,8 @@ namespace state2state_task {
         //add may23, if failed on inf map, use prob map try again
 
         const bool distance_field_frontend = services.cfg.esdf_traj_en || services.cfg.plain_traj_en;
-        if (!direct_line_frontend && ret_code == NO_PATH && !distance_field_frontend) {
+        if (!direct_line_frontend && !topology_frontend &&
+            ret_code == NO_PATH && !distance_field_frontend) {
             flag = ON_PROB_MAP |
                    (unknown_as_occupied_for_frontend ? UNKNOWN_AS_OCCUPIED : UNKNOWN_AS_FREE) |
                    USE_INF_NEIGHBOR;
@@ -345,7 +474,8 @@ namespace state2state_task {
                 fmt::print(fg(fmt::color::indian_red) | fmt::emphasis::bold,
                            " -- [Astar] Path search failed on prob map still failed.\n");
             }
-        } else if (!direct_line_frontend && ret_code == NO_PATH && distance_field_frontend) {
+        } else if (!direct_line_frontend && !topology_frontend &&
+                   ret_code == NO_PATH && distance_field_frontend) {
             fmt::print(fg(fmt::color::indian_red) | fmt::emphasis::bold,
                        " -- [Astar] Path search failed on inf map in distance-field mode; skip prob-map fallback.\n");
         }
@@ -583,6 +713,7 @@ namespace state2state_task {
                 path = dense_path;
             }
         }
+        services.map_manager->observePlannedTopologyPath(path);
         return true;
     }
 

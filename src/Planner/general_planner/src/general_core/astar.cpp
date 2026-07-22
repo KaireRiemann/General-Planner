@@ -23,6 +23,8 @@
 
 #include <path_search/astar.h>
 
+#include <chrono>
+
 using namespace color_text;
 using namespace general_utils;
 
@@ -239,7 +241,7 @@ namespace path_search {
             return setup_ret;
         }
         out_path.clear();
-        double time_1 = ros_ptr_->getSimTime();
+        const auto search_start = std::chrono::steady_clock::now();
         ++rounds_;
         /// 2) Switch both start and end point to local map
 
@@ -513,17 +515,19 @@ namespace path_search {
                             neighborPtr->total_score = distance_score + heu_score;
                         }
                     }
-            double time_2 = ros_ptr_->getSimTime();
-            if (!cfg_.visual_process && (time_2 - time_1) > time_out) {
+            const double elapsed = std::chrono::duration<double>(
+                    std::chrono::steady_clock::now() - search_start).count();
+            if (time_out > 0.0 && elapsed > time_out) {
                 fmt::print(fg(fmt::color::indian_red),
                            "Failed in A star path searching !!! {} seconds time limit exceeded.\n", time_out);
                 return TIME_OUT;
             }
         }
-        double time_2 = ros_ptr_->getSimTime();
-        if ((time_2 - time_1) > time_out) {
+        const double elapsed = std::chrono::duration<double>(
+                std::chrono::steady_clock::now() - search_start).count();
+        if (time_out > 0.0 && elapsed > time_out) {
             fmt::print(fg(fmt::color::indian_red), "Time consume in A star path finding is {} s, iter={}.\n",
-                       (time_2 - time_1),
+                       elapsed,
                        num_iter);
             return NO_PATH;
         }
@@ -564,7 +568,7 @@ namespace path_search {
             return setup_ret;
         }
 
-        double time_1 = ros_ptr_->getSimTime();
+        const auto search_start = std::chrono::steady_clock::now();
         ++rounds_;
 
         posToGlobalIndex(md_.local_map_center_d, md_.local_map_center_id_g);
@@ -708,17 +712,19 @@ namespace path_search {
                             neighborPtr->total_score = distance_score + heu_score;
                         }
                     }
-            double time_2 = ros_ptr_->getSimTime();
-            if (!cfg_.visual_process && (time_2 - time_1) > 0.2) {
+            const double elapsed = std::chrono::duration<double>(
+                    std::chrono::steady_clock::now() - search_start).count();
+            if (elapsed > 0.2) {
                 fmt::print(fg(fmt::color::indian_red),
                            "Failed in A star path searching !!! 0.2 seconds time limit exceeded.\n");
                 return TIME_OUT;
             }
         }
-        double time_2 = ros_ptr_->getSimTime();
-        if ((time_2 - time_1) > 0.1) {
+        const double elapsed = std::chrono::duration<double>(
+                std::chrono::steady_clock::now() - search_start).count();
+        if (elapsed > 0.1) {
             fmt::print(fg(fmt::color::indian_red), "Time consume in A star path finding is {} s, iter={}.\n",
-                       (time_2 - time_1),
+                       elapsed,
                        num_iter);
         }
         cout << rog_map::RED << " -- [A*] Escape path searcher, cannot find path, return." << rog_map::RESET << endl;

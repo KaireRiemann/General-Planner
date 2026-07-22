@@ -43,6 +43,23 @@ general_planner:
   over_wall_forward_ratio: 0.9
   state2state:
     direct_line_frontend_enable: true
+    topology:
+      enable: true
+      # Keep this identical to frontend_in_known_free. Unknown space is only
+      # accepted inside the current local ROG window, never as global history.
+      unknown_as_free: true
+      min_query_distance: 3.0
+      update_budget: 16
+      region_size: 4.0
+      sample_spacing: 1.0
+      min_clearance: 0.45
+      max_clearance: 2.5
+      connection_radius: 6.0
+      dirty_padding: 2.5
+      bubble_overlap_margin: 0.10
+      max_nodes_per_region: 4
+      max_bubbles_per_region: 256
+      max_neighbors: 8
     altitude_guard_enable: true
     altitude_band: 0.25
     altitude_escape_enable: true

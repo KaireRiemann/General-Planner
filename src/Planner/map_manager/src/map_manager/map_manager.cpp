@@ -6,7 +6,8 @@
 namespace general_planner {
 
 void MapManager::syncBoundaryMapImpl(const rog_map::ROGMapROS::Ptr &map,
-                                     const BoundaryMap::Ptr &boundary_map) {
+                                     const BoundaryMap::Ptr &boundary_map,
+                                     const IncrementalTopologyGraph::Ptr &topology_graph) {
     if (!map || !boundary_map) {
         return;
     }
@@ -14,6 +15,15 @@ void MapManager::syncBoundaryMapImpl(const rog_map::ROGMapROS::Ptr &map,
         map->drainStateChanges();
     if (changes.empty()) {
         return;
+    }
+
+    if (topology_graph && topology_graph->config().enabled) {
+        std::vector<rog_map::Vec3i> changed_indices;
+        changed_indices.reserve(changes.size());
+        for (const auto &change : changes) {
+            changed_indices.push_back(change.id_g);
+        }
+        topology_graph->markDirtyVoxels(changed_indices, map->getResolution());
     }
 
     static const rog_map::Vec3i kSixNeighbors[] = {

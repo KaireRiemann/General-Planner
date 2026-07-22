@@ -23,6 +23,7 @@
 
 #include <general_core/general_planner.h>
 #include <checker/state2state_checker.hpp>
+#include <algorithm>
 #include <cmath>
 #include <stdexcept>
 #include <memory>
@@ -176,6 +177,36 @@ namespace general_planner {
         if (config_check.rejected()) {
             throw std::invalid_argument("state2state config invalid: " + config_check.code +
                                         " " + config_check.message);
+        }
+        IncrementalTopologyGraph::Config topology_config;
+        topology_config.enabled = cfg_.state2state_topology_enable;
+        topology_config.unknown_as_free = cfg_.state2state_topology_unknown_as_free;
+        topology_config.region_size = cfg_.state2state_topology_region_size;
+        topology_config.sample_spacing = cfg_.state2state_topology_sample_spacing;
+        topology_config.min_clearance = std::max(
+            cfg_.state2state_topology_min_clearance, cfg_.robot_r);
+        topology_config.max_clearance = cfg_.state2state_topology_max_clearance;
+        topology_config.connection_radius =
+            cfg_.state2state_topology_connection_radius;
+        topology_config.dirty_padding = cfg_.state2state_topology_dirty_padding;
+        topology_config.bubble_overlap_margin =
+            cfg_.state2state_topology_bubble_overlap_margin;
+        topology_config.max_nodes_per_region = static_cast<std::size_t>(
+            std::max(1, cfg_.state2state_topology_max_nodes_per_region));
+        topology_config.max_bubbles_per_region = static_cast<std::size_t>(
+            std::max(1, cfg_.state2state_topology_max_bubbles_per_region));
+        topology_config.max_neighbors = static_cast<std::size_t>(
+            std::max(1, cfg_.state2state_topology_max_neighbors));
+        topology_config.max_regions_per_update = static_cast<std::size_t>(
+            std::max(1, cfg_.state2state_topology_update_budget));
+        map_manager_->configureTopology(topology_config);
+        if (topology_config.enabled) {
+            ros_ptr_->info(
+                " -- [GeneralPlanner] Incremental topology enabled: region={:.2f}m, cell={:.2f}m, clearance={:.2f}m, unknown_as_free={}.",
+                topology_config.region_size,
+                topology_config.sample_spacing,
+                topology_config.min_clearance,
+                topology_config.unknown_as_free);
         }
         ros_ptr_->setResolution(cfg_.resolution);
         ros_ptr_->setVisualizationEn(cfg_.visualization_en);

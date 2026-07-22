@@ -67,3 +67,8 @@ add_executable(boundary_map_self_test tests/boundary_map_self_test.cpp)
 target_include_directories(boundary_map_self_test PRIVATE include)
 target_link_libraries(boundary_map_self_test map_manager)
 add_dependencies(boundary_map_self_test ${catkin_EXPORTED_TARGETS})
+
+add_executable(incremental_topology_self_test tests/incremental_topology_self_test.cpp)
+target_include_directories(incremental_topology_self_test PRIVATE include)
+target_link_libraries(incremental_topology_self_test map_manager)
+add_dependencies(incremental_topology_self_test ${catkin_EXPORTED_TARGETS})

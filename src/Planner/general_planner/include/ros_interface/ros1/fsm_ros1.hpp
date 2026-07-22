@@ -29,6 +29,7 @@
 
 #include "fsm/fsm.h"
 #include "ros_interface/ros_adapter_contract.hpp"
+#include <map_manager/topology_graph_ros1.hpp>
 
 #include "ros/ros.h"
 #include "geometry_msgs/PoseStamped.h"
@@ -74,6 +75,7 @@ namespace fsm {
         ros::Timer execution_timer_, replan_timer_, cmd_timer_, perception_safety_timer_;
         quadrotor_msgs::PositionCommand pid_cmd_;
         rog_map::ROGMapROS::Ptr map_ptr_;
+        general_planner::TopologyGraphROS1::Ptr topology_graph_ros1_;
         quadrotor_msgs::PositionCommand latest_cmd;
         nav_msgs::Path path;
         std::vector<ros::Subscriber> swarm_traj_subs_;
@@ -1227,6 +1229,8 @@ namespace fsm {
             ros_ptr_ = ros1_ptr;
             planner_ptr_ = std::make_shared<GeneralPlanner>(cfg_path, ros_ptr_, map_ptr_);
             planner_ptr_->setSwarmDroneId(cfg_.swarm_drone_id);
+            topology_graph_ros1_ = std::make_shared<general_planner::TopologyGraphROS1>(
+                    nh_, planner_ptr_->getMapManager());
             if (cfg_.dynamic_obstacle_layer_enable) {
                 dynamic_obstacle_cloud_sub_ =
                         nh_.subscribe<sensor_msgs::PointCloud2>(
