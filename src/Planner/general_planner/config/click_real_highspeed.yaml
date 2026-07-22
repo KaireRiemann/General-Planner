@@ -106,6 +106,26 @@ traj_opt:
     convex_hull_subdivision_depth: 2
     # 1: reference control cost; 2: equivalent Bezier shared-endpoint folding.
     convex_hull_cost_version: 2
+    # Constrained Bezier-hull optimization. The fixed-depth penalty path above
+    # remains available by setting this switch to false.
+    convex_hull_alm_en: false
+    # First obtain a near-feasible trajectory with the proven fixed-depth V2
+    # penalty, then let PHR-ALM perform the continuous-constraint correction.
+    convex_hull_alm_warm_start_en: true
+    convex_hull_alm_warm_start_accuracy: 1.0e-3
+    convex_hull_alm_active_set_en: false
+    convex_hull_alm_active_set_margin: 0.05
+    convex_hull_adaptive_en: true
+    convex_hull_refine_derivative_constraints: false
+    convex_hull_alm_max_outer_iterations: 8
+    convex_hull_refine_margin: 0.05
+    convex_hull_derivative_refine_margin: 0.05
+    convex_hull_alm_position_scale: 0.25
+    convex_hull_alm_initial_penalty: 3.0e+5
+    convex_hull_alm_penalty_growth: 5.0
+    convex_hull_alm_progress_ratio: 0.5
+    convex_hull_alm_constraint_tolerance: 1.0e-2
+    convex_hull_alm_require_certification: true
     smooth_eps: 0.01
     penna_t: 2.0e+5
     penna_pos: 5.0e+7

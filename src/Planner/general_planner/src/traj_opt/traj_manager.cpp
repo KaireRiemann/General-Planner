@@ -11,6 +11,7 @@
 #include <path_search/astar.h>
 #include <utils/header/color_msg_utils.hpp>
 #include <utils/optimization/optimization_utils.h>
+#include <utils/optimization/phr_alm.hpp>
 
 using namespace traj_opt;
 using namespace color_text;
@@ -545,6 +546,19 @@ ExpTrajOpt::ExpTrajOpt(const traj_opt::Config &cfg,
   {
     opt_vars_.convex_hull_cost_version = 1;
   }
+  opt_vars_.convex_hull_alm_enabled =
+      cfg_.convex_hull_en && cfg_.convex_hull_alm_en &&
+      opt_vars_.convex_hull_basis == traj_opt::convex_hull::Basis::Bezier;
+  opt_vars_.convex_hull_alm_warm_start_enabled =
+      cfg_.convex_hull_alm_warm_start_en;
+  opt_vars_.convex_hull_alm_warm_start_accuracy =
+      std::max(1.0e-12, cfg_.convex_hull_alm_warm_start_accuracy);
+  opt_vars_.convex_hull_adaptive_enabled =
+      cfg_.convex_hull_adaptive_en;
+  opt_vars_.convex_hull_alm_max_outer_iterations =
+      std::max(1, cfg_.convex_hull_alm_max_outer_iterations);
+  opt_vars_.convex_hull_alm_require_certification =
+      cfg_.convex_hull_alm_require_certification;
   opt_vars_.quadrotor_flatness = cfg_.quadrotot_flatness;
   opt_vars_.guide_z_tube_radius = std::max(0.0, cfg_.guide_z_tube_radius);
   // Guide-path integral cost is disabled until its planner-level semantics are redesigned.
@@ -566,9 +580,28 @@ ExpTrajOpt::ExpTrajOpt(const traj_opt::Config &cfg,
       opt_vars_.convex_hull_basis,
       opt_vars_.convex_hull_subdivision_depth,
       opt_vars_.convex_hull_cost_version);
+  cost_functional_manager::ExpConvexAlmCostManager::Options alm_options;
+  alm_options.adaptive = opt_vars_.convex_hull_adaptive_enabled;
+  alm_options.active_set = cfg_.convex_hull_alm_active_set_en;
+  alm_options.active_set_margin = cfg_.convex_hull_alm_active_set_margin;
+  alm_options.refine_derivative_constraints =
+      cfg_.convex_hull_refine_derivative_constraints;
+  alm_options.max_depth = opt_vars_.convex_hull_subdivision_depth;
+  alm_options.position_refine_margin =
+      cfg_.convex_hull_refine_margin;
+  alm_options.derivative_refine_margin =
+      cfg_.convex_hull_derivative_refine_margin;
+  alm_options.position_scale = cfg_.convex_hull_alm_position_scale;
+  exp_convex_alm_cost_manager_.configure(alm_options);
   last_timing_report_.mode =
       opt_vars_.convex_hull_enabled
-          ? (opt_vars_.convex_hull_basis == traj_opt::convex_hull::Basis::MINVO
+          ? (opt_vars_.convex_hull_alm_enabled
+                 ? "convex_bezier_alm_" +
+                       std::string(opt_vars_.convex_hull_adaptive_enabled
+                                       ? "adaptive_d"
+                                       : "fixed_d") +
+                       std::to_string(opt_vars_.convex_hull_subdivision_depth)
+                 : opt_vars_.convex_hull_basis == traj_opt::convex_hull::Basis::MINVO
                  ? "convex_minvo_v" +
                        std::to_string(opt_vars_.convex_hull_cost_version) +
                        "_d" +
@@ -872,7 +905,23 @@ double ExpTrajOpt::evaluateMincoCost(const VecDf &x, VecDf &g)
 {
   opt_vars_.iter_num++;
   double cost = 0.0;
-  if (opt_vars_.convex_hull_enabled)
+  if (opt_vars_.convex_hull_alm_enabled &&
+      opt_vars_.convex_hull_alm_objective_active)
+  {
+    cost = optimizer_.evaluate(
+        x, g, linear_time_cost_, exp_convex_alm_cost_manager_);
+    opt_vars_.guide_integral_violation =
+        exp_convex_alm_cost_manager_.guideIntegralViolation();
+    opt_vars_.guide_path_cost_log =
+        exp_convex_alm_cost_manager_.guideCostLog();
+    opt_vars_.guide_path_max_abs_time_grad =
+        exp_convex_alm_cost_manager_.guideMaxAbsTimeGrad();
+    opt_vars_.guide_path_out_of_time_range_samples =
+        exp_convex_alm_cost_manager_.guideOutOfTimeRangeSamples();
+    opt_vars_.penalty_log.tail(7) =
+        exp_convex_alm_cost_manager_.getPenaltyLog().segment(1, 7);
+  }
+  else if (opt_vars_.convex_hull_enabled)
   {
     cost = optimizer_.evaluate(
         x, g, linear_time_cost_, exp_convex_cost_manager_);
@@ -997,6 +1046,25 @@ double ExpTrajOpt::optimize(Trajectory &traj, double rel_cost_tol)
                                  opt_vars_.guide_path_z_tube_radius,
                                  opt_vars_.guide_path_huber_delta,
                                  opt_vars_.guide_path_time_gradient_en);
+  exp_convex_alm_cost_manager_.reset(
+      &opt_vars_.h_polytopes,
+      &opt_vars_.h_poly_idx,
+      &opt_vars_.waypoint_attractor,
+      &opt_vars_.waypoint_attractor_dead_d,
+      opt_vars_.smooth_eps,
+      opt_vars_.magnitude_bounds,
+      opt_vars_.penalty_weights,
+      &opt_vars_.quadrotor_flatness,
+      swarm_config_,
+      swarm_trajs_,
+      swarm_current_wall_time_,
+      &opt_vars_.guide_path,
+      &opt_vars_.guide_t,
+      opt_vars_.weight_guide_integral,
+      opt_vars_.guide_path_tube_radius,
+      opt_vars_.guide_path_z_tube_radius,
+      opt_vars_.guide_path_huber_delta,
+      opt_vars_.guide_path_time_gradient_en);
 
   opt_vars_.iter_num = 0;
   opt_vars_.lbfgs_iterations = 0;
@@ -1014,13 +1082,122 @@ double ExpTrajOpt::optimize(Trajectory &traj, double rel_cost_tol)
 
   optimizer_.resetTimingStatistics();
   const auto optimization_begin = std::chrono::steady_clock::now();
-  const int ret = lbfgs::lbfgs_optimize(x,
-                                        min_cost,
-                                        &ExpTrajOpt::costFunctional,
-                                        nullptr,
-                                        &ExpTrajOpt::progressFunctional,
-                                        this,
-                                        params);
+  int ret = 0;
+  std::size_t alm_outer_iterations = 0;
+  std::size_t alm_inner_solves = 0;
+  std::size_t alm_topology_changes = 0;
+  double alm_warm_start_seconds = 0.0;
+  cost_functional_manager::ExpConvexAlmCostManager::UpdateReport alm_report;
+  if (opt_vars_.convex_hull_alm_enabled)
+  {
+    if (opt_vars_.convex_hull_alm_warm_start_enabled)
+    {
+      opt_vars_.convex_hull_alm_objective_active = false;
+      lbfgs::lbfgs_parameter_t warm_start_params = params;
+      warm_start_params.delta = std::max(
+          rel_cost_tol,
+          opt_vars_.convex_hull_alm_warm_start_accuracy);
+      const auto warm_start_begin = std::chrono::steady_clock::now();
+      lbfgs::lbfgs_optimize(x,
+                            min_cost,
+                            &ExpTrajOpt::costFunctional,
+                            nullptr,
+                            &ExpTrajOpt::progressFunctional,
+                            this,
+                            warm_start_params);
+      alm_warm_start_seconds =
+          std::chrono::duration<double>(
+              std::chrono::steady_clock::now() - warm_start_begin)
+              .count();
+    }
+    opt_vars_.convex_hull_alm_objective_active = true;
+    optimization::phr_alm::Parameters phr_parameters;
+    phr_parameters.max_outer_iterations =
+        opt_vars_.convex_hull_alm_max_outer_iterations;
+    phr_parameters.initial_penalty =
+        cfg_.convex_hull_alm_initial_penalty;
+    phr_parameters.penalty_growth =
+        cfg_.convex_hull_alm_penalty_growth;
+    phr_parameters.progress_ratio =
+        cfg_.convex_hull_alm_progress_ratio;
+    phr_parameters.constraint_tolerance =
+        cfg_.convex_hull_alm_constraint_tolerance;
+    // A feasible penalty warm start is not necessarily a constrained KKT point.
+    // Always run at least one PHR subproblem to recover the ALM stationarity
+    // correction; skipping it increased closed-loop replans in the benchmark.
+    phr_parameters.accept_initial_feasible = false;
+    optimization::phr_alm::Report phr_report;
+    const auto phr_status = optimization::phr_alm::solve(
+        x,
+        min_cost,
+        phr_parameters,
+        [this](const VecDf &decision, VecDf &constraints) {
+          if (!optimizer_.updateTrajectoryFromDecisionVector(decision) ||
+              !exp_convex_alm_cost_manager_.initializeAlm(
+                  optimizer_.getTrajectory()))
+          {
+            return false;
+          }
+          constraints = exp_convex_alm_cost_manager_.constraintValues();
+          return true;
+        },
+        [this](const VecDf &multipliers, double penalty) {
+          exp_convex_alm_cost_manager_.setPhrState(multipliers, penalty);
+        },
+        [this, &params](VecDf &decision, double &value) {
+          return lbfgs::lbfgs_optimize(
+              decision,
+              value,
+              &ExpTrajOpt::costFunctional,
+              nullptr,
+              &ExpTrajOpt::progressFunctional,
+              this,
+              params);
+        },
+        [this](const VecDf &decision,
+               VecDf &constraints,
+               optimization::phr_alm::TopologyUpdate &topology_update) {
+          if (!optimizer_.updateTrajectoryFromDecisionVector(decision))
+          {
+            return false;
+          }
+          const auto report = exp_convex_alm_cost_manager_.updateAlmState(
+              optimizer_.getTrajectory());
+          constraints = exp_convex_alm_cost_manager_.constraintValues();
+          topology_update =
+              !report.topology_changed
+                  ? optimization::phr_alm::TopologyUpdate::UNCHANGED
+                  : report.topology_append_only
+                        ? optimization::phr_alm::TopologyUpdate::APPEND
+                        : optimization::phr_alm::TopologyUpdate::REPLACE;
+          return true;
+        },
+        phr_report);
+    ret = phr_report.inner_status;
+    if (phr_status == optimization::phr_alm::Status::INVALID_PROBLEM)
+    {
+      ret = -1;
+    }
+    alm_outer_iterations =
+        static_cast<std::size_t>(phr_report.outer_iterations);
+    alm_inner_solves =
+        static_cast<std::size_t>(phr_report.inner_solves);
+    alm_topology_changes =
+        static_cast<std::size_t>(phr_report.topology_changes);
+    alm_report = exp_convex_alm_cost_manager_.lastUpdateReport();
+    alm_report.certified = phr_report.converged();
+    alm_report.max_normalized_violation = phr_report.max_violation;
+  }
+  else
+  {
+    ret = lbfgs::lbfgs_optimize(x,
+                                min_cost,
+                                &ExpTrajOpt::costFunctional,
+                                nullptr,
+                                &ExpTrajOpt::progressFunctional,
+                                this,
+                                params);
+  }
   const double optimization_seconds =
       std::chrono::duration<double>(std::chrono::steady_clock::now() -
                                     optimization_begin)
@@ -1052,11 +1229,45 @@ double ExpTrajOpt::optimize(Trajectory &traj, double rel_cost_tol)
           : 0;
   last_timing_report_.hull_control_checks_per_evaluation =
       opt_vars_.convex_hull_enabled
-          ? exp_convex_cost_manager_.activeControlPointChecksPerEvaluation()
+          ? (opt_vars_.convex_hull_alm_enabled
+                 ? exp_convex_alm_cost_manager_
+                       .activeControlPointChecksPerEvaluation()
+                 : exp_convex_cost_manager_
+                       .activeControlPointChecksPerEvaluation())
           : 0;
+  last_timing_report_.alm_constraints =
+      opt_vars_.convex_hull_alm_enabled
+          ? exp_convex_alm_cost_manager_.constraintCount()
+          : 0;
+  last_timing_report_.alm_outer_iterations = alm_outer_iterations;
+  last_timing_report_.alm_inner_solves = alm_inner_solves;
+  last_timing_report_.alm_topology_changes = alm_topology_changes;
+  last_timing_report_.adaptive_coarse_segments =
+      opt_vars_.convex_hull_alm_enabled
+          ? static_cast<std::size_t>(
+                exp_convex_alm_cost_manager_.coarseSegmentCount())
+          : 0;
+  last_timing_report_.adaptive_fine_segments =
+      opt_vars_.convex_hull_alm_enabled
+          ? static_cast<std::size_t>(
+                exp_convex_alm_cost_manager_.fineSegmentCount())
+          : 0;
+  last_timing_report_.alm_max_violation =
+      opt_vars_.convex_hull_alm_enabled
+          ? alm_report.max_normalized_violation
+          : 0.0;
+  last_timing_report_.alm_certified =
+      opt_vars_.convex_hull_alm_enabled && alm_report.certified;
+  last_timing_report_.alm_warm_start_seconds = alm_warm_start_seconds;
   last_timing_report_.mode =
       opt_vars_.convex_hull_enabled
-          ? (opt_vars_.convex_hull_basis == traj_opt::convex_hull::Basis::MINVO
+          ? (opt_vars_.convex_hull_alm_enabled
+                 ? "convex_bezier_alm_" +
+                       std::string(opt_vars_.convex_hull_adaptive_enabled
+                                       ? "adaptive_d"
+                                       : "fixed_d") +
+                       std::to_string(opt_vars_.convex_hull_subdivision_depth)
+                 : opt_vars_.convex_hull_basis == traj_opt::convex_hull::Basis::MINVO
                  ? "convex_minvo_v" +
                        std::to_string(opt_vars_.convex_hull_cost_version) +
                        "_d" +
@@ -1104,6 +1315,26 @@ double ExpTrajOpt::optimize(Trajectory &traj, double rel_cost_tol)
       last_timing_report_.dense_nodes_per_evaluation;
   cumulative_timing_report_.hull_control_checks_per_evaluation =
       last_timing_report_.hull_control_checks_per_evaluation;
+  cumulative_timing_report_.alm_constraints =
+      last_timing_report_.alm_constraints;
+  cumulative_timing_report_.alm_outer_iterations +=
+      last_timing_report_.alm_outer_iterations;
+  cumulative_timing_report_.alm_inner_solves +=
+      last_timing_report_.alm_inner_solves;
+  cumulative_timing_report_.alm_topology_changes +=
+      last_timing_report_.alm_topology_changes;
+  cumulative_timing_report_.adaptive_coarse_segments +=
+      last_timing_report_.adaptive_coarse_segments;
+  cumulative_timing_report_.adaptive_fine_segments +=
+      last_timing_report_.adaptive_fine_segments;
+  cumulative_timing_report_.alm_max_violation =
+      std::max(cumulative_timing_report_.alm_max_violation,
+               last_timing_report_.alm_max_violation);
+  cumulative_timing_report_.alm_certified =
+      cumulative_timing_report_.alm_certified ||
+      last_timing_report_.alm_certified;
+  cumulative_timing_report_.alm_warm_start_seconds +=
+      last_timing_report_.alm_warm_start_seconds;
   cumulative_timing_report_.dense_integral_seconds +=
       last_timing_report_.dense_integral_seconds;
   cumulative_timing_report_.control_point_seconds +=
@@ -1172,10 +1403,22 @@ double ExpTrajOpt::optimize(Trajectory &traj, double rel_cost_tol)
               << dense_share_of_optimization * 100.0 << "%" << std::endl;
   }
 
-  if (ret < 0)
+  const bool certification_failed =
+      opt_vars_.convex_hull_alm_enabled &&
+      opt_vars_.convex_hull_alm_require_certification &&
+      !alm_report.certified;
+  if (ret < 0 || certification_failed)
   {
     traj.clear();
-    std::cout << YELLOW << " -- [ExpTrajOpt] Optimization failed: " << lbfgs::lbfgs_strerror(ret)
+    std::cout << YELLOW << " -- [ExpTrajOpt] Optimization failed: "
+              << (certification_failed
+                      ? "convex-hull ALM certificate not satisfied"
+                      : lbfgs::lbfgs_strerror(ret))
+              << ", alm_violation=" << alm_report.max_normalized_violation
+              << ", alm_position_violation="
+              << alm_report.max_position_violation
+              << ", alm_derivative_violation="
+              << alm_report.max_derivative_violation
               << ", guide_excess=" << opt_vars_.guide_integral_violation
               << ", guide_cost_sample=" << opt_vars_.guide_path_cost_log
               << ", guide_max_abs_gt=" << opt_vars_.guide_path_max_abs_time_grad

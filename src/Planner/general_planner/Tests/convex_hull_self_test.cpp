@@ -1,6 +1,8 @@
 #include "traj_opt/convex_hull/convex_hull.hpp"
+#include "traj_opt/costfunctional_manager/exp_convex_alm_cost_manager.hpp"
 #include "traj_opt/costfunctional_manager/exp_convex_cost_manager.hpp"
 #include "traj_opt/minco/minco_optimizer.hpp"
+#include "utils/optimization/phr_alm.hpp"
 
 #include <Eigen/Dense>
 
@@ -815,6 +817,291 @@ void checkExpConvexCostManagerGradientAndTiming(int cost_version)
           "ExpConvexCostManager gradient failed finite differences.");
 }
 
+void checkAdaptiveAlmGradientAndCertificate()
+{
+  using Optimizer =
+      minco::MINCOOptimizer<3, 4, ExpTimeMap, IdentitySpatialMap>;
+
+  Optimizer optimizer;
+  optimizer.setEnergyWeight(0.0);
+  optimizer.setSamplesPerPiece(2);
+  std::vector<double> times{0.9, 1.1, 0.8};
+  Optimizer::WaypointsType waypoints(4, 3);
+  waypoints << 0.0, 0.0, 0.0,
+      0.8, 0.1, 0.0,
+      1.7, -0.1, 0.0,
+      2.5, 0.0, 0.0;
+  Optimizer::BoundaryState head = Optimizer::BoundaryState::Zero();
+  Optimizer::BoundaryState tail = Optimizer::BoundaryState::Zero();
+  head.col(0) = waypoints.row(0).transpose();
+  tail.col(0) = waypoints.row(3).transpose();
+  require(optimizer.setInitState(times, waypoints, head, tail),
+          "Failed to initialize adaptive ALM optimizer.");
+
+  auto make_box = [](double x_min, double x_max) {
+    general_utils::MatDf box(6, 4);
+    box << 1.0, 0.0, 0.0, -x_max,
+        -1.0, 0.0, 0.0, x_min,
+        0.0, 1.0, 0.0, -10.0,
+        0.0, -1.0, 0.0, -10.0,
+        0.0, 0.0, 1.0, -10.0,
+        0.0, 0.0, -1.0, -10.0;
+    return box;
+  };
+  general_utils::PolyhedraH corridors(3);
+  corridors[0] = make_box(-10.0, 10.0);
+  corridors[1] = make_box(-10.0, 1.2);
+  corridors[2] = make_box(-10.0, 10.0);
+  Eigen::VectorXi corridor_indices(3);
+  corridor_indices << 0, 1, 2;
+
+  general_utils::VecDf bounds(6);
+  bounds << 20.0, 30.0, 100.0, 20.0, 0.1, 100.0;
+  general_utils::VecDf weights = general_utils::VecDf::Zero(7);
+  weights(0) = 1.0;
+  flatness::FlatnessMap flatness_map;
+  flatness_map.reset(1.0, 9.81, 0.0, 0.0, 0.0, 1.0e-4);
+  traj_opt::SwarmPenaltyConfig swarm_config;
+  traj_opt::SwarmTrajectoriesConstPtr swarm_trajectories;
+
+  cost_functional_manager::ExpConvexAlmCostManager manager;
+  cost_functional_manager::ExpConvexAlmCostManager::Options options;
+  options.adaptive = true;
+  options.active_set = false;
+  options.max_depth = 2;
+  options.position_refine_margin = 0.05;
+  options.derivative_refine_margin = 0.05;
+  options.position_scale = 0.25;
+  manager.configure(options);
+  manager.reset(&corridors,
+                &corridor_indices,
+                nullptr,
+                nullptr,
+                1.0e-2,
+                bounds,
+                weights,
+                &flatness_map,
+                swarm_config,
+                swarm_trajectories,
+                0.0);
+
+  Eigen::VectorXd x = optimizer.generateInitialGuess();
+  require(optimizer.updateTrajectoryFromDecisionVector(x),
+          "Failed to reconstruct adaptive ALM trajectory.");
+  require(manager.initializeAlm(optimizer.getTrajectory()),
+          "Failed to initialize adaptive ALM constraints.");
+  manager.setPhrState(
+      Eigen::VectorXd::Zero(
+          static_cast<Eigen::Index>(manager.constraintCount())),
+      100.0);
+  require(manager.coarseSegmentCount() == 2 &&
+              manager.fineSegmentCount() == 1,
+          "Adaptive ALM did not keep free segments coarse and refine the constrained segment.");
+  require(manager.activeControlPointChecksPerEvaluation() == 45,
+          "Adaptive ALM selected an unexpected number of position controls.");
+  require(manager.constraintCount() == 270,
+          "Adaptive ALM selected an unexpected number of half-space constraints.");
+
+  ZeroTimeCost time_cost;
+  Eigen::VectorXd gradient = Eigen::VectorXd::Zero(x.size());
+  const double cost = optimizer.evaluate(x, gradient, time_cost, manager);
+  require(cost > 1.0e-12 && gradient.allFinite(),
+          "Adaptive ALM cost or gradient is inactive.");
+  require(!manager.usesDenseSampling(),
+          "Pure adaptive ALM constraints should bypass dense sampling.");
+
+  constexpr double epsilon = 1.0e-6;
+  double max_error = 0.0;
+  for (Eigen::Index i = 0; i < x.size(); ++i)
+  {
+    Eigen::VectorXd plus = x;
+    Eigen::VectorXd minus = x;
+    plus(i) += epsilon;
+    minus(i) -= epsilon;
+    Eigen::VectorXd scratch_plus = Eigen::VectorXd::Zero(x.size());
+    Eigen::VectorXd scratch_minus = Eigen::VectorXd::Zero(x.size());
+    const double value_plus =
+        optimizer.evaluate(plus, scratch_plus, time_cost, manager);
+    const double value_minus =
+        optimizer.evaluate(minus, scratch_minus, time_cost, manager);
+    const double numerical =
+        (value_plus - value_minus) / (2.0 * epsilon);
+    max_error = std::max(
+        max_error,
+        std::abs(numerical - gradient(i)) /
+            std::max({1.0, std::abs(numerical), std::abs(gradient(i))}));
+  }
+  require(max_error < 1.0e-4,
+          "Adaptive ALM gradient failed finite differences.");
+
+  require(optimizer.updateTrajectoryFromDecisionVector(x),
+          "Failed to reconstruct adaptive ALM certificate trajectory.");
+  const auto report = manager.updateAlmState(optimizer.getTrajectory());
+  require(report.max_normalized_violation > 0.0 && !report.certified &&
+              !report.topology_changed,
+          "Adaptive ALM violation certificate is incorrect.");
+
+  options.active_set = true;
+  options.active_set_margin = 0.0;
+  manager.configure(options);
+  manager.reset(&corridors,
+                &corridor_indices,
+                nullptr,
+                nullptr,
+                1.0e-2,
+                bounds,
+                weights,
+                &flatness_map,
+                swarm_config,
+                swarm_trajectories,
+                0.0);
+  require(manager.initializeAlm(optimizer.getTrajectory()) &&
+              manager.constraintCount() > 0 &&
+              manager.constraintCount() < manager.fullConstraintCount(),
+          "Adaptive ALM active set did not reduce the full certificate layout.");
+
+  corridors[1] = make_box(-10.0, 10.0);
+  manager.reset(&corridors,
+                &corridor_indices,
+                nullptr,
+                nullptr,
+                1.0e-2,
+                bounds,
+                weights,
+                &flatness_map,
+                swarm_config,
+                swarm_trajectories,
+                0.0);
+  require(manager.initializeAlm(optimizer.getTrajectory()),
+          "Failed to initialize feasible adaptive ALM certificate.");
+  const auto feasible_report =
+      manager.updateAlmState(optimizer.getTrajectory());
+  require(feasible_report.certified &&
+              manager.coarseSegmentCount() == 3 &&
+              manager.fineSegmentCount() == 0,
+          "Adaptive ALM failed to certify an empty-corridor trajectory at depth zero.");
+}
+
+void checkGenericPhrAlmSolver()
+{
+  Eigen::VectorXd x(1);
+  x(0) = 2.0;
+  Eigen::VectorXd active_lambda;
+  double active_penalty = 1.0;
+  double minimum = 0.0;
+  optimization::phr_alm::Parameters parameters;
+  parameters.max_outer_iterations = 12;
+  parameters.initial_penalty = 1.0;
+  parameters.penalty_growth = 10.0;
+  parameters.progress_ratio = 0.4;
+  parameters.constraint_tolerance = 1.0e-7;
+  optimization::phr_alm::Report report;
+  const auto status = optimization::phr_alm::solve(
+      x,
+      minimum,
+      parameters,
+      [](const Eigen::VectorXd &decision, Eigen::VectorXd &constraints) {
+        constraints = decision;
+        return true;
+      },
+      [&active_lambda, &active_penalty](const Eigen::VectorXd &multipliers,
+                                        double penalty) {
+        active_lambda = multipliers;
+        active_penalty = penalty;
+      },
+      [&active_lambda, &active_penalty](Eigen::VectorXd &decision,
+                                        double &value) {
+        // Exact minimizer of 0.5*(x-2)^2 plus the active PHR branch for x<=0.
+        const double lambda = active_lambda(0);
+        const double active_x =
+            (2.0 - lambda) / (1.0 + active_penalty);
+        decision(0) =
+            lambda + active_penalty * active_x > 0.0 ? active_x : 2.0;
+        const double shifted =
+            std::max(0.0, lambda + active_penalty * decision(0));
+        value = 0.5 * (decision(0) - 2.0) * (decision(0) - 2.0) +
+                0.5 * (shifted * shifted - lambda * lambda) /
+                    active_penalty;
+        return 0;
+      },
+      [](const Eigen::VectorXd &decision,
+         Eigen::VectorXd &constraints,
+         optimization::phr_alm::TopologyUpdate &topology_update) {
+        constraints = decision;
+        topology_update = optimization::phr_alm::TopologyUpdate::UNCHANGED;
+        return true;
+      },
+      report);
+  require(status == optimization::phr_alm::Status::CONVERGED &&
+              report.converged() && x(0) <= parameters.constraint_tolerance,
+          "Generic PHR-ALM solver failed a scalar inequality problem.");
+
+  bool replace_topology_once = true;
+  int topology_inner_solves = 0;
+  parameters.max_outer_iterations = 1;
+  x(0) = -1.0;
+  const auto topology_status = optimization::phr_alm::solve(
+      x,
+      minimum,
+      parameters,
+      [](const Eigen::VectorXd &decision, Eigen::VectorXd &constraints) {
+        constraints = decision;
+        return true;
+      },
+      [](const Eigen::VectorXd &, double) {},
+      [&topology_inner_solves](Eigen::VectorXd &, double &value) {
+        ++topology_inner_solves;
+        value = 0.0;
+        return 0;
+      },
+      [&replace_topology_once](const Eigen::VectorXd &decision,
+                               Eigen::VectorXd &constraints,
+                               optimization::phr_alm::TopologyUpdate &topology_update) {
+        constraints = decision;
+        topology_update =
+            replace_topology_once
+                ? optimization::phr_alm::TopologyUpdate::REPLACE
+                : optimization::phr_alm::TopologyUpdate::UNCHANGED;
+        replace_topology_once = false;
+        return true;
+      },
+      report);
+  require(topology_status == optimization::phr_alm::Status::CONVERGED &&
+              report.outer_iterations == 1 && report.inner_solves == 2 &&
+              report.topology_changes == 1 && topology_inner_solves == 2,
+          "A topology replacement incorrectly consumed a PHR outer iteration.");
+
+  parameters.accept_initial_feasible = true;
+  int skipped_inner_solves = 0;
+  x(0) = -1.0;
+  const auto initially_feasible_status = optimization::phr_alm::solve(
+      x,
+      minimum,
+      parameters,
+      [](const Eigen::VectorXd &decision, Eigen::VectorXd &constraints) {
+        constraints = decision;
+        return true;
+      },
+      [](const Eigen::VectorXd &, double) {},
+      [&skipped_inner_solves](Eigen::VectorXd &, double &) {
+        ++skipped_inner_solves;
+        return 0;
+      },
+      [](const Eigen::VectorXd &decision,
+         Eigen::VectorXd &constraints,
+         optimization::phr_alm::TopologyUpdate &topology_update) {
+        constraints = decision;
+        topology_update = optimization::phr_alm::TopologyUpdate::UNCHANGED;
+        return true;
+      },
+      report);
+  require(initially_feasible_status ==
+              optimization::phr_alm::Status::CONVERGED &&
+              skipped_inner_solves == 0 && report.inner_solves == 0 &&
+              report.outer_iterations == 0,
+          "PHR-ALM did not accept an explicitly allowed feasible warm start.");
+}
+
 } // namespace
 
 int main()
@@ -840,6 +1127,8 @@ int main()
     checkOptimizerGradient();
     checkExpConvexCostManagerGradientAndTiming(1);
     checkExpConvexCostManagerGradientAndTiming(2);
+    checkAdaptiveAlmGradientAndCertificate();
+    checkGenericPhrAlmSolver();
     std::cout << "convex_hull_self_test passed" << std::endl;
   }
   catch (const std::exception &error)

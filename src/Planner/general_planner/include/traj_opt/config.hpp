@@ -79,6 +79,22 @@ namespace traj_opt {
         int convex_hull_basis{0};
         int convex_hull_subdivision_depth{0};
         int convex_hull_cost_version{1};
+        bool convex_hull_alm_en{false};
+        bool convex_hull_alm_warm_start_en{true};
+        double convex_hull_alm_warm_start_accuracy{1.0e-3};
+        bool convex_hull_alm_active_set_en{false};
+        double convex_hull_alm_active_set_margin{0.05};
+        bool convex_hull_adaptive_en{true};
+        bool convex_hull_refine_derivative_constraints{false};
+        int convex_hull_alm_max_outer_iterations{4};
+        double convex_hull_refine_margin{0.05};
+        double convex_hull_derivative_refine_margin{0.05};
+        double convex_hull_alm_position_scale{0.25};
+        double convex_hull_alm_initial_penalty{3.0e5};
+        double convex_hull_alm_penalty_growth{5.0};
+        double convex_hull_alm_progress_ratio{0.5};
+        double convex_hull_alm_constraint_tolerance{1.0e-2};
+        bool convex_hull_alm_require_certification{true};
         double opt_accuracy{0};
         double init_profile_vel_ratio{0.65};
         double init_duration_scale{1.25};
@@ -118,6 +134,38 @@ namespace traj_opt {
                              convex_hull_subdivision_depth, 0);
             loader.LoadParam("traj_opt" + ns + "convex_hull_cost_version",
                              convex_hull_cost_version, 1);
+            loader.LoadParam("traj_opt" + ns + "convex_hull_alm_en",
+                             convex_hull_alm_en, false);
+            loader.LoadParam("traj_opt" + ns + "convex_hull_alm_warm_start_en",
+                             convex_hull_alm_warm_start_en, true);
+            loader.LoadParam("traj_opt" + ns + "convex_hull_alm_warm_start_accuracy",
+                             convex_hull_alm_warm_start_accuracy, 1.0e-3);
+            loader.LoadParam("traj_opt" + ns + "convex_hull_alm_active_set_en",
+                             convex_hull_alm_active_set_en, false);
+            loader.LoadParam("traj_opt" + ns + "convex_hull_alm_active_set_margin",
+                             convex_hull_alm_active_set_margin, 0.05);
+            loader.LoadParam("traj_opt" + ns + "convex_hull_adaptive_en",
+                             convex_hull_adaptive_en, true);
+            loader.LoadParam("traj_opt" + ns + "convex_hull_refine_derivative_constraints",
+                             convex_hull_refine_derivative_constraints, false);
+            loader.LoadParam("traj_opt" + ns + "convex_hull_alm_max_outer_iterations",
+                             convex_hull_alm_max_outer_iterations, 4);
+            loader.LoadParam("traj_opt" + ns + "convex_hull_refine_margin",
+                             convex_hull_refine_margin, 0.05);
+            loader.LoadParam("traj_opt" + ns + "convex_hull_derivative_refine_margin",
+                             convex_hull_derivative_refine_margin, 0.05);
+            loader.LoadParam("traj_opt" + ns + "convex_hull_alm_position_scale",
+                             convex_hull_alm_position_scale, 0.25);
+            loader.LoadParam("traj_opt" + ns + "convex_hull_alm_initial_penalty",
+                             convex_hull_alm_initial_penalty, 3.0e5);
+            loader.LoadParam("traj_opt" + ns + "convex_hull_alm_penalty_growth",
+                             convex_hull_alm_penalty_growth, 5.0);
+            loader.LoadParam("traj_opt" + ns + "convex_hull_alm_progress_ratio",
+                             convex_hull_alm_progress_ratio, 0.5);
+            loader.LoadParam("traj_opt" + ns + "convex_hull_alm_constraint_tolerance",
+                             convex_hull_alm_constraint_tolerance, 1.0e-2);
+            loader.LoadParam("traj_opt" + ns + "convex_hull_alm_require_certification",
+                             convex_hull_alm_require_certification, true);
             loader.LoadParam("traj_opt" + ns + "init_profile_vel_ratio", init_profile_vel_ratio, 0.65);
             loader.LoadParam("traj_opt" + ns + "init_duration_scale", init_duration_scale, 1.25);
             loader.LoadParam("traj_opt" + ns + "terminal_vel_ratio", terminal_vel_ratio, 0.0);

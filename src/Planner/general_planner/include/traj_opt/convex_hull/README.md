@@ -232,3 +232,158 @@ it does not change the optimization landscape. Closed-loop totals still have
 run-to-run variance because real-time replanning can produce a different number
 of polynomial pieces, so kernel timings and convergence counters should always
 be inspected alongside the final total.
+
+## Adaptive constrained optimization with PHR-ALM
+
+The optional constrained state2state path replaces the polynomial penalty
+terms by explicit inequalities `g_i(x) <= 0`. Position control points use
+
+```text
+g_pos(Q) = (a^T Q + b) / position_scale,
+```
+
+for every active corridor plane. Velocity, acceleration and jerk hodograph
+controls use
+
+```text
+g_r(Q_r) = ||Q_r||^2 / bound_r^2 - 1.
+```
+
+The generic Powell-Hestenes-Rockafellar outer solver is implemented in
+`utils/optimization/phr_alm.hpp`, next to LBFGS, SDLP and SDQP. For fixed
+multipliers and penalty it asks the existing LBFGS solver to minimize
+
+```text
+L_rho(x, lambda) = f(x)
+  + sum_i [max(0, lambda_i + rho g_i(x))^2 - lambda_i^2] / (2 rho).
+```
+
+The `-lambda_i^2/(2 rho)` term is constant during one inner solve, so it does
+not change its gradient, but it is required for the standard PHR merit value
+used by outer-loop bookkeeping and LBFGS stopping tests.
+
+After the LBFGS inner solve it evaluates all constraints, updates
+`lambda_i <- max(0, lambda_i + rho g_i)`, and grows `rho` only when the maximum
+violation has not decreased sufficiently. Thus LBFGS remains the only
+unconstrained inner optimizer; PHR-ALM supplies the constrained outer loop.
+
+`ExpConvexAlmCostManager` owns the trajectory-specific part: the constraint
+layout, values and reverse-mode Jacobian product. For every active constraint,
+the PHR derivative with respect to its control point is
+
+```text
+dL/dQ_i = max(0, lambda_i + rho g_i) * dg_i/dQ_i.
+```
+
+These gradients are accumulated on the selected hodograph controls, reversed
+through the Bezier difference chain, passed once through
+`Representation::backwardAdd()`, and then propagated by MINCO's existing
+banded-system adjoint to waypoint and time variables. There is no finite
+difference or sampled approximation in this chain.
+
+Adaptive subdivision selects depth zero for a source MINCO segment while its
+coarse position hull has sufficient corridor margin, and selects the configured
+maximum depth near a corridor plane. Proactive derivative-margin refinement is
+disabled by default because it made nearly every segment fine in the high-speed
+test; an actually violated derivative hull still triggers refinement. The
+selected topology is frozen for an entire LBFGS inner solve. It may be refined
+only between inner solves. Replacing a subdivision layout resets its PHR
+multipliers and does not consume a formal outer iteration. Appending constraints
+in the experimental active-set mode preserves the old multiplier prefix.
+
+Before PHR starts, the current implementation optionally runs one loose fixed
+depth-two V2 penalty solve. This supplies a near-feasible trajectory cheaply
+and leaves PHR to perform the stationarity and certificate correction. PHR
+always performs at least one inner solve: penalty feasibility alone is not a
+constrained KKT condition. An experimental constraint active set is available,
+but is disabled by default because repeated constraint insertion increased the
+number of LBFGS solves on the full-flight benchmark.
+
+The state2state switches are:
+
+```yaml
+traj_opt:
+  exp_traj:
+    convex_hull_en: true
+    convex_hull_basis: 0
+    convex_hull_subdivision_depth: 2
+    convex_hull_alm_en: true
+    convex_hull_alm_warm_start_en: true
+    convex_hull_alm_warm_start_accuracy: 1.0e-3
+    convex_hull_alm_active_set_en: false
+    convex_hull_alm_active_set_margin: 0.05
+    convex_hull_adaptive_en: true
+    convex_hull_refine_derivative_constraints: false
+    convex_hull_alm_max_outer_iterations: 8
+    convex_hull_refine_margin: 0.05
+    convex_hull_alm_position_scale: 0.25
+    convex_hull_alm_initial_penalty: 3.0e+5
+    convex_hull_alm_penalty_growth: 5.0
+    convex_hull_alm_progress_ratio: 0.5
+    convex_hull_alm_constraint_tolerance: 1.0e-2
+    convex_hull_alm_require_certification: true
+```
+
+Setting `convex_hull_alm_en: false` retains the fixed-depth smooth-penalty
+baseline. Setting `convex_hull_en: false` retains the original dense numerical
+integral. Exploration and SE3 optimizers do not read these state2state options.
+
+## Short plan-only comparison
+
+A same-command, one-second click benchmark was run in `ros1_noetic`. The
+requested goal was `[69.032, 1.901, 1.500]`; the running local-map guard
+projected it to the same accepted goal near `[7.172, 1.901, 1.500]` in all
+three runs. Each timing CSV contained 14 optimizer records, so this comparison
+measures the short four-piece regime rather than the earlier full 100 m flight.
+
+| mode | objective evaluations | LBFGS iterations | total optimization | certificate |
+|---|---:|---:|---:|---:|
+| dense integral | 6,125 | 3,337 | 116.111 ms | sampled only |
+| fixed Bezier V2 depth2 penalty | 5,816 | 3,218 | 120.209 ms | penalty, no strict acceptance test |
+| adaptive Bezier depth0/depth2 PHR-ALM | 7,433 | 3,711 | 142.854 ms | 14/14 accepted |
+
+The final ALM run used an average of 3.86 outer iterations and its adaptive
+layouts averaged 2.29 coarse and 1.71 fine source segments. Updating and
+back-propagating only the selected coarse/fine representations reduced the
+control functional from about 6.20 to 4.35 microseconds per objective
+evaluation. Closed-loop convergence varied, however: this run made more LBFGS
+evaluations and was about 18.8% slower than fixed depth2 and 23.0% slower than
+dense sampling in this short-trajectory case. This is the current honest
+performance boundary: the constrained formulation is functional and
+certifying, while the next optimization target is batching active half-space
+constraints and using an inexact-to-accurate inner LBFGS tolerance schedule.
+
+## Full-goal PHR optimization experiment
+
+The full closed-loop goal `[69.032, 1.901, 1.500]` was used to isolate why the
+first PHR version was slow and to test the corrections. These runs are not
+cycle-identical: real-time replanning changes the number and geometry of later
+subproblems, so both total time and kernel counters are shown.
+
+| variant | optimizer calls | evaluations | mean inner solves | total optimization |
+|---|---:|---:|---:|---:|
+| initial adaptive PHR | 195 | 146,532 | n/a | 3180.546 ms |
+| corrected PHR + loose V2 warm start (best observed run) | 157 | 101,522 | 3.268 | 2259.901 ms |
+| experimental constraint active set | 145 | 181,070 | 4.628 | 3870.718 ms |
+| warm-start accuracy `1e-4` | 153 | 114,145 | n/a | 2883.486 ms |
+| initial penalty `1e6` | 155 | 112,578 | 2.865 | 2901.369 ms |
+| final configuration confirmation | 161 | 102,208 | 2.988 | 2655.911 ms |
+
+The final confirmation certified 138 of 161 attempts, used on average 1.075
+coarse and 2.938 fine source pieces, and spent 511.360 ms in the penalty warm
+start, 973.868 ms in the control-point functional, 2511.680 ms in complete
+MINCO evaluations, and 2644.468 ms in LBFGS. Relative to the initial PHR run,
+the final total is 16.5% lower; the best observed run was 28.9% lower. It is
+still slower than the historical fixed-depth V2 penalty result of 1869.104 ms,
+which does not apply the same strict post-solve certificate.
+
+The experiment rules out convex conversion as the primary bottleneck. The
+active-set version reduced constraints per subproblem but invalidated the
+LBFGS model whenever constraints were appended, nearly doubling evaluations.
+Likewise, a tighter warm solve moved work into the non-certifying stage, and a
+larger initial penalty worsened conditioning. The retained configuration is
+therefore: V2 warm-start accuracy `1e-3`, initial PHR penalty `3e5`, violation-
+driven adaptive depth zero/two, active set off, and at least one PHR inner
+solve. Further speedups should target inner-solve continuation or multiplier
+reuse across replans while preserving a fixed constraint topology, rather than
+adding more control-point pruning.

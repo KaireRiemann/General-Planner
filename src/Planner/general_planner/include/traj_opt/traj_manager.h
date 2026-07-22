@@ -15,6 +15,7 @@
 #include "traj_opt/costfunctional_manager/exploration_cost_manager.hpp"
 #include "traj_opt/costfunctional_manager/exp_integal_cost_manager.hpp"
 #include "traj_opt/costfunctional_manager/exp_convex_cost_manager.hpp"
+#include "traj_opt/costfunctional_manager/exp_convex_alm_cost_manager.hpp"
 #include "traj_opt/costfunctional_manager/backup_integal_cost_manager.hpp"
 #include "traj_opt/costfunctional_manager/esdf_integral_cost_manager.hpp"
 #include "traj_opt/costfunctional_manager/plain_integral_cost_manager.hpp"
@@ -375,6 +376,15 @@ public:
     std::size_t polynomial_pieces{0};
     std::size_t dense_nodes_per_evaluation{0};
     std::size_t hull_control_checks_per_evaluation{0};
+    std::size_t alm_constraints{0};
+    std::size_t alm_outer_iterations{0};
+    std::size_t alm_inner_solves{0};
+    std::size_t alm_topology_changes{0};
+    std::size_t adaptive_coarse_segments{0};
+    std::size_t adaptive_fine_segments{0};
+    double alm_max_violation{0.0};
+    bool alm_certified{false};
+    double alm_warm_start_seconds{0.0};
     double dense_integral_seconds{0.0};
     double control_point_seconds{0.0};
     double minco_evaluation_seconds{0.0};
@@ -446,6 +456,13 @@ private:
         traj_opt::convex_hull::Basis::Bezier};
     int convex_hull_subdivision_depth{0};
     int convex_hull_cost_version{1};
+    bool convex_hull_alm_enabled{false};
+    bool convex_hull_alm_warm_start_enabled{true};
+    bool convex_hull_alm_objective_active{true};
+    double convex_hull_alm_warm_start_accuracy{1.0e-3};
+    bool convex_hull_adaptive_enabled{true};
+    int convex_hull_alm_max_outer_iterations{4};
+    bool convex_hull_alm_require_certification{true};
     flatness::FlatnessMap quadrotor_flatness;
 
     bool default_init{true};
@@ -520,6 +537,7 @@ private:
   cost_functional::LinearTimeCost linear_time_cost_;
   cost_functional_manager::ExpIntegralCostManager exp_cost_manager_;
   cost_functional_manager::ExpConvexCostManager exp_convex_cost_manager_;
+  cost_functional_manager::ExpConvexAlmCostManager exp_convex_alm_cost_manager_;
   SwarmPenaltyConfig swarm_config_;
   SwarmTrajectoriesConstPtr swarm_trajs_;
   double swarm_current_wall_time_{0.0};

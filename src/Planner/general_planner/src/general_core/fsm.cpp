@@ -192,6 +192,15 @@ namespace fsm {
                         << ", " << report.polynomial_pieces
                         << ", " << report.dense_nodes_per_evaluation
                         << ", " << report.hull_control_checks_per_evaluation
+                        << ", " << report.alm_constraints
+                        << ", " << report.alm_outer_iterations
+                        << ", " << report.alm_inner_solves
+                        << ", " << report.alm_topology_changes
+                        << ", " << report.adaptive_coarse_segments
+                        << ", " << report.adaptive_fine_segments
+                        << ", " << report.alm_max_violation
+                        << ", " << static_cast<int>(report.alm_certified)
+                        << ", " << report.alm_warm_start_seconds * 1.0e3
                         << ", " << report.dense_integral_seconds * 1.0e3
                         << ", " << report.control_point_seconds * 1.0e3
                         << ", " << report.minco_evaluation_seconds * 1.0e3
