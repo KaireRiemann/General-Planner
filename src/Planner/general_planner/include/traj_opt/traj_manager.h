@@ -20,6 +20,7 @@
 #include "traj_opt/costfunctional_manager/esdf_integral_cost_manager.hpp"
 #include "traj_opt/costfunctional_manager/plain_integral_cost_manager.hpp"
 #include "traj_opt/tracking_perching_traj_opt.hpp"
+#include "traj_opt/state2state_igo_traj_opt.hpp"
 #include "traj_opt/swarm_traj.hpp"
 
 #include <data_structure/base/polytope.h>
@@ -801,6 +802,7 @@ public:
               const general_planner::MapManager::Ptr &map_manager);
 
   ExpTrajOpt::Ptr exp() const { return exp_traj_opt_; }
+  StateToStateIgoTrajOpt::Ptr state2stateIgo() const { return state2state_igo_traj_opt_; }
   ESDFTrajOpt::Ptr esdf() const { return esdf_traj_opt_; }
   PlainTrajOpt::Ptr plain() const { return plain_traj_opt_; }
   BackupTrajOpt::Ptr backup() const { return backup_traj_opt_; }
@@ -817,6 +819,7 @@ public:
 
 private:
   ExpTrajOpt::Ptr exp_traj_opt_;
+  StateToStateIgoTrajOpt::Ptr state2state_igo_traj_opt_;
   ESDFTrajOpt::Ptr esdf_traj_opt_;
   PlainTrajOpt::Ptr plain_traj_opt_;
   BackupTrajOpt::Ptr backup_traj_opt_;

@@ -142,6 +142,43 @@ traj_opt:
     guide_z_tube_radius: 0.00
     penna_omg: 5.0e+6
     penna_thr: 2.0e+6
+    # State2state corridor zeroth-order backend.  IGO owns the spatial/time
+    # search; MINCO only recovers each sampled polynomial trajectory.
+    igo:
+      enable: true
+      fallback_to_legacy: true
+      population: 48
+      generations: 15
+      threads: 4
+      antithetic: true
+      seed: 7
+      elite_ratio: 0.25
+      mean_learning_rate: 0.8
+      covariance_learning_rate: 0.2
+      initial_sigma: 0.65
+      min_eigenvalue: 1.0e-6
+      max_condition_number: 1.0e+6
+      covariance_expand_factor: 1.6
+      no_feasible_expand_generations: 3
+      time_min_scale: 0.45
+      time_max_scale: 2.75
+      spatial_margin: 0.02
+      hull_subdivision_depth: 1
+      sfc_tolerance: 1.0e-6
+      dynamic_tolerance: 0.02
+      sample_dt: 0.02
+      energy_weight: 0.01
+      guide_weight: 0.05
+      unknown_weight: 0.02
+      replan_budget_ratio: 0.45
+      plan_from_rest_budget: 0.20
+      snapshot_max_voxels: 1000000
+      # This obstacle-only point-cloud preset disables raycasting, therefore
+      # unknown cells are not hard obstacles for this compatibility route.
+      unknown_as_occupied: false
+      # CIRI already shrinks the corridor by robot_r; inflated occupancy here
+      # would apply the vehicle radius a second time.
+      use_inflated_map: false
 
   backup_traj:
     uniform_time_en: true

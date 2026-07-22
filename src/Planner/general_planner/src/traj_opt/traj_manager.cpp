@@ -4983,6 +4983,8 @@ TrajManager::TrajManager(const traj_opt::Config &exp_cfg,
                          const general_planner::MapManager::Ptr &map_manager)
 {
   exp_traj_opt_ = std::make_shared<ExpTrajOpt>(exp_cfg, ros_ptr);
+  state2state_igo_traj_opt_ =
+      std::make_shared<StateToStateIgoTrajOpt>(exp_cfg, ros_ptr, map_manager);
   esdf_traj_opt_ = std::make_shared<ESDFTrajOpt>(esdf_cfg, ros_ptr);
   esdf_traj_opt_->setMapManager(map_manager);
   esdf_traj_opt_->setSafeDistance(esdf_safe_distance);
@@ -5005,6 +5007,10 @@ TrajManager::TrajManager(const traj_opt::Config &exp_cfg,
 
 void TrajManager::setMapManager(const general_planner::MapManager::Ptr &map_manager)
 {
+  if (state2state_igo_traj_opt_)
+  {
+    state2state_igo_traj_opt_->setMapManager(map_manager);
+  }
   if (esdf_traj_opt_)
   {
     esdf_traj_opt_->setMapManager(map_manager);

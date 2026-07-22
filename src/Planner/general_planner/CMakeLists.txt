@@ -41,6 +41,7 @@ find_package(catkin REQUIRED COMPONENTS
 )
 
 find_package(OpenMP REQUIRED)
+find_package(Threads REQUIRED)
 find_package(OpenCV REQUIRED)
 find_package(yaml-cpp REQUIRED)
 find_package(Boost REQUIRED COMPONENTS system filesystem regex iostreams)
@@ -92,6 +93,7 @@ add_dependencies(general_planner_core
         ${catkin_EXPORTED_TARGETS}
 )
 target_link_libraries(general_planner_core PUBLIC
+        Threads::Threads
 )
 
 set(GENERAL_PLANNER_EXPLORATION_DIR
@@ -220,6 +222,14 @@ target_include_directories(convex_hull_self_test PRIVATE include)
 target_link_libraries(convex_hull_self_test
         general_planner_core
 )
+
+add_executable(gaussian_igo_self_test
+        Tests/gaussian_igo_self_test.cpp
+)
+target_include_directories(gaussian_igo_self_test PRIVATE include)
+target_link_libraries(gaussian_igo_self_test Threads::Threads)
+add_test(NAME gaussian_igo_self_test COMMAND gaussian_igo_self_test)
+set_tests_properties(gaussian_igo_self_test PROPERTIES TIMEOUT 10)
 
 add_executable(fsm_node
         Apps/fsm_node_ros1.cpp

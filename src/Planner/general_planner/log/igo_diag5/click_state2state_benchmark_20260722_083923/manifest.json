@@ -1,0 +1,48 @@
+{
+  "active_demo": "click",
+  "active_replan_deadline_ms": 66.66666666666667,
+  "active_replan_rate_hz": 15.0,
+  "cases_path": "",
+  "collision_clearance": 0.25,
+  "demos": [
+    "click"
+  ],
+  "ellipsoid_optimizer_label": "igo_diag5",
+  "fpv_rviz": false,
+  "goal_clearance": 0.45,
+  "log_dir": "/root/ws/real_planner/src/General-Planner/src/Planner/general_planner/log/igo_diag5/click_state2state_benchmark_20260722_083923",
+  "manual_goal_timeout": 60.0,
+  "manual_goal_topic": "/goal_3d",
+  "manual_goals": true,
+  "metric_set": "state",
+  "plan_only": false,
+  "planner_config_path": "/root/ws/real_planner/src/General-Planner/src/Planner/general_planner/config/click_real_highspeed.yaml",
+  "requested_replan_rate_hz": 0.0,
+  "restart_per_trial": false,
+  "rviz": false,
+  "sample_cases_only": false,
+  "sampling_bounds": {
+    "x": [
+      -20.0,
+      20.0
+    ],
+    "y": [
+      -20.0,
+      20.0
+    ],
+    "z": 1.5
+  },
+  "sampling_strategy": {
+    "candidate_batch": 32,
+    "min_recent_goal_distance": 6.0,
+    "recent_goal_window": 12,
+    "warmup_radius": 4.0,
+    "warmup_trials": 5,
+    "wide_min_goal_distance": 6.0
+  },
+  "seed": 7,
+  "stamp": "20260722_083923",
+  "trajectory_sample_dt": 0.05,
+  "trials_per_demo": 1,
+  "write_cases_path": ""
+}

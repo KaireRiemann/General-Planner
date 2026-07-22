@@ -73,6 +73,19 @@ CSV_FIELDS = [
     "collision",
     "avg_speed_mps",
     "total_length_m",
+    "planned_total_traj_duration_s",
+    "planned_total_traj_length_m",
+    "planned_total_traj_avg_speed_mps",
+    "planned_total_traj_max_speed_mps",
+    "first_traj_duration_s",
+    "first_traj_length_m",
+    "first_traj_avg_speed_mps",
+    "first_traj_max_speed_mps",
+    "last_traj_length_m",
+    "last_traj_avg_speed_mps",
+    "last_traj_max_speed_mps",
+    "executed_length_m",
+    "executed_avg_speed_mps",
     "mean_trajectory_duration_s",
     "last_trajectory_duration_s",
     "avg_optimization_time_ms",
@@ -217,6 +230,17 @@ def parse_args():
     parser.add_argument("--sample-max-attempts", type=int, default=5000)
     parser.add_argument("--manual-goals", type=str_to_bool, default=True)
     parser.add_argument("--manual-goal-topic", default="/goal")
+    parser.add_argument(
+        "--fixed-goal",
+        default="",
+        help="Optional reproducible x,y,z goal; bypasses random/manual goal selection.",
+    )
+    parser.add_argument(
+        "--goal-yaw",
+        type=float,
+        default=float("nan"),
+        help="Fixed goal yaw in radians; default points the yaw toward the goal.",
+    )
     parser.add_argument(
         "--manual-goal-timeout",
         type=float,
@@ -670,7 +694,11 @@ class BenchmarkNode:
         msg.pose.position.x = goal[0]
         msg.pose.position.y = goal[1]
         msg.pose.position.z = goal[2]
-        yaw = math.atan2(goal[1] - start[1], goal[0] - start[0])
+        yaw = (
+            self.args.goal_yaw
+            if math.isfinite(self.args.goal_yaw)
+            else math.atan2(goal[1] - start[1], goal[0] - start[0])
+        )
         qx, qy, qz, qw = yaw_to_quat(yaw)
         msg.pose.orientation.x = qx
         msg.pose.orientation.y = qy
@@ -1075,6 +1103,19 @@ def run_trial(node, args, rng, occupancy, demo, trial_index, goal_history, case=
         phase = "case"
         required_distance = 0.0
         nearest_recent = recent_goal_distance(goal, goal_history, args.recent_goal_window)
+    elif args.fixed_goal:
+        try:
+            fixed_values = [float(value.strip()) for value in args.fixed_goal.split(",")]
+        except ValueError as exc:
+            raise RuntimeError(f"Invalid --fixed-goal '{args.fixed_goal}'.") from exc
+        if len(fixed_values) != 3 or not all(math.isfinite(value) for value in fixed_values):
+            raise RuntimeError("--fixed-goal must contain three finite comma-separated values.")
+        goal = tuple(fixed_values)
+        attempts = 1
+        clearance = occupancy.clearance(goal, args.goal_clearance)
+        phase = "fixed"
+        required_distance = 0.0
+        nearest_recent = recent_goal_distance(goal, goal_history, args.recent_goal_window)
     elif args.manual_goals:
         previous_goal_seq = node.current_manual_goal_seq()
         rospy.loginfo(
@@ -1099,7 +1140,7 @@ def run_trial(node, args, rng, occupancy, demo, trial_index, goal_history, case=
 
     node.reset_trial_events()
     start_wall = time.monotonic()
-    if not args.manual_goals:
+    if not args.manual_goals or args.fixed_goal:
         node.publish_goal(goal, start_pos)
 
     first_event = None
@@ -1567,6 +1608,8 @@ def main():
         "requested_replan_rate_hz": requested_replan_rate_hz,
         "manual_goals": args.manual_goals,
         "manual_goal_topic": args.manual_goal_topic,
+        "fixed_goal": args.fixed_goal,
+        "goal_yaw": args.goal_yaw if math.isfinite(args.goal_yaw) else None,
         "manual_goal_timeout": args.manual_goal_timeout,
         "rviz": args.rviz,
         "fpv_rviz": args.fpv_rviz,

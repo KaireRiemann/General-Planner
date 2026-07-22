@@ -100,6 +100,43 @@ namespace traj_opt {
         double init_duration_scale{1.25};
         double terminal_vel_ratio{0.0};
 
+        // Zeroth-order state2state backend.  These parameters are intentionally
+        // independent from gradient penalty weights: constraints define ranks,
+        // while MINCO is used only to recover a polynomial trajectory.
+        bool igo_enable{false};
+        bool igo_fallback_to_legacy{true};
+        bool igo_antithetic{true};
+        bool igo_unknown_as_occupied{true};
+        // State2state corridors are normally generated after accounting for
+        // robot_r.  In that case raw occupancy avoids applying the robot
+        // radius twice.  Enable this only for point-robot corridors.
+        bool igo_use_inflated_map{false};
+        int igo_population{24};
+        int igo_generations{5};
+        int igo_threads{4};
+        int igo_seed{7};
+        int igo_hull_subdivision_depth{1};
+        int igo_no_feasible_expand_generations{3};
+        int igo_snapshot_max_voxels{1000000};
+        double igo_elite_ratio{0.25};
+        double igo_mean_learning_rate{0.8};
+        double igo_covariance_learning_rate{0.2};
+        double igo_initial_sigma{0.65};
+        double igo_min_eigenvalue{1.0e-6};
+        double igo_max_condition_number{1.0e6};
+        double igo_covariance_expand_factor{1.6};
+        double igo_time_min_scale{0.45};
+        double igo_time_max_scale{2.75};
+        double igo_spatial_margin{0.02};
+        double igo_sample_dt{0.03};
+        double igo_sfc_tolerance{1.0e-6};
+        double igo_dynamic_tolerance{0.02};
+        double igo_energy_weight{0.01};
+        double igo_guide_weight{0.05};
+        double igo_unknown_weight{0.02};
+        double igo_replan_budget_ratio{0.45};
+        double igo_plan_from_rest_budget{0.15};
+
         Config() = default;
 
         Config(const std::string & cfg_path, string ns) {
@@ -169,6 +206,39 @@ namespace traj_opt {
             loader.LoadParam("traj_opt" + ns + "init_profile_vel_ratio", init_profile_vel_ratio, 0.65);
             loader.LoadParam("traj_opt" + ns + "init_duration_scale", init_duration_scale, 1.25);
             loader.LoadParam("traj_opt" + ns + "terminal_vel_ratio", terminal_vel_ratio, 0.0);
+            loader.LoadParam("traj_opt" + ns + "igo/enable", igo_enable, false);
+            loader.LoadParam("traj_opt" + ns + "igo/fallback_to_legacy", igo_fallback_to_legacy, true);
+            loader.LoadParam("traj_opt" + ns + "igo/antithetic", igo_antithetic, true);
+            loader.LoadParam("traj_opt" + ns + "igo/unknown_as_occupied", igo_unknown_as_occupied, true);
+            loader.LoadParam("traj_opt" + ns + "igo/use_inflated_map", igo_use_inflated_map, false);
+            loader.LoadParam("traj_opt" + ns + "igo/population", igo_population, 24);
+            loader.LoadParam("traj_opt" + ns + "igo/generations", igo_generations, 5);
+            loader.LoadParam("traj_opt" + ns + "igo/threads", igo_threads, 4);
+            loader.LoadParam("traj_opt" + ns + "igo/seed", igo_seed, 7);
+            loader.LoadParam("traj_opt" + ns + "igo/hull_subdivision_depth", igo_hull_subdivision_depth, 1);
+            loader.LoadParam("traj_opt" + ns + "igo/no_feasible_expand_generations",
+                             igo_no_feasible_expand_generations, 3);
+            loader.LoadParam("traj_opt" + ns + "igo/snapshot_max_voxels", igo_snapshot_max_voxels, 1000000);
+            loader.LoadParam("traj_opt" + ns + "igo/elite_ratio", igo_elite_ratio, 0.25);
+            loader.LoadParam("traj_opt" + ns + "igo/mean_learning_rate", igo_mean_learning_rate, 0.8);
+            loader.LoadParam("traj_opt" + ns + "igo/covariance_learning_rate",
+                             igo_covariance_learning_rate, 0.2);
+            loader.LoadParam("traj_opt" + ns + "igo/initial_sigma", igo_initial_sigma, 0.65);
+            loader.LoadParam("traj_opt" + ns + "igo/min_eigenvalue", igo_min_eigenvalue, 1.0e-6);
+            loader.LoadParam("traj_opt" + ns + "igo/max_condition_number", igo_max_condition_number, 1.0e6);
+            loader.LoadParam("traj_opt" + ns + "igo/covariance_expand_factor",
+                             igo_covariance_expand_factor, 1.6);
+            loader.LoadParam("traj_opt" + ns + "igo/time_min_scale", igo_time_min_scale, 0.45);
+            loader.LoadParam("traj_opt" + ns + "igo/time_max_scale", igo_time_max_scale, 2.75);
+            loader.LoadParam("traj_opt" + ns + "igo/spatial_margin", igo_spatial_margin, 0.02);
+            loader.LoadParam("traj_opt" + ns + "igo/sample_dt", igo_sample_dt, 0.03);
+            loader.LoadParam("traj_opt" + ns + "igo/sfc_tolerance", igo_sfc_tolerance, 1.0e-6);
+            loader.LoadParam("traj_opt" + ns + "igo/dynamic_tolerance", igo_dynamic_tolerance, 0.02);
+            loader.LoadParam("traj_opt" + ns + "igo/energy_weight", igo_energy_weight, 0.01);
+            loader.LoadParam("traj_opt" + ns + "igo/guide_weight", igo_guide_weight, 0.05);
+            loader.LoadParam("traj_opt" + ns + "igo/unknown_weight", igo_unknown_weight, 0.02);
+            loader.LoadParam("traj_opt" + ns + "igo/replan_budget_ratio", igo_replan_budget_ratio, 0.45);
+            loader.LoadParam("traj_opt" + ns + "igo/plan_from_rest_budget", igo_plan_from_rest_budget, 0.15);
             loader.LoadParam("traj_opt/boundary/max_vel", max_vel, -1.0);
             loader.LoadParam("traj_opt/boundary/max_acc", max_acc, -1.0);
             loader.LoadParam("traj_opt/boundary/max_jerk", max_jerk, -1.0);

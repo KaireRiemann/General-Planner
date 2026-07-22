@@ -550,6 +550,7 @@ namespace general_planner {
         services.z_debug.local_target_is_global_goal = local_endpoint_is_global_goal;
 
         bool temp_ret;
+        bool used_state2state_igo = false;
         Trajectory out_traj;
         TimeConsuming t_exp_opt("t_exp_opt", false);
         services.traj_manager->setSwarmCurrentWallTime(replan_process_start_WT);
@@ -592,12 +593,69 @@ namespace general_planner {
                 return FAILED;
             }
         } else {
-            temp_ret = services.traj_manager->exp()->optimize(pos_init_state,
-                                                      pos_fina_state,
-                                                      guide_path,
-                                                      guide_stamp,
-                                                      sfc,
-                                                      out_traj);
+            if (services.cfg.exp_traj_cfg.igo_enable) {
+                const double igo_total_budget = planning_from_rest
+                        ? services.cfg.exp_traj_cfg.igo_plan_from_rest_budget
+                        : services.cfg.replan_forward_dt *
+                          services.cfg.exp_traj_cfg.igo_replan_budget_ratio;
+                const double igo_budget = std::max(1.0e-3, igo_total_budget);
+                used_state2state_igo = true;
+                services.ros_ptr->info(
+                        " -- [State2State][IGO] attempt pieces={} population={} generations={} budget={:.4f}s",
+                        sfc.size(),
+                        services.cfg.exp_traj_cfg.igo_population,
+                        services.cfg.exp_traj_cfg.igo_generations,
+                        igo_budget);
+                temp_ret = services.traj_manager->state2stateIgo()->optimize(
+                        pos_init_state, pos_fina_state, guide_path, guide_stamp,
+                        sfc, igo_budget, out_traj);
+                const auto &igo_report = services.traj_manager->state2stateIgo()->lastReport();
+                services.ros_ptr->info(
+                        " -- [State2State][IGO] result success={} reason={} dim={} evals={} gens={} feasible_ratio={:.3f} elapsed={:.4f}s occ={} out={} unk={} sfc={:.5f} dyn={:.5f} duration={:.3f}",
+                        igo_report.success, igo_report.reason,
+                        igo_report.decision_dimension, igo_report.evaluations,
+                        igo_report.generations, igo_report.feasible_ratio,
+                        igo_report.elapsed_seconds,
+                        igo_report.best_occupied_samples,
+                        igo_report.best_outside_samples,
+                        igo_report.best_unknown_samples,
+                        igo_report.best_sfc_violation,
+                        igo_report.best_dynamic_violation,
+                        igo_report.best_duration);
+                if (temp_ret) {
+                    std::string commit_reason;
+                    temp_ret = services.traj_manager->state2stateIgo()->validateForCommit(
+                            out_traj, sfc, commit_reason);
+                    if (!temp_ret) {
+                        services.ros_ptr->warn(
+                                " -- [State2State][IGO] CommitValidator rejected candidate: {}",
+                                commit_reason);
+                    }
+                }
+                if (!temp_ret && services.cfg.exp_traj_cfg.igo_fallback_to_legacy) {
+                    services.ros_ptr->warn(
+                            " -- [State2State][IGO] falling back to legacy corridor optimizer.");
+                    used_state2state_igo = false;
+                    temp_ret = services.traj_manager->exp()->optimize(
+                            pos_init_state, pos_fina_state, guide_path,
+                            guide_stamp, sfc, out_traj);
+                    if (temp_ret) {
+                        services.traj_manager->state2stateIgo()->setWarmStart(out_traj);
+                        std::string legacy_validation_reason;
+                        const bool legacy_passes_igo_gate =
+                                services.traj_manager->state2stateIgo()->validateForCommit(
+                                        out_traj, sfc, legacy_validation_reason);
+                        services.ros_ptr->info(
+                                " -- [State2State][IGO] fallback audit accepted={} reason={}",
+                                legacy_passes_igo_gate,
+                                legacy_validation_reason);
+                    }
+                }
+            } else {
+                temp_ret = services.traj_manager->exp()->optimize(
+                        pos_init_state, pos_fina_state, guide_path,
+                        guide_stamp, sfc, out_traj);
+            }
         }
         services.time_consuming[EXP_TRAJ_OPT] = t_exp_opt.stop();
         copyZSummary(summarizeTrajectoryZ(out_traj, services.cfg.sample_traj_dt),
@@ -620,7 +678,11 @@ namespace general_planner {
         } else {
             VecDf init_ts;
             vec_Vec3f init_ps;
-            services.traj_manager->exp()->getInitValue(init_ts, init_ps);
+            if (used_state2state_igo) {
+                services.traj_manager->state2stateIgo()->getInitValue(init_ts, init_ps);
+            } else {
+                services.traj_manager->exp()->getInitValue(init_ts, init_ps);
+            }
             services.latest_replan.setExpCondition(init_ts, init_ps, pos_init_state, pos_fina_state, sfc);
         }
         if (!temp_ret) {
@@ -638,8 +700,11 @@ namespace general_planner {
 
         {
             TimeConsuming t_viz("tviz", false);
-            services.ros_ptr->vizExpTraj(out_traj,
-                                 use_plain_exp_traj ? "plain_traj" : (use_esdf_exp_traj ? "esdf_traj" : "exp_traj"));
+            services.ros_ptr->vizExpTraj(
+                    out_traj,
+                    use_plain_exp_traj ? "plain_traj" :
+                    (use_esdf_exp_traj ? "esdf_traj" :
+                     (used_state2state_igo ? "igo_traj" : "exp_traj")));
             services.time_consuming[VISUALIZATION] += t_viz.stop();
         }
 

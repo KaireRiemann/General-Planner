@@ -1,0 +1,1473 @@
+[32m -- [Fsm-Test] Begin.[0m
+ -- [Fsm-Test] Load config from: /root/ws/real_planner/src/General-Planner/src/Planner/general_planner/config/click_real_highspeed.yaml
+Load config file: /root/ws/real_planner/src/General-Planner/src/Planner/general_planner/config/click_real_highspeed.yaml
+[0;32m Load param fsm/timer_en success: [0;0m1
+[0;33m Load param fsm/auto_start failed, use default value: [0;0m0
+[0;32m Load param fsm/click_goal_en success: [0;0m1
+[0;32m Load param fsm/click_goal_3d_en success: [0;0m1
+[0;32m Load param fsm/click_yaw_en success: [0;0m1
+[0;32m Load param fsm/replan_rate success: [0;0m15
+[0;32m Load param fsm/click_height success: [0;0m1.5
+[0;32m Load param fsm/cmd_topic success: [0;0m/planning/pos_cmd
+[0;32m Load param fsm/mpc_cmd_topic success: [0;0m/planning_cmd/poly_traj
+[0;33m Load param fsm/publish_so3_cmd failed, use default value: [0;0m0
+[0;33m Load param fsm/so3_cmd_topic failed, use default value: [0;0m/planning/so3_cmd
+[0;33m Load param fsm/so3_kR failed, use default value: [0;0m[0 0 0 ]
+[0;33m Load param fsm/so3_kOm failed, use default value: [0;0m[0 0 0 ]
+[0;32m Load param traj_opt/flatness/mass success: [0;0m1.64
+[0;32m Load param traj_opt/flatness/dh success: [0;0m0.35
+[0;32m Load param traj_opt/flatness/dv success: [0;0m0.35
+[0;32m Load param traj_opt/flatness/grav success: [0;0m9.81
+[0;32m Load param traj_opt/flatness/cp success: [0;0m0.001
+[0;32m Load param traj_opt/flatness/v_eps success: [0;0m0.0001
+[0;32m Load param fsm/click_goal_topic success: [0;0m/goal
+[0;32m Load param fsm/click_goal_3d_topic success: [0;0m/goal_3d
+[0;33m Load param fsm/task_mode failed, use default value: [0;0mstate2state
+[0;33m Load param fsm/planning_backend failed, use default value: [0;0m
+[0;33m Load param general_planner/backend failed, use default value: [0;0m
+[0;33m Load param general_planner/plain_traj_en failed, use default value: [0;0m0
+[0;32m Load param general_planner/esdf_traj_en success: [0;0m0
+[0;33m Load param fsm/task_planner_en failed, use default value: [0;0m0
+[0;33m Load param fsm/task_mode_topic failed, use default value: [0;0m/planning/task_mode
+[0;33m Load param fsm/tracking_target_odom_topic failed, use default value: [0;0m/tracking/target_odom
+[0;33m Load param fsm/tracking_target_prediction_topic failed, use default value: [0;0m/tracking/target_prediction
+[0;33m Load param fsm/tracking_use_target_prediction_path failed, use default value: [0;0m1
+[0;33m Load param fsm/perching_surface_odom_topic failed, use default value: [0;0m/perching/surface_odom
+[0;33m Load param fsm/dynamic_takeoff_start_delay failed, use default value: [0;0m0
+[0;33m Load param general_planner/tracking_perching/enable failed, use default value: [0;0m0
+[0;33m Load param fsm/tracking_prediction_horizon failed, use default value: [0;0m4
+[0;33m Load param fsm/tracking_prediction_dt failed, use default value: [0;0m0.25
+[0;33m Load param fsm/tracking_prediction_use_kinodynamic failed, use default value: [0;0m1
+[0;33m Load param fsm/tracking_prediction_accel failed, use default value: [0;0m3
+[0;33m Load param fsm/tracking_prediction_vmax failed, use default value: [0;0m4
+[0;33m Load param fsm/tracking_prediction_rho_accel failed, use default value: [0;0m1
+[0;33m Load param fsm/tracking_prediction_max_time failed, use default value: [0;0m0.03
+[0;33m Load param fsm/tracking_static_position_epsilon failed, use default value: [0;0m0.05
+[0;33m Load param fsm/tracking_static_velocity_epsilon failed, use default value: [0;0m0.05
+[0;33m Load param fsm/tracking_static_yaw_epsilon failed, use default value: [0;0m0.05
+[0;33m Load param fsm/tracking_static_replan_remaining_time failed, use default value: [0;0m0.8
+[0;33m Load param fsm/tracking_static_task_position_epsilon failed, use default value: [0;0m0.12
+[0;33m Load param fsm/tracking_static_task_velocity_epsilon failed, use default value: [0;0m0.1
+[0;33m Load param fsm/tracking_static_prediction_filter_velocity_epsilon failed, use default value: [0;0m0.08
+[0;33m Load param fsm/tracking_static_safety_check_horizon failed, use default value: [0;0m1.5
+[0;33m Load param fsm/tracking_static_safety_check_dt failed, use default value: [0;0m0.12
+[0;33m Load param fsm/tracking_static_replan_log_period failed, use default value: [0;0m1
+[0;33m Load param fsm/tracking_plan_from_rest_max_failures failed, use default value: [0;0m4
+[0;33m Load param fsm/tracking_plan_from_rest_failure_backoff failed, use default value: [0;0m0.5
+[0;33m Load param fsm/tracking_plan_from_rest_limited_backoff failed, use default value: [0;0m2
+[0;33m Load param fsm/tracking_static_finish_on_plan_failure failed, use default value: [0;0m0
+[0;33m Load param fsm/perception_replan_check_en failed, use default value: [0;0m0
+[0;32m Load param fsm/perception_replan_check_rate success: [0;0m60
+[0;32m Load param fsm/perception_replan_check_horizon success: [0;0m2
+[0;32m Load param fsm/perception_replan_check_dt success: [0;0m0.06
+[0;32m Load param fsm/perception_replan_min_interval success: [0;0m0.08
+[0;32m Load param fsm/perception_replan_consecutive_hits success: [0;0m1
+[0;33m Load param fsm/perception_replan_unknown_as_occupied failed, use default value: [0;0m0
+[0;32m Load param fsm/perception_replan_emergency_horizon success: [0;0m0.45
+[0;33m Load param fsm/perception_replan_log_period failed, use default value: [0;0m0.5
+[0;32m Load param general_planner/dynamic_obstacle_layer/enable success: [0;0m0
+[0;32m Load param general_planner/dynamic_obstacle_layer/cloud_topic success: [0;0m/cloud_registered
+[0;32m Load param general_planner/dynamic_obstacle_layer/cloud_queue_size success: [0;0m3
+[0;32m Load param general_planner/dynamic_obstacle_layer/odom_timeout success: [0;0m0.2
+[0;33m Load param fsm/task_timeout failed, use default value: [0;0m0.6
+[0;33m Load param fsm/state2state_plan_from_rest_max_failures failed, use default value: [0;0m0
+[0;33m Load param fsm/state2state_clear_goal_on_plan_failure failed, use default value: [0;0m0
+[0;33m Load param fsm/diagnostic_log_en failed, use default value: [0;0m1
+[0;33m Load param fsm/diagnostic_event_topic failed, use default value: [0;0m/planning/diagnostics/events
+[0;33m Load param general_planner/swarm/enable failed, use default value: [0;0m0
+[0;33m Load param general_planner/swarm/drone_id failed, use default value: [0;0m-1
+[0;33m Load param general_planner/swarm/des_clearance failed, use default value: [0;0m0.75
+[0;33m Load param general_planner/swarm/broadcast_enable failed, use default value: [0;0m1
+[0;33m Load param general_planner/swarm/traj_broadcast_topic failed, use default value: [0;0m/swarm/trajectory
+[0;33m Load param general_planner/swarm/state_broadcast_topic failed, use default value: [0;0m/swarm/state
+[0;33m Load param general_planner/swarm/formation/reference_enable failed, use default value: [0;0m0
+[0;33m Load param general_planner/swarm/formation/reference_topic failed, use default value: [0;0m/swarm/formation_reference
+[0;33m Load param general_planner/swarm/traj_topics failed, use default value: [0;0m[]
+[0;33m Load param general_planner/swarm/traj_ids failed, use default value: [0;0m[]
+[0;32m Load param general_planner/yaw_dot_max success: [0;0m3
+[0;32m Load param general_planner/visualization_en success: [0;0m1
+[0;32m Load param rog_map/resolution success: [0;0m0.15
+Load config file: /root/ws/real_planner/src/General-Planner/src/Planner/general_planner/config/click_real_highspeed.yaml
+[0;32m Load param rog_map/esdf/resolution success: [0;0m0.1
+[0;32m Load param rog_map/esdf/enable success: [0;0m0
+[0;32m Load param rog_map/esdf/local_update_box success: [0;0m[5 5 3 ]
+[0;32m Load param rog_map/load_pcd_en success: [0;0m0
+[0;32m Load param rog_map/map_sliding/enable success: [0;0m1
+[0;32m Load param rog_map/map_sliding/threshold success: [0;0m0.3
+[0;32m Load param rog_map/fix_map_origin success: [0;0m[0 0 1.5 ]
+[0;32m Load param rog_map/frontier_extraction_en success: [0;0m0
+[0;32m Load param rog_map/ros_callback/enable success: [0;0m1
+[0;32m Load param rog_map/ros_callback/cloud_topic success: [0;0m/cloud_registered
+[0;32m Load param rog_map/ros_callback/odom_topic success: [0;0m/lidar_slam/odom
+[0;32m Load param rog_map/ros_callback/odom_timeout success: [0;0m2
+[0;32m Load param rog_map/visualization/enable success: [0;0m1
+[0;32m Load param rog_map/visualization/use_dynamic_reconfigure success: [0;0m0
+[0;32m Load param rog_map/visualization/pub_unknown_map_en success: [0;0m0
+[0;32m Load param rog_map/visualization/frame_id success: [0;0mworld
+[0;32m Load param rog_map/visualization/time_rate success: [0;0m2
+[0;32m Load param rog_map/visualization/frame_rate success: [0;0m0
+[0;32m Load param rog_map/visualization/range success: [0;0m[20 20 4 ]
+[0;32m Load param rog_map/resolution success: [0;0m0.15
+[0;32m Load param rog_map/inflation_resolution success: [0;0m0.15
+[0;32m Load param rog_map/unk_inflation_en success: [0;0m0
+[0;32m Load param rog_map/unk_inflation_step success: [0;0m1
+[0;32m Load param rog_map/inflation_step success: [0;0m3
+[0;32m Load param rog_map/intensity_thresh success: [0;0m-10
+[0;32m Load param rog_map/map_size success: [0;0m[50 50 6 ]
+[0;32m Load param rog_map/point_filt_num success: [0;0m1
+[0;32m Load param rog_map/raycasting/enable success: [0;0m0
+[0;32m Load param rog_map/raycasting/batch_update_size success: [0;0m1
+[0;32m Load param rog_map/raycasting/unk_thresh success: [0;0m1
+[0;32m Load param rog_map/raycasting/p_hit success: [0;0m0.9
+[0;32m Load param rog_map/raycasting/p_miss success: [0;0m0.49
+[0;32m Load param rog_map/raycasting/p_min success: [0;0m0.12
+[0;32m Load param rog_map/raycasting/p_max success: [0;0m0.98
+[0;32m Load param rog_map/raycasting/p_occ success: [0;0m0.85
+[0;32m Load param rog_map/raycasting/p_free success: [0;0m0.499
+[0;32m Load param rog_map/raycasting/p_free success: [0;0m0.499
+[0;32m Load param rog_map/raycasting/ray_range success: [0;0m[0.5 100 ]
+[0;32m Load param rog_map/raycasting/local_update_box success: [0;0m[100 100 5 ]
+[0;32m Load param rog_map/virtual_ground_height success: [0;0m-0.1
+[0;32m Load param rog_map/virtual_ceil_height success: [0;0m2.5
+[32m -- [RM-Config] inflation_resolution: 0.15[0m
+ -- [ROG-Map] Init, resetMapSize: ORIGIN_AT_CORNER.
+ -- [ROG-Map] Init, resetMapSize: virtual_ceil_height: 1.875, virtual_ground_height: 0.375.
+[34m	[ROG] n_free: 1[0m
+[34m	[ROG] n_occ: 1[0m
+[34m	[ROG] l_hit: 2.19722[0m
+[34m	[ROG] l_miss: -0.0400053[0m
+[34m	[ROG] l_min: -1.99243[0m
+[34m	[ROG] l_max: 3.89182[0m
+[34m	[ROG] l_occ: 1.7346[0m
+[34m	[ROG] l_free: -0.00399995[0m
+[33m -- [Inf-Map] Clear all local map.[0m
+[32m -- [CounterMap] Init successfully -- .[0m
+[32m	resolution: 0.15[0m
+[32m	map_sliding_en: 1[0m
+[32m	local_map_size_i: 341 341  49[0m
+[32m	local_map_size_d: 51.15 51.15  7.35[0m
+[33m -- [Inf-Map] Clear all local map.[0m
+[32m -- [InfMap] Init successfully -- .[0m
+[32m	resolution: 0.15[0m
+[32m	map_sliding_en: 1[0m
+[32m	local_map_size_i: 341 341  49[0m
+[32m	local_map_size_d: 51.15 51.15  7.35[0m
+[ProbMap] virtual_ceil_height: 1.8
+[ProbMap] virtual_ground_height: 0.3
+[33m -- [Prob-Map] Clear all local map.[0m
+[32m -- [ProbMap] Init successfully -- .[0m
+[32m	resolution: 0.15[0m
+[32m	map_sliding_en: 1[0m
+[32m	local_map_size_i: 333 333  41[0m
+[32m	local_map_size_d: 49.95 49.95  6.15[0m
+[33m -- [Inf-Map] Clear all local map.[0m
+Load config file: /root/ws/real_planner/src/General-Planner/src/Planner/general_planner/config/click_real_highspeed.yaml
+Load config file: /root/ws/real_planner/src/General-Planner/src/Planner/general_planner/config/click_real_highspeed.yaml
+[0;32m Load param traj_opt/switch/print_optimizer_log success: [0;0m0
+[0;32m Load param traj_opt/flatness/mass success: [0;0m1.64
+[0;32m Load param traj_opt/flatness/dh success: [0;0m0.35
+[0;32m Load param traj_opt/flatness/dv success: [0;0m0.35
+[0;32m Load param traj_opt/flatness/grav success: [0;0m9.81
+[0;32m Load param traj_opt/flatness/cp success: [0;0m0.001
+[0;32m Load param traj_opt/flatness/v_eps success: [0;0m0.0001
+[0;32m Load param traj_opt/switch/save_log_en success: [0;0m0
+[0;32m Load param traj_opt/exp_traj/pos_constraint_type success: [0;0m1
+[0;33m Load param traj_opt/exp_traj/piece_num failed, use default value: [0;0m1
+[0;33m Load param traj_opt/exp_traj/uniform_time_en failed, use default value: [0;0m0
+[0;32m Load param traj_opt/exp_traj/block_energy_cost success: [0;0m0
+[0;32m Load param traj_opt/exp_traj/opt_accuracy success: [0;0m5e-06
+[0;32m Load param traj_opt/exp_traj/integral_reso success: [0;0m15
+Failed to find match for field 'intensity'.
+[0;32m Load param traj_opt/exp_traj/smooth_eps success: [0;0m0.01
+[0;32m Load param traj_opt/exp_traj/convex_hull_en success: [0;0m1
+[0;32m Load param traj_opt/exp_traj/convex_hull_basis success: [0;0m0
+[0;32m Load param traj_opt/exp_traj/convex_hull_subdivision_depth success: [0;0m2
+[0;32m Load param traj_opt/exp_traj/convex_hull_cost_version success: [0;0m2
+[0;32m Load param traj_opt/exp_traj/convex_hull_alm_en success: [0;0m0
+[0;32m Load param traj_opt/exp_traj/convex_hull_alm_warm_start_en success: [0;0m1
+[33m[WARN] [1784708986.175321715]: PerfectDrone is waiting for the first odometry snapshot before rendering[0m
+[0;32m Load param traj_opt/exp_traj/convex_hull_alm_warm_start_accuracy success: [0;0m0.001
+[0;32m Load param traj_opt/exp_traj/convex_hull_alm_active_set_en success: [0;0m0
+[0;32m Load param traj_opt/exp_traj/convex_hull_alm_active_set_margin success: [0;0m0.05
+[0;32m Load param traj_opt/exp_traj/convex_hull_adaptive_en success: [0;0m1
+[0;32m Load param traj_opt/exp_traj/convex_hull_refine_derivative_constraints success: [0;0m0
+[0;32m Load param traj_opt/exp_traj/convex_hull_alm_max_outer_iterations success: [0;0m8
+[0;32m Load param traj_opt/exp_traj/convex_hull_refine_margin success: [0;0m0.05
+[0;32m Load param traj_opt/exp_traj/convex_hull_derivative_refine_margin success: [0;0m0.05
+[0;32m Load param traj_opt/exp_traj/convex_hull_alm_position_scale success: [0;0m0.25
+[0;32m Load param traj_opt/exp_traj/convex_hull_alm_initial_penalty success: [0;0m300000
+[0;32m Load param traj_opt/exp_traj/convex_hull_alm_penalty_growth success: [0;0m5
+[0;32m Load param traj_opt/exp_traj/convex_hull_alm_progress_ratio success: [0;0m0.5
+[0;32m Load param traj_opt/exp_traj/convex_hull_alm_constraint_tolerance success: [0;0m0.01
+[0;32m Load param traj_opt/exp_traj/convex_hull_alm_require_certification success: [0;0m1
+[0;33m Load param traj_opt/exp_traj/init_profile_vel_ratio failed, use default value: [0;0m0.65
+[0;33m Load param traj_opt/exp_traj/init_duration_scale failed, use default value: [0;0m1.25
+[0;33m Load param traj_opt/exp_traj/terminal_vel_ratio failed, use default value: [0;0m0
+[0;32m Load param traj_opt/exp_traj/igo/enable success: [0;0m1
+[0;32m Load param traj_opt/exp_traj/igo/fallback_to_legacy success: [0;0m1
+[0;32m Load param traj_opt/exp_traj/igo/antithetic success: [0;0m1
+[0;32m Load param traj_opt/exp_traj/igo/unknown_as_occupied success: [0;0m0
+[0;32m Load param traj_opt/exp_traj/igo/population success: [0;0m24
+[0;32m Load param traj_opt/exp_traj/igo/generations success: [0;0m5
+[0;32m Load param traj_opt/exp_traj/igo/threads success: [0;0m4
+[0;32m Load param traj_opt/exp_traj/igo/seed success: [0;0m7
+[0;32m Load param traj_opt/exp_traj/igo/hull_subdivision_depth success: [0;0m1
+[0;32m Load param traj_opt/exp_traj/igo/no_feasible_expand_generations success: [0;0m3
+[0;32m Load param traj_opt/exp_traj/igo/snapshot_max_voxels success: [0;0m1000000
+[0;32m Load param traj_opt/exp_traj/igo/elite_ratio success: [0;0m0.25
+[0;32m Load param traj_opt/exp_traj/igo/mean_learning_rate success: [0;0m0.8
+[0;32m Load param traj_opt/exp_traj/igo/covariance_learning_rate success: [0;0m0.2
+[0;32m Load param traj_opt/exp_traj/igo/initial_sigma success: [0;0m0.65
+[0;32m Load param traj_opt/exp_traj/igo/min_eigenvalue success: [0;0m1e-06
+[0;32m Load param traj_opt/exp_traj/igo/max_condition_number success: [0;0m1e+06
+[0;32m Load param traj_opt/exp_traj/igo/covariance_expand_factor success: [0;0m1.6
+[0;32m Load param traj_opt/exp_traj/igo/time_min_scale success: [0;0m0.45
+[0;32m Load param traj_opt/exp_traj/igo/time_max_scale success: [0;0m2.75
+[0;32m Load param traj_opt/exp_traj/igo/spatial_margin success: [0;0m0.02
+[0;32m Load param traj_opt/exp_traj/igo/sample_dt success: [0;0m0.02
+[0;32m Load param traj_opt/exp_traj/igo/sfc_tolerance success: [0;0m1e-06
+[0;32m Load param traj_opt/exp_traj/igo/dynamic_tolerance success: [0;0m0.02
+[0;32m Load param traj_opt/exp_traj/igo/energy_weight success: [0;0m0.01
+[0;32m Load param traj_opt/exp_traj/igo/guide_weight success: [0;0m0.05
+[0;32m Load param traj_opt/exp_traj/igo/unknown_weight success: [0;0m0.02
+[0;32m Load param traj_opt/exp_traj/igo/replan_budget_ratio success: [0;0m0.45
+[0;32m Load param traj_opt/exp_traj/igo/plan_from_rest_budget success: [0;0m0.2
+[0;32m Load param traj_opt/boundary/max_vel success: [0;0m15
+[0;32m Load param traj_opt/boundary/max_acc success: [0;0m20
+[0;32m Load param traj_opt/boundary/max_jerk success: [0;0m120
+[0;32m Load param traj_opt/boundary/max_omg success: [0;0m3.5
+[0;32m Load param traj_opt/boundary/max_acc_thr success: [0;0m22
+[0;32m Load param traj_opt/boundary/min_acc_thr success: [0;0m6
+[0;32m Load param traj_opt/boundary/penna_margin success: [0;0m0.05
+[0;33m Load param traj_opt/exp_traj/penna_scale failed, use default value: [0;0m-1
+[0;32m Load param traj_opt/exp_traj/penna_t success: [0;0m200000
+[0;33m Load param traj_opt/exp_traj/penna_ts failed, use default value: [0;0m-1
+[0;32m Load param traj_opt/exp_traj/penna_pos success: [0;0m5e+07
+[0;32m Load param traj_opt/exp_traj/penna_vel success: [0;0m1e+07
+[0;32m Load param traj_opt/exp_traj/penna_acc success: [0;0m1e+07
+[0;32m Load param traj_opt/exp_traj/penna_jerk success: [0;0m-100000
+[0;32m Load param traj_opt/exp_traj/penna_attract success: [0;0m1000
+[0;32m Load param traj_opt/exp_traj/penna_guide_path success: [0;0m0
+[0;33m Load param traj_opt/exp_traj/penna_guide_vel failed, use default value: [0;0m-1
+[0;32m Load param traj_opt/exp_traj/penna_guide_z_tube success: [0;0m1e+07
+[0;32m Load param traj_opt/exp_traj/guide_z_tube_radius success: [0;0m0
+[0;32m Load param traj_opt/exp_traj/guide_path_tube_radius success: [0;0m0.05
+[0;32m Load param traj_opt/exp_traj/guide_path_z_tube_radius success: [0;0m0.05
+[0;32m Load param traj_opt/exp_traj/guide_path_huber_delta success: [0;0m0.4
+[0;32m Load param traj_opt/exp_traj/guide_path_time_gradient_en success: [0;0m0
+[0;32m Load param traj_opt/exp_traj/penna_omg success: [0;0m5e+06
+[0;32m Load param traj_opt/exp_traj/penna_thr success: [0;0m2e+06
+Load config file: /root/ws/real_planner/src/General-Planner/src/Planner/general_planner/config/click_real_highspeed.yaml
+[0;32m Load param traj_opt/switch/print_optimizer_log success: [0;0m0
+[0;32m Load param traj_opt/flatness/mass success: [0;0m1.64
+[0;32m Load param traj_opt/flatness/dh success: [0;0m0.35
+[0;32m Load param traj_opt/flatness/dv success: [0;0m0.35
+[0;32m Load param traj_opt/flatness/grav success: [0;0m9.81
+[0;32m Load param traj_opt/flatness/cp success: [0;0m0.001
+[0;32m Load param traj_opt/flatness/v_eps success: [0;0m0.0001
+[0;32m Load param traj_opt/switch/save_log_en success: [0;0m0
+[0;32m Load param traj_opt/backup_traj/pos_constraint_type success: [0;0m1
+[0;32m Load param traj_opt/backup_traj/piece_num success: [0;0m2
+[0;32m Load param traj_opt/backup_traj/uniform_time_en success: [0;0m1
+[0;32m Load param traj_opt/backup_traj/block_energy_cost success: [0;0m0
+[0;32m Load param traj_opt/backup_traj/opt_accuracy success: [0;0m1e-06
+[0;32m Load param traj_opt/backup_traj/integral_reso success: [0;0m12
+[0;32m Load param traj_opt/backup_traj/smooth_eps success: [0;0m0.01
+[0;33m Load param traj_opt/backup_traj/convex_hull_en failed, use default value: [0;0m0
+[0;33m Load param traj_opt/backup_traj/convex_hull_basis failed, use default value: [0;0m0
+[0;33m Load param traj_opt/backup_traj/convex_hull_subdivision_depth failed, use default value: [0;0m0
+[0;33m Load param traj_opt/backup_traj/convex_hull_cost_version failed, use default value: [0;0m1
+[0;33m Load param traj_opt/backup_traj/convex_hull_alm_en failed, use default value: [0;0m0
+[0;33m Load param traj_opt/backup_traj/convex_hull_alm_warm_start_en failed, use default value: [0;0m1
+[0;33m Load param traj_opt/backup_traj/convex_hull_alm_warm_start_accuracy failed, use default value: [0;0m0.001
+[0;33m Load param traj_opt/backup_traj/convex_hull_alm_active_set_en failed, use default value: [0;0m0
+[0;33m Load param traj_opt/backup_traj/convex_hull_alm_active_set_margin failed, use default value: [0;0m0.05
+[0;33m Load param traj_opt/backup_traj/convex_hull_adaptive_en failed, use default value: [0;0m1
+[0;33m Load param traj_opt/backup_traj/convex_hull_refine_derivative_constraints failed, use default value: [0;0m0
+[0;33m Load param traj_opt/backup_traj/convex_hull_alm_max_outer_iterations failed, use default value: [0;0m4
+[0;33m Load param traj_opt/backup_traj/convex_hull_refine_margin failed, use default value: [0;0m0.05
+[0;33m Load param traj_opt/backup_traj/convex_hull_derivative_refine_margin failed, use default value: [0;0m0.05
+[0;33m Load param traj_opt/backup_traj/convex_hull_alm_position_scale failed, use default value: [0;0m0.25
+[0;33m Load param traj_opt/backup_traj/convex_hull_alm_initial_penalty failed, use default value: [0;0m300000
+[0;33m Load param traj_opt/backup_traj/convex_hull_alm_penalty_growth failed, use default value: [0;0m5
+[0;33m Load param traj_opt/backup_traj/convex_hull_alm_progress_ratio failed, use default value: [0;0m0.5
+[0;33m Load param traj_opt/backup_traj/convex_hull_alm_constraint_tolerance failed, use default value: [0;0m0.01
+[0;33m Load param traj_opt/backup_traj/convex_hull_alm_require_certification failed, use default value: [0;0m1
+[0;33m Load param traj_opt/backup_traj/init_profile_vel_ratio failed, use default value: [0;0m0.65
+[0;33m Load param traj_opt/backup_traj/init_duration_scale failed, use default value: [0;0m1.25
+[0;33m Load param traj_opt/backup_traj/terminal_vel_ratio failed, use default value: [0;0m0
+[0;33m Load param traj_opt/backup_traj/igo/enable failed, use default value: [0;0m0
+[0;33m Load param traj_opt/backup_traj/igo/fallback_to_legacy failed, use default value: [0;0m1
+[0;33m Load param traj_opt/backup_traj/igo/antithetic failed, use default value: [0;0m1
+[0;33m Load param traj_opt/backup_traj/igo/unknown_as_occupied failed, use default value: [0;0m1
+[0;33m Load param traj_opt/backup_traj/igo/population failed, use default value: [0;0m24
+[0;33m Load param traj_opt/backup_traj/igo/generations failed, use default value: [0;0m5
+[0;33m Load param traj_opt/backup_traj/igo/threads failed, use default value: [0;0m4
+[0;33m Load param traj_opt/backup_traj/igo/seed failed, use default value: [0;0m7
+[0;33m Load param traj_opt/backup_traj/igo/hull_subdivision_depth failed, use default value: [0;0m1
+[0;33m Load param traj_opt/backup_traj/igo/no_feasible_expand_generations failed, use default value: [0;0m3
+[0;33m Load param traj_opt/backup_traj/igo/snapshot_max_voxels failed, use default value: [0;0m1000000
+[0;33m Load param traj_opt/backup_traj/igo/elite_ratio failed, use default value: [0;0m0.25
+[0;33m Load param traj_opt/backup_traj/igo/mean_learning_rate failed, use default value: [0;0m0.8
+[0;33m Load param traj_opt/backup_traj/igo/covariance_learning_rate failed, use default value: [0;0m0.2
+[0;33m Load param traj_opt/backup_traj/igo/initial_sigma failed, use default value: [0;0m0.65
+[0;33m Load param traj_opt/backup_traj/igo/min_eigenvalue failed, use default value: [0;0m1e-06
+[0;33m Load param traj_opt/backup_traj/igo/max_condition_number failed, use default value: [0;0m1e+06
+[0;33m Load param traj_opt/backup_traj/igo/covariance_expand_factor failed, use default value: [0;0m1.6
+[0;33m Load param traj_opt/backup_traj/igo/time_min_scale failed, use default value: [0;0m0.45
+[0;33m Load param traj_opt/backup_traj/igo/time_max_scale failed, use default value: [0;0m2.75
+[0;33m Load param traj_opt/backup_traj/igo/spatial_margin failed, use default value: [0;0m0.02
+[0;33m Load param traj_opt/backup_traj/igo/sample_dt failed, use default value: [0;0m0.03
+[0;33m Load param traj_opt/backup_traj/igo/sfc_tolerance failed, use default value: [0;0m1e-06
+[0;33m Load param traj_opt/backup_traj/igo/dynamic_tolerance failed, use default value: [0;0m0.02
+[0;33m Load param traj_opt/backup_traj/igo/energy_weight failed, use default value: [0;0m0.01
+[0;33m Load param traj_opt/backup_traj/igo/guide_weight failed, use default value: [0;0m0.05
+[0;33m Load param traj_opt/backup_traj/igo/unknown_weight failed, use default value: [0;0m0.02
+[0;33m Load param traj_opt/backup_traj/igo/replan_budget_ratio failed, use default value: [0;0m0.45
+[0;33m Load param traj_opt/backup_traj/igo/plan_from_rest_budget failed, use default value: [0;0m0.15
+[0;32m Load param traj_opt/boundary/max_vel success: [0;0m15
+[0;32m Load param traj_opt/boundary/max_acc success: [0;0m20
+[0;32m Load param traj_opt/boundary/max_jerk success: [0;0m120
+[0;32m Load param traj_opt/boundary/max_omg success: [0;0m3.5
+[0;32m Load param traj_opt/boundary/max_acc_thr success: [0;0m22
+[0;32m Load param traj_opt/boundary/min_acc_thr success: [0;0m6
+[0;32m Load param traj_opt/boundary/penna_margin success: [0;0m0.05
+[0;33m Load param traj_opt/backup_traj/penna_scale failed, use default value: [0;0m-1
+[0;32m Load param traj_opt/backup_traj/penna_t success: [0;0m50000
+[0;32m Load param traj_opt/backup_traj/penna_ts success: [0;0m1e+06
+[0;32m Load param traj_opt/backup_traj/penna_pos success: [0;0m1e+08
+[0;32m Load param traj_opt/backup_traj/penna_vel success: [0;0m1e+07
+[0;32m Load param traj_opt/backup_traj/penna_acc success: [0;0m1e+07
+[0;32m Load param traj_opt/backup_traj/penna_jerk success: [0;0m-1e+07
+[0;33m Load param traj_opt/backup_traj/penna_attract failed, use default value: [0;0m-1
+[0;33m Load param traj_opt/backup_traj/penna_guide_path failed, use default value: [0;0m-1
+[0;33m Load param traj_opt/backup_traj/penna_guide_vel failed, use default value: [0;0m-1
+[0;32m Load param traj_opt/backup_traj/penna_guide_z_tube success: [0;0m5e+06
+[0;32m Load param traj_opt/backup_traj/guide_z_tube_radius success: [0;0m0
+[0;33m Load param traj_opt/backup_traj/guide_path_tube_radius failed, use default value: [0;0m0.25
+[0;33m Load param traj_opt/backup_traj/guide_path_z_tube_radius failed, use default value: [0;0m0.1
+[0;33m Load param traj_opt/backup_traj/guide_path_huber_delta failed, use default value: [0;0m0.25
+[0;33m Load param traj_opt/backup_traj/guide_path_time_gradient_en failed, use default value: [0;0m0
+[0;32m Load param traj_opt/backup_traj/penna_omg success: [0;0m5e+06
+[0;32m Load param traj_opt/backup_traj/penna_thr success: [0;0m2e+06
+Load config file: /root/ws/real_planner/src/General-Planner/src/Planner/general_planner/config/click_real_highspeed.yaml
+[0;32m Load param traj_opt/switch/print_optimizer_log success: [0;0m0
+[0;32m Load param traj_opt/flatness/mass success: [0;0m1.64
+[0;32m Load param traj_opt/flatness/dh success: [0;0m0.35
+[0;32m Load param traj_opt/flatness/dv success: [0;0m0.35
+[0;32m Load param traj_opt/flatness/grav success: [0;0m9.81
+[0;32m Load param traj_opt/flatness/cp success: [0;0m0.001
+[0;32m Load param traj_opt/flatness/v_eps success: [0;0m0.0001
+[0;32m Load param traj_opt/switch/save_log_en success: [0;0m0
+[0;33m Load param traj_opt/esdf_traj/pos_constraint_type failed, use default value: [0;0m2
+[0;33m Load param traj_opt/esdf_traj/piece_num failed, use default value: [0;0m1
+[0;33m Load param traj_opt/esdf_traj/uniform_time_en failed, use default value: [0;0m0
+[0;32m Load param traj_opt/esdf_traj/block_energy_cost success: [0;0m0
+[0;32m Load param traj_opt/esdf_traj/opt_accuracy success: [0;0m5e-06
+[0;32m Load param traj_opt/esdf_traj/integral_reso success: [0;0m15
+[0;32m Load param traj_opt/esdf_traj/smooth_eps success: [0;0m0.01
+[0;33m Load param traj_opt/esdf_traj/convex_hull_en failed, use default value: [0;0m0
+[0;33m Load param traj_opt/esdf_traj/convex_hull_basis failed, use default value: [0;0m0
+[0;33m Load param traj_opt/esdf_traj/convex_hull_subdivision_depth failed, use default value: [0;0m0
+[0;33m Load param traj_opt/esdf_traj/convex_hull_cost_version failed, use default value: [0;0m1
+[0;33m Load param traj_opt/esdf_traj/convex_hull_alm_en failed, use default value: [0;0m0
+[0;33m Load param traj_opt/esdf_traj/convex_hull_alm_warm_start_en failed, use default value: [0;0m1
+[0;33m Load param traj_opt/esdf_traj/convex_hull_alm_warm_start_accuracy failed, use default value: [0;0m0.001
+[0;33m Load param traj_opt/esdf_traj/convex_hull_alm_active_set_en failed, use default value: [0;0m0
+[0;33m Load param traj_opt/esdf_traj/convex_hull_alm_active_set_margin failed, use default value: [0;0m0.05
+[0;33m Load param traj_opt/esdf_traj/convex_hull_adaptive_en failed, use default value: [0;0m1
+[0;33m Load param traj_opt/esdf_traj/convex_hull_refine_derivative_constraints failed, use default value: [0;0m0
+[0;33m Load param traj_opt/esdf_traj/convex_hull_alm_max_outer_iterations failed, use default value: [0;0m4
+[0;33m Load param traj_opt/esdf_traj/convex_hull_refine_margin failed, use default value: [0;0m0.05
+[0;33m Load param traj_opt/esdf_traj/convex_hull_derivative_refine_margin failed, use default value: [0;0m0.05
+[0;33m Load param traj_opt/esdf_traj/convex_hull_alm_position_scale failed, use default value: [0;0m0.25
+[0;33m Load param traj_opt/esdf_traj/convex_hull_alm_initial_penalty failed, use default value: [0;0m300000
+[0;33m Load param traj_opt/esdf_traj/convex_hull_alm_penalty_growth failed, use default value: [0;0m5
+[0;33m Load param traj_opt/esdf_traj/convex_hull_alm_progress_ratio failed, use default value: [0;0m0.5
+[0;33m Load param traj_opt/esdf_traj/convex_hull_alm_constraint_tolerance failed, use default value: [0;0m0.01
+[0;33m Load param traj_opt/esdf_traj/convex_hull_alm_require_certification failed, use default value: [0;0m1
+[0;33m Load param traj_opt/esdf_traj/init_profile_vel_ratio failed, use default value: [0;0m0.65
+[0;33m Load param traj_opt/esdf_traj/init_duration_scale failed, use default value: [0;0m1.25
+[0;33m Load param traj_opt/esdf_traj/terminal_vel_ratio failed, use default value: [0;0m0
+[0;33m Load param traj_opt/esdf_traj/igo/enable failed, use default value: [0;0m0
+[0;33m Load param traj_opt/esdf_traj/igo/fallback_to_legacy failed, use default value: [0;0m1
+[0;33m Load param traj_opt/esdf_traj/igo/antithetic failed, use default value: [0;0m1
+[0;33m Load param traj_opt/esdf_traj/igo/unknown_as_occupied failed, use default value: [0;0m1
+[0;33m Load param traj_opt/esdf_traj/igo/population failed, use default value: [0;0m24
+[0;33m Load param traj_opt/esdf_traj/igo/generations failed, use default value: [0;0m5
+[0;33m Load param traj_opt/esdf_traj/igo/threads failed, use default value: [0;0m4
+[0;33m Load param traj_opt/esdf_traj/igo/seed failed, use default value: [0;0m7
+[0;33m Load param traj_opt/esdf_traj/igo/hull_subdivision_depth failed, use default value: [0;0m1
+[0;33m Load param traj_opt/esdf_traj/igo/no_feasible_expand_generations failed, use default value: [0;0m3
+[0;33m Load param traj_opt/esdf_traj/igo/snapshot_max_voxels failed, use default value: [0;0m1000000
+[0;33m Load param traj_opt/esdf_traj/igo/elite_ratio failed, use default value: [0;0m0.25
+[0;33m Load param traj_opt/esdf_traj/igo/mean_learning_rate failed, use default value: [0;0m0.8
+[0;33m Load param traj_opt/esdf_traj/igo/covariance_learning_rate failed, use default value: [0;0m0.2
+[0;33m Load param traj_opt/esdf_traj/igo/initial_sigma failed, use default value: [0;0m0.65
+[0;33m Load param traj_opt/esdf_traj/igo/min_eigenvalue failed, use default value: [0;0m1e-06
+[0;33m Load param traj_opt/esdf_traj/igo/max_condition_number failed, use default value: [0;0m1e+06
+[0;33m Load param traj_opt/esdf_traj/igo/covariance_expand_factor failed, use default value: [0;0m1.6
+[0;33m Load param traj_opt/esdf_traj/igo/time_min_scale failed, use default value: [0;0m0.45
+[0;33m Load param traj_opt/esdf_traj/igo/time_max_scale failed, use default value: [0;0m2.75
+[0;33m Load param traj_opt/esdf_traj/igo/spatial_margin failed, use default value: [0;0m0.02
+[0;33m Load param traj_opt/esdf_traj/igo/sample_dt failed, use default value: [0;0m0.03
+[0;33m Load param traj_opt/esdf_traj/igo/sfc_tolerance failed, use default value: [0;0m1e-06
+[0;33m Load param traj_opt/esdf_traj/igo/dynamic_tolerance failed, use default value: [0;0m0.02
+[0;33m Load param traj_opt/esdf_traj/igo/energy_weight failed, use default value: [0;0m0.01
+[0;33m Load param traj_opt/esdf_traj/igo/guide_weight failed, use default value: [0;0m0.05
+[0;33m Load param traj_opt/esdf_traj/igo/unknown_weight failed, use default value: [0;0m0.02
+[0;33m Load param traj_opt/esdf_traj/igo/replan_budget_ratio failed, use default value: [0;0m0.45
+[0;33m Load param traj_opt/esdf_traj/igo/plan_from_rest_budget failed, use default value: [0;0m0.15
+[0;32m Load param traj_opt/boundary/max_vel success: [0;0m15
+[0;32m Load param traj_opt/boundary/max_acc success: [0;0m20
+[0;32m Load param traj_opt/boundary/max_jerk success: [0;0m120
+[0;32m Load param traj_opt/boundary/max_omg success: [0;0m3.5
+[0;32m Load param traj_opt/boundary/max_acc_thr success: [0;0m22
+[0;32m Load param traj_opt/boundary/min_acc_thr success: [0;0m6
+[0;32m Load param traj_opt/boundary/penna_margin success: [0;0m0.05
+[0;33m Load param traj_opt/esdf_traj/penna_scale failed, use default value: [0;0m-1
+[0;32m Load param traj_opt/esdf_traj/penna_t success: [0;0m12000
+[0;33m Load param traj_opt/esdf_traj/penna_ts failed, use default value: [0;0m-1
+[0;32m Load param traj_opt/esdf_traj/penna_pos success: [0;0m5e+06
+[0;32m Load param traj_opt/esdf_traj/penna_vel success: [0;0m500000
+[0;32m Load param traj_opt/esdf_traj/penna_acc success: [0;0m500000
+[0;32m Load param traj_opt/esdf_traj/penna_jerk success: [0;0m500000
+[0;33m Load param traj_opt/esdf_traj/penna_attract failed, use default value: [0;0m-1
+[0;33m Load param traj_opt/esdf_traj/penna_guide_path failed, use default value: [0;0m-1
+[0;33m Load param traj_opt/esdf_traj/penna_guide_vel failed, use default value: [0;0m-1
+[0;33m Load param traj_opt/esdf_traj/penna_guide_z_tube failed, use default value: [0;0m-1
+[0;33m Load param traj_opt/esdf_traj/guide_z_tube_radius failed, use default value: [0;0m-1
+[0;33m Load param traj_opt/esdf_traj/guide_path_tube_radius failed, use default value: [0;0m0.25
+[0;33m Load param traj_opt/esdf_traj/guide_path_z_tube_radius failed, use default value: [0;0m0.1
+[0;33m Load param traj_opt/esdf_traj/guide_path_huber_delta failed, use default value: [0;0m0.25
+[0;33m Load param traj_opt/esdf_traj/guide_path_time_gradient_en failed, use default value: [0;0m0
+[0;32m Load param traj_opt/esdf_traj/penna_omg success: [0;0m500000
+[0;32m Load param traj_opt/esdf_traj/penna_thr success: [0;0m100000
+Load config file: /root/ws/real_planner/src/General-Planner/src/Planner/general_planner/config/click_real_highspeed.yaml
+[0;32m Load param traj_opt/switch/print_optimizer_log success: [0;0m0
+[0;32m Load param traj_opt/flatness/mass success: [0;0m1.64
+[0;32m Load param traj_opt/flatness/dh success: [0;0m0.35
+[0;32m Load param traj_opt/flatness/dv success: [0;0m0.35
+[0;32m Load param traj_opt/flatness/grav success: [0;0m9.81
+[0;32m Load param traj_opt/flatness/cp success: [0;0m0.001
+[0;32m Load param traj_opt/flatness/v_eps success: [0;0m0.0001
+[0;32m Load param traj_opt/switch/save_log_en success: [0;0m0
+[0;33m Load param traj_opt/plain_traj/pos_constraint_type failed, use default value: [0;0m2
+[0;33m Load param traj_opt/plain_traj/piece_num failed, use default value: [0;0m1
+[0;33m Load param traj_opt/plain_traj/uniform_time_en failed, use default value: [0;0m0
+[0;33m Load param traj_opt/plain_traj/block_energy_cost failed, use default value: [0;0m0
+[0;33m Load param traj_opt/plain_traj/opt_accuracy failed, use default value: [0;0m1e-05
+[0;33m Load param traj_opt/plain_traj/integral_reso failed, use default value: [0;0m10
+[0;33m Load param traj_opt/plain_traj/smooth_eps failed, use default value: [0;0m0.01
+[0;33m Load param traj_opt/plain_traj/convex_hull_en failed, use default value: [0;0m0
+[0;33m Load param traj_opt/plain_traj/convex_hull_basis failed, use default value: [0;0m0
+[0;33m Load param traj_opt/plain_traj/convex_hull_subdivision_depth failed, use default value: [0;0m0
+[0;33m Load param traj_opt/plain_traj/convex_hull_cost_version failed, use default value: [0;0m1
+[0;33m Load param traj_opt/plain_traj/convex_hull_alm_en failed, use default value: [0;0m0
+[0;33m Load param traj_opt/plain_traj/convex_hull_alm_warm_start_en failed, use default value: [0;0m1
+[0;33m Load param traj_opt/plain_traj/convex_hull_alm_warm_start_accuracy failed, use default value: [0;0m0.001
+[0;33m Load param traj_opt/plain_traj/convex_hull_alm_active_set_en failed, use default value: [0;0m0
+[0;33m Load param traj_opt/plain_traj/convex_hull_alm_active_set_margin failed, use default value: [0;0m0.05
+[0;33m Load param traj_opt/plain_traj/convex_hull_adaptive_en failed, use default value: [0;0m1
+[0;33m Load param traj_opt/plain_traj/convex_hull_refine_derivative_constraints failed, use default value: [0;0m0
+[0;33m Load param traj_opt/plain_traj/convex_hull_alm_max_outer_iterations failed, use default value: [0;0m4
+[0;33m Load param traj_opt/plain_traj/convex_hull_refine_margin failed, use default value: [0;0m0.05
+[0;33m Load param traj_opt/plain_traj/convex_hull_derivative_refine_margin failed, use default value: [0;0m0.05
+[0;33m Load param traj_opt/plain_traj/convex_hull_alm_position_scale failed, use default value: [0;0m0.25
+[0;33m Load param traj_opt/plain_traj/convex_hull_alm_initial_penalty failed, use default value: [0;0m300000
+[0;33m Load param traj_opt/plain_traj/convex_hull_alm_penalty_growth failed, use default value: [0;0m5
+[0;33m Load param traj_opt/plain_traj/convex_hull_alm_progress_ratio failed, use default value: [0;0m0.5
+[0;33m Load param traj_opt/plain_traj/convex_hull_alm_constraint_tolerance failed, use default value: [0;0m0.01
+[0;33m Load param traj_opt/plain_traj/convex_hull_alm_require_certification failed, use default value: [0;0m1
+[0;33m Load param traj_opt/plain_traj/init_profile_vel_ratio failed, use default value: [0;0m0.65
+[0;33m Load param traj_opt/plain_traj/init_duration_scale failed, use default value: [0;0m1.25
+[0;33m Load param traj_opt/plain_traj/terminal_vel_ratio failed, use default value: [0;0m0
+[0;33m Load param traj_opt/plain_traj/igo/enable failed, use default value: [0;0m0
+[0;33m Load param traj_opt/plain_traj/igo/fallback_to_legacy failed, use default value: [0;0m1
+[0;33m Load param traj_opt/plain_traj/igo/antithetic failed, use default value: [0;0m1
+[0;33m Load param traj_opt/plain_traj/igo/unknown_as_occupied failed, use default value: [0;0m1
+[0;33m Load param traj_opt/plain_traj/igo/population failed, use default value: [0;0m24
+[0;33m Load param traj_opt/plain_traj/igo/generations failed, use default value: [0;0m5
+[0;33m Load param traj_opt/plain_traj/igo/threads failed, use default value: [0;0m4
+[0;33m Load param traj_opt/plain_traj/igo/seed failed, use default value: [0;0m7
+[0;33m Load param traj_opt/plain_traj/igo/hull_subdivision_depth failed, use default value: [0;0m1
+[0;33m Load param traj_opt/plain_traj/igo/no_feasible_expand_generations failed, use default value: [0;0m3
+[0;33m Load param traj_opt/plain_traj/igo/snapshot_max_voxels failed, use default value: [0;0m1000000
+[0;33m Load param traj_opt/plain_traj/igo/elite_ratio failed, use default value: [0;0m0.25
+[0;33m Load param traj_opt/plain_traj/igo/mean_learning_rate failed, use default value: [0;0m0.8
+[0;33m Load param traj_opt/plain_traj/igo/covariance_learning_rate failed, use default value: [0;0m0.2
+[0;33m Load param traj_opt/plain_traj/igo/initial_sigma failed, use default value: [0;0m0.65
+[0;33m Load param traj_opt/plain_traj/igo/min_eigenvalue failed, use default value: [0;0m1e-06
+[0;33m Load param traj_opt/plain_traj/igo/max_condition_number failed, use default value: [0;0m1e+06
+[0;33m Load param traj_opt/plain_traj/igo/covariance_expand_factor failed, use default value: [0;0m1.6
+[0;33m Load param traj_opt/plain_traj/igo/time_min_scale failed, use default value: [0;0m0.45
+[0;33m Load param traj_opt/plain_traj/igo/time_max_scale failed, use default value: [0;0m2.75
+[0;33m Load param traj_opt/plain_traj/igo/spatial_margin failed, use default value: [0;0m0.02
+[0;33m Load param traj_opt/plain_traj/igo/sample_dt failed, use default value: [0;0m0.03
+[0;33m Load param traj_opt/plain_traj/igo/sfc_tolerance failed, use default value: [0;0m1e-06
+[0;33m Load param traj_opt/plain_traj/igo/dynamic_tolerance failed, use default value: [0;0m0.02
+[0;33m Load param traj_opt/plain_traj/igo/energy_weight failed, use default value: [0;0m0.01
+[0;33m Load param traj_opt/plain_traj/igo/guide_weight failed, use default value: [0;0m0.05
+[0;33m Load param traj_opt/plain_traj/igo/unknown_weight failed, use default value: [0;0m0.02
+[0;33m Load param traj_opt/plain_traj/igo/replan_budget_ratio failed, use default value: [0;0m0.45
+[0;33m Load param traj_opt/plain_traj/igo/plan_from_rest_budget failed, use default value: [0;0m0.15
+[0;32m Load param traj_opt/boundary/max_vel success: [0;0m15
+[0;32m Load param traj_opt/boundary/max_acc success: [0;0m20
+[0;32m Load param traj_opt/boundary/max_jerk success: [0;0m120
+[0;32m Load param traj_opt/boundary/max_omg success: [0;0m3.5
+[0;32m Load param traj_opt/boundary/max_acc_thr success: [0;0m22
+[0;32m Load param traj_opt/boundary/min_acc_thr success: [0;0m6
+[0;32m Load param traj_opt/boundary/penna_margin success: [0;0m0.05
+[0;33m Load param traj_opt/plain_traj/penna_scale failed, use default value: [0;0m-1
+[0;33m Load param traj_opt/plain_traj/penna_t failed, use default value: [0;0m-1
+[0;33m Load param traj_opt/plain_traj/penna_ts failed, use default value: [0;0m-1
+[0;33m Load param traj_opt/plain_traj/penna_pos failed, use default value: [0;0m-1
+[0;33m Load param traj_opt/plain_traj/penna_vel failed, use default value: [0;0m-1
+[0;33m Load param traj_opt/plain_traj/penna_acc failed, use default value: [0;0m-1
+[0;33m Load param traj_opt/plain_traj/penna_jerk failed, use default value: [0;0m-1
+[0;33m Load param traj_opt/plain_traj/penna_attract failed, use default value: [0;0m-1
+[0;33m Load param traj_opt/plain_traj/penna_guide_path failed, use default value: [0;0m-1
+[0;33m Load param traj_opt/plain_traj/penna_guide_vel failed, use default value: [0;0m-1
+[0;33m Load param traj_opt/plain_traj/penna_guide_z_tube failed, use default value: [0;0m-1
+[0;33m Load param traj_opt/plain_traj/guide_z_tube_radius failed, use default value: [0;0m-1
+[0;33m Load param traj_opt/plain_traj/guide_path_tube_radius failed, use default value: [0;0m0.25
+[0;33m Load param traj_opt/plain_traj/guide_path_z_tube_radius failed, use default value: [0;0m0.1
+[0;33m Load param traj_opt/plain_traj/guide_path_huber_delta failed, use default value: [0;0m0.25
+[0;33m Load param traj_opt/plain_traj/guide_path_time_gradient_en failed, use default value: [0;0m0
+[0;33m Load param traj_opt/plain_traj/penna_omg failed, use default value: [0;0m-1
+[0;33m Load param traj_opt/plain_traj/penna_thr failed, use default value: [0;0m-1
+[0;32m Load param general_planner/print_log success: [0;0m0
+[0;32m Load param general_planner/detailed_log_en success: [0;0m0
+[0;32m Load param general_planner/visualization_en success: [0;0m1
+[0;32m Load param general_planner/backup_traj_en success: [0;0m1
+[0;32m Load param general_planner/esdf_traj_en success: [0;0m0
+[0;33m Load param general_planner/plain_traj_en failed, use default value: [0;0m0
+[0;32m Load param general_planner/esdf_safe_distance success: [0;0m0.3
+[0;32m Load param general_planner/goal_vel_en success: [0;0m0
+[0;32m Load param general_planner/goal_yaw_en success: [0;0m0
+[0;32m Load param general_planner/visual_process success: [0;0m0
+[0;32m Load param general_planner/use_fov_cut success: [0;0m0
+[0;32m Load param general_planner/frontend_in_known_free success: [0;0m0
+[0;32m Load param general_planner/safe_corridor_line_max_length success: [0;0m15
+[0;32m Load param general_planner/sensing_horizon success: [0;0m-1
+[0;32m Load param general_planner/obs_skip_num success: [0;0m2
+[0;32m Load param general_planner/replan_forward_dt success: [0;0m0.1
+[0;32m Load param general_planner/corridor_bound_dis success: [0;0m2
+[0;32m Load param general_planner/corridor_line_max_length success: [0;0m2
+[0;32m Load param general_planner/planning_horizon success: [0;0m15
+[0;32m Load param general_planner/receding_dis success: [0;0m8
+[0;32m Load param general_planner/robot_r success: [0;0m0.2
+[0;32m Load param general_planner/frontend_astar_time_out success: [0;0m0.35
+[0;32m Load param general_planner/over_wall_search_en success: [0;0m1
+[0;32m Load param general_planner/over_wall_max_climb success: [0;0m3
+[0;32m Load param general_planner/over_wall_height_step success: [0;0m0.3
+[0;32m Load param general_planner/over_wall_min_blocked_span success: [0;0m0.8
+[0;32m Load param general_planner/over_wall_min_progress_gain success: [0;0m0.5
+[0;32m Load param general_planner/over_wall_forward_ratio success: [0;0m0.9
+[0;32m Load param general_planner/dynamic_obstacle_layer/enable success: [0;0m0
+[0;32m Load param general_planner/dynamic_obstacle_layer/ttl success: [0;0m0.35
+[0;32m Load param general_planner/dynamic_obstacle_layer/voxel_size success: [0;0m0.2
+[0;32m Load param general_planner/dynamic_obstacle_layer/inflation_radius success: [0;0m0.4
+[0;32m Load param general_planner/dynamic_obstacle_layer/line_check_step success: [0;0m0.05
+[0;32m Load param general_planner/dynamic_obstacle_layer/max_points_per_frame success: [0;0m30000
+[0;32m Load param general_planner/dynamic_obstacle_layer/local_half_size success: [0;0m[12 12 3 ]
+[0;32m Load param general_planner/state2state/direct_line_frontend_enable success: [0;0m1
+[0;32m Load param general_planner/state2state/altitude_guard_enable success: [0;0m1
+[0;32m Load param general_planner/state2state/altitude_band success: [0;0m0.25
+[0;32m Load param general_planner/state2state/altitude_escape_enable success: [0;0m1
+[0;32m Load param general_planner/state2state/altitude_escape_band success: [0;0m3.5
+[0;32m Load param general_planner/state2state/over_goal_guard_enable success: [0;0m1
+[0;32m Load param general_planner/state2state/over_goal_tolerance success: [0;0m0.25
+[0;32m Load param general_planner/state2state/near_goal_radius success: [0;0m2
+[0;32m Load param general_planner/state2state/accept_exp_without_backup_near_goal success: [0;0m1
+[0;32m Load param general_planner/unknown_goal_reveal_en success: [0;0m1
+[0;32m Load param general_planner/iris_iter_num success: [0;0m2
+[0;32m Load param general_planner/ellipsoid_optimizer success: [0;0mclassic
+[0;32m Load param general_planner/ellipsoid_optimizer_fallback success: [0;0m0
+[0;32m Load param general_planner/yaw_mode success: [0;0m1
+[0;32m Load param general_planner/mpc_horizon success: [0;0m15
+[0;32m Load param general_planner/yaw_dot_max success: [0;0m3
+[0;33m Load param general_planner/se3_aggressive/enable failed, use default value: [0;0m1
+[0;33m Load param general_planner/se3_aggressive/piece_num failed, use default value: [0;0m4
+[0;33m Load param general_planner/se3_aggressive/reference_speed failed, use default value: [0;0m3
+[0;33m Load param general_planner/se3_aggressive/min_duration failed, use default value: [0;0m0.5
+[0;33m Load param general_planner/se3_aggressive/max_duration failed, use default value: [0;0m8
+[0;33m Load param general_planner/se3_aggressive/horiz_half_len failed, use default value: [0;0m0.35
+[0;33m Load param general_planner/se3_aggressive/vert_half_len failed, use default value: [0;0m0.12
+[0;33m Load param general_planner/se3_aggressive/safe_margin failed, use default value: [0;0m0.05
+[0;33m Load param general_planner/se3_aggressive/max_vel failed, use default value: [0;0m8
+[0;33m Load param general_planner/se3_aggressive/thrust_acc_min failed, use default value: [0;0m4
+[0;33m Load param general_planner/se3_aggressive/thrust_acc_max failed, use default value: [0;0m20
+[0;33m Load param general_planner/se3_aggressive/body_rate_max failed, use default value: [0;0m5
+[0;33m Load param general_planner/se3_aggressive/yaw_rate_max failed, use default value: [0;0m3
+[0;33m Load param general_planner/se3_aggressive/weight_time failed, use default value: [0;0m10
+[0;33m Load param general_planner/se3_aggressive/weight_corridor failed, use default value: [0;0m10000
+[0;33m Load param general_planner/se3_aggressive/weight_vel failed, use default value: [0;0m1000
+[0;33m Load param general_planner/se3_aggressive/weight_thrust failed, use default value: [0;0m1000
+[0;33m Load param general_planner/se3_aggressive/weight_body_rate failed, use default value: [0;0m1000
+[0;33m Load param general_planner/se3_aggressive/use_yaw failed, use default value: [0;0m0
+[0;33m Load param general_planner/se3_aggressive/yaw_heading_to_velocity failed, use default value: [0;0m1
+[0;33m Load param general_planner/se3_aggressive/use_corridor failed, use default value: [0;0m1
+[0;33m Load param general_planner/se3_aggressive/runtime_check_enable failed, use default value: [0;0m1
+[0;33m Load param general_planner/se3_aggressive/use_numeric_shape_gradient failed, use default value: [0;0m1
+[0;33m Load param general_planner/tracking/distance failed, use default value: [0;0m2.2
+[0;33m Load param general_planner/tracking/distance_tolerance failed, use default value: [0;0m0.8
+[0;33m Load param general_planner/tracking/distance_lower_tolerance failed, use default value: [0;0m0.8
+[0;33m Load param general_planner/tracking/distance_upper_tolerance failed, use default value: [0;0m0.8
+[0;33m Load param general_planner/tracking/height_offset failed, use default value: [0;0m0.7
+[0;33m Load param general_planner/tracking/height_tolerance failed, use default value: [0;0m0.6
+[0;33m Load param general_planner/tracking/safe_distance failed, use default value: [0;0m0.35
+[0;33m Load param general_planner/tracking/hard_safe_distance failed, use default value: [0;0m0.22
+[0;33m Load param general_planner/tracking/narrow_passage_enable failed, use default value: [0;0m1
+[0;33m Load param general_planner/tracking/narrow_passage_clearance_threshold failed, use default value: [0;0m0.38
+[0;33m Load param general_planner/tracking/narrow_passage_soft_safe_distance_scale failed, use default value: [0;0m0.65
+[0;33m Load param general_planner/tracking/visibility_safe_distance failed, use default value: [0;0m0.25
+[0;33m Load param general_planner/tracking/visibility_cone_ratio failed, use default value: [0;0m0.12
+[0;33m Load param general_planner/tracking/visibility_angle_clearance failed, use default value: [0;0m0.0872665
+[0;33m Load param general_planner/tracking/adaptive_occlusion_enable failed, use default value: [0;0m1
+[0;33m Load param general_planner/tracking/adaptive_occlusion_activation_distance failed, use default value: [0;0m0.25
+[0;33m Load param general_planner/tracking/adaptive_occlusion_max_weight_scale failed, use default value: [0;0m12
+[0;33m Load param general_planner/tracking/adaptive_occlusion_recovery_oe_scale failed, use default value: [0;0m8
+[0;33m Load param general_planner/tracking/adaptive_occlusion_od_far_weight_scale failed, use default value: [0;0m4
+[0;33m Load param general_planner/tracking/adaptive_occlusion_distance_upper_scale failed, use default value: [0;0m0.65
+[0;33m Load param general_planner/tracking/adaptive_occlusion_min_horizontal_upper failed, use default value: [0;0m0.85
+[0;33m Load param general_planner/tracking/adaptive_occlusion_postcheck_enable failed, use default value: [0;0m1
+[0;33m Load param general_planner/tracking/reacquire_distance failed, use default value: [0;0m6
+[0;33m Load param general_planner/tracking/min_commit_duration failed, use default value: [0;0m0.8
+[0;33m Load param general_planner/tracking/low_speed_velocity_threshold failed, use default value: [0;0m0.25
+[0;33m Load param general_planner/tracking/angular_hysteresis failed, use default value: [0;0m0.35
+[0;33m Load param general_planner/tracking/runtime_manager_enable failed, use default value: [0;0m1
+[0;33m Load param general_planner/tracking/anti_rollback_enable failed, use default value: [0;0m1
+[0;33m Load param general_planner/tracking/anti_rollback_horizon failed, use default value: [0;0m1
+[0;33m Load param general_planner/tracking/anti_rollback_dt failed, use default value: [0;0m0.25
+[0;33m Load param general_planner/tracking/anti_rollback_margin failed, use default value: [0;0m0.35
+[0;33m Load param general_planner/tracking/keep_old_horizon failed, use default value: [0;0m1
+[0;33m Load param general_planner/tracking/keep_old_safety_dt failed, use default value: [0;0m0.05
+[0;33m Load param general_planner/tracking/keep_old_short_safety_grace_enable failed, use default value: [0;0m1
+[0;33m Load param general_planner/tracking/keep_old_short_safety_grace_horizon failed, use default value: [0;0m0.25
+[0;33m Load param general_planner/tracking/keep_old_min_remaining failed, use default value: [0;0m0.45
+[0;33m Load param general_planner/tracking/keep_old_min_speed failed, use default value: [0;0m0.15
+[0;33m Load param general_planner/tracking/keep_old_min_displacement failed, use default value: [0;0m0.04
+[0;33m Load param general_planner/tracking/keep_old_min_progress_ratio failed, use default value: [0;0m0.1
+[0;33m Load param general_planner/tracking/keep_old_max_tracking_error_scale failed, use default value: [0;0m1.25
+[0;33m Load param general_planner/tracking/max_consecutive_keep_old failed, use default value: [0;0m2
+[0;33m Load param general_planner/tracking/no_motion_guard_enable failed, use default value: [0;0m1
+[0;33m Load param general_planner/tracking/no_motion_check_horizon failed, use default value: [0;0m0.35
+[0;33m Load param general_planner/tracking/no_motion_min_displacement failed, use default value: [0;0m0.04
+[0;33m Load param general_planner/tracking/motion_3d_enable failed, use default value: [0;0m1
+[0;33m Load param general_planner/tracking/vertical_motion_threshold failed, use default value: [0;0m0.12
+[0;33m Load param general_planner/tracking/no_motion_min_displacement_z failed, use default value: [0;0m0.04
+[0;33m Load param general_planner/tracking/keep_old_min_progress_3d_ratio failed, use default value: [0;0m0.08
+[0;33m Load param general_planner/tracking/no_motion_target_speed_threshold failed, use default value: [0;0m0.25
+[0;33m Load param general_planner/tracking/commit_start_time_tolerance failed, use default value: [0;0m0.05
+[0;33m Load param general_planner/tracking/detour_grace_enable failed, use default value: [0;0m1
+[0;33m Load param general_planner/tracking/detour_grace_horizon failed, use default value: [0;0m1.2
+[0;33m Load param general_planner/tracking/detour_max_tracking_error_scale failed, use default value: [0;0m2.5
+[0;33m Load param general_planner/tracking/anti_rollback_eval_after_prefix failed, use default value: [0;0m1
+[0;33m Load param general_planner/tracking/candidate_angle_step failed, use default value: [0;0m0.392699
+[0;33m Load param general_planner/tracking/candidate_radius_num failed, use default value: [0;0m3
+[0;33m Load param general_planner/tracking/visibility_samples failed, use default value: [0;0m5
+[0;33m Load param general_planner/tracking/recovery_enable failed, use default value: [0;0m1
+[0;33m Load param general_planner/tracking/recovery_horizon failed, use default value: [0;0m1.5
+[0;33m Load param general_planner/tracking/recovery_distance_tolerance_scale failed, use default value: [0;0m1.8
+[0;33m Load param general_planner/tracking/recovery_height_tolerance_scale failed, use default value: [0;0m1.8
+[0;33m Load param general_planner/tracking/recovery_time_scale failed, use default value: [0;0m1.4
+[0;33m Load param general_planner/tracking/recovery_reduce_visible_region_weight failed, use default value: [0;0m0.3
+[0;33m Load param general_planner/tracking/recovery_reduce_target_forward_weight failed, use default value: [0;0m0.5
+[0;33m Load param general_planner/tracking/soft_recovery_enable failed, use default value: [0;0m1
+[0;33m Load param general_planner/tracking/soft_recovery_margin failed, use default value: [0;0m0.2
+[0;33m Load param general_planner/tracking/soft_recovery_hold_duration failed, use default value: [0;0m0.8
+[0;33m Load param general_planner/tracking/reacquire_recovery_enable failed, use default value: [0;0m1
+[0;33m Load param general_planner/tracking/reacquire_recovery_horizon failed, use default value: [0;0m0.8
+[0;33m Load param general_planner/tracking/reacquire_transit_enable failed, use default value: [0;0m1
+[0;33m Load param general_planner/tracking/reacquire_transit_horizon_scale failed, use default value: [0;0m0.6
+[0;33m Load param general_planner/tracking/reacquire_transit_max_horizon failed, use default value: [0;0m2.5
+[0;33m Load param general_planner/tracking/reacquire_visible_region_weight_scale failed, use default value: [0;0m0
+[0;33m Load param general_planner/tracking/reacquire_fov_relax_enable failed, use default value: [0;0m1
+[0;33m Load param general_planner/tracking/reacquire_fov_deferred_strict_enable failed, use default value: [0;0m1
+[0;33m Load param general_planner/tracking/reacquire_fov_entry_distance failed, use default value: [0;0m6
+[0;33m Load param general_planner/tracking/reacquire_min_progress_distance failed, use default value: [0;0m0.5
+[0;33m Load param general_planner/tracking/reacquire_min_progress_ratio failed, use default value: [0;0m0.1
+[0;33m Load param general_planner/tracking/reacquire_fov_range_grace failed, use default value: [0;0m8
+[0;33m Load param general_planner/tracking/reacquire_fov_angular_grace_deg failed, use default value: [0;0m8
+[0;33m Load param general_planner/tracking/optimizer_commit_safety_precheck_enable failed, use default value: [0;0m1
+[0;33m Load param general_planner/tracking/retry_without_corridor_enable failed, use default value: [0;0m1
+[0;33m Load param general_planner/tracking/fallback_relax_enable failed, use default value: [0;0m1
+[0;33m Load param general_planner/tracking/fallback_distance_tolerance_scale failed, use default value: [0;0m1.6
+[0;33m Load param general_planner/tracking/fallback_height_tolerance_scale failed, use default value: [0;0m1.5
+[0;33m Load param general_planner/tracking/fallback_candidate_radius_extra failed, use default value: [0;0m2
+[0;33m Load param general_planner/tracking/fallback_candidate_angle_step_scale failed, use default value: [0;0m0.5
+[0;33m Load param general_planner/tracking/fallback_search_horizon_scale failed, use default value: [0;0m1.3
+[0;33m Load param general_planner/tracking/frontend_elastic_enable failed, use default value: [0;0m1
+[0;33m Load param general_planner/tracking/frontend_elastic_distance_tolerance_scale failed, use default value: [0;0m2
+[0;33m Load param general_planner/tracking/frontend_elastic_height_tolerance_scale failed, use default value: [0;0m2
+[0;33m Load param general_planner/tracking/frontend_partial_guide_enable failed, use default value: [0;0m1
+[0;33m Load param general_planner/tracking/frontend_partial_min_duration failed, use default value: [0;0m0.45
+[0;33m Load param general_planner/tracking/frontend_partial_min_samples failed, use default value: [0;0m2
+[0;33m Load param general_planner/tracking/weight_od_near failed, use default value: [0;0m20
+[0;33m Load param general_planner/tracking/weight_od_far failed, use default value: [0;0m5
+[0;33m Load param general_planner/tracking/weight_od_vertical failed, use default value: [0;0m8
+[0;33m Load param general_planner/tracking/weight_oa failed, use default value: [0;0m5
+[0;33m Load param general_planner/tracking/weight_oe failed, use default value: [0;0m1
+[0;33m Load param general_planner/tracking/weight_relative_velocity failed, use default value: [0;0m1
+[0;33m Load param general_planner/tracking/weight_tangent_velocity failed, use default value: [0;0m5
+[0;33m Load param general_planner/tracking/weight_viewpoint_attractor failed, use default value: [0;0m50
+[0;33m Load param general_planner/tracking/weight_visible_region failed, use default value: [0;0m3
+[0;33m Load param general_planner/tracking/weight_fov failed, use default value: [0;0m20
+[0;33m Load param general_planner/tracking/weight_target_forward failed, use default value: [0;0m15
+[0;33m Load param general_planner/tracking/static_distance_tolerance_scale failed, use default value: [0;0m0.35
+[0;33m Load param general_planner/tracking/static_height_tolerance_scale failed, use default value: [0;0m0.5
+[0;33m Load param general_planner/tracking/static_tangent_weight_scale failed, use default value: [0;0m3
+[0;33m Load param general_planner/tracking/static_tail_speed_epsilon failed, use default value: [0;0m0.08
+[0;33m Load param general_planner/tracking/fov_horizontal_deg failed, use default value: [0;0m90
+[0;33m Load param general_planner/tracking/fov_vertical_deg failed, use default value: [0;0m60
+[0;33m Load param general_planner/tracking/fov_range failed, use default value: [0;0m4
+[0;33m Load param general_planner/tracking/target_front_margin failed, use default value: [0;0m0.15
+[0;33m Load param general_planner/tracking/fov_commit_check_enable failed, use default value: [0;0m1
+[0;33m Load param general_planner/tracking/fov_check_strict failed, use default value: [0;0m1
+[0;33m Load param general_planner/tracking/fov_check_dt failed, use default value: [0;0m0.03
+[0;33m Load param general_planner/tracking/fov_range_grace_enable failed, use default value: [0;0m1
+[0;33m Load param general_planner/tracking/fov_range_grace failed, use default value: [0;0m0.9
+[0;33m Load param general_planner/tracking/fov_keep_old_angular_grace_deg failed, use default value: [0;0m5
+[0;33m Load param general_planner/tracking/fov_keep_old_violation_ratio_grace failed, use default value: [0;0m0.25
+[0;33m Load param general_planner/tracking/fov_range_margin failed, use default value: [0;0m0.05
+[0;33m Load param general_planner/tracking/fov_front_margin failed, use default value: [0;0m0.05
+[0;33m Load param general_planner/tracking/fov_check_first_commit failed, use default value: [0;0m1
+[0;33m Load param general_planner/tracking/keep_old_requires_fov failed, use default value: [0;0m1
+[0;33m Load param general_planner/tracking/frontend_fov_feasibility_enable failed, use default value: [0;0m1
+[0;33m Load param general_planner/tracking/frontend_yaw_rate_feasibility_enable failed, use default value: [0;0m1
+[0;33m Load param general_planner/tracking/frontend_fov_range_margin failed, use default value: [0;0m0.05
+[0;33m Load param general_planner/tracking/frontend_yaw_rate_margin failed, use default value: [0;0m0.1
+[0;33m Load param general_planner/tracking/frontend_obstacle_recovery_enable failed, use default value: [0;0m1
+[0;33m Load param general_planner/tracking/frontend_grid_neighbor_mode failed, use default value: [0;0m26
+[0;33m Load param general_planner/tracking/frontend_over_wall_enable failed, use default value: [0;0m1
+[0;33m Load param general_planner/tracking/frontend_over_wall_max_climb failed, use default value: [0;0m2
+[0;33m Load param general_planner/tracking/frontend_side_pass_enable failed, use default value: [0;0m1
+[0;33m Load param general_planner/tracking/frontend_side_pass_width failed, use default value: [0;0m1.5
+[0;33m Load param general_planner/tracking/frontend_reacquire_relax_yaw_rate failed, use default value: [0;0m1
+[0;33m Load param general_planner/tracking/joint_sample_dt failed, use default value: [0;0m0.05
+[0;33m Load param general_planner/tracking/dense_joint_sample_enable failed, use default value: [0;0m1
+[0;33m Load param general_planner/tracking/unknown_as_occupied failed, use default value: [0;0m0
+[0;33m Load param general_planner/tracking/frontend_astar failed, use default value: [0;0m1
+[0;33m Load param general_planner/tracking/use_visible_region failed, use default value: [0;0m1
+[0;33m Load param general_planner/tracking/use_snap failed, use default value: [0;0m0
+[0;33m Load param general_planner/perching/robot_l failed, use default value: [0;0m0.28
+[0;33m Load param general_planner/perching/v_plus failed, use default value: [0;0m0.8
+[0;33m Load param general_planner/perching/pre_contact_distance failed, use default value: [0;0m0.55
+[0;33m Load param general_planner/perching/terminal_relax_time failed, use default value: [0;0m0.35
+[0;33m Load param general_planner/perching/safe_distance failed, use default value: [0;0m0
+[0;33m Load param general_planner/perching/platform_radius failed, use default value: [0;0m0.35
+[0;33m Load param general_planner/perching/robot_radius failed, use default value: [0;0m0.25
+[0;33m Load param general_planner/perching/platform_clearance failed, use default value: [0;0m0.05
+[0;33m Load param general_planner/perching/thrust_nominal failed, use default value: [0;0m9.81
+[0;33m Load param general_planner/perching/thrust_range failed, use default value: [0;0m2
+[0;33m Load param general_planner/perching/weight_nu failed, use default value: [0;0m0.01
+[0;33m Load param general_planner/perching/weight_tau_f failed, use default value: [0;0m0.001
+[0;33m Load param general_planner/perching/min_duration failed, use default value: [0;0m0.6
+[0;33m Load param general_planner/perching/max_duration failed, use default value: [0;0m4
+[0;33m Load param general_planner/perching/reference_speed failed, use default value: [0;0m2
+[0;33m Load param general_planner/perching/relative_z_min failed, use default value: [0;0m0.1
+[0;33m Load param general_planner/perching/relative_z_max failed, use default value: [0;0m3
+[0;33m Load param general_planner/perching/weight_relative_height failed, use default value: [0;0m1
+[0;33m Load param general_planner/perching/visual_min_distance failed, use default value: [0;0m0.2
+[0;33m Load param general_planner/perching/visual_activation_distance failed, use default value: [0;0m3
+[0;33m Load param general_planner/perching/visual_fx failed, use default value: [0;0m1
+[0;33m Load param general_planner/perching/visual_fy failed, use default value: [0;0m1
+[0;33m Load param general_planner/perching/terminal_pos_tolerance failed, use default value: [0;0m0.15
+[0;33m Load param general_planner/perching/terminal_vel_tolerance failed, use default value: [0;0m0.5
+[0;33m Load param general_planner/perching/contact_time_margin failed, use default value: [0;0m0.15
+[0;33m Load param general_planner/perching/contact_distance_tolerance failed, use default value: [0;0m0.12
+[0;33m Load param general_planner/perching/max_replan_fail_keep failed, use default value: [0;0m3
+[0;33m Load param general_planner/perching/rotate_surface_with_yaw_rate failed, use default value: [0;0m1
+[0;33m Load param general_planner/perching/frontend_astar failed, use default value: [0;0m1
+[0;33m Load param general_planner/perching/use_dynamics_terminal_accel failed, use default value: [0;0m1
+[0;33m Load param general_planner/perching/contact_occupancy_allowance_enable failed, use default value: [0;0m1
+[0;33m Load param general_planner/perching/contact_linefree_allowance_enable failed, use default value: [0;0m1
+[0;33m Load param general_planner/perching/contact_occupancy_normal_tolerance failed, use default value: [0;0m0.2
+[0;33m Load param general_planner/perching/contact_occupancy_tangent_margin failed, use default value: [0;0m0.15
+[0;33m Load param general_planner/perching/duration_margin failed, use default value: [0;0m0.2
+[0;33m Load param general_planner/perching/duration_tolerance failed, use default value: [0;0m0.15
+[0;33m Load param general_planner/perching/allow_long_standalone failed, use default value: [0;0m0
+[0;33m Load param general_planner/perching/time_upper_bound_weight failed, use default value: [0;0m5000
+[0;33m Load param general_planner/perching/duration_seed_weight failed, use default value: [0;0m50
+[0;33m Load param general_planner/perching/max_piece_duration failed, use default value: [0;0m1.2
+[0;33m Load param general_planner/perching/min_piece_num failed, use default value: [0;0m3
+[0;33m Load param general_planner/perching/max_piece_num failed, use default value: [0;0m8
+[0;33m Load param general_planner/perching/multi_point_guide_enable failed, use default value: [0;0m1
+[0;33m Load param general_planner/perching/moving_guide_sample_num failed, use default value: [0;0m4
+[0;33m Load param general_planner/perching/tau_f_seed_limit failed, use default value: [0;0m1.3
+[0;33m Load param general_planner/perching/reset_surface_time failed, use default value: [0;0m1
+[0;33m Load param general_planner/takeoff/robot_l failed, use default value: [0;0m0.28
+[0;33m Load param general_planner/takeoff/robot_radius failed, use default value: [0;0m0.25
+[0;33m Load param general_planner/takeoff/platform_radius failed, use default value: [0;0m0.35
+[0;33m Load param general_planner/takeoff/platform_clearance failed, use default value: [0;0m0.05
+[0;33m Load param general_planner/takeoff/release_contact_time failed, use default value: [0;0m0.2
+[0;33m Load param general_planner/takeoff/escape_distance failed, use default value: [0;0m1
+[0;33m Load param general_planner/takeoff/escape_height failed, use default value: [0;0m0.8
+[0;33m Load param general_planner/takeoff/reference_speed failed, use default value: [0;0m1.5
+[0;33m Load param general_planner/takeoff/min_duration failed, use default value: [0;0m0.6
+[0;33m Load param general_planner/takeoff/max_duration failed, use default value: [0;0m3
+[0;33m Load param general_planner/takeoff/safe_distance failed, use default value: [0;0m0.35
+[0;33m Load param general_planner/takeoff/piece_num failed, use default value: [0;0m3
+[0;33m Load param general_planner/takeoff/frontend_astar failed, use default value: [0;0m1
+[0;33m Load param general_planner/takeoff/use_tangent_release_velocity failed, use default value: [0;0m0
+[0;33m Load param general_planner/takeoff/weight_eta failed, use default value: [0;0m1
+[0;33m Load param general_planner/takeoff/weight_tau_f failed, use default value: [0;0m0.001
+[0;33m Load param general_planner/takeoff/platform_clearance_after_release failed, use default value: [0;0m0.08
+[0;33m Load param general_planner/tracking_perching/enable failed, use default value: [0;0m1
+[0;33m Load param general_planner/tracking_perching/auto_trigger_enable failed, use default value: [0;0m0
+[0;33m Load param general_planner/tracking_perching/require_external_request failed, use default value: [0;0m1
+[0;33m Load param general_planner/tracking_perching/readiness_min_distance failed, use default value: [0;0m0.5
+[0;33m Load param general_planner/tracking_perching/readiness_max_distance failed, use default value: [0;0m3
+[0;33m Load param general_planner/tracking_perching/readiness_max_relative_speed failed, use default value: [0;0m2
+[0;33m Load param general_planner/tracking_perching/readiness_max_lateral_speed failed, use default value: [0;0m1.5
+[0;33m Load param general_planner/tracking_perching/readiness_max_required_duration failed, use default value: [0;0m3
+[0;33m Load param general_planner/tracking_perching/readiness_min_prediction_time failed, use default value: [0;0m1.2
+[0;33m Load param general_planner/tracking_perching/readiness_hold_cycles failed, use default value: [0;0m3
+[0;33m Load param general_planner/tracking_perching/handover_delay failed, use default value: [0;0m0
+[0;33m Load param general_planner/tracking_perching/prefix_ratio failed, use default value: [0;0m0.4
+[0;33m Load param general_planner/tracking_perching/reference_speed failed, use default value: [0;0m2
+[0;33m Load param general_planner/tracking_perching/max_seed_duration failed, use default value: [0;0m3
+[0;33m Load param general_planner/tracking_perching/use_tracking_suffix failed, use default value: [0;0m1
+[0;33m Load param general_planner/tracking_perching/stitch_prefix failed, use default value: [0;0m1
+[0;33m Load param general_planner/tracking_perching/commit_only_after_candidate_check failed, use default value: [0;0m1
+[0;33m Load param general_planner/tracking_perching/abort_to_tracking_enable failed, use default value: [0;0m1
+[0;33m Load param general_planner/swarm/enable failed, use default value: [0;0m0
+[0;33m Load param general_planner/swarm/drone_id failed, use default value: [0;0m-1
+[0;33m Load param general_planner/swarm/clearance failed, use default value: [0;0m0.75
+[0;33m Load param general_planner/swarm/des_clearance failed, use default value: [0;0m0.75
+[0;33m Load param general_planner/swarm/weight failed, use default value: [0;0m0
+[0;33m Load param general_planner/swarm/horizontal_scale failed, use default value: [0;0m1
+[0;33m Load param general_planner/swarm/vertical_scale failed, use default value: [0;0m2
+[0;33m Load param general_planner/swarm/activation_scale failed, use default value: [0;0m1.5
+[0;33m Load param general_planner/swarm/time_horizon failed, use default value: [0;0m5
+[0;33m Load param general_planner/swarm/stale_timeout failed, use default value: [0;0m1
+[0;33m Load param general_planner/swarm/formation/enable failed, use default value: [0;0m0
+[0;33m Load param general_planner/swarm/formation/weight failed, use default value: [0;0m0
+[0;33m Load param general_planner/swarm/formation/num failed, use default value: [0;0m0
+[0;33m Load param general_planner/swarm/formation/offsets failed, use default value: [0;0m[]
+[0;33m Load param general_planner/swarm/formation/start failed, use default value: [0;0m[0 0 0 ]
+[0;33m Load param general_planner/swarm/formation/end failed, use default value: [0;0m[1 0 0 ]
+[0;33m Load param general_planner/swarm/formation/time_horizon failed, use default value: [0;0m5
+[0;33m Load param general_planner/swarm/formation/stale_timeout failed, use default value: [0;0m1
+[0;32m Load param rog_map/resolution success: [0;0m0.15
+[38;2;050;205;050m -- [Viz] Set resolution_ to 0.15
+[0m[38;2;050;205;050m -- [Viz] Set visualization_en_ to true
+[0mLoad config file: /root/ws/real_planner/src/General-Planner/src/Planner/general_planner/config/click_real_highspeed.yaml
+[0;32m Load param astar/map_voxel_num success: [0;0m[500 500 100 ]
+[0;32m Load param astar/allow_diag success: [0;0m1
+[0;32m Load param astar/debug_visualization_en success: [0;0m0
+[0;32m Load param astar/heu_type success: [0;0m2
+[0;32m Load param astar/visual_process success: [0;0m0
+[32m -- [RM] Init Astar-map.[0m
+[34m	map index size: 250 250  50[0m
+[34m	map vox_num: 501 501 101[0m
+[33m -- [Fsm] 2D CLICK GOAL ENABLED: /goal (z falls back to click_height=1.5).[0m
+[33m -- [Fsm] 3D CLICK GOAL ENABLED: /goal_3d (message z is preserved).[0m
+[33m -- [ROGMapCore] cur_pose out of map range, reset the map.[0m
+[33m -- [ROGMapCore] Sliding to map center at:  -30 -0.5  1.5[0m
+[0m[INFO] [1784708987.996955372]:  -- [Fsm] Active task executor: plugin=state2state, mission=single_task, task=state2state, backend=corridor, resolved_backend=corridor[0m
+[33m -- [Fsm] Wait for goal.[0m
+[32m -- [Fsm 1.010] Current state: INIT[0m
+[33m -- [Fsm] Wait for goal.[0m
+[32m -- [Fsm 2.010] Current state: INIT[0m
+[33m -- [Fsm] Wait for goal.[0m
+[32m -- [Fsm 3.010] Current state: INIT[0m
+[33m -- [Fsm] Wait for goal.[0m
+[32m -- [Fsm 4.020] Current state: INIT[0m
+[33m -- [Fsm] Wait for goal.[0m
+[32m -- [Fsm 5.020] Current state: INIT[0m
+[33m -- [Fsm] Wait for goal.[0m
+[32m -- [Fsm 6.030] Current state: INIT[0m
+[33m -- [Fsm] Wait for goal.[0m
+[32m -- [Fsm 7.030] Current state: INIT[0m
+[33m -- [Fsm] Wait for goal.[0m
+[32m -- [Fsm 8.030] Current state: INIT[0m
+[33m -- [Fsm] Wait for goal.[0m
+[32m -- [Fsm 9.030] Current state: INIT[0m
+[33m -- [Fsm] Wait for goal.[0m
+[32m -- [Fsm 10.040] Current state: INIT[0m
+[33m -- [Fsm] Wait for goal.[0m
+[32m -- [Fsm 11.050] Current state: INIT[0m
+[33m -- [Fsm] Wait for goal.[0m
+[32m -- [Fsm 12.060] Current state: INIT[0m
+[33m -- [Fsm] Wait for goal.[0m
+[32m -- [Fsm 13.060] Current state: INIT[0m
+[33m -- [Fsm] Wait for goal.[0m
+[32m -- [Fsm 14.070] Current state: INIT[0m
+[33m -- [Fsm] Wait for goal.[0m
+[32m -- [Fsm 15.070] Current state: INIT[0m
+[33m -- [Fsm] Wait for goal.[0m
+[32m -- [Fsm 16.070] Current state: INIT[0m
+[32m -- [Fsm] Get goal at [0m64.831 -8.768  1.500
+[32m -- [Fsm] Receive click goal at: [64.831 -8.768  1.500]; goal yaw: 0.000 deg[0m
+[33m[WARN] [1784709004.749693909]:  -- [State2State][IGO] falling back to legacy corridor optimizer.[0m
+[33m[WARN] [1784709004.800259220]:  -- [State2State][IGO] falling back to legacy corridor optimizer.[0m
+[38;2;000;128;000m -- [Fsm]: [MainFsmCallback] change state from [INIT] to [WAIT_GOAL].
+[0m[38;2;000;128;000m -- [Fsm]: [MainFsmCallback] change state from [WAIT_GOAL] to [GENERATE_TRAJ].
+[0m[0m[INFO] [1784709004.746389075]:  -- [State2State][IGO] attempt pieces=5 population=24 generations=5 budget=0.2000s[0m
+[0m[INFO] [1784709004.749681639]:  -- [State2State][IGO] result success=false reason=NO_FEASIBLE_CANDIDATE dim=13 evals=120 gens=5 feasible_ratio=0.000 elapsed=0.0033s occ=33 out=262 unk=14 sfc=65.59645 dyn=351.78741 duration=1.665[0m
+[0m[INFO] [1784709004.753592293]:  -- [GeneralPlanner] in [PlanFromRest] GenerateExpTrajectory SUCCESS.[0m
+[38;2;000;128;000m -- [Fsm]: [MainFsmCallback] change state from [GENERATE_TRAJ] to [FOLLOW_TRAJ].
+[0m[0m[INFO] [1784709004.796784150]:  -- [State2State][IGO] attempt pieces=5 population=24 generations=5 budget=0.0450s[0m
+[0m[INFO] [1784709004.800246819]:  -- [State2State][IGO] result success=false reason=NO_FEASIBLE_CANDIDATE dim=13 evals=120 gens=5 feasible_ratio=0.000 elapsed=0.0034s occ=49 out=272 unk=49 sfc=36.25665 dyn=77.69513 duration=2.019[0m
+[32m -- [Fsm] ReplanOnce succeed.[0m
+[33m[WARN] [1784709004.867077474]:  -- [State2State][IGO] falling back to legacy corridor optimizer.[0m
+[0m[INFO] [1784709004.863796820]:  -- [State2State][IGO] attempt pieces=5 population=24 generations=5 budget=0.0450s[0m
+[0m[INFO] [1784709004.867068874]:  -- [State2State][IGO] result success=false reason=NO_FEASIBLE_CANDIDATE dim=13 evals=120 gens=5 feasible_ratio=0.000 elapsed=0.0032s occ=0 out=151 unk=204 sfc=5.41109 dyn=23.40265 duration=1.922[0m
+[32m -- [Fsm] ReplanOnce succeed.[0m
+[33m[WARN] [1784709004.934257060]:  -- [State2State][IGO] falling back to legacy corridor optimizer.[0m
+[0m[INFO] [1784709004.930894004]:  -- [State2State][IGO] attempt pieces=5 population=24 generations=5 budget=0.0450s[0m
+[0m[INFO] [1784709004.934244490]:  -- [State2State][IGO] result success=false reason=NO_FEASIBLE_CANDIDATE dim=13 evals=120 gens=5 feasible_ratio=0.000 elapsed=0.0033s occ=28 out=238 unk=166 sfc=16.19288 dyn=37.14376 duration=2.234[0m
+[32m -- [Fsm] ReplanOnce succeed.[0m
+[33m[WARN] [1784709005.000311651]:  -- [State2State][IGO] falling back to legacy corridor optimizer.[0m
+[0m[INFO] [1784709004.997144490]:  -- [State2State][IGO] attempt pieces=5 population=24 generations=5 budget=0.0450s[0m
+[0m[INFO] [1784709005.000294240]:  -- [State2State][IGO] result success=false reason=NO_FEASIBLE_CANDIDATE dim=13 evals=120 gens=5 feasible_ratio=0.000 elapsed=0.0031s occ=43 out=152 unk=56 sfc=9.55431 dyn=137.71996 duration=1.265[0m
+[32m -- [Fsm] ReplanOnce succeed.[0m
+[32m -- [Fsm 17.076] Current state: FOLLOW_TRAJ[0m
+[33m[WARN] [1784709005.067124520]:  -- [State2State][IGO] falling back to legacy corridor optimizer.[0m
+[0m[INFO] [1784709005.063767064]:  -- [State2State][IGO] attempt pieces=5 population=24 generations=5 budget=0.0450s[0m
+[0m[INFO] [1784709005.067113910]:  -- [State2State][IGO] result success=false reason=NO_FEASIBLE_CANDIDATE dim=13 evals=120 gens=5 feasible_ratio=0.000 elapsed=0.0033s occ=47 out=175 unk=260 sfc=5.67625 dyn=14.07855 duration=2.406[0m
+[32m -- [Fsm] ReplanOnce succeed.[0m
+[33m[WARN] [1784709005.134172677]:  -- [State2State][IGO] falling back to legacy corridor optimizer.[0m
+[0m[INFO] [1784709005.130864053]:  -- [State2State][IGO] attempt pieces=5 population=24 generations=5 budget=0.0450s[0m
+[0m[INFO] [1784709005.134160207]:  -- [State2State][IGO] result success=false reason=NO_FEASIBLE_CANDIDATE dim=13 evals=120 gens=5 feasible_ratio=0.000 elapsed=0.0033s occ=44 out=184 unk=268 sfc=5.39963 dyn=8.81432 duration=2.473[0m
+[32m -- [Fsm] ReplanOnce succeed.[0m
+[33m[WARN] [1784709005.200277385]:  -- [State2State][IGO] falling back to legacy corridor optimizer.[0m
+[0m[INFO] [1784709005.197168687]:  -- [State2State][IGO] attempt pieces=5 population=24 generations=5 budget=0.0450s[0m
+[0m[INFO] [1784709005.200266294]:  -- [State2State][IGO] result success=false reason=NO_FEASIBLE_CANDIDATE dim=13 evals=120 gens=5 feasible_ratio=0.000 elapsed=0.0031s occ=53 out=167 unk=56 sfc=9.56496 dyn=97.12519 duration=1.375[0m
+[32m -- [Fsm] ReplanOnce succeed.[0m
+[33m[WARN] [1784709005.267249880]:  -- [State2State][IGO] falling back to legacy corridor optimizer.[0m
+[0m[INFO] [1784709005.264281135]:  -- [State2State][IGO] attempt pieces=6 population=24 generations=5 budget=0.0450s[0m
+[0m[INFO] [1784709005.267240519]:  -- [State2State][IGO] result success=false reason=NO_FEASIBLE_CANDIDATE dim=13 evals=120 gens=5 feasible_ratio=0.000 elapsed=0.0029s occ=77 out=173 unk=121 sfc=8.64730 dyn=16.69666 duration=1.849[0m
+[32m -- [Fsm] ReplanOnce succeed.[0m
+[33m[WARN] [1784709005.333860633]:  -- [State2State][IGO] falling back to legacy corridor optimizer.[0m
+[0m[INFO] [1784709005.330592330]:  -- [State2State][IGO] attempt pieces=5 population=24 generations=5 budget=0.0450s[0m
+[0m[INFO] [1784709005.333847152]:  -- [State2State][IGO] result success=false reason=NO_FEASIBLE_CANDIDATE dim=13 evals=120 gens=5 feasible_ratio=0.000 elapsed=0.0032s occ=81 out=188 unk=36 sfc=6.65997 dyn=30.62904 duration=1.519[0m
+[32m -- [Fsm] ReplanOnce succeed.[0m
+[33m[WARN] [1784709005.401611762]:  -- [State2State][IGO] falling back to legacy corridor optimizer.[0m
+[0m[INFO] [1784709005.397564594]:  -- [State2State][IGO] attempt pieces=5 population=24 generations=5 budget=0.0450s[0m
+[0m[INFO] [1784709005.401593921]:  -- [State2State][IGO] result success=false reason=NO_FEASIBLE_CANDIDATE dim=13 evals=120 gens=5 feasible_ratio=0.000 elapsed=0.0040s occ=91 out=0 unk=276 sfc=0.99791 dyn=19.19567 duration=1.828[0m
+[32m -- [Fsm] ReplanOnce succeed.[0m
+[33m[WARN] [1784709005.467231904]:  -- [State2State][IGO] falling back to legacy corridor optimizer.[0m
+[0m[INFO] [1784709005.463760124]:  -- [State2State][IGO] attempt pieces=5 population=24 generations=5 budget=0.0450s[0m
+[0m[INFO] [1784709005.467219163]:  -- [State2State][IGO] result success=false reason=NO_FEASIBLE_CANDIDATE dim=9 evals=120 gens=5 feasible_ratio=0.000 elapsed=0.0034s occ=82 out=93 unk=99 sfc=2.19606 dyn=15.53721 duration=1.365[0m
+[32m -- [Fsm] ReplanOnce succeed.[0m
+[33m[WARN] [1784709005.533931470]:  -- [State2State][IGO] falling back to legacy corridor optimizer.[0m
+[0m[INFO] [1784709005.530374168]:  -- [State2State][IGO] attempt pieces=5 population=24 generations=5 budget=0.0450s[0m
+[0m[INFO] [1784709005.533919769]:  -- [State2State][IGO] result success=false reason=NO_FEASIBLE_CANDIDATE dim=13 evals=120 gens=5 feasible_ratio=0.000 elapsed=0.0035s occ=136 out=67 unk=20 sfc=3.63969 dyn=90.83588 duration=1.111[0m
+[32m -- [Fsm] ReplanOnce succeed.[0m
+[33m[WARN] [1784709005.601150052]:  -- [State2State][IGO] falling back to legacy corridor optimizer.[0m
+[0m[INFO] [1784709005.597832788]:  -- [State2State][IGO] attempt pieces=5 population=24 generations=5 budget=0.0450s[0m
+[0m[INFO] [1784709005.601139472]:  -- [State2State][IGO] result success=false reason=NO_FEASIBLE_CANDIDATE dim=13 evals=120 gens=5 feasible_ratio=0.000 elapsed=0.0033s occ=70 out=120 unk=81 sfc=3.52002 dyn=41.98441 duration=1.348[0m
+[32m -- [Fsm] ReplanOnce succeed.[0m
+[33m[WARN] [1784709005.667417405]:  -- [State2State][IGO] falling back to legacy corridor optimizer.[0m
+[0m[INFO] [1784709005.663705968]:  -- [State2State][IGO] attempt pieces=5 population=24 generations=5 budget=0.0450s[0m
+[0m[INFO] [1784709005.667408175]:  -- [State2State][IGO] result success=false reason=NO_FEASIBLE_CANDIDATE dim=17 evals=120 gens=5 feasible_ratio=0.000 elapsed=0.0037s occ=149 out=35 unk=93 sfc=1.27204 dyn=24.27174 duration=1.378[0m
+[32m -- [Fsm] ReplanOnce succeed.[0m
+[33m[WARN] [1784709005.733972126]:  -- [State2State][IGO] falling back to legacy corridor optimizer.[0m
+[0m[INFO] [1784709005.730689553]:  -- [State2State][IGO] attempt pieces=5 population=24 generations=5 budget=0.0450s[0m
+[0m[INFO] [1784709005.733960396]:  -- [State2State][IGO] result success=false reason=NO_FEASIBLE_CANDIDATE dim=13 evals=120 gens=5 feasible_ratio=0.000 elapsed=0.0032s occ=125 out=0 unk=92 sfc=0.08788 dyn=27.66933 duration=1.078[0m
+[32m -- [Fsm] ReplanOnce succeed.[0m
+[33m[WARN] [1784709005.800466676]:  -- [State2State][IGO] falling back to legacy corridor optimizer.[0m
+[0m[INFO] [1784709005.797095089]:  -- [State2State][IGO] attempt pieces=5 population=24 generations=5 budget=0.0450s[0m
+[0m[INFO] [1784709005.800453915]:  -- [State2State][IGO] result success=false reason=NO_FEASIBLE_CANDIDATE dim=9 evals=120 gens=5 feasible_ratio=0.000 elapsed=0.0033s occ=40 out=0 unk=190 sfc=0.10559 dyn=10.93201 duration=1.144[0m
+[32m -- [Fsm] ReplanOnce succeed.[0m
+[33m[WARN] [1784709005.867925256]:  -- [State2State][IGO] falling back to legacy corridor optimizer.[0m
+[0m[INFO] [1784709005.863569708]:  -- [State2State][IGO] attempt pieces=5 population=24 generations=5 budget=0.0450s[0m
+[0m[INFO] [1784709005.867914866]:  -- [State2State][IGO] result success=false reason=NO_FEASIBLE_CANDIDATE dim=13 evals=120 gens=5 feasible_ratio=0.000 elapsed=0.0043s occ=102 out=52 unk=70 sfc=1.02026 dyn=24.52915 duration=1.114[0m
+[32m -- [Fsm] ReplanOnce succeed.[0m
+[33m[WARN] [1784709005.934895140]:  -- [State2State][IGO] falling back to legacy corridor optimizer.[0m
+[0m[INFO] [1784709005.930389278]:  -- [State2State][IGO] attempt pieces=5 population=24 generations=5 budget=0.0450s[0m
+[0m[INFO] [1784709005.934886290]:  -- [State2State][IGO] result success=false reason=NO_FEASIBLE_CANDIDATE dim=17 evals=120 gens=5 feasible_ratio=0.000 elapsed=0.0045s occ=97 out=231 unk=72 sfc=9.70804 dyn=76.34584 duration=1.997[0m
+[32m -- [Fsm] ReplanOnce succeed.[0m
+[33m[WARN] [1784709006.001254336]:  -- [State2State][IGO] falling back to legacy corridor optimizer.[0m
+[0m[INFO] [1784709005.996910619]:  -- [State2State][IGO] attempt pieces=5 population=24 generations=5 budget=0.0450s[0m
+[0m[INFO] [1784709006.001241685]:  -- [State2State][IGO] result success=false reason=NO_FEASIBLE_CANDIDATE dim=13 evals=120 gens=5 feasible_ratio=0.000 elapsed=0.0043s occ=63 out=131 unk=178 sfc=7.32129 dyn=32.84231 duration=1.855[0m
+[32m -- [Fsm] ReplanOnce succeed.[0m
+[32m -- [Fsm 18.086] Current state: FOLLOW_TRAJ[0m
+[33m[WARN] [1784709006.069577958]:  -- [State2State][IGO] falling back to legacy corridor optimizer.[0m
+[0m[INFO] [1784709006.063486906]:  -- [State2State][IGO] attempt pieces=5 population=24 generations=5 budget=0.0450s[0m
+[0m[INFO] [1784709006.069569668]:  -- [State2State][IGO] result success=false reason=NO_FEASIBLE_CANDIDATE dim=13 evals=120 gens=5 feasible_ratio=0.000 elapsed=0.0061s occ=50 out=244 unk=82 sfc=28.29091 dyn=130.62335 duration=1.877[0m
+[32m -- [Fsm] ReplanOnce succeed.[0m
+[33m[WARN] [1784709006.135039090]:  -- [State2State][IGO] falling back to legacy corridor optimizer.[0m
+[0m[INFO] [1784709006.130651272]:  -- [State2State][IGO] attempt pieces=5 population=24 generations=5 budget=0.0450s[0m
+[0m[INFO] [1784709006.135029820]:  -- [State2State][IGO] result success=false reason=NO_FEASIBLE_CANDIDATE dim=13 evals=120 gens=5 feasible_ratio=0.000 elapsed=0.0044s occ=71 out=125 unk=81 sfc=8.56098 dyn=78.55921 duration=1.381[0m
+[32m -- [Fsm] ReplanOnce succeed.[0m
+[33m[WARN] [1784709006.200294646]:  -- [State2State][IGO] falling back to legacy corridor optimizer.[0m
+[0m[INFO] [1784709006.196945201]:  -- [State2State][IGO] attempt pieces=5 population=24 generations=5 budget=0.0450s[0m
+[0m[INFO] [1784709006.200286706]:  -- [State2State][IGO] result success=false reason=NO_FEASIBLE_CANDIDATE dim=9 evals=120 gens=5 feasible_ratio=0.000 elapsed=0.0033s occ=0 out=0 unk=279 sfc=0.24509 dyn=9.81647 duration=1.390[0m
+[32m -- [Fsm] ReplanOnce succeed.[0m
+[33m[WARN] [1784709006.266879884]:  -- [State2State][IGO] falling back to legacy corridor optimizer.[0m
+[0m[INFO] [1784709006.263682913]:  -- [State2State][IGO] attempt pieces=5 population=24 generations=5 budget=0.0450s[0m
+[0m[INFO] [1784709006.266869614]:  -- [State2State][IGO] result success=false reason=NO_FEASIBLE_CANDIDATE dim=13 evals=120 gens=5 feasible_ratio=0.000 elapsed=0.0032s occ=54 out=435 unk=57 sfc=76.26525 dyn=140.41761 duration=2.725[0m
+[32m -- [Fsm] ReplanOnce succeed.[0m
+[33m[WARN] [1784709006.333591446]:  -- [State2State][IGO] falling back to legacy corridor optimizer.[0m
+[0m[INFO] [1784709006.330513849]:  -- [State2State][IGO] attempt pieces=5 population=24 generations=5 budget=0.0450s[0m
+[0m[INFO] [1784709006.333580015]:  -- [State2State][IGO] result success=false reason=NO_FEASIBLE_CANDIDATE dim=13 evals=120 gens=5 feasible_ratio=0.000 elapsed=0.0030s occ=93 out=0 unk=228 sfc=0.48387 dyn=6.94367 duration=1.600[0m
+[32m -- [Fsm] ReplanOnce succeed.[0m
+[33m[WARN] [1784709006.400447152]:  -- [State2State][IGO] falling back to legacy corridor optimizer.[0m
+[0m[INFO] [1784709006.397170819]:  -- [State2State][IGO] attempt pieces=5 population=24 generations=5 budget=0.0450s[0m
+[0m[INFO] [1784709006.400435431]:  -- [State2State][IGO] result success=false reason=NO_FEASIBLE_CANDIDATE dim=13 evals=120 gens=5 feasible_ratio=0.000 elapsed=0.0032s occ=81 out=0 unk=302 sfc=0.00515 dyn=3.88689 duration=1.911[0m
+[32m -- [Fsm] ReplanOnce succeed.[0m
+[33m[WARN] [1784709006.466425080]:  -- [State2State][IGO] falling back to legacy corridor optimizer.[0m
+[0m[INFO] [1784709006.463510939]:  -- [State2State][IGO] attempt pieces=5 population=24 generations=5 budget=0.0450s[0m
+[0m[INFO] [1784709006.466413110]:  -- [State2State][IGO] result success=false reason=NO_FEASIBLE_CANDIDATE dim=13 evals=120 gens=5 feasible_ratio=0.000 elapsed=0.0029s occ=94 out=0 unk=143 sfc=0.00000 dyn=13.74818 duration=1.179[0m
+[32m -- [Fsm] ReplanOnce succeed.[0m
+[33m[WARN] [1784709006.534043971]:  -- [State2State][IGO] falling back to legacy corridor optimizer.[0m
+[0m[INFO] [1784709006.530634453]:  -- [State2State][IGO] attempt pieces=5 population=24 generations=5 budget=0.0450s[0m
+[0m[INFO] [1784709006.534032750]:  -- [State2State][IGO] result success=false reason=NO_FEASIBLE_CANDIDATE dim=17 evals=120 gens=5 feasible_ratio=0.000 elapsed=0.0034s occ=96 out=207 unk=44 sfc=8.45752 dyn=70.20386 duration=1.728[0m
+[32m -- [Fsm] ReplanOnce succeed.[0m
+[33m[WARN] [1784709006.600681790]:  -- [State2State][IGO] falling back to legacy corridor optimizer.[0m
+[0m[INFO] [1784709006.597558522]:  -- [State2State][IGO] attempt pieces=5 population=24 generations=5 budget=0.0450s[0m
+[0m[INFO] [1784709006.600673080]:  -- [State2State][IGO] result success=false reason=NO_FEASIBLE_CANDIDATE dim=13 evals=120 gens=5 feasible_ratio=0.000 elapsed=0.0031s occ=56 out=0 unk=217 sfc=0.00000 dyn=5.03320 duration=1.362[0m
+[32m -- [Fsm] ReplanOnce succeed.[0m
+[33m[WARN] [1784709006.667158144]:  -- [State2State][IGO] falling back to legacy corridor optimizer.[0m
+[0m[INFO] [1784709006.664171690]:  -- [State2State][IGO] attempt pieces=5 population=24 generations=5 budget=0.0450s[0m
+[0m[INFO] [1784709006.667147754]:  -- [State2State][IGO] result success=false reason=NO_FEASIBLE_CANDIDATE dim=13 evals=120 gens=5 feasible_ratio=0.000 elapsed=0.0030s occ=99 out=82 unk=28 sfc=1.33588 dyn=53.31798 duration=1.039[0m
+[32m -- [Fsm] ReplanOnce succeed.[0m
+[33m[WARN] [1784709006.734131314]:  -- [State2State][IGO] falling back to legacy corridor optimizer.[0m
+[0m[INFO] [1784709006.730919223]:  -- [State2State][IGO] attempt pieces=6 population=24 generations=5 budget=0.0450s[0m
+[0m[INFO] [1784709006.734119384]:  -- [State2State][IGO] result success=false reason=NO_FEASIBLE_CANDIDATE dim=13 evals=120 gens=5 feasible_ratio=0.000 elapsed=0.0032s occ=120 out=62 unk=60 sfc=3.59577 dyn=28.32269 duration=1.207[0m
+[32m -- [Fsm] ReplanOnce succeed.[0m
+[33m[WARN] [1784709006.800531776]:  -- [State2State][IGO] falling back to legacy corridor optimizer.[0m
+[0m[INFO] [1784709006.797299684]:  -- [State2State][IGO] attempt pieces=6 population=24 generations=5 budget=0.0450s[0m
+[0m[INFO] [1784709006.800520306]:  -- [State2State][IGO] result success=false reason=NO_FEASIBLE_CANDIDATE dim=17 evals=120 gens=5 feasible_ratio=0.000 elapsed=0.0032s occ=112 out=45 unk=162 sfc=1.31813 dyn=20.21370 duration=1.590[0m
+[32m -- [Fsm] ReplanOnce succeed.[0m
+[33m[WARN] [1784709006.866905197]:  -- [State2State][IGO] falling back to legacy corridor optimizer.[0m
+[0m[INFO] [1784709006.863885102]:  -- [State2State][IGO] attempt pieces=5 population=24 generations=5 budget=0.0450s[0m
+[0m[INFO] [1784709006.866896787]:  -- [State2State][IGO] result success=false reason=NO_FEASIBLE_CANDIDATE dim=13 evals=120 gens=5 feasible_ratio=0.000 elapsed=0.0030s occ=101 out=117 unk=43 sfc=4.12511 dyn=32.37297 duration=1.301[0m
+[32m -- [Fsm] ReplanOnce succeed.[0m
+[33m[WARN] [1784709006.935359244]:  -- [State2State][IGO] falling back to legacy corridor optimizer.[0m
+[0m[INFO] [1784709006.931400039]:  -- [State2State][IGO] attempt pieces=6 population=24 generations=5 budget=0.0450s[0m
+[0m[INFO] [1784709006.935347133]:  -- [State2State][IGO] result success=false reason=NO_FEASIBLE_CANDIDATE dim=17 evals=120 gens=5 feasible_ratio=0.000 elapsed=0.0039s occ=61 out=189 unk=46 sfc=7.23854 dyn=137.79255 duration=1.473[0m
+[32m -- [Fsm] ReplanOnce succeed.[0m
+[33m[WARN] [1784709007.001295151]:  -- [State2State][IGO] falling back to legacy corridor optimizer.[0m
+[0m[INFO] [1784709006.997453000]:  -- [State2State][IGO] attempt pieces=5 population=24 generations=5 budget=0.0450s[0m
+[0m[INFO] [1784709007.001286441]:  -- [State2State][IGO] result success=false reason=NO_FEASIBLE_CANDIDATE dim=13 evals=120 gens=5 feasible_ratio=0.000 elapsed=0.0038s occ=66 out=45 unk=264 sfc=0.98406 dyn=7.10167 duration=1.868[0m
+[32m -- [Fsm] ReplanOnce succeed.[0m
+[32m -- [Fsm 19.096] Current state: FOLLOW_TRAJ[0m
+[33m[WARN] [1784709007.068734551]:  -- [State2State][IGO] falling back to legacy corridor optimizer.[0m
+[0m[INFO] [1784709007.063875908]:  -- [State2State][IGO] attempt pieces=6 population=24 generations=5 budget=0.0450s[0m
+[0m[INFO] [1784709007.068722880]:  -- [State2State][IGO] result success=false reason=NO_FEASIBLE_CANDIDATE dim=21 evals=120 gens=5 feasible_ratio=0.000 elapsed=0.0048s occ=108 out=0 unk=294 sfc=0.43782 dyn=13.09659 duration=2.006[0m
+[32m -- [Fsm] ReplanOnce succeed.[0m
+[33m[WARN] [1784709007.135685756]:  -- [State2State][IGO] falling back to legacy corridor optimizer.[0m
+[0m[INFO] [1784709007.131225975]:  -- [State2State][IGO] attempt pieces=5 population=24 generations=5 budget=0.0450s[0m
+[0m[INFO] [1784709007.135675235]:  -- [State2State][IGO] result success=false reason=NO_FEASIBLE_CANDIDATE dim=17 evals=120 gens=5 feasible_ratio=0.000 elapsed=0.0044s occ=119 out=0 unk=240 sfc=0.20785 dyn=11.46220 duration=1.790[0m
+[32m -- [Fsm] ReplanOnce succeed.[0m
+[33m[WARN] [1784709007.202471095]:  -- [State2State][IGO] falling back to legacy corridor optimizer.[0m
+[0m[INFO] [1784709007.198106967]:  -- [State2State][IGO] attempt pieces=5 population=24 generations=5 budget=0.0450s[0m
+[0m[INFO] [1784709007.202460104]:  -- [State2State][IGO] result success=false reason=NO_FEASIBLE_CANDIDATE dim=17 evals=120 gens=5 feasible_ratio=0.000 elapsed=0.0043s occ=69 out=167 unk=138 sfc=5.45167 dyn=34.04026 duration=1.865[0m
+[32m -- [Fsm] ReplanOnce succeed.[0m
+[33m[WARN] [1784709007.268050066]:  -- [State2State][IGO] falling back to legacy corridor optimizer.[0m
+[0m[INFO] [1784709007.264076541]:  -- [State2State][IGO] attempt pieces=5 population=24 generations=5 budget=0.0450s[0m
+[0m[INFO] [1784709007.268041586]:  -- [State2State][IGO] result success=false reason=NO_FEASIBLE_CANDIDATE dim=13 evals=120 gens=5 feasible_ratio=0.000 elapsed=0.0039s occ=101 out=0 unk=249 sfc=0.13852 dyn=5.28579 duration=1.747[0m
+[32m -- [Fsm] ReplanOnce succeed.[0m
+[33m[WARN] [1784709007.334935319]:  -- [State2State][IGO] falling back to legacy corridor optimizer.[0m
+[0m[INFO] [1784709007.330902012]:  -- [State2State][IGO] attempt pieces=5 population=24 generations=5 budget=0.0450s[0m
+[0m[INFO] [1784709007.334925118]:  -- [State2State][IGO] result success=false reason=NO_FEASIBLE_CANDIDATE dim=17 evals=120 gens=5 feasible_ratio=0.000 elapsed=0.0040s occ=92 out=193 unk=78 sfc=6.05857 dyn=74.66326 duration=1.810[0m
+[32m -- [Fsm] ReplanOnce succeed.[0m
+[33m[WARN] [1784709007.401573913]:  -- [State2State][IGO] falling back to legacy corridor optimizer.[0m
+[0m[INFO] [1784709007.397541736]:  -- [State2State][IGO] attempt pieces=6 population=24 generations=5 budget=0.0450s[0m
+[0m[INFO] [1784709007.401566053]:  -- [State2State][IGO] result success=false reason=NO_FEASIBLE_CANDIDATE dim=17 evals=120 gens=5 feasible_ratio=0.000 elapsed=0.0040s occ=18 out=0 unk=351 sfc=0.07297 dyn=14.44647 duration=1.841[0m
+[32m -- [Fsm] ReplanOnce succeed.[0m
+[33m[WARN] [1784709007.467756744]:  -- [State2State][IGO] falling back to legacy corridor optimizer.[0m
+[0m[INFO] [1784709007.464107169]:  -- [State2State][IGO] attempt pieces=6 population=24 generations=5 budget=0.0450s[0m
+[0m[INFO] [1784709007.467748643]:  -- [State2State][IGO] result success=false reason=NO_FEASIBLE_CANDIDATE dim=13 evals=120 gens=5 feasible_ratio=0.000 elapsed=0.0036s occ=98 out=0 unk=231 sfc=0.41156 dyn=9.91337 duration=1.639[0m
+[32m -- [Fsm] ReplanOnce succeed.[0m
+[33m[WARN] [1784709007.535366059]:  -- [State2State][IGO] falling back to legacy corridor optimizer.[0m
+[0m[INFO] [1784709007.530854787]:  -- [State2State][IGO] attempt pieces=6 population=24 generations=5 budget=0.0450s[0m
+[0m[INFO] [1784709007.535352068]:  -- [State2State][IGO] result success=false reason=NO_FEASIBLE_CANDIDATE dim=17 evals=120 gens=5 feasible_ratio=0.000 elapsed=0.0045s occ=101 out=0 unk=298 sfc=2.62797 dyn=13.06666 duration=1.988[0m
+[32m -- [Fsm] ReplanOnce succeed.[0m
+[33m[WARN] [1784709007.603713617]:  -- [State2State][IGO] falling back to legacy corridor optimizer.[0m
+[0m[INFO] [1784709007.597561014]:  -- [State2State][IGO] attempt pieces=5 population=24 generations=5 budget=0.0450s[0m
+[0m[INFO] [1784709007.603704797]:  -- [State2State][IGO] result success=false reason=NO_FEASIBLE_CANDIDATE dim=13 evals=120 gens=5 feasible_ratio=0.000 elapsed=0.0061s occ=76 out=207 unk=45 sfc=11.05222 dyn=29.32457 duration=1.637[0m
+[32m -- [Fsm] ReplanOnce succeed.[0m
+[33m[WARN] [1784709007.668275856]:  -- [State2State][IGO] falling back to legacy corridor optimizer.[0m
+[0m[INFO] [1784709007.664165067]:  -- [State2State][IGO] attempt pieces=6 population=24 generations=5 budget=0.0450s[0m
+[0m[INFO] [1784709007.668267286]:  -- [State2State][IGO] result success=false reason=NO_FEASIBLE_CANDIDATE dim=17 evals=120 gens=5 feasible_ratio=0.000 elapsed=0.0041s occ=111 out=199 unk=49 sfc=3.67060 dyn=52.10935 duration=1.791[0m
+[32m -- [Fsm] ReplanOnce succeed.[0m
+[33m[WARN] [1784709007.735348915]:  -- [State2State][IGO] falling back to legacy corridor optimizer.[0m
+[0m[INFO] [1784709007.731219815]:  -- [State2State][IGO] attempt pieces=6 population=24 generations=5 budget=0.0450s[0m
+[0m[INFO] [1784709007.735338275]:  -- [State2State][IGO] result success=false reason=NO_FEASIBLE_CANDIDATE dim=17 evals=120 gens=5 feasible_ratio=0.000 elapsed=0.0041s occ=22 out=0 unk=307 sfc=1.67803 dyn=17.17481 duration=1.642[0m
+[32m -- [Fsm] ReplanOnce succeed.[0m
+[33m[WARN] [1784709007.801673649]:  -- [State2State][IGO] falling back to legacy corridor optimizer.[0m
+[0m[INFO] [1784709007.797646423]:  -- [State2State][IGO] attempt pieces=6 population=24 generations=5 budget=0.0450s[0m
+[0m[INFO] [1784709007.801665319]:  -- [State2State][IGO] result success=false reason=NO_FEASIBLE_CANDIDATE dim=17 evals=120 gens=5 feasible_ratio=0.000 elapsed=0.0040s occ=59 out=0 unk=344 sfc=1.41727 dyn=7.23913 duration=2.009[0m
+[32m -- [Fsm] ReplanOnce succeed.[0m
+[33m[WARN] [1784709007.867888671]:  -- [State2State][IGO] falling back to legacy corridor optimizer.[0m
+[0m[INFO] [1784709007.864198795]:  -- [State2State][IGO] attempt pieces=6 population=24 generations=5 budget=0.0450s[0m
+[0m[INFO] [1784709007.867880831]:  -- [State2State][IGO] result success=false reason=NO_FEASIBLE_CANDIDATE dim=17 evals=120 gens=5 feasible_ratio=0.000 elapsed=0.0037s occ=63 out=433 unk=72 sfc=31.85578 dyn=59.29535 duration=2.834[0m
+[32m -- [Fsm] ReplanOnce succeed.[0m
+[33m[WARN] [1784709007.935184726]:  -- [State2State][IGO] falling back to legacy corridor optimizer.[0m
+[0m[INFO] [1784709007.931228172]:  -- [State2State][IGO] attempt pieces=6 population=24 generations=5 budget=0.0450s[0m
+[0m[INFO] [1784709007.935173286]:  -- [State2State][IGO] result success=false reason=NO_FEASIBLE_CANDIDATE dim=17 evals=120 gens=5 feasible_ratio=0.000 elapsed=0.0039s occ=88 out=66 unk=137 sfc=4.28353 dyn=45.57922 duration=1.451[0m
+[32m -- [Fsm] ReplanOnce succeed.[0m
+[33m[WARN] [1784709008.001203021]:  -- [State2State][IGO] falling back to legacy corridor optimizer.[0m
+[0m[INFO] [1784709007.997227677]:  -- [State2State][IGO] attempt pieces=5 population=24 generations=5 budget=0.0450s[0m
+[0m[INFO] [1784709008.001191401]:  -- [State2State][IGO] result success=false reason=NO_FEASIBLE_CANDIDATE dim=13 evals=120 gens=5 feasible_ratio=0.000 elapsed=0.0039s occ=128 out=0 unk=140 sfc=0.10810 dyn=9.65872 duration=1.337[0m
+[32m -- [Fsm] ReplanOnce succeed.[0m
+[32m -- [Fsm 20.096] Current state: FOLLOW_TRAJ[0m
+[33m[WARN] [1784709008.067803840]:  -- [State2State][IGO] falling back to legacy corridor optimizer.[0m
+[0m[INFO] [1784709008.064428024]:  -- [State2State][IGO] attempt pieces=5 population=24 generations=5 budget=0.0450s[0m
+[0m[INFO] [1784709008.067792240]:  -- [State2State][IGO] result success=false reason=NO_FEASIBLE_CANDIDATE dim=13 evals=120 gens=5 feasible_ratio=0.000 elapsed=0.0033s occ=128 out=50 unk=43 sfc=1.66942 dyn=35.34284 duration=1.100[0m
+[32m -- [Fsm] ReplanOnce succeed.[0m
+[33m[WARN] [1784709008.134647366]:  -- [State2State][IGO] falling back to legacy corridor optimizer.[0m
+[0m[INFO] [1784709008.131097205]:  -- [State2State][IGO] attempt pieces=6 population=24 generations=5 budget=0.0450s[0m
+[0m[INFO] [1784709008.134632726]:  -- [State2State][IGO] result success=false reason=NO_FEASIBLE_CANDIDATE dim=17 evals=120 gens=5 feasible_ratio=0.000 elapsed=0.0035s occ=74 out=29 unk=258 sfc=0.69705 dyn=10.46232 duration=1.799[0m
+[32m -- [Fsm] ReplanOnce succeed.[0m
+[33m[WARN] [1784709008.201198534]:  -- [State2State][IGO] falling back to legacy corridor optimizer.[0m
+[0m[INFO] [1784709008.197649213]:  -- [State2State][IGO] attempt pieces=6 population=24 generations=5 budget=0.0450s[0m
+[0m[INFO] [1784709008.201186723]:  -- [State2State][IGO] result success=false reason=NO_FEASIBLE_CANDIDATE dim=17 evals=120 gens=5 feasible_ratio=0.000 elapsed=0.0035s occ=122 out=0 unk=188 sfc=0.00000 dyn=14.43749 duration=1.547[0m
+[32m -- [Fsm] ReplanOnce succeed.[0m
+[33m[WARN] [1784709008.267374609]:  -- [State2State][IGO] falling back to legacy corridor optimizer.[0m
+[0m[INFO] [1784709008.264019094]:  -- [State2State][IGO] attempt pieces=5 population=24 generations=5 budget=0.0450s[0m
+[0m[INFO] [1784709008.267365499]:  -- [State2State][IGO] result success=false reason=NO_FEASIBLE_CANDIDATE dim=13 evals=120 gens=5 feasible_ratio=0.000 elapsed=0.0033s occ=89 out=126 unk=58 sfc=6.51529 dyn=40.43869 duration=1.362[0m
+[32m -- [Fsm] ReplanOnce succeed.[0m
+[33m[WARN] [1784709008.334601158]:  -- [State2State][IGO] falling back to legacy corridor optimizer.[0m
+[0m[INFO] [1784709008.330728286]:  -- [State2State][IGO] attempt pieces=5 population=24 generations=5 budget=0.0450s[0m
+[0m[INFO] [1784709008.334588577]:  -- [State2State][IGO] result success=false reason=NO_FEASIBLE_CANDIDATE dim=13 evals=120 gens=5 feasible_ratio=0.000 elapsed=0.0038s occ=114 out=152 unk=162 sfc=4.84419 dyn=19.31235 duration=2.137[0m
+[32m -- [Fsm] ReplanOnce succeed.[0m
+[33m[WARN] [1784709008.401824796]:  -- [State2State][IGO] falling back to legacy corridor optimizer.[0m
+[0m[INFO] [1784709008.397445489]:  -- [State2State][IGO] attempt pieces=5 population=24 generations=5 budget=0.0450s[0m
+[0m[INFO] [1784709008.401809146]:  -- [State2State][IGO] result success=false reason=NO_FEASIBLE_CANDIDATE dim=17 evals=120 gens=5 feasible_ratio=0.000 elapsed=0.0043s occ=113 out=188 unk=42 sfc=3.19664 dyn=56.46197 duration=1.710[0m
+[32m -- [Fsm] ReplanOnce succeed.[0m
+[33m[WARN] [1784709008.467974221]:  -- [State2State][IGO] falling back to legacy corridor optimizer.[0m
+[0m[INFO] [1784709008.463948284]:  -- [State2State][IGO] attempt pieces=5 population=24 generations=5 budget=0.0450s[0m
+[0m[INFO] [1784709008.467963990]:  -- [State2State][IGO] result success=false reason=NO_FEASIBLE_CANDIDATE dim=17 evals=120 gens=5 feasible_ratio=0.000 elapsed=0.0040s occ=59 out=202 unk=64 sfc=7.20738 dyn=115.51713 duration=1.619[0m
+[32m -- [Fsm] ReplanOnce succeed.[0m
+[33m[WARN] [1784709008.534892779]:  -- [State2State][IGO] falling back to legacy corridor optimizer.[0m
+[0m[INFO] [1784709008.530604945]:  -- [State2State][IGO] attempt pieces=5 population=24 generations=5 budget=0.0450s[0m
+[0m[INFO] [1784709008.534881299]:  -- [State2State][IGO] result success=false reason=NO_FEASIBLE_CANDIDATE dim=17 evals=120 gens=5 feasible_ratio=0.000 elapsed=0.0042s occ=92 out=0 unk=329 sfc=1.59317 dyn=12.46517 duration=2.100[0m
+[32m -- [Fsm] ReplanOnce succeed.[0m
+[33m[WARN] [1784709008.601203519]:  -- [State2State][IGO] falling back to legacy corridor optimizer.[0m
+[0m[INFO] [1784709008.597191893]:  -- [State2State][IGO] attempt pieces=5 population=24 generations=5 budget=0.0450s[0m
+[0m[INFO] [1784709008.601191809]:  -- [State2State][IGO] result success=false reason=NO_FEASIBLE_CANDIDATE dim=13 evals=120 gens=5 feasible_ratio=0.000 elapsed=0.0040s occ=0 out=0 unk=403 sfc=0.00000 dyn=2.52995 duration=2.008[0m
+[32m -- [Fsm] ReplanOnce succeed.[0m
+[33m[WARN] [1784709008.667311412]:  -- [State2State][IGO] falling back to legacy corridor optimizer.[0m
+[0m[INFO] [1784709008.663794232]:  -- [State2State][IGO] attempt pieces=6 population=24 generations=5 budget=0.0450s[0m
+[0m[INFO] [1784709008.667300122]:  -- [State2State][IGO] result success=false reason=NO_FEASIBLE_CANDIDATE dim=13 evals=120 gens=5 feasible_ratio=0.000 elapsed=0.0035s occ=117 out=0 unk=180 sfc=0.00000 dyn=9.59803 duration=1.480[0m
+[32m -- [Fsm] ReplanOnce succeed.[0m
+[33m[WARN] [1784709008.734521320]:  -- [State2State][IGO] falling back to legacy corridor optimizer.[0m
+[0m[INFO] [1784709008.730518565]:  -- [State2State][IGO] attempt pieces=5 population=24 generations=5 budget=0.0450s[0m
+[0m[INFO] [1784709008.734510140]:  -- [State2State][IGO] result success=false reason=NO_FEASIBLE_CANDIDATE dim=13 evals=120 gens=5 feasible_ratio=0.000 elapsed=0.0040s occ=127 out=0 unk=151 sfc=0.29992 dyn=23.02638 duration=1.383[0m
+[32m -- [Fsm] ReplanOnce succeed.[0m
+[33m[WARN] [1784709008.800862141]:  -- [State2State][IGO] falling back to legacy corridor optimizer.[0m
+[0m[INFO] [1784709008.797237857]:  -- [State2State][IGO] attempt pieces=5 population=24 generations=5 budget=0.0450s[0m
+[0m[INFO] [1784709008.800851330]:  -- [State2State][IGO] result success=false reason=NO_FEASIBLE_CANDIDATE dim=13 evals=120 gens=5 feasible_ratio=0.000 elapsed=0.0036s occ=12 out=326 unk=65 sfc=109.75306 dyn=370.38716 duration=2.008[0m
+[32m -- [Fsm] ReplanOnce succeed.[0m
+[33m[WARN] [1784709008.867376207]:  -- [State2State][IGO] falling back to legacy corridor optimizer.[0m
+[0m[INFO] [1784709008.863814875]:  -- [State2State][IGO] attempt pieces=5 population=24 generations=5 budget=0.0450s[0m
+[0m[INFO] [1784709008.867367217]:  -- [State2State][IGO] result success=false reason=NO_FEASIBLE_CANDIDATE dim=13 evals=120 gens=5 feasible_ratio=0.000 elapsed=0.0035s occ=102 out=0 unk=178 sfc=0.16613 dyn=28.21369 duration=1.393[0m
+[32m -- [Fsm] ReplanOnce succeed.[0m
+[33m[WARN] [1784709008.934411839]:  -- [State2State][IGO] falling back to legacy corridor optimizer.[0m
+[0m[INFO] [1784709008.930391523]:  -- [State2State][IGO] attempt pieces=5 population=24 generations=5 budget=0.0450s[0m
+[0m[INFO] [1784709008.934399639]:  -- [State2State][IGO] result success=false reason=NO_FEASIBLE_CANDIDATE dim=13 evals=120 gens=5 feasible_ratio=0.000 elapsed=0.0040s occ=97 out=78 unk=162 sfc=4.40534 dyn=27.83597 duration=1.680[0m
+[32m -- [Fsm] ReplanOnce succeed.[0m
+[33m[WARN] [1784709009.000558544]:  -- [State2State][IGO] falling back to legacy corridor optimizer.[0m
+[0m[INFO] [1784709008.997055414]:  -- [State2State][IGO] attempt pieces=5 population=24 generations=5 budget=0.0450s[0m
+[0m[INFO] [1784709009.000549703]:  -- [State2State][IGO] result success=false reason=NO_FEASIBLE_CANDIDATE dim=17 evals=120 gens=5 feasible_ratio=0.000 elapsed=0.0035s occ=107 out=0 unk=219 sfc=1.69299 dyn=26.11281 duration=1.623[0m
+[32m -- [Fsm] ReplanOnce succeed.[0m
+[32m -- [Fsm 21.096] Current state: FOLLOW_TRAJ[0m
+[33m[WARN] [1784709009.066696703]:  -- [State2State][IGO] falling back to legacy corridor optimizer.[0m
+[0m[INFO] [1784709009.063647698]:  -- [State2State][IGO] attempt pieces=5 population=24 generations=5 budget=0.0450s[0m
+[0m[INFO] [1784709009.066687143]:  -- [State2State][IGO] result success=false reason=NO_FEASIBLE_CANDIDATE dim=13 evals=120 gens=5 feasible_ratio=0.000 elapsed=0.0030s occ=93 out=0 unk=199 sfc=0.00000 dyn=10.11575 duration=1.453[0m
+[32m -- [Fsm] ReplanOnce succeed.[0m
+[33m[WARN] [1784709009.133438702]:  -- [State2State][IGO] falling back to legacy corridor optimizer.[0m
+[0m[INFO] [1784709009.130486499]:  -- [State2State][IGO] attempt pieces=6 population=24 generations=5 budget=0.0450s[0m
+[0m[INFO] [1784709009.133427092]:  -- [State2State][IGO] result success=false reason=NO_FEASIBLE_CANDIDATE dim=13 evals=120 gens=5 feasible_ratio=0.000 elapsed=0.0029s occ=54 out=0 unk=228 sfc=0.00000 dyn=11.46102 duration=1.403[0m
+[32m -- [Fsm] ReplanOnce succeed.[0m
+[33m[WARN] [1784709009.200158730]:  -- [State2State][IGO] falling back to legacy corridor optimizer.[0m
+[0m[INFO] [1784709009.197075043]:  -- [State2State][IGO] attempt pieces=5 population=24 generations=5 budget=0.0450s[0m
+[0m[INFO] [1784709009.200148749]:  -- [State2State][IGO] result success=false reason=NO_FEASIBLE_CANDIDATE dim=13 evals=120 gens=5 feasible_ratio=0.000 elapsed=0.0030s occ=115 out=0 unk=136 sfc=0.00000 dyn=18.45606 duration=1.250[0m
+[32m -- [Fsm] ReplanOnce succeed.[0m
+[33m[WARN] [1784709009.267037392]:  -- [State2State][IGO] falling back to legacy corridor optimizer.[0m
+[0m[INFO] [1784709009.263722449]:  -- [State2State][IGO] attempt pieces=5 population=24 generations=5 budget=0.0450s[0m
+[0m[INFO] [1784709009.267021182]:  -- [State2State][IGO] result success=false reason=NO_FEASIBLE_CANDIDATE dim=13 evals=120 gens=5 feasible_ratio=0.000 elapsed=0.0033s occ=41 out=0 unk=291 sfc=0.00000 dyn=5.54685 duration=1.655[0m
+[32m -- [Fsm] ReplanOnce succeed.[0m
+[33m[WARN] [1784709009.333473511]:  -- [State2State][IGO] falling back to legacy corridor optimizer.[0m
+[0m[INFO] [1784709009.330506968]:  -- [State2State][IGO] attempt pieces=6 population=24 generations=5 budget=0.0450s[0m
+[0m[INFO] [1784709009.333463641]:  -- [State2State][IGO] result success=false reason=NO_FEASIBLE_CANDIDATE dim=13 evals=120 gens=5 feasible_ratio=0.000 elapsed=0.0029s occ=164 out=0 unk=139 sfc=0.01043 dyn=10.38883 duration=1.509[0m
+[32m -- [Fsm] ReplanOnce succeed.[0m
+[33m[WARN] [1784709009.400204209]:  -- [State2State][IGO] falling back to legacy corridor optimizer.[0m
+[0m[INFO] [1784709009.397072601]:  -- [State2State][IGO] attempt pieces=6 population=24 generations=5 budget=0.0450s[0m
+[0m[INFO] [1784709009.400187189]:  -- [State2State][IGO] result success=false reason=NO_FEASIBLE_CANDIDATE dim=13 evals=120 gens=5 feasible_ratio=0.000 elapsed=0.0031s occ=74 out=115 unk=57 sfc=1.87415 dyn=40.19856 duration=1.227[0m
+[32m -- [Fsm] ReplanOnce succeed.[0m
+[33m[WARN] [1784709009.466320608]:  -- [State2State][IGO] falling back to legacy corridor optimizer.[0m
+[0m[INFO] [1784709009.463547572]:  -- [State2State][IGO] attempt pieces=5 population=24 generations=5 budget=0.0450s[0m
+[0m[INFO] [1784709009.466309858]:  -- [State2State][IGO] result success=false reason=NO_FEASIBLE_CANDIDATE dim=13 evals=120 gens=5 feasible_ratio=0.000 elapsed=0.0027s occ=104 out=55 unk=92 sfc=2.75298 dyn=32.46610 duration=1.249[0m
+[32m -- [Fsm] ReplanOnce succeed.[0m
+[33m[WARN] [1784709009.533685506]:  -- [State2State][IGO] falling back to legacy corridor optimizer.[0m
+[0m[INFO] [1784709009.530490226]:  -- [State2State][IGO] attempt pieces=6 population=24 generations=5 budget=0.0450s[0m
+[0m[INFO] [1784709009.533672566]:  -- [State2State][IGO] result success=false reason=NO_FEASIBLE_CANDIDATE dim=17 evals=120 gens=5 feasible_ratio=0.000 elapsed=0.0031s occ=135 out=0 unk=158 sfc=0.10438 dyn=22.80631 duration=1.462[0m
+[32m -- [Fsm] ReplanOnce succeed.[0m
+[33m[WARN] [1784709009.600499677]:  -- [State2State][IGO] falling back to legacy corridor optimizer.[0m
+[0m[INFO] [1784709009.597026288]:  -- [State2State][IGO] attempt pieces=6 population=24 generations=5 budget=0.0450s[0m
+[0m[INFO] [1784709009.600490867]:  -- [State2State][IGO] result success=false reason=NO_FEASIBLE_CANDIDATE dim=13 evals=120 gens=5 feasible_ratio=0.000 elapsed=0.0034s occ=65 out=191 unk=124 sfc=12.59341 dyn=45.89328 duration=1.894[0m
+[32m -- [Fsm] ReplanOnce succeed.[0m
+[33m[WARN] [1784709009.666538344]:  -- [State2State][IGO] falling back to legacy corridor optimizer.[0m
+[0m[INFO] [1784709009.663785927]:  -- [State2State][IGO] attempt pieces=5 population=24 generations=5 budget=0.0450s[0m
+[0m[INFO] [1784709009.666531613]:  -- [State2State][IGO] result success=false reason=NO_FEASIBLE_CANDIDATE dim=13 evals=120 gens=5 feasible_ratio=0.000 elapsed=0.0027s occ=86 out=139 unk=58 sfc=5.18303 dyn=29.10789 duration=1.408[0m
+[32m -- [Fsm] ReplanOnce succeed.[0m
+[33m[WARN] [1784709009.733381975]:  -- [State2State][IGO] falling back to legacy corridor optimizer.[0m
+[0m[INFO] [1784709009.730396412]:  -- [State2State][IGO] attempt pieces=5 population=24 generations=5 budget=0.0450s[0m
+[0m[INFO] [1784709009.733373385]:  -- [State2State][IGO] result success=false reason=NO_FEASIBLE_CANDIDATE dim=13 evals=120 gens=5 feasible_ratio=0.000 elapsed=0.0030s occ=118 out=52 unk=103 sfc=2.04976 dyn=17.53299 duration=1.358[0m
+[32m -- [Fsm] ReplanOnce succeed.[0m
+[33m[WARN] [1784709009.800122884]:  -- [State2State][IGO] falling back to legacy corridor optimizer.[0m
+[0m[INFO] [1784709009.797083318]:  -- [State2State][IGO] attempt pieces=5 population=24 generations=5 budget=0.0450s[0m
+[0m[INFO] [1784709009.800109083]:  -- [State2State][IGO] result success=false reason=NO_FEASIBLE_CANDIDATE dim=13 evals=120 gens=5 feasible_ratio=0.000 elapsed=0.0030s occ=100 out=57 unk=100 sfc=1.84111 dyn=14.28522 duration=1.278[0m
+[32m -- [Fsm] ReplanOnce succeed.[0m
+[33m[WARN] [1784709009.866585423]:  -- [State2State][IGO] falling back to legacy corridor optimizer.[0m
+[0m[INFO] [1784709009.863618880]:  -- [State2State][IGO] attempt pieces=5 population=24 generations=5 budget=0.0450s[0m
+[0m[INFO] [1784709009.866576833]:  -- [State2State][IGO] result success=false reason=NO_FEASIBLE_CANDIDATE dim=13 evals=120 gens=5 feasible_ratio=0.000 elapsed=0.0029s occ=106 out=148 unk=17 sfc=4.62049 dyn=34.41942 duration=1.352[0m
+[32m -- [Fsm] ReplanOnce succeed.[0m
+[33m[WARN] [1784709009.933308781]:  -- [State2State][IGO] falling back to legacy corridor optimizer.[0m
+[0m[INFO] [1784709009.930311237]:  -- [State2State][IGO] attempt pieces=5 population=24 generations=5 budget=0.0450s[0m
+[0m[INFO] [1784709009.933299861]:  -- [State2State][IGO] result success=false reason=NO_FEASIBLE_CANDIDATE dim=13 evals=120 gens=5 feasible_ratio=0.000 elapsed=0.0030s occ=116 out=158 unk=21 sfc=3.23008 dyn=20.16312 duration=1.472[0m
+[32m -- [Fsm] ReplanOnce succeed.[0m
+[33m[WARN] [1784709009.999934846]:  -- [State2State][IGO] falling back to legacy corridor optimizer.[0m
+[0m[INFO] [1784709009.996937442]:  -- [State2State][IGO] attempt pieces=5 population=24 generations=5 budget=0.0450s[0m
+[0m[INFO] [1784709009.999923876]:  -- [State2State][IGO] result success=false reason=NO_FEASIBLE_CANDIDATE dim=13 evals=120 gens=5 feasible_ratio=0.000 elapsed=0.0030s occ=111 out=121 unk=16 sfc=2.96036 dyn=34.35708 duration=1.237[0m
+[32m -- [Fsm] ReplanOnce succeed.[0m
+[32m -- [Fsm 22.106] Current state: FOLLOW_TRAJ[0m
+[33m[WARN] [1784709010.066846175]:  -- [State2State][IGO] falling back to legacy corridor optimizer.[0m
+[0m[INFO] [1784709010.063762209]:  -- [State2State][IGO] attempt pieces=5 population=24 generations=5 budget=0.0450s[0m
+[0m[INFO] [1784709010.066832495]:  -- [State2State][IGO] result success=false reason=NO_FEASIBLE_CANDIDATE dim=13 evals=120 gens=5 feasible_ratio=0.000 elapsed=0.0030s occ=63 out=69 unk=230 sfc=2.47110 dyn=10.65721 duration=1.803[0m
+[32m -- [Fsm] ReplanOnce succeed.[0m
+[33m[WARN] [1784709010.133569848]:  -- [State2State][IGO] falling back to legacy corridor optimizer.[0m
+[0m[INFO] [1784709010.130501503]:  -- [State2State][IGO] attempt pieces=6 population=24 generations=5 budget=0.0450s[0m
+[0m[INFO] [1784709010.133557318]:  -- [State2State][IGO] result success=false reason=NO_FEASIBLE_CANDIDATE dim=13 evals=120 gens=5 feasible_ratio=0.000 elapsed=0.0030s occ=86 out=63 unk=134 sfc=1.74344 dyn=14.73829 duration=1.409[0m
+[32m -- [Fsm] ReplanOnce succeed.[0m
+[33m[WARN] [1784709010.200474687]:  -- [State2State][IGO] falling back to legacy corridor optimizer.[0m
+[0m[INFO] [1784709010.197082071]:  -- [State2State][IGO] attempt pieces=5 population=24 generations=5 budget=0.0450s[0m
+[0m[INFO] [1784709010.200463607]:  -- [State2State][IGO] result success=false reason=NO_FEASIBLE_CANDIDATE dim=13 evals=120 gens=5 feasible_ratio=0.000 elapsed=0.0034s occ=99 out=194 unk=34 sfc=5.08778 dyn=26.43182 duration=1.631[0m
+[32m -- [Fsm] ReplanOnce succeed.[0m
+[33m[WARN] [1784709010.266866430]:  -- [State2State][IGO] falling back to legacy corridor optimizer.[0m
+[0m[INFO] [1784709010.263702601]:  -- [State2State][IGO] attempt pieces=5 population=24 generations=5 budget=0.0450s[0m
+[0m[INFO] [1784709010.266852260]:  -- [State2State][IGO] result success=false reason=NO_FEASIBLE_CANDIDATE dim=13 evals=120 gens=5 feasible_ratio=0.000 elapsed=0.0031s occ=117 out=25 unk=88 sfc=0.57965 dyn=27.73444 duration=1.145[0m
+[32m -- [Fsm] ReplanOnce succeed.[0m
+[33m[WARN] [1784709010.334110599]:  -- [State2State][IGO] falling back to legacy corridor optimizer.[0m
+[0m[INFO] [1784709010.330937270]:  -- [State2State][IGO] attempt pieces=6 population=24 generations=5 budget=0.0450s[0m
+[0m[INFO] [1784709010.334097809]:  -- [State2State][IGO] result success=false reason=NO_FEASIBLE_CANDIDATE dim=13 evals=120 gens=5 feasible_ratio=0.000 elapsed=0.0031s occ=57 out=119 unk=193 sfc=5.26786 dyn=13.89857 duration=1.842[0m
+[32m -- [Fsm] ReplanOnce succeed.[0m
+[33m[WARN] [1784709010.400675978]:  -- [State2State][IGO] falling back to legacy corridor optimizer.[0m
+[0m[INFO] [1784709010.397420356]:  -- [State2State][IGO] attempt pieces=5 population=24 generations=5 budget=0.0450s[0m
+[0m[INFO] [1784709010.400663577]:  -- [State2State][IGO] result success=false reason=NO_FEASIBLE_CANDIDATE dim=13 evals=120 gens=5 feasible_ratio=0.000 elapsed=0.0032s occ=106 out=104 unk=23 sfc=2.16610 dyn=60.33111 duration=1.161[0m
+[32m -- [Fsm] ReplanOnce succeed.[0m
+[33m[WARN] [1784709010.467019659]:  -- [State2State][IGO] falling back to legacy corridor optimizer.[0m
+[0m[INFO] [1784709010.463945613]:  -- [State2State][IGO] attempt pieces=5 population=24 generations=5 budget=0.0450s[0m
+[0m[INFO] [1784709010.467010429]:  -- [State2State][IGO] result success=false reason=NO_FEASIBLE_CANDIDATE dim=13 evals=120 gens=5 feasible_ratio=0.000 elapsed=0.0030s occ=84 out=161 unk=16 sfc=9.31341 dyn=112.36864 duration=1.300[0m
+[32m -- [Fsm] ReplanOnce succeed.[0m
+[33m[WARN] [1784709010.535502827]:  -- [State2State][IGO] falling back to legacy corridor optimizer.[0m
+[0m[INFO] [1784709010.531350568]:  -- [State2State][IGO] attempt pieces=5 population=24 generations=5 budget=0.0450s[0m
+[0m[INFO] [1784709010.535490897]:  -- [State2State][IGO] result success=false reason=NO_FEASIBLE_CANDIDATE dim=13 evals=120 gens=5 feasible_ratio=0.000 elapsed=0.0041s occ=81 out=154 unk=20 sfc=5.42363 dyn=74.96202 duration=1.272[0m
+[32m -- [Fsm] ReplanOnce succeed.[0m
+[33m[WARN] [1784709010.600414994]:  -- [State2State][IGO] falling back to legacy corridor optimizer.[0m
+[0m[INFO] [1784709010.597380989]:  -- [State2State][IGO] attempt pieces=5 population=24 generations=5 budget=0.0450s[0m
+[0m[INFO] [1784709010.600402713]:  -- [State2State][IGO] result success=false reason=NO_FEASIBLE_CANDIDATE dim=13 evals=120 gens=5 feasible_ratio=0.000 elapsed=0.0030s occ=86 out=167 unk=27 sfc=5.13957 dyn=44.77767 duration=1.395[0m
+[32m -- [Fsm] ReplanOnce succeed.[0m
+[33m[WARN] [1784709010.669260793]:  -- [State2State][IGO] falling back to legacy corridor optimizer.[0m
+[0m[INFO] [1784709010.664969479]:  -- [State2State][IGO] attempt pieces=6 population=24 generations=5 budget=0.0450s[0m
+[0m[INFO] [1784709010.669245693]:  -- [State2State][IGO] result success=false reason=NO_FEASIBLE_CANDIDATE dim=17 evals=120 gens=5 feasible_ratio=0.000 elapsed=0.0042s occ=159 out=0 unk=186 sfc=0.00000 dyn=10.11716 duration=1.718[0m
+[32m -- [Fsm] ReplanOnce succeed.[0m
+[33m[WARN] [1784709010.734797219]:  -- [State2State][IGO] falling back to legacy corridor optimizer.[0m
+[0m[INFO] [1784709010.731172896]:  -- [State2State][IGO] attempt pieces=6 population=24 generations=5 budget=0.0450s[0m
+[0m[INFO] [1784709010.734786329]:  -- [State2State][IGO] result success=false reason=NO_FEASIBLE_CANDIDATE dim=17 evals=120 gens=5 feasible_ratio=0.000 elapsed=0.0036s occ=81 out=0 unk=315 sfc=0.00000 dyn=5.22940 duration=1.975[0m
+[32m -- [Fsm] ReplanOnce succeed.[0m
+[33m[WARN] [1784709010.800713337]:  -- [State2State][IGO] falling back to legacy corridor optimizer.[0m
+[0m[INFO] [1784709010.797509017]:  -- [State2State][IGO] attempt pieces=6 population=24 generations=5 budget=0.0450s[0m
+[0m[INFO] [1784709010.800700137]:  -- [State2State][IGO] result success=false reason=NO_FEASIBLE_CANDIDATE dim=13 evals=120 gens=5 feasible_ratio=0.000 elapsed=0.0032s occ=146 out=0 unk=249 sfc=0.05808 dyn=3.95110 duration=1.971[0m
+[32m -- [Fsm] ReplanOnce succeed.[0m
+[33m[WARN] [1784709010.867062809]:  -- [State2State][IGO] falling back to legacy corridor optimizer.[0m
+[0m[INFO] [1784709010.864116517]:  -- [State2State][IGO] attempt pieces=6 population=24 generations=5 budget=0.0450s[0m
+[0m[INFO] [1784709010.867054858]:  -- [State2State][IGO] result success=false reason=NO_FEASIBLE_CANDIDATE dim=13 evals=120 gens=5 feasible_ratio=0.000 elapsed=0.0029s occ=64 out=0 unk=372 sfc=0.62132 dyn=4.46830 duration=2.173[0m
+[32m -- [Fsm] ReplanOnce succeed.[0m
+[33m[WARN] [1784709010.933937107]:  -- [State2State][IGO] falling back to legacy corridor optimizer.[0m
+[0m[INFO] [1784709010.930592422]:  -- [State2State][IGO] attempt pieces=6 population=24 generations=5 budget=0.0450s[0m
+[0m[INFO] [1784709010.933924906]:  -- [State2State][IGO] result success=false reason=NO_FEASIBLE_CANDIDATE dim=17 evals=120 gens=5 feasible_ratio=0.000 elapsed=0.0033s occ=40 out=49 unk=291 sfc=0.83625 dyn=6.58412 duration=1.894[0m
+[32m -- [Fsm] ReplanOnce succeed.[0m
+[33m[WARN] [1784709011.000757113]:  -- [State2State][IGO] falling back to legacy corridor optimizer.[0m
+[0m[INFO] [1784709010.997192081]:  -- [State2State][IGO] attempt pieces=5 population=24 generations=5 budget=0.0450s[0m
+[0m[INFO] [1784709011.000748173]:  -- [State2State][IGO] result success=false reason=NO_FEASIBLE_CANDIDATE dim=13 evals=120 gens=5 feasible_ratio=0.000 elapsed=0.0035s occ=77 out=0 unk=346 sfc=0.00000 dyn=5.11439 duration=2.108[0m
+[32m -- [Fsm] ReplanOnce succeed.[0m
+[32m -- [Fsm 23.116] Current state: FOLLOW_TRAJ[0m
+[33m[WARN] [1784709011.067263254]:  -- [State2State][IGO] falling back to legacy corridor optimizer.[0m
+[0m[INFO] [1784709011.063753615]:  -- [State2State][IGO] attempt pieces=5 population=24 generations=5 budget=0.0450s[0m
+[0m[INFO] [1784709011.067249394]:  -- [State2State][IGO] result success=false reason=NO_FEASIBLE_CANDIDATE dim=13 evals=120 gens=5 feasible_ratio=0.000 elapsed=0.0035s occ=52 out=72 unk=255 sfc=0.95262 dyn=3.56966 duration=1.891[0m
+[32m -- [Fsm] ReplanOnce succeed.[0m
+[33m[WARN] [1784709011.133853499]:  -- [State2State][IGO] falling back to legacy corridor optimizer.[0m
+[0m[INFO] [1784709011.130675650]:  -- [State2State][IGO] attempt pieces=6 population=24 generations=5 budget=0.0450s[0m
+[0m[INFO] [1784709011.133844069]:  -- [State2State][IGO] result success=false reason=NO_FEASIBLE_CANDIDATE dim=17 evals=120 gens=5 feasible_ratio=0.000 elapsed=0.0031s occ=41 out=16 unk=283 sfc=0.49088 dyn=23.19506 duration=1.694[0m
+[32m -- [Fsm] ReplanOnce succeed.[0m
+[33m[WARN] [1784709011.200349130]:  -- [State2State][IGO] falling back to legacy corridor optimizer.[0m
+[0m[INFO] [1784709011.197169461]:  -- [State2State][IGO] attempt pieces=6 population=24 generations=5 budget=0.0450s[0m
+[0m[INFO] [1784709011.200340840]:  -- [State2State][IGO] result success=false reason=NO_FEASIBLE_CANDIDATE dim=17 evals=120 gens=5 feasible_ratio=0.000 elapsed=0.0031s occ=123 out=43 unk=193 sfc=1.16345 dyn=21.03478 duration=1.790[0m
+[32m -- [Fsm] ReplanOnce succeed.[0m
+[33m[WARN] [1784709011.267109150]:  -- [State2State][IGO] falling back to legacy corridor optimizer.[0m
+[0m[INFO] [1784709011.263975662]:  -- [State2State][IGO] attempt pieces=6 population=24 generations=5 budget=0.0450s[0m
+[0m[INFO] [1784709011.267097410]:  -- [State2State][IGO] result success=false reason=NO_FEASIBLE_CANDIDATE dim=17 evals=120 gens=5 feasible_ratio=0.000 elapsed=0.0031s occ=88 out=0 unk=220 sfc=1.10799 dyn=14.39621 duration=1.537[0m
+[32m -- [Fsm] ReplanOnce succeed.[0m
+[33m[WARN] [1784709011.333870310]:  -- [State2State][IGO] falling back to legacy corridor optimizer.[0m
+[0m[INFO] [1784709011.330740862]:  -- [State2State][IGO] attempt pieces=6 population=24 generations=5 budget=0.0450s[0m
+[0m[INFO] [1784709011.333862649]:  -- [State2State][IGO] result success=false reason=NO_FEASIBLE_CANDIDATE dim=17 evals=120 gens=5 feasible_ratio=0.000 elapsed=0.0031s occ=53 out=218 unk=45 sfc=4.35447 dyn=41.63021 duration=1.574[0m
+[32m -- [Fsm] ReplanOnce succeed.[0m
+[33m[WARN] [1784709011.400148184]:  -- [State2State][IGO] falling back to legacy corridor optimizer.[0m
+[0m[INFO] [1784709011.397205673]:  -- [State2State][IGO] attempt pieces=6 population=24 generations=5 budget=0.0450s[0m
+[0m[INFO] [1784709011.400136514]:  -- [State2State][IGO] result success=false reason=NO_FEASIBLE_CANDIDATE dim=13 evals=120 gens=5 feasible_ratio=0.000 elapsed=0.0029s occ=74 out=59 unk=143 sfc=1.63929 dyn=24.55408 duration=1.376[0m
+[32m -- [Fsm] ReplanOnce succeed.[0m
+[33m[WARN] [1784709011.467026508]:  -- [State2State][IGO] falling back to legacy corridor optimizer.[0m
+[0m[INFO] [1784709011.463937171]:  -- [State2State][IGO] attempt pieces=5 population=24 generations=5 budget=0.0450s[0m
+[0m[INFO] [1784709011.467014157]:  -- [State2State][IGO] result success=false reason=NO_FEASIBLE_CANDIDATE dim=13 evals=120 gens=5 feasible_ratio=0.000 elapsed=0.0030s occ=79 out=51 unk=127 sfc=1.15227 dyn=23.28884 duration=1.282[0m
+[32m -- [Fsm] ReplanOnce succeed.[0m
+[33m[WARN] [1784709011.533516828]:  -- [State2State][IGO] falling back to legacy corridor optimizer.[0m
+[0m[INFO] [1784709011.530467764]:  -- [State2State][IGO] attempt pieces=5 population=24 generations=5 budget=0.0450s[0m
+[0m[INFO] [1784709011.533503058]:  -- [State2State][IGO] result success=false reason=NO_FEASIBLE_CANDIDATE dim=13 evals=120 gens=5 feasible_ratio=0.000 elapsed=0.0030s occ=131 out=0 unk=103 sfc=0.15843 dyn=29.30677 duration=1.167[0m
+[32m -- [Fsm] ReplanOnce succeed.[0m
+[33m[WARN] [1784709011.600359671]:  -- [State2State][IGO] falling back to legacy corridor optimizer.[0m
+[0m[INFO] [1784709011.597103789]:  -- [State2State][IGO] attempt pieces=5 population=24 generations=5 budget=0.0450s[0m
+[0m[INFO] [1784709011.600344680]:  -- [State2State][IGO] result success=false reason=NO_FEASIBLE_CANDIDATE dim=13 evals=120 gens=5 feasible_ratio=0.000 elapsed=0.0032s occ=88 out=42 unk=104 sfc=0.72656 dyn=24.78004 duration=1.164[0m
+[32m -- [Fsm] ReplanOnce succeed.[0m
+[33m[WARN] [1784709011.666774130]:  -- [State2State][IGO] falling back to legacy corridor optimizer.[0m
+[0m[INFO] [1784709011.663854149]:  -- [State2State][IGO] attempt pieces=5 population=24 generations=5 budget=0.0450s[0m
+[0m[INFO] [1784709011.666761880]:  -- [State2State][IGO] result success=false reason=NO_FEASIBLE_CANDIDATE dim=13 evals=120 gens=5 feasible_ratio=0.000 elapsed=0.0029s occ=124 out=102 unk=57 sfc=2.22411 dyn=21.37610 duration=1.408[0m
+[32m -- [Fsm] ReplanOnce succeed.[0m
+[33m[WARN] [1784709011.733434196]:  -- [State2State][IGO] falling back to legacy corridor optimizer.[0m
+[0m[INFO] [1784709011.730377801]:  -- [State2State][IGO] attempt pieces=5 population=24 generations=5 budget=0.0450s[0m
+[0m[INFO] [1784709011.733426726]:  -- [State2State][IGO] result success=false reason=NO_FEASIBLE_CANDIDATE dim=13 evals=120 gens=5 feasible_ratio=0.000 elapsed=0.0030s occ=109 out=61 unk=76 sfc=1.48679 dyn=20.04852 duration=1.223[0m
+[33m -- [BackupTrajOpt] Optimization failed: Line search reaches the maximum try number, assumptions not satisfied or precision not achievable.[0m
+[33m[WARN] [1784709011.752415388]:  -- [GeneralPlanner] OptimizationBakTrajInPolytopes failed, force return[0m
+[33m[WARN] [1784709011.752424618]:  -- [GeneralPlanner] in [ReplanOnce]: generateBackupTrajectory return OPT_FAILED, replan Failed return[0m
+[33m[WARN] [1784709011.800166235]:  -- [State2State][IGO] falling back to legacy corridor optimizer.[0m
+[0m[INFO] [1784709011.796977046]:  -- [State2State][IGO] attempt pieces=5 population=24 generations=5 budget=0.0450s[0m
+[0m[INFO] [1784709011.800154935]:  -- [State2State][IGO] result success=false reason=NO_FEASIBLE_CANDIDATE dim=13 evals=120 gens=5 feasible_ratio=0.000 elapsed=0.0031s occ=69 out=0 unk=262 sfc=0.00000 dyn=6.85590 duration=1.651[0m
+[32m -- [Fsm] ReplanOnce succeed.[0m
+[33m[WARN] [1784709011.866719678]:  -- [State2State][IGO] falling back to legacy corridor optimizer.[0m
+[0m[INFO] [1784709011.863699634]:  -- [State2State][IGO] attempt pieces=5 population=24 generations=5 budget=0.0450s[0m
+[0m[INFO] [1784709011.866707918]:  -- [State2State][IGO] result success=false reason=NO_FEASIBLE_CANDIDATE dim=13 evals=120 gens=5 feasible_ratio=0.000 elapsed=0.0030s occ=105 out=0 unk=225 sfc=0.00000 dyn=7.36083 duration=1.647[0m
+[32m -- [Fsm] ReplanOnce succeed.[0m
+[33m[WARN] [1784709011.933313323]:  -- [State2State][IGO] falling back to legacy corridor optimizer.[0m
+[0m[INFO] [1784709011.930267368]:  -- [State2State][IGO] attempt pieces=5 population=24 generations=5 budget=0.0450s[0m
+[0m[INFO] [1784709011.933302482]:  -- [State2State][IGO] result success=false reason=NO_FEASIBLE_CANDIDATE dim=13 evals=120 gens=5 feasible_ratio=0.000 elapsed=0.0030s occ=61 out=0 unk=292 sfc=0.00000 dyn=7.19561 duration=1.760[0m
+[32m -- [Fsm] ReplanOnce succeed.[0m
+[33m[WARN] [1784709012.000136414]:  -- [State2State][IGO] falling back to legacy corridor optimizer.[0m
+[0m[INFO] [1784709011.997036088]:  -- [State2State][IGO] attempt pieces=5 population=24 generations=5 budget=0.0450s[0m
+[0m[INFO] [1784709012.000122644]:  -- [State2State][IGO] result success=false reason=NO_FEASIBLE_CANDIDATE dim=13 evals=120 gens=5 feasible_ratio=0.000 elapsed=0.0031s occ=48 out=0 unk=332 sfc=0.00000 dyn=7.54899 duration=1.894[0m
+[32m -- [Fsm] ReplanOnce succeed.[0m
+[33m[WARN] [1784709012.066598230]:  -- [State2State][IGO] falling back to legacy corridor optimizer.[0m
+[0m[INFO] [1784709012.063646128]:  -- [State2State][IGO] attempt pieces=5 population=24 generations=5 budget=0.0450s[0m
+[0m[INFO] [1784709012.066588640]:  -- [State2State][IGO] result success=false reason=NO_FEASIBLE_CANDIDATE dim=13 evals=120 gens=5 feasible_ratio=0.000 elapsed=0.0029s occ=36 out=0 unk=335 sfc=0.00000 dyn=5.94515 duration=1.852[0m
+[32m -- [Fsm] ReplanOnce succeed.[0m
+[32m -- [Fsm 24.136] Current state: FOLLOW_TRAJ[0m
+[33m[WARN] [1784709012.135065568]:  -- [State2State][IGO] falling back to legacy corridor optimizer.[0m
+[0m[INFO] [1784709012.130445184]:  -- [State2State][IGO] attempt pieces=5 population=24 generations=5 budget=0.0450s[0m
+[0m[INFO] [1784709012.135052357]:  -- [State2State][IGO] result success=false reason=NO_FEASIBLE_CANDIDATE dim=13 evals=120 gens=5 feasible_ratio=0.000 elapsed=0.0046s occ=39 out=0 unk=302 sfc=0.54501 dyn=12.53123 duration=1.699[0m
+[32m -- [Fsm] ReplanOnce succeed.[0m
+[33m[WARN] [1784709012.201355888]:  -- [State2State][IGO] falling back to legacy corridor optimizer.[0m
+[0m[INFO] [1784709012.196741325]:  -- [State2State][IGO] attempt pieces=5 population=24 generations=5 budget=0.0450s[0m
+[0m[INFO] [1784709012.201346178]:  -- [State2State][IGO] result success=false reason=NO_FEASIBLE_CANDIDATE dim=13 evals=120 gens=5 feasible_ratio=0.000 elapsed=0.0046s occ=31 out=0 unk=468 sfc=0.46355 dyn=2.39964 duration=2.490[0m
+[32m -- [Fsm] ReplanOnce succeed.[0m
+[33m[WARN] [1784709012.268105123]:  -- [State2State][IGO] falling back to legacy corridor optimizer.[0m
+[0m[INFO] [1784709012.263257542]:  -- [State2State][IGO] attempt pieces=5 population=24 generations=5 budget=0.0450s[0m
+[0m[INFO] [1784709012.268087442]:  -- [State2State][IGO] result success=false reason=NO_FEASIBLE_CANDIDATE dim=9 evals=120 gens=5 feasible_ratio=0.000 elapsed=0.0048s occ=87 out=105 unk=138 sfc=3.46526 dyn=12.95342 duration=1.646[0m
+[32m -- [Fsm] ReplanOnce succeed.[0m
+[33m[WARN] [1784709012.330579045]:  -- [State2State][IGO] falling back to legacy corridor optimizer.[0m
+[0m[INFO] [1784709012.330519993]:  -- [State2State][IGO] attempt pieces=5 population=24 generations=5 budget=0.0450s[0m
+[0m[INFO] [1784709012.330573364]:  -- [State2State][IGO] result success=false reason=CORRIDOR_OVERLAP_NOT_STRICT dim=13 evals=0 gens=0 feasible_ratio=0.000 elapsed=0.0000s occ=0 out=0 unk=0 sfc=0.00000 dyn=0.00000 duration=0.000[0m
+[32m -- [Fsm] ReplanOnce succeed.[0m
+[33m[WARN] [1784709012.401839989]:  -- [State2State][IGO] falling back to legacy corridor optimizer.[0m
+[0m[INFO] [1784709012.396730160]:  -- [State2State][IGO] attempt pieces=5 population=24 generations=5 budget=0.0450s[0m
+[0m[INFO] [1784709012.401820639]:  -- [State2State][IGO] result success=false reason=NO_FEASIBLE_CANDIDATE dim=13 evals=120 gens=5 feasible_ratio=0.000 elapsed=0.0050s occ=18 out=0 unk=323 sfc=0.26198 dyn=13.73844 duration=1.698[0m
+[32m -- [Fsm] ReplanOnce succeed.[0m
+[33m[WARN] [1784709012.467799020]:  -- [State2State][IGO] falling back to legacy corridor optimizer.[0m
+[0m[INFO] [1784709012.463258078]:  -- [State2State][IGO] attempt pieces=5 population=24 generations=5 budget=0.0450s[0m
+[0m[INFO] [1784709012.467787019]:  -- [State2State][IGO] result success=false reason=NO_FEASIBLE_CANDIDATE dim=13 evals=120 gens=5 feasible_ratio=0.000 elapsed=0.0045s occ=0 out=0 unk=377 sfc=0.00000 dyn=5.76734 duration=1.882[0m
+[32m -- [Fsm] ReplanOnce succeed.[0m
+[33m[WARN] [1784709012.534606276]:  -- [State2State][IGO] falling back to legacy corridor optimizer.[0m
+[0m[INFO] [1784709012.529976142]:  -- [State2State][IGO] attempt pieces=5 population=24 generations=5 budget=0.0450s[0m
+[0m[INFO] [1784709012.534594425]:  -- [State2State][IGO] result success=false reason=NO_FEASIBLE_CANDIDATE dim=13 evals=120 gens=5 feasible_ratio=0.000 elapsed=0.0046s occ=0 out=0 unk=397 sfc=0.00000 dyn=4.22232 duration=1.982[0m
+[32m -- [Fsm] ReplanOnce succeed.[0m
+[33m[WARN] [1784709012.601376721]:  -- [State2State][IGO] falling back to legacy corridor optimizer.[0m
+[0m[INFO] [1784709012.596617183]:  -- [State2State][IGO] attempt pieces=5 population=24 generations=5 budget=0.0450s[0m
+[0m[INFO] [1784709012.601364671]:  -- [State2State][IGO] result success=false reason=NO_FEASIBLE_CANDIDATE dim=13 evals=120 gens=5 feasible_ratio=0.000 elapsed=0.0047s occ=29 out=62 unk=297 sfc=1.16100 dyn=5.07467 duration=1.934[0m
+[32m -- [Fsm] ReplanOnce succeed.[0m
+[33m[WARN] [1784709012.667217647]:  -- [State2State][IGO] falling back to legacy corridor optimizer.[0m
+[0m[INFO] [1784709012.663206633]:  -- [State2State][IGO] attempt pieces=5 population=24 generations=5 budget=0.0450s[0m
+[0m[INFO] [1784709012.667206347]:  -- [State2State][IGO] result success=false reason=NO_FEASIBLE_CANDIDATE dim=9 evals=120 gens=5 feasible_ratio=0.000 elapsed=0.0040s occ=0 out=0 unk=279 sfc=0.00000 dyn=9.14005 duration=1.391[0m
+[32m -- [Fsm] ReplanOnce succeed.[0m
+[33m[WARN] [1784709012.734662904]:  -- [State2State][IGO] falling back to legacy corridor optimizer.[0m
+[0m[INFO] [1784709012.729912146]:  -- [State2State][IGO] attempt pieces=5 population=24 generations=5 budget=0.0450s[0m
+[0m[INFO] [1784709012.734653053]:  -- [State2State][IGO] result success=false reason=NO_FEASIBLE_CANDIDATE dim=13 evals=120 gens=5 feasible_ratio=0.000 elapsed=0.0047s occ=118 out=35 unk=95 sfc=1.06618 dyn=27.11872 duration=1.234[0m
+[32m -- [Fsm] ReplanOnce succeed.[0m
+[33m[WARN] [1784709012.800891322]:  -- [State2State][IGO] falling back to legacy corridor optimizer.[0m
+[0m[INFO] [1784709012.796513896]:  -- [State2State][IGO] attempt pieces=5 population=24 generations=5 budget=0.0450s[0m
+[0m[INFO] [1784709012.800877342]:  -- [State2State][IGO] result success=false reason=NO_FEASIBLE_CANDIDATE dim=9 evals=120 gens=5 feasible_ratio=0.000 elapsed=0.0043s occ=18 out=94 unk=164 sfc=2.10066 dyn=6.07682 duration=1.375[0m
+[32m -- [Fsm] ReplanOnce succeed.[0m
+[33m[WARN] [1784709012.867846053]:  -- [State2State][IGO] falling back to legacy corridor optimizer.[0m
+[0m[INFO] [1784709012.863447736]:  -- [State2State][IGO] attempt pieces=5 population=24 generations=5 budget=0.0450s[0m
+[0m[INFO] [1784709012.867832962]:  -- [State2State][IGO] result success=false reason=NO_FEASIBLE_CANDIDATE dim=9 evals=120 gens=5 feasible_ratio=0.000 elapsed=0.0044s occ=119 out=48 unk=96 sfc=0.54569 dyn=7.75546 duration=1.309[0m
+[32m -- [Fsm] ReplanOnce succeed.[0m
+[33m[WARN] [1784709012.934493674]:  -- [State2State][IGO] falling back to legacy corridor optimizer.[0m
+[0m[INFO] [1784709012.929839190]:  -- [State2State][IGO] attempt pieces=5 population=24 generations=5 budget=0.0450s[0m
+[0m[INFO] [1784709012.934477764]:  -- [State2State][IGO] result success=false reason=NO_FEASIBLE_CANDIDATE dim=13 evals=120 gens=5 feasible_ratio=0.000 elapsed=0.0046s occ=56 out=0 unk=316 sfc=0.25626 dyn=11.70557 duration=1.857[0m
+[32m -- [Fsm] ReplanOnce succeed.[0m
+[33m[WARN] [1784709013.001150696]:  -- [State2State][IGO] falling back to legacy corridor optimizer.[0m
+[0m[INFO] [1784709012.996483971]:  -- [State2State][IGO] attempt pieces=5 population=24 generations=5 budget=0.0450s[0m
+[0m[INFO] [1784709013.001136726]:  -- [State2State][IGO] result success=false reason=NO_FEASIBLE_CANDIDATE dim=13 evals=120 gens=5 feasible_ratio=0.000 elapsed=0.0046s occ=0 out=0 unk=353 sfc=0.03738 dyn=6.80882 duration=1.762[0m
+[32m -- [Fsm] ReplanOnce succeed.[0m
+[33m[WARN] [1784709013.067430621]:  -- [State2State][IGO] falling back to legacy corridor optimizer.[0m
+[0m[INFO] [1784709013.063084836]:  -- [State2State][IGO] attempt pieces=5 population=24 generations=5 budget=0.0450s[0m
+[0m[INFO] [1784709013.067420661]:  -- [State2State][IGO] result success=false reason=NO_FEASIBLE_CANDIDATE dim=13 evals=120 gens=5 feasible_ratio=0.000 elapsed=0.0043s occ=40 out=37 unk=193 sfc=0.80677 dyn=12.46246 duration=1.343[0m
+[32m -- [Fsm] ReplanOnce succeed.[0m
+[32m -- [Fsm 25.146] Current state: FOLLOW_TRAJ[0m
+[33m[WARN] [1784709013.133713417]:  -- [State2State][IGO] falling back to legacy corridor optimizer.[0m
+[0m[INFO] [1784709013.129707762]:  -- [State2State][IGO] attempt pieces=4 population=24 generations=5 budget=0.0450s[0m
+[0m[INFO] [1784709013.133699786]:  -- [State2State][IGO] result success=false reason=NO_FEASIBLE_CANDIDATE dim=9 evals=120 gens=5 feasible_ratio=0.000 elapsed=0.0040s occ=44 out=80 unk=112 sfc=2.20667 dyn=14.07946 duration=1.175[0m
+[32m -- [Fsm] ReplanOnce succeed.[0m
+[33m[WARN] [1784709013.200117786]:  -- [State2State][IGO] falling back to legacy corridor optimizer.[0m
+[0m[INFO] [1784709013.196371289]:  -- [State2State][IGO] attempt pieces=5 population=24 generations=5 budget=0.0450s[0m
+[0m[INFO] [1784709013.200104195]:  -- [State2State][IGO] result success=false reason=NO_FEASIBLE_CANDIDATE dim=9 evals=120 gens=5 feasible_ratio=0.000 elapsed=0.0037s occ=0 out=0 unk=310 sfc=0.28893 dyn=2.50551 duration=1.543[0m
+[32m -- [Fsm] ReplanOnce succeed.[0m
+[33m[WARN] [1784709013.266252137]:  -- [State2State][IGO] falling back to legacy corridor optimizer.[0m
+[0m[INFO] [1784709013.262954414]:  -- [State2State][IGO] attempt pieces=4 population=24 generations=5 budget=0.0450s[0m
+[0m[INFO] [1784709013.266243086]:  -- [State2State][IGO] result success=false reason=NO_FEASIBLE_CANDIDATE dim=9 evals=120 gens=5 feasible_ratio=0.000 elapsed=0.0033s occ=0 out=0 unk=315 sfc=0.33895 dyn=3.32851 duration=1.569[0m
+[32m -- [Fsm] ReplanOnce succeed.[0m
+[33m[WARN] [1784709013.332866212]:  -- [State2State][IGO] falling back to legacy corridor optimizer.[0m
+[0m[INFO] [1784709013.329659423]:  -- [State2State][IGO] attempt pieces=4 population=24 generations=5 budget=0.0450s[0m
+[0m[INFO] [1784709013.332845812]:  -- [State2State][IGO] result success=false reason=NO_FEASIBLE_CANDIDATE dim=9 evals=120 gens=5 feasible_ratio=0.000 elapsed=0.0032s occ=0 out=44 unk=231 sfc=1.16665 dyn=9.46262 duration=1.370[0m
+[32m -- [Fsm] ReplanOnce succeed.[0m
+[general] Total replan num: 129, total length: 86.32734106361723, average computation time: 0.1897159224806202 ms, total optimization time: 1203.5092159999992 ms, dense sampling share: 48.72930711317465%, control point share: 27.968834432257488%
+[32mData saved successfully to /root/ws/real_planner/src/General-Planner/src/Planner/general_planner/log/replan_logs/general_latest_log.bin[0m
+... logging to /root/.ros/log/d070edd2-856c-11f1-9d45-f068e322ab4c/roslaunch-diffbot-885836.log
+Checking log directory for disk usage. This may take a while.
+Press Ctrl-C to interrupt
+Done checking log file disk usage. Usage is <1GB.
+]2;/root/ws/real_planner/src/General-Planner/src/Planner/task_planner/launch/click_demo.launch
+[1mstarted roslaunch server http://diffbot:46635/[0m
+
+SUMMARY
+========
+
+CLEAR PARAMETERS
+ * /fsm_node/
+ * /perfect_drone/
+
+PARAMETERS
+ * /fsm_node/config_path: /root/ws/real_pla...
+ * /perfect_drone/config_name: click.yaml
+ * /rosdistro: noetic
+ * /rosversion: 1.17.4
+
+NODES
+  /
+    fsm_node (general_planner/fsm_node)
+    perfect_drone (perfect_drone_sim/perfect_drone)
+
+[1mROS_MASTER_URI=http://localhost:11311[0m
+]2;/root/ws/real_planner/src/General-Planner/src/Planner/task_planner/launch/click_demo.launch http://localhost:11311
+[1mprocess[perfect_drone-1]: started with pid [885867][0m
+[1mprocess[fsm_node-2]: started with pid [885868][0m
+[fsm_node-2] killing on exit
+[perfect_drone-1] killing on exit
+shutting down processing monitor...
+... shutting down processing monitor complete
+[1mdone[0m

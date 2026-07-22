@@ -93,6 +93,33 @@ traj_opt:
     guide_z_tube_radius: 0.05
     penna_omg:  5.0e+5
     penna_thr: 1.0e+5
+    # State2state-only zeroth-order backend.  The legacy gradient optimizer is
+    # retained as an explicit fallback during route stabilization.
+    igo:
+      enable: true
+      fallback_to_legacy: true
+      population: 24
+      generations: 5
+      threads: 4
+      antithetic: true
+      seed: 7
+      elite_ratio: 0.25
+      mean_learning_rate: 0.8
+      covariance_learning_rate: 0.2
+      initial_sigma: 0.65
+      time_min_scale: 0.45
+      time_max_scale: 2.75
+      hull_subdivision_depth: 1
+      sfc_tolerance: 1.0e-6
+      sample_dt: 0.03
+      replan_budget_ratio: 0.45
+      plan_from_rest_budget: 0.15
+      snapshot_max_voxels: 1000000
+      # click_smooth uses obstacle-only point clouds with raycasting disabled;
+      # unknown-as-occupied would reject the whole operational free volume.
+      unknown_as_occupied: false
+      # The state2state CIRI corridor already accounts for robot_r.
+      use_inflated_map: false
 
   backup_traj:
     uniform_time_en: true
