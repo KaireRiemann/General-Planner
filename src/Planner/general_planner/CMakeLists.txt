@@ -39,6 +39,7 @@ find_package(catkin REQUIRED COMPONENTS
         yaml-cpp
         tf
 )
+
 find_package(OpenMP REQUIRED)
 find_package(OpenCV REQUIRED)
 find_package(yaml-cpp REQUIRED)
@@ -132,6 +133,7 @@ target_link_libraries(general_planner_exploration_utils PUBLIC
 add_library(general_planner_exploration STATIC
         ${GENERAL_PLANNER_EXPLORATION_DIR}/fast_exploration_manager.cpp
         ${GENERAL_PLANNER_EXPLORATION_DIR}/general_planner_adapter.cpp
+        ${GENERAL_PLANNER_EXPLORATION_DIR}/swarm_exploration_coordinator.cpp
 )
 add_dependencies(general_planner_exploration
         ${${PROJECT_NAME}_EXPORTED_TARGETS}

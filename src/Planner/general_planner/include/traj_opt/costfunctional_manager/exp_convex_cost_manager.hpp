@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <vector>
 
 namespace cost_functional_manager
 {
@@ -36,10 +37,13 @@ class ExpConvexCostManager
 public:
   using Basis = traj_opt::convex_hull::Basis;
 
-  void configure(Basis basis, int subdivision_depth)
+  void configure(Basis basis,
+                 int subdivision_depth,
+                 int cost_version = 1)
   {
     basis_ = basis;
     subdivision_depth_ = std::clamp(subdivision_depth, 0, 8);
+    cost_version_ = std::clamp(cost_version, 1, 2);
   }
 
   void reset(const general_utils::PolyhedraH *h_polys,
@@ -124,8 +128,19 @@ public:
       if (penalty_weights_.size() > derivative_order &&
           penalty_weights_(derivative_order) > 0.0)
       {
-        checks += static_cast<std::size_t>(
-            selected_controls_[derivative_order].rows());
+        if (cost_version_ == 2 && basis_ == Basis::Bezier)
+        {
+          const int cp = controlsPerPiece(derivative_order);
+          const int unique_per_segment =
+              bezier_hull_.piecesPerSegment() * (cp - 1) + 1;
+          checks += static_cast<std::size_t>(
+              bezier_hull_.numSourceSegments() * unique_per_segment);
+        }
+        else
+        {
+          checks += static_cast<std::size_t>(
+              selected_controls_[derivative_order].rows());
+        }
       }
     }
     return checks;
@@ -365,6 +380,12 @@ private:
       const Eigen::VectorXd &durations,
       Eigen::VectorXd &direct_duration_gradients) const
   {
+    if (cost_version_ == 2 && basis_ == Basis::Bezier)
+    {
+      return accumulatePositionCostV2(durations,
+                                      direct_duration_gradients);
+    }
+
     const double weight = std::max(0.0, penalty_weights_(0));
     if (weight <= 0.0)
     {
@@ -417,6 +438,13 @@ private:
       int derivative_order,
       Eigen::VectorXd &direct_duration_gradients) const
   {
+    if (cost_version_ == 2 && basis_ == Basis::Bezier)
+    {
+      return accumulateDerivativeCostV2(durations,
+                                        derivative_order,
+                                        direct_duration_gradients);
+    }
+
     const double weight =
         std::max(0.0, penalty_weights_(derivative_order));
     const double bound = magnitude_bounds_(derivative_order - 1);
@@ -453,6 +481,132 @@ private:
         direct_duration_gradients(segment) +=
             local_cost / durations(segment);
         cost += local_cost;
+      }
+    }
+    return cost;
+  }
+
+  double accumulatePositionCostV2(
+      const Eigen::VectorXd &durations,
+      Eigen::VectorXd &direct_duration_gradients) const
+  {
+    const double weight = std::max(0.0, penalty_weights_(0));
+    if (weight <= 0.0)
+    {
+      return 0.0;
+    }
+
+    double cost = 0.0;
+    const int leaves = bezier_hull_.piecesPerSegment();
+    const int controls_per_piece = controlsPerPiece(0);
+
+    for (int segment = 0;
+         segment < bezier_hull_.numSourceSegments();
+         ++segment)
+    {
+      if (segment >= h_poly_idx_->size())
+      {
+        continue;
+      }
+      const int poly_id = (*h_poly_idx_)(segment);
+      if (poly_id < 0 || poly_id >= static_cast<int>(h_polys_->size()))
+      {
+        continue;
+      }
+      const double duration = durations(segment);
+      const double base_scale =
+          duration /
+          static_cast<double>(leaves * controls_per_piece);
+      for (int leaf = 0; leaf < leaves; ++leaf)
+      {
+        const int piece = segment * leaves + leaf;
+        const int first_control = leaf == 0 ? 0 : 1;
+        for (int control = first_control;
+             control < controls_per_piece;
+             ++control)
+        {
+          const int row = piece * controls_per_piece + control;
+          // The last control of every non-final leaf is exactly the first
+          // control of the next leaf. Fold both identical V1 terms into this
+          // row instead of evaluating the same penalty twice.
+          const double multiplicity =
+              control == controls_per_piece - 1 && leaf + 1 < leaves
+                  ? 2.0
+                  : 1.0;
+          const Eigen::Vector3d value =
+              selected_controls_[0].row(row).transpose();
+          Eigen::Vector3d gradient = Eigen::Vector3d::Zero();
+          const double local_cost =
+              cost_functional::accumulatePolytopePositionPenalty(
+                  (*h_polys_)[poly_id],
+                  value,
+                  smooth_eps_,
+                  weight * base_scale * multiplicity,
+                  gradient,
+                  &hull_violation_(1));
+          selected_gradients_[0].row(row) += gradient.transpose();
+          direct_duration_gradients(segment) += local_cost / duration;
+          cost += local_cost;
+        }
+      }
+    }
+    return cost;
+  }
+
+  double accumulateDerivativeCostV2(
+      const Eigen::VectorXd &durations,
+      int derivative_order,
+      Eigen::VectorXd &direct_duration_gradients) const
+  {
+    const double weight =
+        std::max(0.0, penalty_weights_(derivative_order));
+    const double bound = magnitude_bounds_(derivative_order - 1);
+    if (weight <= 0.0 || !std::isfinite(bound) || bound <= 0.0)
+    {
+      return 0.0;
+    }
+
+    double cost = 0.0;
+    const int leaves = bezier_hull_.piecesPerSegment();
+    const int controls_per_piece = controlsPerPiece(derivative_order);
+
+    for (int segment = 0;
+         segment < bezier_hull_.numSourceSegments();
+         ++segment)
+    {
+      const double duration = durations(segment);
+      const double base_scale =
+          duration /
+          static_cast<double>(leaves * controls_per_piece);
+      for (int leaf = 0; leaf < leaves; ++leaf)
+      {
+        const int piece = segment * leaves + leaf;
+        const int first_control = leaf == 0 ? 0 : 1;
+        for (int control = first_control;
+             control < controls_per_piece;
+             ++control)
+        {
+          const int row = piece * controls_per_piece + control;
+          const double multiplicity =
+              control == controls_per_piece - 1 && leaf + 1 < leaves
+                  ? 2.0
+                  : 1.0;
+          const Eigen::Vector3d value =
+              selected_controls_[derivative_order].row(row).transpose();
+          Eigen::Vector3d gradient = Eigen::Vector3d::Zero();
+          const double local_cost =
+              cost_functional::accumulateSquaredNormBoundPenalty(
+                  value,
+                  bound * bound,
+                  smooth_eps_,
+                  weight * base_scale * multiplicity,
+                  gradient,
+                  &hull_violation_(derivative_order + 1));
+          selected_gradients_[derivative_order].row(row) +=
+              gradient.transpose();
+          direct_duration_gradients(segment) += local_cost / duration;
+          cost += local_cost;
+        }
       }
     }
     return cost;
@@ -532,6 +686,7 @@ private:
   Basis basis_{Basis::Bezier};
   mutable Basis cached_output_basis_{Basis::Bezier};
   int subdivision_depth_{0};
+  int cost_version_{1};
   bool dense_sampling_required_{true};
 
   mutable Hull bezier_hull_;

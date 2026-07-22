@@ -102,8 +102,10 @@ traj_opt:
     convex_hull_en: true
     # 0: Bezier, 1: MINVO.
     convex_hull_basis: 0
-    # Start with one 8-point hull per segment. Uniform depth d multiplies work by 2^d.
-    convex_hull_subdivision_depth: 1
+    # Two binary subdivisions give four local hulls per MINCO segment.
+    convex_hull_subdivision_depth: 2
+    # 1: reference control cost; 2: equivalent Bezier shared-endpoint folding.
+    convex_hull_cost_version: 2
     smooth_eps: 0.01
     penna_t: 2.0e+5
     penna_pos: 5.0e+7

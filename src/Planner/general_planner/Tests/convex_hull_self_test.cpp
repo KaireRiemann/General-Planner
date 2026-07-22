@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <cmath>
 #include <iostream>
+#include <limits>
 #include <random>
 #include <stdexcept>
 #include <vector>
@@ -646,7 +647,7 @@ void checkOptimizerGradient()
           "Coefficient cost was not recorded by MINCOOptimizer.");
 }
 
-void checkExpConvexCostManagerGradientAndTiming()
+void checkExpConvexCostManagerGradientAndTiming(int cost_version)
 {
   using Optimizer =
       minco::MINCOOptimizer<3, 4, ExpTimeMap, IdentitySpatialMap>;
@@ -720,10 +721,11 @@ void checkExpConvexCostManagerGradientAndTiming()
           "Dense ExpIntegralCostManager unexpectedly produced coefficient cost.");
 
   cost_functional_manager::ExpConvexCostManager convex_manager;
-  // Benchmark the production default: one Bezier hull per MINCO piece.
-  // Uniform depth two is covered by the representation tests above and would
-  // deliberately multiply all control-point checks by four.
-  convex_manager.configure(traj_opt::convex_hull::Basis::Bezier, 0);
+  // Exercise the production depth-two path. Cost V2 omits the algebraically
+  // duplicated first control of every leaf after the first one.
+  convex_manager.configure(traj_opt::convex_hull::Basis::Bezier,
+                           2,
+                           cost_version);
   convex_manager.reset(&corridors,
                        &corridor_indices,
                        nullptr,
@@ -744,21 +746,37 @@ void checkExpConvexCostManagerGradientAndTiming()
   }
   require(convex_cost > 1.0e-12,
           "ExpConvexCostManager did not produce a convex-hull cost.");
+  static double v1_cost = std::numeric_limits<double>::quiet_NaN();
+  if (cost_version == 1)
+  {
+    v1_cost = convex_cost;
+  }
+  else
+  {
+    require(std::isfinite(v1_cost) &&
+                std::abs(convex_cost - v1_cost) <=
+                    1.0e-11 * std::max(1.0, std::abs(v1_cost)),
+            "Deduplicated V2 cost is not equivalent to V1.");
+  }
   require(std::abs(optimizer.lastIntegralCost()) < 1.0e-12,
           "Polynomial dense costs remained active in ExpConvexCostManager.");
   require(optimizer.lastCoefficientCost() > 1.0e-12,
           "ExpConvexCostManager coefficient cost was not recorded.");
   require(!convex_manager.usesDenseSampling(),
           "Pure polynomial hull costs should bypass dense sampling.");
-  // Production ExpTrajOpt uses seventh-degree MINCO_S4:
-  // (8+7+6+5) controls x 3 pieces.
-  require(convex_manager.activeControlPointChecksPerEvaluation() == 78,
-          "Unexpected depth-zero p/v/a/j control-point count.");
+  // Production ExpTrajOpt uses seventh-degree MINCO_S4. At depth two V1 has
+  // 4*(8+7+6+5)*3 = 312 checks. V2 keeps only the unique leaf-chain controls:
+  // ((4*7+1)+(4*6+1)+(4*5+1)+(4*4+1))*3 = 276 checks.
+  const std::size_t expected_checks = cost_version == 2 ? 276 : 312;
+  require(convex_manager.activeControlPointChecksPerEvaluation() ==
+              expected_checks,
+          "Unexpected depth-two p/v/a/j control-point count.");
   const auto timing = optimizer.cumulativeTimingStatistics();
   require(timing.evaluations == 200 && timing.evaluation_seconds > 0.0 &&
               timing.dense_integral_seconds >= 0.0,
           "MINCO timing statistics were not recorded.");
-  std::cout << "timing_microbenchmark dense_integral_share="
+  std::cout << "timing_microbenchmark cost_v=" << cost_version
+            << " dense_integral_share="
             << dense_timing.denseIntegralShareOfEvaluation() * 100.0
             << "% convex_residual_integral_share="
             << timing.denseIntegralShareOfEvaluation() * 100.0
@@ -820,7 +838,8 @@ int main()
     checkCompleteLinearOperator();
     checkPieceTimeBackward();
     checkOptimizerGradient();
-    checkExpConvexCostManagerGradientAndTiming();
+    checkExpConvexCostManagerGradientAndTiming(1);
+    checkExpConvexCostManagerGradientAndTiming(2);
     std::cout << "convex_hull_self_test passed" << std::endl;
   }
   catch (const std::exception &error)

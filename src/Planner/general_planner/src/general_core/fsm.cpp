@@ -177,6 +177,18 @@ namespace fsm {
                     : 0.0;
             write_time_ << ", " << report.mode
                         << ", " << report.evaluations
+                        << ", " << report.iterations
+                        << ", " << report.line_search_evaluations
+                        << ", " << (report.iterations > 0
+                                      ? static_cast<double>(report.line_search_evaluations) /
+                                            static_cast<double>(report.iterations)
+                                      : 0.0)
+                        << ", " << report.max_line_search_evaluations
+                        << ", " << (report.iterations > 0
+                                      ? report.accepted_step_sum /
+                                            static_cast<double>(report.iterations)
+                                      : 0.0)
+                        << ", " << report.min_accepted_step
                         << ", " << report.polynomial_pieces
                         << ", " << report.dense_nodes_per_evaluation
                         << ", " << report.hull_control_checks_per_evaluation

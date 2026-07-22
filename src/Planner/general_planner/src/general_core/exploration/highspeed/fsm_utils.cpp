@@ -149,6 +149,10 @@ void FastExplorationFSM::resetFinishGate(const string &reason) {
     ROS_INFO_STREAM("[finish gate] reset by " << reason);
   }
   finish_gate_ = FinishGate();
+  if (expl_manager_ && expl_manager_->swarm_coordinator_ &&
+      expl_manager_->swarm_coordinator_->enabled()) {
+    expl_manager_->swarm_coordinator_->setLocalConverged(false);
+  }
 }
 
 bool FastExplorationFSM::trajectoryEnded() const {
@@ -318,6 +322,18 @@ void FastExplorationFSM::handleNoFrontierResult(const string &source) {
   }
 
   if (finishGateSatisfied(source)) {
+    if (expl_manager_->swarm_coordinator_ &&
+        expl_manager_->swarm_coordinator_->enabled()) {
+      const CoverageFinishStatus coverage =
+          expl_manager_->coverageFinishStatus();
+      const bool audit_ready =
+          !expl_manager_->frontier_manager_ptr_ ||
+          expl_manager_->frontier_manager_ptr_->frontierAuditReady();
+      expl_manager_->swarm_coordinator_->setLocalConverged(
+          true, audit_ready,
+          !coverage.guard_enabled || coverage.plateau_reached,
+          !coverage.guard_enabled || coverage.targets_exhausted);
+    }
     fd_->static_state_ = true;
     transitState(FINISH, source + ": finish gate satisfied");
     return;
@@ -349,6 +365,10 @@ bool FastExplorationFSM::handleGoalReached() {
   const bool coverage_reached =
       expl_manager_->completeActiveCoverageGoalIfReached(
           fd_->odom_pos_.cast<double>());
+  if (expl_manager_->swarm_coordinator_ &&
+      expl_manager_->swarm_coordinator_->enabled()) {
+    expl_manager_->swarm_coordinator_->completeTaskAt(goal.cast<double>());
+  }
   bool marked = false;
   if (!coverage_reached) {
     const float visited_radius = static_cast<float>(
@@ -373,6 +393,18 @@ bool FastExplorationFSM::handleGoalReached() {
   }
 
   if (finishGateSatisfied("goal reached")) {
+    if (expl_manager_->swarm_coordinator_ &&
+        expl_manager_->swarm_coordinator_->enabled()) {
+      const CoverageFinishStatus coverage =
+          expl_manager_->coverageFinishStatus();
+      const bool audit_ready =
+          !expl_manager_->frontier_manager_ptr_ ||
+          expl_manager_->frontier_manager_ptr_->frontierAuditReady();
+      expl_manager_->swarm_coordinator_->setLocalConverged(
+          true, audit_ready,
+          !coverage.guard_enabled || coverage.plateau_reached,
+          !coverage.guard_enabled || coverage.targets_exhausted);
+    }
     fd_->static_state_ = true;
     transitState(FINISH, "goal reached: finish gate satisfied");
   } else {
@@ -823,6 +855,11 @@ void FastExplorationFSM::odometryCallback(
 
   planner_manager_->local_data_.curr_pos_ = fd_->odom_pos_.cast<double>();
   planner_manager_->local_data_.curr_vel_ = fd_->odom_vel_.cast<double>();
+  if (expl_manager_->swarm_coordinator_ &&
+      expl_manager_->swarm_coordinator_->enabled()) {
+    expl_manager_->swarm_coordinator_->updateRobotState(
+        fd_->odom_pos_.cast<double>(), fd_->odom_vel_.cast<double>());
+  }
   planner_manager_->local_data_.curr_yaw_ = fd_->odom_yaw_;
   if (planner_manager_->topo_graph_ &&
       planner_manager_->topo_graph_->odom_node_) {

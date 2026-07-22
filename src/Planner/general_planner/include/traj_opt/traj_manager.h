@@ -367,6 +367,11 @@ public:
   {
     std::string mode{"not_run"};
     std::size_t evaluations{0};
+    std::size_t iterations{0};
+    std::size_t line_search_evaluations{0};
+    std::size_t max_line_search_evaluations{0};
+    double accepted_step_sum{0.0};
+    double min_accepted_step{0.0};
     std::size_t polynomial_pieces{0};
     std::size_t dense_nodes_per_evaluation{0};
     std::size_t hull_control_checks_per_evaluation{0};
@@ -427,6 +432,11 @@ private:
   {
     double rho{0.0};
     int iter_num{0};
+    std::size_t lbfgs_iterations{0};
+    std::size_t line_search_evaluations{0};
+    std::size_t max_line_search_evaluations{0};
+    double accepted_step_sum{0.0};
+    double min_accepted_step{0.0};
     int pos_constraint_type{0};
     bool block_energy_cost{false};
     double smooth_eps{0.0};
@@ -435,6 +445,7 @@ private:
     traj_opt::convex_hull::Basis convex_hull_basis{
         traj_opt::convex_hull::Basis::Bezier};
     int convex_hull_subdivision_depth{0};
+    int convex_hull_cost_version{1};
     flatness::FlatnessMap quadrotor_flatness;
 
     bool default_init{true};
@@ -478,6 +489,13 @@ private:
   };
 
   static double costFunctional(void *ptr, const VecDf &x, VecDf &g);
+  static int progressFunctional(void *ptr,
+                                const VecDf &x,
+                                const VecDf &g,
+                                double cost,
+                                double step,
+                                int iteration,
+                                int line_search_evaluations);
 
   bool processCorridor();
   bool processCorridorWithGuideTraj();

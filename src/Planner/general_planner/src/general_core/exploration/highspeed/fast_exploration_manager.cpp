@@ -41,6 +41,12 @@ void FastExplorationManager::initialize(
   frontier_manager_ptr_ = frt_manager;
   planner_manager_ = planner_manager;
 
+  // The coordinator is a strict runtime bypass when disabled.  Keeping it
+  // outside FrontierManager/CoverageGuidance preserves byte-for-byte task
+  // generation and all single-UAV planning costs.
+  swarm_coordinator_ = std::make_shared<SwarmExplorationCoordinator>();
+  swarm_coordinator_->init(nh);
+
   ed_.reset(new ExplorationData);
   ep_.reset(new ExplorationParam);
   ed_->next_goal_node_ = make_shared<TopoNode>();
@@ -1188,6 +1194,9 @@ double FastExplorationManager::failedGoalPenalty(
 
 int FastExplorationManager::planGlobalPath(const Eigen::Vector3d &pos,
                                            const Eigen::Vector3d &vel) {
+  if (swarm_coordinator_ && swarm_coordinator_->enabled()) {
+    swarm_coordinator_->updateRobotState(pos, vel);
+  }
   last_plan_empty_frontier_ = false;
   last_plan_no_reachable_ = false;
   last_plan_requires_reorientation_ = false;
@@ -1853,6 +1862,27 @@ int FastExplorationManager::planGlobalPath(const Eigen::Vector3d &pos,
     return FAIL;
   }
 
+  std::vector<double> swarm_candidate_penalties(viewpoint_reachable.size(),
+                                                 0.0);
+  if (swarm_coordinator_ && swarm_coordinator_->enabled()) {
+    std::vector<SwarmCandidate> swarm_candidates;
+    swarm_candidates.reserve(viewpoint_reachable.size());
+    for (std::size_t i = 0; i < viewpoint_reachable.size(); ++i) {
+      SwarmCandidate candidate;
+      candidate.position = viewpoint_reachable[i]->center_.cast<double>();
+      candidate.information_gain =
+          viewpoint_reachable[i]->is_coverage_target_
+              ? static_cast<double>(
+                    std::max(0, viewpoint_reachable[i]->coverage_voxel_count_))
+              : viewpoint_reachable[i]->frontier_information_gain_;
+      candidate.travel_cost = viewpoint_reachable_distance[i];
+      candidate.coverage = viewpoint_reachable[i]->is_coverage_target_;
+      swarm_candidates.emplace_back(candidate);
+    }
+    swarm_candidate_penalties =
+        swarm_coordinator_->candidatePenalties(swarm_candidates);
+  }
+
   auto activateSelectedGoal = [&](const TopoNode::Ptr &selected) {
     if (!selected) {
       return;
@@ -1916,6 +1946,7 @@ int FastExplorationManager::planGlobalPath(const Eigen::Vector3d &pos,
     double debt_norm{0.0};
     double coverage{0.0};
     double failed_goal{0.0};
+    double swarm{0.0};
     double total{0.0};
   };
   vector<CandidateCostBreakdown> candidate_terms(viewpoint_reachable.size());
@@ -1969,12 +2000,13 @@ int FastExplorationManager::planGlobalPath(const Eigen::Vector3d &pos,
                            : 0.0;
     }
     terms.failed_goal = failedGoalPenalty(viewpoint);
+    terms.swarm = swarm_candidate_penalties[i];
   };
   auto finishCompositeCost = [&](const int i) {
     CandidateCostBreakdown &terms = candidate_terms[i];
     if (!ep_->composite_candidate_cost_enable_) {
       terms.total = viewpoint_reachable_distance[i] + terms.coverage +
-                    terms.failed_goal;
+                    terms.failed_goal + terms.swarm;
       return;
     }
     terms.total =
@@ -1984,7 +2016,7 @@ int FastExplorationManager::planGlobalPath(const Eigen::Vector3d &pos,
         ep_->candidate_information_gain_weight_ * terms.gain_norm -
         ep_->candidate_wait_weight_ * terms.wait_norm -
         ep_->candidate_debt_weight_ * terms.debt_norm + terms.coverage +
-        terms.failed_goal;
+        terms.failed_goal + terms.swarm;
   };
   for (int i = 0; i < static_cast<int>(candidate_terms.size()); ++i) {
     fillStaticTerms(i);
@@ -2003,6 +2035,18 @@ int FastExplorationManager::planGlobalPath(const Eigen::Vector3d &pos,
       return planGlobalPath(pos, vel);
     }
     activateSelectedGoal(viewpoint_reachable[goal_idx]);
+    if (swarm_coordinator_ && swarm_coordinator_->enabled()) {
+      SwarmCandidate claim;
+      claim.position = viewpoint_reachable[goal_idx]->center_.cast<double>();
+      claim.information_gain =
+          viewpoint_reachable[goal_idx]->is_coverage_target_
+              ? static_cast<double>(std::max(
+                    0, viewpoint_reachable[goal_idx]->coverage_voxel_count_))
+              : viewpoint_reachable[goal_idx]->frontier_information_gain_;
+      claim.travel_cost = candidate_terms[goal_idx].travel;
+      claim.coverage = viewpoint_reachable[goal_idx]->is_coverage_target_;
+      swarm_coordinator_->claimTask(claim);
+    }
     ROS_INFO_STREAM_THROTTLE(
         0.5, "[candidate cost] chosen_cluster="
                  << viewpoint_reachable[goal_idx]->frontier_cluster_id_
@@ -2017,7 +2061,8 @@ int FastExplorationManager::planGlobalPath(const Eigen::Vector3d &pos,
                  << " debt=" << candidate_terms[goal_idx].debt_norm
                  << " coverage=" << candidate_terms[goal_idx].coverage
                  << " failed_goal="
-                 << candidate_terms[goal_idx].failed_goal);
+                 << candidate_terms[goal_idx].failed_goal
+                 << " swarm=" << candidate_terms[goal_idx].swarm);
     ed_->global_tour_.clear();
     ed_->global_tour_.emplace_back(pos.cast<float>());
     ed_->global_tour_.emplace_back(viewpoint_reachable[goal_idx]->center_);
@@ -2144,6 +2189,22 @@ int FastExplorationManager::planGlobalPath(const Eigen::Vector3d &pos,
     return planGlobalPath(pos, vel);
   }
   activateSelectedGoal(viewpoint_reachable[stable_goal_idx]);
+  if (swarm_coordinator_ && swarm_coordinator_->enabled()) {
+    SwarmCandidate claim;
+    claim.position =
+        viewpoint_reachable[stable_goal_idx]->center_.cast<double>();
+    claim.information_gain =
+        viewpoint_reachable[stable_goal_idx]->is_coverage_target_
+            ? static_cast<double>(std::max(
+                  0, viewpoint_reachable[stable_goal_idx]
+                         ->coverage_voxel_count_))
+            : viewpoint_reachable[stable_goal_idx]
+                  ->frontier_information_gain_;
+    claim.travel_cost = candidate_terms[stable_goal_idx].travel;
+    claim.coverage =
+        viewpoint_reachable[stable_goal_idx]->is_coverage_target_;
+    swarm_coordinator_->claimTask(claim);
+  }
 
   vector<int> debug_order(candidate_terms.size());
   for (int i = 0; i < static_cast<int>(debug_order.size()); ++i) {
@@ -2171,6 +2232,9 @@ int FastExplorationManager::planGlobalPath(const Eigen::Vector3d &pos,
              << " TB=" << term.turn_brake << " R=" << term.future_return
              << " G=" << term.gain_norm << " W=" << term.wait_norm
              << " D=" << term.debt_norm << " C=" << term.coverage;
+    if (std::fabs(term.swarm) > 1.0e-9) {
+      cost_log << " S=" << term.swarm;
+    }
     if (term.failed_goal > 0.0) {
       cost_log << " F=" << term.failed_goal;
     }

@@ -1,0 +1,51 @@
+# Optional decentralized coordination plane.  This file is never loaded by
+# the single-UAV launch, so the current exploration_house.yaml behavior stays
+# unchanged.
+swarm_exploration:
+  enabled: true
+  mission_epoch: 1
+
+  # Stable EROI/task identity.  Z is deliberately smaller than a floor height
+  # so staircase and second-floor observations cannot collapse into one task.
+  task_origin: [-30.0, -30.0, -1.0]
+  task_size: [3.6, 3.6, 1.8]
+  floor_height: 3.0
+
+  # GVP-style sparse history graph.  Executed anchors are connected in a local
+  # chain; spatially coincident peer anchors create MR-DTG handshake edges.
+  anchor_spacing: 2.5
+  graph_handshake_radius: 3.5
+  graph_handshake_max: 4
+  max_graph_nodes: 2500
+
+  # RACER-style ownership stability without continuously solving pairwise
+  # ACVRP.  A live lease is a hard gate; graph-Voronoi ownership is a ranking
+  # term and assist mode remains available when no local-owned task exists.
+  peer_timeout: 1.5
+  task_evidence_timeout: 5.0
+  task_evidence_publish_interval: 1.0
+  task_lease_duration: 15.0
+  ownership_penalty: 5000.0
+  peer_lease_penalty: 1000000.0
+  assist_penalty: 6.0
+  continuity_bonus: 10.0
+  load_balance_weight: 3.0
+
+  # TEAM_FINISH is layered on top of the existing single-UAV frontier audit,
+  # coverage plateau and observation-target exhaustion gate.
+  finish_quiet_period: 3.0
+  finish_hold_duration: 3.0
+
+  # Commit-time hard trajectory envelope.  The existing optimizer/safety and
+  # stop/replan pipeline remains responsible for producing the replacement.
+  trajectory_horizon: 6.0
+  trajectory_sample_dt: 0.08
+  horizontal_clearance: 1.4
+  vertical_clearance: 0.9
+
+  topics:
+    robot_state: /swarm/exploration/robot_state
+    task: /swarm/exploration/task
+    graph_delta: /swarm/exploration/graph_delta
+    finish_vote: /swarm/exploration/finish_vote
+    trajectory: /swarm/exploration/trajectory

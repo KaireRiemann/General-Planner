@@ -538,6 +538,13 @@ ExpTrajOpt::ExpTrajOpt(const traj_opt::Config &cfg,
           : traj_opt::convex_hull::Basis::Bezier;
   opt_vars_.convex_hull_subdivision_depth =
       std::clamp(cfg_.convex_hull_subdivision_depth, 0, 8);
+  opt_vars_.convex_hull_cost_version =
+      std::clamp(cfg_.convex_hull_cost_version, 1, 2);
+  if (opt_vars_.convex_hull_basis !=
+      traj_opt::convex_hull::Basis::Bezier)
+  {
+    opt_vars_.convex_hull_cost_version = 1;
+  }
   opt_vars_.quadrotor_flatness = cfg_.quadrotot_flatness;
   opt_vars_.guide_z_tube_radius = std::max(0.0, cfg_.guide_z_tube_radius);
   // Guide-path integral cost is disabled until its planner-level semantics are redesigned.
@@ -557,13 +564,18 @@ ExpTrajOpt::ExpTrajOpt(const traj_opt::Config &cfg,
   optimizer_.setTimingEnabled(true);
   exp_convex_cost_manager_.configure(
       opt_vars_.convex_hull_basis,
-      opt_vars_.convex_hull_subdivision_depth);
+      opt_vars_.convex_hull_subdivision_depth,
+      opt_vars_.convex_hull_cost_version);
   last_timing_report_.mode =
       opt_vars_.convex_hull_enabled
           ? (opt_vars_.convex_hull_basis == traj_opt::convex_hull::Basis::MINVO
-                 ? "convex_minvo_d" +
+                 ? "convex_minvo_v" +
+                       std::to_string(opt_vars_.convex_hull_cost_version) +
+                       "_d" +
                        std::to_string(opt_vars_.convex_hull_subdivision_depth)
-                 : "convex_bezier_d" +
+                 : "convex_bezier_v" +
+                       std::to_string(opt_vars_.convex_hull_cost_version) +
+                       "_d" +
                        std::to_string(opt_vars_.convex_hull_subdivision_depth))
           : "dense";
 }
@@ -829,6 +841,33 @@ double ExpTrajOpt::costFunctional(void *ptr, const VecDf &x, VecDf &g)
   return static_cast<ExpTrajOpt *>(ptr)->evaluateMincoCost(x, g);
 }
 
+int ExpTrajOpt::progressFunctional(void *ptr,
+                                   const VecDf &,
+                                   const VecDf &,
+                                   double,
+                                   double step,
+                                   int,
+                                   int line_search_evaluations)
+{
+  auto *self = static_cast<ExpTrajOpt *>(ptr);
+  auto &vars = self->opt_vars_;
+  ++vars.lbfgs_iterations;
+  const std::size_t line_search_count = static_cast<std::size_t>(
+      std::max(0, line_search_evaluations));
+  vars.line_search_evaluations += line_search_count;
+  vars.max_line_search_evaluations =
+      std::max(vars.max_line_search_evaluations, line_search_count);
+  if (std::isfinite(step) && step >= 0.0)
+  {
+    vars.accepted_step_sum += step;
+    vars.min_accepted_step =
+        vars.lbfgs_iterations == 1
+            ? step
+            : std::min(vars.min_accepted_step, step);
+  }
+  return 0;
+}
+
 double ExpTrajOpt::evaluateMincoCost(const VecDf &x, VecDf &g)
 {
   opt_vars_.iter_num++;
@@ -960,6 +999,11 @@ double ExpTrajOpt::optimize(Trajectory &traj, double rel_cost_tol)
                                  opt_vars_.guide_path_time_gradient_en);
 
   opt_vars_.iter_num = 0;
+  opt_vars_.lbfgs_iterations = 0;
+  opt_vars_.line_search_evaluations = 0;
+  opt_vars_.max_line_search_evaluations = 0;
+  opt_vars_.accepted_step_sum = 0.0;
+  opt_vars_.min_accepted_step = 0.0;
   double min_cost = 0.0;
   lbfgs::lbfgs_parameter_t params;
   params.mem_size = 256;
@@ -970,7 +1014,13 @@ double ExpTrajOpt::optimize(Trajectory &traj, double rel_cost_tol)
 
   optimizer_.resetTimingStatistics();
   const auto optimization_begin = std::chrono::steady_clock::now();
-  const int ret = lbfgs::lbfgs_optimize(x, min_cost, &ExpTrajOpt::costFunctional, nullptr, nullptr, this, params);
+  const int ret = lbfgs::lbfgs_optimize(x,
+                                        min_cost,
+                                        &ExpTrajOpt::costFunctional,
+                                        nullptr,
+                                        &ExpTrajOpt::progressFunctional,
+                                        this,
+                                        params);
   const double optimization_seconds =
       std::chrono::duration<double>(std::chrono::steady_clock::now() -
                                     optimization_begin)
@@ -981,6 +1031,15 @@ double ExpTrajOpt::optimize(Trajectory &traj, double rel_cost_tol)
           ? timing.dense_integral_seconds / optimization_seconds
           : 0.0;
   last_timing_report_.evaluations = timing.evaluations;
+  last_timing_report_.iterations = opt_vars_.lbfgs_iterations;
+  last_timing_report_.line_search_evaluations =
+      opt_vars_.line_search_evaluations;
+  last_timing_report_.max_line_search_evaluations =
+      opt_vars_.max_line_search_evaluations;
+  last_timing_report_.accepted_step_sum =
+      opt_vars_.accepted_step_sum;
+  last_timing_report_.min_accepted_step =
+      opt_vars_.lbfgs_iterations > 0 ? opt_vars_.min_accepted_step : 0.0;
   last_timing_report_.polynomial_pieces =
       static_cast<std::size_t>(optimizer_.getPieceNum());
   const bool dense_sampling_active =
@@ -998,9 +1057,13 @@ double ExpTrajOpt::optimize(Trajectory &traj, double rel_cost_tol)
   last_timing_report_.mode =
       opt_vars_.convex_hull_enabled
           ? (opt_vars_.convex_hull_basis == traj_opt::convex_hull::Basis::MINVO
-                 ? "convex_minvo_d" +
+                 ? "convex_minvo_v" +
+                       std::to_string(opt_vars_.convex_hull_cost_version) +
+                       "_d" +
                        std::to_string(opt_vars_.convex_hull_subdivision_depth)
-                 : "convex_bezier_d" +
+                 : "convex_bezier_v" +
+                       std::to_string(opt_vars_.convex_hull_cost_version) +
+                       "_d" +
                        std::to_string(opt_vars_.convex_hull_subdivision_depth))
           : "dense";
   last_timing_report_.dense_integral_seconds =
@@ -1019,6 +1082,22 @@ double ExpTrajOpt::optimize(Trajectory &traj, double rel_cost_tol)
 
   cumulative_timing_report_.mode = last_timing_report_.mode;
   cumulative_timing_report_.evaluations += last_timing_report_.evaluations;
+  cumulative_timing_report_.iterations += last_timing_report_.iterations;
+  cumulative_timing_report_.line_search_evaluations +=
+      last_timing_report_.line_search_evaluations;
+  cumulative_timing_report_.max_line_search_evaluations =
+      std::max(cumulative_timing_report_.max_line_search_evaluations,
+               last_timing_report_.max_line_search_evaluations);
+  cumulative_timing_report_.accepted_step_sum +=
+      last_timing_report_.accepted_step_sum;
+  if (last_timing_report_.iterations > 0)
+  {
+    cumulative_timing_report_.min_accepted_step =
+        cumulative_timing_report_.iterations == last_timing_report_.iterations
+            ? last_timing_report_.min_accepted_step
+            : std::min(cumulative_timing_report_.min_accepted_step,
+                       last_timing_report_.min_accepted_step);
+  }
   cumulative_timing_report_.polynomial_pieces +=
       last_timing_report_.polynomial_pieces;
   cumulative_timing_report_.dense_nodes_per_evaluation =
@@ -1067,6 +1146,17 @@ double ExpTrajOpt::optimize(Trajectory &traj, double rel_cost_tol)
               << "\tGuidePathMaxAbsTimeGrad: " << opt_vars_.guide_path_max_abs_time_grad << "\n"
               << "\tGuidePathOutOfTimeSamples: " << opt_vars_.guide_path_out_of_time_range_samples << "\n"
               << "\tTimingEvaluations: " << timing.evaluations << "\n"
+              << "\tLBFGSIterations: " << last_timing_report_.iterations << "\n"
+              << "\tLineSearchEvaluations: "
+              << last_timing_report_.line_search_evaluations << "\n"
+              << "\tAverageLineSearchEvaluations: "
+              << (last_timing_report_.iterations > 0
+                      ? static_cast<double>(last_timing_report_.line_search_evaluations) /
+                            static_cast<double>(last_timing_report_.iterations)
+                      : 0.0)
+              << "\n"
+              << "\tMaxLineSearchEvaluations: "
+              << last_timing_report_.max_line_search_evaluations << "\n"
               << "\tPolynomialPieces: " << last_timing_report_.polynomial_pieces << "\n"
               << "\tDenseNodesPerEvaluation: " << last_timing_report_.dense_nodes_per_evaluation << "\n"
               << "\tHullControlChecksPerEvaluation: " << last_timing_report_.hull_control_checks_per_evaluation << "\n"

@@ -78,6 +78,7 @@ namespace traj_opt {
         bool convex_hull_en{false};
         int convex_hull_basis{0};
         int convex_hull_subdivision_depth{0};
+        int convex_hull_cost_version{1};
         double opt_accuracy{0};
         double init_profile_vel_ratio{0.65};
         double init_duration_scale{1.25};
@@ -115,6 +116,8 @@ namespace traj_opt {
             loader.LoadParam("traj_opt" + ns + "convex_hull_basis", convex_hull_basis, 0);
             loader.LoadParam("traj_opt" + ns + "convex_hull_subdivision_depth",
                              convex_hull_subdivision_depth, 0);
+            loader.LoadParam("traj_opt" + ns + "convex_hull_cost_version",
+                             convex_hull_cost_version, 1);
             loader.LoadParam("traj_opt" + ns + "init_profile_vel_ratio", init_profile_vel_ratio, 0.65);
             loader.LoadParam("traj_opt" + ns + "init_duration_scale", init_duration_scale, 1.25);
             loader.LoadParam("traj_opt" + ns + "terminal_vel_ratio", terminal_vel_ratio, 0.0);

@@ -1,0 +1,331 @@
+Panels:
+  - Class: rviz/Displays
+    Help Height: 0
+    Name: Displays
+    Property Tree Widget:
+      Expanded:
+        - /Swarm 01
+        - /Swarm 11
+      Splitter Ratio: 0.5
+    Tree Height: 780
+  - Class: rviz/Tool Properties
+    Name: Tool Properties
+    Splitter Ratio: 0.5
+  - Class: rviz/Views
+    Name: Views
+    Splitter Ratio: 0.5
+Preferences:
+  PromptSaveOnExit: true
+Toolbars:
+  toolButtonStyle: 2
+Visualization Manager:
+  Class: ""
+  Displays:
+    - Alpha: 0.12
+      Cell Size: 1
+      Class: rviz/Grid
+      Color: 160; 160; 164
+      Enabled: true
+      Line Style:
+        Line Width: 0.03
+        Value: Lines
+      Name: Grid
+      Plane: XY
+      Plane Cell Count: 160
+      Reference Frame: <Fixed Frame>
+      Value: true
+    - Class: rviz/Group
+      Displays:
+        - Alpha: 0.9
+          Autocompute Intensity Bounds: true
+          Autocompute Value Bounds:
+            Value: true
+          Axis: Z
+          Channel Name: intensity
+          Class: rviz/PointCloud2
+          Color: 0; 210; 255
+          Color Transformer: FlatColor
+          Decay Time: 0
+          Enabled: true
+          Name: Occupied map
+          Position Transformer: XYZ
+          Queue Size: 10
+          Selectable: true
+          Size (Pixels): 3
+          Size (m): 0.10
+          Style: Flat Squares
+          Topic: /swarm0/exploration_node/rog_map/occ
+          Unreliable: false
+          Use Fixed Frame: true
+          Value: true
+        - Alpha: 0.18
+          Class: rviz/PointCloud2
+          Color: 120; 225; 255
+          Color Transformer: FlatColor
+          Decay Time: 1
+          Enabled: false
+          Name: Sensor cloud
+          Position Transformer: XYZ
+          Queue Size: 3
+          Selectable: true
+          Size (Pixels): 1
+          Size (m): 0.025
+          Style: Points
+          Topic: /swarm0/cloud_registered
+          Unreliable: false
+          Use Fixed Frame: true
+          Value: false
+        - Class: rviz/MarkerArray
+          Enabled: true
+          Marker Topic: /swarm0/exploration_node/rog_map/map_bound
+          Name: Map bounds
+          Queue Size: 20
+          Value: true
+        - Class: rviz/Marker
+          Enabled: true
+          Marker Topic: /swarm0/perfect_drone/robot
+          Name: Robot
+          Queue Size: 20
+          Value: true
+        - Class: rviz/Path
+          Color: 0; 210; 255
+          Enabled: true
+          Line Style: Lines
+          Line Width: 0.05
+          Name: Executed path
+          Queue Size: 10
+          Topic: /swarm0/perfect_drone/path
+          Value: true
+        - Class: rviz/Marker
+          Enabled: true
+          Marker Topic: /swarm0/planning/travel_traj
+          Name: Executed trajectory
+          Queue Size: 20
+          Value: true
+        - Class: rviz/Marker
+          Enabled: true
+          Marker Topic: /swarm0/visualizer/trajectory
+          Name: Planned trajectory
+          Queue Size: 20
+          Value: true
+        - Class: rviz/Marker
+          Enabled: true
+          Marker Topic: /swarm0/planning/state
+          Name: FSM state
+          Queue Size: 20
+          Value: true
+        - Class: rviz/Marker
+          Enabled: true
+          Marker Topic: /swarm0/planning/speed
+          Name: Speed
+          Queue Size: 20
+          Value: true
+        - Class: rviz/MarkerArray
+          Enabled: true
+          Marker Topic: /swarm0/exploration_node/coverage_guidance/route
+          Name: Coverage route
+          Queue Size: 20
+          Value: true
+        - Class: rviz/MarkerArray
+          Enabled: true
+          Marker Topic: /swarm0/exploration_node/sf_cluster_marker
+          Name: Frontier clusters
+          Queue Size: 20
+          Value: true
+        - Class: rviz/PointCloud2
+          Color: 0; 255; 120
+          Color Transformer: FlatColor
+          Enabled: false
+          Name: Frontier points
+          Position Transformer: XYZ
+          Queue Size: 10
+          Selectable: true
+          Size (Pixels): 3
+          Style: Flat Squares
+          Topic: /swarm0/exploration_node/frt
+          Use Fixed Frame: true
+          Value: false
+        - Class: rviz/MarkerArray
+          Enabled: false
+          Marker Topic: /swarm0/global_tour
+          Name: Global tour
+          Queue Size: 20
+          Value: false
+        - Class: rviz/MarkerArray
+          Enabled: false
+          Marker Topic: /swarm0/viz_graph_topic
+          Name: Topology graph
+          Queue Size: 20
+          Value: false
+      Enabled: true
+      Name: Swarm 0
+    - Class: rviz/Group
+      Displays:
+        - Alpha: 0.82
+          Autocompute Intensity Bounds: true
+          Autocompute Value Bounds:
+            Value: true
+          Axis: Z
+          Channel Name: intensity
+          Class: rviz/PointCloud2
+          Color: 255; 145; 35
+          Color Transformer: FlatColor
+          Decay Time: 0
+          Enabled: true
+          Name: Occupied map
+          Position Transformer: XYZ
+          Queue Size: 10
+          Selectable: true
+          Size (Pixels): 3
+          Size (m): 0.10
+          Style: Flat Squares
+          Topic: /swarm1/exploration_node/rog_map/occ
+          Unreliable: false
+          Use Fixed Frame: true
+          Value: true
+        - Alpha: 0.18
+          Class: rviz/PointCloud2
+          Color: 255; 205; 110
+          Color Transformer: FlatColor
+          Decay Time: 1
+          Enabled: false
+          Name: Sensor cloud
+          Position Transformer: XYZ
+          Queue Size: 3
+          Selectable: true
+          Size (Pixels): 1
+          Size (m): 0.025
+          Style: Points
+          Topic: /swarm1/cloud_registered
+          Unreliable: false
+          Use Fixed Frame: true
+          Value: false
+        - Class: rviz/MarkerArray
+          Enabled: true
+          Marker Topic: /swarm1/exploration_node/rog_map/map_bound
+          Name: Map bounds
+          Queue Size: 20
+          Value: true
+        - Class: rviz/Marker
+          Enabled: true
+          Marker Topic: /swarm1/perfect_drone/robot
+          Name: Robot
+          Queue Size: 20
+          Value: true
+        - Class: rviz/Path
+          Color: 255; 145; 35
+          Enabled: true
+          Line Style: Lines
+          Line Width: 0.05
+          Name: Executed path
+          Queue Size: 10
+          Topic: /swarm1/perfect_drone/path
+          Value: true
+        - Class: rviz/Marker
+          Enabled: true
+          Marker Topic: /swarm1/planning/travel_traj
+          Name: Executed trajectory
+          Queue Size: 20
+          Value: true
+        - Class: rviz/Marker
+          Enabled: true
+          Marker Topic: /swarm1/visualizer/trajectory
+          Name: Planned trajectory
+          Queue Size: 20
+          Value: true
+        - Class: rviz/Marker
+          Enabled: true
+          Marker Topic: /swarm1/planning/state
+          Name: FSM state
+          Queue Size: 20
+          Value: true
+        - Class: rviz/Marker
+          Enabled: true
+          Marker Topic: /swarm1/planning/speed
+          Name: Speed
+          Queue Size: 20
+          Value: true
+        - Class: rviz/MarkerArray
+          Enabled: true
+          Marker Topic: /swarm1/exploration_node/coverage_guidance/route
+          Name: Coverage route
+          Queue Size: 20
+          Value: true
+        - Class: rviz/MarkerArray
+          Enabled: true
+          Marker Topic: /swarm1/exploration_node/sf_cluster_marker
+          Name: Frontier clusters
+          Queue Size: 20
+          Value: true
+        - Class: rviz/PointCloud2
+          Color: 255; 230; 0
+          Color Transformer: FlatColor
+          Enabled: false
+          Name: Frontier points
+          Position Transformer: XYZ
+          Queue Size: 10
+          Selectable: true
+          Size (Pixels): 3
+          Style: Flat Squares
+          Topic: /swarm1/exploration_node/frt
+          Use Fixed Frame: true
+          Value: false
+        - Class: rviz/MarkerArray
+          Enabled: false
+          Marker Topic: /swarm1/global_tour
+          Name: Global tour
+          Queue Size: 20
+          Value: false
+        - Class: rviz/MarkerArray
+          Enabled: false
+          Marker Topic: /swarm1/viz_graph_topic
+          Name: Topology graph
+          Queue Size: 20
+          Value: false
+      Enabled: true
+      Name: Swarm 1
+  Enabled: true
+  Global Options:
+    Background Color: 46; 52; 54
+    Default Light: true
+    Fixed Frame: world
+    Frame Rate: 30
+  Name: root
+  Tools:
+    - Class: rviz/Interact
+      Hide Inactive Objects: true
+    - Class: rviz/Select
+    - Class: rviz/FocusCamera
+    - Class: rviz/Measure
+    - Class: rviz/SetInitialPose
+      Theta std deviation: 0.261799
+      Topic: /initialpose
+      X std deviation: 0.5
+      Y std deviation: 0.5
+    - Class: rviz/SetGoal
+      Topic: /move_base_simple/goal
+    - Class: rviz/PublishPoint
+      Single click: true
+      Topic: /clicked_point
+  Value: true
+  Views:
+    Current:
+      Class: rviz/Orbit
+      Distance: 85
+      Field of View: 0.785398
+      Focal Point:
+        X: 0
+        Y: 0
+        Z: 2
+      Focal Shape Fixed Size: true
+      Focal Shape Size: 0.05
+      Invert Z Axis: false
+      Name: Current View
+      Near Clip Distance: 0.01
+      Pitch: 0.85
+      Target Frame: <Fixed Frame>
+      Yaw: 3.14
+    Saved: ~
+Window Geometry:
+  Height: 1050
+  Width: 1680

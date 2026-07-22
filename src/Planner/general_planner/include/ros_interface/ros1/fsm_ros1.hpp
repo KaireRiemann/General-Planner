@@ -1426,7 +1426,10 @@ namespace fsm {
                 }
             }
             if (write_exp_timing) {
-                write_time_ << "EXP_COST_MODE,EXP_EVALUATIONS,EXP_POLYNOMIAL_PIECES,"
+                write_time_ << "EXP_COST_MODE,EXP_EVALUATIONS,EXP_LBFGS_ITERATIONS,"
+                               "EXP_LINE_SEARCH_EVALUATIONS,EXP_AVG_LINE_SEARCH_EVALS,"
+                               "EXP_MAX_LINE_SEARCH_EVALS,EXP_AVG_ACCEPTED_STEP,"
+                               "EXP_MIN_ACCEPTED_STEP,EXP_POLYNOMIAL_PIECES,"
                                "EXP_DENSE_NODES_PER_EVAL,EXP_HULL_CONTROL_CHECKS_PER_EVAL,"
                                "EXP_DENSE_INTEGRAL_MS,EXP_CONTROL_POINT_FUNCTIONAL_MS,"
                                "EXP_MINCO_EVALUATION_MS,EXP_LBFGS_MS,"

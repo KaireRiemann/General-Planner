@@ -20,6 +20,7 @@
 #include <opencv2/opencv.hpp>
 #include <general_core/exploration/exploration_utils/pointcloud_topo/graph.h>
 #include <general_core/exploration/highspeed/planner_manager.h>
+#include <general_core/exploration/highspeed/swarm_exploration_coordinator.h>
 #include <ros/ros.h>
 #include <vector>
 using Eigen::Vector3d;
@@ -74,6 +75,7 @@ public:
 
   shared_ptr<FastPlannerManager> planner_manager_;
   CoverageGuidanceManager::Ptr coverage_guidance_;
+  SwarmExplorationCoordinator::Ptr swarm_coordinator_;
   // ViewpointForest::Ptr vps_forest_;
   double getPathCost(TopoNode::Ptr &n1, Eigen::Vector3d v1, float &yaw1, TopoNode::Ptr &n2, float &yaw2);
   EdgeSafetyCost getPathEdgeCost(TopoNode::Ptr &n1,

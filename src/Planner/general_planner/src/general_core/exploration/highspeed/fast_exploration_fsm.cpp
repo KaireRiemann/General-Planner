@@ -45,6 +45,23 @@ FastExplorationFSM::~FastExplorationFSM() {
 
 void FastExplorationFSM::FSMCallback(const ros::TimerEvent &e) {
   pubState();
+  if (expl_manager_->swarm_coordinator_ &&
+      expl_manager_->swarm_coordinator_->enabled()) {
+    int priority_robot = -1;
+    if (expl_manager_->swarm_coordinator_->consumeYieldRequest(
+            &priority_robot) &&
+        (state_ == EXEC_TRAJ || state_ == PLAN_TRAJ)) {
+      ROS_ERROR_STREAM("[swarm safety] yield to priority robot="
+                       << priority_robot);
+      expl_manager_->swarm_coordinator_->releaseCurrentTask(
+          "trajectory priority conflict");
+      expl_manager_->ed_->global_tour_.clear();
+      expl_manager_->ed_->path_next_goal_.clear();
+      stopTraj("swarm priority conflict");
+      transitState(PLAN_TRAJ, "swarm priority yield", true);
+      return;
+    }
+  }
   switch (state_) {
   case INIT: {
     if (!fd_->have_odom_) {
@@ -99,7 +116,32 @@ void FastExplorationFSM::FSMCallback(const ros::TimerEvent &e) {
     if (!safe) {
       stopTraj("FINISH collision guard");
     }
-    ROS_WARN_THROTTLE(1.0, "Finished.");
+    if (expl_manager_->swarm_coordinator_ &&
+        expl_manager_->swarm_coordinator_->enabled()) {
+      const bool local_frontier_resumed =
+          expl_manager_->frontier_manager_ptr_ &&
+          expl_manager_->frontier_manager_ptr_->reachableClusterCount() > 0;
+      if (local_frontier_resumed ||
+          expl_manager_->swarm_coordinator_->hasLocallyActionableTask()) {
+        resetFinishGate("swarm/local task resumed");
+        expl_manager_->ed_->global_tour_.clear();
+        expl_manager_->ed_->path_next_goal_.clear();
+        global_path_update_timer_.start();
+        transitState(PLAN_TRAJ, "swarm task resumed");
+        break;
+      }
+      if (expl_manager_->swarm_coordinator_->teamFinishReady()) {
+        ROS_WARN_STREAM_THROTTLE(
+            1.0, "[swarm finish] TEAM_FINISH "
+                     << expl_manager_->swarm_coordinator_->statusString());
+      } else {
+        ROS_WARN_STREAM_THROTTLE(
+            1.0, "[swarm finish] LOCAL_CONVERGED; wait for team: "
+                     << expl_manager_->swarm_coordinator_->statusString());
+      }
+    } else {
+      ROS_WARN_THROTTLE(1.0, "Finished.");
+    }
     break;
   }
 
@@ -147,6 +189,22 @@ void FastExplorationFSM::FSMCallback(const ros::TimerEvent &e) {
              (ros::Time::now() - tplan).toSec() * 1000.0);
 
     if (res == SUCCEED) {
+      if (expl_manager_->swarm_coordinator_ &&
+          expl_manager_->swarm_coordinator_->enabled()) {
+        int conflicting_robot = -1;
+        if (!expl_manager_->swarm_coordinator_->validateAndCommitTrajectory(
+                fd_->newest_traj_, &conflicting_robot)) {
+          ROS_ERROR_STREAM("[swarm safety] reject trajectory conflicting with "
+                           "priority robot=" << conflicting_robot);
+          expl_manager_->swarm_coordinator_->releaseCurrentTask(
+              "commit-time trajectory conflict");
+          expl_manager_->ed_->global_tour_.clear();
+          expl_manager_->ed_->path_next_goal_.clear();
+          stopTraj("swarm commit conflict");
+          transitState(PLAN_TRAJ, "swarm trajectory rejected", true);
+          break;
+        }
+      }
       fd_->consecutive_plan_failures_ = 0;
       fd_->stationary_failure_refreshes_ = 0;
       fd_->next_plan_retry_time_ = ros::Time(0);

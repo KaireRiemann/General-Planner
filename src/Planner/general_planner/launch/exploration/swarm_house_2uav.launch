@@ -1,0 +1,137 @@
+<launch>
+  <!-- Two complete single-UAV explorers plus an in-process decentralized
+       coordination plane.  No central allocator is required. -->
+  <arg name="simulation" default="true" />
+  <arg name="rviz" default="true" />
+  <arg name="auto_start" default="false" />
+  <arg name="auto_start_delay" default="2.0" />
+  <!-- Both explorers subscribe to the standard RViz 2D Nav Goal topic.  The
+       clicked position is intentionally used only as a synchronized start
+       trigger; each robot still selects its own exploration goal. -->
+  <arg name="trigger_topic" default="/move_base_simple/goal" />
+  <arg name="mission_epoch" default="1" />
+  <arg name="exploration_config"
+       default="$(find general_planner)/config/exploration_house.yaml" />
+  <arg name="swarm_config"
+       default="$(find general_planner)/config/swarm_exploration/common.yaml" />
+  <arg name="rviz_config"
+       default="$(find general_planner)/config/swarm_exploration/swarm_exploration.rviz" />
+  <arg name="rog_map_config"
+       default="$(find general_planner)/config/exploration_rog_map.yaml" />
+  <arg name="drone0_sim_config"
+       default="$(find general_planner)/config/swarm_exploration/house_drone0_sim.yaml" />
+  <arg name="drone1_sim_config"
+       default="$(find general_planner)/config/swarm_exploration/house_drone1_sim.yaml" />
+
+  <group ns="swarm0">
+    <node if="$(arg simulation)" pkg="perfect_drone_sim" type="perfect_drone"
+          name="perfect_drone" output="screen" clear_params="true">
+      <param name="config_path" value="$(arg drone0_sim_config)" type="string" />
+    </node>
+    <node pkg="general_planner" type="exploration_node" name="exploration_node"
+          output="screen" clear_params="true">
+      <rosparam file="$(arg exploration_config)" command="load" />
+      <rosparam file="$(arg swarm_config)" command="load" />
+      <param name="swarm_exploration/robot_id" value="0" type="int" />
+      <param name="swarm_exploration/team_size" value="2" type="int" />
+      <param name="swarm_exploration/mission_epoch" value="$(arg mission_epoch)" type="int" />
+      <param name="odometry_topic" value="/swarm0/lidar_slam/odom" type="string" />
+      <param name="cloud_topic" value="/swarm0/cloud_registered" type="string" />
+      <param name="RogMapEnable" value="true" type="bool" />
+      <param name="RogMapConfigPath" value="$(arg rog_map_config)" type="string" />
+      <param name="fsm/auto_trigger" value="$(arg auto_start)" type="bool" />
+      <param name="fsm/auto_trigger_delay" value="$(arg auto_start_delay)" type="double" />
+      <param name="fsm/trigger_topic" value="$(arg trigger_topic)" type="string" />
+      <param name="exploration/tsp_dir" value="/tmp/swarm0" type="string" />
+      <param name="bubble_astar/allocate_num" value="1000000" type="int" />
+      <param name="bubble_astar/lambda_heu" value="100.0" type="double" />
+      <param name="bubble_astar/debug" value="false" type="bool" />
+      <remap from="/planning/trajectory" to="/swarm0/planning/trajectory" />
+      <remap from="/planning/yaw_trajectory" to="/swarm0/planning/yaw_trajectory" />
+      <remap from="/planning/heartbeat" to="/swarm0/planning/heartbeat" />
+      <remap from="/planning/replan" to="/swarm0/planning/replan" />
+      <remap from="/planning/new" to="/swarm0/planning/new" />
+      <remap from="/planning/static" to="/swarm0/planning/static" />
+      <remap from="/planning/state" to="/swarm0/planning/state" />
+      <remap from="/planning/speed" to="/swarm0/planning/speed" />
+      <remap from="/global_tour" to="/swarm0/global_tour" />
+      <remap from="/viz_graph_topic" to="/swarm0/viz_graph_topic" />
+      <remap from="/visualizer/trajectory" to="/swarm0/visualizer/trajectory" />
+      <remap from="/visualizer/edge" to="/swarm0/visualizer/edge" />
+      <remap from="/visualizer/mesh" to="/swarm0/visualizer/mesh" />
+    </node>
+    <node pkg="general_planner" type="highspeed_traj_server" name="traj_server"
+          output="screen">
+      <param name="odometry_topic" value="/swarm0/lidar_slam/odom" type="string" />
+      <param name="replan_time" value="0.25" type="double" />
+      <param name="heartbeat_timeout" value="1.5" type="double" />
+      <remap from="/planning/trajectory" to="/swarm0/planning/trajectory" />
+      <remap from="/planning/yaw_trajectory" to="/swarm0/planning/yaw_trajectory" />
+      <remap from="/planning/heartbeat" to="/swarm0/planning/heartbeat" />
+      <remap from="/planning/replan" to="/swarm0/planning/replan" />
+      <remap from="/planning/new" to="/swarm0/planning/new" />
+      <remap from="/planning/pos_cmd" to="/swarm0/planning/pos_cmd" />
+      <remap from="/planning/position_cmd_vis" to="/swarm0/planning/position_cmd_vis" />
+      <remap from="/planning/travel_traj" to="/swarm0/planning/travel_traj" />
+    </node>
+  </group>
+
+  <group ns="swarm1">
+    <node if="$(arg simulation)" pkg="perfect_drone_sim" type="perfect_drone"
+          name="perfect_drone" output="screen" clear_params="true">
+      <param name="config_path" value="$(arg drone1_sim_config)" type="string" />
+    </node>
+    <node pkg="general_planner" type="exploration_node" name="exploration_node"
+          output="screen" clear_params="true">
+      <rosparam file="$(arg exploration_config)" command="load" />
+      <rosparam file="$(arg swarm_config)" command="load" />
+      <param name="swarm_exploration/robot_id" value="1" type="int" />
+      <param name="swarm_exploration/team_size" value="2" type="int" />
+      <param name="swarm_exploration/mission_epoch" value="$(arg mission_epoch)" type="int" />
+      <param name="odometry_topic" value="/swarm1/lidar_slam/odom" type="string" />
+      <param name="cloud_topic" value="/swarm1/cloud_registered" type="string" />
+      <param name="RogMapEnable" value="true" type="bool" />
+      <param name="RogMapConfigPath" value="$(arg rog_map_config)" type="string" />
+      <param name="fsm/auto_trigger" value="$(arg auto_start)" type="bool" />
+      <param name="fsm/auto_trigger_delay" value="$(arg auto_start_delay)" type="double" />
+      <param name="fsm/trigger_topic" value="$(arg trigger_topic)" type="string" />
+      <param name="exploration/tsp_dir" value="/tmp/swarm1" type="string" />
+      <param name="bubble_astar/allocate_num" value="1000000" type="int" />
+      <param name="bubble_astar/lambda_heu" value="100.0" type="double" />
+      <param name="bubble_astar/debug" value="false" type="bool" />
+      <remap from="/planning/trajectory" to="/swarm1/planning/trajectory" />
+      <remap from="/planning/yaw_trajectory" to="/swarm1/planning/yaw_trajectory" />
+      <remap from="/planning/heartbeat" to="/swarm1/planning/heartbeat" />
+      <remap from="/planning/replan" to="/swarm1/planning/replan" />
+      <remap from="/planning/new" to="/swarm1/planning/new" />
+      <remap from="/planning/static" to="/swarm1/planning/static" />
+      <remap from="/planning/state" to="/swarm1/planning/state" />
+      <remap from="/planning/speed" to="/swarm1/planning/speed" />
+      <remap from="/global_tour" to="/swarm1/global_tour" />
+      <remap from="/viz_graph_topic" to="/swarm1/viz_graph_topic" />
+      <remap from="/visualizer/trajectory" to="/swarm1/visualizer/trajectory" />
+      <remap from="/visualizer/edge" to="/swarm1/visualizer/edge" />
+      <remap from="/visualizer/mesh" to="/swarm1/visualizer/mesh" />
+    </node>
+    <node pkg="general_planner" type="highspeed_traj_server" name="traj_server"
+          output="screen">
+      <param name="odometry_topic" value="/swarm1/lidar_slam/odom" type="string" />
+      <param name="replan_time" value="0.25" type="double" />
+      <param name="heartbeat_timeout" value="1.5" type="double" />
+      <remap from="/planning/trajectory" to="/swarm1/planning/trajectory" />
+      <remap from="/planning/yaw_trajectory" to="/swarm1/planning/yaw_trajectory" />
+      <remap from="/planning/heartbeat" to="/swarm1/planning/heartbeat" />
+      <remap from="/planning/replan" to="/swarm1/planning/replan" />
+      <remap from="/planning/new" to="/swarm1/planning/new" />
+      <remap from="/planning/pos_cmd" to="/swarm1/planning/pos_cmd" />
+      <remap from="/planning/position_cmd_vis" to="/swarm1/planning/position_cmd_vis" />
+      <remap from="/planning/travel_traj" to="/swarm1/planning/travel_traj" />
+    </node>
+  </group>
+
+  <node if="$(arg rviz)" pkg="rviz" type="rviz" name="swarm_exploration_rviz"
+        output="log" args="-d $(arg rviz_config)" />
+  <node if="$(arg rviz)" pkg="tf" type="static_transform_publisher"
+        name="swarm_exploration_world_tf"
+        args="0 0 0 0 0 0 world navigation 100" />
+</launch>
