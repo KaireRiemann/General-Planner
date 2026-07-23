@@ -221,6 +221,14 @@ target_link_libraries(convex_hull_self_test
         general_planner_core
 )
 
+add_executable(convex_hull_convergence_benchmark
+        Tests/convex_hull_convergence_benchmark.cpp
+)
+target_include_directories(convex_hull_convergence_benchmark PRIVATE include)
+target_link_libraries(convex_hull_convergence_benchmark
+        general_planner_core
+)
+
 add_executable(fsm_node
         Apps/fsm_node_ros1.cpp
 )

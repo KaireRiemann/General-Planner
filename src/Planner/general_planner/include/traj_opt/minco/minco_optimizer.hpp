@@ -119,6 +119,25 @@ namespace optimizer_traits
   };
 
   /**
+   * Optional post-integral sample-cost gate. This is intentionally separate
+   * from usesDenseSampling(): a manager may need quadrature while having no
+   * discrete evaluateSample() term. Returning false lets MINCO avoid retaining
+   * samples and performing an all-zero sample-gradient backpropagation.
+   */
+  template <typename T, typename = void>
+  struct HasSampleCostQuery : std::false_type
+  {
+  };
+
+  template <typename T>
+  struct HasSampleCostQuery<
+      T,
+      void_t<decltype(static_cast<bool>(
+          std::declval<const T &>().usesSampleCost()))>> : std::true_type
+  {
+  };
+
+  /**
    * Optional direct coefficient/time cost interface:
    *
    * double evaluateCoefficient(const Trajectory &trajectory,
@@ -234,8 +253,10 @@ public:
     BoundaryState grad_by_tail_state;
 
     SampleBuffer samples;
+    SampleBuffer discrete_samples;
     Eigen::Matrix<double, DIM, Eigen::Dynamic> sample_grad_p;
     Eigen::VectorXd sample_grad_t_global;
+    Eigen::VectorXd global_time_grad;
 
     void resize(int piece_num)
     {
@@ -252,6 +273,7 @@ public:
       gdT_time.resize(piece_num);
       grad_by_points.resize(DIM, std::max(0, piece_num - 1));
       grad_by_times.resize(piece_num);
+      global_time_grad.resize(piece_num);
       grad_by_head_state.setZero();
       grad_by_tail_state.setZero();
     }
@@ -264,6 +286,7 @@ public:
         active_spatial_map_(&default_spatial_map_)
   {
     workspace_ = std::make_unique<Workspace>();
+    setSamplesPerPiece(samples_per_piece_);
   }
 
   void setTimeMap(const TimeMap *time_map)
@@ -284,6 +307,16 @@ public:
   void setSamplesPerPiece(int samples_per_piece)
   {
     samples_per_piece_ = std::max(1, samples_per_piece);
+    sample_alphas_.resize(static_cast<std::size_t>(samples_per_piece_ + 1));
+    sample_trap_weights_.resize(static_cast<std::size_t>(samples_per_piece_ + 1));
+    const double inv_K = 1.0 / static_cast<double>(samples_per_piece_);
+    for (int k = 0; k <= samples_per_piece_; ++k)
+    {
+      sample_alphas_[static_cast<std::size_t>(k)] =
+          static_cast<double>(k) * inv_K;
+      sample_trap_weights_[static_cast<std::size_t>(k)] =
+          (k == 0 || k == samples_per_piece_) ? 0.5 : 1.0;
+    }
   }
 
   void setUniformTimeMode(bool enabled)
@@ -809,10 +842,18 @@ private:
       }
     }
 
-    workspace_->samples.reserve(piece_num_ * samples_per_piece_ + 1);
+    bool retain_samples = true;
+    if constexpr (optimizer_traits::HasSampleCostQuery<Manager>::value)
+    {
+      retain_samples = cost_manager.usesSampleCost();
+    }
+    if (retain_samples)
+    {
+      workspace_->samples.reserve(piece_num_ * samples_per_piece_ + 1);
+    }
 
     const auto &coeffs = traj_.getCoefficients();
-    Eigen::VectorXd global_time_grad = Eigen::VectorXd::Zero(piece_num_);
+    workspace_->global_time_grad.setZero();
 
     double seg_start_time = 0.0;
     for (int i = 0; i < piece_num_; ++i)
@@ -825,9 +866,10 @@ private:
 
       for (int k = 0; k <= samples_per_piece_; ++k)
       {
-        const double alpha = static_cast<double>(k) * inv_K;
+        const double alpha = sample_alphas_[static_cast<std::size_t>(k)];
         const double t = alpha * T;
-        const double trap_weight = (k == 0 || k == samples_per_piece_) ? 0.5 : 1.0;
+        const double trap_weight =
+            sample_trap_weights_[static_cast<std::size_t>(k)];
         const double common_weight = trap_weight * dt;
         const double t_global = seg_start_time + t;
         const int logical_idx = i * samples_per_piece_ + k;
@@ -867,9 +909,9 @@ private:
         workspace_->gdT_integral(i) += c_val * trap_weight * inv_K;
         workspace_->gdT_integral(i) += (gp.dot(v) + gv.dot(a) + ga.dot(j) + gj.dot(s)) * alpha * common_weight;
         workspace_->gdT_integral(i) += gt * alpha * common_weight;
-        global_time_grad(i) += gt * common_weight;
+        workspace_->global_time_grad(i) += gt * common_weight;
 
-        if (k > 0 || i == 0)
+        if (retain_samples && (k > 0 || i == 0))
         {
           Sample sample;
           sample.seg_idx = i;
@@ -893,7 +935,7 @@ private:
     double accumulator = 0.0;
     for (int i = piece_num_ - 1; i > 0; --i)
     {
-      accumulator += global_time_grad(i);
+      accumulator += workspace_->global_time_grad(i);
       workspace_->gdT_integral(i - 1) += accumulator;
     }
   }
@@ -905,6 +947,13 @@ private:
     workspace_->gdT_sample.setZero();
 
     using Manager = typename std::decay<CostManager>::type;
+    if constexpr (optimizer_traits::HasSampleCostQuery<Manager>::value)
+    {
+      if (!cost_manager.usesSampleCost())
+      {
+        return;
+      }
+    }
     if constexpr (optimizer_traits::HasDenseSamplingQuery<Manager>::value)
     {
       if (!cost_manager.usesDenseSampling())
@@ -913,14 +962,14 @@ private:
       }
     }
 
-    SampleBuffer discrete_samples;
     const SampleBuffer *active_samples = &workspace_->samples;
     constexpr bool uses_absolute_sample_times =
         optimizer_traits::HasDiscreteSampleTimes<typename std::decay<CostManager>::type>::value;
     if constexpr (uses_absolute_sample_times)
     {
-      buildAbsoluteTimeSamples(cost_manager.discreteSampleTimes(), discrete_samples);
-      active_samples = &discrete_samples;
+      buildAbsoluteTimeSamples(cost_manager.discreteSampleTimes(),
+                               workspace_->discrete_samples);
+      active_samples = &workspace_->discrete_samples;
     }
 
     const Eigen::Index sample_count = static_cast<Eigen::Index>(active_samples->size());
@@ -933,7 +982,7 @@ private:
                                         workspace_->sample_grad_p,
                                         workspace_->sample_grad_t_global);
 
-    Eigen::VectorXd global_time_grad = Eigen::VectorXd::Zero(piece_num_);
+    workspace_->global_time_grad.setZero();
     for (Eigen::Index sample_idx = 0; sample_idx < sample_count; ++sample_idx)
     {
       const auto &sample = (*active_samples)[sample_idx];
@@ -957,7 +1006,7 @@ private:
 
         const double grad_time = workspace_->sample_grad_t_global(sample_idx);
         workspace_->gdT_sample(sample.seg_idx) += grad_time * sample.alpha;
-        global_time_grad(sample.seg_idx) += grad_time;
+        workspace_->global_time_grad(sample.seg_idx) += grad_time;
       }
     }
 
@@ -966,7 +1015,7 @@ private:
       double accumulator = 0.0;
       for (int i = piece_num_ - 1; i > 0; --i)
       {
-        accumulator += global_time_grad(i);
+        accumulator += workspace_->global_time_grad(i);
         workspace_->gdT_sample(i - 1) += accumulator;
       }
     }
@@ -1092,6 +1141,8 @@ private:
   BoundaryState nominal_tail_state_{BoundaryState::Zero()};
   int piece_num_{0};
   int samples_per_piece_{5};
+  std::vector<double> sample_alphas_;
+  std::vector<double> sample_trap_weights_;
   double rho_energy_{1.0};
   bool uniform_time_mode_{false};
   double last_energy_cost_{0.0};

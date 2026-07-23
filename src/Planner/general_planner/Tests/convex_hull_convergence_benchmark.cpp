@@ -1,0 +1,611 @@
+#include "traj_opt/convex_hull/convex_hull.hpp"
+#include "traj_opt/costfunctional_manager/exp_convex_cost_manager.hpp"
+#include "traj_opt/costfunctional_manager/exp_integal_cost_manager.hpp"
+#include "traj_opt/minco/minco_optimizer.hpp"
+#include "utils/optimization/lbfgs.h"
+
+#include <Eigen/Dense>
+
+#include <algorithm>
+#include <array>
+#include <chrono>
+#include <cmath>
+#include <iomanip>
+#include <iostream>
+#include <limits>
+#include <string>
+#include <vector>
+
+namespace
+{
+
+struct ExpTimeMap
+{
+  double toTime(double tau) const { return std::exp(tau); }
+  double toTau(double time) const { return std::log(time); }
+  double backward(double, double time, double grad_time) const
+  {
+    return time * grad_time;
+  }
+};
+
+struct IdentitySpatialMap
+{
+  int getUnconstrainedDim(int) const { return 3; }
+
+  Eigen::Vector3d toPhysical(const Eigen::VectorXd &x, int) const
+  {
+    return x.head<3>();
+  }
+
+  Eigen::VectorXd toUnconstrained(const Eigen::Vector3d &p, int) const
+  {
+    return p;
+  }
+
+  Eigen::VectorXd backwardGrad(const Eigen::VectorXd &,
+                               const Eigen::Vector3d &gradient,
+                               int) const
+  {
+    return gradient;
+  }
+
+  void addNormPenalty(const Eigen::VectorXd &,
+                      double &,
+                      Eigen::VectorXd &) const
+  {
+  }
+};
+
+struct LinearTimeCost
+{
+  double weight{1.0};
+
+  double operator()(const std::vector<double> &times,
+                    Eigen::VectorXd &gradient) const
+  {
+    gradient.setConstant(static_cast<Eigen::Index>(times.size()), weight);
+    double total = 0.0;
+    for (const double time : times)
+    {
+      total += time;
+    }
+    return weight * total;
+  }
+};
+
+enum class Mode
+{
+  DENSE = 0,
+  V1 = 1,
+  V2 = 2
+};
+
+const char *modeName(Mode mode)
+{
+  switch (mode)
+  {
+    case Mode::DENSE:
+      return "dense";
+    case Mode::V1:
+      return "depth2_v1";
+    case Mode::V2:
+      return "depth2_v2";
+  }
+  return "unknown";
+}
+
+using Optimizer =
+    minco::MINCOOptimizer<3, 4, ExpTimeMap, IdentitySpatialMap>;
+using Hull = traj_opt::convex_hull::Representation<3>;
+
+struct ContinuousMetrics
+{
+  double sampled_violation{0.0};
+  double certificate_violation{0.0};
+};
+
+struct RunResult
+{
+  Mode mode{Mode::DENSE};
+  int case_id{0};
+  int status{0};
+  std::size_t evaluations{0};
+  std::size_t iterations{0};
+  std::size_t line_search_evaluations{0};
+  int first_sampled_feasible_iteration{-1};
+  int first_certified_iteration{-1};
+  double initial_cost{0.0};
+  double final_cost{0.0};
+  double initial_gradient_inf{0.0};
+  double final_gradient_inf{0.0};
+  double sampled_violation{0.0};
+  double certificate_violation{0.0};
+  double evaluation_seconds{0.0};
+  double dense_seconds{0.0};
+  double coefficient_seconds{0.0};
+  double solver_seconds{0.0};
+};
+
+class PairedProblem
+{
+public:
+  PairedProblem(int case_id, Mode mode)
+      : case_id_(case_id), mode_(mode)
+  {
+    constexpr int pieces = 4;
+    const double amplitude = 0.68 + 0.08 * static_cast<double>(case_id);
+    const double corridor_half_width =
+        0.32 + 0.025 * static_cast<double>(case_id % 3);
+
+    times_ = {0.82, 0.76, 0.88, 0.80};
+    waypoints_.resize(pieces + 1, 3);
+    waypoints_ <<
+        0.0, 0.0, 0.0,
+        1.0, amplitude, 0.04,
+        2.0, -0.92 * amplitude, -0.03,
+        3.0, 0.82 * amplitude, 0.02,
+        4.0, 0.0, 0.0;
+
+    Optimizer::BoundaryState head = Optimizer::BoundaryState::Zero();
+    Optimizer::BoundaryState tail = Optimizer::BoundaryState::Zero();
+    head.col(0) = waypoints_.row(0).transpose();
+    tail.col(0) = waypoints_.row(pieces).transpose();
+
+    optimizer_.setEnergyWeight(0.02);
+    optimizer_.setSamplesPerPiece(15);
+    optimizer_.setTimingEnabled(true);
+    optimizer_.setInitState(times_, waypoints_, head, tail);
+    x0_ = optimizer_.generateInitialGuess();
+
+    corridors_.resize(1);
+    corridors_[0].resize(6, 4);
+    corridors_[0] <<
+        1.0, 0.0, 0.0, -10.0,
+        -1.0, 0.0, 0.0, -10.0,
+        0.0, 1.0, 0.0, -corridor_half_width,
+        0.0, -1.0, 0.0, -corridor_half_width,
+        0.0, 0.0, 1.0, -1.0,
+        0.0, 0.0, -1.0, -1.0;
+    corridor_indices_.setZero(pieces);
+
+    magnitude_bounds_.resize(6);
+    magnitude_bounds_ << 2.6, 6.0, 25.0, 50.0, 0.1, 100.0;
+    penalty_weights_ = general_utils::VecDf::Zero(7);
+    penalty_weights_(0) = 2.0e4;
+    penalty_weights_(1) = 2.0e2;
+    penalty_weights_(2) = 2.0e1;
+
+    flatness_map_.reset(1.0, 9.81, 0.0, 0.0, 0.0, 1.0e-4);
+    dense_manager_.reset(&corridors_,
+                         &corridor_indices_,
+                         nullptr,
+                         nullptr,
+                         1.0e-2,
+                         magnitude_bounds_,
+                         penalty_weights_,
+                         &flatness_map_,
+                         swarm_config_,
+                         swarm_trajectories_,
+                         0.0);
+    convex_manager_.configure(
+        traj_opt::convex_hull::Basis::Bezier,
+        2,
+        mode_ == Mode::V1 ? 1 : 2);
+    convex_manager_.reset(&corridors_,
+                          &corridor_indices_,
+                          nullptr,
+                          nullptr,
+                          1.0e-2,
+                          magnitude_bounds_,
+                          penalty_weights_,
+                          &flatness_map_,
+                          swarm_config_,
+                          swarm_trajectories_,
+                          0.0);
+    corridor_half_width_ = corridor_half_width;
+  }
+
+  RunResult run()
+  {
+    RunResult result;
+    result.mode = mode_;
+    result.case_id = case_id_;
+
+    Eigen::VectorXd x = x0_;
+    Eigen::VectorXd gradient = Eigen::VectorXd::Zero(x.size());
+    result.initial_cost = evaluateImpl(x, gradient, false);
+    result.initial_gradient_inf = gradient.lpNorm<Eigen::Infinity>();
+    const auto initial_metrics = continuousMetrics(x);
+    if (initial_metrics.sampled_violation <= feasibility_tolerance_)
+    {
+      first_sampled_feasible_iteration_ = 0;
+    }
+    if (initial_metrics.certificate_violation <= feasibility_tolerance_)
+    {
+      first_certified_iteration_ = 0;
+    }
+
+    evaluations_ = 0;
+    iterations_ = 0;
+    line_search_evaluations_ = 0;
+    optimizer_.resetTimingStatistics();
+
+    math_utils::lbfgs::lbfgs_parameter_t parameters;
+    parameters.mem_size = 64;
+    parameters.past = 3;
+    parameters.g_epsilon = 0.0;
+    parameters.delta = 5.0e-6;
+    parameters.min_step = 1.0e-32;
+    parameters.max_iterations = 600;
+
+    double minimum = result.initial_cost;
+    const auto solver_begin = std::chrono::steady_clock::now();
+    result.status = math_utils::lbfgs::lbfgs_optimize(
+        x,
+        minimum,
+        &PairedProblem::evaluateCallback,
+        nullptr,
+        &PairedProblem::progressCallback,
+        this,
+        parameters);
+    result.solver_seconds =
+        std::chrono::duration<double>(
+            std::chrono::steady_clock::now() - solver_begin)
+            .count() -
+        monitor_seconds_;
+
+    gradient.setZero();
+    result.final_cost = evaluateImpl(x, gradient, false);
+    result.final_gradient_inf = gradient.lpNorm<Eigen::Infinity>();
+    const auto final_metrics = continuousMetrics(x);
+    result.sampled_violation = final_metrics.sampled_violation;
+    result.certificate_violation = final_metrics.certificate_violation;
+    result.evaluations = evaluations_;
+    result.iterations = iterations_;
+    result.line_search_evaluations = line_search_evaluations_;
+    result.first_sampled_feasible_iteration =
+        first_sampled_feasible_iteration_;
+    result.first_certified_iteration = first_certified_iteration_;
+
+    const auto timing = optimizer_.cumulativeTimingStatistics();
+    result.evaluation_seconds = timing.evaluation_seconds;
+    result.dense_seconds = timing.dense_integral_seconds;
+    result.coefficient_seconds = timing.coefficient_seconds;
+    return result;
+  }
+
+private:
+  static double evaluateCallback(void *instance,
+                                 const Eigen::VectorXd &x,
+                                 Eigen::VectorXd &gradient)
+  {
+    auto *self = static_cast<PairedProblem *>(instance);
+    return self->evaluateImpl(x, gradient, true);
+  }
+
+  static int progressCallback(void *instance,
+                              const Eigen::VectorXd &x,
+                              const Eigen::VectorXd &,
+                              double,
+                              double,
+                              int,
+                              int line_search_evaluations)
+  {
+    auto *self = static_cast<PairedProblem *>(instance);
+    const auto monitor_begin = std::chrono::steady_clock::now();
+    ++self->iterations_;
+    self->line_search_evaluations_ +=
+        static_cast<std::size_t>(std::max(0, line_search_evaluations));
+    const auto metrics = self->continuousMetrics(x);
+    if (self->first_sampled_feasible_iteration_ < 0 &&
+        metrics.sampled_violation <= self->feasibility_tolerance_)
+    {
+      self->first_sampled_feasible_iteration_ =
+          static_cast<int>(self->iterations_);
+    }
+    if (self->first_certified_iteration_ < 0 &&
+        metrics.certificate_violation <= self->feasibility_tolerance_)
+    {
+      self->first_certified_iteration_ =
+          static_cast<int>(self->iterations_);
+    }
+    self->monitor_seconds_ +=
+        std::chrono::duration<double>(
+            std::chrono::steady_clock::now() - monitor_begin)
+            .count();
+    return 0;
+  }
+
+  double evaluateImpl(const Eigen::VectorXd &x,
+                      Eigen::VectorXd &gradient,
+                      bool count)
+  {
+    if (count)
+    {
+      ++evaluations_;
+    }
+    if (mode_ == Mode::DENSE)
+    {
+      return optimizer_.evaluate(x, gradient, time_cost_, dense_manager_);
+    }
+    return optimizer_.evaluate(x, gradient, time_cost_, convex_manager_);
+  }
+
+  ContinuousMetrics continuousMetrics(const Eigen::VectorXd &x)
+  {
+    ContinuousMetrics metrics;
+    if (!optimizer_.updateTrajectoryFromDecisionVector(x))
+    {
+      metrics.sampled_violation = std::numeric_limits<double>::infinity();
+      metrics.certificate_violation =
+          std::numeric_limits<double>::infinity();
+      return metrics;
+    }
+
+    const auto &trajectory = optimizer_.getTrajectory();
+    const double total_time = trajectory.getTotalDuration();
+    constexpr int samples = 4096;
+    for (int i = 0; i <= samples; ++i)
+    {
+      const double time =
+          total_time * static_cast<double>(i) /
+          static_cast<double>(samples);
+      const Eigen::Vector3d position = trajectory.getPos(time);
+      const Eigen::Vector3d velocity = trajectory.getVel(time);
+      const Eigen::Vector3d acceleration = trajectory.getAcc(time);
+      metrics.sampled_violation = std::max(
+          metrics.sampled_violation,
+          std::max({std::abs(position.y()) - corridor_half_width_,
+                    position.z() - 1.0,
+                    -position.z() - 1.0,
+                    velocity.norm() - magnitude_bounds_(0),
+                    acceleration.norm() - magnitude_bounds_(1)}));
+    }
+    metrics.sampled_violation = std::max(0.0, metrics.sampled_violation);
+
+    constexpr int certificate_depth = 6;
+    for (int derivative = 0; derivative <= 2; ++derivative)
+    {
+      Hull hull;
+      hull.resetTopology(trajectory.getPieceNum(),
+                         Optimizer::TrajType::COEFF_NUM,
+                         traj_opt::convex_hull::Basis::Bezier,
+                         derivative,
+                         certificate_depth);
+      trajectory.updateConvexHull(hull);
+      if (derivative == 0)
+      {
+        for (Eigen::Index row = 0; row < hull.controls().rows(); ++row)
+        {
+          const auto control = hull.controls().row(row);
+          metrics.certificate_violation = std::max(
+              metrics.certificate_violation,
+              std::max({std::abs(control.y()) - corridor_half_width_,
+                        control.z() - 1.0,
+                        -control.z() - 1.0}));
+        }
+      }
+      else
+      {
+        const double bound = magnitude_bounds_(derivative - 1);
+        for (Eigen::Index row = 0; row < hull.controls().rows(); ++row)
+        {
+          metrics.certificate_violation = std::max(
+              metrics.certificate_violation,
+              hull.controls().row(row).norm() - bound);
+        }
+      }
+    }
+    metrics.certificate_violation =
+        std::max(0.0, metrics.certificate_violation);
+    return metrics;
+  }
+
+  int case_id_{0};
+  Mode mode_{Mode::DENSE};
+  Optimizer optimizer_;
+  std::vector<double> times_;
+  Optimizer::WaypointsType waypoints_;
+  Eigen::VectorXd x0_;
+  general_utils::PolyhedraH corridors_;
+  Eigen::VectorXi corridor_indices_;
+  general_utils::VecDf magnitude_bounds_;
+  general_utils::VecDf penalty_weights_;
+  flatness::FlatnessMap flatness_map_;
+  traj_opt::SwarmPenaltyConfig swarm_config_;
+  traj_opt::SwarmTrajectoriesConstPtr swarm_trajectories_;
+  cost_functional_manager::ExpIntegralCostManager dense_manager_;
+  cost_functional_manager::ExpConvexCostManager convex_manager_;
+  LinearTimeCost time_cost_;
+  double corridor_half_width_{0.35};
+  double feasibility_tolerance_{1.0e-3};
+  std::size_t evaluations_{0};
+  std::size_t iterations_{0};
+  std::size_t line_search_evaluations_{0};
+  int first_sampled_feasible_iteration_{-1};
+  int first_certified_iteration_{-1};
+  double monitor_seconds_{0.0};
+};
+
+struct Aggregate
+{
+  std::size_t runs{0};
+  std::size_t evaluations{0};
+  std::size_t iterations{0};
+  std::size_t line_search_evaluations{0};
+  std::size_t sampled_feasible_runs{0};
+  std::size_t certified_runs{0};
+  double evaluation_seconds{0.0};
+  double dense_seconds{0.0};
+  double coefficient_seconds{0.0};
+  double solver_seconds{0.0};
+  double final_sampled_violation{0.0};
+  double final_certificate_violation{0.0};
+
+  void add(const RunResult &result)
+  {
+    ++runs;
+    evaluations += result.evaluations;
+    iterations += result.iterations;
+    line_search_evaluations += result.line_search_evaluations;
+    sampled_feasible_runs += result.sampled_violation <= 1.0e-3;
+    certified_runs += result.certificate_violation <= 1.0e-3;
+    evaluation_seconds += result.evaluation_seconds;
+    dense_seconds += result.dense_seconds;
+    coefficient_seconds += result.coefficient_seconds;
+    solver_seconds += result.solver_seconds;
+    final_sampled_violation =
+        std::max(final_sampled_violation, result.sampled_violation);
+    final_certificate_violation =
+        std::max(final_certificate_violation,
+                 result.certificate_violation);
+  }
+};
+
+} // namespace
+
+int main()
+{
+  constexpr int cases = 6;
+  const std::array<Mode, 3> modes{
+      Mode::DENSE, Mode::V1, Mode::V2};
+  std::array<Aggregate, 3> aggregates;
+
+  std::cout << std::fixed << std::setprecision(6);
+  std::cout << "case,mode,status,evaluations,iterations,line_search,"
+               "eval_per_iteration,first_sample_feasible,"
+               "first_certified,initial_cost,final_cost,"
+               "initial_grad_inf,final_grad_inf,sampled_violation,"
+               "certificate_violation,evaluation_ms,dense_ms,"
+               "coefficient_ms,solver_ms\n";
+
+  for (int case_id = 0; case_id < cases; ++case_id)
+  {
+    std::array<RunResult, 3> case_results;
+    for (int order = 0; order < 3; ++order)
+    {
+      const int mode_index = (case_id + order) % 3;
+      const Mode mode = modes[mode_index];
+      PairedProblem problem(case_id, mode);
+      case_results[mode_index] = problem.run();
+    }
+
+    const double v1_cost = case_results[1].initial_cost;
+    const double v2_cost = case_results[2].initial_cost;
+    if (std::abs(v1_cost - v2_cost) >
+        1.0e-10 * std::max(1.0, std::abs(v1_cost)))
+    {
+      std::cerr << "V1/V2 initial objectives differ in case "
+                << case_id << std::endl;
+      return 2;
+    }
+
+    for (int mode_index = 0; mode_index < 3; ++mode_index)
+    {
+      const auto &result = case_results[mode_index];
+      aggregates[mode_index].add(result);
+      std::cout << result.case_id << ","
+                << modeName(result.mode) << ","
+                << result.status << ","
+                << result.evaluations << ","
+                << result.iterations << ","
+                << result.line_search_evaluations << ","
+                << (result.iterations > 0
+                        ? static_cast<double>(
+                              result.line_search_evaluations) /
+                              static_cast<double>(result.iterations)
+                        : 0.0)
+                << ","
+                << result.first_sampled_feasible_iteration << ","
+                << result.first_certified_iteration << ","
+                << result.initial_cost << ","
+                << result.final_cost << ","
+                << result.initial_gradient_inf << ","
+                << result.final_gradient_inf << ","
+                << result.sampled_violation << ","
+                << result.certificate_violation << ","
+                << result.evaluation_seconds * 1.0e3 << ","
+                << result.dense_seconds * 1.0e3 << ","
+                << result.coefficient_seconds * 1.0e3 << ","
+                << result.solver_seconds * 1.0e3
+                << "\n";
+    }
+  }
+
+  std::cout << "aggregate,mode,runs,evaluations_per_run,"
+               "iterations_per_run,line_search_per_iteration,"
+               "evaluation_us,dense_us,coefficient_us,solver_ms_per_run,"
+               "sampled_feasible_runs,certified_runs,"
+               "max_sampled_violation,max_certificate_violation\n";
+  for (int mode_index = 0; mode_index < 3; ++mode_index)
+  {
+    const auto &aggregate = aggregates[mode_index];
+    std::cout << "aggregate,"
+              << modeName(modes[mode_index]) << ","
+              << aggregate.runs << ","
+              << static_cast<double>(aggregate.evaluations) /
+                     static_cast<double>(aggregate.runs)
+              << ","
+              << static_cast<double>(aggregate.iterations) /
+                     static_cast<double>(aggregate.runs)
+              << ","
+              << (aggregate.iterations > 0
+                      ? static_cast<double>(
+                            aggregate.line_search_evaluations) /
+                            static_cast<double>(aggregate.iterations)
+                      : 0.0)
+              << ","
+              << aggregate.evaluation_seconds * 1.0e6 /
+                     static_cast<double>(aggregate.evaluations)
+              << ","
+              << aggregate.dense_seconds * 1.0e6 /
+                     static_cast<double>(aggregate.evaluations)
+              << ","
+              << aggregate.coefficient_seconds * 1.0e6 /
+                     static_cast<double>(aggregate.evaluations)
+              << ","
+              << aggregate.solver_seconds * 1.0e3 /
+                     static_cast<double>(aggregate.runs)
+              << ","
+              << aggregate.sampled_feasible_runs << ","
+              << aggregate.certified_runs << ","
+              << aggregate.final_sampled_violation << ","
+              << aggregate.final_certificate_violation
+              << "\n";
+  }
+
+  // A degree-two polynomial is also a valid degree-seven MINCO polynomial.
+  // With 15 intervals (16 nodes), y(u)=4u(1-u) is sampled only at i/15.
+  // The true peak at u=0.5 lies strictly between two nodes.
+  constexpr double safety_bound = 0.998;
+  double sampled_peak = 0.0;
+  for (int i = 0; i <= 15; ++i)
+  {
+    const double u = static_cast<double>(i) / 15.0;
+    sampled_peak = std::max(sampled_peak, 4.0 * u * (1.0 - u));
+  }
+  Hull::Matrix coefficients = Hull::Matrix::Zero(8, 3);
+  coefficients(1, 1) = 4.0;
+  coefficients(2, 1) = -4.0;
+  Eigen::VectorXd duration(1);
+  duration << 1.0;
+  Hull safety_hull;
+  safety_hull.resetTopology(
+      1, 8, traj_opt::convex_hull::Basis::Bezier, 0, 2);
+  safety_hull.update(coefficients, duration);
+  const double hull_peak = safety_hull.controls().col(1).maxCoeff();
+  std::cout << "safety_probe,dense_nodes=16,sampled_peak="
+            << sampled_peak
+            << ",true_peak=1.000000,depth2_hull_peak="
+            << hull_peak
+            << ",bound=" << safety_bound
+            << ",dense_detects="
+            << static_cast<int>(sampled_peak > safety_bound)
+            << ",continuous_violation="
+            << std::max(0.0, 1.0 - safety_bound)
+            << ",hull_detects="
+            << static_cast<int>(hull_peak > safety_bound)
+            << "\n";
+  return 0;
+}

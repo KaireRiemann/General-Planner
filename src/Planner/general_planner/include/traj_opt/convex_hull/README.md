@@ -387,3 +387,118 @@ driven adaptive depth zero/two, active set off, and at least one PHR inner
 solve. Further speedups should target inner-solve continuation or multiplier
 reuse across replans while preserving a fixed constraint topology, rather than
 adding more control-point pruning.
+
+## Paired convergence benchmark
+
+`convex_hull_convergence_benchmark` removes closed-loop replanning variance.
+Six deterministic seventh-degree MINCO problems use exactly the same boundary
+states, initial durations, inner waypoints, corridor and LBFGS parameters for
+the dense, depth-two V1 and depth-two V2 objectives. Every accepted iteration
+is checked by 4096 time samples and by a depth-six Bezier certificate. The
+certificate monitor time is excluded from the reported solver time.
+
+| mode | evaluations / problem | iterations / problem | line searches / iteration | evaluation | solver / problem |
+|---|---:|---:|---:|---:|---:|
+| dense | 30.167 | 28.167 | 1.036 | 8.709 us | 0.271 ms |
+| depth-two V1 | 33.333 | 29.667 | 1.090 | 8.732 us | 0.301 ms |
+| depth-two V2 | 33.333 | 29.667 | 1.090 | 8.380 us | 0.289 ms |
+
+V1 and V2 have identical evaluations, accepted iterations and line-search
+counts on every paired problem, as required by their algebraically identical
+objective and gradient. V2 reduces evaluation cost but cannot improve
+convergence. In these problems depth-two V2 evaluates about 3.8% faster than
+dense, but needs about 10.5% more evaluations, leaving the complete solve about
+6.7% slower. All three modes reach the common sampled and certified tolerance;
+there is no measured convergence advantage for the hull penalty in this set.
+
+The executable also includes a deterministic continuous-safety probe. For
+`y(u)=4u(1-u)`, 16 uniform nodes have maximum `0.995556`, while the true peak
+between nodes is `1.0`. With a bound of `0.998`, dense sampling reports no
+violation, whereas the depth-two Bezier hull fails the safety certificate and,
+for this exact quadratic probe, exposes the actual continuous violation.
+Generally, all hull controls satisfying a convex constraint is a sufficient
+continuous-time safety certificate; a control outside the constraint only means
+that certification failed and can still be a conservative false positive. This
+captures the actual benefit of the hull representation independently of whether
+its penalty objective converges faster.
+
+## Shared LBFGS fast path
+
+The ordinary state2state `ExpTrajOpt` now has a representation-independent fast
+path. It applies unchanged to dense and fixed-depth convex-hull objectives and
+does not alter exploration or SE3 optimization. The implementation:
+
+- skips the post-integral sample buffer and zero-gradient backpropagation when
+  the cost manager has no discrete sample term;
+- skips flatness reverse propagation when both angular-rate and thrust
+  penalties are inactive at a dense node;
+- reuses integral work buffers and precomputes normalized sample locations and
+  trapezoid weights;
+- starts from the guide trajectory timing instead of applying the old fixed
+  `0.8` duration compression;
+- stops LBFGS only after accepted objective, decision and penalty-log changes
+  are jointly stable; and
+- restarts the original LBFGS configuration from the initial decision if the
+  optimistic fast solve encounters a numerical error.
+
+A 25-second closed-loop comparison used the historical goal
+`[69.032, 1.901, 1.500]` and dense sampling in both runs:
+
+| metric | original LBFGS dense | fast LBFGS dense | change |
+|---|---:|---:|---:|
+| optimizer calls | 134 | 144 | +7.46% |
+| objective evaluations | 62,002 | 18,317 | -70.46% |
+| evaluations / call | 462.701 | 127.201 | -72.51% |
+| accepted iterations / call | 269.687 | 55.021 | -79.60% |
+| line-search evaluations / iteration | 1.712 | 2.294 | +34.00% |
+| accumulated LBFGS time | 1130.671 ms | 303.145 ms | **-73.19%** |
+| LBFGS time / call | 8.438 ms | 2.105 ms | -75.05% |
+| planner path length | 103.021 m | 103.360 m | +0.33% |
+| `ExpTrajOpt` failures | 0 | 0 | unchanged |
+
+The measured end-to-end optimization speedup is `3.73x`. All 144 optimized
+calls satisfied the fast-stop stability test, and none needed the numerical
+fallback. A time-step line-search bound was tested but deliberately disabled:
+it increased line-search trials enough to offset its protection. The speedup is
+therefore dominated by avoiding over-solving after the trajectory has
+stabilized, with a smaller contribution from the equivalent dense-kernel
+changes.
+
+### Fast depth-two V2 comparison
+
+The same 25-second closed-loop goal and fast-LBFGS parameters were then used
+with the fixed Bezier depth-two V2 functional. The original dense row is kept
+as the common baseline:
+
+| metric | original dense | fast dense | fast depth2 V2 |
+|---|---:|---:|---:|
+| optimizer calls | 134 | 144 | 138 |
+| objective evaluations | 62,002 | 18,317 | 19,556 |
+| evaluations / call | 462.701 | 127.201 | 141.710 |
+| accepted iterations / call | 269.687 | 55.021 | 62.536 |
+| line-search evaluations / iteration | 1.712 | 2.294 | 2.250 |
+| accumulated LBFGS time | 1130.671 ms | 303.145 ms | 364.646 ms |
+| LBFGS time / call | 8.438 ms | 2.105 ms | 2.642 ms |
+| complete MINCO evaluation time | 1016.101 ms | 298.387 ms | 358.993 ms |
+| residual dense functional time | 837.131 ms | 246.951 ms | 170.447 ms |
+| control-point functional time | 0 ms | 0 ms | 130.004 ms |
+| planner path length | 103.021 m | 103.360 m | 102.446 m |
+| `ExpTrajOpt` failures | 0 | 0 | 0 |
+
+Fast depth-two V2 is `3.10x` faster than the original dense solve in
+accumulated optimization time, demonstrating that the shared fast path also
+works for the hull objective. It is nevertheless 20.3% slower in total and
+25.5% slower per optimizer call than fast dense. Its evaluations cost about
+12.7% more and it performs 11.4% more evaluations per call. The
+control-point functional accounts for 35.65% of its optimization time, while
+the retained dense terms account for another 46.74%. Thus the remaining gap is
+not Bezier basis conversion: it is the extra control-point penalty work and the
+different objective geometry, which requires more accepted iterations.
+
+The different optimizer-call counts are normal closed-loop timing variance, so
+the per-call and per-evaluation columns are the strict kernel comparison. The
+hull construction still has a distinct mathematical purpose: when all Bezier
+controls satisfy a convex corridor, it supplies a sufficient continuous-time
+certificate, whereas dense nodes only certify the sampled instants. The
+current V2 path is a smooth penalty formulation and does not yet impose a
+strict final certificate acceptance test.

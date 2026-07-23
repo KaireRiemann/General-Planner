@@ -1,5 +1,6 @@
 #pragma once
 
+#include <deque>
 #include <fstream>
 #include <limits>
 #include <memory>
@@ -392,6 +393,9 @@ public:
     double dense_share_of_minco_evaluation{0.0};
     double control_point_share_of_minco_evaluation{0.0};
     double dense_share_of_optimization{0.0};
+    bool fast_stop_satisfied{false};
+    std::size_t fast_stop_iteration{0};
+    bool fast_fallback_used{false};
   };
 
   ExpTrajOpt(const traj_opt::Config &cfg,
@@ -447,6 +451,25 @@ private:
     std::size_t max_line_search_evaluations{0};
     double accepted_step_sum{0.0};
     double min_accepted_step{0.0};
+    bool lbfgs_fast_enabled{false};
+    int lbfgs_mem_size{32};
+    bool lbfgs_step_bound_enabled{true};
+    double lbfgs_time_ratio_min{0.5};
+    double lbfgs_time_ratio_max{2.0};
+    int lbfgs_fast_window{5};
+    int lbfgs_fast_min_iterations{20};
+    int lbfgs_fast_consecutive{2};
+    double lbfgs_fast_rel_cost{1.0e-4};
+    double lbfgs_fast_rel_step{2.0e-3};
+    double lbfgs_fast_rel_penalty{5.0e-3};
+    double guide_initial_time_scale{1.0};
+    std::deque<double> accepted_cost_history;
+    VecDf previous_accepted_x;
+    VecDf previous_accepted_penalty;
+    int fast_stop_streak{0};
+    bool fast_stop_satisfied{false};
+    std::size_t fast_stop_iteration{0};
+    bool fast_fallback_used{false};
     int pos_constraint_type{0};
     bool block_energy_cost{false};
     double smooth_eps{0.0};
@@ -513,6 +536,9 @@ private:
                                 double step,
                                 int iteration,
                                 int line_search_evaluations);
+  static double stepBoundFunctional(void *ptr,
+                                    const VecDf &x,
+                                    const VecDf &direction);
 
   bool processCorridor();
   bool processCorridorWithGuideTraj();

@@ -97,6 +97,7 @@ namespace cost_functional_manager
         double guideCostLog() const { return guide_cost_log_; }
         double guideMaxAbsTimeGrad() const { return guide_max_abs_time_grad_; }
         int guideOutOfTimeRangeSamples() const { return guide_out_of_time_range_samples_; }
+        bool usesSampleCost() const { return false; }
 
         double evaluateIntegral(int logical_idx,
                                 double t,
@@ -261,21 +262,27 @@ namespace cost_functional_manager
                                                                             grad_thr,
                                                                             &max_violation_(7));
 
-                double total_grad_psi = 0.0;
-                double total_grad_psid = 0.0;
-                quadrotor_flatness->backward(grad_pos,
-                                grad_vel,
-                                grad_acc,
-                                grad_jer,
-                                grad_thr,
-                                general_utils::Vec4f::Zero(),
-                                grad_omg,
-                                total_grad_pos,
-                                total_grad_vel,
-                                total_grad_acc,
-                                total_grad_jer,
-                                total_grad_psi,
-                                total_grad_psid);
+                // Forward evaluation is required to check the bounds, but the
+                // considerably more expensive reverse map is an exact no-op
+                // when neither flatness penalty is active at this sample.
+                if (grad_omg.squaredNorm() != 0.0 || grad_thr != 0.0)
+                {
+                    double total_grad_psi = 0.0;
+                    double total_grad_psid = 0.0;
+                    quadrotor_flatness->backward(grad_pos,
+                                    grad_vel,
+                                    grad_acc,
+                                    grad_jer,
+                                    grad_thr,
+                                    general_utils::Vec4f::Zero(),
+                                    grad_omg,
+                                    total_grad_pos,
+                                    total_grad_vel,
+                                    total_grad_acc,
+                                    total_grad_jer,
+                                    total_grad_psi,
+                                    total_grad_psid);
+                }
             }
 
             gp += total_grad_pos;

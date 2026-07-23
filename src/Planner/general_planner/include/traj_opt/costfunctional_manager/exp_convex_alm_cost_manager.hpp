@@ -125,6 +125,11 @@ public:
     return residual_manager_.usesDenseSampling();
   }
 
+  bool usesSampleCost() const
+  {
+    return residual_manager_.usesSampleCost();
+  }
+
   void beginEvaluation(const std::vector<double> *times)
   {
     residual_manager_.beginEvaluation(times);

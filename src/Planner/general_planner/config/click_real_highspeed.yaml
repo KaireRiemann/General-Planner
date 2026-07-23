@@ -61,7 +61,7 @@ general_planner:
   state2state:
     direct_line_frontend_enable: true
     topology:
-      enable: true
+      enable: false
       # Build, record and visualize only. Keep topology completely outside the
       # latency-sensitive state2state frontend.
       query_enable: false
@@ -121,10 +121,27 @@ traj_opt:
     energy_cost_type: 4
     block_energy_cost: false
     opt_accuracy: 5.0e-6
+    # Shared LBFGS fast path for the ordinary state2state ExpTrajOpt. It is
+    # representation-independent and therefore applies to both dense and
+    # fixed-depth convex-hull objectives.
+    lbfgs_fast_en: true
+    lbfgs_mem_size: 32
+    lbfgs_step_bound_en: false
+    lbfgs_time_ratio_min: 0.5
+    lbfgs_time_ratio_max: 2.0
+    lbfgs_fast_window: 3
+    lbfgs_fast_min_iterations: 10
+    lbfgs_fast_consecutive: 1
+    lbfgs_fast_rel_cost: 1.0e-3
+    lbfgs_fast_rel_step: 2.0e-2
+    lbfgs_fast_rel_penalty: 5.0e-2
+    # Preserve the timing of the already feasible guide trajectory. The old
+    # implicit 0.8 scale manufactured dynamic violations before every solve.
+    guide_initial_time_scale: 1.0
     scale_factor: 1.0
     integral_reso: 15
     # Dense baseline: false. Change only this switch to true for the convex run.
-    convex_hull_en: true
+    convex_hull_en: false
     # 0: Bezier, 1: MINVO.
     convex_hull_basis: 0
     # Two binary subdivisions give four local hulls per MINCO segment.

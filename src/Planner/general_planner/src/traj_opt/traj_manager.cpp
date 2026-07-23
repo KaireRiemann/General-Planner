@@ -532,6 +532,26 @@ ExpTrajOpt::ExpTrajOpt(const traj_opt::Config &cfg,
   opt_vars_.block_energy_cost = cfg_.block_energy_cost;
   opt_vars_.smooth_eps = cfg_.smooth_eps;
   opt_vars_.integral_res = std::max(1, cfg_.integral_reso);
+  opt_vars_.lbfgs_fast_enabled = cfg_.lbfgs_fast_en;
+  opt_vars_.lbfgs_mem_size = std::max(3, cfg_.lbfgs_mem_size);
+  opt_vars_.lbfgs_step_bound_enabled = cfg_.lbfgs_step_bound_en;
+  opt_vars_.lbfgs_time_ratio_min =
+      std::clamp(cfg_.lbfgs_time_ratio_min, 1.0e-3, 1.0);
+  opt_vars_.lbfgs_time_ratio_max =
+      std::max(1.0, cfg_.lbfgs_time_ratio_max);
+  opt_vars_.lbfgs_fast_window = std::max(1, cfg_.lbfgs_fast_window);
+  opt_vars_.lbfgs_fast_min_iterations =
+      std::max(1, cfg_.lbfgs_fast_min_iterations);
+  opt_vars_.lbfgs_fast_consecutive =
+      std::max(1, cfg_.lbfgs_fast_consecutive);
+  opt_vars_.lbfgs_fast_rel_cost =
+      std::max(0.0, cfg_.lbfgs_fast_rel_cost);
+  opt_vars_.lbfgs_fast_rel_step =
+      std::max(0.0, cfg_.lbfgs_fast_rel_step);
+  opt_vars_.lbfgs_fast_rel_penalty =
+      std::max(0.0, cfg_.lbfgs_fast_rel_penalty);
+  opt_vars_.guide_initial_time_scale =
+      std::max(0.1, cfg_.guide_initial_time_scale);
   opt_vars_.convex_hull_enabled = cfg_.convex_hull_en;
   opt_vars_.convex_hull_basis =
       cfg_.convex_hull_basis == 1
@@ -821,7 +841,12 @@ bool ExpTrajOpt::setupProblemAndCheck()
   }
   else
   {
-    opt_vars_.times *= 0.8;
+    // The guide trajectory is already the best available timing warm start.
+    // A fixed 0.8 compression amplified velocity/acceleration/jerk by roughly
+    // 1.25/1.56/1.95 before every solve and forced LBFGS to undo artificial
+    // dynamic violations. Keep the scale configurable for reproducible A/B
+    // tests, with 1.0 as the fast-path default.
+    opt_vars_.times *= opt_vars_.guide_initial_time_scale;
   }
 
   if (!opt_vars_.times.allFinite() || opt_vars_.times.minCoeff() <= 1.0e-6)
@@ -875,9 +900,9 @@ double ExpTrajOpt::costFunctional(void *ptr, const VecDf &x, VecDf &g)
 }
 
 int ExpTrajOpt::progressFunctional(void *ptr,
+                                   const VecDf &x,
                                    const VecDf &,
-                                   const VecDf &,
-                                   double,
+                                   double cost,
                                    double step,
                                    int,
                                    int line_search_evaluations)
@@ -898,7 +923,130 @@ int ExpTrajOpt::progressFunctional(void *ptr,
             ? step
             : std::min(vars.min_accepted_step, step);
   }
+
+  if (!vars.lbfgs_fast_enabled ||
+      vars.convex_hull_alm_enabled ||
+      !std::isfinite(cost) ||
+      !x.allFinite())
+  {
+    return 0;
+  }
+
+  vars.accepted_cost_history.push_back(cost);
+  const std::size_t history_limit =
+      static_cast<std::size_t>(vars.lbfgs_fast_window + 1);
+  while (vars.accepted_cost_history.size() > history_limit)
+  {
+    vars.accepted_cost_history.pop_front();
+  }
+
+  double relative_step = std::numeric_limits<double>::infinity();
+  if (vars.previous_accepted_x.size() == x.size() &&
+      vars.previous_accepted_x.allFinite())
+  {
+    relative_step =
+        (x - vars.previous_accepted_x).lpNorm<Eigen::Infinity>() /
+        std::max(1.0, x.lpNorm<Eigen::Infinity>());
+  }
+
+  double relative_penalty = std::numeric_limits<double>::infinity();
+  if (vars.previous_accepted_penalty.size() == vars.penalty_log.size() &&
+      vars.previous_accepted_penalty.allFinite() &&
+      vars.penalty_log.allFinite())
+  {
+    const Eigen::Index safety_terms =
+        std::max<Eigen::Index>(0, vars.penalty_log.size() - 1);
+    if (safety_terms == 0)
+    {
+      relative_penalty = 0.0;
+    }
+    else
+    {
+      const auto current = vars.penalty_log.tail(safety_terms);
+      const auto previous = vars.previous_accepted_penalty.tail(safety_terms);
+      relative_penalty =
+          (current - previous).lpNorm<Eigen::Infinity>() /
+          std::max({1.0,
+                    current.lpNorm<Eigen::Infinity>(),
+                    previous.lpNorm<Eigen::Infinity>()});
+    }
+  }
+
+  vars.previous_accepted_x = x;
+  vars.previous_accepted_penalty = vars.penalty_log;
+
+  bool stable = false;
+  if (vars.lbfgs_iterations >=
+          static_cast<std::size_t>(vars.lbfgs_fast_min_iterations) &&
+      vars.accepted_cost_history.size() == history_limit)
+  {
+    const double relative_cost =
+        std::abs(vars.accepted_cost_history.front() - cost) /
+        std::max(1.0, std::abs(cost));
+    stable = relative_cost <= vars.lbfgs_fast_rel_cost &&
+             relative_step <= vars.lbfgs_fast_rel_step &&
+             relative_penalty <= vars.lbfgs_fast_rel_penalty;
+  }
+
+  vars.fast_stop_streak = stable ? vars.fast_stop_streak + 1 : 0;
+  if (vars.fast_stop_streak >= vars.lbfgs_fast_consecutive)
+  {
+    vars.fast_stop_satisfied = true;
+    vars.fast_stop_iteration = vars.lbfgs_iterations;
+    return 1;
+  }
   return 0;
+}
+
+double ExpTrajOpt::stepBoundFunctional(void *ptr,
+                                       const VecDf &x,
+                                       const VecDf &direction)
+{
+  auto *self = static_cast<ExpTrajOpt *>(ptr);
+  const auto &vars = self->opt_vars_;
+  if (!vars.lbfgs_fast_enabled ||
+      !vars.lbfgs_step_bound_enabled ||
+      x.size() != direction.size())
+  {
+    return 1.0e20;
+  }
+
+  const int time_dim =
+      std::min<int>(vars.piece_num, static_cast<int>(x.size()));
+  double step_bound = 1.0e20;
+  for (int i = 0; i < time_dim; ++i)
+  {
+    const double d = direction(i);
+    if (!std::isfinite(d) || std::abs(d) <= 1.0e-16)
+    {
+      continue;
+    }
+
+    const double duration = self->time_map_.toTime(x(i));
+    if (!std::isfinite(duration) || duration <= 0.0)
+    {
+      continue;
+    }
+
+    if (d > 0.0)
+    {
+      const double upper_tau = self->time_map_.toTau(
+          duration * vars.lbfgs_time_ratio_max);
+      step_bound = std::min(step_bound, (upper_tau - x(i)) / d);
+    }
+    else
+    {
+      const double lower_tau = self->time_map_.toTau(
+          duration * vars.lbfgs_time_ratio_min);
+      step_bound = std::min(step_bound, (lower_tau - x(i)) / d);
+    }
+  }
+
+  if (!std::isfinite(step_bound) || step_bound >= 1.0e20)
+  {
+    return 1.0e20;
+  }
+  return std::max(1.0e-16, 0.999 * step_bound);
 }
 
 double ExpTrajOpt::evaluateMincoCost(const VecDf &x, VecDf &g)
@@ -1008,6 +1156,7 @@ double ExpTrajOpt::optimize(Trajectory &traj, double rel_cost_tol)
   {
     return INFINITY;
   }
+  const VecDf initial_decision = x;
 
   exp_cost_manager_.reset(&opt_vars_.h_polytopes,
                           &opt_vars_.h_poly_idx,
@@ -1072,9 +1221,20 @@ double ExpTrajOpt::optimize(Trajectory &traj, double rel_cost_tol)
   opt_vars_.max_line_search_evaluations = 0;
   opt_vars_.accepted_step_sum = 0.0;
   opt_vars_.min_accepted_step = 0.0;
+  opt_vars_.accepted_cost_history.clear();
+  opt_vars_.previous_accepted_x.resize(0);
+  opt_vars_.previous_accepted_penalty.resize(0);
+  opt_vars_.fast_stop_streak = 0;
+  opt_vars_.fast_stop_satisfied = false;
+  opt_vars_.fast_stop_iteration = 0;
+  opt_vars_.fast_fallback_used = false;
   double min_cost = 0.0;
   lbfgs::lbfgs_parameter_t params;
-  params.mem_size = 256;
+  params.mem_size =
+      opt_vars_.lbfgs_fast_enabled
+          ? std::min(opt_vars_.lbfgs_mem_size,
+                     std::max(3, static_cast<int>(x.size())))
+          : 256;
   params.past = 3;
   params.min_step = 1.0e-32;
   params.g_epsilon = 0.0;
@@ -1193,10 +1353,44 @@ double ExpTrajOpt::optimize(Trajectory &traj, double rel_cost_tol)
     ret = lbfgs::lbfgs_optimize(x,
                                 min_cost,
                                 &ExpTrajOpt::costFunctional,
-                                nullptr,
+                                opt_vars_.lbfgs_fast_enabled &&
+                                        opt_vars_.lbfgs_step_bound_enabled
+                                    ? &ExpTrajOpt::stepBoundFunctional
+                                    : nullptr,
                                 &ExpTrajOpt::progressFunctional,
                                 this,
                                 params);
+
+    // The fast path is deliberately optimistic. Preserve the original solver
+    // as a transparent recovery path for rare non-finite line searches or
+    // other numerical failures. LBFGS already restores x to the last accepted
+    // point before returning an error, so resuming from x is both cheaper and
+    // safer than restarting from the initial trajectory.
+    const bool accepted_fast_stop =
+        ret == lbfgs::LBFGS_CANCELED &&
+        opt_vars_.fast_stop_satisfied;
+    if (ret < 0 &&
+        !accepted_fast_stop &&
+        opt_vars_.lbfgs_fast_enabled)
+    {
+      opt_vars_.fast_fallback_used = true;
+      x = initial_decision;
+      const bool fast_enabled = opt_vars_.lbfgs_fast_enabled;
+      opt_vars_.lbfgs_fast_enabled = false;
+      lbfgs::lbfgs_parameter_t fallback_params = params;
+      fallback_params.mem_size = 256;
+      fallback_params.delta = rel_cost_tol;
+      fallback_params.min_step = 1.0e-20;
+      fallback_params.max_linesearch = 128;
+      ret = lbfgs::lbfgs_optimize(x,
+                                  min_cost,
+                                  &ExpTrajOpt::costFunctional,
+                                  nullptr,
+                                  &ExpTrajOpt::progressFunctional,
+                                  this,
+                                  fallback_params);
+      opt_vars_.lbfgs_fast_enabled = fast_enabled;
+    }
   }
   const double optimization_seconds =
       std::chrono::duration<double>(std::chrono::steady_clock::now() -
@@ -1290,6 +1484,12 @@ double ExpTrajOpt::optimize(Trajectory &traj, double rel_cost_tol)
       timing.coefficientShareOfEvaluation();
   last_timing_report_.dense_share_of_optimization =
       dense_share_of_optimization;
+  last_timing_report_.fast_stop_satisfied =
+      opt_vars_.fast_stop_satisfied;
+  last_timing_report_.fast_stop_iteration =
+      opt_vars_.fast_stop_iteration;
+  last_timing_report_.fast_fallback_used =
+      opt_vars_.fast_fallback_used;
 
   cumulative_timing_report_.mode = last_timing_report_.mode;
   cumulative_timing_report_.evaluations += last_timing_report_.evaluations;
@@ -1343,6 +1543,14 @@ double ExpTrajOpt::optimize(Trajectory &traj, double rel_cost_tol)
       last_timing_report_.minco_evaluation_seconds;
   cumulative_timing_report_.optimization_seconds +=
       last_timing_report_.optimization_seconds;
+  cumulative_timing_report_.fast_stop_satisfied =
+      cumulative_timing_report_.fast_stop_satisfied ||
+      last_timing_report_.fast_stop_satisfied;
+  cumulative_timing_report_.fast_stop_iteration +=
+      last_timing_report_.fast_stop_iteration;
+  cumulative_timing_report_.fast_fallback_used =
+      cumulative_timing_report_.fast_fallback_used ||
+      last_timing_report_.fast_fallback_used;
   if (cumulative_timing_report_.minco_evaluation_seconds > 0.0)
   {
     cumulative_timing_report_.dense_share_of_minco_evaluation =
@@ -1388,6 +1596,12 @@ double ExpTrajOpt::optimize(Trajectory &traj, double rel_cost_tol)
               << "\n"
               << "\tMaxLineSearchEvaluations: "
               << last_timing_report_.max_line_search_evaluations << "\n"
+              << "\tFastStopSatisfied: "
+              << (last_timing_report_.fast_stop_satisfied ? 1 : 0) << "\n"
+              << "\tFastStopIteration: "
+              << last_timing_report_.fast_stop_iteration << "\n"
+              << "\tFastFallbackUsed: "
+              << (last_timing_report_.fast_fallback_used ? 1 : 0) << "\n"
               << "\tPolynomialPieces: " << last_timing_report_.polynomial_pieces << "\n"
               << "\tDenseNodesPerEvaluation: " << last_timing_report_.dense_nodes_per_evaluation << "\n"
               << "\tHullControlChecksPerEvaluation: " << last_timing_report_.hull_control_checks_per_evaluation << "\n"
@@ -1407,7 +1621,10 @@ double ExpTrajOpt::optimize(Trajectory &traj, double rel_cost_tol)
       opt_vars_.convex_hull_alm_enabled &&
       opt_vars_.convex_hull_alm_require_certification &&
       !alm_report.certified;
-  if (ret < 0 || certification_failed)
+  const bool accepted_fast_stop =
+      ret == lbfgs::LBFGS_CANCELED &&
+      opt_vars_.fast_stop_satisfied;
+  if ((ret < 0 && !accepted_fast_stop) || certification_failed)
   {
     traj.clear();
     std::cout << YELLOW << " -- [ExpTrajOpt] Optimization failed: "

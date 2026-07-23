@@ -96,6 +96,20 @@ namespace traj_opt {
         double convex_hull_alm_constraint_tolerance{1.0e-2};
         bool convex_hull_alm_require_certification{true};
         double opt_accuracy{0};
+        // Optional fast LBFGS path used only by the ordinary ExpTrajOpt
+        // state2state corridor backend.
+        bool lbfgs_fast_en{false};
+        int lbfgs_mem_size{32};
+        bool lbfgs_step_bound_en{true};
+        double lbfgs_time_ratio_min{0.5};
+        double lbfgs_time_ratio_max{2.0};
+        int lbfgs_fast_window{5};
+        int lbfgs_fast_min_iterations{20};
+        int lbfgs_fast_consecutive{2};
+        double lbfgs_fast_rel_cost{1.0e-4};
+        double lbfgs_fast_rel_step{2.0e-3};
+        double lbfgs_fast_rel_penalty{5.0e-3};
+        double guide_initial_time_scale{1.0};
         double init_profile_vel_ratio{0.65};
         double init_duration_scale{1.25};
         double terminal_vel_ratio{0.0};
@@ -126,6 +140,30 @@ namespace traj_opt {
             loader.LoadParam("traj_opt" + ns + "uniform_time_en", uniform_time_en, false);
             loader.LoadParam("traj_opt" + ns + "block_energy_cost", block_energy_cost, false);
             loader.LoadParam("traj_opt" + ns + "opt_accuracy", opt_accuracy, 1.0e-5);
+            loader.LoadParam("traj_opt" + ns + "lbfgs_fast_en",
+                             lbfgs_fast_en, false);
+            loader.LoadParam("traj_opt" + ns + "lbfgs_mem_size",
+                             lbfgs_mem_size, 32);
+            loader.LoadParam("traj_opt" + ns + "lbfgs_step_bound_en",
+                             lbfgs_step_bound_en, true);
+            loader.LoadParam("traj_opt" + ns + "lbfgs_time_ratio_min",
+                             lbfgs_time_ratio_min, 0.5);
+            loader.LoadParam("traj_opt" + ns + "lbfgs_time_ratio_max",
+                             lbfgs_time_ratio_max, 2.0);
+            loader.LoadParam("traj_opt" + ns + "lbfgs_fast_window",
+                             lbfgs_fast_window, 5);
+            loader.LoadParam("traj_opt" + ns + "lbfgs_fast_min_iterations",
+                             lbfgs_fast_min_iterations, 20);
+            loader.LoadParam("traj_opt" + ns + "lbfgs_fast_consecutive",
+                             lbfgs_fast_consecutive, 2);
+            loader.LoadParam("traj_opt" + ns + "lbfgs_fast_rel_cost",
+                             lbfgs_fast_rel_cost, 1.0e-4);
+            loader.LoadParam("traj_opt" + ns + "lbfgs_fast_rel_step",
+                             lbfgs_fast_rel_step, 2.0e-3);
+            loader.LoadParam("traj_opt" + ns + "lbfgs_fast_rel_penalty",
+                             lbfgs_fast_rel_penalty, 5.0e-3);
+            loader.LoadParam("traj_opt" + ns + "guide_initial_time_scale",
+                             guide_initial_time_scale, 1.0);
             loader.LoadParam("traj_opt" + ns + "integral_reso", integral_reso, 10);
             loader.LoadParam("traj_opt" + ns + "smooth_eps", smooth_eps, 0.01);
             loader.LoadParam("traj_opt" + ns + "convex_hull_en", convex_hull_en, false);

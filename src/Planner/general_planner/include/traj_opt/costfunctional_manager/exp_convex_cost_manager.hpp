@@ -115,6 +115,11 @@ public:
     return dense_sampling_required_;
   }
 
+  bool usesSampleCost() const
+  {
+    return residual_cost_manager_.usesSampleCost();
+  }
+
   std::size_t activeControlPointChecksPerEvaluation() const
   {
     if (!bezier_hull_.kernel())
