@@ -502,3 +502,38 @@ controls satisfy a convex corridor, it supplies a sufficient continuous-time
 certificate, whereas dense nodes only certify the sampled instants. The
 current V2 path is a smooth penalty formulation and does not yet impose a
 strict final certificate acceptance test.
+
+### Fast-LBFGS paired solution-quality check
+
+The convergence benchmark also compares the original and fast LBFGS stopping
+rules on six identical dense MINCO problems. Both solvers receive the same
+initial decision, objective, gradient, corridor and dynamic limits. A third
+strict solve starts from each fast result and measures how much useful
+optimization the early stop left unfinished. Final trajectories are checked
+with 4096 samples and a depth-six Bezier certificate.
+
+| quality metric | mean | worst case |
+|---|---:|---:|
+| fast objective increase relative to strict | 0.058% | 0.198% |
+| objective recovered by strict polishing | 0.058% | 0.198% |
+| normalized-time position difference | 3.22 cm | 7.36 cm |
+| duration difference | 0.179% | 0.493% |
+| path-length difference | 0.018% | 0.038% |
+| maximum-speed absolute difference | 0.0038 m/s | 0.0163 m/s |
+| maximum-acceleration absolute difference | 0.0092 m/s^2 | 0.0448 m/s^2 |
+| sampled feasible cases | 6/6 | zero maximum violation |
+| depth-six certified cases | 6/6 | zero maximum violation |
+
+Fast stopping reduced evaluations from 30.17 to 20.33 per problem and solver
+time from 0.265 to 0.184 ms, a `1.44x` deterministic speedup. The smaller
+speedup than the closed-loop `3.73x` result is expected because these compact
+problems require only about 30 evaluations even under the strict rule.
+
+The final gradient infinity norm is not equivalent: it averages about `0.141`
+for fast stopping versus `0.00224` for strict stopping. Strict polishing
+reduces that residual, but changes the objective and path only by the small
+amounts above. Thus fast mode preserves the measured trajectory-level quality
+and safety in this set, while deliberately giving up unnecessary numerical
+stationarity on flat directions. It should be judged by the objective,
+continuous constraints and trajectory metrics rather than by an expectation
+of bitwise-identical decision variables.

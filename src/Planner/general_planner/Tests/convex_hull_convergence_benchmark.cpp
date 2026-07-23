@@ -103,6 +103,10 @@ struct ContinuousMetrics
 {
   double sampled_violation{0.0};
   double certificate_violation{0.0};
+  double path_length{0.0};
+  double duration{0.0};
+  double max_speed{0.0};
+  double max_acceleration{0.0};
 };
 
 struct RunResult
@@ -125,6 +129,12 @@ struct RunResult
   double dense_seconds{0.0};
   double coefficient_seconds{0.0};
   double solver_seconds{0.0};
+  double path_length{0.0};
+  double duration{0.0};
+  double max_speed{0.0};
+  double max_acceleration{0.0};
+  bool fast_stop_satisfied{false};
+  Eigen::VectorXd decision;
 };
 
 class PairedProblem
@@ -206,13 +216,24 @@ public:
     corridor_half_width_ = corridor_half_width;
   }
 
-  RunResult run()
+  RunResult run(bool fast_stop = false,
+                const Eigen::VectorXd *initial_decision = nullptr)
   {
     RunResult result;
     result.mode = mode_;
     result.case_id = case_id_;
 
-    Eigen::VectorXd x = x0_;
+    fast_stop_enabled_ = fast_stop;
+    fast_stop_satisfied_ = false;
+    accepted_cost_history_.clear();
+    previous_accepted_x_.resize(0);
+    previous_accepted_penalty_.resize(0);
+    first_sampled_feasible_iteration_ = -1;
+    first_certified_iteration_ = -1;
+    monitor_seconds_ = 0.0;
+
+    Eigen::VectorXd x =
+        initial_decision == nullptr ? x0_ : *initial_decision;
     Eigen::VectorXd gradient = Eigen::VectorXd::Zero(x.size());
     result.initial_cost = evaluateImpl(x, gradient, false);
     result.initial_gradient_inf = gradient.lpNorm<Eigen::Infinity>();
@@ -232,7 +253,10 @@ public:
     optimizer_.resetTimingStatistics();
 
     math_utils::lbfgs::lbfgs_parameter_t parameters;
-    parameters.mem_size = 64;
+    parameters.mem_size =
+        fast_stop
+            ? std::min(32, std::max(3, static_cast<int>(x.size())))
+            : 64;
     parameters.past = 3;
     parameters.g_epsilon = 0.0;
     parameters.delta = 5.0e-6;
@@ -261,6 +285,12 @@ public:
     const auto final_metrics = continuousMetrics(x);
     result.sampled_violation = final_metrics.sampled_violation;
     result.certificate_violation = final_metrics.certificate_violation;
+    result.path_length = final_metrics.path_length;
+    result.duration = final_metrics.duration;
+    result.max_speed = final_metrics.max_speed;
+    result.max_acceleration = final_metrics.max_acceleration;
+    result.fast_stop_satisfied = fast_stop_satisfied_;
+    result.decision = x;
     result.evaluations = evaluations_;
     result.iterations = iterations_;
     result.line_search_evaluations = line_search_evaluations_;
@@ -287,7 +317,7 @@ private:
   static int progressCallback(void *instance,
                               const Eigen::VectorXd &x,
                               const Eigen::VectorXd &,
-                              double,
+                              double cost,
                               double,
                               int,
                               int line_search_evaluations)
@@ -314,6 +344,65 @@ private:
         std::chrono::duration<double>(
             std::chrono::steady_clock::now() - monitor_begin)
             .count();
+
+    if (!self->fast_stop_enabled_ ||
+        !std::isfinite(cost) ||
+        !x.allFinite())
+    {
+      return 0;
+    }
+
+    self->accepted_cost_history_.push_back(cost);
+    constexpr std::size_t history_limit = 4;
+    while (self->accepted_cost_history_.size() > history_limit)
+    {
+      self->accepted_cost_history_.erase(
+          self->accepted_cost_history_.begin());
+    }
+
+    double relative_step = std::numeric_limits<double>::infinity();
+    if (self->previous_accepted_x_.size() == x.size() &&
+        self->previous_accepted_x_.allFinite())
+    {
+      relative_step =
+          (x - self->previous_accepted_x_).lpNorm<Eigen::Infinity>() /
+          std::max(1.0, x.lpNorm<Eigen::Infinity>());
+    }
+
+    const auto &penalty =
+        self->mode_ == Mode::DENSE
+            ? self->dense_manager_.getPenaltyLog()
+            : self->convex_manager_.getPenaltyLog();
+    double relative_penalty = std::numeric_limits<double>::infinity();
+    if (self->previous_accepted_penalty_.size() == penalty.size() &&
+        self->previous_accepted_penalty_.allFinite() &&
+        penalty.allFinite())
+    {
+      relative_penalty =
+          (penalty - self->previous_accepted_penalty_)
+              .lpNorm<Eigen::Infinity>() /
+          std::max({1.0,
+                    penalty.lpNorm<Eigen::Infinity>(),
+                    self->previous_accepted_penalty_
+                        .lpNorm<Eigen::Infinity>()});
+    }
+    self->previous_accepted_x_ = x;
+    self->previous_accepted_penalty_ = penalty;
+
+    if (self->iterations_ >= 10 &&
+        self->accepted_cost_history_.size() == history_limit)
+    {
+      const double relative_cost =
+          std::abs(self->accepted_cost_history_.front() - cost) /
+          std::max(1.0, std::abs(cost));
+      if (relative_cost <= 1.0e-3 &&
+          relative_step <= 2.0e-2 &&
+          relative_penalty <= 5.0e-2)
+      {
+        self->fast_stop_satisfied_ = true;
+        return 1;
+      }
+    }
     return 0;
   }
 
@@ -345,7 +434,9 @@ private:
 
     const auto &trajectory = optimizer_.getTrajectory();
     const double total_time = trajectory.getTotalDuration();
+    metrics.duration = total_time;
     constexpr int samples = 4096;
+    Eigen::Vector3d previous_position = trajectory.getPos(0.0);
     for (int i = 0; i <= samples; ++i)
     {
       const double time =
@@ -354,6 +445,14 @@ private:
       const Eigen::Vector3d position = trajectory.getPos(time);
       const Eigen::Vector3d velocity = trajectory.getVel(time);
       const Eigen::Vector3d acceleration = trajectory.getAcc(time);
+      if (i > 0)
+      {
+        metrics.path_length += (position - previous_position).norm();
+      }
+      previous_position = position;
+      metrics.max_speed = std::max(metrics.max_speed, velocity.norm());
+      metrics.max_acceleration =
+          std::max(metrics.max_acceleration, acceleration.norm());
       metrics.sampled_violation = std::max(
           metrics.sampled_violation,
           std::max({std::abs(position.y()) - corridor_half_width_,
@@ -402,6 +501,36 @@ private:
     return metrics;
   }
 
+public:
+  double maxPositionDifference(const Eigen::VectorXd &lhs,
+                               const Eigen::VectorXd &rhs)
+  {
+    if (!optimizer_.updateTrajectoryFromDecisionVector(lhs))
+    {
+      return std::numeric_limits<double>::infinity();
+    }
+    const auto lhs_trajectory = optimizer_.getTrajectory();
+    if (!optimizer_.updateTrajectoryFromDecisionVector(rhs))
+    {
+      return std::numeric_limits<double>::infinity();
+    }
+    const auto rhs_trajectory = optimizer_.getTrajectory();
+    constexpr int samples = 4096;
+    double maximum = 0.0;
+    for (int i = 0; i <= samples; ++i)
+    {
+      const double alpha =
+          static_cast<double>(i) / static_cast<double>(samples);
+      maximum = std::max(
+          maximum,
+          (lhs_trajectory.getPos(alpha * lhs_trajectory.getTotalDuration()) -
+           rhs_trajectory.getPos(alpha * rhs_trajectory.getTotalDuration()))
+              .norm());
+    }
+    return maximum;
+  }
+
+private:
   int case_id_{0};
   Mode mode_{Mode::DENSE};
   Optimizer optimizer_;
@@ -426,6 +555,11 @@ private:
   int first_sampled_feasible_iteration_{-1};
   int first_certified_iteration_{-1};
   double monitor_seconds_{0.0};
+  bool fast_stop_enabled_{false};
+  bool fast_stop_satisfied_{false};
+  std::vector<double> accepted_cost_history_;
+  Eigen::VectorXd previous_accepted_x_;
+  Eigen::VectorXd previous_accepted_penalty_;
 };
 
 struct Aggregate
@@ -574,6 +708,145 @@ int main()
               << aggregate.final_certificate_violation
               << "\n";
   }
+
+  // Isolate the fast stopping rule from the convex-hull representation.
+  // Every strict/fast pair starts from the identical dense objective and
+  // decision vector. The polish solve starts at the fast result and uses the
+  // original strict relative-cost tolerance, measuring how much useful
+  // optimization the early stop left unfinished.
+  std::cout << "fast_quality,case,strict_evaluations,fast_evaluations,"
+               "polish_evaluations,strict_iterations,fast_iterations,"
+               "polish_iterations,strict_cost,fast_cost,polished_cost,"
+               "fast_cost_gap_rel,polish_gain_rel,strict_grad_inf,"
+               "fast_grad_inf,polished_grad_inf,max_position_difference,"
+               "duration_gap_rel,path_length_gap_rel,strict_max_speed,"
+               "fast_max_speed,strict_max_acceleration,"
+               "fast_max_acceleration,strict_sampled_violation,"
+               "fast_sampled_violation,strict_certificate_violation,"
+               "fast_certificate_violation,fast_stop_satisfied,"
+               "strict_solver_ms,fast_solver_ms,polish_solver_ms\n";
+  double sum_strict_evaluations = 0.0;
+  double sum_fast_evaluations = 0.0;
+  double sum_polish_evaluations = 0.0;
+  double sum_strict_solver_ms = 0.0;
+  double sum_fast_solver_ms = 0.0;
+  double sum_polish_solver_ms = 0.0;
+  double max_fast_cost_gap_rel = 0.0;
+  double max_polish_gain_rel = 0.0;
+  double max_position_difference = 0.0;
+  double max_duration_gap_rel = 0.0;
+  double max_path_length_gap_rel = 0.0;
+  double max_sampled_violation = 0.0;
+  double max_certificate_violation = 0.0;
+  int fast_stop_count = 0;
+  for (int case_id = 0; case_id < cases; ++case_id)
+  {
+    PairedProblem strict_problem(case_id, Mode::DENSE);
+    const RunResult strict = strict_problem.run(false);
+    PairedProblem fast_problem(case_id, Mode::DENSE);
+    const RunResult fast = fast_problem.run(true);
+    PairedProblem polish_problem(case_id, Mode::DENSE);
+    const RunResult polished =
+        polish_problem.run(false, &fast.decision);
+
+    const double fast_cost_gap_rel =
+        (fast.final_cost - strict.final_cost) /
+        std::max(1.0, std::abs(strict.final_cost));
+    const double polish_gain_rel =
+        (fast.final_cost - polished.final_cost) /
+        std::max(1.0, std::abs(fast.final_cost));
+    const double position_difference =
+        strict_problem.maxPositionDifference(
+            strict.decision, fast.decision);
+    const double duration_gap_rel =
+        std::abs(fast.duration - strict.duration) /
+        std::max(1.0, std::abs(strict.duration));
+    const double path_length_gap_rel =
+        std::abs(fast.path_length - strict.path_length) /
+        std::max(1.0, std::abs(strict.path_length));
+
+    sum_strict_evaluations += strict.evaluations;
+    sum_fast_evaluations += fast.evaluations;
+    sum_polish_evaluations += polished.evaluations;
+    sum_strict_solver_ms += strict.solver_seconds * 1.0e3;
+    sum_fast_solver_ms += fast.solver_seconds * 1.0e3;
+    sum_polish_solver_ms += polished.solver_seconds * 1.0e3;
+    max_fast_cost_gap_rel =
+        std::max(max_fast_cost_gap_rel, fast_cost_gap_rel);
+    max_polish_gain_rel =
+        std::max(max_polish_gain_rel, polish_gain_rel);
+    max_position_difference =
+        std::max(max_position_difference, position_difference);
+    max_duration_gap_rel =
+        std::max(max_duration_gap_rel, duration_gap_rel);
+    max_path_length_gap_rel =
+        std::max(max_path_length_gap_rel, path_length_gap_rel);
+    max_sampled_violation =
+        std::max({max_sampled_violation,
+                  strict.sampled_violation,
+                  fast.sampled_violation});
+    max_certificate_violation =
+        std::max({max_certificate_violation,
+                  strict.certificate_violation,
+                  fast.certificate_violation});
+    fast_stop_count += fast.fast_stop_satisfied ? 1 : 0;
+
+    std::cout << "fast_quality,"
+              << case_id << ","
+              << strict.evaluations << ","
+              << fast.evaluations << ","
+              << polished.evaluations << ","
+              << strict.iterations << ","
+              << fast.iterations << ","
+              << polished.iterations << ","
+              << strict.final_cost << ","
+              << fast.final_cost << ","
+              << polished.final_cost << ","
+              << fast_cost_gap_rel << ","
+              << polish_gain_rel << ","
+              << strict.final_gradient_inf << ","
+              << fast.final_gradient_inf << ","
+              << polished.final_gradient_inf << ","
+              << position_difference << ","
+              << duration_gap_rel << ","
+              << path_length_gap_rel << ","
+              << strict.max_speed << ","
+              << fast.max_speed << ","
+              << strict.max_acceleration << ","
+              << fast.max_acceleration << ","
+              << strict.sampled_violation << ","
+              << fast.sampled_violation << ","
+              << strict.certificate_violation << ","
+              << fast.certificate_violation << ","
+              << static_cast<int>(fast.fast_stop_satisfied) << ","
+              << strict.solver_seconds * 1.0e3 << ","
+              << fast.solver_seconds * 1.0e3 << ","
+              << polished.solver_seconds * 1.0e3
+              << "\n";
+  }
+  std::cout << "fast_quality_aggregate,cases=" << cases
+            << ",fast_stops=" << fast_stop_count
+            << ",strict_evaluations_per_case="
+            << sum_strict_evaluations / static_cast<double>(cases)
+            << ",fast_evaluations_per_case="
+            << sum_fast_evaluations / static_cast<double>(cases)
+            << ",polish_evaluations_per_case="
+            << sum_polish_evaluations / static_cast<double>(cases)
+            << ",strict_solver_ms_per_case="
+            << sum_strict_solver_ms / static_cast<double>(cases)
+            << ",fast_solver_ms_per_case="
+            << sum_fast_solver_ms / static_cast<double>(cases)
+            << ",polish_solver_ms_per_case="
+            << sum_polish_solver_ms / static_cast<double>(cases)
+            << ",max_fast_cost_gap_rel=" << max_fast_cost_gap_rel
+            << ",max_polish_gain_rel=" << max_polish_gain_rel
+            << ",max_position_difference=" << max_position_difference
+            << ",max_duration_gap_rel=" << max_duration_gap_rel
+            << ",max_path_length_gap_rel=" << max_path_length_gap_rel
+            << ",max_sampled_violation=" << max_sampled_violation
+            << ",max_certificate_violation="
+            << max_certificate_violation
+            << "\n";
 
   // A degree-two polynomial is also a valid degree-seven MINCO polynomial.
   // With 15 intervals (16 nodes), y(u)=4u(1-u) is sampled only at i/15.

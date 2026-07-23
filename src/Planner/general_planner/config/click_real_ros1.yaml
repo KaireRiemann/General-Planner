@@ -73,6 +73,8 @@ general_planner:
     over_goal_guard_enable: true
     over_goal_tolerance: 0.25
     near_goal_radius: 2.0
+    # A goal-connected trajectory already ends at rest, so do not let a
+    # redundant backup segment replace its terminal approach.
     accept_exp_without_backup_near_goal: true
   unknown_goal_reveal_en: true
   yaw_dot_max: 3.0

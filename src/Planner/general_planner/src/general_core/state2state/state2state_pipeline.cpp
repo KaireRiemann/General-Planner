@@ -106,6 +106,36 @@ namespace general_planner {
             return cfg.backup_traj_en && !cfg.esdf_traj_en && !cfg.plain_traj_en;
         }
 
+        bool goalConnectedExpStopsSafely(const Config &cfg,
+                                         const ExpTraj &exp_traj,
+                                         const Vec3f &goal_p) {
+            if (!cfg.state2state_accept_exp_without_backup_near_goal ||
+                exp_traj.empty() ||
+                !exp_traj.connectedToGoal()) {
+                return false;
+            }
+
+            const Trajectory &pos_traj = exp_traj.posTraj();
+            if (pos_traj.empty()) {
+                return false;
+            }
+            const double duration = pos_traj.getTotalDuration();
+            if (!std::isfinite(duration) || duration <= 1.0e-4) {
+                return false;
+            }
+
+            const Vec3f end_pos = pos_traj.getPos(duration);
+            const Vec3f end_vel = pos_traj.getVel(duration);
+            if (!end_pos.allFinite() || !end_vel.allFinite()) {
+                return false;
+            }
+
+            const double goal_tolerance = std::max(cfg.resolution * 3.0, 0.3);
+            const double stop_velocity_tolerance = 0.1;
+            return (end_pos - goal_p).norm() <= goal_tolerance &&
+                   end_vel.norm() <= stop_velocity_tolerance;
+        }
+
         void logCheckResult(const ros_interface::RosInterface::Ptr &ros_ptr,
                             const std::string &context,
                             const checker::CheckResult &result) {
@@ -233,6 +263,30 @@ namespace general_planner {
                 services.time_consuming[VISUALIZATION] += t_viz.stop();
             }
             services.latest_replan.setRetCode(GENERAL_RET_CODE::GENERAL_SUCCESS_NO_BACKUP);
+            return SUCCESS;
+        }
+
+        if (goalConnectedExpStopsSafely(services.cfg, exp_traj_info, goal_p)) {
+            if (rejectOnCheckFailure(services.ros_ptr,
+                                     "PlanFromRest goal-connected exp commit",
+                                     checker::checkExpTrajectory(
+                                             exp_traj_info,
+                                             services.cfg,
+                                             "plan_from_rest_goal_connected_exp"))) {
+                return FAILED;
+            }
+            services.cmd_traj_info.setTrajectory(exp_traj_info);
+            services.last_exp_traj_info = exp_traj_info;
+            services.robot_on_backup_traj = false;
+            services.backend_context.markGoalConsumed();
+            {
+                TimeConsuming t_viz("viz goal VisualizeCommitTrajectory", false);
+                services.ros_ptr->vizCommittedTraj(services.cmd_traj_info.posTraj(), -1);
+                services.time_consuming[VISUALIZATION] += t_viz.stop();
+            }
+            services.latest_replan.setRetCode(GENERAL_RET_CODE::GENERAL_SUCCESS_NO_BACKUP);
+            services.ros_ptr->info(
+                    " -- [GeneralPlanner] Goal-connected exp trajectory already stops at goal; skip redundant backup.");
             return SUCCESS;
         }
 
@@ -395,6 +449,30 @@ namespace general_planner {
                 services.time_consuming[VISUALIZATION] += t_viz.stop();
             }
             services.latest_replan.setRetCode(GENERAL_SUCCESS_NO_BACKUP);
+            return SUCCESS;
+        }
+
+        if (goalConnectedExpStopsSafely(services.cfg, exp_traj_info, goal_p)) {
+            if (rejectOnCheckFailure(services.ros_ptr,
+                                     "ReplanOnce goal-connected exp commit",
+                                     checker::checkExpTrajectory(
+                                             exp_traj_info,
+                                             services.cfg,
+                                             "replan_goal_connected_exp"))) {
+                return FAILED;
+            }
+            services.cmd_traj_info.setTrajectory(exp_traj_info);
+            services.last_exp_traj_info = exp_traj_info;
+            services.robot_on_backup_traj = false;
+            services.backend_context.markGoalConsumed();
+            {
+                TimeConsuming t_viz("tviz", false);
+                services.ros_ptr->vizCommittedTraj(services.cmd_traj_info.posTraj(), -1);
+                services.time_consuming[VISUALIZATION] += t_viz.stop();
+            }
+            services.latest_replan.setRetCode(GENERAL_SUCCESS_NO_BACKUP);
+            services.ros_ptr->info(
+                    " -- [GeneralPlanner] Goal-connected exp trajectory already stops at goal; skip redundant backup.");
             return SUCCESS;
         }
 

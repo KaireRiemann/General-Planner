@@ -48,9 +48,16 @@ general_planner:
     direct_line_frontend_enable: true
     topology:
       enable: true
+      # Build and visualize the persistent graph without changing the
+      # state2state frontend selection.
+      query_enable: false
+      # Keep the topology graph on the center plane of the configured
+      # navigation-height band.
+      planar_mode: true
       unknown_as_free: true
       min_query_distance: 3.0
-      update_budget: 16
+      # Bound each asynchronous topology update to avoid planner jitter.
+      update_budget: 1
       region_size: 4.0
       sample_spacing: 1.0
       min_clearance: 0.45
@@ -68,6 +75,8 @@ general_planner:
     over_goal_guard_enable: true
     over_goal_tolerance: 0.25
     near_goal_radius: 2.0
+    # A goal-connected trajectory already ends at rest, so do not let a
+    # redundant backup segment replace its terminal approach.
     accept_exp_without_backup_near_goal: true
   unknown_goal_reveal_en: true
   yaw_dot_max: 3.0
