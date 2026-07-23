@@ -32,6 +32,9 @@ IncrementalTopologyGraph::Config IncrementalTopologyGraph::sanitized(
     const Config &input) {
     Config cfg = input;
     cfg.region_size = std::max(0.2, cfg.region_size);
+    if (!std::isfinite(cfg.navigation_altitude)) {
+        cfg.navigation_altitude = 0.0;
+    }
     cfg.sample_spacing = clampValue(cfg.sample_spacing, 0.05, cfg.region_size);
     cfg.min_clearance = std::max(0.0, cfg.min_clearance);
     cfg.max_clearance = std::max(cfg.min_clearance, cfg.max_clearance);
@@ -52,7 +55,11 @@ IncrementalTopologyGraph::IncrementalTopologyGraph()
     : IncrementalTopologyGraph(Config{}) {}
 
 IncrementalTopologyGraph::IncrementalTopologyGraph(const Config &config)
-    : config_(sanitized(config)) {}
+    : config_(sanitized(config)), active_(config_.enabled) {
+    auto snapshot = std::make_shared<SearchSnapshot>();
+    snapshot->config = config_;
+    search_snapshot_ = snapshot;
+}
 
 IncrementalTopologyGraph::Config IncrementalTopologyGraph::config() const {
     std::shared_lock<std::shared_mutex> lock(graph_mutex_);
@@ -61,18 +68,29 @@ IncrementalTopologyGraph::Config IncrementalTopologyGraph::config() const {
 
 void IncrementalTopologyGraph::configure(const Config &config) {
     std::lock_guard<std::mutex> update_lock(update_mutex_);
+    const Config sanitized_config = sanitized(config);
     {
         std::unique_lock<std::shared_mutex> lock(graph_mutex_);
-        config_ = sanitized(config);
+        config_ = sanitized_config;
         nodes_.clear();
         regions_.clear();
         next_node_id_ = 1;
         revision_ = 0;
         rebuilt_region_count_ = 0;
+        empty_region_count_ = 0;
+        last_candidate_diagnostics_ = CandidateDiagnostics{};
     }
-    std::lock_guard<std::mutex> dirty_lock(dirty_mutex_);
-    dirty_regions_.clear();
-    observed_route_regions_.clear();
+    publishSearchSnapshot();
+    {
+        std::lock_guard<std::mutex> dirty_lock(dirty_mutex_);
+        dirty_regions_.clear();
+        observed_route_regions_.clear();
+    }
+    active_.store(sanitized_config.enabled, std::memory_order_release);
+    {
+        std::lock_guard<std::mutex> focus_lock(focus_mutex_);
+        has_update_focus_ = false;
+    }
 }
 
 void IncrementalTopologyGraph::clear() {
@@ -80,20 +98,45 @@ void IncrementalTopologyGraph::clear() {
     configure(current);
 }
 
+bool IncrementalTopologyGraph::active() const {
+    return active_.load(std::memory_order_acquire);
+}
+
+void IncrementalTopologyGraph::setActive(const bool active) {
+    const bool configured = config().enabled;
+    active_.store(configured && active, std::memory_order_release);
+}
+
+void IncrementalTopologyGraph::requestUpdateFocus(const rog_map::Vec3f &focus) {
+    if (!active() || !focus.allFinite()) {
+        return;
+    }
+    std::lock_guard<std::mutex> lock(focus_mutex_);
+    update_focus_ = focus;
+    has_update_focus_ = true;
+}
+
 IncrementalTopologyGraph::RegionKey IncrementalTopologyGraph::regionOf(
     const rog_map::Vec3f &position) const {
     const double size = config_.region_size;
     return {static_cast<int>(std::floor(position.x() / size)),
             static_cast<int>(std::floor(position.y() / size)),
-            static_cast<int>(std::floor(position.z() / size))};
+            config_.planar_mode
+                ? 0
+                : static_cast<int>(std::floor(position.z() / size))};
 }
 
 rog_map::Vec3f IncrementalTopologyGraph::regionMin(const RegionKey &region) const {
-    return config_.region_size * rog_map::Vec3f(region.x, region.y, region.z);
+    rog_map::Vec3f minimum =
+        config_.region_size * rog_map::Vec3f(region.x, region.y, region.z);
+    if (config_.planar_mode) {
+        minimum.z() = config_.navigation_altitude;
+    }
+    return minimum;
 }
 
 void IncrementalTopologyGraph::markDirty(const rog_map::Vec3f &position) {
-    if (!position.allFinite()) {
+    if (!active() || !position.allFinite()) {
         return;
     }
     Config cfg;
@@ -108,9 +151,10 @@ void IncrementalTopologyGraph::markDirty(const rog_map::Vec3f &position) {
     }
     const int padding = static_cast<int>(std::ceil(cfg.dirty_padding / cfg.region_size));
     std::lock_guard<std::mutex> lock(dirty_mutex_);
+    const int z_padding = cfg.planar_mode ? 0 : padding;
     for (int x = -padding; x <= padding; ++x) {
         for (int y = -padding; y <= padding; ++y) {
-            for (int z = -padding; z <= padding; ++z) {
+            for (int z = -z_padding; z <= z_padding; ++z) {
                 dirty_regions_.insert({center.x + x, center.y + y, center.z + z});
             }
         }
@@ -119,7 +163,7 @@ void IncrementalTopologyGraph::markDirty(const rog_map::Vec3f &position) {
 
 void IncrementalTopologyGraph::markDirtyBox(const rog_map::Vec3f &box_min,
                                              const rog_map::Vec3f &box_max) {
-    if (!box_min.allFinite() || !box_max.allFinite() ||
+    if (!active() || !box_min.allFinite() || !box_max.allFinite() ||
         (box_max.array() < box_min.array()).any()) {
         return;
     }
@@ -148,7 +192,7 @@ void IncrementalTopologyGraph::markDirtyBox(const rog_map::Vec3f &box_min,
 
 void IncrementalTopologyGraph::markDirtyVoxels(
     const std::vector<rog_map::Vec3i> &indices, const double resolution) {
-    if (indices.empty() || !std::isfinite(resolution) || resolution <= 0.0) {
+    if (!active() || indices.empty() || !std::isfinite(resolution) || resolution <= 0.0) {
         return;
     }
     Config cfg;
@@ -168,13 +212,16 @@ void IncrementalTopologyGraph::markDirtyVoxels(
         changed_regions.insert({
             static_cast<int>(std::floor(position.x() / cfg.region_size)),
             static_cast<int>(std::floor(position.y() / cfg.region_size)),
-            static_cast<int>(std::floor(position.z() / cfg.region_size))});
+            cfg.planar_mode
+                ? 0
+                : static_cast<int>(std::floor(position.z() / cfg.region_size))});
     }
+    const int z_padding = cfg.planar_mode ? 0 : padding;
     std::lock_guard<std::mutex> lock(dirty_mutex_);
     for (const RegionKey &center : changed_regions) {
         for (int x = -padding; x <= padding; ++x) {
             for (int y = -padding; y <= padding; ++y) {
-                for (int z = -padding; z <= padding; ++z) {
+                for (int z = -z_padding; z <= z_padding; ++z) {
                     dirty_regions_.insert({center.x + x, center.y + y, center.z + z});
                 }
             }
@@ -184,7 +231,7 @@ void IncrementalTopologyGraph::markDirtyVoxels(
 
 void IncrementalTopologyGraph::observePlannedPath(
     const rog_map::vec_Vec3f &path) {
-    if (path.empty()) {
+    if (!active() || path.empty()) {
         return;
     }
     Config cfg;
@@ -201,7 +248,9 @@ void IncrementalTopologyGraph::observePlannedPath(
         return RegionKey{
             static_cast<int>(std::floor(position.x() / cfg.region_size)),
             static_cast<int>(std::floor(position.y() / cfg.region_size)),
-            static_cast<int>(std::floor(position.z() / cfg.region_size))};
+            cfg.planar_mode
+                ? 0
+                : static_cast<int>(std::floor(position.z() / cfg.region_size))};
     };
     for (std::size_t i = 0; i < path.size(); ++i) {
         if (!path[i].allFinite()) {
@@ -232,13 +281,18 @@ void IncrementalTopologyGraph::observePlannedPath(
 
 bool IncrementalTopologyGraph::lineTraversable(const rog_map::Vec3f &start,
                                                 const rog_map::Vec3f &goal,
-                                                const TopologyMapView &map_view) const {
+                                                const TopologyMapView &map_view,
+                                                double sample_spacing) const {
     if (!start.allFinite() || !goal.allFinite()) {
         return false;
     }
     const double distance = (goal - start).norm();
+    if (!std::isfinite(sample_spacing) || sample_spacing <= 0.0) {
+        std::shared_lock<std::shared_mutex> lock(graph_mutex_);
+        sample_spacing = config_.edge_sample_spacing;
+    }
     const int steps = std::max(1, static_cast<int>(std::ceil(
-        distance / config_.edge_sample_spacing)));
+        distance / sample_spacing)));
     for (int i = 0; i <= steps; ++i) {
         const double ratio = static_cast<double>(i) / static_cast<double>(steps);
         if (!map_view.isTraversable(start + ratio * (goal - start))) {
@@ -251,12 +305,20 @@ bool IncrementalTopologyGraph::lineTraversable(const rog_map::Vec3f &start,
 double IncrementalTopologyGraph::estimateClearance(
     const rog_map::Vec3f &position, const TopologyMapView &map_view) const {
     double clearance = 0.0;
-    if (map_view.getClearance(position, clearance) &&
+    // A 3D ESDF legitimately includes the virtual floor and ceiling. In
+    // planar state2state mode those bounds have already selected the flight
+    // layer, so using the ESDF minimum again would reject every horizontal
+    // bubble in a narrow altitude band.
+    if (!config_.planar_mode &&
+        map_view.getClearance(position, clearance) &&
         std::isfinite(clearance)) {
         return clampValue(clearance, 0.0, config_.max_clearance);
     }
 
-    static const rog_map::Vec3f directions[] = {
+    static const rog_map::Vec3f planar_directions[] = {
+        {1, 0, 0}, {-1, 0, 0}, {0, 1, 0}, {0, -1, 0},
+        {1, 1, 0}, {1, -1, 0}, {-1, 1, 0}, {-1, -1, 0}};
+    static const rog_map::Vec3f spatial_directions[] = {
         {1, 0, 0}, {-1, 0, 0}, {0, 1, 0}, {0, -1, 0}, {0, 0, 1}, {0, 0, -1},
         {1, 1, 0}, {1, -1, 0}, {-1, 1, 0}, {-1, -1, 0},
         {1, 0, 1}, {1, 0, -1}, {-1, 0, 1}, {-1, 0, -1},
@@ -266,7 +328,7 @@ double IncrementalTopologyGraph::estimateClearance(
     const double step = std::min(config_.sample_spacing * 0.5,
                                  config_.edge_sample_spacing);
     double minimum = config_.max_clearance;
-    for (const rog_map::Vec3f &raw_direction : directions) {
+    const auto scan_direction = [&](const rog_map::Vec3f &raw_direction) {
         const rog_map::Vec3f direction = raw_direction.normalized();
         double hit_distance = config_.max_clearance;
         for (double distance = step; distance <= config_.max_clearance; distance += step) {
@@ -276,6 +338,15 @@ double IncrementalTopologyGraph::estimateClearance(
             }
         }
         minimum = std::min(minimum, hit_distance);
+    };
+    if (config_.planar_mode) {
+        for (const rog_map::Vec3f &direction : planar_directions) {
+            scan_direction(direction);
+        }
+    } else {
+        for (const rog_map::Vec3f &direction : spatial_directions) {
+            scan_direction(direction);
+        }
     }
     return minimum;
 }
@@ -283,7 +354,8 @@ double IncrementalTopologyGraph::estimateClearance(
 std::vector<IncrementalTopologyGraph::Node,
             Eigen::aligned_allocator<IncrementalTopologyGraph::Node>>
 IncrementalTopologyGraph::generateCandidates(const RegionKey &region,
-                                              const TopologyMapView &map_view) const {
+                                              const TopologyMapView &map_view,
+                                              CandidateDiagnostics &diagnostics) const {
     std::vector<Node, Eigen::aligned_allocator<Node>> candidates;
 
     struct Box {
@@ -299,8 +371,12 @@ IncrementalTopologyGraph::generateCandidates(const RegionKey &region,
 
     const rog_map::Vec3f minimum = regionMin(region);
     std::vector<Box, Eigen::aligned_allocator<Box>> pending;
-    pending.push_back({minimum,
-                       minimum + rog_map::Vec3f::Constant(config_.region_size)});
+    rog_map::Vec3f maximum =
+        minimum + rog_map::Vec3f::Constant(config_.region_size);
+    if (config_.planar_mode) {
+        maximum.z() = minimum.z();
+    }
+    pending.push_back({minimum, maximum});
     std::vector<Bubble, Eigen::aligned_allocator<Bubble>> bubbles;
     bubbles.reserve(config_.max_bubbles_per_region);
 
@@ -310,6 +386,7 @@ IncrementalTopologyGraph::generateCandidates(const RegionKey &region,
         const rog_map::Vec3f center = 0.5 * (box.minimum + box.maximum);
         const rog_map::Vec3f half_size = 0.5 * (box.maximum - box.minimum);
         const double half_diagonal = half_size.norm();
+        ++diagnostics.sampled_center_count;
 
         bool covered = false;
         for (const Bubble &bubble : bubbles) {
@@ -323,12 +400,15 @@ IncrementalTopologyGraph::generateCandidates(const RegionKey &region,
         }
 
         if (map_view.isTraversable(center)) {
+            ++diagnostics.traversable_center_count;
             const double clearance = estimateClearance(center, map_view);
             if (clearance >= config_.min_clearance) {
                 bubbles.push_back({center, clearance});
                 if (clearance + 1.0e-9 >= half_diagonal) {
                     continue;
                 }
+            } else {
+                ++diagnostics.clearance_rejected_count;
             }
         }
 
@@ -337,9 +417,13 @@ IncrementalTopologyGraph::generateCandidates(const RegionKey &region,
             continue;
         }
         const rog_map::Vec3f midpoint = center;
-        for (int mask = 0; mask < 8; ++mask) {
+        const int split_axes = config_.planar_mode ? 2 : 3;
+        const int child_count = 1 << split_axes;
+        for (int mask = 0; mask < child_count; ++mask) {
             Box child;
-            for (int axis = 0; axis < 3; ++axis) {
+            child.minimum = box.minimum;
+            child.maximum = box.maximum;
+            for (int axis = 0; axis < split_axes; ++axis) {
                 const bool upper = (mask & (1 << axis)) != 0;
                 child.minimum[axis] = upper ? midpoint[axis] : box.minimum[axis];
                 child.maximum[axis] = upper ? box.maximum[axis] : midpoint[axis];
@@ -433,10 +517,13 @@ bool IncrementalTopologyGraph::popDirtyRegion(RegionKey &region,
         double best_distance = std::numeric_limits<double>::infinity();
         for (auto candidate = dirty_regions_.begin();
              candidate != dirty_regions_.end(); ++candidate) {
-            const rog_map::Vec3f center = config_.region_size *
+            rog_map::Vec3f center = config_.region_size *
                 rog_map::Vec3f(candidate->x + 0.5,
                                candidate->y + 0.5,
                                candidate->z + 0.5);
+            if (config_.planar_mode) {
+                center.z() = config_.navigation_altitude;
+            }
             const double distance = (center - *focus).squaredNorm();
             if (distance < best_distance) {
                 best_distance = distance;
@@ -451,7 +538,8 @@ bool IncrementalTopologyGraph::popDirtyRegion(RegionKey &region,
 
 void IncrementalTopologyGraph::rebuildRegion(const RegionKey &region,
                                              const TopologyMapView &map_view) {
-    auto candidates = generateCandidates(region, map_view);
+    CandidateDiagnostics diagnostics;
+    auto candidates = generateCandidates(region, map_view, diagnostics);
     std::vector<Node, Eigen::aligned_allocator<Node>> old_nodes;
     {
         std::shared_lock<std::shared_mutex> lock(graph_mutex_);
@@ -509,6 +597,10 @@ void IncrementalTopologyGraph::rebuildRegion(const RegionKey &region,
         }
 
         ++revision_;
+        last_candidate_diagnostics_ = diagnostics;
+        if (candidates.empty()) {
+            ++empty_region_count_;
+        }
         for (Node &candidate : candidates) {
             if (candidate.id == 0) {
                 candidate.id = next_node_id_++;
@@ -638,13 +730,42 @@ void IncrementalTopologyGraph::rebuildIncidentEdges(
     }
 }
 
+void IncrementalTopologyGraph::publishSearchSnapshot() {
+    auto next = std::make_shared<SearchSnapshot>();
+    {
+        std::shared_lock<std::shared_mutex> lock(graph_mutex_);
+        next->config = config_;
+        next->revision = revision_;
+        next->graph.reserve(nodes_.size());
+        for (const auto &entry : nodes_) {
+            next->graph.emplace(entry.first,
+                                SearchNode{entry.second.node,
+                                           entry.second.neighbors});
+        }
+    }
+    std::atomic_store_explicit(
+        &search_snapshot_, SearchSnapshotPtr(std::move(next)),
+        std::memory_order_release);
+}
+
 std::size_t IncrementalTopologyGraph::update(const TopologyMapView &map_view,
                                              std::size_t max_regions,
                                              const rog_map::Vec3f *focus) {
+    if (!active()) {
+        return 0;
+    }
+    rog_map::Vec3f requested_focus = rog_map::Vec3f::Zero();
+    if (focus == nullptr) {
+        std::lock_guard<std::mutex> focus_lock(focus_mutex_);
+        if (has_update_focus_) {
+            requested_focus = update_focus_;
+            focus = &requested_focus;
+        }
+    }
     std::lock_guard<std::mutex> update_lock(update_mutex_);
     {
         std::shared_lock<std::shared_mutex> lock(graph_mutex_);
-        if (!config_.enabled) {
+        if (!config_.enabled || !active()) {
             return 0;
         }
         if (max_regions == 0) {
@@ -657,15 +778,18 @@ std::size_t IncrementalTopologyGraph::update(const TopologyMapView &map_view,
         rebuildRegion(region, map_view);
         ++rebuilt;
     }
+    if (rebuilt > 0) {
+        publishSearchSnapshot();
+    }
     return rebuilt;
 }
 
 IncrementalTopologyGraph::Snapshot IncrementalTopologyGraph::snapshot() const {
     Snapshot output;
-    {
-        std::shared_lock<std::shared_mutex> lock(graph_mutex_);
-        output.nodes.reserve(nodes_.size());
-        for (const auto &entry : nodes_) {
+    const auto search = acquireSearchSnapshot();
+    if (search) {
+        output.nodes.reserve(search->graph.size());
+        for (const auto &entry : search->graph) {
             output.nodes.push_back(entry.second.node);
             for (const auto &neighbor : entry.second.neighbors) {
                 if (entry.first < neighbor.first) {
@@ -673,11 +797,27 @@ IncrementalTopologyGraph::Snapshot IncrementalTopologyGraph::snapshot() const {
                 }
             }
         }
-        output.revision = revision_;
+        output.revision = search->revision;
+    }
+    {
+        std::shared_lock<std::shared_mutex> lock(graph_mutex_);
+        output.empty_region_count = empty_region_count_;
+        output.last_sampled_center_count =
+            last_candidate_diagnostics_.sampled_center_count;
+        output.last_traversable_center_count =
+            last_candidate_diagnostics_.traversable_center_count;
+        output.last_clearance_rejected_count =
+            last_candidate_diagnostics_.clearance_rejected_count;
     }
     std::lock_guard<std::mutex> dirty_lock(dirty_mutex_);
     output.dirty_region_count = dirty_regions_.size();
     return output;
+}
+
+IncrementalTopologyGraph::SearchSnapshotPtr
+IncrementalTopologyGraph::acquireSearchSnapshot() const {
+    return std::atomic_load_explicit(&search_snapshot_,
+                                     std::memory_order_acquire);
 }
 
 IncrementalTopologyGraph::Stats IncrementalTopologyGraph::stats() const {
@@ -692,6 +832,13 @@ IncrementalTopologyGraph::Stats IncrementalTopologyGraph::stats() const {
         output.edge_count /= 2U;
         output.revision = revision_;
         output.rebuilt_region_count = rebuilt_region_count_;
+        output.empty_region_count = empty_region_count_;
+        output.last_sampled_center_count =
+            last_candidate_diagnostics_.sampled_center_count;
+        output.last_traversable_center_count =
+            last_candidate_diagnostics_.traversable_center_count;
+        output.last_clearance_rejected_count =
+            last_candidate_diagnostics_.clearance_rejected_count;
     }
     std::lock_guard<std::mutex> dirty_lock(dirty_mutex_);
     output.dirty_region_count = dirty_regions_.size();
@@ -703,59 +850,89 @@ bool IncrementalTopologyGraph::findPath(const rog_map::Vec3f &start,
                                         const TopologyMapView &map_view,
                                         rog_map::vec_Vec3f &path,
                                         double attach_radius) const {
-    std::lock_guard<std::mutex> update_lock(update_mutex_);
+    return findPath(acquireSearchSnapshot(), start, goal, map_view,
+                    path, attach_radius);
+}
+
+bool IncrementalTopologyGraph::findPath(
+    const SearchSnapshotPtr &snapshot,
+    const rog_map::Vec3f &start,
+    const rog_map::Vec3f &goal,
+    const TopologyMapView &map_view,
+    rog_map::vec_Vec3f &path,
+    double attach_radius) const {
     path.clear();
-    if (!start.allFinite() || !goal.allFinite() ||
+    if (!active() || !snapshot || !start.allFinite() || !goal.allFinite() ||
         !map_view.isTraversable(start) || !map_view.isTraversable(goal)) {
         return false;
     }
-    if ((goal - start).norm() <= config_.edge_sample_spacing) {
+    const auto &graph = snapshot->graph;
+    const Config &query_config = snapshot->config;
+    attach_radius = attach_radius > 0.0
+        ? attach_radius : query_config.connection_radius;
+    if ((goal - start).norm() <= query_config.edge_sample_spacing) {
         path = {start, goal};
         return true;
     }
-    if (lineTraversable(start, goal, map_view)) {
+    if (lineTraversable(start, goal, map_view,
+                        query_config.edge_sample_spacing)) {
         path = {start, goal};
         return true;
-    }
-
-    struct SearchNode {
-        rog_map::Vec3f position{rog_map::Vec3f::Zero()};
-        std::unordered_map<NodeId, double> neighbors;
-    };
-    std::unordered_map<NodeId, SearchNode> graph;
-    {
-        std::shared_lock<std::shared_mutex> lock(graph_mutex_);
-        attach_radius = attach_radius > 0.0 ? attach_radius : config_.connection_radius;
-        graph.reserve(nodes_.size());
-        for (const auto &entry : nodes_) {
-            graph.emplace(entry.first,
-                          SearchNode{entry.second.node.position,
-                                     entry.second.neighbors});
-        }
     }
     if (graph.empty()) {
         return false;
     }
 
+    // USS-Nav mounts query points onto a small nearest-neighbor set before
+    // running graph A*. Do the same here: never ray-check every global node in
+    // the real-time planner as the persistent graph grows.
+    std::vector<std::pair<double, NodeId>> nearest_start;
+    std::vector<std::pair<double, NodeId>> nearest_goal;
+    nearest_start.reserve(graph.size());
+    nearest_goal.reserve(graph.size());
+    for (const auto &entry : graph) {
+        const double start_distance =
+            (entry.second.node.position - start).norm();
+        if (start_distance <= attach_radius) {
+            nearest_start.emplace_back(start_distance, entry.first);
+        }
+        const double goal_distance =
+            (entry.second.node.position - goal).norm();
+        if (goal_distance <= attach_radius) {
+            nearest_goal.emplace_back(goal_distance, entry.first);
+        }
+    }
+    std::sort(nearest_start.begin(), nearest_start.end());
+    std::sort(nearest_goal.begin(), nearest_goal.end());
+
     std::vector<std::pair<double, NodeId>> start_candidates;
     std::unordered_map<NodeId, double> goal_links;
-    for (const auto &entry : graph) {
-        const double start_distance = (entry.second.position - start).norm();
-        if (start_distance <= attach_radius &&
-            lineTraversable(start, entry.second.position, map_view)) {
-            start_candidates.emplace_back(start_distance, entry.first);
+    const std::size_t attachment_checks = std::max<std::size_t>(
+        8, 4 * query_config.max_neighbors);
+    for (std::size_t i = 0;
+         i < nearest_start.size() && i < attachment_checks &&
+         start_candidates.size() < query_config.max_neighbors; ++i) {
+        const auto node = graph.find(nearest_start[i].second);
+        if (node != graph.end() &&
+            lineTraversable(start, node->second.node.position, map_view,
+                            query_config.edge_sample_spacing)) {
+            start_candidates.push_back(nearest_start[i]);
         }
-        const double goal_distance = (entry.second.position - goal).norm();
-        if (goal_distance <= attach_radius &&
-            lineTraversable(entry.second.position, goal, map_view)) {
-            goal_links.emplace(entry.first, goal_distance);
+    }
+    for (std::size_t i = 0;
+         i < nearest_goal.size() && i < attachment_checks &&
+         goal_links.size() < query_config.max_neighbors; ++i) {
+        const auto node = graph.find(nearest_goal[i].second);
+        if (node != graph.end() &&
+            lineTraversable(node->second.node.position, goal, map_view,
+                            query_config.edge_sample_spacing)) {
+            goal_links.emplace(nearest_goal[i].second, nearest_goal[i].first);
         }
     }
     if (start_candidates.empty() || goal_links.empty()) {
         return false;
     }
-    std::sort(start_candidates.begin(), start_candidates.end());
-    const std::size_t max_attach = std::min(config_.max_neighbors,
+    const std::size_t max_attach = std::min(query_config.max_neighbors,
                                              start_candidates.size());
 
     using QueueEntry = std::pair<double, NodeId>;
@@ -818,7 +995,7 @@ bool IncrementalTopologyGraph::findPath(const rog_map::Vec3f &start,
     }
     path.push_back(start);
     for (auto iterator = reverse_ids.rbegin(); iterator != reverse_ids.rend(); ++iterator) {
-        path.push_back(graph.at(*iterator).position);
+        path.push_back(graph.at(*iterator).node.position);
     }
     path.push_back(goal);
     return true;

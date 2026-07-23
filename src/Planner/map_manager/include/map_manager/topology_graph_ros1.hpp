@@ -2,8 +2,12 @@
 
 #ifdef USE_ROS1
 
+#include <condition_variable>
+#include <functional>
 #include <memory>
+#include <mutex>
 #include <string>
+#include <thread>
 
 #include <ros/ros.h>
 #include <visualization_msgs/MarkerArray.h>
@@ -19,13 +23,17 @@ public:
 
     TopologyGraphROS1(const ros::NodeHandle &node,
                       const MapManager::Ptr &map_manager,
-                      const std::string &parameter_namespace = "topology");
+                      const std::string &parameter_namespace = "topology",
+                      std::function<bool()> mission_active = {});
+    ~TopologyGraphROS1();
 
     bool enabled() const { return enabled_; }
     void updateAndPublish();
 
 private:
     void timerCallback(const ros::TimerEvent &);
+    void workerLoop();
+    bool missionActive() const;
     visualization_msgs::MarkerArray makeMarkers(
         const IncrementalTopologyGraph::Snapshot &snapshot) const;
 
@@ -33,6 +41,12 @@ private:
     std::weak_ptr<MapManager> map_manager_;
     ros::Publisher publisher_;
     ros::Timer timer_;
+    std::function<bool()> mission_active_;
+    std::mutex worker_mutex_;
+    std::condition_variable worker_cv_;
+    std::thread worker_;
+    bool update_requested_{false};
+    bool stopping_{false};
     std::string frame_id_{"world"};
     bool enabled_{false};
     double node_scale_{0.22};

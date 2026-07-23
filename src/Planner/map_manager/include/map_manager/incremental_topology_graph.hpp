@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -37,6 +38,14 @@ public:
 
     struct Config {
         bool enabled{false};
+        /**
+         * Build a 2.5D graph on navigation_altitude. This is intended for
+         * state2state flight in a narrow inflated altitude band: virtual
+         * ground/ceiling still gate traversability, but they are not treated
+         * as horizontal bubble obstacles a second time.
+         */
+        bool planar_mode{false};
+        double navigation_altitude{0.0};
         double region_size{4.0};
         double sample_spacing{1.0};
         double min_clearance{0.45};
@@ -89,7 +98,24 @@ public:
         std::vector<Edge> edges;
         std::uint64_t revision{0};
         std::size_t dirty_region_count{0};
+        std::size_t empty_region_count{0};
+        std::size_t last_sampled_center_count{0};
+        std::size_t last_traversable_center_count{0};
+        std::size_t last_clearance_rejected_count{0};
     };
+
+    /** Immutable graph revision shared by real-time planning queries. */
+    struct SearchNode {
+        Node node;
+        std::unordered_map<NodeId, double> neighbors;
+    };
+
+    struct SearchSnapshot {
+        Config config;
+        std::unordered_map<NodeId, SearchNode> graph;
+        std::uint64_t revision{0};
+    };
+    using SearchSnapshotPtr = std::shared_ptr<const SearchSnapshot>;
 
     struct Stats {
         std::size_t node_count{0};
@@ -97,6 +123,10 @@ public:
         std::size_t region_count{0};
         std::size_t dirty_region_count{0};
         std::size_t rebuilt_region_count{0};
+        std::size_t empty_region_count{0};
+        std::size_t last_sampled_center_count{0};
+        std::size_t last_traversable_center_count{0};
+        std::size_t last_clearance_rejected_count{0};
         std::uint64_t revision{0};
     };
 
@@ -106,6 +136,17 @@ public:
     Config config() const;
     void configure(const Config &config);
     void clear();
+
+    /**
+     * Runtime ownership gate. Configuration says whether this resource may be
+     * used; active says whether the current mission owns it. Exploration keeps
+     * this false so its independent TopoGraph remains the only graph builder.
+     */
+    bool active() const;
+    void setActive(bool active);
+
+    /** Lightweight priority hint consumed by the asynchronous map worker. */
+    void requestUpdateFocus(const rog_map::Vec3f &focus);
 
     void markDirty(const rog_map::Vec3f &position);
     void markDirtyBox(const rog_map::Vec3f &box_min,
@@ -123,9 +164,16 @@ public:
 
     Snapshot snapshot() const;
     Stats stats() const;
+    SearchSnapshotPtr acquireSearchSnapshot() const;
 
     /** Weighted shortest path. Failure never fabricates a direct connection. */
     bool findPath(const rog_map::Vec3f &start,
+                  const rog_map::Vec3f &goal,
+                  const TopologyMapView &map_view,
+                  rog_map::vec_Vec3f &path,
+                  double attach_radius = 0.0) const;
+    bool findPath(const SearchSnapshotPtr &snapshot,
+                  const rog_map::Vec3f &start,
                   const rog_map::Vec3f &goal,
                   const TopologyMapView &map_view,
                   rog_map::vec_Vec3f &path,
@@ -158,25 +206,39 @@ private:
                                          std::vector<NodeId>,
                                          RegionKeyHash>;
 
+    struct CandidateDiagnostics {
+        std::size_t sampled_center_count{0};
+        std::size_t traversable_center_count{0};
+        std::size_t clearance_rejected_count{0};
+    };
+
     static Config sanitized(const Config &config);
     RegionKey regionOf(const rog_map::Vec3f &position) const;
     rog_map::Vec3f regionMin(const RegionKey &region) const;
     bool lineTraversable(const rog_map::Vec3f &start,
                          const rog_map::Vec3f &goal,
-                         const TopologyMapView &map_view) const;
+                         const TopologyMapView &map_view,
+                         double sample_spacing = 0.0) const;
     double estimateClearance(const rog_map::Vec3f &position,
                              const TopologyMapView &map_view) const;
     std::vector<Node, Eigen::aligned_allocator<Node>> generateCandidates(
-        const RegionKey &region, const TopologyMapView &map_view) const;
+        const RegionKey &region, const TopologyMapView &map_view,
+        CandidateDiagnostics &diagnostics) const;
     bool popDirtyRegion(RegionKey &region, const rog_map::Vec3f *focus);
     void rebuildRegion(const RegionKey &region, const TopologyMapView &map_view);
     void rebuildIncidentEdges(const std::vector<NodeId> &source_ids,
                               const TopologyMapView &map_view);
+    void publishSearchSnapshot();
 
     mutable std::shared_mutex graph_mutex_;
     mutable std::mutex dirty_mutex_;
     mutable std::mutex update_mutex_;
+    mutable std::mutex focus_mutex_;
     Config config_;
+    std::atomic<bool> active_{false};
+    rog_map::Vec3f update_focus_{rog_map::Vec3f::Zero()};
+    bool has_update_focus_{false};
+    SearchSnapshotPtr search_snapshot_;
     NodeMap nodes_;
     RegionMap regions_;
     std::unordered_set<RegionKey, RegionKeyHash> dirty_regions_;
@@ -184,6 +246,8 @@ private:
     NodeId next_node_id_{1};
     std::uint64_t revision_{0};
     std::size_t rebuilt_region_count_{0};
+    std::size_t empty_region_count_{0};
+    CandidateDiagnostics last_candidate_diagnostics_;
 };
 
 } // namespace general_planner

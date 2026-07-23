@@ -17,7 +17,7 @@ void MapManager::syncBoundaryMapImpl(const rog_map::ROGMapROS::Ptr &map,
         return;
     }
 
-    if (topology_graph && topology_graph->config().enabled) {
+    if (topology_graph && topology_graph->active()) {
         std::vector<rog_map::Vec3i> changed_indices;
         changed_indices.reserve(changes.size());
         for (const auto &change : changes) {

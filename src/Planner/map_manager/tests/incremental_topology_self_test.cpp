@@ -1,8 +1,14 @@
 #include <map_manager/incremental_topology_graph.hpp>
 
+#include <atomic>
+#include <chrono>
+#include <cmath>
+#include <condition_variable>
 #include <cstdlib>
 #include <iostream>
+#include <mutex>
 #include <string>
+#include <thread>
 #include <unordered_map>
 
 namespace {
@@ -99,6 +105,47 @@ int main() {
     ok &= expect(stats.rebuilt_region_count == 4 && stats.revision == 4,
                  "incremental revision statistics are inconsistent");
 
+    // A narrow inflated flight-height band is valid for quasi-2D
+    // state2state planning, but a 3D minimum-clearance ray test necessarily
+    // sees the floor/ceiling first. Planar topology must keep those bounds as
+    // traversability gates while measuring bubble clearance in XY only.
+    IncrementalTopologyGraph::Config narrow_config = config;
+    narrow_config.min_clearance = 0.45;
+    narrow_config.max_clearance = 0.8;
+    narrow_config.planar_mode = false;
+    IncrementalTopologyGraph::Query narrow_query;
+    narrow_query.traversable = [](const Vec3f &point) {
+        return point.x() >= 0.0 && point.x() < 4.0 &&
+               point.y() >= 0.0 && point.y() < 2.0 &&
+               point.z() > 0.9 && point.z() < 1.3;
+    };
+    IncrementalTopologyGraph spatial_narrow_graph(narrow_config);
+    spatial_narrow_graph.observePlannedPath({Vec3f(0.5, 0.5, 1.1),
+                                             Vec3f(3.5, 0.5, 1.1)});
+    spatial_narrow_graph.update(narrow_query, 2);
+    ok &= expect(spatial_narrow_graph.snapshot().nodes.empty(),
+                 "3D clearance should expose the narrow-height regression fixture");
+
+    narrow_config.planar_mode = true;
+    narrow_config.navigation_altitude = 1.1;
+    IncrementalTopologyGraph planar_narrow_graph(narrow_config);
+    planar_narrow_graph.observePlannedPath({Vec3f(0.5, 0.5, 1.1),
+                                            Vec3f(3.5, 0.5, 1.1)});
+    ok &= expect(planar_narrow_graph.update(narrow_query, 2) == 2,
+                 "planar topology must rebuild both XY regions");
+    const auto planar_narrow = planar_narrow_graph.snapshot();
+    ok &= expect(planar_narrow.nodes.size() == 2,
+                 "planar topology must retain nodes in a narrow height band");
+    ok &= expect(planar_narrow.edges.size() == 1,
+                 "planar topology must connect adjacent free XY regions");
+    for (const auto &node : planar_narrow.nodes) {
+        ok &= expect(std::abs(node.position.z() - 1.1) < 1.0e-9,
+                     "planar topology node altitude is inconsistent");
+    }
+    ok &= expect(planar_narrow.last_sampled_center_count > 0 &&
+                     planar_narrow.last_traversable_center_count > 0,
+                 "candidate diagnostics must expose successful planar sampling");
+
     // A dirty region may contain no node while an edge passes through it. The
     // edge still has to be invalidated when an obstacle appears in the middle.
     IncrementalTopologyGraph::Config crossing_config = config;
@@ -130,6 +177,71 @@ int main() {
     crossing_graph.update(crossing_query, 1);
     ok &= expect(crossing_graph.snapshot().edges.empty(),
                  "an edge crossing a node-free dirty region must be removed");
+
+    // The state2state graph is a mission-scoped MapManager resource. Turning
+    // it off for exploration must suppress dirty tracking, maintenance and
+    // planner queries without destroying exploration's independent TopoGraph.
+    const auto dirty_before_deactivation = crossing_graph.stats().dirty_region_count;
+    crossing_graph.setActive(false);
+    crossing_graph.markDirty(Vec3f(1.0, 1.0, 1.0));
+    ok &= expect(!crossing_graph.active(),
+                 "the runtime topology ownership gate must deactivate");
+    ok &= expect(crossing_graph.stats().dirty_region_count ==
+                     dirty_before_deactivation,
+                 "inactive topology must not consume exploration map changes");
+    path.clear();
+    ok &= expect(!crossing_graph.findPath(Vec3f(0.5, 0.5, 0.5),
+                                          Vec3f(1.5, 0.5, 0.5),
+                                          crossing_query, path),
+                 "inactive topology must not participate in planning");
+    ok &= expect(crossing_graph.update(crossing_query, 1) == 0,
+                 "inactive topology worker must not rebuild regions");
+    crossing_graph.setActive(true);
+    ok &= expect(crossing_graph.active(),
+                 "configured topology must reactivate for state2state");
+
+    // A graph rebuild may be expensive. A planner query must use the already
+    // available graph instead of waiting for the maintenance update mutex.
+    std::atomic<bool> slow_update_entered{false};
+    std::mutex slow_mutex;
+    std::condition_variable slow_cv;
+    bool release_slow_update = false;
+    IncrementalTopologyGraph::Query slow_query;
+    slow_query.traversable = [&](const Vec3f &point) {
+        if (!slow_update_entered.exchange(true)) {
+            slow_cv.notify_all();
+        }
+        std::unique_lock<std::mutex> lock(slow_mutex);
+        slow_cv.wait(lock, [&]() { return release_slow_update; });
+        return crossing_query.traversable(point);
+    };
+    slow_query.clearance = crossing_query.clearance;
+    crossing_graph.markDirty(Vec3f(1.0, 1.0, 1.0));
+    std::thread slow_worker([&]() { crossing_graph.update(slow_query, 1); });
+    {
+        std::unique_lock<std::mutex> lock(slow_mutex);
+        slow_cv.wait(lock, [&]() { return slow_update_entered.load(); });
+    }
+    std::thread delayed_release([&]() {
+        std::this_thread::sleep_for(std::chrono::milliseconds(250));
+        {
+            std::lock_guard<std::mutex> lock(slow_mutex);
+            release_slow_update = true;
+        }
+        slow_cv.notify_all();
+    });
+    const auto query_start = std::chrono::steady_clock::now();
+    path.clear();
+    const bool concurrent_path = crossing_graph.findPath(
+        Vec3f(0.5, 0.5, 0.5), Vec3f(1.5, 0.5, 0.5),
+        crossing_query, path);
+    const double concurrent_query_ms =
+        std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - query_start).count();
+    ok &= expect(concurrent_path && concurrent_query_ms < 100.0,
+                 "planner query blocked on asynchronous topology maintenance");
+    delayed_release.join();
+    slow_worker.join();
 
     if (!ok) {
         return EXIT_FAILURE;

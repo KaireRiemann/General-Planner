@@ -60,6 +60,31 @@ general_planner:
     local_half_size: [ 12, 12, 3 ]
   state2state:
     direct_line_frontend_enable: true
+    topology:
+      enable: true
+      # Build, record and visualize only. Keep topology completely outside the
+      # latency-sensitive state2state frontend.
+      query_enable: false
+      # State2state in this profile navigates inside a narrow inflated height
+      # band. Build a 2.5D XY graph at the band's automatically derived center.
+      planar_mode: true
+      # frontend_in_known_free=false: allow unknown only inside the current
+      # 50x50x6 m rolling ROG window; never persist unseen global space as free.
+      unknown_as_free: true
+      min_query_distance: 3.0
+      # One region per worker tick keeps topology construction incremental and
+      # prevents the map-maintenance thread from monopolizing a CPU core.
+      update_budget: 1
+      region_size: 4.0
+      sample_spacing: 1.0
+      min_clearance: 0.45
+      max_clearance: 2.5
+      connection_radius: 6.0
+      dirty_padding: 2.5
+      bubble_overlap_margin: 0.10
+      max_nodes_per_region: 4
+      max_bubbles_per_region: 256
+      max_neighbors: 8
     altitude_guard_enable: true
     altitude_band: 0.25
     altitude_escape_enable: true

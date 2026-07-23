@@ -181,6 +181,11 @@ namespace general_planner {
         IncrementalTopologyGraph::Config topology_config;
         topology_config.enabled = cfg_.state2state_topology_enable;
         topology_config.unknown_as_free = cfg_.state2state_topology_unknown_as_free;
+        topology_config.planar_mode = cfg_.state2state_topology_planar_mode;
+        const auto topology_map_config = map_manager_->getMapConfig();
+        topology_config.navigation_altitude = 0.5 *
+            (topology_map_config.virtual_ground_height +
+             topology_map_config.virtual_ceil_height);
         topology_config.region_size = cfg_.state2state_topology_region_size;
         topology_config.sample_spacing = cfg_.state2state_topology_sample_spacing;
         topology_config.min_clearance = std::max(
@@ -202,11 +207,14 @@ namespace general_planner {
         map_manager_->configureTopology(topology_config);
         if (topology_config.enabled) {
             ros_ptr_->info(
-                " -- [GeneralPlanner] Incremental topology enabled: region={:.2f}m, cell={:.2f}m, clearance={:.2f}m, unknown_as_free={}.",
+                " -- [GeneralPlanner] Incremental topology enabled: region={:.2f}m, cell={:.2f}m, clearance={:.2f}m, unknown_as_free={}, planar={}, navigation_z={:.3f}m, planning_query={}.",
                 topology_config.region_size,
                 topology_config.sample_spacing,
                 topology_config.min_clearance,
-                topology_config.unknown_as_free);
+                topology_config.unknown_as_free,
+                topology_config.planar_mode,
+                topology_config.navigation_altitude,
+                cfg_.state2state_topology_query_enable);
         }
         ros_ptr_->setResolution(cfg_.resolution);
         ros_ptr_->setVisualizationEn(cfg_.visualization_en);

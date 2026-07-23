@@ -1230,7 +1230,8 @@ namespace fsm {
             planner_ptr_ = std::make_shared<GeneralPlanner>(cfg_path, ros_ptr_, map_ptr_);
             planner_ptr_->setSwarmDroneId(cfg_.swarm_drone_id);
             topology_graph_ros1_ = std::make_shared<general_planner::TopologyGraphROS1>(
-                    nh_, planner_ptr_->getMapManager());
+                    nh_, planner_ptr_->getMapManager(), "topology",
+                    [this]() { return state2stateMode(); });
             if (cfg_.dynamic_obstacle_layer_enable) {
                 dynamic_obstacle_cloud_sub_ =
                         nh_.subscribe<sensor_msgs::PointCloud2>(

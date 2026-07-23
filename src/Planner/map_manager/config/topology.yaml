@@ -1,5 +1,7 @@
 topology:
   enabled: false
+  planar_mode: false
+  navigation_altitude: 0.0
   frame_id: world
   topic: map_manager/topology
   update_period: 0.2
@@ -17,6 +19,6 @@ topology:
   max_nodes_per_region: 4
   max_bubbles_per_region: 256
   max_neighbors: 8
-  max_regions_per_update: 4
+  max_regions_per_update: 1
   node_scale: 0.22
   edge_scale: 0.06

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <limits>
 #include <memory>
@@ -31,8 +32,10 @@ public:
     {
         if (map_) {
             map_->setStateChangeCallback({});
+            map_->setRobotStateCallback({});
         }
         map_ = map;
+        topology_seeded_.store(false, std::memory_order_release);
         boundary_map_.reset();
         if (!topology_graph_) {
             topology_graph_ = std::make_shared<IncrementalTopologyGraph>();
@@ -58,6 +61,46 @@ public:
                     syncBoundaryMapImpl(map, boundary, topology);
                 }
             });
+
+            // Odom drives where the persistent graph expands, but performs no
+            // occupancy sampling or edge construction in the odom callback.
+            // The ROS topology worker consumes these dirty/focus hints with a
+            // bounded asynchronous budget.
+            struct OdomTopologyTrigger {
+                std::mutex mutex;
+                bool initialized{false};
+                rog_map::Vec3f last_marked{rog_map::Vec3f::Zero()};
+            };
+            const auto trigger = std::make_shared<OdomTopologyTrigger>();
+            map_->setRobotStateCallback(
+                [weak_topology, trigger](const rog_map::RobotState &robot) {
+                    const auto topology = weak_topology.lock();
+                    if (!topology || !topology->active() || !robot.rcv ||
+                        !robot.p.allFinite()) {
+                        return;
+                    }
+                    topology->requestUpdateFocus(robot.p);
+                    const auto config = topology->config();
+                    const double trigger_distance =
+                        std::max(0.5, 0.5 * config.region_size);
+                    bool mark = false;
+                    {
+                        std::lock_guard<std::mutex> lock(trigger->mutex);
+                        rog_map::Vec3f delta = robot.p - trigger->last_marked;
+                        if (config.planar_mode) {
+                            delta.z() = 0.0;
+                        }
+                        mark = !trigger->initialized ||
+                               delta.norm() >= trigger_distance;
+                        if (mark) {
+                            trigger->initialized = true;
+                            trigger->last_marked = robot.p;
+                        }
+                    }
+                    if (mark) {
+                        topology->markDirty(robot.p);
+                    }
+                });
         }
     }
 
@@ -104,17 +147,27 @@ public:
         } else {
             topology_graph_->configure(config);
         }
-        if (map_ && config.enabled) {
-            rog_map::Vec3f box_min(-1.0e6, -1.0e6, -1.0e6);
-            rog_map::Vec3f box_max(1.0e6, 1.0e6, 1.0e6);
-            map_->boundBoxByLocalMap(box_min, box_max);
-            topology_graph_->markDirtyBox(box_min, box_max);
-        }
+        topology_seeded_.store(false, std::memory_order_release);
+        seedTopologyFromCurrentWindow();
     }
 
     bool topologyReady() const
     {
-        return topology_graph_ != nullptr && topology_graph_->config().enabled;
+        return topology_graph_ != nullptr && topology_graph_->active();
+    }
+
+    /** Enable the state2state-owned graph only while that mission is active. */
+    void setTopologyActive(const bool active)
+    {
+        if (!topology_graph_) {
+            return;
+        }
+        const bool was_active = topology_graph_->active();
+        topology_graph_->setActive(active);
+        if (!was_active && topology_graph_->active()) {
+            topology_seeded_.store(false, std::memory_order_release);
+            seedTopologyFromCurrentWindow();
+        }
     }
 
     IncrementalTopologyGraph::Ptr topologyGraph() const
@@ -127,15 +180,32 @@ public:
         if (!map_ || !topologyReady()) {
             return 0;
         }
+        if (!seedTopologyFromCurrentWindow()) {
+            return 0;
+        }
         syncBoundaryMap();
         return topology_graph_->update(makeTopologyQuery(), max_regions);
     }
 
-    /** Rebuild the dirty regions nearest a planning query first. */
+    /**
+     * Non-blocking planner hint. The asynchronous topology worker consumes the
+     * latest focus; no map sampling or graph mutation occurs on this call.
+     */
+    void requestTopologyUpdateAround(const rog_map::Vec3f &focus) const
+    {
+        if (topologyReady()) {
+            topology_graph_->requestUpdateFocus(focus);
+        }
+    }
+
+    /** Synchronous maintenance API for tests/tools; planners must not call it. */
     std::size_t updateTopologyAround(const rog_map::Vec3f &focus,
                                      std::size_t max_regions = 0) const
     {
         if (!map_ || !topologyReady()) {
+            return 0;
+        }
+        if (!seedTopologyFromCurrentWindow()) {
             return 0;
         }
         syncBoundaryMap();
@@ -155,6 +225,12 @@ public:
                                : IncrementalTopologyGraph::Snapshot{};
     }
 
+    IncrementalTopologyGraph::SearchSnapshotPtr topologySearchSnapshot() const
+    {
+        return topology_graph_ ? topology_graph_->acquireSearchSnapshot()
+                               : IncrementalTopologyGraph::SearchSnapshotPtr{};
+    }
+
     IncrementalTopologyGraph::Stats topologyStats() const
     {
         return topology_graph_ ? topology_graph_->stats()
@@ -170,9 +246,24 @@ public:
             path.clear();
             return false;
         }
-        syncBoundaryMap();
         return topology_graph_->findPath(start, goal, makeTopologyQuery(),
                                          path, attach_radius);
+    }
+
+    bool findTopologyPath(
+        const IncrementalTopologyGraph::SearchSnapshotPtr &snapshot,
+        const rog_map::Vec3f &start,
+        const rog_map::Vec3f &goal,
+        rog_map::vec_Vec3f &path,
+        const double attach_radius = 0.0) const
+    {
+        if (!map_ || !topologyReady() || !snapshot) {
+            path.clear();
+            return false;
+        }
+        return topology_graph_->findPath(snapshot, start, goal,
+                                         makeTopologyQuery(), path,
+                                         attach_radius);
     }
 
     rog_map::RobotState getRobotState() const
@@ -458,6 +549,32 @@ public:
     }
 
 private:
+    /**
+     * Delay the initial dirty-window seed until the first real odometry has
+     * initialized ROG's sliding-map origin. Otherwise unknown_as_free could
+     * create persistent nodes around the default origin before the robot's
+     * actual window exists.
+     */
+    bool seedTopologyFromCurrentWindow() const
+    {
+        if (!map_ || !topologyReady()) {
+            return false;
+        }
+        const rog_map::RobotState robot = map_->getRobotState();
+        if (!robot.rcv) {
+            return false;
+        }
+        bool expected = false;
+        if (topology_seeded_.compare_exchange_strong(
+                expected, true, std::memory_order_acq_rel)) {
+            rog_map::Vec3f box_min(-1.0e6, -1.0e6, -1.0e6);
+            rog_map::Vec3f box_max(1.0e6, 1.0e6, 1.0e6);
+            map_->boundBoxByLocalMap(box_min, box_max);
+            topology_graph_->markDirtyBox(box_min, box_max);
+        }
+        return true;
+    }
+
     static void syncBoundaryMapImpl(const rog_map::ROGMapROS::Ptr &map,
                                     const BoundaryMap::Ptr &boundary_map,
                                     const IncrementalTopologyGraph::Ptr &topology_graph);
@@ -515,5 +632,6 @@ private:
     BoundaryMap::Ptr boundary_map_;
     IncrementalTopologyGraph::Ptr topology_graph_{
         std::make_shared<IncrementalTopologyGraph>()};
+    mutable std::atomic<bool> topology_seeded_{false};
 };
 } // namespace general_planner

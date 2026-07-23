@@ -45,11 +45,17 @@ general_planner:
     direct_line_frontend_enable: true
     topology:
       enable: true
+      # Build, record and visualize only; do not use it as a planner frontend.
+      query_enable: false
+      # Use the center of ROG's effective height band and horizontal clearance
+      # for the persistent state2state topology graph.
+      planar_mode: true
       # Keep this identical to frontend_in_known_free. Unknown space is only
       # accepted inside the current local ROG window, never as global history.
       unknown_as_free: true
       min_query_distance: 3.0
-      update_budget: 16
+      # Topology is maintained asynchronously; keep each worker pass bounded.
+      update_budget: 1
       region_size: 4.0
       sample_spacing: 1.0
       min_clearance: 0.45

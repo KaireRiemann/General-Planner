@@ -4,14 +4,17 @@
 
 #include <algorithm>
 #include <unordered_map>
+#include <utility>
 
 namespace general_planner {
 
 TopologyGraphROS1::TopologyGraphROS1(
     const ros::NodeHandle &node,
     const MapManager::Ptr &map_manager,
-    const std::string &parameter_namespace)
-    : node_(node), map_manager_(map_manager) {
+    const std::string &parameter_namespace,
+    std::function<bool()> mission_active)
+    : node_(node), map_manager_(map_manager),
+      mission_active_(std::move(mission_active)) {
     IncrementalTopologyGraph::Config config =
         map_manager && map_manager->topologyGraph()
             ? map_manager->topologyGraph()->config()
@@ -19,6 +22,9 @@ TopologyGraphROS1::TopologyGraphROS1(
     const std::string prefix = parameter_namespace.empty()
         ? std::string{} : parameter_namespace + "/";
     node_.param(prefix + "enabled", config.enabled, config.enabled);
+    node_.param(prefix + "planar_mode", config.planar_mode, config.planar_mode);
+    node_.param(prefix + "navigation_altitude", config.navigation_altitude,
+                config.navigation_altitude);
     node_.param(prefix + "region_size", config.region_size, config.region_size);
     node_.param(prefix + "sample_spacing", config.sample_spacing, config.sample_spacing);
     node_.param(prefix + "min_clearance", config.min_clearance, config.min_clearance);
@@ -64,24 +70,79 @@ TopologyGraphROS1::TopologyGraphROS1(
         return;
     }
     map_manager->configureTopology(config);
+    map_manager->setTopologyActive(missionActive());
     publisher_ = node_.advertise<visualization_msgs::MarkerArray>(topic, 1, true);
+    worker_ = std::thread(&TopologyGraphROS1::workerLoop, this);
     timer_ = node_.createTimer(ros::Duration(std::max(0.02, update_period)),
                                &TopologyGraphROS1::timerCallback, this);
-    ROS_INFO_STREAM("[map_manager] Incremental topology enabled, topic: "
-                    << node_.resolveName(topic));
+    if (missionActive()) {
+        updateAndPublish();
+    }
+    ROS_INFO_STREAM("[map_manager] State2state incremental topology enabled, topic: "
+                    << node_.resolveName(topic)
+                    << ", asynchronous worker active");
+}
+
+TopologyGraphROS1::~TopologyGraphROS1() {
+    timer_.stop();
+    {
+        std::lock_guard<std::mutex> lock(worker_mutex_);
+        stopping_ = true;
+    }
+    worker_cv_.notify_one();
+    if (worker_.joinable()) {
+        worker_.join();
+    }
+}
+
+bool TopologyGraphROS1::missionActive() const {
+    return !mission_active_ || mission_active_();
 }
 
 void TopologyGraphROS1::timerCallback(const ros::TimerEvent &) {
-    updateAndPublish();
-}
-
-void TopologyGraphROS1::updateAndPublish() {
     const auto manager = map_manager_.lock();
     if (!enabled_ || !manager) {
         return;
     }
-    manager->updateTopology(max_regions_per_tick_);
-    publisher_.publish(makeMarkers(manager->topologySnapshot()));
+    const bool active = missionActive();
+    manager->setTopologyActive(active);
+    if (!active) {
+        return;
+    }
+    updateAndPublish();
+}
+
+void TopologyGraphROS1::updateAndPublish() {
+    if (!enabled_) {
+        return;
+    }
+    {
+        std::lock_guard<std::mutex> lock(worker_mutex_);
+        update_requested_ = true;
+    }
+    worker_cv_.notify_one();
+}
+
+void TopologyGraphROS1::workerLoop() {
+    for (;;) {
+        {
+            std::unique_lock<std::mutex> lock(worker_mutex_);
+            worker_cv_.wait(lock, [this]() {
+                return stopping_ || update_requested_;
+            });
+            if (stopping_) {
+                return;
+            }
+            update_requested_ = false;
+        }
+
+        const auto manager = map_manager_.lock();
+        if (!manager || !manager->topologyReady()) {
+            continue;
+        }
+        manager->updateTopology(max_regions_per_tick_);
+        publisher_.publish(makeMarkers(manager->topologySnapshot()));
+    }
 }
 
 visualization_msgs::MarkerArray TopologyGraphROS1::makeMarkers(
@@ -176,7 +237,14 @@ visualization_msgs::MarkerArray TopologyGraphROS1::makeMarkers(
     status.text = "topology nodes=" + std::to_string(snapshot.nodes.size()) +
                   " edges=" + std::to_string(snapshot.edges.size()) +
                   " dirty=" + std::to_string(snapshot.dirty_region_count) +
-                  " rev=" + std::to_string(snapshot.revision);
+                  " rev=" + std::to_string(snapshot.revision) +
+                  " empty=" + std::to_string(snapshot.empty_region_count) +
+                  " last[sampled=" +
+                  std::to_string(snapshot.last_sampled_center_count) +
+                  " free=" +
+                  std::to_string(snapshot.last_traversable_center_count) +
+                  " clearance_reject=" +
+                  std::to_string(snapshot.last_clearance_rejected_count) + "]";
     output.markers.push_back(status);
     return output;
 }

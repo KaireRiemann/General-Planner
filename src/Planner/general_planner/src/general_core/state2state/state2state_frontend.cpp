@@ -308,18 +308,24 @@ namespace state2state_task {
             candidate.clear();
             candidate_ret = FAILED;
             const double query_distance = (goal - temp_start_point).norm();
-            if (!services.cfg.state2state_topology_enable ||
+            if (!services.cfg.state2state_topology_query_enable ||
+                !services.cfg.state2state_topology_enable ||
                 !services.map_manager->topologyReady() ||
                 query_distance < std::max(0.0,
                     services.cfg.state2state_topology_min_query_distance)) {
                 return false;
             }
 
-            const Vec3f focus = 0.5 * (temp_start_point + goal);
-            services.map_manager->updateTopologyAround(
-                focus,
-                static_cast<std::size_t>(std::max(
-                    1, services.cfg.state2state_topology_update_budget)));
+            // Match USS-Nav's build/query separation: planning only tells the
+            // persistent map where the robot currently is. Expanding from the
+            // robot (not a possibly unobserved goal midpoint) lets the graph
+            // accumulate connected navigation memory along executed routes.
+            services.map_manager->requestTopologyUpdateAround(temp_start_point);
+            const auto topology_snapshot =
+                services.map_manager->topologySearchSnapshot();
+            if (!topology_snapshot || topology_snapshot->graph.empty()) {
+                return false;
+            }
 
             vec_Vec3f topology_path;
             auto routeUsable = [&](const vec_Vec3f &route) {
@@ -335,7 +341,8 @@ namespace state2state_task {
             };
 
             bool reaches_goal = services.map_manager->findTopologyPath(
-                                    temp_start_point, goal, topology_path) &&
+                                    topology_snapshot, temp_start_point, goal,
+                                    topology_path) &&
                                 routeUsable(topology_path);
 
             // A distant click goal can lie outside the rolling local map. In
@@ -351,7 +358,8 @@ namespace state2state_task {
                 if (query_distance > 1.0e-9) {
                     direction = (goal - temp_start_point) / query_distance;
                 }
-                for (const auto &node : services.map_manager->topologySnapshot().nodes) {
+                for (const auto &entry : topology_snapshot->graph) {
+                    const auto &node = entry.second.node;
                     const Vec3f offset = node.position - temp_start_point;
                     const double radial_distance = offset.norm();
                     const double progress = offset.dot(direction);
@@ -371,13 +379,17 @@ namespace state2state_task {
 
                 vec_Vec3f best_route;
                 double best_progress = -1.0;
-                const std::size_t attempts = std::min<std::size_t>(8, targets.size());
+                // Targets are already ordered by goal progress. Stop at the
+                // first safe route instead of ray-checking several equivalent
+                // graph paths in the latency-sensitive frontend.
+                const std::size_t attempts = std::min<std::size_t>(3, targets.size());
                 const double required_length = 0.65 * std::min(
                     searching_horizon, query_distance);
                 for (std::size_t i = 0; i < attempts; ++i) {
                     vec_Vec3f route;
                     if (!services.map_manager->findTopologyPath(
-                            temp_start_point, targets[i].position, route) ||
+                            topology_snapshot, temp_start_point,
+                            targets[i].position, route) ||
                         !routeUsable(route)) {
                         continue;
                     }
@@ -391,6 +403,7 @@ namespace state2state_task {
                         progress > best_progress) {
                         best_progress = progress;
                         best_route = std::move(route);
+                        break;
                     }
                 }
                 topology_path = std::move(best_route);

@@ -265,6 +265,12 @@ RobotState ROGMap::getRobotState() const {
     return robot_state_;
 }
 
+void ROGMap::setRobotStateCallback(
+    std::function<void(const RobotState &)> callback) {
+    std::lock_guard<std::mutex> lock(robot_state_callback_mutex_);
+    robot_state_callback_ = std::move(callback);
+}
+
 void ROGMap::updateRobotState(const Pose& pose) {
     robot_state_.p = pose.first;
     robot_state_.q = pose.second;
@@ -272,4 +278,12 @@ void ROGMap::updateRobotState(const Pose& pose) {
     robot_state_.rcv = true;
     robot_state_.yaw = get_yaw_from_quaternion<double>(pose.second);
     updateLocalBox(pose.first);
+    std::function<void(const RobotState &)> callback;
+    {
+        std::lock_guard<std::mutex> lock(robot_state_callback_mutex_);
+        callback = robot_state_callback_;
+    }
+    if (callback) {
+        callback(robot_state_);
+    }
 }

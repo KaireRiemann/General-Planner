@@ -23,6 +23,9 @@
 
 #pragma once
 
+#include <functional>
+#include <mutex>
+
 #include <rog_map/prob_map.h>
 #include <rog_map/rog_map_core/common_lib.hpp>
 #include <general_utils/type_utils.hpp>
@@ -113,6 +116,9 @@ namespace rog_map {
 
         RobotState getRobotState() const;
 
+        /** Lightweight notification after odometry has updated/slid the map. */
+        void setRobotStateCallback(std::function<void(const RobotState &)> callback);
+
     protected:
 
         std::ofstream time_log_file_, map_info_log_file_;
@@ -126,5 +132,7 @@ namespace rog_map {
           const Vec3f & start_pos, Vec3f& nearest_pt, const double & max_dis) const ;
 
         RobotState robot_state_;
+        mutable std::mutex robot_state_callback_mutex_;
+        std::function<void(const RobotState &)> robot_state_callback_;
     };
 }

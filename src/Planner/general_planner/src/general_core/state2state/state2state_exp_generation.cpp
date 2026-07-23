@@ -410,7 +410,8 @@ namespace general_planner {
                 guide_path.push_back(services.goal_p);
             } else {
                 vec_Vec3f new_path;
-                if (!pathSearch(services.frontend, guide_path.back(), services.goal_p, temp_horizon, new_path)) {
+                if (!pathSearch(services.frontend, guide_path.back(),
+                                services.goal_p, temp_horizon, new_path)) {
                     services.ros_ptr->warn(" -- [GeneralPlanner] PathSearch for new path failed");
                     return FAILED;
                 } else if (new_path.size() < 2) {
