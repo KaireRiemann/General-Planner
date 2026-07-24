@@ -1102,6 +1102,354 @@ void checkGenericPhrAlmSolver()
           "PHR-ALM did not accept an explicitly allowed feasible warm start.");
 }
 
+void checkTwoStageAdaptivePenaltyPath()
+{
+  using Optimizer =
+      minco::MINCOOptimizer<3, 4, ExpTimeMap, IdentitySpatialMap>;
+
+  Optimizer optimizer;
+  optimizer.setEnergyWeight(0.0);
+  optimizer.setSamplesPerPiece(8);
+  optimizer.setTimingEnabled(false);
+
+  std::vector<double> times{0.9, 1.1, 0.8};
+  Optimizer::WaypointsType waypoints(4, 3);
+  waypoints << 0.0, 0.0, 0.0,
+      0.8, 0.4, -0.1,
+      1.7, -0.2, 0.3,
+      2.5, 0.1, 0.0;
+  Optimizer::BoundaryState head = Optimizer::BoundaryState::Zero();
+  Optimizer::BoundaryState tail = Optimizer::BoundaryState::Zero();
+  head.col(0) = waypoints.row(0).transpose();
+  tail.col(0) = waypoints.row(3).transpose();
+  require(optimizer.setInitState(times, waypoints, head, tail),
+          "Failed to initialize two-stage adaptive test optimizer.");
+
+  // Narrow corridor so depth-0 certificates fail and Stage B must refine.
+  general_utils::PolyhedraH corridors(1);
+  corridors[0].resize(6, 4);
+  corridors[0] <<
+      1.0, 0.0, 0.0, -0.2,
+      -1.0, 0.0, 0.0, -3.0,
+      0.0, 1.0, 0.0, -0.15,
+      0.0, -1.0, 0.0, -0.15,
+      0.0, 0.0, 1.0, -0.2,
+      0.0, 0.0, -1.0, -0.2;
+  Eigen::VectorXi corridor_indices(3);
+  corridor_indices.setZero();
+
+  general_utils::VecDf bounds(6);
+  bounds << 2.0, 4.0, 8.0, 20.0, 0.1, 100.0;
+  general_utils::VecDf weights(7);
+  weights << 1.0, 0.2, 0.15, 0.1, 0.0, 0.0, 0.0;
+  flatness::FlatnessMap flatness_map;
+  flatness_map.reset(1.0, 9.81, 0.0, 0.0, 0.0, 1.0e-4);
+  traj_opt::SwarmPenaltyConfig swarm_config;
+  traj_opt::SwarmTrajectoriesConstPtr swarm_trajectories;
+
+  cost_functional_manager::ExpConvexCostManager::AdaptiveOptions options;
+  options.enabled = true;
+  options.position_refine_margin = 0.05;
+  options.refine_derivative_constraints = false;
+
+  cost_functional_manager::ExpConvexCostManager manager;
+  manager.configure(traj_opt::convex_hull::Basis::Bezier, 2, 2, options);
+  manager.reset(&corridors,
+                &corridor_indices,
+                nullptr,
+                nullptr,
+                1.0e-2,
+                bounds,
+                weights,
+                &flatness_map,
+                swarm_config,
+                swarm_trajectories,
+                0.0);
+  require(manager.adaptiveEnabled(),
+          "Two-stage adaptive hull path was not enabled.");
+
+  manager.freezeAllDepths(3, 0);
+  require(manager.coarseSegmentCount() == 3 &&
+              manager.fineSegmentCount() == 0,
+          "Stage A must freeze every segment at depth 0.");
+
+  Eigen::VectorXd x = optimizer.generateInitialGuess();
+  Eigen::VectorXd gradient = Eigen::VectorXd::Zero(x.size());
+  ZeroTimeCost time_cost;
+  const double stage_a_cost =
+      optimizer.evaluate(x, gradient, time_cost, manager);
+  require(std::isfinite(stage_a_cost) && gradient.allFinite(),
+          "Stage A adaptive evaluation produced non-finite values.");
+  const std::size_t stage_a_checks =
+      manager.activeControlPointChecksPerEvaluation();
+  require(stage_a_checks > 0 && stage_a_checks < 276,
+          "Stage A should evaluate fewer controls than fixed depth-2 V2.");
+
+  require(optimizer.updateTrajectoryFromDecisionVector(x),
+          "Failed to materialize trajectory before Stage B refine.");
+  const bool refined =
+      manager.refineFrozenDepths(optimizer.getTrajectory());
+  require(refined && manager.fineSegmentCount() > 0,
+          "Stage B refine did not promote any segment to depth 2.");
+  require(manager.coarseSegmentCount() + manager.fineSegmentCount() == 3,
+          "Frozen depth layout lost a source segment.");
+
+  // Topology must stay fixed across evaluations of the same solve.
+  const std::vector<int> frozen = manager.frozenSegmentDepths();
+  const double stage_b_cost =
+      optimizer.evaluate(x, gradient, time_cost, manager);
+  require(std::isfinite(stage_b_cost) && gradient.allFinite(),
+          "Stage B adaptive evaluation produced non-finite values.");
+  require(manager.frozenSegmentDepths() == frozen,
+          "Adaptive depth topology changed inside an evaluation/line-search.");
+  require(manager.activeControlPointChecksPerEvaluation() > stage_a_checks,
+          "Stage B should evaluate more controls after refining segments.");
+
+  const auto certificate =
+      manager.computeAdaptiveContinuousCertificate(
+          optimizer.getTrajectory());
+  require(certificate.scalar_constraint_checks > 0,
+          "Post-solve adaptive certificate produced no scalar checks.");
+  require(std::isfinite(certificate.max_normalized_violation),
+          "Post-solve adaptive certificate max violation is non-finite.");
+}
+
+void checkDiscreteAttractorDoesNotForceDense()
+{
+  using Optimizer =
+      minco::MINCOOptimizer<3, 4, ExpTimeMap, IdentitySpatialMap>;
+
+  Optimizer optimizer;
+  optimizer.setEnergyWeight(0.0);
+  optimizer.setSamplesPerPiece(4);
+  std::vector<double> times{0.8, 0.9, 1.0};
+  Optimizer::WaypointsType waypoints(4, 3);
+  waypoints << 0.0, 0.0, 0.0,
+      1.0, 0.0, 0.0,
+      2.0, 0.0, 0.0,
+      3.0, 0.0, 0.0;
+  Optimizer::BoundaryState head = Optimizer::BoundaryState::Zero();
+  Optimizer::BoundaryState tail = Optimizer::BoundaryState::Zero();
+  head.col(0) = waypoints.row(0).transpose();
+  tail.col(0) = waypoints.row(3).transpose();
+  require(optimizer.setInitState(times, waypoints, head, tail),
+          "Failed to initialize discrete-attractor optimizer.");
+
+  general_utils::PolyhedraH corridors(1);
+  corridors[0].resize(6, 4);
+  corridors[0] <<
+      1.0, 0.0, 0.0, -10.0,
+      -1.0, 0.0, 0.0, -10.0,
+      0.0, 1.0, 0.0, -10.0,
+      0.0, -1.0, 0.0, -10.0,
+      0.0, 0.0, 1.0, -10.0,
+      0.0, 0.0, -1.0, -10.0;
+  Eigen::VectorXi corridor_indices(3);
+  corridor_indices.setZero();
+
+  general_utils::Mat3Df attractors(3, 3);
+  attractors << 1.0, 2.0, 2.5,
+      0.2, -0.2, 0.1,
+      0.0, 0.0, 0.0;
+  general_utils::VecDf dead(3);
+  dead << 0.05, 0.05, 0.05;
+
+  general_utils::VecDf bounds(6);
+  bounds << 20.0, 40.0, 80.0, 20.0, 0.1, 100.0;
+  general_utils::VecDf weights = general_utils::VecDf::Zero(7);
+  weights(4) = 10.0; // attractor only
+  flatness::FlatnessMap flatness_map;
+  flatness_map.reset(1.0, 9.81, 0.0, 0.0, 0.0, 1.0e-4);
+  traj_opt::SwarmPenaltyConfig swarm_config;
+  traj_opt::SwarmTrajectoriesConstPtr swarm_trajectories;
+
+  cost_functional_manager::ExpConvexCostManager manager;
+  manager.configure(traj_opt::convex_hull::Basis::Bezier, 0, 2);
+  manager.reset(&corridors,
+                &corridor_indices,
+                &attractors,
+                &dead,
+                1.0e-2,
+                bounds,
+                weights,
+                &flatness_map,
+                swarm_config,
+                swarm_trajectories,
+                0.0);
+  require(!manager.usesDenseSampling(),
+          "Attractor-only hull cost must not force dense sampling.");
+
+  Eigen::VectorXd x = optimizer.generateInitialGuess();
+  Eigen::VectorXd gradient = Eigen::VectorXd::Zero(x.size());
+  ZeroTimeCost time_cost;
+  const double cost =
+      optimizer.evaluate(x, gradient, time_cost, manager);
+  require(cost > 1.0e-12 && gradient.allFinite(),
+          "Discrete attractor cost/gradient inactive.");
+  require(std::abs(optimizer.lastIntegralCost()) < 1.0e-12,
+          "Discrete attractor unexpectedly used dense integral.");
+  require(optimizer.lastCoefficientCost() > 1.0e-12,
+          "Discrete attractor was not recorded as coefficient cost.");
+
+  constexpr double epsilon = 1.0e-6;
+  double max_error = 0.0;
+  for (Eigen::Index i = 0; i < x.size(); ++i)
+  {
+    Eigen::VectorXd plus = x;
+    Eigen::VectorXd minus = x;
+    plus(i) += epsilon;
+    minus(i) -= epsilon;
+    Eigen::VectorXd scratch_plus = Eigen::VectorXd::Zero(x.size());
+    Eigen::VectorXd scratch_minus = Eigen::VectorXd::Zero(x.size());
+    const double value_plus =
+        optimizer.evaluate(plus, scratch_plus, time_cost, manager);
+    const double value_minus =
+        optimizer.evaluate(minus, scratch_minus, time_cost, manager);
+    const double numerical =
+        (value_plus - value_minus) / (2.0 * epsilon);
+    max_error = std::max(
+        max_error,
+        std::abs(numerical - gradient(i)) /
+            std::max({1.0,
+                      std::abs(numerical),
+                      std::abs(gradient(i))}));
+  }
+  require(max_error < 8.0e-5,
+          "Discrete attractor gradient failed finite differences.");
+}
+
+void checkPositionScaleNondimensionalization()
+{
+  using Optimizer =
+      minco::MINCOOptimizer<3, 4, ExpTimeMap, IdentitySpatialMap>;
+
+  Optimizer optimizer;
+  optimizer.setEnergyWeight(0.0);
+  optimizer.setSamplesPerPiece(2);
+  std::vector<double> times{1.0};
+  Optimizer::WaypointsType waypoints(2, 3);
+  waypoints << 0.0, 0.0, 0.0,
+      1.0, 0.0, 0.0;
+  Optimizer::BoundaryState head = Optimizer::BoundaryState::Zero();
+  Optimizer::BoundaryState tail = Optimizer::BoundaryState::Zero();
+  head.col(0) = waypoints.row(0).transpose();
+  tail.col(0) = waypoints.row(1).transpose();
+  require(optimizer.setInitState(times, waypoints, head, tail),
+          "Failed to initialize position-scale optimizer.");
+
+  general_utils::PolyhedraH corridors(1);
+  corridors[0].resize(6, 4);
+  // Force a positive position violation on +x.
+  corridors[0] <<
+      1.0, 0.0, 0.0, -0.2,
+      -1.0, 0.0, 0.0, 1.0,
+      0.0, 1.0, 0.0, -1.0,
+      0.0, -1.0, 0.0, -1.0,
+      0.0, 0.0, 1.0, -1.0,
+      0.0, 0.0, -1.0, -1.0;
+  Eigen::VectorXi corridor_indices(1);
+  corridor_indices.setZero();
+  general_utils::VecDf bounds(6);
+  bounds << 20.0, 40.0, 80.0, 20.0, 0.1, 100.0;
+  general_utils::VecDf weights = general_utils::VecDf::Zero(7);
+  weights(0) = 1.0;
+  flatness::FlatnessMap flatness_map;
+  flatness_map.reset(1.0, 9.81, 0.0, 0.0, 0.0, 1.0e-4);
+  traj_opt::SwarmPenaltyConfig swarm_config;
+  traj_opt::SwarmTrajectoriesConstPtr swarm_trajectories;
+
+  cost_functional_manager::ExpConvexCostManager manager_a;
+  cost_functional_manager::ExpConvexCostManager manager_b;
+  cost_functional_manager::ExpConvexCostManager::AdaptiveOptions opts;
+  manager_a.configure(
+      traj_opt::convex_hull::Basis::Bezier, 0, 2, opts, 0.25, 0.05);
+  manager_b.configure(
+      traj_opt::convex_hull::Basis::Bezier, 0, 2, opts, 0.50, 0.05);
+  manager_a.reset(&corridors,
+                  &corridor_indices,
+                  nullptr,
+                  nullptr,
+                  1.0e-2,
+                  bounds,
+                  weights,
+                  &flatness_map,
+                  swarm_config,
+                  swarm_trajectories,
+                  0.0);
+  manager_b.reset(&corridors,
+                  &corridor_indices,
+                  nullptr,
+                  nullptr,
+                  1.0e-2,
+                  bounds,
+                  weights,
+                  &flatness_map,
+                  swarm_config,
+                  swarm_trajectories,
+                  0.0);
+
+  Eigen::VectorXd x = optimizer.generateInitialGuess();
+  Eigen::VectorXd ga = Eigen::VectorXd::Zero(x.size());
+  Eigen::VectorXd gb = Eigen::VectorXd::Zero(x.size());
+  ZeroTimeCost time_cost;
+  const double cost_a = optimizer.evaluate(x, ga, time_cost, manager_a);
+  const double cost_b = optimizer.evaluate(x, gb, time_cost, manager_b);
+  require(cost_a > cost_b && cost_b > 0.0,
+          "Larger position_scale must reduce nondimensional position penalty.");
+  require(manager_a.lastScalarConstraintChecks() > 0 &&
+              manager_b.lastScalarConstraintChecks() > 0,
+          "Position-scale path must count scalar constraint checks.");
+}
+
+void checkPhrKktResidualReporting()
+{
+  optimization::phr_alm::Parameters parameters;
+  parameters.max_outer_iterations = 3;
+  parameters.initial_penalty = 1.0;
+  parameters.penalty_growth = 2.0;
+  parameters.progress_ratio = 0.5;
+  parameters.constraint_tolerance = 1.0e-8;
+
+  Eigen::VectorXd x(1);
+  x(0) = 2.0;
+  double minimum = 0.0;
+  optimization::phr_alm::Report report;
+  const auto status = optimization::phr_alm::solve(
+      x,
+      minimum,
+      parameters,
+      [](Eigen::VectorXd &decision, Eigen::VectorXd &constraints) {
+        constraints.resize(1);
+        constraints(0) = decision(0); // g(x)=x <= 0
+        return true;
+      },
+      [](const Eigen::VectorXd &, double) {},
+      [](Eigen::VectorXd &decision, double &objective) {
+        // One projected gradient step onto the PHR surrogate.
+        const double g = decision(0);
+        objective = 0.5 * decision(0) * decision(0) +
+                    0.5 * std::max(0.0, g) * std::max(0.0, g);
+        decision(0) = std::min(0.0, decision(0) - 0.5);
+        return 0;
+      },
+      [](const Eigen::VectorXd &decision,
+         Eigen::VectorXd &constraints,
+         optimization::phr_alm::TopologyUpdate &topology) {
+        topology = optimization::phr_alm::TopologyUpdate::UNCHANGED;
+        constraints.resize(1);
+        constraints(0) = decision(0);
+        return true;
+      },
+      report);
+  require(status == optimization::phr_alm::Status::CONVERGED ||
+              status == optimization::phr_alm::Status::MAX_OUTER_ITERATIONS,
+          "PHR solve failed unexpectedly in KKT residual test.");
+  require(std::isfinite(report.primal_residual) &&
+              std::isfinite(report.dual_residual) &&
+              std::isfinite(report.complementarity_residual),
+          "PHR report did not populate KKT residual fields.");
+}
+
 } // namespace
 
 int main()
@@ -1127,6 +1475,10 @@ int main()
     checkOptimizerGradient();
     checkExpConvexCostManagerGradientAndTiming(1);
     checkExpConvexCostManagerGradientAndTiming(2);
+    checkTwoStageAdaptivePenaltyPath();
+    checkDiscreteAttractorDoesNotForceDense();
+    checkPositionScaleNondimensionalization();
+    checkPhrKktResidualReporting();
     checkAdaptiveAlmGradientAndCertificate();
     checkGenericPhrAlmSolver();
     std::cout << "convex_hull_self_test passed" << std::endl;

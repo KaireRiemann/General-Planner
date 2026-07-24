@@ -1,14 +1,20 @@
 #ifndef EXP_CONVEX_COST_MANAGER_HPP
 #define EXP_CONVEX_COST_MANAGER_HPP
 
+#include "traj_opt/convex_hull/continuous_certificate.hpp"
 #include "traj_opt/convex_hull/convex_hull.hpp"
+#include "traj_opt/convex_hull/flatness_convex_hull_cost.hpp"
 #include "traj_opt/costfunctional/spatialcosts/polytope_position_penalty.hpp"
 #include "traj_opt/costfunctional/spatialcosts/squared_norm_bound_penalty.hpp"
+#include "traj_opt/costfunctional/spatialcosts/way_point_attractor_penalty.hpp"
 #include "traj_opt/costfunctional_manager/exp_integal_cost_manager.hpp"
+#include "traj_opt/solver_quality_report.hpp"
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cmath>
+#include <limits>
 #include <vector>
 
 namespace cost_functional_manager
@@ -28,22 +34,194 @@ namespace cost_functional_manager
  * degree-local Bezier-to-MINVO basis change after the hodograph; they do not
  * trigger independent source-polynomial conversions.
  *
- * Non-polynomial costs (guide path, swarm, angular rate and thrust) retain the
- * original dense evaluator. MINCOOptimizer can completely skip dense sampling
- * when none of those residual terms is active.
+ * Non-polynomial costs (guide path, swarm) retain the original dense
+ * evaluator. Angular-rate / thrust can be moved onto the continuous flatness
+ * convex-hull certificate; then MINCOOptimizer skips dense sampling entirely
+ * when guide/swarm are also inactive.
  */
 class ExpConvexCostManager
 {
 public:
   using Basis = traj_opt::convex_hull::Basis;
+  using FlatnessCost = traj_opt::convex_hull::FlatnessConvexHullCost;
+
+  /**
+   * Optional LBFGS-only adaptive depth. Topology (per-segment depth) is frozen
+   * for an entire LBFGS solve and may change only between solves via
+   * refineFrozenDepths(). This preserves the limited-memory Hessian model
+   * inside line search.
+   */
+  struct AdaptiveOptions
+  {
+    bool enabled{false};
+    double position_refine_margin{0.05};
+    bool refine_derivative_constraints{false};
+    double derivative_refine_margin{0.05};
+  };
+
+  struct EvaluatorTiming
+  {
+    double transform_seconds{0.0};
+    double hodograph_seconds{0.0};
+    double position_residual_seconds{0.0};
+    double derivative_residual_seconds{0.0};
+    double reverse_hodograph_seconds{0.0};
+    double backward_add_seconds{0.0};
+    double discrete_attractor_seconds{0.0};
+  };
 
   void configure(Basis basis,
                  int subdivision_depth,
                  int cost_version = 1)
   {
+    configure(basis, subdivision_depth, cost_version, AdaptiveOptions{});
+  }
+
+  void configure(Basis basis,
+                 int subdivision_depth,
+                 int cost_version,
+                 const AdaptiveOptions &adaptive,
+                 double position_scale = 0.25,
+                 double robust_certificate_margin = 0.05)
+  {
     basis_ = basis;
     subdivision_depth_ = std::clamp(subdivision_depth, 0, 8);
     cost_version_ = std::clamp(cost_version, 1, 2);
+    adaptive_ = adaptive;
+    adaptive_.enabled =
+        adaptive.enabled && subdivision_depth_ > 0 && basis_ == Basis::Bezier;
+    adaptive_.position_refine_margin =
+        std::max(0.0, adaptive_.position_refine_margin);
+    adaptive_.derivative_refine_margin =
+        std::max(0.0, adaptive_.derivative_refine_margin);
+    position_scale_ = std::max(1.0e-6, position_scale);
+    robust_certificate_margin_ = std::max(0.0, robust_certificate_margin);
+    levels_[0].depth = 0;
+    levels_[1].depth = subdivision_depth_;
+    selected_depths_.clear();
+    // Flatness hull requires fixed-depth Bezier hodograph controls.
+    if (basis_ != Basis::Bezier || adaptive_.enabled)
+    {
+      flatness_enabled_ = false;
+      flatness_cost_.clearReference();
+    }
+  }
+
+  /**
+   * Continuous-time flatness (tilt/thrust/omg) certificate on hodograph
+   * controls. When enabled, residual dense omg/thr weights are zeroed in
+   * reset(). Call refreshFlatnessReference() only between L-BFGS majors.
+   */
+  void configureFlatness(bool enabled, const FlatnessCost::Config &config)
+  {
+    flatness_enabled_ =
+        enabled && basis_ == Basis::Bezier && !adaptive_.enabled;
+    flatness_cost_.configure(config);
+    if (!flatness_enabled_)
+    {
+      flatness_cost_.clearReference();
+    }
+  }
+
+  bool usesFlatnessHull() const { return flatness_enabled_; }
+
+  const FlatnessCost::Diagnostics &flatnessDiagnostics() const
+  {
+    return flatness_cost_.diagnostics();
+  }
+
+  template <typename Trajectory>
+  void refreshFlatnessReference(const Trajectory &trajectory)
+  {
+    if (!flatness_enabled_ || !ready())
+    {
+      flatness_cost_.clearReference();
+      return;
+    }
+    updateControlPoints(trajectory);
+    flatness_cost_.refreshReference(
+        trajectory,
+        bezier_hull_.numPieces(),
+        bezier_hull_.piecesPerSegment(),
+        bezier_controls_[1],
+        controlsPerPiece(1),
+        trajectory.getDurations());
+  }
+
+  bool adaptiveEnabled() const { return adaptive_.enabled; }
+
+  void freezeAllDepths(int segments, int depth)
+  {
+    const int clamped =
+        depth <= 0 ? 0 : subdivision_depth_;
+    selected_depths_.assign(static_cast<std::size_t>(std::max(0, segments)),
+                            clamped);
+  }
+
+  template <typename Trajectory>
+  bool refineFrozenDepths(const Trajectory &trajectory)
+  {
+    return refineFrozenDepthsImpl(trajectory, /*violation_only=*/false);
+  }
+
+  /**
+   * Stage-A seed: only deepen segments with actual half-space / bound
+   * violations (raw > 0). Margin-based refine is too aggressive on the
+   * frontend init and collapses Stage-A into full depth-2.
+   */
+  template <typename Trajectory>
+  bool refineFrozenDepthsOnViolation(const Trajectory &trajectory)
+  {
+    return refineFrozenDepthsImpl(trajectory, /*violation_only=*/true);
+  }
+
+  template <typename Trajectory>
+  bool refineFrozenDepthsImpl(const Trajectory &trajectory,
+                              bool violation_only)
+  {
+    if (!adaptive_.enabled || !ready())
+    {
+      return false;
+    }
+    const int segments = trajectory.getPieceNum();
+    if (segments <= 0)
+    {
+      return false;
+    }
+    if (static_cast<int>(selected_depths_.size()) != segments)
+    {
+      selected_depths_.assign(static_cast<std::size_t>(segments), 0);
+    }
+    updateLevel(trajectory, levels_[0]);
+    bool changed = false;
+    for (int segment = 0; segment < segments; ++segment)
+    {
+      int &depth = selected_depths_[static_cast<std::size_t>(segment)];
+      if (depth == 0 &&
+          segmentNeedsFineWithLevel(levels_[0], segment, violation_only))
+      {
+        depth = subdivision_depth_;
+        changed = true;
+      }
+    }
+    return changed;
+  }
+
+  int coarseSegmentCount() const
+  {
+    return static_cast<int>(std::count(selected_depths_.begin(),
+                                       selected_depths_.end(),
+                                       0));
+  }
+
+  int fineSegmentCount() const
+  {
+    return static_cast<int>(selected_depths_.size()) - coarseSegmentCount();
+  }
+
+  const std::vector<int> &frozenSegmentDepths() const
+  {
+    return selected_depths_;
   }
 
   void reset(const general_utils::PolyhedraH *h_polys,
@@ -70,15 +248,36 @@ public:
     smooth_eps_ = std::max(1.0e-6, smooth_eps);
     magnitude_bounds_ = magnitude_bounds;
     penalty_weights_ = penalty_weights;
+    waypoint_attractors_ = waypoint_attractors;
+    waypoint_attractor_dead_d_ = waypoint_attractor_dead_d;
 
+    // Phase 0: keep attractor as a discrete junction cost so it no longer
+    // forces the full dense integral loop. Residual dense only covers
+    // non-polynomial terms (guide/swarm, and omg/thrust when flatness hull
+    // is off).
     general_utils::VecDf residual_weights = penalty_weights;
     const int polynomial_weight_count =
         std::min<int>(4, residual_weights.size());
     residual_weights.head(polynomial_weight_count).setZero();
+    if (residual_weights.size() > 4)
+    {
+      residual_weights(4) = 0.0;
+    }
+    if (flatness_enabled_)
+    {
+      if (residual_weights.size() > 5)
+      {
+        residual_weights(5) = 0.0;
+      }
+      if (residual_weights.size() > 6)
+      {
+        residual_weights(6) = 0.0;
+      }
+    }
     residual_cost_manager_.reset(h_polys,
                                  h_poly_idx,
-                                 waypoint_attractors,
-                                 waypoint_attractor_dead_d,
+                                 nullptr,
+                                 nullptr,
                                  smooth_eps,
                                  magnitude_bounds,
                                  residual_weights,
@@ -94,20 +293,44 @@ public:
                                  guide_path_huber_delta,
                                  guide_path_time_gradient_en);
 
-    const bool attractor_active =
-        residual_weights.size() > 4 && residual_weights(4) > 0.0;
+    discrete_attractor_active_ =
+        penalty_weights_.size() > 4 && penalty_weights_(4) > 0.0 &&
+        waypoint_attractors_ != nullptr &&
+        waypoint_attractor_dead_d_ != nullptr;
     const bool angular_rate_active =
-        residual_weights.size() > 5 && residual_weights(5) > 0.0;
+        !flatness_enabled_ && residual_weights.size() > 5 &&
+        residual_weights(5) > 0.0;
     const bool thrust_active =
-        residual_weights.size() > 6 && residual_weights(6) > 0.0;
+        !flatness_enabled_ && residual_weights.size() > 6 &&
+        residual_weights(6) > 0.0;
     const bool guide_active = weight_guide_integral > 0.0;
     const bool swarm_active =
         swarm_trajs != nullptr &&
         ((swarm_config.enable && swarm_config.weight > 0.0) ||
          (swarm_config.formation_enable &&
           swarm_config.formation_weight > 0.0));
-    dense_sampling_required_ = attractor_active || angular_rate_active ||
-                               thrust_active || guide_active || swarm_active;
+    dense_sampling_required_ = angular_rate_active || thrust_active ||
+                               guide_active || swarm_active;
+    flatness_cost_.clearReference();
+    last_scalar_constraint_checks_ = 0;
+    last_evaluator_timing_ = EvaluatorTiming{};
+  }
+
+  std::size_t lastScalarConstraintChecks() const
+  {
+    return last_scalar_constraint_checks_;
+  }
+
+  const EvaluatorTiming &lastEvaluatorTiming() const
+  {
+    return last_evaluator_timing_;
+  }
+
+  double positionScale() const { return position_scale_; }
+
+  double robustCertificateMargin() const
+  {
+    return robust_certificate_margin_;
   }
 
   bool usesDenseSampling() const
@@ -122,6 +345,38 @@ public:
 
   std::size_t activeControlPointChecksPerEvaluation() const
   {
+    if (adaptive_.enabled)
+    {
+      if (selected_depths_.empty())
+      {
+        return 0;
+      }
+      std::size_t checks = 0;
+      for (int segment = 0;
+           segment < static_cast<int>(selected_depths_.size());
+           ++segment)
+      {
+        const auto &level = levels_[levelIndexForSegment(segment)];
+        if (!level.hull.kernel())
+        {
+          continue;
+        }
+        const int leaves = level.hull.piecesPerSegment();
+        for (int derivative_order = 0; derivative_order <= 3;
+             ++derivative_order)
+        {
+          if (penalty_weights_.size() <= derivative_order ||
+              penalty_weights_(derivative_order) <= 0.0)
+          {
+            continue;
+          }
+          const int cp = level.hull.sourceDegree() + 1 - derivative_order;
+          checks += static_cast<std::size_t>(leaves * (cp - 1) + 1);
+        }
+      }
+      return checks;
+    }
+
     if (!bezier_hull_.kernel())
     {
       return 0;
@@ -168,6 +423,18 @@ public:
     {
       combined_penalty_log_(i) =
           std::max(combined_penalty_log_(i), hull_violation_(i));
+    }
+    if (flatness_enabled_ && combined_penalty_log_.size() > 7)
+    {
+      const auto &diag = flatness_cost_.diagnostics();
+      combined_penalty_log_(6) =
+          std::max(combined_penalty_log_(6),
+                   diag.max_angular_rate_violation);
+      combined_penalty_log_(7) =
+          std::max({combined_penalty_log_(7),
+                    diag.max_thrust_upper_violation,
+                    diag.max_thrust_lower_violation,
+                    diag.max_tilt_violation});
     }
     return combined_penalty_log_;
   }
@@ -238,33 +505,116 @@ public:
       typename Trajectory::CoeffMat &grad_coefficients,
       Eigen::VectorXd &grad_durations) const
   {
+    last_scalar_constraint_checks_ = 0;
+    last_evaluator_timing_ = EvaluatorTiming{};
     if (!ready())
     {
       return 0.0;
     }
 
-    updateControlPoints(trajectory);
-    const Eigen::VectorXd &durations = trajectory.getDurations();
-
-    double cost = accumulatePositionCost(durations, grad_durations);
-    for (int derivative_order = 1; derivative_order <= 3;
-         ++derivative_order)
+    using Clock = std::chrono::steady_clock;
+    const auto t0 = Clock::now();
+    double cost = 0.0;
+    if (adaptive_.enabled)
     {
-      cost += accumulateDerivativeCost(durations,
-                                       derivative_order,
-                                       grad_durations);
+      cost = evaluateCoefficientAdaptive(
+          trajectory, grad_coefficients, grad_durations);
+    }
+    else
+    {
+      updateControlPoints(trajectory);
+      last_evaluator_timing_.transform_seconds +=
+          std::chrono::duration<double>(Clock::now() - t0).count();
+      const Eigen::VectorXd &durations = trajectory.getDurations();
+
+      const auto t_pos = Clock::now();
+      cost = accumulatePositionCost(durations, grad_durations);
+      last_evaluator_timing_.position_residual_seconds +=
+          std::chrono::duration<double>(Clock::now() - t_pos).count();
+      const auto t_der = Clock::now();
+      for (int derivative_order = 1; derivative_order <= 3;
+           ++derivative_order)
+      {
+        cost += accumulateDerivativeCost(durations,
+                                         derivative_order,
+                                         grad_durations);
+      }
+      cost += accumulateFlatnessCost();
+      last_evaluator_timing_.derivative_residual_seconds +=
+          std::chrono::duration<double>(Clock::now() - t_der).count();
+
+      const auto t_rev = Clock::now();
+      backwardControlPointGradients(durations, grad_durations);
+      last_evaluator_timing_.reverse_hodograph_seconds +=
+          std::chrono::duration<double>(Clock::now() - t_rev).count();
+      const auto t_add = Clock::now();
+      bezier_hull_.backwardAdd(bezier_gradients_[0],
+                               grad_coefficients,
+                               grad_durations);
+      last_evaluator_timing_.backward_add_seconds +=
+          std::chrono::duration<double>(Clock::now() - t_add).count();
     }
 
-    backwardControlPointGradients(durations, grad_durations);
-    bezier_hull_.backwardAdd(bezier_gradients_[0],
-                             grad_coefficients,
-                             grad_durations);
+    const auto t_attr = Clock::now();
+    cost += evaluateDiscreteAttractor(
+        trajectory, grad_coefficients, grad_durations);
+    last_evaluator_timing_.discrete_attractor_seconds +=
+        std::chrono::duration<double>(Clock::now() - t_attr).count();
     return cost;
+  }
+
+  /**
+   * Phase-1 post-solve adaptive Bezier certificate oracle.
+   * Uses scalar Bernstein half-spaces, squared-norm Bernstein and a
+   * de Casteljau forest. Does not modify live LBFGS penalty topology.
+   */
+  template <typename Trajectory>
+  traj_opt::ContinuousCertificateReport computeAdaptiveContinuousCertificate(
+      const Trajectory &trajectory) const
+  {
+    traj_opt::ContinuousCertificateReport report;
+    if (!ready() || trajectory.getPieceNum() <= 0 || h_polys_ == nullptr ||
+        h_poly_idx_ == nullptr)
+    {
+      return report;
+    }
+
+    traj_opt::convex_hull::CertificateOptions options;
+    options.max_depth = std::max(subdivision_depth_, 4);
+    options.safe_margin = robust_certificate_margin_;
+    options.refine_margin = adaptive_.position_refine_margin;
+    options.coarsen_margin =
+        std::max(adaptive_.position_refine_margin,
+                 adaptive_.position_refine_margin + 0.05);
+    options.position_scale = position_scale_;
+    options.certify_position =
+        penalty_weights_.size() > 0 && penalty_weights_(0) > 0.0;
+    options.certify_velocity =
+        penalty_weights_.size() > 1 && penalty_weights_(1) > 0.0;
+    options.certify_acceleration =
+        penalty_weights_.size() > 2 && penalty_weights_(2) > 0.0;
+    options.certify_jerk =
+        penalty_weights_.size() > 3 && penalty_weights_(3) > 0.0;
+
+    traj_opt::convex_hull::ContinuousCertificateOracle oracle;
+    oracle.configure(options);
+    return oracle.certify(trajectory,
+                          *h_polys_,
+                          *h_poly_idx_,
+                          magnitude_bounds_);
   }
 
 private:
   using Hull = traj_opt::convex_hull::Representation<3>;
   using HullMatrix = typename Hull::Matrix;
+
+  struct LevelWorkspace
+  {
+    int depth{0};
+    mutable Hull hull;
+    mutable std::array<HullMatrix, 4> controls;
+    mutable std::array<HullMatrix, 4> gradients;
+  };
 
   bool ready() const
   {
@@ -272,6 +622,499 @@ private:
            h_poly_idx_ != nullptr &&
            magnitude_bounds_.size() >= 3 &&
            penalty_weights_.size() >= 4;
+  }
+
+  int levelIndexForSegment(int segment) const
+  {
+    if (segment < 0 ||
+        segment >= static_cast<int>(selected_depths_.size()) ||
+        selected_depths_[static_cast<std::size_t>(segment)] == 0)
+    {
+      return 0;
+    }
+    return 1;
+  }
+
+  bool levelSelected(int level_index) const
+  {
+    const int depth = level_index == 0 ? 0 : subdivision_depth_;
+    return std::find(selected_depths_.begin(),
+                     selected_depths_.end(),
+                     depth) != selected_depths_.end();
+  }
+
+  int controlsPerPiece(const LevelWorkspace &level, int order) const
+  {
+    return level.hull.sourceDegree() + 1 - order;
+  }
+
+  template <typename Trajectory>
+  void updateLevel(const Trajectory &trajectory,
+                   LevelWorkspace &level) const
+  {
+    const bool topology_changed =
+        !level.hull.kernel() ||
+        level.hull.numSourceSegments() != trajectory.getPieceNum() ||
+        level.hull.sourceNumCoeffs() != Trajectory::COEFF_NUM ||
+        level.hull.subdivisionDepth() != level.depth;
+    if (topology_changed)
+    {
+      level.hull.resetTopology(trajectory.getPieceNum(),
+                               Trajectory::COEFF_NUM,
+                               Basis::Bezier,
+                               0,
+                               level.depth);
+      const int pieces = level.hull.numPieces();
+      for (int order = 0; order <= 3; ++order)
+      {
+        const int cp = controlsPerPiece(level, order);
+        level.controls[order].resize(pieces * cp, 3);
+        level.gradients[order].resize(pieces * cp, 3);
+      }
+    }
+
+    trajectory.updateConvexHull(level.hull);
+    level.controls[0] = level.hull.controls();
+    const Eigen::VectorXd &durations = trajectory.getDurations();
+    const int leaves = level.hull.piecesPerSegment();
+    for (int order = 1; order <= 3; ++order)
+    {
+      const int previous_cp = controlsPerPiece(level, order - 1);
+      const int current_cp = previous_cp - 1;
+      const double degree_factor = static_cast<double>(previous_cp - 1);
+      for (int piece = 0; piece < level.hull.numPieces(); ++piece)
+      {
+        const int segment = level.hull.pieceInfo(piece).source_segment;
+        const double scale =
+            degree_factor * static_cast<double>(leaves) /
+            durations(segment);
+        const int previous_row = piece * previous_cp;
+        const int current_row = piece * current_cp;
+        for (int control = 0; control < current_cp; ++control)
+        {
+          level.controls[order].row(current_row + control) =
+              scale *
+              (level.controls[order - 1].row(previous_row + control + 1) -
+               level.controls[order - 1].row(previous_row + control));
+        }
+      }
+    }
+    for (auto &gradient : level.gradients)
+    {
+      gradient.setZero();
+    }
+  }
+
+  template <typename Trajectory>
+  void updateSelectedLevels(const Trajectory &trajectory) const
+  {
+    if (static_cast<int>(selected_depths_.size()) !=
+        trajectory.getPieceNum())
+    {
+      selected_depths_.assign(
+          static_cast<std::size_t>(trajectory.getPieceNum()), 0);
+    }
+    if (levelSelected(0))
+    {
+      updateLevel(trajectory, levels_[0]);
+    }
+    if (subdivision_depth_ > 0 && levelSelected(1))
+    {
+      updateLevel(trajectory, levels_[1]);
+    }
+  }
+
+  bool segmentNeedsFineWithLevel(const LevelWorkspace &coarse,
+                                 int segment,
+                                 bool violation_only = false) const
+  {
+    if (subdivision_depth_ <= 0)
+    {
+      return false;
+    }
+    if (!coarse.hull.kernel())
+    {
+      return true;
+    }
+    const double position_threshold =
+        violation_only ? 0.0 : -adaptive_.position_refine_margin;
+    if (penalty_weights_(0) > 0.0 && segment < h_poly_idx_->size())
+    {
+      const int poly_id = (*h_poly_idx_)(segment);
+      if (poly_id >= 0 && poly_id < static_cast<int>(h_polys_->size()))
+      {
+        const auto &poly = (*h_polys_)[poly_id];
+        const int cp = controlsPerPiece(coarse, 0);
+        const int first_row = segment * cp;
+        for (int control = 0; control < cp; ++control)
+        {
+          const Eigen::Vector3d value =
+              coarse.controls[0].row(first_row + control).transpose();
+          for (int plane = 0; plane < poly.rows(); ++plane)
+          {
+            const double raw =
+                poly.template block<1, 3>(plane, 0).dot(value) +
+                poly(plane, 3);
+            if (raw > position_threshold)
+            {
+              return true;
+            }
+          }
+        }
+      }
+    }
+
+    const double derivative_refine_threshold =
+        violation_only
+            ? 0.0
+            : (adaptive_.refine_derivative_constraints
+                   ? -adaptive_.derivative_refine_margin
+                   : 0.0);
+    for (int order = 1; order <= 3; ++order)
+    {
+      if (penalty_weights_.size() <= order ||
+          penalty_weights_(order) <= 0.0)
+      {
+        continue;
+      }
+      const double bound = magnitude_bounds_(order - 1);
+      if (!std::isfinite(bound) || bound <= 0.0)
+      {
+        continue;
+      }
+      const int cp = controlsPerPiece(coarse, order);
+      const int first_row = segment * cp;
+      for (int control = 0; control < cp; ++control)
+      {
+        const double normalized =
+            coarse.controls[order].row(first_row + control).squaredNorm() /
+                (bound * bound) -
+            1.0;
+        if (normalized > derivative_refine_threshold)
+        {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  bool segmentNeedsFine(int segment) const
+  {
+    return segmentNeedsFineWithLevel(levels_[0], segment);
+  }
+
+  template <typename Trajectory>
+  double evaluateDiscreteAttractor(
+      const Trajectory &trajectory,
+      typename Trajectory::CoeffMat &grad_coefficients,
+      Eigen::VectorXd &grad_durations) const
+  {
+    if (!discrete_attractor_active_)
+    {
+      return 0.0;
+    }
+    const double weight = penalty_weights_(4);
+    const int junctions =
+        std::min(trajectory.getPieceNum() - 1,
+                 static_cast<int>(waypoint_attractors_->cols()));
+    if (junctions <= 0 ||
+        waypoint_attractor_dead_d_->size() < junctions)
+    {
+      return 0.0;
+    }
+
+    double cost = 0.0;
+    const Eigen::VectorXd &durations = trajectory.getDurations();
+    double absolute_time = 0.0;
+    for (int junction = 0; junction < junctions; ++junction)
+    {
+      const double duration = durations(junction);
+      if (!std::isfinite(duration) || duration <= 0.0)
+      {
+        continue;
+      }
+      absolute_time += duration;
+      const auto position = trajectory.getPos(absolute_time);
+      Eigen::Vector3d gradient = Eigen::Vector3d::Zero();
+      cost += cost_functional::accumulateWaypointAttractorPenalty(
+          position,
+          waypoint_attractors_->col(junction),
+          (*waypoint_attractor_dead_d_)(junction),
+          smooth_eps_,
+          weight,
+          gradient,
+          &hull_violation_(5));
+
+      if (gradient.squaredNorm() <= 0.0)
+      {
+        continue;
+      }
+
+      const auto basis =
+          Trajectory::derivativeBasis(0, duration);
+      const int base_row = junction * Trajectory::COEFF_NUM;
+      grad_coefficients
+          .middleRows(base_row, Trajectory::COEFF_NUM)
+          .noalias() += basis.transpose() * gradient.transpose();
+
+      // Endpoint depends on duration through the power basis.
+      const auto velocity = trajectory.getVel(absolute_time);
+      grad_durations(junction) += gradient.dot(velocity);
+    }
+    return cost;
+  }
+
+  double accumulateSegmentPositionCost(
+      LevelWorkspace &level,
+      int segment,
+      double duration,
+      Eigen::VectorXd &direct_duration_gradients) const
+  {
+    const double weight = std::max(0.0, penalty_weights_(0));
+    if (weight <= 0.0 || segment >= h_poly_idx_->size())
+    {
+      return 0.0;
+    }
+    const int poly_id = (*h_poly_idx_)(segment);
+    if (poly_id < 0 || poly_id >= static_cast<int>(h_polys_->size()))
+    {
+      return 0.0;
+    }
+
+    const auto &poly = (*h_polys_)[poly_id];
+    const int leaves = level.hull.piecesPerSegment();
+    const int controls_per_piece = controlsPerPiece(level, 0);
+    const double base_scale =
+        duration / static_cast<double>(leaves * controls_per_piece);
+    double cost = 0.0;
+
+    std::vector<char> plane_active(static_cast<std::size_t>(poly.rows()), 0);
+    for (int plane = 0; plane < poly.rows(); ++plane)
+    {
+      double max_raw = -std::numeric_limits<double>::infinity();
+      for (int leaf = 0; leaf < leaves; ++leaf)
+      {
+        const int piece = segment * leaves + leaf;
+        const int first_control = leaf == 0 ? 0 : 1;
+        for (int control = first_control; control < controls_per_piece;
+             ++control)
+        {
+          const int row = piece * controls_per_piece + control;
+          const Eigen::Vector3d value =
+              level.controls[0].row(row).transpose();
+          const double raw =
+              poly.template block<1, 3>(plane, 0).dot(value) +
+              poly(plane, 3);
+          max_raw = std::max(max_raw, raw);
+        }
+      }
+      if (max_raw > -adaptive_.position_refine_margin)
+      {
+        plane_active[static_cast<std::size_t>(plane)] = 1;
+      }
+    }
+
+    for (int leaf = 0; leaf < leaves; ++leaf)
+    {
+      const int piece = segment * leaves + leaf;
+      const int first_control = leaf == 0 ? 0 : 1;
+      for (int control = first_control; control < controls_per_piece;
+           ++control)
+      {
+        const int row = piece * controls_per_piece + control;
+        const double multiplicity =
+            control == controls_per_piece - 1 && leaf + 1 < leaves ? 2.0
+                                                                  : 1.0;
+        const Eigen::Vector3d value =
+            level.controls[0].row(row).transpose();
+        Eigen::Vector3d gradient = Eigen::Vector3d::Zero();
+        double local_cost = 0.0;
+        for (int plane = 0; plane < poly.rows(); ++plane)
+        {
+          if (!plane_active[static_cast<std::size_t>(plane)])
+          {
+            continue;
+          }
+          const Eigen::Vector3d normal =
+              poly.template block<1, 3>(plane, 0).transpose();
+          ++last_scalar_constraint_checks_;
+          const double raw = normal.dot(value) + poly(plane, 3);
+          hull_violation_(1) = std::max(hull_violation_(1), raw);
+          const double violation = raw / position_scale_;
+          double penalty = 0.0;
+          double penalty_grad = 0.0;
+          if (cost_functional::smoothedL1(
+                  violation, smooth_eps_, penalty, penalty_grad))
+          {
+            const double scale = weight * base_scale * multiplicity;
+            gradient +=
+                scale * penalty_grad / position_scale_ * normal;
+            local_cost += scale * penalty;
+          }
+        }
+        level.gradients[0].row(row) += gradient.transpose();
+        direct_duration_gradients(segment) += local_cost / duration;
+        cost += local_cost;
+      }
+    }
+    return cost;
+  }
+
+  double accumulateSegmentDerivativeCost(
+      LevelWorkspace &level,
+      int segment,
+      int derivative_order,
+      double duration,
+      Eigen::VectorXd &direct_duration_gradients) const
+  {
+    const double weight =
+        std::max(0.0, penalty_weights_(derivative_order));
+    const double bound = magnitude_bounds_(derivative_order - 1);
+    if (weight <= 0.0 || !std::isfinite(bound) || bound <= 0.0)
+    {
+      return 0.0;
+    }
+
+    const int leaves = level.hull.piecesPerSegment();
+    const int controls_per_piece =
+        controlsPerPiece(level, derivative_order);
+    const double base_scale =
+        duration / static_cast<double>(leaves * controls_per_piece);
+    double cost = 0.0;
+    for (int leaf = 0; leaf < leaves; ++leaf)
+    {
+      const int piece = segment * leaves + leaf;
+      const int first_control = leaf == 0 ? 0 : 1;
+      for (int control = first_control; control < controls_per_piece;
+           ++control)
+      {
+        const int row = piece * controls_per_piece + control;
+        const double multiplicity =
+            control == controls_per_piece - 1 && leaf + 1 < leaves ? 2.0
+                                                                  : 1.0;
+        ++last_scalar_constraint_checks_;
+        const Eigen::Vector3d value =
+            level.controls[derivative_order].row(row).transpose();
+        Eigen::Vector3d gradient = Eigen::Vector3d::Zero();
+        const double local_cost =
+            cost_functional::accumulateSquaredNormBoundPenalty(
+                value,
+                bound * bound,
+                smooth_eps_,
+                weight * base_scale * multiplicity,
+                gradient,
+                &hull_violation_(derivative_order + 1));
+        level.gradients[derivative_order].row(row) += gradient.transpose();
+        direct_duration_gradients(segment) += local_cost / duration;
+        cost += local_cost;
+      }
+    }
+    return cost;
+  }
+
+  void backwardHodographs(LevelWorkspace &level,
+                          const Eigen::VectorXd &durations,
+                          Eigen::VectorXd &duration_gradients) const
+  {
+    const int leaves = level.hull.piecesPerSegment();
+    for (int order = 3; order >= 1; --order)
+    {
+      const int current_cp = controlsPerPiece(level, order);
+      const int previous_cp = current_cp + 1;
+      const double degree_factor = static_cast<double>(previous_cp - 1);
+      for (int piece = 0; piece < level.hull.numPieces(); ++piece)
+      {
+        const int segment = level.hull.pieceInfo(piece).source_segment;
+        if (levelIndexForSegment(segment) !=
+            (level.depth == 0 ? 0 : 1))
+        {
+          continue;
+        }
+        const double duration = durations(segment);
+        const double scale =
+            degree_factor * static_cast<double>(leaves) / duration;
+        const int current_row = piece * current_cp;
+        const int previous_row = piece * previous_cp;
+        duration_gradients(segment) -=
+            level.gradients[order]
+                .middleRows(current_row, current_cp)
+                .cwiseProduct(level.controls[order]
+                                  .middleRows(current_row, current_cp))
+                .sum() /
+            duration;
+        for (int control = 0; control < current_cp; ++control)
+        {
+          const auto gradient =
+              level.gradients[order].row(current_row + control);
+          level.gradients[order - 1].row(previous_row + control) -=
+              scale * gradient;
+          level.gradients[order - 1].row(previous_row + control + 1) +=
+              scale * gradient;
+        }
+      }
+    }
+  }
+
+  template <typename Trajectory>
+  double evaluateCoefficientAdaptive(
+      const Trajectory &trajectory,
+      typename Trajectory::CoeffMat &grad_coefficients,
+      Eigen::VectorXd &grad_durations) const
+  {
+    using Clock = std::chrono::steady_clock;
+    const auto t_xform = Clock::now();
+    updateSelectedLevels(trajectory);
+    last_evaluator_timing_.transform_seconds +=
+        std::chrono::duration<double>(Clock::now() - t_xform).count();
+    last_evaluator_timing_.hodograph_seconds +=
+        last_evaluator_timing_.transform_seconds;
+    const Eigen::VectorXd &durations = trajectory.getDurations();
+    double cost = 0.0;
+    const auto t_pos = Clock::now();
+    for (int segment = 0;
+         segment < static_cast<int>(selected_depths_.size());
+         ++segment)
+    {
+      auto &level = levels_[levelIndexForSegment(segment)];
+      cost += accumulateSegmentPositionCost(
+          level, segment, durations(segment), grad_durations);
+    }
+    last_evaluator_timing_.position_residual_seconds +=
+        std::chrono::duration<double>(Clock::now() - t_pos).count();
+    const auto t_der = Clock::now();
+    for (int segment = 0;
+         segment < static_cast<int>(selected_depths_.size());
+         ++segment)
+    {
+      auto &level = levels_[levelIndexForSegment(segment)];
+      for (int order = 1; order <= 3; ++order)
+      {
+        cost += accumulateSegmentDerivativeCost(
+            level, segment, order, durations(segment), grad_durations);
+      }
+    }
+    last_evaluator_timing_.derivative_residual_seconds +=
+        std::chrono::duration<double>(Clock::now() - t_der).count();
+    for (int level_index = 0; level_index < 2; ++level_index)
+    {
+      auto &level = levels_[level_index];
+      if (!level.hull.kernel() || !levelSelected(level_index))
+      {
+        continue;
+      }
+      const auto t_rev = Clock::now();
+      backwardHodographs(level, durations, grad_durations);
+      last_evaluator_timing_.reverse_hodograph_seconds +=
+          std::chrono::duration<double>(Clock::now() - t_rev).count();
+      const auto t_add = Clock::now();
+      level.hull.backwardAdd(level.gradients[0],
+                             grad_coefficients,
+                             grad_durations);
+      last_evaluator_timing_.backward_add_seconds +=
+          std::chrono::duration<double>(Clock::now() - t_add).count();
+    }
+    return cost;
   }
 
   int controlsPerPiece(int derivative_order) const
@@ -421,6 +1264,7 @@ private:
         const Eigen::Vector3d value =
             selected_controls_[0].row(row).transpose();
         Eigen::Vector3d gradient = Eigen::Vector3d::Zero();
+        ++last_scalar_constraint_checks_;
         const double local_cost =
             cost_functional::accumulatePolytopePositionPenalty(
                 (*h_polys_)[poly_id],
@@ -428,7 +1272,8 @@ private:
                 smooth_eps_,
                 weight * scale,
                 gradient,
-                &hull_violation_(1));
+                &hull_violation_(1),
+                position_scale_);
         selected_gradients_[0].row(row) += gradient.transpose();
         direct_duration_gradients(segment) +=
             local_cost / durations(segment);
@@ -470,6 +1315,7 @@ private:
       for (int control = 0; control < controls_per_piece; ++control)
       {
         const int row = piece * controls_per_piece + control;
+        ++last_scalar_constraint_checks_;
         const Eigen::Vector3d value =
             selected_controls_[derivative_order].row(row).transpose();
         Eigen::Vector3d gradient = Eigen::Vector3d::Zero();
@@ -538,6 +1384,7 @@ private:
               control == controls_per_piece - 1 && leaf + 1 < leaves
                   ? 2.0
                   : 1.0;
+          ++last_scalar_constraint_checks_;
           const Eigen::Vector3d value =
               selected_controls_[0].row(row).transpose();
           Eigen::Vector3d gradient = Eigen::Vector3d::Zero();
@@ -548,7 +1395,8 @@ private:
                   smooth_eps_,
                   weight * base_scale * multiplicity,
                   gradient,
-                  &hull_violation_(1));
+                  &hull_violation_(1),
+                  position_scale_);
           selected_gradients_[0].row(row) += gradient.transpose();
           direct_duration_gradients(segment) += local_cost / duration;
           cost += local_cost;
@@ -596,6 +1444,7 @@ private:
               control == controls_per_piece - 1 && leaf + 1 < leaves
                   ? 2.0
                   : 1.0;
+          ++last_scalar_constraint_checks_;
           const Eigen::Vector3d value =
               selected_controls_[derivative_order].row(row).transpose();
           Eigen::Vector3d gradient = Eigen::Vector3d::Zero();
@@ -615,6 +1464,33 @@ private:
       }
     }
     return cost;
+  }
+
+  double accumulateFlatnessCost() const
+  {
+    if (!flatness_enabled_ || !flatness_cost_.referenceReady() ||
+        !bezier_hull_.kernel())
+    {
+      return 0.0;
+    }
+    const int pieces = bezier_hull_.numPieces();
+    const int vel_cp = controlsPerPiece(1);
+    const int acc_cp = controlsPerPiece(2);
+    const int jerk_cp = controlsPerPiece(3);
+    last_scalar_constraint_checks_ +=
+        static_cast<std::size_t>(pieces * vel_cp);
+    // Physics is on Bezier hodograph controls; write into selected_
+    // gradients (identical for Bezier) so reverse-hodograph stays unified.
+    return flatness_cost_.accumulate(bezier_controls_[1],
+                                     bezier_controls_[2],
+                                     bezier_controls_[3],
+                                     pieces,
+                                     vel_cp,
+                                     acc_cp,
+                                     jerk_cp,
+                                     selected_gradients_[1],
+                                     selected_gradients_[2],
+                                     selected_gradients_[3]);
   }
 
   void backwardControlPointGradients(
@@ -685,7 +1561,11 @@ private:
   ExpIntegralCostManager residual_cost_manager_;
   const general_utils::PolyhedraH *h_polys_{nullptr};
   const Eigen::VectorXi *h_poly_idx_{nullptr};
+  const general_utils::Mat3Df *waypoint_attractors_{nullptr};
+  const general_utils::VecDf *waypoint_attractor_dead_d_{nullptr};
   double smooth_eps_{1.0e-3};
+  double position_scale_{0.25};
+  double robust_certificate_margin_{0.05};
   general_utils::VecDf magnitude_bounds_;
   general_utils::VecDf penalty_weights_;
   Basis basis_{Basis::Bezier};
@@ -693,6 +1573,14 @@ private:
   int subdivision_depth_{0};
   int cost_version_{1};
   bool dense_sampling_required_{true};
+  bool discrete_attractor_active_{false};
+  bool flatness_enabled_{false};
+  mutable FlatnessCost flatness_cost_{};
+  AdaptiveOptions adaptive_{};
+  mutable std::array<LevelWorkspace, 2> levels_{};
+  mutable std::vector<int> selected_depths_;
+  mutable std::size_t last_scalar_constraint_checks_{0};
+  mutable EvaluatorTiming last_evaluator_timing_{};
 
   mutable Hull bezier_hull_;
   mutable std::array<Eigen::MatrixXd, 4> basis_change_;

@@ -111,6 +111,7 @@ traj_opt:
     max_acc: 20.0
     max_jerk: 120.0
     max_omg: 3.5
+    max_tilt: 1.05
     max_acc_thr: 22.0
     min_acc_thr: 6.0
     penna_margin: 0.05
@@ -135,44 +136,67 @@ traj_opt:
     lbfgs_fast_rel_cost: 1.0e-3
     lbfgs_fast_rel_step: 2.0e-2
     lbfgs_fast_rel_penalty: 5.0e-2
+    # Legacy early-stop (cost/step/penalty only). Phase-0 physical/grad/stall
+    # guards are kept in code but disabled: they were too strict and removed
+    # the ~300ms closed-loop fast-dense speedup.
+    lbfgs_fast_phase0_guards_en: false
+    lbfgs_fast_rel_time: 2.0e-2
+    lbfgs_fast_rel_waypoint: 2.0e-2
+    lbfgs_fast_scaled_grad: 5.0e-2
+    lbfgs_fast_min_step: 1.0e-8
+    lbfgs_fast_penalty_tol: 1.0e-2
+    lbfgs_fast_small_step_limit: 3
     # Preserve the timing of the already feasible guide trajectory. The old
     # implicit 0.8 scale manufactured dynamic violations before every solve.
     guide_initial_time_scale: 1.0
     scale_factor: 1.0
     integral_reso: 15
-    # Dense baseline: false. Change only this switch to true for the convex run.
-    convex_hull_en: false
-    # 0: Bezier, 1: MINVO.
+    # Online Bezier hull: ONE Fast LBFGS at depth-2 (less conservative than d0).
+    # Flatness hull OFF for now: residual dense omg/thr (pre-flatness path).
+    # Certificate is post-solve monitor only. Phase-2 / ALM are opt-in.
+    convex_hull_en: true
     convex_hull_basis: 0
-    # Two binary subdivisions give four local hulls per MINCO segment.
+    # depth-2: complete online hull (4 leaves/segment); not depth-0.
     convex_hull_subdivision_depth: 2
-    # 1: reference control cost; 2: equivalent Bezier shared-endpoint folding.
     convex_hull_cost_version: 2
-    # Constrained Bezier-hull optimization. The fixed-depth penalty path above
-    # remains available by setting this switch to false.
+    # Rollback flatness certificate — use dense omg/thr residual sampling.
+    convex_hull_flatness_en: false
+    convex_hull_flatness_major_iters: 1
     convex_hull_alm_en: false
-    # First obtain a near-feasible trajectory with the proven fixed-depth V2
-    # penalty, then let PHR-ALM perform the continuous-constraint correction.
-    convex_hull_alm_warm_start_en: true
+    convex_hull_alm_warm_start_en: false
     convex_hull_alm_warm_start_accuracy: 1.0e-3
     convex_hull_alm_active_set_en: false
     convex_hull_alm_active_set_margin: 0.05
-    convex_hull_adaptive_en: true
+    # Fixed depth-2 single solve (no Stage-A/B adaptive).
+    convex_hull_adaptive_en: false
     convex_hull_refine_derivative_constraints: false
     convex_hull_alm_max_outer_iterations: 8
     convex_hull_refine_margin: 0.05
     convex_hull_derivative_refine_margin: 0.05
     convex_hull_alm_position_scale: 0.25
+    convex_hull_robust_certificate_margin: 0.05
     convex_hull_alm_initial_penalty: 3.0e+5
     convex_hull_alm_penalty_growth: 5.0
     convex_hull_alm_progress_ratio: 0.5
     convex_hull_alm_constraint_tolerance: 1.0e-2
-    convex_hull_alm_require_certification: true
+    convex_hull_alm_require_certification: false
+    # Opt-in second solve — leave false for online speed.
+    convex_hull_phase2_corrector_en: false
+    convex_hull_stage_a_seed_refine_en: false
+    convex_hull_phase2_require_certification: false
+    convex_hull_phase2_top_k: 32
+    convex_hull_phase2_max_constraints: 64
+    convex_hull_phase2_max_outer: 3
+    convex_hull_phase2_inner_tol_init: 1.0e-2
+    convex_hull_phase2_inner_tol_final: 1.0e-4
+    convex_hull_phase2_append_en: true
+    convex_hull_phase2_multiplier_reuse_en: true
     smooth_eps: 0.01
     penna_t: 2.0e+5
     penna_pos: 5.0e+7
     penna_vel: 1.0e+7
     penna_acc: 1.0e+7
+    # penna_jerk <= 0 disables both the penalty and continuous jerk certificate.
     penna_jerk: -1.0e+5
     penna_attract: 1.0e+3
     penna_guide_path: 0.0

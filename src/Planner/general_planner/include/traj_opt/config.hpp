@@ -79,8 +79,10 @@ namespace traj_opt {
         int convex_hull_basis{0};
         int convex_hull_subdivision_depth{0};
         int convex_hull_cost_version{1};
+        // Legacy full PHR-ALM (research/offline only). Online Bezier hull
+        // ignores this unless explicitly kept for experiments.
         bool convex_hull_alm_en{false};
-        bool convex_hull_alm_warm_start_en{true};
+        bool convex_hull_alm_warm_start_en{false};
         double convex_hull_alm_warm_start_accuracy{1.0e-3};
         bool convex_hull_alm_active_set_en{false};
         double convex_hull_alm_active_set_margin{0.05};
@@ -90,11 +92,33 @@ namespace traj_opt {
         double convex_hull_refine_margin{0.05};
         double convex_hull_derivative_refine_margin{0.05};
         double convex_hull_alm_position_scale{0.25};
+        double convex_hull_robust_certificate_margin{0.05};
         double convex_hull_alm_initial_penalty{3.0e5};
         double convex_hull_alm_penalty_growth{5.0};
         double convex_hull_alm_progress_ratio{0.5};
         double convex_hull_alm_constraint_tolerance{1.0e-2};
         bool convex_hull_alm_require_certification{true};
+        // Opt-in packed correction (slow). Online default is single LBFGS.
+        bool convex_hull_phase2_corrector_en{false};
+        // Optional: deepen only segments with raw > 0 on the init guess.
+        // Default false: frontend inits are often widely violated and would
+        // collapse Stage-A into full depth-2. Prefer depth-0 + Phase-2.
+        bool convex_hull_stage_a_seed_refine_en{false};
+        // When true, uncertified Phase-2 results fail unless a certified
+        // incumbent exists. Default false keeps online planning soft.
+        bool convex_hull_phase2_require_certification{false};
+        int convex_hull_phase2_top_k{32};
+        int convex_hull_phase2_max_constraints{64};
+        int convex_hull_phase2_max_outer{4};
+        double convex_hull_phase2_inner_tol_init{1.0e-2};
+        double convex_hull_phase2_inner_tol_final{1.0e-4};
+        bool convex_hull_phase2_append_en{true};
+        bool convex_hull_phase2_multiplier_reuse_en{true};
+        // Continuous flatness certificate on Bezier hodograph controls
+        // (replaces residual dense omg/thr sampling when enabled).
+        bool convex_hull_flatness_en{false};
+        int convex_hull_flatness_major_iters{1};
+        double max_tilt{1.05};
         double opt_accuracy{0};
         // Optional fast LBFGS path used only by the ordinary ExpTrajOpt
         // state2state corridor backend.
@@ -109,6 +133,15 @@ namespace traj_opt {
         double lbfgs_fast_rel_cost{1.0e-4};
         double lbfgs_fast_rel_step{2.0e-3};
         double lbfgs_fast_rel_penalty{5.0e-3};
+        // Optional Phase-0 guards. When false, fast-stop uses only the
+        // original cost / decision-step / penalty-log stability test.
+        bool lbfgs_fast_phase0_guards_en{false};
+        double lbfgs_fast_rel_time{2.0e-2};
+        double lbfgs_fast_rel_waypoint{2.0e-2};
+        double lbfgs_fast_scaled_grad{5.0e-2};
+        double lbfgs_fast_min_step{1.0e-8};
+        double lbfgs_fast_penalty_tol{1.0e-2};
+        int lbfgs_fast_small_step_limit{3};
         double guide_initial_time_scale{1.0};
         double init_profile_vel_ratio{0.65};
         double init_duration_scale{1.25};
@@ -162,6 +195,20 @@ namespace traj_opt {
                              lbfgs_fast_rel_step, 2.0e-3);
             loader.LoadParam("traj_opt" + ns + "lbfgs_fast_rel_penalty",
                              lbfgs_fast_rel_penalty, 5.0e-3);
+            loader.LoadParam("traj_opt" + ns + "lbfgs_fast_phase0_guards_en",
+                             lbfgs_fast_phase0_guards_en, false);
+            loader.LoadParam("traj_opt" + ns + "lbfgs_fast_rel_time",
+                             lbfgs_fast_rel_time, 2.0e-2);
+            loader.LoadParam("traj_opt" + ns + "lbfgs_fast_rel_waypoint",
+                             lbfgs_fast_rel_waypoint, 2.0e-2);
+            loader.LoadParam("traj_opt" + ns + "lbfgs_fast_scaled_grad",
+                             lbfgs_fast_scaled_grad, 5.0e-2);
+            loader.LoadParam("traj_opt" + ns + "lbfgs_fast_min_step",
+                             lbfgs_fast_min_step, 1.0e-8);
+            loader.LoadParam("traj_opt" + ns + "lbfgs_fast_penalty_tol",
+                             lbfgs_fast_penalty_tol, 1.0e-2);
+            loader.LoadParam("traj_opt" + ns + "lbfgs_fast_small_step_limit",
+                             lbfgs_fast_small_step_limit, 3);
             loader.LoadParam("traj_opt" + ns + "guide_initial_time_scale",
                              guide_initial_time_scale, 1.0);
             loader.LoadParam("traj_opt" + ns + "integral_reso", integral_reso, 10);
@@ -194,6 +241,8 @@ namespace traj_opt {
                              convex_hull_derivative_refine_margin, 0.05);
             loader.LoadParam("traj_opt" + ns + "convex_hull_alm_position_scale",
                              convex_hull_alm_position_scale, 0.25);
+            loader.LoadParam("traj_opt" + ns + "convex_hull_robust_certificate_margin",
+                             convex_hull_robust_certificate_margin, 0.05);
             loader.LoadParam("traj_opt" + ns + "convex_hull_alm_initial_penalty",
                              convex_hull_alm_initial_penalty, 3.0e5);
             loader.LoadParam("traj_opt" + ns + "convex_hull_alm_penalty_growth",
@@ -204,6 +253,30 @@ namespace traj_opt {
                              convex_hull_alm_constraint_tolerance, 1.0e-2);
             loader.LoadParam("traj_opt" + ns + "convex_hull_alm_require_certification",
                              convex_hull_alm_require_certification, true);
+            loader.LoadParam("traj_opt" + ns + "convex_hull_phase2_corrector_en",
+                             convex_hull_phase2_corrector_en, false);
+            loader.LoadParam("traj_opt" + ns + "convex_hull_stage_a_seed_refine_en",
+                             convex_hull_stage_a_seed_refine_en, false);
+            loader.LoadParam("traj_opt" + ns + "convex_hull_phase2_require_certification",
+                             convex_hull_phase2_require_certification, false);
+            loader.LoadParam("traj_opt" + ns + "convex_hull_phase2_top_k",
+                             convex_hull_phase2_top_k, 32);
+            loader.LoadParam("traj_opt" + ns + "convex_hull_phase2_max_constraints",
+                             convex_hull_phase2_max_constraints, 64);
+            loader.LoadParam("traj_opt" + ns + "convex_hull_phase2_max_outer",
+                             convex_hull_phase2_max_outer, 4);
+            loader.LoadParam("traj_opt" + ns + "convex_hull_phase2_inner_tol_init",
+                             convex_hull_phase2_inner_tol_init, 1.0e-2);
+            loader.LoadParam("traj_opt" + ns + "convex_hull_phase2_inner_tol_final",
+                             convex_hull_phase2_inner_tol_final, 1.0e-4);
+            loader.LoadParam("traj_opt" + ns + "convex_hull_phase2_append_en",
+                             convex_hull_phase2_append_en, true);
+            loader.LoadParam("traj_opt" + ns + "convex_hull_phase2_multiplier_reuse_en",
+                             convex_hull_phase2_multiplier_reuse_en, true);
+            loader.LoadParam("traj_opt" + ns + "convex_hull_flatness_en",
+                             convex_hull_flatness_en, false);
+            loader.LoadParam("traj_opt" + ns + "convex_hull_flatness_major_iters",
+                             convex_hull_flatness_major_iters, 1);
             loader.LoadParam("traj_opt" + ns + "init_profile_vel_ratio", init_profile_vel_ratio, 0.65);
             loader.LoadParam("traj_opt" + ns + "init_duration_scale", init_duration_scale, 1.25);
             loader.LoadParam("traj_opt" + ns + "terminal_vel_ratio", terminal_vel_ratio, 0.0);
@@ -211,6 +284,7 @@ namespace traj_opt {
             loader.LoadParam("traj_opt/boundary/max_acc", max_acc, -1.0);
             loader.LoadParam("traj_opt/boundary/max_jerk", max_jerk, -1.0);
             loader.LoadParam("traj_opt/boundary/max_omg", max_omg, -1.0);
+            loader.LoadParam("traj_opt/boundary/max_tilt", max_tilt, 1.05);
             loader.LoadParam("traj_opt/boundary/max_acc_thr", max_acc_thr, -1.0);
             loader.LoadParam("traj_opt/boundary/min_acc_thr", min_acc_thr, -1.0);
             loader.LoadParam("traj_opt/boundary/penna_margin", penna_margin, 0.05);

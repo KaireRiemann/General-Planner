@@ -52,6 +52,10 @@ struct Report
   std::size_t constraints{0};
   double penalty{0.0};
   double max_violation{std::numeric_limits<double>::infinity()};
+  double primal_residual{0.0};
+  double dual_residual{0.0};
+  double complementarity_residual{0.0};
+  double stationarity_residual{0.0};
 
   bool converged() const { return status == Status::CONVERGED; }
 };
@@ -172,6 +176,17 @@ Status solve(Vector &x,
     report.max_violation =
         constraints.size() > 0
             ? std::max(0.0, constraints.maxCoeff())
+            : 0.0;
+    report.primal_residual = report.max_violation;
+    report.dual_residual =
+        multipliers.size() > 0
+            ? std::max(0.0, (-multipliers).maxCoeff())
+            : 0.0;
+    report.complementarity_residual =
+        multipliers.size() > 0
+            ? (multipliers.cwiseProduct(constraints))
+                  .cwiseAbs()
+                  .maxCoeff()
             : 0.0;
     report.penalty = penalty;
     if (report.max_violation <= parameters.constraint_tolerance)

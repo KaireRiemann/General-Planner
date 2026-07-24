@@ -43,11 +43,35 @@ public:
     double max_normalized_violation{0.0};
     double max_position_violation{0.0};
     double max_derivative_violation{0.0};
+    double primal_residual{0.0};
+    double dual_residual{0.0};
+    double complementarity_residual{0.0};
+    double stationarity_residual{0.0};
     double penalty{0.0};
     std::size_t constraints{0};
     int coarse_segments{0};
     int fine_segments{0};
   };
+
+  void fillKktResiduals(UpdateReport &report,
+                        double stationarity_residual = 0.0) const
+  {
+    report.primal_residual = std::max(0.0, report.max_normalized_violation);
+    report.dual_residual =
+        multipliers_.size() > 0
+            ? std::max(0.0, (-multipliers_).maxCoeff())
+            : 0.0;
+    report.complementarity_residual = 0.0;
+    if (multipliers_.size() > 0 &&
+        constraint_values_.size() == multipliers_.size())
+    {
+      report.complementarity_residual =
+          multipliers_.cwiseProduct(constraint_values_)
+              .cwiseAbs()
+              .maxCoeff();
+    }
+    report.stationarity_residual = std::max(0.0, stationarity_residual);
+  }
 
   void configure(const Options &options)
   {
@@ -848,6 +872,7 @@ private:
     report.max_derivative_violation =
         std::max(0.0, report.max_derivative_violation);
     report.certified = report.max_normalized_violation <= 0.0;
+    fillKktResiduals(report);
     return report;
   }
 

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <deque>
 #include <fstream>
 #include <limits>
@@ -17,6 +18,8 @@
 #include "traj_opt/costfunctional_manager/exp_integal_cost_manager.hpp"
 #include "traj_opt/costfunctional_manager/exp_convex_cost_manager.hpp"
 #include "traj_opt/costfunctional_manager/exp_convex_alm_cost_manager.hpp"
+#include "traj_opt/costfunctional_manager/exp_packed_corrector_cost_manager.hpp"
+#include "traj_opt/convex_hull/constraint_pack.hpp"
 #include "traj_opt/costfunctional_manager/backup_integal_cost_manager.hpp"
 #include "traj_opt/costfunctional_manager/esdf_integral_cost_manager.hpp"
 #include "traj_opt/costfunctional_manager/plain_integral_cost_manager.hpp"
@@ -377,6 +380,7 @@ public:
     std::size_t polynomial_pieces{0};
     std::size_t dense_nodes_per_evaluation{0};
     std::size_t hull_control_checks_per_evaluation{0};
+    std::size_t scalar_constraint_checks{0};
     std::size_t alm_constraints{0};
     std::size_t alm_outer_iterations{0};
     std::size_t alm_inner_solves{0};
@@ -384,10 +388,22 @@ public:
     std::size_t adaptive_coarse_segments{0};
     std::size_t adaptive_fine_segments{0};
     double alm_max_violation{0.0};
+    // Full ALM: PHR certificate. Phase-2: oracle continuous_feasible.
     bool alm_certified{false};
+    // Phase-2 observability (also mirrored into alm_* counters when active).
+    bool phase2_triggered{false};
+    std::size_t phase2_packed_constraints{0};
+    bool jerk_certificate_enabled{false};
     double alm_warm_start_seconds{0.0};
     double dense_integral_seconds{0.0};
     double control_point_seconds{0.0};
+    double hull_transform_seconds{0.0};
+    double hull_hodograph_seconds{0.0};
+    double hull_position_residual_seconds{0.0};
+    double hull_derivative_residual_seconds{0.0};
+    double hull_reverse_hodograph_seconds{0.0};
+    double hull_backward_add_seconds{0.0};
+    double hull_discrete_attractor_seconds{0.0};
     double minco_evaluation_seconds{0.0};
     double optimization_seconds{0.0};
     double dense_share_of_minco_evaluation{0.0};
@@ -396,6 +412,15 @@ public:
     bool fast_stop_satisfied{false};
     std::size_t fast_stop_iteration{0};
     bool fast_fallback_used{false};
+    bool continuous_feasible{false};
+    bool robustly_certified{false};
+    bool has_certified_incumbent{false};
+    double max_normalized_violation{0.0};
+    double min_position_margin{0.0};
+    double primal_residual{0.0};
+    double dual_residual{0.0};
+    double complementarity_residual{0.0};
+    double stationarity_residual{0.0};
   };
 
   ExpTrajOpt(const traj_opt::Config &cfg,
@@ -441,6 +466,11 @@ public:
     return cumulative_timing_report_;
   }
 
+  const SolverQualityReport &lastQualityReport() const
+  {
+    return last_quality_report_;
+  }
+
 private:
   struct OptimizationVariables
   {
@@ -462,14 +492,29 @@ private:
     double lbfgs_fast_rel_cost{1.0e-4};
     double lbfgs_fast_rel_step{2.0e-3};
     double lbfgs_fast_rel_penalty{5.0e-3};
+    bool lbfgs_fast_phase0_guards_en{false};
+    double lbfgs_fast_rel_time{2.0e-2};
+    double lbfgs_fast_rel_waypoint{2.0e-2};
+    double lbfgs_fast_scaled_grad{5.0e-2};
+    double lbfgs_fast_min_step{1.0e-8};
+    double lbfgs_fast_penalty_tol{1.0e-2};
+    int lbfgs_fast_small_step_limit{3};
     double guide_initial_time_scale{1.0};
     std::deque<double> accepted_cost_history;
     VecDf previous_accepted_x;
     VecDf previous_accepted_penalty;
+    VecDf previous_accepted_durations;
+    Mat3Df previous_accepted_waypoints;
     int fast_stop_streak{0};
+    int small_step_streak{0};
     bool fast_stop_satisfied{false};
     std::size_t fast_stop_iteration{0};
     bool fast_fallback_used{false};
+    bool has_certified_incumbent{false};
+    VecDf certified_incumbent_x;
+    double certified_incumbent_cost{std::numeric_limits<double>::infinity()};
+    ContinuousCertificateReport last_certificate{};
+    SolverQualityReport quality{};
     int pos_constraint_type{0};
     bool block_energy_cost{false};
     double smooth_eps{0.0};
@@ -486,6 +531,22 @@ private:
     bool convex_hull_adaptive_enabled{true};
     int convex_hull_alm_max_outer_iterations{4};
     bool convex_hull_alm_require_certification{true};
+    bool convex_hull_phase2_corrector_enabled{false};
+    bool convex_hull_stage_a_seed_refine_enabled{true};
+    bool convex_hull_phase2_require_certification{false};
+    bool convex_hull_phase2_objective_active{false};
+    bool phase2_triggered{false};
+    std::size_t phase2_packed_constraints{0};
+    std::size_t stage_a_fine_segments{0};
+    int convex_hull_phase2_top_k{32};
+    int convex_hull_phase2_max_constraints{64};
+    int convex_hull_phase2_max_outer{4};
+    double convex_hull_phase2_inner_tol_init{1.0e-2};
+    double convex_hull_phase2_inner_tol_final{1.0e-4};
+    bool convex_hull_phase2_append_en{true};
+    bool convex_hull_phase2_multiplier_reuse_en{true};
+    bool convex_hull_flatness_enabled{false};
+    int convex_hull_flatness_major_iters{2};
     flatness::FlatnessMap quadrotor_flatness;
 
     bool default_init{true};
@@ -564,12 +625,33 @@ private:
   cost_functional_manager::ExpIntegralCostManager exp_cost_manager_;
   cost_functional_manager::ExpConvexCostManager exp_convex_cost_manager_;
   cost_functional_manager::ExpConvexAlmCostManager exp_convex_alm_cost_manager_;
+  cost_functional_manager::ExpPackedCorrectorCostManager
+      exp_packed_corrector_cost_manager_;
   SwarmPenaltyConfig swarm_config_;
   SwarmTrajectoriesConstPtr swarm_trajs_;
   double swarm_current_wall_time_{0.0};
   OptimizationVariables opt_vars_;
   TimingReport last_timing_report_;
   TimingReport cumulative_timing_report_;
+  SolverQualityReport last_quality_report_;
+
+  // Cross-replan Phase-2 multiplier / topology cache.
+  std::uint64_t phase2_cached_signature_{0};
+  traj_opt::convex_hull::PackedConstraintSet phase2_cached_pack_{};
+  Eigen::VectorXd phase2_cached_multipliers_;
+  double phase2_cached_penalty_{0.0};
+
+  void maybeUpdateCertifiedIncumbent(const VecDf &x, double cost);
+  void fillPostSolveQualityReport(const VecDf &x, const VecDf &grad);
+  bool runPhase2PackedCorrection(VecDf &x,
+                                 double &min_cost,
+                                 double rel_cost_tol,
+                                 int lbfgs_mem_size,
+                                 std::size_t &outer_iterations,
+                                 std::size_t &inner_solves,
+                                 std::size_t &topology_changes,
+                                 double &max_violation,
+                                 bool &correction_certified);
 };
 
 class ExplorationTrajOpt

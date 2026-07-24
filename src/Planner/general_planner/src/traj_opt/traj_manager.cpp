@@ -550,6 +550,19 @@ ExpTrajOpt::ExpTrajOpt(const traj_opt::Config &cfg,
       std::max(0.0, cfg_.lbfgs_fast_rel_step);
   opt_vars_.lbfgs_fast_rel_penalty =
       std::max(0.0, cfg_.lbfgs_fast_rel_penalty);
+  opt_vars_.lbfgs_fast_phase0_guards_en = cfg_.lbfgs_fast_phase0_guards_en;
+  opt_vars_.lbfgs_fast_rel_time =
+      std::max(0.0, cfg_.lbfgs_fast_rel_time);
+  opt_vars_.lbfgs_fast_rel_waypoint =
+      std::max(0.0, cfg_.lbfgs_fast_rel_waypoint);
+  opt_vars_.lbfgs_fast_scaled_grad =
+      std::max(0.0, cfg_.lbfgs_fast_scaled_grad);
+  opt_vars_.lbfgs_fast_min_step =
+      std::max(0.0, cfg_.lbfgs_fast_min_step);
+  opt_vars_.lbfgs_fast_penalty_tol =
+      std::max(0.0, cfg_.lbfgs_fast_penalty_tol);
+  opt_vars_.lbfgs_fast_small_step_limit =
+      std::max(1, cfg_.lbfgs_fast_small_step_limit);
   opt_vars_.guide_initial_time_scale =
       std::max(0.1, cfg_.guide_initial_time_scale);
   opt_vars_.convex_hull_enabled = cfg_.convex_hull_en;
@@ -566,19 +579,67 @@ ExpTrajOpt::ExpTrajOpt(const traj_opt::Config &cfg,
   {
     opt_vars_.convex_hull_cost_version = 1;
   }
+  // Online Bezier hull hot path: ONE Fast LBFGS (cheap depth-0 V2).
+  // Phase-2 / full ALM are opt-in only — they must not be forced online.
   opt_vars_.convex_hull_alm_enabled =
       cfg_.convex_hull_en && cfg_.convex_hull_alm_en &&
       opt_vars_.convex_hull_basis == traj_opt::convex_hull::Basis::Bezier;
+  if (opt_vars_.convex_hull_alm_enabled)
+  {
+    std::cout << YELLOW
+              << " -- [ExpTrajOpt] convex_hull_alm_en enabled (slow legacy path)."
+              << RESET << std::endl;
+  }
   opt_vars_.convex_hull_alm_warm_start_enabled =
       cfg_.convex_hull_alm_warm_start_en;
   opt_vars_.convex_hull_alm_warm_start_accuracy =
       std::max(1.0e-12, cfg_.convex_hull_alm_warm_start_accuracy);
-  opt_vars_.convex_hull_adaptive_enabled =
-      cfg_.convex_hull_adaptive_en;
   opt_vars_.convex_hull_alm_max_outer_iterations =
       std::max(1, cfg_.convex_hull_alm_max_outer_iterations);
   opt_vars_.convex_hull_alm_require_certification =
       cfg_.convex_hull_alm_require_certification;
+  opt_vars_.convex_hull_adaptive_enabled = cfg_.convex_hull_adaptive_en;
+  // Phase-2 is explicit opt-in; never force it on.
+  opt_vars_.convex_hull_phase2_corrector_enabled =
+      cfg_.convex_hull_en && cfg_.convex_hull_phase2_corrector_en &&
+      !opt_vars_.convex_hull_alm_enabled &&
+      opt_vars_.convex_hull_basis == traj_opt::convex_hull::Basis::Bezier;
+  opt_vars_.convex_hull_stage_a_seed_refine_enabled =
+      opt_vars_.convex_hull_phase2_corrector_enabled &&
+      cfg_.convex_hull_stage_a_seed_refine_en;
+  opt_vars_.convex_hull_phase2_require_certification =
+      cfg_.convex_hull_phase2_require_certification;
+  opt_vars_.convex_hull_phase2_objective_active = false;
+  opt_vars_.phase2_triggered = false;
+  opt_vars_.phase2_packed_constraints = 0;
+  opt_vars_.stage_a_fine_segments = 0;
+  opt_vars_.convex_hull_phase2_top_k =
+      std::max(1, cfg_.convex_hull_phase2_top_k);
+  opt_vars_.convex_hull_phase2_max_constraints =
+      std::max(opt_vars_.convex_hull_phase2_top_k,
+               cfg_.convex_hull_phase2_max_constraints);
+  opt_vars_.convex_hull_phase2_max_outer =
+      std::max(1, cfg_.convex_hull_phase2_max_outer);
+  opt_vars_.convex_hull_phase2_inner_tol_init =
+      std::max(1.0e-12, cfg_.convex_hull_phase2_inner_tol_init);
+  opt_vars_.convex_hull_phase2_inner_tol_final =
+      std::max(1.0e-12, cfg_.convex_hull_phase2_inner_tol_final);
+  if (opt_vars_.convex_hull_phase2_inner_tol_final >
+      opt_vars_.convex_hull_phase2_inner_tol_init)
+  {
+    opt_vars_.convex_hull_phase2_inner_tol_final =
+        opt_vars_.convex_hull_phase2_inner_tol_init;
+  }
+  opt_vars_.convex_hull_phase2_append_en = cfg_.convex_hull_phase2_append_en;
+  opt_vars_.convex_hull_phase2_multiplier_reuse_en =
+      cfg_.convex_hull_phase2_multiplier_reuse_en;
+  opt_vars_.convex_hull_flatness_enabled =
+      cfg_.convex_hull_en && cfg_.convex_hull_flatness_en &&
+      !opt_vars_.convex_hull_alm_enabled &&
+      !opt_vars_.convex_hull_adaptive_enabled &&
+      opt_vars_.convex_hull_basis == traj_opt::convex_hull::Basis::Bezier;
+  opt_vars_.convex_hull_flatness_major_iters =
+      std::max(1, cfg_.convex_hull_flatness_major_iters);
   opt_vars_.quadrotor_flatness = cfg_.quadrotot_flatness;
   opt_vars_.guide_z_tube_radius = std::max(0.0, cfg_.guide_z_tube_radius);
   // Guide-path integral cost is disabled until its planner-level semantics are redesigned.
@@ -594,12 +655,65 @@ ExpTrajOpt::ExpTrajOpt(const traj_opt::Config &cfg,
   optimizer_.setTimeMap(&time_map_);
   optimizer_.setSpatialMap(&spatial_map_);
   optimizer_.setEnergyWeight(opt_vars_.block_energy_cost ? 0.0 : 1.0);
-  optimizer_.setSamplesPerPiece(opt_vars_.integral_res);
+  // With Bezier hull covering pos/vel/acc, dense sampling is only for
+  // residual terms (omg/thr). Use a fixed coarse grid — otherwise hull+dense
+  // is strictly more work than dense-only.
+  {
+    const int dense_samples =
+        opt_vars_.convex_hull_enabled ? 2 : opt_vars_.integral_res;
+    optimizer_.setSamplesPerPiece(dense_samples);
+  }
   optimizer_.setTimingEnabled(true);
-  exp_convex_cost_manager_.configure(
-      opt_vars_.convex_hull_basis,
-      opt_vars_.convex_hull_subdivision_depth,
-      opt_vars_.convex_hull_cost_version);
+  {
+    cost_functional_manager::ExpConvexCostManager::AdaptiveOptions
+        adaptive_options;
+    adaptive_options.enabled =
+        opt_vars_.convex_hull_enabled &&
+        !opt_vars_.convex_hull_alm_enabled &&
+        opt_vars_.convex_hull_adaptive_enabled &&
+        opt_vars_.convex_hull_basis ==
+            traj_opt::convex_hull::Basis::Bezier;
+    adaptive_options.position_refine_margin =
+        cfg_.convex_hull_refine_margin;
+    adaptive_options.refine_derivative_constraints =
+        cfg_.convex_hull_refine_derivative_constraints;
+    adaptive_options.derivative_refine_margin =
+        cfg_.convex_hull_derivative_refine_margin;
+    exp_convex_cost_manager_.configure(
+        opt_vars_.convex_hull_basis,
+        opt_vars_.convex_hull_subdivision_depth,
+        opt_vars_.convex_hull_cost_version,
+        adaptive_options,
+        cfg_.convex_hull_alm_position_scale,
+        cfg_.convex_hull_robust_certificate_margin);
+    {
+      traj_opt::convex_hull::FlatnessConvexHullCost::Config flat_cfg;
+      flat_cfg.mass = cfg_.mass;
+      flat_cfg.gravity = cfg_.grav;
+      flat_cfg.horizontal_drag = cfg_.dh;
+      flat_cfg.vertical_drag = cfg_.dv;
+      flat_cfg.parasitic_drag = cfg_.cp;
+      flat_cfg.speed_smoothing = cfg_.v_eps;
+      flat_cfg.max_angular_rate = cfg_.max_omg;
+      flat_cfg.max_tilt_angle =
+          std::clamp(cfg_.max_tilt, 1.0e-3, 0.5 * M_PI - 1.0e-3);
+      flat_cfg.min_thrust = cfg_.min_acc_thr * cfg_.mass;
+      flat_cfg.max_thrust = cfg_.max_acc_thr * cfg_.mass;
+      flat_cfg.smooth_epsilon = cfg_.smooth_eps;
+      flat_cfg.weights.angular_rate = std::max(0.0, cfg_.penna_omg);
+      flat_cfg.weights.thrust = std::max(0.0, cfg_.penna_thr);
+      flat_cfg.weights.tilt = std::max(flat_cfg.weights.thrust,
+                                       flat_cfg.weights.angular_rate);
+      flat_cfg.weights.force_projection = flat_cfg.weights.thrust;
+      flat_cfg.weights.velocity_trust_region =
+          10.0 * std::max(flat_cfg.weights.angular_rate,
+                          flat_cfg.weights.thrust);
+      exp_convex_cost_manager_.configureFlatness(
+          opt_vars_.convex_hull_flatness_enabled, flat_cfg);
+      opt_vars_.convex_hull_flatness_enabled =
+          exp_convex_cost_manager_.usesFlatnessHull();
+    }
+  }
   cost_functional_manager::ExpConvexAlmCostManager::Options alm_options;
   alm_options.adaptive = opt_vars_.convex_hull_adaptive_enabled;
   alm_options.active_set = cfg_.convex_hull_alm_active_set_en;
@@ -613,6 +727,14 @@ ExpTrajOpt::ExpTrajOpt(const traj_opt::Config &cfg,
       cfg_.convex_hull_derivative_refine_margin;
   alm_options.position_scale = cfg_.convex_hull_alm_position_scale;
   exp_convex_alm_cost_manager_.configure(alm_options);
+  {
+    cost_functional_manager::ExpPackedCorrectorCostManager::Options
+        packed_options;
+    packed_options.position_scale = cfg_.convex_hull_alm_position_scale;
+    packed_options.max_constraints =
+        opt_vars_.convex_hull_phase2_max_constraints;
+    exp_packed_corrector_cost_manager_.configure(packed_options);
+  }
   last_timing_report_.mode =
       opt_vars_.convex_hull_enabled
           ? (opt_vars_.convex_hull_alm_enabled
@@ -621,14 +743,25 @@ ExpTrajOpt::ExpTrajOpt(const traj_opt::Config &cfg,
                                        ? "adaptive_d"
                                        : "fixed_d") +
                        std::to_string(opt_vars_.convex_hull_subdivision_depth)
+                 : opt_vars_.convex_hull_phase2_corrector_enabled
+                 ? "convex_bezier_v" +
+                       std::to_string(opt_vars_.convex_hull_cost_version) +
+                       "_phase2_d" +
+                       std::to_string(opt_vars_.convex_hull_subdivision_depth)
                  : opt_vars_.convex_hull_basis == traj_opt::convex_hull::Basis::MINVO
                  ? "convex_minvo_v" +
                        std::to_string(opt_vars_.convex_hull_cost_version) +
                        "_d" +
                        std::to_string(opt_vars_.convex_hull_subdivision_depth)
-                 : "convex_bezier_v" +
+                 : exp_convex_cost_manager_.adaptiveEnabled()
+                 ? "convex_bezier_v" +
                        std::to_string(opt_vars_.convex_hull_cost_version) +
-                       "_d" +
+                       "_twostage_d" +
+                       std::to_string(opt_vars_.convex_hull_subdivision_depth)
+                 : std::string("convex_bezier_v") +
+                       std::to_string(opt_vars_.convex_hull_cost_version) +
+                       (opt_vars_.convex_hull_flatness_enabled ? "_flat_d"
+                                                              : "_d") +
                        std::to_string(opt_vars_.convex_hull_subdivision_depth))
           : "dense";
 }
@@ -901,7 +1034,7 @@ double ExpTrajOpt::costFunctional(void *ptr, const VecDf &x, VecDf &g)
 
 int ExpTrajOpt::progressFunctional(void *ptr,
                                    const VecDf &x,
-                                   const VecDf &,
+                                   const VecDf &g,
                                    double cost,
                                    double step,
                                    int,
@@ -950,6 +1083,12 @@ int ExpTrajOpt::progressFunctional(void *ptr,
   }
 
   double relative_penalty = std::numeric_limits<double>::infinity();
+  double max_penalty = 0.0;
+  if (vars.penalty_log.allFinite() && vars.penalty_log.size() > 1)
+  {
+    max_penalty = vars.penalty_log.tail(vars.penalty_log.size() - 1)
+                      .lpNorm<Eigen::Infinity>();
+  }
   if (vars.previous_accepted_penalty.size() == vars.penalty_log.size() &&
       vars.previous_accepted_penalty.allFinite() &&
       vars.penalty_log.allFinite())
@@ -972,8 +1111,87 @@ int ExpTrajOpt::progressFunctional(void *ptr,
     }
   }
 
+  // Physical duration / waypoint change (decision-map space).
+  const int time_dim =
+      std::min<int>(vars.piece_num, static_cast<int>(x.size()));
+  VecDf durations(time_dim);
+  for (int i = 0; i < time_dim; ++i)
+  {
+    durations(i) = self->time_map_.toTime(x(i));
+  }
+  double relative_time = 0.0;
+  if (vars.previous_accepted_durations.size() == durations.size() &&
+      vars.previous_accepted_durations.allFinite() &&
+      durations.allFinite())
+  {
+    for (int i = 0; i < time_dim; ++i)
+    {
+      relative_time = std::max(
+          relative_time,
+          std::abs(durations(i) - vars.previous_accepted_durations(i)) /
+              std::max(vars.previous_accepted_durations(i), 1.0e-3));
+    }
+  }
+
+  Mat3Df waypoints(3, std::max(0, vars.piece_num - 1));
+  int offset = time_dim;
+  for (int i = 1; i < vars.piece_num; ++i)
+  {
+    const int dof = self->spatial_map_.getUnconstrainedDim(i);
+    if (offset + dof > x.size())
+    {
+      break;
+    }
+    waypoints.col(i - 1) =
+        self->spatial_map_.toPhysical(x.segment(offset, dof), i);
+    offset += dof;
+  }
+  double relative_waypoint = 0.0;
+  if (vars.previous_accepted_waypoints.cols() == waypoints.cols() &&
+      vars.previous_accepted_waypoints.allFinite() &&
+      waypoints.allFinite())
+  {
+    const double corridor_scale =
+        std::max(1.0e-3, self->cfg_.convex_hull_alm_position_scale);
+    for (int i = 0; i < waypoints.cols(); ++i)
+    {
+      relative_waypoint = std::max(
+          relative_waypoint,
+          (waypoints.col(i) - vars.previous_accepted_waypoints.col(i))
+                  .norm() /
+              corridor_scale);
+    }
+  }
+
+  double scaled_gradient_inf = std::numeric_limits<double>::infinity();
+  if (g.size() == x.size() && g.allFinite() && x.allFinite())
+  {
+    scaled_gradient_inf = 0.0;
+    for (Eigen::Index i = 0; i < x.size(); ++i)
+    {
+      const double scale = std::max(1.0, std::abs(x(i)));
+      scaled_gradient_inf =
+          std::max(scaled_gradient_inf, std::abs(g(i)) / scale);
+    }
+  }
+
+  const bool small_step =
+      std::isfinite(step) && step < vars.lbfgs_fast_min_step;
+  vars.small_step_streak = small_step ? vars.small_step_streak + 1 : 0;
+  const bool stall_blocks_fast_stop =
+      vars.small_step_streak >= vars.lbfgs_fast_small_step_limit &&
+      !(scaled_gradient_inf <= vars.lbfgs_fast_scaled_grad);
+
   vars.previous_accepted_x = x;
   vars.previous_accepted_penalty = vars.penalty_log;
+  vars.previous_accepted_durations = durations;
+  vars.previous_accepted_waypoints = waypoints;
+  vars.quality.relative_decision_step = relative_step;
+  vars.quality.relative_physical_time_change = relative_time;
+  vars.quality.relative_waypoint_step = relative_waypoint;
+  vars.quality.scaled_gradient_inf = scaled_gradient_inf;
+  vars.quality.min_accepted_step = vars.min_accepted_step;
+  vars.quality.max_sampled_violation = max_penalty;
 
   bool stable = false;
   if (vars.lbfgs_iterations >=
@@ -983,9 +1201,21 @@ int ExpTrajOpt::progressFunctional(void *ptr,
     const double relative_cost =
         std::abs(vars.accepted_cost_history.front() - cost) /
         std::max(1.0, std::abs(cost));
+    vars.quality.relative_cost_change = relative_cost;
+    // Legacy fast-stop: cost / decision-step / penalty-log only.
     stable = relative_cost <= vars.lbfgs_fast_rel_cost &&
              relative_step <= vars.lbfgs_fast_rel_step &&
              relative_penalty <= vars.lbfgs_fast_rel_penalty;
+    if (vars.lbfgs_fast_phase0_guards_en)
+    {
+      const bool penalty_ok = max_penalty <= vars.lbfgs_fast_penalty_tol;
+      stable = stable &&
+               relative_time <= vars.lbfgs_fast_rel_time &&
+               relative_waypoint <= vars.lbfgs_fast_rel_waypoint &&
+               scaled_gradient_inf <= vars.lbfgs_fast_scaled_grad &&
+               penalty_ok &&
+               !stall_blocks_fast_stop;
+    }
   }
 
   vars.fast_stop_streak = stable ? vars.fast_stop_streak + 1 : 0;
@@ -993,6 +1223,7 @@ int ExpTrajOpt::progressFunctional(void *ptr,
   {
     vars.fast_stop_satisfied = true;
     vars.fast_stop_iteration = vars.lbfgs_iterations;
+    vars.quality.trajectory_stable = true;
     return 1;
   }
   return 0;
@@ -1069,6 +1300,22 @@ double ExpTrajOpt::evaluateMincoCost(const VecDf &x, VecDf &g)
     opt_vars_.penalty_log.tail(7) =
         exp_convex_alm_cost_manager_.getPenaltyLog().segment(1, 7);
   }
+  else if (opt_vars_.convex_hull_phase2_corrector_enabled &&
+           opt_vars_.convex_hull_phase2_objective_active)
+  {
+    cost = optimizer_.evaluate(
+        x, g, linear_time_cost_, exp_packed_corrector_cost_manager_);
+    opt_vars_.guide_integral_violation =
+        exp_packed_corrector_cost_manager_.guideIntegralViolation();
+    opt_vars_.guide_path_cost_log =
+        exp_packed_corrector_cost_manager_.guideCostLog();
+    opt_vars_.guide_path_max_abs_time_grad =
+        exp_packed_corrector_cost_manager_.guideMaxAbsTimeGrad();
+    opt_vars_.guide_path_out_of_time_range_samples =
+        exp_packed_corrector_cost_manager_.guideOutOfTimeRangeSamples();
+    opt_vars_.penalty_log.tail(7) =
+        exp_packed_corrector_cost_manager_.getPenaltyLog().segment(1, 7);
+  }
   else if (opt_vars_.convex_hull_enabled)
   {
     cost = optimizer_.evaluate(
@@ -1100,6 +1347,356 @@ double ExpTrajOpt::evaluateMincoCost(const VecDf &x, VecDf &g)
   opt_vars_.penalty_log(5) = std::max({opt_vars_.penalty_log(5),
                                        opt_vars_.guide_integral_violation});
   return cost;
+}
+
+void ExpTrajOpt::maybeUpdateCertifiedIncumbent(const VecDf &x, double cost)
+{
+  if (!opt_vars_.convex_hull_enabled || !x.allFinite() ||
+      !std::isfinite(cost))
+  {
+    return;
+  }
+  if (!optimizer_.updateTrajectoryFromDecisionVector(x))
+  {
+    return;
+  }
+  const auto certificate =
+      exp_convex_cost_manager_.computeAdaptiveContinuousCertificate(
+          optimizer_.getTrajectory());
+  opt_vars_.last_certificate = certificate;
+  if (!certificate.continuous_feasible)
+  {
+    return;
+  }
+  if (!opt_vars_.has_certified_incumbent ||
+      cost < opt_vars_.certified_incumbent_cost)
+  {
+    opt_vars_.has_certified_incumbent = true;
+    opt_vars_.certified_incumbent_x = x;
+    opt_vars_.certified_incumbent_cost = cost;
+  }
+}
+
+void ExpTrajOpt::fillPostSolveQualityReport(const VecDf &x,
+                                            const VecDf &grad)
+{
+  const SolverQualityReport progress_snapshot = opt_vars_.quality;
+  SolverQualityReport &report = opt_vars_.quality;
+  report = SolverQualityReport{};
+  report.relative_cost_change = progress_snapshot.relative_cost_change;
+  report.relative_decision_step = progress_snapshot.relative_decision_step;
+  report.relative_physical_time_change =
+      progress_snapshot.relative_physical_time_change;
+  report.relative_waypoint_step = progress_snapshot.relative_waypoint_step;
+  report.scaled_gradient_inf = progress_snapshot.scaled_gradient_inf;
+  report.min_accepted_step = opt_vars_.min_accepted_step;
+  report.trajectory_stable = opt_vars_.fast_stop_satisfied;
+  report.has_certified_incumbent = opt_vars_.has_certified_incumbent;
+
+  if (opt_vars_.penalty_log.size() > 1 && opt_vars_.penalty_log.allFinite())
+  {
+    report.max_sampled_violation =
+        opt_vars_.penalty_log.tail(opt_vars_.penalty_log.size() - 1)
+            .lpNorm<Eigen::Infinity>();
+    report.sampled_feasible =
+        report.max_sampled_violation <= opt_vars_.lbfgs_fast_penalty_tol;
+  }
+
+  if (opt_vars_.convex_hull_enabled &&
+      optimizer_.updateTrajectoryFromDecisionVector(x))
+  {
+    const auto certificate =
+        exp_convex_cost_manager_.computeAdaptiveContinuousCertificate(
+            optimizer_.getTrajectory());
+    opt_vars_.last_certificate = certificate;
+    report.continuous_feasible = certificate.continuous_feasible;
+    report.robustly_certified = certificate.robustly_certified;
+    report.max_position_violation = certificate.max_position_violation;
+    report.max_derivative_violation = std::max(
+        {certificate.max_velocity_violation,
+         certificate.max_acceleration_violation,
+         certificate.max_jerk_violation});
+    report.max_normalized_violation = certificate.max_normalized_violation;
+    report.min_position_margin = certificate.min_position_margin;
+    report.min_derivative_margin = std::min(
+        {certificate.min_velocity_margin,
+         certificate.min_acceleration_margin,
+         certificate.min_jerk_margin});
+    report.scalar_constraint_checks = certificate.scalar_constraint_checks;
+    report.max_depth_used = certificate.max_depth_used;
+    report.unresolved_leaves = certificate.unresolved_leaves;
+  }
+
+  if (grad.size() == x.size() && grad.allFinite() && x.allFinite())
+  {
+    double scaled = 0.0;
+    for (Eigen::Index i = 0; i < x.size(); ++i)
+    {
+      scaled = std::max(scaled,
+                        std::abs(grad(i)) / std::max(1.0, std::abs(x(i))));
+    }
+    report.scaled_gradient_inf = scaled;
+    report.stationarity_residual = scaled;
+    report.approximately_kkt =
+        report.continuous_feasible &&
+        scaled <= opt_vars_.lbfgs_fast_scaled_grad;
+  }
+
+  if (opt_vars_.convex_hull_alm_enabled)
+  {
+    const auto &alm = exp_convex_alm_cost_manager_.lastUpdateReport();
+    report.primal_residual = alm.primal_residual;
+    report.dual_residual = alm.dual_residual;
+    report.complementarity_residual = alm.complementarity_residual;
+    report.stationarity_residual =
+        std::max(report.stationarity_residual, alm.stationarity_residual);
+    report.approximately_kkt =
+        report.continuous_feasible &&
+        report.primal_residual <= cfg_.convex_hull_alm_constraint_tolerance &&
+        report.complementarity_residual <=
+            cfg_.convex_hull_alm_constraint_tolerance &&
+        report.stationarity_residual <= opt_vars_.lbfgs_fast_scaled_grad;
+  }
+
+  report.strictly_polished = false;
+  last_quality_report_ = report;
+}
+
+bool ExpTrajOpt::runPhase2PackedCorrection(
+    VecDf &x,
+    double &min_cost,
+    double rel_cost_tol,
+    int lbfgs_mem_size,
+    std::size_t &outer_iterations,
+    std::size_t &inner_solves,
+    std::size_t &topology_changes,
+    double &max_violation,
+    bool &correction_certified)
+{
+  correction_certified = false;
+  max_violation = 0.0;
+  opt_vars_.phase2_triggered = false;
+  opt_vars_.phase2_packed_constraints = 0;
+  if (!opt_vars_.convex_hull_phase2_corrector_enabled ||
+      !optimizer_.updateTrajectoryFromDecisionVector(x))
+  {
+    return false;
+  }
+
+  auto certificate =
+      exp_convex_cost_manager_.computeAdaptiveContinuousCertificate(
+          optimizer_.getTrajectory());
+  opt_vars_.last_certificate = certificate;
+  max_violation = certificate.max_normalized_violation;
+  if (certificate.continuous_feasible)
+  {
+    correction_certified = true;
+    maybeUpdateCertifiedIncumbent(x, min_cost);
+    return true;
+  }
+  // Only enter packed correction when the oracle reports concrete violations.
+  if (certificate.violated.empty())
+  {
+    std::cout << YELLOW
+              << " -- [ExpTrajOpt] Phase2 skip: infeasible but no packable "
+                 "violations (unresolved="
+              << certificate.unresolved_leaves
+              << ", nviol=" << certificate.max_normalized_violation << ")"
+              << RESET << std::endl;
+    return false;
+  }
+
+  const bool reuse = opt_vars_.convex_hull_phase2_multiplier_reuse_en &&
+                     phase2_cached_signature_ != 0 &&
+                     phase2_cached_multipliers_.size() > 0;
+  const auto *previous_set = reuse ? &phase2_cached_pack_ : nullptr;
+  const Eigen::VectorXd *previous_multipliers =
+      reuse ? &phase2_cached_multipliers_ : nullptr;
+  auto packed = traj_opt::convex_hull::packConstraintCandidates(
+      certificate.violated,
+      opt_vars_.convex_hull_phase2_top_k,
+      previous_multipliers,
+      previous_set);
+  if (packed.constraints.empty())
+  {
+    return false;
+  }
+
+  opt_vars_.phase2_triggered = true;
+  opt_vars_.phase2_packed_constraints = packed.constraints.size();
+  std::cout << " -- [ExpTrajOpt] Phase2 trigger: packed_constraints="
+            << opt_vars_.phase2_packed_constraints
+            << ", oracle_nviol=" << max_violation
+            << ", jerk_cert="
+            << (certificate.jerk_certificate_enabled ? 1 : 0) << std::endl;
+
+  Eigen::VectorXd multipliers =
+      traj_opt::convex_hull::seedMultipliers(packed);
+  double penalty = cfg_.convex_hull_alm_initial_penalty;
+  if (reuse &&
+      packed.topology_signature == phase2_cached_signature_ &&
+      phase2_cached_penalty_ > 0.0)
+  {
+    penalty = phase2_cached_penalty_;
+  }
+
+  if (!exp_packed_corrector_cost_manager_.initializeFromPacked(
+          packed, multipliers, penalty))
+  {
+    return false;
+  }
+
+  opt_vars_.convex_hull_phase2_objective_active = true;
+  opt_vars_.accepted_cost_history.clear();
+  opt_vars_.previous_accepted_x.resize(0);
+  opt_vars_.previous_accepted_penalty.resize(0);
+  opt_vars_.previous_accepted_durations.resize(0);
+  opt_vars_.previous_accepted_waypoints.resize(3, 0);
+  opt_vars_.fast_stop_streak = 0;
+  opt_vars_.small_step_streak = 0;
+  opt_vars_.fast_stop_satisfied = false;
+  opt_vars_.fast_stop_iteration = 0;
+
+  const int max_outer = opt_vars_.convex_hull_phase2_max_outer;
+  const int max_attempts = std::max(8, max_outer * 4);
+  double previous_violation = std::numeric_limits<double>::infinity();
+  int outer = 0;
+  for (int attempt = 0; attempt < max_attempts && outer < max_outer;
+       ++attempt)
+  {
+    const double t =
+        max_outer <= 1 ? 1.0
+                       : static_cast<double>(outer) /
+                             static_cast<double>(max_outer - 1);
+    const double log_init =
+        std::log(opt_vars_.convex_hull_phase2_inner_tol_init);
+    const double log_final =
+        std::log(opt_vars_.convex_hull_phase2_inner_tol_final);
+    const double inner_tol = std::exp((1.0 - t) * log_init + t * log_final);
+
+    lbfgs::lbfgs_parameter_t params;
+    params.mem_size = std::max(3, lbfgs_mem_size);
+    params.g_epsilon = 0.0;
+    params.past = 3;
+    params.delta = std::max(rel_cost_tol, inner_tol);
+    params.max_linesearch = 64;
+    params.min_step = 1.0e-20;
+    exp_packed_corrector_cost_manager_.setPhrState(multipliers, penalty);
+    ++inner_solves;
+    const int status = lbfgs::lbfgs_optimize(x,
+                                             min_cost,
+                                             &ExpTrajOpt::costFunctional,
+                                             nullptr,
+                                             &ExpTrajOpt::progressFunctional,
+                                             this,
+                                             params);
+    const bool accepted_fast =
+        status == lbfgs::LBFGS_CANCELED && opt_vars_.fast_stop_satisfied;
+    if (status < 0 && !accepted_fast)
+    {
+      break;
+    }
+
+    if (!optimizer_.updateTrajectoryFromDecisionVector(x))
+    {
+      break;
+    }
+    certificate =
+        exp_convex_cost_manager_.computeAdaptiveContinuousCertificate(
+            optimizer_.getTrajectory());
+    opt_vars_.last_certificate = certificate;
+    max_violation = certificate.max_normalized_violation;
+
+    const auto report =
+        exp_packed_corrector_cost_manager_.inspectAndMaybeAppend(
+            optimizer_.getTrajectory(),
+            certificate.violated,
+            opt_vars_.convex_hull_phase2_append_en);
+    if (report.topology_changed)
+    {
+      ++topology_changes;
+      multipliers = exp_packed_corrector_cost_manager_.multipliers();
+      packed = exp_packed_corrector_cost_manager_.packedSet();
+      continue;
+    }
+
+    ++outer;
+    ++outer_iterations;
+    multipliers = exp_packed_corrector_cost_manager_.multipliers();
+    const Eigen::VectorXd &values =
+        exp_packed_corrector_cost_manager_.constraintValues();
+    const double packed_violation =
+        values.size() > 0 ? std::max(0.0, values.maxCoeff()) : 0.0;
+    max_violation = std::max(max_violation, packed_violation);
+
+    if (certificate.continuous_feasible)
+    {
+      correction_certified = true;
+      maybeUpdateCertifiedIncumbent(x, min_cost);
+      break;
+    }
+
+    if (values.size() == multipliers.size() && values.size() > 0)
+    {
+      multipliers = (multipliers + penalty * values).cwiseMax(0.0);
+    }
+    if (std::isfinite(previous_violation) &&
+        packed_violation >
+            cfg_.convex_hull_alm_progress_ratio * previous_violation)
+    {
+      penalty *= cfg_.convex_hull_alm_penalty_growth;
+    }
+    previous_violation = packed_violation;
+    exp_packed_corrector_cost_manager_.setPhrState(multipliers, penalty);
+  }
+
+  opt_vars_.convex_hull_phase2_objective_active = false;
+
+  if (opt_vars_.convex_hull_phase2_multiplier_reuse_en &&
+      exp_packed_corrector_cost_manager_.constraintCount() > 0)
+  {
+    phase2_cached_pack_ = exp_packed_corrector_cost_manager_.packedSet();
+    phase2_cached_multipliers_ =
+        exp_packed_corrector_cost_manager_.multipliers();
+    phase2_cached_penalty_ = penalty;
+    phase2_cached_signature_ = phase2_cached_pack_.topology_signature;
+  }
+
+  if (!correction_certified &&
+      optimizer_.updateTrajectoryFromDecisionVector(x))
+  {
+    certificate =
+        exp_convex_cost_manager_.computeAdaptiveContinuousCertificate(
+            optimizer_.getTrajectory());
+    opt_vars_.last_certificate = certificate;
+    max_violation = certificate.max_normalized_violation;
+    correction_certified = certificate.continuous_feasible;
+    if (correction_certified)
+    {
+      maybeUpdateCertifiedIncumbent(x, min_cost);
+    }
+  }
+  if (!correction_certified && opt_vars_.has_certified_incumbent &&
+      opt_vars_.certified_incumbent_x.size() == x.size())
+  {
+    // Prefer a previously certified incumbent over an uncertified correction.
+    x = opt_vars_.certified_incumbent_x;
+    min_cost = opt_vars_.certified_incumbent_cost;
+    if (optimizer_.updateTrajectoryFromDecisionVector(x))
+    {
+      certificate =
+          exp_convex_cost_manager_.computeAdaptiveContinuousCertificate(
+              optimizer_.getTrajectory());
+      opt_vars_.last_certificate = certificate;
+      max_violation = certificate.max_normalized_violation;
+      correction_certified = certificate.continuous_feasible;
+    }
+  }
+  opt_vars_.phase2_packed_constraints = std::max(
+      opt_vars_.phase2_packed_constraints,
+      exp_packed_corrector_cost_manager_.constraintCount());
+  return correction_certified ||
+         exp_packed_corrector_cost_manager_.constraintCount() > 0;
 }
 
 double ExpTrajOpt::optimize(Trajectory &traj, double rel_cost_tol)
@@ -1143,7 +1740,10 @@ double ExpTrajOpt::optimize(Trajectory &traj, double rel_cost_tol)
 
   optimizer_.setUniformTimeMode(false);
   optimizer_.setEnergyWeight(opt_vars_.block_energy_cost ? 0.0 : 1.0);
-  optimizer_.setSamplesPerPiece(opt_vars_.integral_res);
+  // Hull covers pos/vel/acc continuously; keep residual dense grid coarse.
+  optimizer_.setSamplesPerPiece(opt_vars_.convex_hull_enabled
+                                    ? 2
+                                    : opt_vars_.integral_res);
   if (!optimizer_.setInitState(toStdVector(opt_vars_.times),
                                toOptimizerWaypoints(waypoints),
                                toSnapBoundary(opt_vars_.head_pvaj),
@@ -1214,6 +1814,29 @@ double ExpTrajOpt::optimize(Trajectory &traj, double rel_cost_tol)
       opt_vars_.guide_path_z_tube_radius,
       opt_vars_.guide_path_huber_delta,
       opt_vars_.guide_path_time_gradient_en);
+  exp_packed_corrector_cost_manager_.reset(
+      &opt_vars_.h_polytopes,
+      &opt_vars_.h_poly_idx,
+      &opt_vars_.waypoint_attractor,
+      &opt_vars_.waypoint_attractor_dead_d,
+      opt_vars_.smooth_eps,
+      opt_vars_.magnitude_bounds,
+      opt_vars_.penalty_weights,
+      &opt_vars_.quadrotor_flatness,
+      swarm_config_,
+      swarm_trajs_,
+      swarm_current_wall_time_,
+      &opt_vars_.guide_path,
+      &opt_vars_.guide_t,
+      opt_vars_.weight_guide_integral,
+      opt_vars_.guide_path_tube_radius,
+      opt_vars_.guide_path_z_tube_radius,
+      opt_vars_.guide_path_huber_delta,
+      opt_vars_.guide_path_time_gradient_en);
+  opt_vars_.convex_hull_phase2_objective_active = false;
+  opt_vars_.phase2_triggered = false;
+  opt_vars_.phase2_packed_constraints = 0;
+  opt_vars_.stage_a_fine_segments = 0;
 
   opt_vars_.iter_num = 0;
   opt_vars_.lbfgs_iterations = 0;
@@ -1224,9 +1847,19 @@ double ExpTrajOpt::optimize(Trajectory &traj, double rel_cost_tol)
   opt_vars_.accepted_cost_history.clear();
   opt_vars_.previous_accepted_x.resize(0);
   opt_vars_.previous_accepted_penalty.resize(0);
+  opt_vars_.previous_accepted_durations.resize(0);
+  opt_vars_.previous_accepted_waypoints.resize(3, 0);
   opt_vars_.fast_stop_streak = 0;
+  opt_vars_.small_step_streak = 0;
   opt_vars_.fast_stop_satisfied = false;
   opt_vars_.fast_stop_iteration = 0;
+  opt_vars_.has_certified_incumbent = false;
+  opt_vars_.certified_incumbent_x.resize(0);
+  opt_vars_.certified_incumbent_cost =
+      std::numeric_limits<double>::infinity();
+  opt_vars_.last_certificate = ContinuousCertificateReport{};
+  opt_vars_.quality = SolverQualityReport{};
+  last_quality_report_ = SolverQualityReport{};
   opt_vars_.fast_fallback_used = false;
   double min_cost = 0.0;
   lbfgs::lbfgs_parameter_t params;
@@ -1347,55 +1980,137 @@ double ExpTrajOpt::optimize(Trajectory &traj, double rel_cost_tol)
     alm_report = exp_convex_alm_cost_manager_.lastUpdateReport();
     alm_report.certified = phr_report.converged();
     alm_report.max_normalized_violation = phr_report.max_violation;
+    alm_report.primal_residual = phr_report.primal_residual;
+    alm_report.dual_residual = phr_report.dual_residual;
+    alm_report.complementarity_residual =
+        phr_report.complementarity_residual;
+    alm_report.stationarity_residual = phr_report.stationarity_residual;
+    exp_convex_alm_cost_manager_.fillKktResiduals(
+        alm_report, phr_report.stationarity_residual);
   }
   else
   {
-    ret = lbfgs::lbfgs_optimize(x,
-                                min_cost,
-                                &ExpTrajOpt::costFunctional,
-                                opt_vars_.lbfgs_fast_enabled &&
-                                        opt_vars_.lbfgs_step_bound_enabled
-                                    ? &ExpTrajOpt::stepBoundFunctional
-                                    : nullptr,
-                                &ExpTrajOpt::progressFunctional,
-                                this,
-                                params);
+    VecDf restart_decision = initial_decision;
+    auto run_lbfgs_with_optional_fallback =
+        [this, &x, &min_cost, &params, &rel_cost_tol, &restart_decision]() {
+          int status = lbfgs::lbfgs_optimize(
+              x,
+              min_cost,
+              &ExpTrajOpt::costFunctional,
+              opt_vars_.lbfgs_fast_enabled &&
+                      opt_vars_.lbfgs_step_bound_enabled
+                  ? &ExpTrajOpt::stepBoundFunctional
+                  : nullptr,
+              &ExpTrajOpt::progressFunctional,
+              this,
+              params);
 
-    // The fast path is deliberately optimistic. Preserve the original solver
-    // as a transparent recovery path for rare non-finite line searches or
-    // other numerical failures. LBFGS already restores x to the last accepted
-    // point before returning an error, so resuming from x is both cheaper and
-    // safer than restarting from the initial trajectory.
-    const bool accepted_fast_stop =
-        ret == lbfgs::LBFGS_CANCELED &&
-        opt_vars_.fast_stop_satisfied;
-    if (ret < 0 &&
-        !accepted_fast_stop &&
-        opt_vars_.lbfgs_fast_enabled)
+          // The fast path is deliberately optimistic. Preserve the original
+          // solver as a transparent recovery path for rare non-finite line
+          // searches or other numerical failures.
+          const bool accepted_fast_stop =
+              status == lbfgs::LBFGS_CANCELED &&
+              opt_vars_.fast_stop_satisfied;
+          if (status < 0 &&
+              !accepted_fast_stop &&
+              opt_vars_.lbfgs_fast_enabled)
+          {
+            opt_vars_.fast_fallback_used = true;
+            x = restart_decision;
+            const bool fast_enabled = opt_vars_.lbfgs_fast_enabled;
+            opt_vars_.lbfgs_fast_enabled = false;
+            lbfgs::lbfgs_parameter_t fallback_params = params;
+            fallback_params.mem_size = 256;
+            fallback_params.delta = rel_cost_tol;
+            fallback_params.min_step = 1.0e-20;
+            fallback_params.max_linesearch = 128;
+            status = lbfgs::lbfgs_optimize(x,
+                                           min_cost,
+                                           &ExpTrajOpt::costFunctional,
+                                           nullptr,
+                                           &ExpTrajOpt::progressFunctional,
+                                           this,
+                                           fallback_params);
+            opt_vars_.lbfgs_fast_enabled = fast_enabled;
+          }
+          return status;
+        };
+
+    // Hot path: Fast LBFGS on fixed Bezier depth (default depth-2).
+    // With flatness hull, freeze the Taylor reference for each major
+    // iteration and refresh only between majors (sequential convexification).
+    const int flatness_majors =
+        opt_vars_.convex_hull_flatness_enabled
+            ? opt_vars_.convex_hull_flatness_major_iters
+            : 1;
+    for (int major = 0; major < flatness_majors; ++major)
     {
-      opt_vars_.fast_fallback_used = true;
-      x = initial_decision;
-      const bool fast_enabled = opt_vars_.lbfgs_fast_enabled;
-      opt_vars_.lbfgs_fast_enabled = false;
-      lbfgs::lbfgs_parameter_t fallback_params = params;
-      fallback_params.mem_size = 256;
-      fallback_params.delta = rel_cost_tol;
-      fallback_params.min_step = 1.0e-20;
-      fallback_params.max_linesearch = 128;
-      ret = lbfgs::lbfgs_optimize(x,
-                                  min_cost,
-                                  &ExpTrajOpt::costFunctional,
-                                  nullptr,
-                                  &ExpTrajOpt::progressFunctional,
-                                  this,
-                                  fallback_params);
-      opt_vars_.lbfgs_fast_enabled = fast_enabled;
+      if (opt_vars_.convex_hull_flatness_enabled)
+      {
+        if (!optimizer_.updateTrajectoryFromDecisionVector(x))
+        {
+          return INFINITY;
+        }
+        exp_convex_cost_manager_.refreshFlatnessReference(
+            optimizer_.getTrajectory());
+      }
+      ret = run_lbfgs_with_optional_fallback();
+      if (ret < 0 &&
+          !(ret == lbfgs::LBFGS_CANCELED && opt_vars_.fast_stop_satisfied))
+      {
+        break;
+      }
+    }
+
+    if (opt_vars_.convex_hull_phase2_corrector_enabled &&
+        (ret >= 0 ||
+         (ret == lbfgs::LBFGS_CANCELED && opt_vars_.fast_stop_satisfied)))
+    {
+      maybeUpdateCertifiedIncumbent(x, min_cost);
+      bool phase2_certified = false;
+      double phase2_violation = 0.0;
+      runPhase2PackedCorrection(x,
+                                min_cost,
+                                rel_cost_tol,
+                                params.mem_size,
+                                alm_outer_iterations,
+                                alm_inner_solves,
+                                alm_topology_changes,
+                                phase2_violation,
+                                phase2_certified);
+      alm_report.certified = phase2_certified;
+      alm_report.max_normalized_violation = phase2_violation;
+      alm_report.constraints =
+          exp_packed_corrector_cost_manager_.constraintCount();
     }
   }
   const double optimization_seconds =
       std::chrono::duration<double>(std::chrono::steady_clock::now() -
                                     optimization_begin)
           .count();
+
+  // Prefer a certified incumbent when the final solve fails numerically.
+  const bool accepted_fast_stop_early =
+      ret == lbfgs::LBFGS_CANCELED &&
+      opt_vars_.fast_stop_satisfied;
+  if ((ret < 0 && !accepted_fast_stop_early) &&
+      opt_vars_.has_certified_incumbent &&
+      opt_vars_.certified_incumbent_x.size() == x.size())
+  {
+    x = opt_vars_.certified_incumbent_x;
+    min_cost = opt_vars_.certified_incumbent_cost;
+    ret = lbfgs::LBFGS_CONVERGENCE;
+  }
+  else if (ret >= 0 || accepted_fast_stop_early)
+  {
+    maybeUpdateCertifiedIncumbent(x, min_cost);
+  }
+
+  {
+    VecDf provisional_grad = VecDf::Zero(x.size());
+    fillPostSolveQualityReport(x, provisional_grad);
+  }
+
   const auto &timing = optimizer_.cumulativeTimingStatistics();
   const double dense_share_of_optimization =
       optimization_seconds > 0.0
@@ -1426,13 +2141,47 @@ double ExpTrajOpt::optimize(Trajectory &traj, double rel_cost_tol)
           ? (opt_vars_.convex_hull_alm_enabled
                  ? exp_convex_alm_cost_manager_
                        .activeControlPointChecksPerEvaluation()
-                 : exp_convex_cost_manager_
-                       .activeControlPointChecksPerEvaluation())
+                 : (opt_vars_.convex_hull_phase2_corrector_enabled
+                        ? std::max(exp_convex_cost_manager_
+                                       .activeControlPointChecksPerEvaluation(),
+                                   exp_packed_corrector_cost_manager_
+                                       .activeControlPointChecksPerEvaluation())
+                        : exp_convex_cost_manager_
+                              .activeControlPointChecksPerEvaluation()))
           : 0;
+  last_timing_report_.scalar_constraint_checks =
+      opt_vars_.convex_hull_enabled
+          ? std::max(exp_convex_cost_manager_.lastScalarConstraintChecks(),
+                     exp_packed_corrector_cost_manager_.lastScalarChecks())
+          : 0;
+  {
+    const auto &ev = exp_convex_cost_manager_.lastEvaluatorTiming();
+    last_timing_report_.hull_transform_seconds = ev.transform_seconds;
+    last_timing_report_.hull_hodograph_seconds = ev.hodograph_seconds;
+    last_timing_report_.hull_position_residual_seconds =
+        ev.position_residual_seconds;
+    last_timing_report_.hull_derivative_residual_seconds =
+        ev.derivative_residual_seconds;
+    last_timing_report_.hull_reverse_hodograph_seconds =
+        ev.reverse_hodograph_seconds;
+    last_timing_report_.hull_backward_add_seconds = ev.backward_add_seconds;
+    last_timing_report_.hull_discrete_attractor_seconds =
+        ev.discrete_attractor_seconds;
+  }
+  last_timing_report_.phase2_triggered = opt_vars_.phase2_triggered;
+  last_timing_report_.phase2_packed_constraints =
+      opt_vars_.phase2_packed_constraints;
+  last_timing_report_.jerk_certificate_enabled =
+      opt_vars_.last_certificate.jerk_certificate_enabled;
+  // EXP_ALM_CONSTRAINTS: full ALM active-set size, or Phase-2 packed count.
   last_timing_report_.alm_constraints =
       opt_vars_.convex_hull_alm_enabled
           ? exp_convex_alm_cost_manager_.constraintCount()
-          : 0;
+          : (opt_vars_.convex_hull_phase2_corrector_enabled
+                 ? std::max(opt_vars_.phase2_packed_constraints,
+                            exp_packed_corrector_cost_manager_
+                                .constraintCount())
+                 : 0);
   last_timing_report_.alm_outer_iterations = alm_outer_iterations;
   last_timing_report_.alm_inner_solves = alm_inner_solves;
   last_timing_report_.alm_topology_changes = alm_topology_changes;
@@ -1440,18 +2189,30 @@ double ExpTrajOpt::optimize(Trajectory &traj, double rel_cost_tol)
       opt_vars_.convex_hull_alm_enabled
           ? static_cast<std::size_t>(
                 exp_convex_alm_cost_manager_.coarseSegmentCount())
-          : 0;
+          : (exp_convex_cost_manager_.adaptiveEnabled()
+                 ? static_cast<std::size_t>(
+                       exp_convex_cost_manager_.coarseSegmentCount())
+                 : 0);
   last_timing_report_.adaptive_fine_segments =
       opt_vars_.convex_hull_alm_enabled
           ? static_cast<std::size_t>(
                 exp_convex_alm_cost_manager_.fineSegmentCount())
-          : 0;
+          : (opt_vars_.convex_hull_phase2_corrector_enabled
+                 ? opt_vars_.stage_a_fine_segments
+                 : (exp_convex_cost_manager_.adaptiveEnabled()
+                        ? static_cast<std::size_t>(
+                              exp_convex_cost_manager_.fineSegmentCount())
+                        : 0));
   last_timing_report_.alm_max_violation =
-      opt_vars_.convex_hull_alm_enabled
+      (opt_vars_.convex_hull_alm_enabled ||
+       opt_vars_.convex_hull_phase2_corrector_enabled)
           ? alm_report.max_normalized_violation
           : 0.0;
+  // Phase-2: alm_certified mirrors oracle continuous_feasible (not PHR KKT).
   last_timing_report_.alm_certified =
-      opt_vars_.convex_hull_alm_enabled && alm_report.certified;
+      (opt_vars_.convex_hull_alm_enabled ||
+       opt_vars_.convex_hull_phase2_corrector_enabled) &&
+      (alm_report.certified || opt_vars_.quality.continuous_feasible);
   last_timing_report_.alm_warm_start_seconds = alm_warm_start_seconds;
   last_timing_report_.mode =
       opt_vars_.convex_hull_enabled
@@ -1461,14 +2222,25 @@ double ExpTrajOpt::optimize(Trajectory &traj, double rel_cost_tol)
                                        ? "adaptive_d"
                                        : "fixed_d") +
                        std::to_string(opt_vars_.convex_hull_subdivision_depth)
+                 : opt_vars_.convex_hull_phase2_corrector_enabled
+                 ? "convex_bezier_v" +
+                       std::to_string(opt_vars_.convex_hull_cost_version) +
+                       "_phase2_d" +
+                       std::to_string(opt_vars_.convex_hull_subdivision_depth)
                  : opt_vars_.convex_hull_basis == traj_opt::convex_hull::Basis::MINVO
                  ? "convex_minvo_v" +
                        std::to_string(opt_vars_.convex_hull_cost_version) +
                        "_d" +
                        std::to_string(opt_vars_.convex_hull_subdivision_depth)
-                 : "convex_bezier_v" +
+                 : exp_convex_cost_manager_.adaptiveEnabled()
+                 ? "convex_bezier_v" +
                        std::to_string(opt_vars_.convex_hull_cost_version) +
-                       "_d" +
+                       "_twostage_d" +
+                       std::to_string(opt_vars_.convex_hull_subdivision_depth)
+                 : std::string("convex_bezier_v") +
+                       std::to_string(opt_vars_.convex_hull_cost_version) +
+                       (opt_vars_.convex_hull_flatness_enabled ? "_flat_d"
+                                                              : "_d") +
                        std::to_string(opt_vars_.convex_hull_subdivision_depth))
           : "dense";
   last_timing_report_.dense_integral_seconds =
@@ -1490,6 +2262,22 @@ double ExpTrajOpt::optimize(Trajectory &traj, double rel_cost_tol)
       opt_vars_.fast_stop_iteration;
   last_timing_report_.fast_fallback_used =
       opt_vars_.fast_fallback_used;
+  last_timing_report_.continuous_feasible =
+      opt_vars_.quality.continuous_feasible;
+  last_timing_report_.robustly_certified =
+      opt_vars_.quality.robustly_certified;
+  last_timing_report_.has_certified_incumbent =
+      opt_vars_.has_certified_incumbent;
+  last_timing_report_.max_normalized_violation =
+      opt_vars_.quality.max_normalized_violation;
+  last_timing_report_.min_position_margin =
+      opt_vars_.quality.min_position_margin;
+  last_timing_report_.primal_residual = opt_vars_.quality.primal_residual;
+  last_timing_report_.dual_residual = opt_vars_.quality.dual_residual;
+  last_timing_report_.complementarity_residual =
+      opt_vars_.quality.complementarity_residual;
+  last_timing_report_.stationarity_residual =
+      opt_vars_.quality.stationarity_residual;
 
   cumulative_timing_report_.mode = last_timing_report_.mode;
   cumulative_timing_report_.evaluations += last_timing_report_.evaluations;
@@ -1533,6 +2321,13 @@ double ExpTrajOpt::optimize(Trajectory &traj, double rel_cost_tol)
   cumulative_timing_report_.alm_certified =
       cumulative_timing_report_.alm_certified ||
       last_timing_report_.alm_certified;
+  cumulative_timing_report_.phase2_triggered =
+      cumulative_timing_report_.phase2_triggered ||
+      last_timing_report_.phase2_triggered;
+  cumulative_timing_report_.phase2_packed_constraints +=
+      last_timing_report_.phase2_packed_constraints;
+  cumulative_timing_report_.jerk_certificate_enabled =
+      last_timing_report_.jerk_certificate_enabled;
   cumulative_timing_report_.alm_warm_start_seconds +=
       last_timing_report_.alm_warm_start_seconds;
   cumulative_timing_report_.dense_integral_seconds +=
@@ -1617,10 +2412,21 @@ double ExpTrajOpt::optimize(Trajectory &traj, double rel_cost_tol)
               << dense_share_of_optimization * 100.0 << "%" << std::endl;
   }
 
-  const bool certification_failed =
+  const bool alm_certification_failed =
       opt_vars_.convex_hull_alm_enabled &&
       opt_vars_.convex_hull_alm_require_certification &&
-      !alm_report.certified;
+      !alm_report.certified &&
+      !opt_vars_.quality.continuous_feasible &&
+      !opt_vars_.has_certified_incumbent;
+  // Phase-2 require uses oracle continuous feasibility (not full PHR KKT).
+  const bool phase2_certification_failed =
+      opt_vars_.convex_hull_phase2_corrector_enabled &&
+      opt_vars_.convex_hull_phase2_require_certification &&
+      !alm_report.certified &&
+      !opt_vars_.quality.continuous_feasible &&
+      !opt_vars_.has_certified_incumbent;
+  const bool certification_failed =
+      alm_certification_failed || phase2_certification_failed;
   const bool accepted_fast_stop =
       ret == lbfgs::LBFGS_CANCELED &&
       opt_vars_.fast_stop_satisfied;
@@ -1628,14 +2434,17 @@ double ExpTrajOpt::optimize(Trajectory &traj, double rel_cost_tol)
   {
     traj.clear();
     std::cout << YELLOW << " -- [ExpTrajOpt] Optimization failed: "
-              << (certification_failed
-                      ? "convex-hull ALM certificate not satisfied"
-                      : lbfgs::lbfgs_strerror(ret))
+              << (phase2_certification_failed
+                      ? "Phase-2 continuous certificate not satisfied"
+                      : (alm_certification_failed
+                             ? "convex-hull ALM certificate not satisfied"
+                             : lbfgs::lbfgs_strerror(ret)))
               << ", alm_violation=" << alm_report.max_normalized_violation
               << ", alm_position_violation="
               << alm_report.max_position_violation
               << ", alm_derivative_violation="
               << alm_report.max_derivative_violation
+              << ", quality=" << opt_vars_.quality.summary()
               << ", guide_excess=" << opt_vars_.guide_integral_violation
               << ", guide_cost_sample=" << opt_vars_.guide_path_cost_log
               << ", guide_max_abs_gt=" << opt_vars_.guide_path_max_abs_time_grad
@@ -1646,6 +2455,23 @@ double ExpTrajOpt::optimize(Trajectory &traj, double rel_cost_tol)
 
   VecDf grad = VecDf::Zero(x.size());
   min_cost = evaluateMincoCost(x, grad);
+  fillPostSolveQualityReport(x, grad);
+  last_timing_report_.continuous_feasible =
+      opt_vars_.quality.continuous_feasible;
+  last_timing_report_.robustly_certified =
+      opt_vars_.quality.robustly_certified;
+  last_timing_report_.has_certified_incumbent =
+      opt_vars_.has_certified_incumbent;
+  last_timing_report_.max_normalized_violation =
+      opt_vars_.quality.max_normalized_violation;
+  last_timing_report_.min_position_margin =
+      opt_vars_.quality.min_position_margin;
+  last_timing_report_.primal_residual = opt_vars_.quality.primal_residual;
+  last_timing_report_.dual_residual = opt_vars_.quality.dual_residual;
+  last_timing_report_.complementarity_residual =
+      opt_vars_.quality.complementarity_residual;
+  last_timing_report_.stationarity_residual =
+      opt_vars_.quality.stationarity_residual;
 
   traj = toGeometryTrajectory(optimizer_.getTrajectory());
   return min_cost;

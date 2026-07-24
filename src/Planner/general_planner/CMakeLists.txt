@@ -221,6 +221,30 @@ target_link_libraries(convex_hull_self_test
         general_planner_core
 )
 
+add_executable(bezier_certificate_self_test
+        Tests/bezier_certificate_self_test.cpp
+)
+target_include_directories(bezier_certificate_self_test PRIVATE include)
+target_link_libraries(bezier_certificate_self_test
+        general_planner_core
+)
+
+add_executable(phase2_corrector_self_test
+        Tests/phase2_corrector_self_test.cpp
+)
+target_include_directories(phase2_corrector_self_test PRIVATE include)
+target_link_libraries(phase2_corrector_self_test
+        general_planner_core
+)
+
+add_executable(flatness_convex_hull_self_test
+        Tests/flatness_convex_hull_self_test.cpp
+)
+target_include_directories(flatness_convex_hull_self_test PRIVATE include)
+target_link_libraries(flatness_convex_hull_self_test
+        general_planner_core
+)
+
 add_executable(convex_hull_convergence_benchmark
         Tests/convex_hull_convergence_benchmark.cpp
 )

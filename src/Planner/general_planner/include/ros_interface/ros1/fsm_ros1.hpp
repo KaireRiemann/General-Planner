@@ -1436,15 +1436,26 @@ namespace fsm {
                                "EXP_MAX_LINE_SEARCH_EVALS,EXP_AVG_ACCEPTED_STEP,"
                                "EXP_MIN_ACCEPTED_STEP,EXP_POLYNOMIAL_PIECES,"
                                "EXP_DENSE_NODES_PER_EVAL,EXP_HULL_CONTROL_CHECKS_PER_EVAL,"
+                               "EXP_SCALAR_CONSTRAINT_CHECKS,"
                                "EXP_ALM_CONSTRAINTS,EXP_ALM_OUTER_ITERATIONS,"
                                "EXP_ALM_INNER_SOLVES,EXP_ALM_TOPOLOGY_CHANGES,"
                                "EXP_ADAPTIVE_COARSE_SEGMENTS,EXP_ADAPTIVE_FINE_SEGMENTS,"
                                "EXP_ALM_MAX_VIOLATION,EXP_ALM_CERTIFIED,EXP_ALM_WARM_START_MS,"
                                "EXP_DENSE_INTEGRAL_MS,EXP_CONTROL_POINT_FUNCTIONAL_MS,"
+                               "EXP_HULL_TRANSFORM_MS,EXP_HULL_HODOGRAPH_MS,"
+                               "EXP_HULL_POSITION_RESIDUAL_MS,EXP_HULL_DERIVATIVE_RESIDUAL_MS,"
+                               "EXP_HULL_REVERSE_HODOGRAPH_MS,EXP_HULL_BACKWARD_ADD_MS,"
+                               "EXP_HULL_DISCRETE_ATTRACTOR_MS,"
                                "EXP_MINCO_EVALUATION_MS,EXP_LBFGS_MS,"
                                "EXP_DENSE_SHARE_MINCO_PERCENT,EXP_CONTROL_POINT_SHARE_MINCO_PERCENT,"
                                "EXP_DENSE_SHARE_OPT_PERCENT,"
-                               "EXP_LBFGS_SHARE_MODULE_PERCENT,EXP_MODULE_SHARE_REPLAN_PERCENT";
+                               "EXP_LBFGS_SHARE_MODULE_PERCENT,EXP_MODULE_SHARE_REPLAN_PERCENT,"
+                               "EXP_FAST_STOP,EXP_CONTINUOUS_FEASIBLE,EXP_ROBUSTLY_CERTIFIED,"
+                               "EXP_HAS_CERTIFIED_INCUMBENT,EXP_MAX_NORMALIZED_VIOLATION,"
+                               "EXP_MIN_POSITION_MARGIN,EXP_PRIMAL_RESIDUAL,EXP_DUAL_RESIDUAL,"
+                               "EXP_COMPLEMENTARITY_RESIDUAL,EXP_STATIONARITY_RESIDUAL,"
+                               "EXP_PHASE2_TRIGGERED,EXP_PHASE2_PACKED_CONSTRAINTS,"
+                               "EXP_JERK_CERTIFICATE_ENABLED";
             }
             write_time_ << endl;
             machine_state_ = INIT;

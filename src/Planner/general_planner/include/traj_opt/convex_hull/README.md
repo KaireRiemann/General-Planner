@@ -127,6 +127,111 @@ five derived controls. Uniform subdivision multiplies every count by
 `2^depth`, so it should not be enabled globally merely to reduce occasional
 conservatism; selective/adaptive leaf subdivision is the intended follow-up.
 
+## Phase-1 adaptive Bezier certificate oracle
+
+Post-solve continuous certification no longer relies on a fixed two-level hull
+scan. `ExpConvexCostManager::computeAdaptiveContinuousCertificate()` delegates
+to `ContinuousCertificateOracle`, which uses the Bezier convex-hull property
+as a true certificate / constraint generator:
+
+| Header | Role |
+| --- | --- |
+| `scalar_bernstein.hpp` | Half-space Bernstein bounds, leaf status, de Casteljau split |
+| `bezier_product.hpp` | Squared-norm Bernstein + Level-A vector hull |
+| `adaptive_bezier_forest.hpp` | Per-stream de Casteljau forest + BnB + hysteresis |
+| `constraint_generator.hpp` | Worst-leaf `ConstraintCandidate` extraction (Phase-2 input) |
+| `continuous_certificate.hpp` | Position half-space BnB; vel/acc/jerk A→B→C |
+
+Pipeline per source segment:
+
+```text
+position:  scalar half-space Bernstein → split uncertain leaves (de Casteljau)
+derivatives: Level A vector hull → Level B squared-norm Bernstein → Level C split
+```
+
+The oracle does **not** change live LBFGS penalty topology. It reports
+`ContinuousCertificateReport` (feasibility, robust margin, unresolved leaves,
+top-K violations) for acceptance and for later correction packing.
+
+Build/test targets:
+
+- `bezier_certificate_self_test` — Bernstein envelope, monotone tightening,
+  forest refine, end-to-end oracle through `ExpConvexCostManager`
+- `convex_hull_self_test` — existing Phase-0 + regression coverage
+
+## Online Bezier hull (complete single solve at depth-2)
+
+Default online path:
+
+```text
+ONE Fast LBFGS on (q, T)
+  + Bezier V2 control-point cost at depth-2 (4 leaves / segment)
+  + post-solve continuous certificate (monitor only)
+  + coarse residual dense grid (2 samples/piece) for omg/thr only
+```
+
+Depth-0 is intentionally **not** the online default: the coarse hull is too
+conservative for high-speed corridors. Depth-2 is the complete online setting.
+No second LBFGS / Phase-2 / ALM unless explicitly enabled.
+
+Opt-in only (expect slower):
+
+| Flag | Effect |
+| --- | --- |
+| `convex_hull_phase2_corrector_en` | packed short PHR second solve |
+| `convex_hull_alm_en` | full PHR-ALM |
+| `convex_hull_adaptive_en` | Stage-A/B depth switching |
+
+Recommended online yaml: `subdivision_depth: 2`, `adaptive_en: false`,
+`phase2_corrector_en: false`, `alm_en: false`.
+
+Remaining dense cost comes from nonlinear flatness (`penna_omg` / `penna_thr`).
+A sequential-convex flatness hull certificate (Taylor drag + joint Bezier SOC)
+can move those off the sample grid; that is a separate integration from the
+polynomial pos/vel/acc hull already in this module.
+
+Config notes:
+
+- `convex_hull_phase2_require_certification` (default `false`): when `true`,
+  fail the optimize if the oracle is not continuous-feasible and no certified
+  incumbent exists. Online keeps the soft default.
+- Under Phase-2, timing field `EXP_ALM_CERTIFIED` / `alm_certified` means
+  **oracle continuous feasibility**, not full PHR-ALM KKT.
+- `EXP_PHASE2_TRIGGERED` / `EXP_PHASE2_PACKED_CONSTRAINTS` report correction
+  entry rate and packed active-set size. `EXP_ALM_*` outer/inner counters still
+  track the short PHR loops.
+- `penna_jerk <= 0` disables both the jerk penalty and continuous jerk
+  certification (`EXP_JERK_CERTIFICATE_ENABLED=0`). This is intentional, not a
+  silent skip.
+
+### Continuous residual units (Phase-1 / Phase-2)
+
+Comparable nondimensional residuals feed `max_normalized_violation`,
+`continuous_feasible`, and top-K packing:
+
+| Constraint | Stored / ranked residual |
+| --- | --- |
+| Position half-space | `(a·Q + b) / position_scale` |
+| Velocity / acc / jerk | `\|\|v\|\|^2 / bound^2 - 1` |
+
+Packed PHR uses the same scales (`batched_residuals.hpp`). Mixing raw
+`\|\|v\|\|^2 - bound^2` into `max_normalized_violation` is incorrect and was
+removed so `cont%` is not artificially crushed by huge metric derivatives.
+
+New headers:
+
+| Header | Role |
+| --- | --- |
+| `constraint_pack.hpp` | Top-K pack, topology signature, λ seed / append |
+| `batched_residuals.hpp` | Leaf selection matrix, pos / Bernstein residuals + adjoint |
+| `exp_packed_corrector_cost_manager.hpp` | Frozen packed PHR + dense residual terms |
+
+This replaces Stage-B full depth-2 penalty when Phase-2 is enabled. Fixed
+depth-2 global penalty remains available with `phase2_corrector_en: false`.
+
+Test target: `phase2_corrector_self_test` (includes nondim unit + feasible /
+infeasible boundary checks).
+
 When no residual dense term is active, `ExpConvexCostManager::usesDenseSampling()`
 allows `MINCOOptimizer` to bypass the integral nodes and basis construction
 entirely. Timing reports separate the dense residual and control-point

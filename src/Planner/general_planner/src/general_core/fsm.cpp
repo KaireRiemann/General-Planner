@@ -162,10 +162,15 @@ namespace fsm {
 
         if (state2stateMode() &&
             cfg_.backend_type == general_planner::architecture::BackendType::CORRIDOR) {
-            traj_opt::ExpTrajOpt::TimingReport report;
-            if (log_module_time.size() > EXP_TRAJ_OPT &&
-                log_module_time[EXP_TRAJ_OPT] > 0.0) {
-                report = planner_ptr_->getLatestExpTimingReport();
+            // Always stamp the configured/last cost mode (ctor + optimize).
+            // When this replan skipped ExpTrajOpt, keep mode but zero metrics.
+            traj_opt::ExpTrajOpt::TimingReport report =
+                    planner_ptr_->getLatestExpTimingReport();
+            const std::string configured_mode = report.mode;
+            if (!(log_module_time.size() > EXP_TRAJ_OPT &&
+                  log_module_time[EXP_TRAJ_OPT] > 0.0)) {
+                report = traj_opt::ExpTrajOpt::TimingReport{};
+                report.mode = configured_mode.empty() ? "not_run" : configured_mode;
             }
             const double exp_opt_seconds =
                     log_module_time.size() > EXP_TRAJ_OPT
@@ -192,6 +197,7 @@ namespace fsm {
                         << ", " << report.polynomial_pieces
                         << ", " << report.dense_nodes_per_evaluation
                         << ", " << report.hull_control_checks_per_evaluation
+                        << ", " << report.scalar_constraint_checks
                         << ", " << report.alm_constraints
                         << ", " << report.alm_outer_iterations
                         << ", " << report.alm_inner_solves
@@ -203,6 +209,13 @@ namespace fsm {
                         << ", " << report.alm_warm_start_seconds * 1.0e3
                         << ", " << report.dense_integral_seconds * 1.0e3
                         << ", " << report.control_point_seconds * 1.0e3
+                        << ", " << report.hull_transform_seconds * 1.0e3
+                        << ", " << report.hull_hodograph_seconds * 1.0e3
+                        << ", " << report.hull_position_residual_seconds * 1.0e3
+                        << ", " << report.hull_derivative_residual_seconds * 1.0e3
+                        << ", " << report.hull_reverse_hodograph_seconds * 1.0e3
+                        << ", " << report.hull_backward_add_seconds * 1.0e3
+                        << ", " << report.hull_discrete_attractor_seconds * 1.0e3
                         << ", " << report.minco_evaluation_seconds * 1.0e3
                         << ", " << report.optimization_seconds * 1.0e3
                         << ", " << report.dense_share_of_minco_evaluation * 100.0
@@ -213,7 +226,20 @@ namespace fsm {
                                       : 0.0)
                         << ", " << (total_replan_seconds > 0.0
                                       ? exp_opt_seconds / total_replan_seconds * 100.0
-                                      : 0.0);
+                                      : 0.0)
+                        << ", " << static_cast<int>(report.fast_stop_satisfied)
+                        << ", " << static_cast<int>(report.continuous_feasible)
+                        << ", " << static_cast<int>(report.robustly_certified)
+                        << ", " << static_cast<int>(report.has_certified_incumbent)
+                        << ", " << report.max_normalized_violation
+                        << ", " << report.min_position_margin
+                        << ", " << report.primal_residual
+                        << ", " << report.dual_residual
+                        << ", " << report.complementarity_residual
+                        << ", " << report.stationarity_residual
+                        << ", " << static_cast<int>(report.phase2_triggered)
+                        << ", " << report.phase2_packed_constraints
+                        << ", " << static_cast<int>(report.jerk_certificate_enabled);
         }
         write_time_ << endl;
     }
