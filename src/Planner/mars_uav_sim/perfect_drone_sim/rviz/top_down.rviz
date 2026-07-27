@@ -27,7 +27,7 @@ Panels:
         - /MarkerArray3/Namespaces1
         - /MarkerArray4/Namespaces1
       Splitter Ratio: 0.5484460592269897
-    Tree Height: 367
+    Tree Height: 948
   - Class: rviz/Selection
     Name: Selection
   - Class: rviz/Tool Properties
@@ -309,7 +309,8 @@ Visualization Manager:
           Marker Topic: /fsm_node/visualization/exp_traj
           Name: ExpTraj
           Namespaces:
-            plain_traj: true
+            exp_traj: true
+            exp_traj_waypoints: true
           Queue Size: 100
           Value: true
         - Class: rviz/MarkerArray
@@ -317,7 +318,9 @@ Visualization Manager:
           Marker Topic: /fsm_node/visualization/backup_traj
           Name: BackupTraj
           Namespaces:
-            {}
+            backup_traj: true
+            backup_traj_start: true
+            backup_traj_waypoints: true
           Queue Size: 100
           Value: true
         - Class: rviz/MarkerArray
@@ -510,6 +513,16 @@ Visualization Manager:
       Topic: /waypoint_mission
       Unreliable: false
       Value: true
+    - Class: rviz/MarkerArray
+      Enabled: true
+      Marker Topic: /fsm_node/map_manager/topology
+      Name: TopoMap
+      Namespaces:
+        incremental_topology_edges: true
+        incremental_topology_nodes: true
+        incremental_topology_status: true
+      Queue Size: 100
+      Value: true
   Enabled: true
   Global Options:
     Background Color: 255; 255; 255
@@ -522,8 +535,8 @@ Visualization Manager:
       Hide Inactive Objects: true
     - Class: rviz/SetGoal
       Topic: /goal
-    - Class: general_planner_rviz_plugins/Goal3DTool
-      3D Topic: /goal_3d
+    - 3D Topic: /goal_3d
+      Class: general_planner_rviz_plugins/Goal3DTool
       Fallback 2D Topic: /goal
   Value: true
   Views:
@@ -547,7 +560,7 @@ Visualization Manager:
       Near Clip Distance: 0.009999999776482582
       Pitch: 1.0247955322265625
       Target Frame: world
-      Yaw: 3.046787977218628
+      Yaw: 3.1617889404296875
     Saved: ~
 Window Geometry:
   Displays:

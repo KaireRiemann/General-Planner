@@ -99,6 +99,17 @@ void checkPackTopKAndSignature()
   require(packed.topology_signature != 0, "Topology signature missing.");
   require(packed.constraints.front().control_or_bernstein_index == 4,
           "Top-K did not keep the worst candidate first.");
+
+  traj_opt::convex_hull::PackedConstraintSet flat_pack;
+  traj_opt::convex_hull::PackedConstraint flat;
+  flat.kind = traj_opt::ConstraintKind::FlatnessAngularRate;
+  flat.source_segment = 0;
+  flat.derivative_order = -1;
+  flat_pack.constraints.push_back(flat);
+  traj_opt::convex_hull::appendFlatnessTrustRegionGuards(
+      flat_pack, 7, /*soft physical-row cap=*/1);
+  require(flat_pack.constraints.size() == 8,
+          "Mandatory Taylor trust rows were truncated by the soft cap.");
 }
 
 void checkNondimensionalResidualUnits()
@@ -166,6 +177,7 @@ void checkNondimensionalResidualUnits()
       0.25,
       multipliers,
       1.0e3,
+      nullptr,
       order_gradients);
   require(result.values.size() == 1, "Packed residual size mismatch.");
   require(std::abs(result.values(0) - expected_nondim) < 1.0e-12,
@@ -249,7 +261,7 @@ void checkPackedCorrectorEndToEnd()
   traj_opt::SwarmTrajectoriesConstPtr swarm_trajectories;
 
   cost_functional_manager::ExpConvexCostManager manager;
-  manager.configure(traj_opt::convex_hull::Basis::Bezier, 2, 2);
+  manager.configure(traj_opt::convex_hull::Basis::Bezier, 2);
   manager.reset(&corridors,
                 &corridor_indices,
                 nullptr,
@@ -266,7 +278,7 @@ void checkPackedCorrectorEndToEnd()
   require(optimizer.updateTrajectoryFromDecisionVector(x),
           "Failed to materialize trajectory.");
   const auto certificate =
-      manager.computeAdaptiveContinuousCertificate(optimizer.getTrajectory());
+      manager.computeContinuousCertificate(optimizer.getTrajectory());
   require(!certificate.continuous_feasible,
           "Narrow corridor should fail certificate.");
   require(!certificate.violated.empty(),
@@ -311,6 +323,139 @@ void checkPackedCorrectorEndToEnd()
           "Packed constraint count exceeded top-K.");
 }
 
+void checkPackedFlatnessGradientAndTrustRegion()
+{
+  using traj_opt::ConstraintKind;
+  using traj_opt::convex_hull::FlatnessConvexHullCost;
+  using traj_opt::convex_hull::PackedConstraint;
+
+  FlatnessConvexHullCost::Config config;
+  config.mass = 1.64;
+  config.gravity = 9.81;
+  config.horizontal_drag = 0.35;
+  config.vertical_drag = 0.42;
+  config.parasitic_drag = 0.015;
+  config.max_tilt_angle = 0.70;
+  config.max_angular_rate = 0.12;
+  config.absolute_yaw_rate_bound = 0.01;
+  config.norm_epsilon = 1.0e-12;
+
+  std::array<Eigen::MatrixXd, 4> leaves;
+  leaves[0] = Eigen::MatrixXd::Zero(8, 3);
+  leaves[1] = Eigen::MatrixXd::Zero(7, 3);
+  leaves[2] = Eigen::MatrixXd::Zero(6, 3);
+  leaves[3] = Eigen::MatrixXd::Zero(5, 3);
+  for (int i = 0; i < leaves[1].rows(); ++i)
+  {
+    leaves[1].row(i) << 2.0 + 0.04 * i, 0.12 * i, 0.03;
+  }
+  for (int i = 0; i < leaves[2].rows(); ++i)
+  {
+    leaves[2].row(i) << 0.25, 0.18 + 0.03 * i, -0.08;
+  }
+  for (int i = 0; i < leaves[3].rows(); ++i)
+  {
+    leaves[3].row(i) << 0.15, 3.0 + 0.2 * i, 0.10;
+  }
+
+  PackedConstraint angular;
+  angular.kind = ConstraintKind::FlatnessAngularRate;
+  angular.source_segment = 0;
+  angular.derivative_order = -1;
+  angular.control_or_bernstein_index = 3;
+  angular.flatness.reference_velocity << 2.0, 0.0, 0.0;
+  angular.flatness.force_direction = Eigen::Vector3d::UnitZ();
+  angular.flatness.drag_jacobian <<
+      1.08, 0.01, 0.0,
+      0.01, 1.03, 0.0,
+      0.0, 0.0, 1.01;
+  angular.flatness.drag_bias << -0.04, 0.02, 0.0;
+  angular.flatness.trust_radius = 0.8;
+  angular.flatness.anchor_radius = 0.4;
+  angular.flatness.drag_remainder = 0.01;
+  angular.flatness.force_remainder = 0.003;
+
+  const auto analytic =
+      traj_opt::convex_hull::evaluatePackedFlatnessConstraint(
+          angular, leaves, config);
+  require(std::isfinite(analytic.normalized) &&
+              analytic.normalized > 0.0,
+          "Packed angular-rate constraint is not active.");
+
+  constexpr double epsilon = 1.0e-6;
+  double max_relative_error = 0.0;
+  for (int order = 1; order <= 3; ++order)
+  {
+    for (Eigen::Index row = 0; row < leaves[order].rows(); ++row)
+    {
+      for (Eigen::Index axis = 0; axis < 3; ++axis)
+      {
+        auto plus = leaves;
+        auto minus = leaves;
+        plus[order](row, axis) += epsilon;
+        minus[order](row, axis) -= epsilon;
+        const double numerical =
+            (traj_opt::convex_hull::evaluatePackedFlatnessConstraint(
+                 angular, plus, config)
+                 .normalized -
+             traj_opt::convex_hull::evaluatePackedFlatnessConstraint(
+                 angular, minus, config)
+                 .normalized) /
+            (2.0 * epsilon);
+        const double expected =
+            analytic.leaf_gradients[order](row, axis);
+        max_relative_error =
+            std::max(max_relative_error,
+                     std::abs(numerical - expected) /
+                         std::max({1.0, std::abs(numerical),
+                                   std::abs(expected)}));
+      }
+    }
+  }
+  require(max_relative_error < 2.0e-5,
+          "Packed angular-rate gradient failed finite differences.");
+
+  traj_opt::convex_hull::PackedConstraintSet packed;
+  PackedConstraint trust;
+  trust.kind = ConstraintKind::FlatnessVelocityTrust;
+  trust.source_segment = 0;
+  trust.derivative_order = -1;
+  trust.depth = 0;
+  trust.binary_index = 0;
+  trust.control_or_bernstein_index = 0;
+  trust.flatness.reference_velocity.setZero();
+  trust.flatness.trust_radius = 0.5;
+  packed.constraints.push_back(trust);
+
+  std::array<Eigen::MatrixXd, 4> controls;
+  controls[0] = Eigen::MatrixXd::Zero(8, 3);
+  controls[1] = Eigen::MatrixXd::Zero(7, 3);
+  controls[2] = Eigen::MatrixXd::Zero(6, 3);
+  controls[3] = Eigen::MatrixXd::Zero(5, 3);
+  controls[1](0, 0) = 0.8;
+  Eigen::VectorXd durations(1);
+  durations << 1.0;
+  general_utils::PolyhedraH empty_polys;
+  Eigen::VectorXi poly_idx(1);
+  poly_idx.setZero();
+  Eigen::VectorXd bounds(3);
+  bounds << 2.0, 4.0, 8.0;
+  Eigen::VectorXd multipliers = Eigen::VectorXd::Zero(1);
+  std::array<Eigen::MatrixXd, 4> gradients;
+  auto outside = traj_opt::convex_hull::evaluatePackedResiduals(
+      packed, controls, durations, 8, empty_polys, poly_idx, bounds,
+      0.25, multipliers, 100.0, &config, gradients);
+  require(!outside.trust_region_feasible && outside.values(0) > 0.0,
+          "Velocity outside the Taylor trust region was accepted.");
+
+  controls[1](0, 0) = 0.2;
+  const auto inside = traj_opt::convex_hull::evaluatePackedResiduals(
+      packed, controls, durations, 8, empty_polys, poly_idx, bounds,
+      0.25, multipliers, 100.0, &config, gradients);
+  require(inside.trust_region_feasible && inside.values(0) <= 0.0,
+          "Velocity inside the Taylor trust region was rejected.");
+}
+
 } // namespace
 
 int main()
@@ -322,6 +467,7 @@ int main()
     checkNondimensionalResidualUnits();
     checkFeasibleInfeasibleBoundary();
     checkPackedCorrectorEndToEnd();
+    checkPackedFlatnessGradientAndTrustRegion();
     std::cout << "phase2_corrector_self_test passed" << std::endl;
   }
   catch (const std::exception &error)

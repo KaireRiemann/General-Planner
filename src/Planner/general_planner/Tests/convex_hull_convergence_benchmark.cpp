@@ -77,8 +77,7 @@ struct LinearTimeCost
 enum class Mode
 {
   DENSE = 0,
-  V1 = 1,
-  V2 = 2
+  CONVEX = 1
 };
 
 const char *modeName(Mode mode)
@@ -87,10 +86,8 @@ const char *modeName(Mode mode)
   {
     case Mode::DENSE:
       return "dense";
-    case Mode::V1:
-      return "depth2_v1";
-    case Mode::V2:
-      return "depth2_v2";
+    case Mode::CONVEX:
+      return "depth2_stable";
   }
   return "unknown";
 }
@@ -200,8 +197,7 @@ public:
                          0.0);
     convex_manager_.configure(
         traj_opt::convex_hull::Basis::Bezier,
-        2,
-        mode_ == Mode::V1 ? 1 : 2);
+        2);
     convex_manager_.reset(&corridors_,
                           &corridor_indices_,
                           nullptr,
@@ -602,9 +598,8 @@ struct Aggregate
 int main()
 {
   constexpr int cases = 6;
-  const std::array<Mode, 3> modes{
-      Mode::DENSE, Mode::V1, Mode::V2};
-  std::array<Aggregate, 3> aggregates;
+  const std::array<Mode, 2> modes{Mode::DENSE, Mode::CONVEX};
+  std::array<Aggregate, 2> aggregates;
 
   std::cout << std::fixed << std::setprecision(6);
   std::cout << "case,mode,status,evaluations,iterations,line_search,"
@@ -616,26 +611,16 @@ int main()
 
   for (int case_id = 0; case_id < cases; ++case_id)
   {
-    std::array<RunResult, 3> case_results;
-    for (int order = 0; order < 3; ++order)
+    std::array<RunResult, 2> case_results;
+    for (int order = 0; order < 2; ++order)
     {
-      const int mode_index = (case_id + order) % 3;
+      const int mode_index = (case_id + order) % 2;
       const Mode mode = modes[mode_index];
       PairedProblem problem(case_id, mode);
       case_results[mode_index] = problem.run();
     }
 
-    const double v1_cost = case_results[1].initial_cost;
-    const double v2_cost = case_results[2].initial_cost;
-    if (std::abs(v1_cost - v2_cost) >
-        1.0e-10 * std::max(1.0, std::abs(v1_cost)))
-    {
-      std::cerr << "V1/V2 initial objectives differ in case "
-                << case_id << std::endl;
-      return 2;
-    }
-
-    for (int mode_index = 0; mode_index < 3; ++mode_index)
+    for (int mode_index = 0; mode_index < 2; ++mode_index)
     {
       const auto &result = case_results[mode_index];
       aggregates[mode_index].add(result);
@@ -672,7 +657,7 @@ int main()
                "evaluation_us,dense_us,coefficient_us,solver_ms_per_run,"
                "sampled_feasible_runs,certified_runs,"
                "max_sampled_violation,max_certificate_violation\n";
-  for (int mode_index = 0; mode_index < 3; ++mode_index)
+  for (int mode_index = 0; mode_index < 2; ++mode_index)
   {
     const auto &aggregate = aggregates[mode_index];
     std::cout << "aggregate,"

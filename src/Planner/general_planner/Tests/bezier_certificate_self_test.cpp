@@ -250,7 +250,7 @@ void checkEndToEndOracle()
   traj_opt::SwarmTrajectoriesConstPtr swarm_trajectories;
 
   cost_functional_manager::ExpConvexCostManager manager;
-  manager.configure(traj_opt::convex_hull::Basis::Bezier, 2, 2);
+  manager.configure(traj_opt::convex_hull::Basis::Bezier, 2);
   manager.reset(&corridors,
                 &corridor_indices,
                 nullptr,
@@ -267,7 +267,7 @@ void checkEndToEndOracle()
   require(optimizer.updateTrajectoryFromDecisionVector(x),
           "Failed to materialize trajectory for oracle.");
   const auto report =
-      manager.computeAdaptiveContinuousCertificate(optimizer.getTrajectory());
+      manager.computeContinuousCertificate(optimizer.getTrajectory());
   require(report.scalar_constraint_checks > 0,
           "Oracle produced no scalar checks.");
   require(report.continuous_feasible,
@@ -276,6 +276,37 @@ void checkEndToEndOracle()
           "Wide corridor certificate should be fully resolved.");
   require(report.violated.empty(),
           "Feasible certificate should not emit violations.");
+
+  // A Bernstein upper bound below zero proves the original constraint even
+  // when it is closer to the boundary than the requested robust margin.
+  // The endpoint at x=2 is 0.01 m inside x<=2.01, so refinement can remain
+  // unresolved for the 0.05 robust margin while basic feasibility is exact.
+  corridors[0] <<
+      1.0, 0.0, 0.0, -2.01,
+      -1.0, 0.0, 0.0, -10.0,
+      0.0, 1.0, 0.0, -10.0,
+      0.0, -1.0, 0.0, -10.0,
+      0.0, 0.0, 1.0, -10.0,
+      0.0, 0.0, -1.0, -10.0;
+  manager.reset(&corridors,
+                &corridor_indices,
+                nullptr,
+                nullptr,
+                1.0e-2,
+                bounds,
+                weights,
+                &flatness_map,
+                swarm_config,
+                swarm_trajectories,
+                0.0);
+  const auto boundary_near_report =
+      manager.computeContinuousCertificate(optimizer.getTrajectory());
+  require(boundary_near_report.continuous_feasible,
+          "Boundary-near negative upper bound must certify feasibility.");
+  require(!boundary_near_report.robustly_certified,
+          "Boundary-near trajectory must not claim the robust margin.");
+  require(!boundary_near_report.fully_resolved,
+          "Robust-margin refinement diagnostic should remain unresolved.");
 
   corridors[0] <<
       1.0, 0.0, 0.0, -0.2,
@@ -296,7 +327,7 @@ void checkEndToEndOracle()
                 swarm_trajectories,
                 0.0);
   const auto violated_report =
-      manager.computeAdaptiveContinuousCertificate(optimizer.getTrajectory());
+      manager.computeContinuousCertificate(optimizer.getTrajectory());
   require(!violated_report.continuous_feasible,
           "Narrow corridor should fail continuous certificate.");
   require(!violated_report.violated.empty() ||

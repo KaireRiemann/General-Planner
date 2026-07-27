@@ -1,7 +1,6 @@
 #pragma once
 
 #include <cstdint>
-#include <deque>
 #include <fstream>
 #include <limits>
 #include <memory>
@@ -17,7 +16,6 @@
 #include "traj_opt/costfunctional_manager/exploration_cost_manager.hpp"
 #include "traj_opt/costfunctional_manager/exp_integal_cost_manager.hpp"
 #include "traj_opt/costfunctional_manager/exp_convex_cost_manager.hpp"
-#include "traj_opt/costfunctional_manager/exp_convex_alm_cost_manager.hpp"
 #include "traj_opt/costfunctional_manager/exp_packed_corrector_cost_manager.hpp"
 #include "traj_opt/convex_hull/constraint_pack.hpp"
 #include "traj_opt/costfunctional_manager/backup_integal_cost_manager.hpp"
@@ -32,6 +30,7 @@
 #include <map_manager/map_manager.hpp>
 #include <utils/header/type_utils.hpp>
 #include <utils/optimization/lbfgs.h>
+#include <utils/optimization/fast_lbfgs.hpp>
 
 namespace path_search
 {
@@ -394,6 +393,10 @@ public:
     bool phase2_triggered{false};
     std::size_t phase2_packed_constraints{0};
     bool jerk_certificate_enabled{false};
+    std::size_t trust_region_rejections{0};
+    double trust_region_ratio{0.0};
+    double actual_reduction{0.0};
+    double predicted_reduction{0.0};
     double alm_warm_start_seconds{0.0};
     double dense_integral_seconds{0.0};
     double control_point_seconds{0.0};
@@ -412,6 +415,33 @@ public:
     bool fast_stop_satisfied{false};
     std::size_t fast_stop_iteration{0};
     bool fast_fallback_used{false};
+    std::size_t fast_stop_candidate_checks{0};
+    std::size_t fast_stop_cost_passes{0};
+    std::size_t fast_stop_decision_step_passes{0};
+    std::size_t fast_stop_penalty_change_passes{0};
+    std::size_t fast_stop_physical_time_passes{0};
+    std::size_t fast_stop_waypoint_passes{0};
+    std::size_t fast_stop_gradient_passes{0};
+    std::size_t fast_stop_violation_passes{0};
+    std::size_t fast_stop_nonstall_passes{0};
+    std::size_t fast_stop_base_rule_passes{0};
+    std::size_t fast_stop_guarded_rule_passes{0};
+    // 0 disabled/no cache, 1 selected, 2 invalid cache,
+    // 3 endpoint mismatch, 4 overlap clipping failure,
+    // 5 invalid waypoint shift, 6 encoding failure, 7 objective rejection.
+    int warm_start_status{0};
+    bool warm_start_attempted{false};
+    bool warm_start_accepted{false};
+    bool warm_start_topology_resampled{false};
+    std::size_t warm_start_comparison_evaluations{0};
+    double warm_start_seconds{0.0};
+    double warm_start_baseline_cost{0.0};
+    double warm_start_candidate_cost{0.0};
+    double warm_start_baseline_gradient{0.0};
+    double warm_start_candidate_gradient{0.0};
+    double warm_start_baseline_penalty{0.0};
+    double warm_start_candidate_penalty{0.0};
+    double warm_start_max_waypoint_shift{0.0};
     bool continuous_feasible{false};
     bool robustly_certified{false};
     bool has_certified_incumbent{false};
@@ -499,17 +529,30 @@ private:
     double lbfgs_fast_min_step{1.0e-8};
     double lbfgs_fast_penalty_tol{1.0e-2};
     int lbfgs_fast_small_step_limit{3};
+    bool lbfgs_warm_start_enabled{false};
+    double lbfgs_warm_start_max_endpoint_shift{3.0};
+    double lbfgs_warm_start_max_waypoint_shift{2.0};
+    double lbfgs_warm_start_duration_blend{0.75};
+    double lbfgs_warm_start_cost_ratio{0.75};
+    double lbfgs_warm_start_gradient_ratio{1.0};
+    double lbfgs_warm_start_penalty_ratio{1.0};
     double guide_initial_time_scale{1.0};
-    std::deque<double> accepted_cost_history;
-    VecDf previous_accepted_x;
-    VecDf previous_accepted_penalty;
-    VecDf previous_accepted_durations;
-    Mat3Df previous_accepted_waypoints;
-    int fast_stop_streak{0};
-    int small_step_streak{0};
     bool fast_stop_satisfied{false};
     std::size_t fast_stop_iteration{0};
     bool fast_fallback_used{false};
+    int warm_start_status{0};
+    bool warm_start_attempted{false};
+    bool warm_start_accepted{false};
+    bool warm_start_topology_resampled{false};
+    std::size_t warm_start_comparison_evaluations{0};
+    double warm_start_seconds{0.0};
+    double warm_start_baseline_cost{0.0};
+    double warm_start_candidate_cost{0.0};
+    double warm_start_baseline_gradient{0.0};
+    double warm_start_candidate_gradient{0.0};
+    double warm_start_baseline_penalty{0.0};
+    double warm_start_candidate_penalty{0.0};
+    double warm_start_max_waypoint_shift{0.0};
     bool has_certified_incumbent{false};
     VecDf certified_incumbent_x;
     double certified_incumbent_cost{std::numeric_limits<double>::infinity()};
@@ -522,18 +565,8 @@ private:
     bool convex_hull_enabled{false};
     traj_opt::convex_hull::Basis convex_hull_basis{
         traj_opt::convex_hull::Basis::Bezier};
-    int convex_hull_subdivision_depth{0};
-    int convex_hull_cost_version{1};
-    bool convex_hull_alm_enabled{false};
-    bool convex_hull_alm_warm_start_enabled{true};
-    bool convex_hull_alm_objective_active{true};
-    double convex_hull_alm_warm_start_accuracy{1.0e-3};
-    bool convex_hull_adaptive_enabled{true};
-    int convex_hull_alm_max_outer_iterations{4};
-    bool convex_hull_alm_require_certification{true};
-    bool convex_hull_phase2_corrector_enabled{false};
-    bool convex_hull_stage_a_seed_refine_enabled{true};
-    bool convex_hull_phase2_require_certification{false};
+    static constexpr int convex_hull_subdivision_depth{2};
+    bool convex_hull_require_certification{true};
     bool convex_hull_phase2_objective_active{false};
     bool phase2_triggered{false};
     std::size_t phase2_packed_constraints{0};
@@ -546,7 +579,10 @@ private:
     bool convex_hull_phase2_append_en{true};
     bool convex_hull_phase2_multiplier_reuse_en{true};
     bool convex_hull_flatness_enabled{false};
-    int convex_hull_flatness_major_iters{2};
+    std::size_t trust_region_rejections{0};
+    double trust_region_ratio{0.0};
+    double actual_reduction{0.0};
+    double predicted_reduction{0.0};
     flatness::FlatnessMap quadrotor_flatness;
 
     bool default_init{true};
@@ -590,16 +626,18 @@ private:
   };
 
   static double costFunctional(void *ptr, const VecDf &x, VecDf &g);
-  static int progressFunctional(void *ptr,
-                                const VecDf &x,
-                                const VecDf &g,
-                                double cost,
-                                double step,
-                                int iteration,
-                                int line_search_evaluations);
   static double stepBoundFunctional(void *ptr,
                                     const VecDf &x,
                                     const VecDf &direction);
+  static math_utils::FastLbfgs::PhysicalSnapshot fastLbfgsSnapshot(
+      void *ptr, const Eigen::VectorXd &x);
+
+  void configureFastLbfgs(double rel_cost_tol,
+                          bool early_stop_enabled,
+                          int decision_dim);
+  void syncFastLbfgsReport();
+  bool buildWarmStartCandidate(VecDf &candidate);
+  void updateWarmStartCache(const Trajectory &traj);
 
   bool processCorridor();
   bool processCorridorWithGuideTraj();
@@ -624,9 +662,9 @@ private:
   cost_functional::LinearTimeCost linear_time_cost_;
   cost_functional_manager::ExpIntegralCostManager exp_cost_manager_;
   cost_functional_manager::ExpConvexCostManager exp_convex_cost_manager_;
-  cost_functional_manager::ExpConvexAlmCostManager exp_convex_alm_cost_manager_;
   cost_functional_manager::ExpPackedCorrectorCostManager
       exp_packed_corrector_cost_manager_;
+  math_utils::FastLbfgs fast_lbfgs_;
   SwarmPenaltyConfig swarm_config_;
   SwarmTrajectoriesConstPtr swarm_trajs_;
   double swarm_current_wall_time_{0.0};
@@ -634,6 +672,18 @@ private:
   TimingReport last_timing_report_;
   TimingReport cumulative_timing_report_;
   SolverQualityReport last_quality_report_;
+
+  struct WarmStartCache
+  {
+    bool valid{false};
+    int piece_num{0};
+    VecDf durations;
+    Mat3Df inner_points;
+    Vec3f head{Vec3f::Zero()};
+    Vec3f tail{Vec3f::Zero()};
+    Trajectory trajectory;
+  };
+  WarmStartCache warm_start_cache_;
 
   // Cross-replan Phase-2 multiplier / topology cache.
   std::uint64_t phase2_cached_signature_{0};

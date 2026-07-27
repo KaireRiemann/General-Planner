@@ -61,7 +61,7 @@ general_planner:
   state2state:
     direct_line_frontend_enable: true
     topology:
-      enable: false
+      enable: true
       # Build, record and visualize only. Keep topology completely outside the
       # latency-sensitive state2state frontend.
       query_enable: false
@@ -136,9 +136,10 @@ traj_opt:
     lbfgs_fast_rel_cost: 1.0e-3
     lbfgs_fast_rel_step: 2.0e-2
     lbfgs_fast_rel_penalty: 5.0e-2
-    # Legacy early-stop (cost/step/penalty only). Phase-0 physical/grad/stall
-    # guards are kept in code but disabled: they were too strict and removed
-    # the ~300ms closed-loop fast-dense speedup.
+    # Keep the stable fast-stop rule based on objective/decision-step/penalty
+    # changes. The phase-0 raw-gradient guard is scale-sensitive under the
+    # large corridor weights and otherwise prevents nearly every fast stop.
+    # Continuous-time feasibility is checked independently by the certificate.
     lbfgs_fast_phase0_guards_en: false
     lbfgs_fast_rel_time: 2.0e-2
     lbfgs_fast_rel_waypoint: 2.0e-2
@@ -146,51 +147,47 @@ traj_opt:
     lbfgs_fast_min_step: 1.0e-8
     lbfgs_fast_penalty_tol: 1.0e-2
     lbfgs_fast_small_step_limit: 3
+    # Reuse the previous successful physical MINCO solution only when it is
+    # compatible with the new corridor. The fresh guide seed and cached seed
+    # are evaluated with the same real objective; the cached seed wins only
+    # when it improves the guide cost by at least 25%.
+    lbfgs_warm_start_en: true
+    lbfgs_warm_start_max_endpoint_shift: 3.0
+    lbfgs_warm_start_max_waypoint_shift: 2.0
+    lbfgs_warm_start_duration_blend: 0.75
+    lbfgs_warm_start_cost_ratio: 0.75
+    lbfgs_warm_start_gradient_ratio: 1.0
+    lbfgs_warm_start_penalty_ratio: 1.0
     # Preserve the timing of the already feasible guide trajectory. The old
     # implicit 0.8 scale manufactured dynamic violations before every solve.
     guide_initial_time_scale: 1.0
     scale_factor: 1.0
     integral_reso: 15
-    # Online Bezier hull: ONE Fast LBFGS at depth-2 (less conservative than d0).
-    # Flatness hull OFF for now: residual dense omg/thr (pre-flatness path).
-    # Certificate is post-solve monitor only. Phase-2 / ALM are opt-in.
+    # Fixed stable state2state route:
+    #   depth-2 V2 P/V/A + Fast L-BFGS + exact sampled FlatnessMap.
+    # P/V/A continuous certification and the current nonlinear flatness
+    # envelope are read-only post-solve monitors. They never reject the stable
+    # result or enter packed polish. Hard certificate-triggered polish remains
+    # an experimental opt-in and is deliberately disabled here.
     convex_hull_en: true
     convex_hull_basis: 0
-    # depth-2: complete online hull (4 leaves/segment); not depth-0.
-    convex_hull_subdivision_depth: 2
-    convex_hull_cost_version: 2
-    # Rollback flatness certificate — use dense omg/thr residual sampling.
-    convex_hull_flatness_en: false
-    convex_hull_flatness_major_iters: 1
-    convex_hull_alm_en: false
-    convex_hull_alm_warm_start_en: false
-    convex_hull_alm_warm_start_accuracy: 1.0e-3
-    convex_hull_alm_active_set_en: false
-    convex_hull_alm_active_set_margin: 0.05
-    # Fixed depth-2 single solve (no Stage-A/B adaptive).
-    convex_hull_adaptive_en: false
-    convex_hull_refine_derivative_constraints: false
-    convex_hull_alm_max_outer_iterations: 8
-    convex_hull_refine_margin: 0.05
-    convex_hull_derivative_refine_margin: 0.05
-    convex_hull_alm_position_scale: 0.25
+    # Keep the advisory flatness envelope active for diagnostics. This does not
+    # select another optimizer route.
+    convex_hull_flatness_en: true
+    convex_hull_position_scale: 0.25
     convex_hull_robust_certificate_margin: 0.05
-    convex_hull_alm_initial_penalty: 3.0e+5
-    convex_hull_alm_penalty_growth: 5.0
-    convex_hull_alm_progress_ratio: 0.5
-    convex_hull_alm_constraint_tolerance: 1.0e-2
-    convex_hull_alm_require_certification: false
-    # Opt-in second solve — leave false for online speed.
-    convex_hull_phase2_corrector_en: false
-    convex_hull_stage_a_seed_refine_en: false
-    convex_hull_phase2_require_certification: false
-    convex_hull_phase2_top_k: 32
-    convex_hull_phase2_max_constraints: 64
-    convex_hull_phase2_max_outer: 3
-    convex_hull_phase2_inner_tol_init: 1.0e-2
-    convex_hull_phase2_inner_tol_final: 1.0e-4
-    convex_hull_phase2_append_en: true
-    convex_hull_phase2_multiplier_reuse_en: true
+    # Experimental only. Keep false on the fixed stable branch.
+    convex_hull_require_certification: false
+    convex_hull_polish_initial_penalty: 3.0e+5
+    convex_hull_polish_penalty_growth: 5.0
+    convex_hull_polish_progress_ratio: 0.5
+    convex_hull_polish_top_k: 32
+    convex_hull_polish_max_constraints: 64
+    convex_hull_polish_max_outer: 3
+    convex_hull_polish_inner_tol_init: 1.0e-2
+    convex_hull_polish_inner_tol_final: 1.0e-4
+    convex_hull_polish_append_en: true
+    convex_hull_polish_multiplier_reuse_en: true
     smooth_eps: 0.01
     penna_t: 2.0e+5
     penna_pos: 5.0e+7

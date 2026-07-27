@@ -1,5 +1,7 @@
 #pragma once
 
+#include <Eigen/Dense>
+
 #include <cstddef>
 #include <limits>
 #include <string>
@@ -7,6 +9,30 @@
 
 namespace traj_opt
 {
+
+enum class ConstraintKind : int
+{
+  PolynomialPosition = 0,
+  PolynomialDerivativeNorm = 1,
+  FlatnessVelocityTrust = 2,
+  FlatnessTilt = 3,
+  FlatnessThrustUpper = 4,
+  FlatnessThrustLower = 5,
+  FlatnessForceProjection = 6,
+  FlatnessAngularRate = 7
+};
+
+struct FlatnessLinearization
+{
+  Eigen::Vector3d reference_velocity{Eigen::Vector3d::Zero()};
+  Eigen::Vector3d force_direction{Eigen::Vector3d::UnitZ()};
+  Eigen::Matrix3d drag_jacobian{Eigen::Matrix3d::Identity()};
+  Eigen::Vector3d drag_bias{Eigen::Vector3d::Zero()};
+  double anchor_radius{0.0};
+  double trust_radius{0.0};
+  double drag_remainder{0.0};
+  double force_remainder{0.0};
+};
 
 /**
  * Phase-0/1 solver quality semantics.
@@ -78,6 +104,7 @@ struct SolverQualityReport
  */
 struct ConstraintCandidate
 {
+  ConstraintKind kind{ConstraintKind::PolynomialPosition};
   int source_segment{-1};
   int derivative_order{-1};
   int leaf_id{-1};
@@ -89,6 +116,7 @@ struct ConstraintCandidate
   double value{0.0};
   double margin{0.0};
   double historical_multiplier{0.0};
+  FlatnessLinearization flatness{};
 };
 
 struct ContinuousCertificateReport
@@ -101,11 +129,22 @@ struct ContinuousCertificateReport
   bool velocity_certificate_enabled{false};
   bool acceleration_certificate_enabled{false};
   bool position_certificate_enabled{false};
+  bool flatness_certificate_enabled{false};
+  // The stable state2state route evaluates the current flatness envelope for
+  // diagnostics only. Until its angular-rate bound is made rigorous, it must
+  // not gate the independently valid polynomial P/V/A certificate.
+  bool flatness_advisory_only{false};
+  bool flatness_advisory_feasible{false};
 
   double max_position_violation{0.0};
   double max_velocity_violation{0.0};
   double max_acceleration_violation{0.0};
   double max_jerk_violation{0.0};
+  double max_flatness_violation{0.0};
+  double max_tilt_violation{0.0};
+  double max_thrust_violation{0.0};
+  double max_angular_rate_violation{0.0};
+  double max_flatness_trust_violation{0.0};
   double max_normalized_violation{0.0};
 
   double min_position_margin{

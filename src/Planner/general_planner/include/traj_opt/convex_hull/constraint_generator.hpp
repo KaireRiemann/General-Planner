@@ -50,6 +50,10 @@ inline std::vector<ConstraintCandidate> extractViolatedCandidates(
     }
 
     ConstraintCandidate candidate;
+    candidate.kind =
+        leaf.derivative_order == 0
+            ? ConstraintKind::PolynomialPosition
+            : ConstraintKind::PolynomialDerivativeNorm;
     candidate.source_segment = leaf.source_segment;
     candidate.derivative_order = leaf.derivative_order;
     candidate.leaf_id = static_cast<int>(leaf_id);

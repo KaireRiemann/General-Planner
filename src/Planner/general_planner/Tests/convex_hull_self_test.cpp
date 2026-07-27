@@ -1,5 +1,4 @@
 #include "traj_opt/convex_hull/convex_hull.hpp"
-#include "traj_opt/costfunctional_manager/exp_convex_alm_cost_manager.hpp"
 #include "traj_opt/costfunctional_manager/exp_convex_cost_manager.hpp"
 #include "traj_opt/minco/minco_optimizer.hpp"
 #include "utils/optimization/phr_alm.hpp"
@@ -649,7 +648,7 @@ void checkOptimizerGradient()
           "Coefficient cost was not recorded by MINCOOptimizer.");
 }
 
-void checkExpConvexCostManagerGradientAndTiming(int cost_version)
+void checkExpConvexCostManagerGradientAndTiming()
 {
   using Optimizer =
       minco::MINCOOptimizer<3, 4, ExpTimeMap, IdentitySpatialMap>;
@@ -723,11 +722,10 @@ void checkExpConvexCostManagerGradientAndTiming(int cost_version)
           "Dense ExpIntegralCostManager unexpectedly produced coefficient cost.");
 
   cost_functional_manager::ExpConvexCostManager convex_manager;
-  // Exercise the production depth-two path. Cost V2 omits the algebraically
+  // Exercise the production depth-two path. Bezier omits the algebraically
   // duplicated first control of every leaf after the first one.
   convex_manager.configure(traj_opt::convex_hull::Basis::Bezier,
-                           2,
-                           cost_version);
+                           2);
   convex_manager.reset(&corridors,
                        &corridor_indices,
                        nullptr,
@@ -748,28 +746,16 @@ void checkExpConvexCostManagerGradientAndTiming(int cost_version)
   }
   require(convex_cost > 1.0e-12,
           "ExpConvexCostManager did not produce a convex-hull cost.");
-  static double v1_cost = std::numeric_limits<double>::quiet_NaN();
-  if (cost_version == 1)
-  {
-    v1_cost = convex_cost;
-  }
-  else
-  {
-    require(std::isfinite(v1_cost) &&
-                std::abs(convex_cost - v1_cost) <=
-                    1.0e-11 * std::max(1.0, std::abs(v1_cost)),
-            "Deduplicated V2 cost is not equivalent to V1.");
-  }
   require(std::abs(optimizer.lastIntegralCost()) < 1.0e-12,
           "Polynomial dense costs remained active in ExpConvexCostManager.");
   require(optimizer.lastCoefficientCost() > 1.0e-12,
           "ExpConvexCostManager coefficient cost was not recorded.");
   require(!convex_manager.usesDenseSampling(),
           "Pure polynomial hull costs should bypass dense sampling.");
-  // Production ExpTrajOpt uses seventh-degree MINCO_S4. At depth two V1 has
-  // 4*(8+7+6+5)*3 = 312 checks. V2 keeps only the unique leaf-chain controls:
+  // Production ExpTrajOpt uses seventh-degree MINCO_S4. The stable Bezier
+  // functional keeps only the unique leaf-chain controls:
   // ((4*7+1)+(4*6+1)+(4*5+1)+(4*4+1))*3 = 276 checks.
-  const std::size_t expected_checks = cost_version == 2 ? 276 : 312;
+  const std::size_t expected_checks = 276;
   require(convex_manager.activeControlPointChecksPerEvaluation() ==
               expected_checks,
           "Unexpected depth-two p/v/a/j control-point count.");
@@ -777,7 +763,7 @@ void checkExpConvexCostManagerGradientAndTiming(int cost_version)
   require(timing.evaluations == 200 && timing.evaluation_seconds > 0.0 &&
               timing.dense_integral_seconds >= 0.0,
           "MINCO timing statistics were not recorded.");
-  std::cout << "timing_microbenchmark cost_v=" << cost_version
+  std::cout << "timing_microbenchmark stable_bezier"
             << " dense_integral_share="
             << dense_timing.denseIntegralShareOfEvaluation() * 100.0
             << "% convex_residual_integral_share="
@@ -817,6 +803,10 @@ void checkExpConvexCostManagerGradientAndTiming(int cost_version)
           "ExpConvexCostManager gradient failed finite differences.");
 }
 
+#if 0
+// Historical standalone full-ALM experiment. The production route now uses
+// only certificate-triggered packed polish; keep this block excluded while
+// old benchmark data are being archived.
 void checkAdaptiveAlmGradientAndCertificate()
 {
   using Optimizer =
@@ -864,8 +854,9 @@ void checkAdaptiveAlmGradientAndCertificate()
   traj_opt::SwarmPenaltyConfig swarm_config;
   traj_opt::SwarmTrajectoriesConstPtr swarm_trajectories;
 
-  cost_functional_manager::ExpConvexAlmCostManager manager;
-  cost_functional_manager::ExpConvexAlmCostManager::Options options;
+  // Removed standalone full-trajectory ALM manager.
+  RemovedStandaloneAlmManager manager;
+  RemovedStandaloneAlmManager::Options options;
   options.adaptive = true;
   options.active_set = false;
   options.max_depth = 2;
@@ -981,6 +972,7 @@ void checkAdaptiveAlmGradientAndCertificate()
               manager.fineSegmentCount() == 0,
           "Adaptive ALM failed to certify an empty-corridor trajectory at depth zero.");
 }
+#endif
 
 void checkGenericPhrAlmSolver()
 {
@@ -1102,6 +1094,9 @@ void checkGenericPhrAlmSolver()
           "PHR-ALM did not accept an explicitly allowed feasible warm start.");
 }
 
+#if 0
+// Historical adaptive hot-loop experiment. Continuous refinement now belongs
+// only to the post-solve certificate, never to the L-BFGS objective topology.
 void checkTwoStageAdaptivePenaltyPath()
 {
   using Optimizer =
@@ -1153,7 +1148,7 @@ void checkTwoStageAdaptivePenaltyPath()
   options.refine_derivative_constraints = false;
 
   cost_functional_manager::ExpConvexCostManager manager;
-  manager.configure(traj_opt::convex_hull::Basis::Bezier, 2, 2, options);
+  manager.configure(traj_opt::convex_hull::Basis::Bezier, 2);
   manager.reset(&corridors,
                 &corridor_indices,
                 nullptr,
@@ -1206,13 +1201,14 @@ void checkTwoStageAdaptivePenaltyPath()
           "Stage B should evaluate more controls after refining segments.");
 
   const auto certificate =
-      manager.computeAdaptiveContinuousCertificate(
+      manager.computeContinuousCertificate(
           optimizer.getTrajectory());
   require(certificate.scalar_constraint_checks > 0,
           "Post-solve adaptive certificate produced no scalar checks.");
   require(std::isfinite(certificate.max_normalized_violation),
           "Post-solve adaptive certificate max violation is non-finite.");
 }
+#endif
 
 void checkDiscreteAttractorDoesNotForceDense()
 {
@@ -1360,11 +1356,10 @@ void checkPositionScaleNondimensionalization()
 
   cost_functional_manager::ExpConvexCostManager manager_a;
   cost_functional_manager::ExpConvexCostManager manager_b;
-  cost_functional_manager::ExpConvexCostManager::AdaptiveOptions opts;
   manager_a.configure(
-      traj_opt::convex_hull::Basis::Bezier, 0, 2, opts, 0.25, 0.05);
+      traj_opt::convex_hull::Basis::Bezier, 0, 0.25, 0.05);
   manager_b.configure(
-      traj_opt::convex_hull::Basis::Bezier, 0, 2, opts, 0.50, 0.05);
+      traj_opt::convex_hull::Basis::Bezier, 0, 0.50, 0.05);
   manager_a.reset(&corridors,
                   &corridor_indices,
                   nullptr,
@@ -1473,13 +1468,10 @@ int main()
     checkCompleteLinearOperator();
     checkPieceTimeBackward();
     checkOptimizerGradient();
-    checkExpConvexCostManagerGradientAndTiming(1);
-    checkExpConvexCostManagerGradientAndTiming(2);
-    checkTwoStageAdaptivePenaltyPath();
+    checkExpConvexCostManagerGradientAndTiming();
     checkDiscreteAttractorDoesNotForceDense();
     checkPositionScaleNondimensionalization();
     checkPhrKktResidualReporting();
-    checkAdaptiveAlmGradientAndCertificate();
     checkGenericPhrAlmSolver();
     std::cout << "convex_hull_self_test passed" << std::endl;
   }

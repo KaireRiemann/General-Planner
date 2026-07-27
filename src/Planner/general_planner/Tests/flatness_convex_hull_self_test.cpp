@@ -86,10 +86,10 @@ void checkSyntheticFlatnessGradient()
   config.vertical_drag = 0.35;
   config.parasitic_drag = 0.001;
   config.speed_smoothing = 1.0e-4;
-  config.max_angular_rate = 1.5;
+  config.max_angular_rate = 0.01;
   config.max_tilt_angle = 0.55;
   config.min_thrust = 6.0;
-  config.max_thrust = 30.0;
+  config.max_thrust = 12.0;
   config.smooth_epsilon = 1.0e-2;
   config.weights.angular_rate = 1.0e3;
   config.weights.thrust = 1.0e3;
@@ -131,7 +131,8 @@ void checkSyntheticFlatnessGradient()
   Eigen::MatrixXd g_jerk = Eigen::MatrixXd::Zero(jerk.rows(), 3);
   const double base = cost.accumulate(vel, acc, jerk, pieces, vel_cp, acc_cp,
                                       jerk_cp, g_vel, g_acc, g_jerk);
-  require(std::isfinite(base), "Flatness cost must be finite.");
+  require(std::isfinite(base) && base > 0.0,
+          "Flatness test must activate a constraint.");
   require(g_vel.allFinite() && g_acc.allFinite() && g_jerk.allFinite(),
           "Flatness gradients must be finite.");
 
@@ -161,7 +162,7 @@ void checkSyntheticFlatnessGradient()
             << "\n";
 }
 
-void checkManagerDisablesDenseOmgThr()
+void checkManagerKeepsRealFlatnessObjective()
 {
   using Optimizer =
       minco::MINCOOptimizer<3, 4, ExpTimeMap, IdentitySpatialMap>;
@@ -197,7 +198,7 @@ void checkManagerDisablesDenseOmgThr()
   traj_opt::SwarmTrajectoriesConstPtr swarm_trajectories;
 
   cost_functional_manager::ExpConvexCostManager manager;
-  manager.configure(traj_opt::convex_hull::Basis::Bezier, 2, 2);
+  manager.configure(traj_opt::convex_hull::Basis::Bezier, 2);
   traj_opt::convex_hull::FlatnessConvexHullCost::Config flat_cfg;
   flat_cfg.mass = 1.64;
   flat_cfg.gravity = 9.81;
@@ -227,14 +228,12 @@ void checkManagerDisablesDenseOmgThr()
                 swarm_trajectories,
                 0.0);
   require(manager.usesFlatnessHull(), "Flatness hull should be enabled.");
-  require(!manager.usesDenseSampling(),
-          "Flatness must zero residual omg/thr dense sampling.");
+  require(manager.usesDenseSampling(),
+          "Exact FlatnessMap omg/thrust must remain in the real objective.");
 
   Eigen::VectorXd x = optimizer.generateInitialGuess();
   require(optimizer.updateTrajectoryFromDecisionVector(x),
           "Failed to materialize trajectory.");
-  manager.refreshFlatnessReference(optimizer.getTrajectory());
-
   typename Optimizer::TrajType::CoeffMat grad_c =
       Optimizer::TrajType::CoeffMat::Zero(
           optimizer.getTrajectory().getPieceNum() *
@@ -247,6 +246,29 @@ void checkManagerDisablesDenseOmgThr()
   require(std::isfinite(cost), "Coefficient cost must be finite.");
   require(grad_c.allFinite() && grad_t.allFinite(),
           "Coefficient gradients must be finite.");
+  const auto certificate =
+      manager.computeContinuousCertificate(
+          optimizer.getTrajectory());
+  require(certificate.flatness_certificate_enabled,
+          "Conservative flatness certificate was not evaluated.");
+  manager.configureFlatness(true, flat_cfg, /*advisory_only=*/true);
+  const auto advisory =
+      manager.computeContinuousCertificate(optimizer.getTrajectory());
+  require(advisory.flatness_certificate_enabled &&
+              advisory.flatness_advisory_only,
+          "Stable flatness route must be explicitly advisory.");
+  require(advisory.flatness_advisory_feasible ==
+              (manager.flatnessDiagnostics().certified),
+          "Advisory feasibility must mirror the shadow diagnostic.");
+  for (const auto &candidate : advisory.violated)
+  {
+    require(candidate.kind < traj_opt::ConstraintKind::FlatnessVelocityTrust ||
+                candidate.kind > traj_opt::ConstraintKind::FlatnessAngularRate,
+            "Advisory flatness rows must not enter packed correction.");
+  }
+  require(advisory.max_normalized_violation <=
+              certificate.max_normalized_violation + 1.0e-12,
+          "Shadow flatness must not raise the hard P/V/A violation.");
   std::cout << "[flatness] manager coefficient cost = " << cost << "\n";
   std::cout << "[flatness] diagnostics max violation = "
             << manager.flatnessDiagnostics().maxViolation() << "\n";
@@ -259,7 +281,7 @@ int main()
   try
   {
     checkSyntheticFlatnessGradient();
-    checkManagerDisablesDenseOmgThr();
+    checkManagerKeepsRealFlatnessObjective();
     std::cout << "flatness_convex_hull_self_test passed\n";
     return 0;
   }

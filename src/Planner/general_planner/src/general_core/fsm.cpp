@@ -228,6 +228,31 @@ namespace fsm {
                                       ? exp_opt_seconds / total_replan_seconds * 100.0
                                       : 0.0)
                         << ", " << static_cast<int>(report.fast_stop_satisfied)
+                        << ", " << report.fast_stop_candidate_checks
+                        << ", " << report.fast_stop_cost_passes
+                        << ", " << report.fast_stop_decision_step_passes
+                        << ", " << report.fast_stop_penalty_change_passes
+                        << ", " << report.fast_stop_physical_time_passes
+                        << ", " << report.fast_stop_waypoint_passes
+                        << ", " << report.fast_stop_gradient_passes
+                        << ", " << report.fast_stop_violation_passes
+                        << ", " << report.fast_stop_nonstall_passes
+                        << ", " << report.fast_stop_base_rule_passes
+                        << ", " << report.fast_stop_guarded_rule_passes
+                        << ", " << report.warm_start_status
+                        << ", " << static_cast<int>(report.warm_start_attempted)
+                        << ", " << static_cast<int>(report.warm_start_accepted)
+                        << ", " << static_cast<int>(
+                                      report.warm_start_topology_resampled)
+                        << ", " << report.warm_start_comparison_evaluations
+                        << ", " << report.warm_start_seconds * 1.0e3
+                        << ", " << report.warm_start_baseline_cost
+                        << ", " << report.warm_start_candidate_cost
+                        << ", " << report.warm_start_baseline_gradient
+                        << ", " << report.warm_start_candidate_gradient
+                        << ", " << report.warm_start_baseline_penalty
+                        << ", " << report.warm_start_candidate_penalty
+                        << ", " << report.warm_start_max_waypoint_shift
                         << ", " << static_cast<int>(report.continuous_feasible)
                         << ", " << static_cast<int>(report.robustly_certified)
                         << ", " << static_cast<int>(report.has_certified_incumbent)

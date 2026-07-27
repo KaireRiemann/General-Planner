@@ -1,15 +1,20 @@
 #pragma once
 
 /*
- * Continuous-time convex sufficient conditions for GCOPTER-style flatness
- * (tilt / thrust / angular-rate), adapted from FlatnessConvexHullCertificate
- * for General-Planner's Bezier hodograph control layout.
+ * Experimental GCOPTER-style flatness envelope (tilt / thrust /
+ * angular-rate) on General-Planner's Bezier hodograph layout.
+ *
+ * Tilt and thrust use convex sufficient bounds. The current angular row
+ * evaluates a non-convex cross-product expression at matching joint controls,
+ * so the combined result is advisory rather than a production certificate.
  *
  * Call refreshReference() only between L-BFGS major iterations. Inner
  * evaluations must keep the frozen affine drag model fixed.
  */
 
 #include <Eigen/Dense>
+
+#include "traj_opt/solver_quality_report.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -90,6 +95,19 @@ public:
   void configure(const Config &config) { config_ = config; }
   const Config &config() const { return config_; }
   const Diagnostics &diagnostics() const { return diagnostics_; }
+  const std::vector<ConstraintCandidate> &constraintCandidates() const
+  {
+    return candidates_;
+  }
+  double normalizedMaxViolation() const
+  {
+    double maximum = 0.0;
+    for (const auto &candidate : candidates_)
+    {
+      maximum = std::max(maximum, candidate.value);
+    }
+    return maximum;
+  }
   bool referenceReady() const { return reference_ready_; }
 
   void clearReference()
@@ -111,6 +129,7 @@ public:
                         const Eigen::VectorXd &durations)
   {
     references_.assign(static_cast<std::size_t>(num_pieces), PieceReference{});
+    leaves_per_segment_ = std::max(1, leaves_per_segment);
     const double jacobian_lipschitz = dragJacobianLipschitz();
     const double alpha = config_.horizontal_drag / config_.mass;
 
@@ -150,6 +169,7 @@ public:
           std::max(config_.trust_radius_scale * maximum_distance,
                    maximum_distance) +
               config_.trust_radius_padding);
+      reference.anchor_radius = maximum_distance;
 
       Vector drag_at_reference;
       dragModel(reference.velocity, drag_at_reference, reference.drag_jacobian);
@@ -198,6 +218,7 @@ public:
                     Eigen::MatrixBase<JerkGrad> &jerk_gradients) const
   {
     diagnostics_ = Diagnostics{};
+    candidates_.clear();
     diagnostics_.num_pieces = num_pieces;
     diagnostics_.num_joint_controls = num_pieces * vel_cp;
     diagnostics_.reference_ready = reference_ready_;
@@ -264,6 +285,7 @@ private:
     Matrix3 drag_jacobian = Matrix3::Identity();
     Vector drag_bias = Vector::Zero();
     double trust_radius{0.0};
+    double anchor_radius{0.0};
     double drag_remainder{0.0};
     double force_remainder{0.0};
   };
@@ -271,6 +293,8 @@ private:
   Config config_{};
   mutable Diagnostics diagnostics_{};
   mutable std::vector<PieceReference> references_;
+  mutable std::vector<ConstraintCandidate> candidates_;
+  mutable int leaves_per_segment_{1};
   mutable bool reference_ready_{false};
   mutable std::uint64_t reference_revision_{0};
 
@@ -472,19 +496,41 @@ private:
                                         config_.norm_epsilon);
         }
 
+        const bool angular_enabled =
+            std::isfinite(config_.max_angular_rate) &&
+            config_.max_angular_rate > 0.0;
+        const bool thrust_upper_enabled =
+            std::isfinite(config_.max_thrust) &&
+            config_.max_thrust > 0.0;
+        const bool thrust_lower_enabled =
+            std::isfinite(config_.min_thrust) &&
+            config_.min_thrust >= 0.0;
+        const bool attitude_enabled =
+            angular_enabled || thrust_upper_enabled || thrust_lower_enabled;
+
         const Vector force_xy(force.x(), force.y(), 0.0);
         const double force_xy_norm = force_xy.norm();
         const double tilt_violation =
             force_xy_norm + reference.force_remainder -
             tangent_tilt * (force.z() - reference.force_remainder);
-        total_cost += addPenalty(tilt_violation, config_.weights.tilt,
-                                 multiplier, diagnostics_.max_tilt_violation);
-        if (force_xy_norm > config_.norm_epsilon)
+        if (attitude_enabled)
         {
-          force_gradient.x() += multiplier * force.x() / force_xy_norm;
-          force_gradient.y() += multiplier * force.y() / force_xy_norm;
+          total_cost += addPenalty(
+              tilt_violation, config_.weights.tilt,
+              multiplier, diagnostics_.max_tilt_violation);
+          addCandidate(ConstraintKind::FlatnessTilt,
+                       piece,
+                       local,
+                       tilt_violation,
+                       reference,
+                       std::max(1.0, config_.gravity));
+          if (force_xy_norm > config_.norm_epsilon)
+          {
+            force_gradient.x() += multiplier * force.x() / force_xy_norm;
+            force_gradient.y() += multiplier * force.y() / force_xy_norm;
+          }
+          force_gradient.z() -= multiplier * tangent_tilt;
         }
-        force_gradient.z() -= multiplier * tangent_tilt;
 
         const double force_norm = force.norm();
         const double drag_norm = affine_drag.norm();
@@ -493,7 +539,7 @@ private:
         const Vector drag_unit =
             unitGradient(affine_drag, drag_norm, config_.norm_epsilon);
 
-        if (std::isfinite(config_.max_thrust))
+        if (thrust_upper_enabled)
         {
           const double thrust_upper_violation =
               config_.mass * (force_norm + reference.force_remainder) +
@@ -503,11 +549,17 @@ private:
           total_cost += addPenalty(
               thrust_upper_violation, config_.weights.thrust, multiplier,
               diagnostics_.max_thrust_upper_violation);
+          addCandidate(ConstraintKind::FlatnessThrustUpper,
+                       piece,
+                       local,
+                       thrust_upper_violation,
+                       reference,
+                       std::max(1.0, std::abs(config_.max_thrust)));
           force_gradient += multiplier * config_.mass * force_unit;
           drag_gradient += multiplier * abs_drag_difference * drag_unit;
         }
 
-        if (std::isfinite(config_.min_thrust))
+        if (thrust_lower_enabled)
         {
           const double thrust_lower_certificate =
               config_.mass * (reference.force_direction.dot(force) -
@@ -519,6 +571,12 @@ private:
           total_cost += addPenalty(
               thrust_lower_violation, config_.weights.thrust, multiplier,
               diagnostics_.max_thrust_lower_violation);
+          addCandidate(ConstraintKind::FlatnessThrustLower,
+                       piece,
+                       local,
+                       thrust_lower_violation,
+                       reference,
+                       std::max(1.0, std::abs(config_.min_thrust)));
           force_gradient -=
               multiplier * config_.mass * reference.force_direction;
           drag_gradient += multiplier * abs_drag_difference * drag_unit;
@@ -526,34 +584,78 @@ private:
 
         const double projected_force =
             reference.force_direction.dot(force) - reference.force_remainder;
-        const double projection_violation =
-            config_.min_force_projection - projected_force;
-        total_cost += addPenalty(
-            projection_violation, config_.weights.force_projection, multiplier,
-            diagnostics_.max_force_projection_violation);
-        force_gradient -= multiplier * reference.force_direction;
+        if (attitude_enabled)
+        {
+          const double projection_violation =
+              config_.min_force_projection - projected_force;
+          total_cost += addPenalty(
+              projection_violation, config_.weights.force_projection,
+              multiplier, diagnostics_.max_force_projection_violation);
+          addCandidate(ConstraintKind::FlatnessForceProjection,
+                       piece,
+                       local,
+                       projection_violation,
+                       reference,
+                       std::max(1.0, config_.gravity));
+          force_gradient -= multiplier * reference.force_direction;
+        }
 
-        if (std::isfinite(config_.max_angular_rate))
+        if (angular_enabled)
         {
           const double force_rate_norm = force_rate.norm();
           const double acceleration_norm = acceleration.norm();
+          const Vector cross = force.cross(force_rate);
+          const double cross_norm = cross.norm();
+          const Vector cross_unit =
+              unitGradient(cross, cross_norm, config_.norm_epsilon);
+          // True force and force-rate are enclosed by the affine Taylor
+          // model. Bound the missing cross-product terms explicitly:
+          //   |(f+ef)x(fd+ed)| <= |fxfd| + ef|fd| + ed|f| + ef*ed.
+          const double force_error = reference.force_remainder;
+          const double force_rate_error =
+              angular_remainder_gain * acceleration_norm;
+          const double cross_remainder =
+              force_error * force_rate_norm +
+              force_rate_error * force_norm +
+              force_error * force_rate_error;
           const double angular_violation =
               angular_map_gain *
-                  (force_rate_norm +
-                   angular_remainder_gain * acceleration_norm) -
-              angular_rate_budget * projected_force;
+                  (cross_norm + cross_remainder) -
+              angular_rate_budget * projected_force * projected_force;
           total_cost += addPenalty(
               angular_violation, config_.weights.angular_rate, multiplier,
               diagnostics_.max_angular_rate_violation);
+          addCandidate(
+              ConstraintKind::FlatnessAngularRate,
+              piece,
+              local,
+              angular_violation,
+              reference,
+              std::max(1.0,
+                       angular_rate_budget * config_.gravity *
+                           config_.gravity));
+
+          // d|f x fd|/df = fd x u, d|f x fd|/dfd = u x f.
+          force_gradient +=
+              multiplier * angular_map_gain *
+              (force_rate.cross(cross_unit) +
+               force_rate_error *
+                   unitGradient(force, force_norm, config_.norm_epsilon));
           force_rate_gradient +=
               multiplier * angular_map_gain *
-              unitGradient(force_rate, force_rate_norm, config_.norm_epsilon);
+              (cross_unit.cross(force) +
+               force_error *
+                   unitGradient(force_rate,
+                                force_rate_norm,
+                                config_.norm_epsilon));
           acceleration_gradient +=
               multiplier * angular_map_gain * angular_remainder_gain *
+              (force_norm + force_error) *
               unitGradient(acceleration, acceleration_norm,
                            config_.norm_epsilon);
           force_gradient -=
-              multiplier * angular_rate_budget * reference.force_direction;
+              multiplier * 2.0 * angular_rate_budget * projected_force *
+              reference.force_direction;
         }
 
         drag_gradient += alpha * force_gradient;
@@ -571,6 +673,42 @@ private:
       }
     }
     return total_cost;
+  }
+
+  void addCandidate(ConstraintKind kind,
+                    int piece,
+                    int local,
+                    double raw_value,
+                    const PieceReference &reference,
+                    double scale) const
+  {
+    if (!(raw_value > config_.certificate_tolerance))
+    {
+      return;
+    }
+    ConstraintCandidate candidate;
+    candidate.kind = kind;
+    candidate.source_segment = piece / std::max(1, leaves_per_segment_);
+    candidate.derivative_order = -1;
+    candidate.depth = 0;
+    int leaves = std::max(1, leaves_per_segment_);
+    while ((1 << candidate.depth) < leaves)
+    {
+      ++candidate.depth;
+    }
+    candidate.binary_index = piece % leaves;
+    candidate.control_or_bernstein_index = local;
+    candidate.value = raw_value / std::max(1.0e-9, scale);
+    candidate.margin = -candidate.value;
+    candidate.flatness.reference_velocity = reference.velocity;
+    candidate.flatness.force_direction = reference.force_direction;
+    candidate.flatness.drag_jacobian = reference.drag_jacobian;
+    candidate.flatness.drag_bias = reference.drag_bias;
+    candidate.flatness.trust_radius = reference.trust_radius;
+    candidate.flatness.anchor_radius = reference.anchor_radius;
+    candidate.flatness.drag_remainder = reference.drag_remainder;
+    candidate.flatness.force_remainder = reference.force_remainder;
+    candidates_.push_back(candidate);
   }
 };
 

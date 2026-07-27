@@ -245,6 +245,14 @@ target_link_libraries(flatness_convex_hull_self_test
         general_planner_core
 )
 
+add_executable(fast_lbfgs_self_test
+        Tests/fast_lbfgs_self_test.cpp
+)
+target_include_directories(fast_lbfgs_self_test PRIVATE include)
+target_link_libraries(fast_lbfgs_self_test
+        general_planner_core
+)
+
 add_executable(convex_hull_convergence_benchmark
         Tests/convex_hull_convergence_benchmark.cpp
 )

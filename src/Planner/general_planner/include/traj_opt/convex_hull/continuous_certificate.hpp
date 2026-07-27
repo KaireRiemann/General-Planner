@@ -368,9 +368,19 @@ private:
         std::max(0.0, report.max_normalized_violation);
 
     report.fully_resolved = report.unresolved_leaves == 0;
+    // Every active leaf stores a Bernstein upper bound over its complete
+    // interval.  Therefore upper_bound <= 0 is already a rigorous
+    // continuous-time feasibility proof, even when the adaptive classifier
+    // calls the leaf UNCERTAIN/MAX_DEPTH_REACHED because it has not reached
+    // safe_margin.  Conflating that robust-interior classification with
+    // basic feasibility made valid boundary-near trajectories fail forever:
+    // max_normalized_violation was zero while continuous_feasible was false.
+    //
+    // Keep fully_resolved as a diagnostic for robust refinement, but let the
+    // actual certificate be decided by the certified upper bounds.  The
+    // stronger safe-margin requirement remains in robustly_certified below.
     report.continuous_feasible =
-        report.max_normalized_violation <= 0.0 &&
-        report.fully_resolved;
+        report.max_normalized_violation <= 0.0;
     // Position robust margin stays metric; derivative margins are
     // nondimensional (||v||^2/bound^2 - 1). Disabled orders are ignored
     // (e.g. penna_jerk<=0 ⇒ certify_jerk=false ⇒ jerk not required).

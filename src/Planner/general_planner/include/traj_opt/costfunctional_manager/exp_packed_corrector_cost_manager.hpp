@@ -32,6 +32,8 @@ public:
   {
     double position_scale{0.25};
     int max_constraints{64};
+    bool flatness_enabled{false};
+    traj_opt::convex_hull::FlatnessConvexHullCost::Config flatness{};
   };
 
   struct UpdateReport
@@ -84,7 +86,7 @@ public:
     const int polynomial_weight_count =
         std::min<int>(4, residual_weights.size());
     residual_weights.head(polynomial_weight_count).setZero();
-    residual_manager_.configure(Basis::Bezier, 0, 2);
+    residual_manager_.configure(Basis::Bezier, 0);
     residual_manager_.reset(h_polys,
                             h_poly_idx,
                             waypoint_attractors,
@@ -180,6 +182,49 @@ public:
 
   std::size_t constraintCount() const { return packed_.constraints.size(); }
 
+  bool hasFlatnessConstraints() const
+  {
+    for (const auto &constraint : packed_.constraints)
+    {
+      if (constraint.kind >=
+              traj_opt::ConstraintKind::FlatnessVelocityTrust &&
+          constraint.kind <=
+              traj_opt::ConstraintKind::FlatnessAngularRate)
+      {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  bool shrinkFlatnessTrustRegions(double factor)
+  {
+    factor = std::clamp(factor, 0.1, 0.99);
+    bool changed = false;
+    for (auto &constraint : packed_.constraints)
+    {
+      if (constraint.kind < traj_opt::ConstraintKind::FlatnessVelocityTrust ||
+          constraint.kind > traj_opt::ConstraintKind::FlatnessAngularRate)
+      {
+        continue;
+      }
+      auto &model = constraint.flatness;
+      const double old_radius = model.trust_radius;
+      const double new_radius =
+          std::max(model.anchor_radius + 1.0e-6, factor * old_radius);
+      if (new_radius + 1.0e-12 >= old_radius)
+      {
+        continue;
+      }
+      const double ratio = new_radius / old_radius;
+      model.trust_radius = new_radius;
+      model.drag_remainder *= ratio * ratio;
+      model.force_remainder *= ratio * ratio;
+      changed = true;
+    }
+    return changed;
+  }
+
   std::size_t lastScalarChecks() const { return last_scalar_checks_; }
 
   std::size_t activeControlPointChecksPerEvaluation() const
@@ -228,6 +273,19 @@ public:
             fresh_candidates,
             options_.max_constraints))
     {
+      const Eigen::Index before_guards = multipliers_.size();
+      traj_opt::convex_hull::appendFlatnessTrustRegionGuards(
+          packed_,
+          /*velocity_controls_per_leaf=*/7,
+          options_.max_constraints);
+      if (static_cast<Eigen::Index>(packed_.constraints.size()) >
+          before_guards)
+      {
+        Eigen::VectorXd grown = Eigen::VectorXd::Zero(
+            static_cast<Eigen::Index>(packed_.constraints.size()));
+        grown.head(before_guards) = multipliers_;
+        multipliers_.swap(grown);
+      }
       constraint_values_ = Eigen::VectorXd::Zero(
           static_cast<Eigen::Index>(packed_.constraints.size()));
       last_report_.topology_changed = true;
@@ -337,9 +395,14 @@ public:
         options_.position_scale,
         multipliers_,
         penalty_,
+        options_.flatness_enabled ? &options_.flatness : nullptr,
         order_gradients);
     constraint_values_ = residual.values;
     last_scalar_checks_ = residual.scalar_checks;
+    if (!residual.trust_region_feasible)
+    {
+      return std::numeric_limits<double>::infinity();
+    }
 
     if (grad_durations.size() != durations.size())
     {
@@ -391,6 +454,7 @@ private:
         options_.position_scale,
         multipliers_,
         penalty_,
+        options_.flatness_enabled ? &options_.flatness : nullptr,
         order_gradients);
     constraint_values_ = residual.values;
     last_scalar_checks_ = residual.scalar_checks;
