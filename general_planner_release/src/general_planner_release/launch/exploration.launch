@@ -43,6 +43,7 @@
         name="exploration_node"
         output="screen"
         clear_params="true">
+    <!-- Dynamic bounding-box selection is configured by exploration.yaml. -->
     <rosparam file="$(arg exploration_config)" command="load"/>
 
     <param name="odometry_topic" value="$(arg odom_topic)" type="string"/>

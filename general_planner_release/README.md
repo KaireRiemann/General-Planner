@@ -84,17 +84,48 @@ Run exploration with real sensors, rosbag or an externally started simulator:
 roslaunch general_planner_release exploration.launch
 ```
 
-Exploration starts in `WAIT_TRIGGER`. After odometry and point clouds are
-available, click RViz `2D Nav Goal` once. The click publishes a
+The delivered `config/exploration.yaml` enables pre-flight dynamic exploration
+boundary selection. After launch, RViz `3D Nav Goal` sends two opposite XYZ
+corners to `/exploration_node/dynamic_bounding_box/corner_3d`. Their Z values
+become the lower and upper limits; `min_z/max_z` are not used in the default
+`diagonal_3d` mode.
+The exploration graph, A*, frontier manager, coverage map and FSM initialize
+only after the second point is accepted and the green box is displayed.
+While dynamic selection is enabled, the fixed `box_0` values are neither
+displayed nor used as a timeout fallback.
+
+After initialization and odometry are available, the FSM enters
+`WAIT_TRIGGER`. Click RViz `2D Nav Goal` once. This publishes a
 `geometry_msgs/PoseStamped` on `/move_base_simple/goal`; its position is used
-only as a start trigger, not as an exploration destination. To use another
-topic or restore automatic startup:
+only as a start trigger, not as an exploration destination. Thus 3D Nav Goal
+builds the search region and 2D Nav Goal remains the separate exploration
+trigger. To use another trigger topic or restore automatic startup:
 
 ```bash
 roslaunch general_planner_release exploration.launch \
   trigger_topic:=/your/start_trigger
 
 roslaunch general_planner_release exploration.launch auto_start:=true
+```
+
+With `auto_start:=true`, automatic triggering still occurs only after the
+dynamic box has been accepted and all exploration modules have initialized.
+To return to the fixed `box_0` boundary, set
+`dynamic_bounding_box/enabled: false` in `config/exploration.yaml`.
+
+The default full XYZ mode is:
+
+```yaml
+dynamic_bounding_box/mode: diagonal_3d
+```
+
+To return to an XY footprint with configured fixed vertical limits, set
+`mode: footprint`; only that mode uses `dynamic_bounding_box/min_z/max_z`.
+
+Before submitting the second point, clear an incorrect first point with:
+
+```bash
+rostopic pub -1 /exploration_node/dynamic_bounding_box/reset std_msgs/Empty "{}"
 ```
 
 The delivered garage profile enables persistent long-horizon coverage
@@ -146,8 +177,12 @@ Run the garage simulation in the development workspace:
 roslaunch general_planner_release exploration_sim.launch rviz:=true
 ```
 
-Wait for the garage point cloud to appear, select RViz `2D Nav Goal`, and
-click anywhere once to start exploration.
+Wait for the garage point cloud to appear and select RViz `3D Nav Goal`.
+For each corner, left-drag to choose XY/yaw, then keep the left button held,
+press the right button too, and move vertically to choose Z. Release left to
+submit the corner. Submit the lower and upper opposite corners of the desired
+3D volume. After the green box appears and initialization completes, select
+`2D Nav Goal` and click once to trigger exploration.
 
 Like `state2state_sim.launch`, `exploration_sim.launch` expects the
 `perfect_drone_sim` package and its garage map assets to be installed or

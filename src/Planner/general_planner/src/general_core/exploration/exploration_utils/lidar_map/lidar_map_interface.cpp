@@ -7,6 +7,23 @@ LIOInterface::LIOInterface() {}
 
 LIOInterface::~LIOInterface() {}
 
+bool LIOInterface::setSingleExplorationBox(
+    const Eigen::Vector3f &box_min, const Eigen::Vector3f &box_max) {
+  if (!lp_ || !box_min.allFinite() || !box_max.allFinite() ||
+      (box_max.array() <= box_min.array()).any()) {
+    return false;
+  }
+
+  lp_->box_num_ = 1;
+  lp_->global_box_min_boundary_vec_.assign(1, box_min);
+  lp_->global_box_max_boundary_vec_.assign(1, box_max);
+  lp_->global_box_min_boundary_ = box_min;
+  lp_->global_box_max_boundary_ = box_max;
+  lp_->global_map_min_boundary_ = box_min;
+  lp_->global_map_max_boundary_ = box_max;
+  return true;
+}
+
 void LIOInterface::init(ros::NodeHandle &nh) {
   lp_.reset(new LIOInterfaceParam);
   ld_.reset(new LIOInterfaceData);

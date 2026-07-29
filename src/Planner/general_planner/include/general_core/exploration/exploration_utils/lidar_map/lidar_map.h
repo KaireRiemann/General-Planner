@@ -47,6 +47,8 @@ public:
   LIOInterface();
   ~LIOInterface();
   void init(ros::NodeHandle &nh);
+  bool setSingleExplorationBox(const Eigen::Vector3f &box_min,
+                               const Eigen::Vector3f &box_max);
   bool IsInBox(const Eigen::Vector3f &pos);
   bool IsInBox(const PointType &pos);
   bool IsInMap(const Eigen::Vector3f &pos);

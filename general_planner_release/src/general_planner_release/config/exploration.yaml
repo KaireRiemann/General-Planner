@@ -110,6 +110,27 @@ ViewpointManager/view_direction_range: 140.0
 ViewpointManager/local_tsp_size: 10
 ViewpointManager/top_candidate_num: 2
 # area
+# Runtime exploration boundary selection.
+#
+# When enabled, exploration_node starts only the selector first and waits for
+# two RViz 3D Nav Goal messages. In diagonal_3d mode the two poses define
+# the complete XYZ diagonal, including the lower and upper Z limits. Only
+# after the box is accepted are TopoGraph, A*, FrontierManager,
+# CoverageGuidance and the FSM initialized. box_0 is used only when dynamic
+# selection is disabled.
+dynamic_bounding_box/enabled: true
+dynamic_bounding_box/mode: diagonal_3d
+dynamic_bounding_box/frame_id: world
+dynamic_bounding_box/goal_topic: dynamic_bounding_box/corner_3d
+dynamic_bounding_box/reset_topic: dynamic_bounding_box/reset
+dynamic_bounding_box/marker_topic: dynamic_bounding_box/markers
+# Used only if mode is changed back to footprint.
+dynamic_bounding_box/min_z: -0.2
+dynamic_bounding_box/max_z: 3.8
+dynamic_bounding_box/min_xy_extent: 1.0
+dynamic_bounding_box/min_z_extent: 0.5
+dynamic_bounding_box/selection_timeout: 0.0
+dynamic_bounding_box/line_width: 0.08
 box_num: 1
 box_0/down: [-10.0, -6.0, -0.2]
 box_0/up: [182.0, 150.2, 3.8]

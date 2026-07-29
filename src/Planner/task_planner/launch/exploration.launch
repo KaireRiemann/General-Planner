@@ -1,8 +1,11 @@
 <launch>
   <!--
     Top-level exploration entry point.
-    The default profile is the garage simulation. Exploration waits for an
-    RViz 2D Nav Goal on /move_base_simple/goal. For a real robot, set
+    The default profile is the garage simulation. When dynamic selection is
+    enabled in the loaded profile, RViz 3D Nav Goal
+    first selects two opposite exploration corners; no fixed YAML box is used.
+    Exploration then waits for an RViz 2D Nav Goal on /move_base_simple/goal.
+    For a real robot, set
     marsim:=false and override odom_topic/cloud_topic when necessary.
   -->
   <arg name="marsim" default="true" />

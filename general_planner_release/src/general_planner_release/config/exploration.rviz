@@ -17,7 +17,7 @@ Panels:
     Expanded:
       - /2D Pose Estimate1
       - /2D Nav Goal1
-      - /Publish Point1
+      - /3D Nav Goal1
     Name: Tool Properties
     Splitter Ratio: 0.5886790156364441
   - Class: rviz/Views
@@ -391,6 +391,14 @@ Visualization Manager:
         box id: true
       Queue Size: 100
       Value: true
+    - Class: rviz/MarkerArray
+      Enabled: true
+      Marker Topic: /exploration_node/dynamic_bounding_box/markers
+      Name: dynamic_exploration_bbox
+      Namespaces:
+        dynamic_exploration_bbox: true
+      Queue Size: 10
+      Value: true
     - Alpha: 1
       Autocompute Intensity Bounds: true
       Autocompute Value Bounds:
@@ -482,9 +490,9 @@ Visualization Manager:
       Y std deviation: 0.5
     - Class: rviz/SetGoal
       Topic: /move_base_simple/goal
-    - Class: rviz/PublishPoint
-      Single click: true
-      Topic: /clicked_point
+    - Class: general_planner_rviz_plugins/Goal3DTool
+      3D Topic: /exploration_node/dynamic_bounding_box/corner_3d
+      Fallback 2D Topic: /exploration_node/dynamic_bounding_box/incomplete_goal
   Value: true
   Views:
     Current:

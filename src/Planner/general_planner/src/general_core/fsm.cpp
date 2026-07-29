@@ -605,10 +605,13 @@ namespace fsm {
     }
 
     void Fsm::callReplanOnce() {
-        std::unique_lock<std::mutex> tick_lock(fsm_tick_mutex_, std::try_to_lock);
-        if (!tick_lock.owns_lock()) {
-            return;
-        }
+        // Replanning runs at a much lower rate than the main FSM timer.  If
+        // this callback loses a try-lock race, dropping the entire tick can
+        // starve rolling replanning and make the committed backup suffix run
+        // to completion.  Wait for the short FSM critical section instead;
+        // the expensive state-to-state planner call is still executed without
+        // this lock below.
+        std::unique_lock<std::mutex> tick_lock(fsm_tick_mutex_);
         if (stop) {
             return;
         }

@@ -153,6 +153,7 @@ target_link_libraries(general_planner_exploration PUBLIC
 
 add_executable(exploration_node
         ${GENERAL_PLANNER_EXPLORATION_DIR}/exploration_node.cpp
+        ${GENERAL_PLANNER_EXPLORATION_DIR}/dynamic_bounding_box_selector.cpp
         ${GENERAL_PLANNER_EXPLORATION_DIR}/fast_exploration_fsm.cpp
         ${GENERAL_PLANNER_EXPLORATION_DIR}/fsm_utils.cpp
 )

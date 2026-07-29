@@ -39,6 +39,23 @@ namespace traj_opt {
 
     class Config {
     public:
+        struct PenaltyWeights {
+            double scale{-1.0};
+            double time{-1.0};
+            double time_shift{-1.0};
+            double position{-1.0};
+            double velocity{-1.0};
+            double acceleration{-1.0};
+            double jerk{-1.0};
+            double attractor{-1.0};
+            double guide_path{-1.0};
+            double guide_velocity{-1.0};
+            double guide_z_tube{-1.0};
+            double angular_rate{-1.0};
+            double tilt{-1.0};
+            double thrust{-1.0};
+        };
+
         bool uniform_time_en{false};
 
         flatness::FlatnessMap quadrotot_flatness;
@@ -76,6 +93,14 @@ namespace traj_opt {
         int integral_reso{0};
         // Used only by the ordinary state2state ExpTrajOpt corridor backend.
         bool convex_hull_en{false};
+        // Optional profile relative to the main YAML file. The profile owns
+        // all convex-hull parameters and, crucially, a penalty set independent
+        // of the dense integral objective.
+        string convex_hull_config;
+        string convex_hull_config_resolved;
+        bool convex_hull_penalty_profile_loaded{false};
+        PenaltyWeights dense_penalty_weights;
+        PenaltyWeights convex_hull_penalty_weights;
         // 0: Bezier, 1: MINVO. The optimizer/certificate state machine is
         // shared; only the fixed linear control-basis operator changes.
         int convex_hull_basis{0};
@@ -141,8 +166,15 @@ namespace traj_opt {
 
         Config() = default;
 
+        PenaltyWeights activePenaltyWeights() const {
+            return convex_hull_en && convex_hull_penalty_profile_loaded
+                       ? convex_hull_penalty_weights
+                       : makePenaltyWeightsFromLegacyFields();
+        }
+
         Config(const std::string & cfg_path, string ns) {
             yaml_loader::YamlLoader loader(cfg_path);
+            const bool is_exp_traj = ns == "exp_traj";
             if (ns.empty()) {
                 ns = "/";
             }
@@ -226,6 +258,10 @@ namespace traj_opt {
             loader.LoadParam("traj_opt" + ns + "integral_reso", integral_reso, 10);
             loader.LoadParam("traj_opt" + ns + "smooth_eps", smooth_eps, 0.01);
             loader.LoadParam("traj_opt" + ns + "convex_hull_en", convex_hull_en, false);
+            if (is_exp_traj) {
+                loader.LoadParam("traj_opt" + ns + "convex_hull_config",
+                                 convex_hull_config, string{});
+            }
             loader.LoadParam("traj_opt" + ns + "convex_hull_basis",
                              convex_hull_basis, 0);
             loader.LoadParam("traj_opt" + ns + "convex_hull_position_scale",
@@ -303,7 +339,149 @@ namespace traj_opt {
                 penna_thr = penna_thr * penna_scale;
             }
 
+            dense_penalty_weights = makePenaltyWeightsFromLegacyFields();
+            convex_hull_penalty_weights = dense_penalty_weights;
+            if (is_exp_traj && convex_hull_en && !convex_hull_config.empty()) {
+                convex_hull_config_resolved =
+                    resolveConfigPath(cfg_path, convex_hull_config);
+                loadConvexHullProfile(convex_hull_config_resolved);
+                convex_hull_penalty_profile_loaded = true;
+                std::cout << " -- [TrajOpt] Convex-hull penalty profile: "
+                          << convex_hull_config_resolved << std::endl;
+            }
+
             quadrotot_flatness.reset(mass, grav, dh, dv, cp, v_eps);
+        }
+
+    private:
+        PenaltyWeights makePenaltyWeightsFromLegacyFields() const {
+            PenaltyWeights weights;
+            weights.scale = penna_scale;
+            weights.time = penna_t;
+            weights.time_shift = penna_ts;
+            weights.position = penna_pos;
+            weights.velocity = penna_vel;
+            weights.acceleration = penna_acc;
+            weights.jerk = penna_jerk;
+            weights.attractor = penna_attract;
+            weights.guide_path = penna_guide_path;
+            weights.guide_velocity = penna_guide_vel;
+            weights.guide_z_tube = penna_guide_z_tube;
+            weights.angular_rate = penna_omg;
+            weights.tilt = penna_theta;
+            weights.thrust = penna_thr;
+            return weights;
+        }
+
+        static string resolveConfigPath(const string &base_path,
+                                        const string &profile_path) {
+            if (profile_path.empty() || profile_path.front() == '/') {
+                return profile_path;
+            }
+            const auto separator = base_path.find_last_of("/\\");
+            if (separator == string::npos) {
+                return profile_path;
+            }
+            return base_path.substr(0, separator + 1) + profile_path;
+        }
+
+        static void scalePenaltyWeights(PenaltyWeights &weights) {
+            if (weights.scale <= 0.0) {
+                return;
+            }
+            weights.time *= weights.scale;
+            weights.time_shift *= weights.scale;
+            weights.position *= weights.scale;
+            weights.velocity *= weights.scale;
+            weights.acceleration *= weights.scale;
+            weights.jerk *= weights.scale;
+            weights.attractor *= weights.scale;
+            weights.guide_path *= weights.scale;
+            weights.guide_velocity *= weights.scale;
+            weights.guide_z_tube *= weights.scale;
+            weights.angular_rate *= weights.scale;
+            weights.tilt *= weights.scale;
+            weights.thrust *= weights.scale;
+        }
+
+        void loadConvexHullProfile(const string &profile_path) {
+            yaml_loader::YamlLoader loader(profile_path);
+            loader.LoadParam("convex_hull/basis", convex_hull_basis,
+                             convex_hull_basis);
+            loader.LoadParam("convex_hull/flatness_en",
+                             convex_hull_flatness_en,
+                             convex_hull_flatness_en);
+            loader.LoadParam("convex_hull/position_scale",
+                             convex_hull_position_scale,
+                             convex_hull_position_scale);
+            loader.LoadParam("convex_hull/robust_certificate_margin",
+                             convex_hull_robust_certificate_margin,
+                             convex_hull_robust_certificate_margin);
+            loader.LoadParam("convex_hull/require_certification",
+                             convex_hull_require_certification,
+                             convex_hull_require_certification);
+            loader.LoadParam("convex_hull/polish/initial_penalty",
+                             convex_hull_polish_initial_penalty,
+                             convex_hull_polish_initial_penalty);
+            loader.LoadParam("convex_hull/polish/penalty_growth",
+                             convex_hull_polish_penalty_growth,
+                             convex_hull_polish_penalty_growth);
+            loader.LoadParam("convex_hull/polish/progress_ratio",
+                             convex_hull_polish_progress_ratio,
+                             convex_hull_polish_progress_ratio);
+            loader.LoadParam("convex_hull/polish/top_k",
+                             convex_hull_polish_top_k,
+                             convex_hull_polish_top_k);
+            loader.LoadParam("convex_hull/polish/max_constraints",
+                             convex_hull_polish_max_constraints,
+                             convex_hull_polish_max_constraints);
+            loader.LoadParam("convex_hull/polish/max_outer",
+                             convex_hull_polish_max_outer,
+                             convex_hull_polish_max_outer);
+            loader.LoadParam("convex_hull/polish/inner_tol_init",
+                             convex_hull_polish_inner_tol_init,
+                             convex_hull_polish_inner_tol_init);
+            loader.LoadParam("convex_hull/polish/inner_tol_final",
+                             convex_hull_polish_inner_tol_final,
+                             convex_hull_polish_inner_tol_final);
+            loader.LoadParam("convex_hull/polish/append_en",
+                             convex_hull_polish_append_en,
+                             convex_hull_polish_append_en);
+            loader.LoadParam("convex_hull/polish/multiplier_reuse_en",
+                             convex_hull_polish_multiplier_reuse_en,
+                             convex_hull_polish_multiplier_reuse_en);
+
+            auto &weights = convex_hull_penalty_weights;
+            loader.LoadParam("convex_hull/penalty/penna_scale",
+                             weights.scale, -1.0);
+            loader.LoadParam("convex_hull/penalty/penna_t",
+                             weights.time, weights.time, true);
+            loader.LoadParam("convex_hull/penalty/penna_ts",
+                             weights.time_shift, weights.time_shift, true);
+            loader.LoadParam("convex_hull/penalty/penna_pos",
+                             weights.position, weights.position, true);
+            loader.LoadParam("convex_hull/penalty/penna_vel",
+                             weights.velocity, weights.velocity, true);
+            loader.LoadParam("convex_hull/penalty/penna_acc",
+                             weights.acceleration, weights.acceleration, true);
+            loader.LoadParam("convex_hull/penalty/penna_jerk",
+                             weights.jerk, weights.jerk, true);
+            loader.LoadParam("convex_hull/penalty/penna_attract",
+                             weights.attractor, weights.attractor, true);
+            loader.LoadParam("convex_hull/penalty/penna_guide_path",
+                             weights.guide_path, weights.guide_path, true);
+            loader.LoadParam("convex_hull/penalty/penna_guide_vel",
+                             weights.guide_velocity, weights.guide_velocity,
+                             true);
+            loader.LoadParam("convex_hull/penalty/penna_guide_z_tube",
+                             weights.guide_z_tube, weights.guide_z_tube, true);
+            loader.LoadParam("convex_hull/penalty/penna_omg",
+                             weights.angular_rate, weights.angular_rate, true);
+            loader.LoadParam("convex_hull/penalty/penna_theta",
+                             weights.tilt, weights.tilt, true);
+            loader.LoadParam("convex_hull/penalty/penna_thr",
+                             weights.thrust, weights.thrust, true);
+            scalePenaltyWeights(weights);
         }
     };
 }

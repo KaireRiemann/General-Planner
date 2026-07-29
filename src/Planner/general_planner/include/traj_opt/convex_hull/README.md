@@ -163,30 +163,30 @@ acceptance path.
 
 ## Runtime configuration
 
-The stable options in `click_real_highspeed.yaml` are:
+The main planner YAML only selects the representation:
 
 ```yaml
 convex_hull_en: true
-convex_hull_basis: 0
-convex_hull_flatness_en: true
-convex_hull_position_scale: 0.25
-convex_hull_robust_certificate_margin: 0.05
-convex_hull_require_certification: false
-
-convex_hull_polish_initial_penalty: 3.0e+5
-convex_hull_polish_penalty_growth: 5.0
-convex_hull_polish_progress_ratio: 0.5
-convex_hull_polish_top_k: 32
-convex_hull_polish_max_constraints: 64
-convex_hull_polish_max_outer: 3
-convex_hull_polish_inner_tol_init: 1.0e-2
-convex_hull_polish_inner_tol_final: 1.0e-4
-convex_hull_polish_append_en: true
-convex_hull_polish_multiplier_reuse_en: true
+convex_hull_config: "traj_opt/convex_hull/click_real_highspeed.yaml"
 ```
+
+The referenced profile owns the Bezier/MINVO switch, certificate/polish
+settings, and a complete `convex_hull/penalty/penna_*` set. Dense-integral
+weights remain under `traj_opt/exp_traj/penna_*` in the main YAML. At startup,
+`ExpTrajOpt` selects exactly one set:
+
+```text
+convex_hull_en && profile loaded -> convex_hull/penalty/penna_*
+otherwise                         -> exp_traj/penna_*
+```
+
+This separation is required because the dense objective integrates point
+residuals while the convex objective aggregates normalized control-point
+residuals. Their numerical weights are independent tuning parameters even
+when a profile is initially seeded with the previous stable values.
 
 Subdivision depth is fixed at two in the stable route. The basis switch is
 kept because it changes only the linear convex-hull representation.
-`convex_hull_flatness_en`
+Profile option `flatness_en`
 enables shadow diagnostics and the eight-node real FlatnessMap residual grid;
 the P/V/A certificate is a stable-line monitor.

@@ -18,4 +18,5 @@
   <exec_depend>pcl_ros</exec_depend>
   <exec_depend>tf</exec_depend>
   <exec_depend>rviz</exec_depend>
+  <exec_depend>general_planner_rviz_plugins</exec_depend>
 </package>

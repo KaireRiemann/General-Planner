@@ -29,6 +29,7 @@ What is synced:
   - devel/lib/general_planner/exploration_node
   - devel/lib/general_planner/highspeed_traj_server
   - devel/lib/liblkh_tsp_solver.so
+  - General Planner 3D Nav Goal RViz plugin
   - General Planner garage exploration YAML/RViz configs
   - src/Utils/quadrotor_msgs/msg
   - traj_utils message interfaces used by exploration
@@ -113,7 +114,12 @@ echo "[build_release] Release: ${RELEASE_ROOT}"
 echo "[build_release] Build type: ${BUILD_TYPE}"
 
 cd "${WORKSPACE_ROOT}"
-catkin_cmd=(catkin_make --force-cmake --pkg general_planner -DCMAKE_BUILD_TYPE="${BUILD_TYPE}")
+catkin_cmd=(
+  catkin_make
+  --force-cmake
+  "-DCATKIN_WHITELIST_PACKAGES=general_planner;general_planner_rviz_plugins"
+  -DCMAKE_BUILD_TYPE="${BUILD_TYPE}"
+)
 if [[ -n "${GP_CATKIN_ARGS:-}" ]]; then
   # shellcheck disable=SC2206
   extra_args=(${GP_CATKIN_ARGS})
@@ -131,6 +137,11 @@ TRAJ_SERVER_BINARY_SRC="${WORKSPACE_ROOT}/devel/lib/general_planner/highspeed_tr
 TRAJ_SERVER_BINARY_DST="${RELEASE_ROOT}/src/general_planner_release/bin/highspeed_traj_server.bin"
 LKH_LIBRARY_SRC="${WORKSPACE_ROOT}/devel/lib/liblkh_tsp_solver.so"
 LKH_LIBRARY_DST="${RELEASE_ROOT}/lib/liblkh_tsp_solver.so"
+RVIZ_PLUGIN_LIBRARY_SRC="${WORKSPACE_ROOT}/devel/lib/libgeneral_planner_rviz_plugins.so"
+RVIZ_PLUGIN_SRC="${REPO_ROOT}/src/Utils/general_planner_rviz_plugins"
+RVIZ_PLUGIN_DST="${RELEASE_ROOT}/src/general_planner_rviz_plugins"
+RVIZ_PLUGIN_LIBRARY_DST="${RVIZ_PLUGIN_DST}/lib/libgeneral_planner_rviz_plugins.so"
+LEGACY_RVIZ_PLUGIN_LIBRARY_DST="${RELEASE_ROOT}/lib/libgeneral_planner_rviz_plugins.so"
 
 PLANNER_CONFIG_DIR="${REPO_ROOT}/src/Planner/general_planner/config"
 RELEASE_CONFIG_DIR="${RELEASE_ROOT}/src/general_planner_release/config"
@@ -158,6 +169,10 @@ for required in \
   "${EXPLORATION_BINARY_SRC}" \
   "${TRAJ_SERVER_BINARY_SRC}" \
   "${LKH_LIBRARY_SRC}" \
+  "${RVIZ_PLUGIN_LIBRARY_SRC}" \
+  "${RVIZ_PLUGIN_SRC}/package.xml" \
+  "${RVIZ_PLUGIN_SRC}/plugin_description.xml" \
+  "${RVIZ_PLUGIN_SRC}/LICENSE" \
   "${EXPLORATION_CONFIG_SRC}" \
   "${EXPLORATION_SIM_CONFIG_SRC}" \
   "${EXPLORATION_ROG_MAP_CONFIG_SRC}" \
@@ -197,6 +212,20 @@ chmod 755 "${LKH_LIBRARY_DST}"
 if [[ "${GP_NO_STRIP:-0}" != "1" ]] && command -v strip >/dev/null 2>&1; then
   strip "${LKH_LIBRARY_DST}"
 fi
+
+echo "[build_release] Sync 3D Nav Goal RViz plugin"
+rm -f "${LEGACY_RVIZ_PLUGIN_LIBRARY_DST}"
+mkdir -p "$(dirname "${RVIZ_PLUGIN_LIBRARY_DST}")"
+cp "${RVIZ_PLUGIN_LIBRARY_SRC}" "${RVIZ_PLUGIN_LIBRARY_DST}"
+chmod 755 "${RVIZ_PLUGIN_LIBRARY_DST}"
+if [[ "${GP_NO_STRIP:-0}" != "1" ]] && command -v strip >/dev/null 2>&1; then
+  strip "${RVIZ_PLUGIN_LIBRARY_DST}"
+fi
+mkdir -p "${RVIZ_PLUGIN_DST}"
+cp "${RVIZ_PLUGIN_SRC}/package.xml" "${RVIZ_PLUGIN_DST}/package.xml"
+cp "${RVIZ_PLUGIN_SRC}/plugin_description.xml" \
+  "${RVIZ_PLUGIN_DST}/plugin_description.xml"
+cp "${RVIZ_PLUGIN_SRC}/LICENSE" "${RVIZ_PLUGIN_DST}/LICENSE"
 
 echo "[build_release] Sync garage exploration configs"
 mkdir -p "${RELEASE_CONFIG_DIR}"
@@ -249,8 +278,11 @@ run_smoke_tests() {
   set -u
 
   rospack find general_planner_release >/dev/null
+  rospack find general_planner_rviz_plugins >/dev/null
   rospack find quadrotor_msgs >/dev/null
   rospack find traj_utils >/dev/null
+  rospack plugins --attrib=plugin rviz |
+    grep -q '^general_planner_rviz_plugins '
 
   python3 - <<'PY'
 import quadrotor_msgs.msg
@@ -269,7 +301,8 @@ PY
   for binary in \
     "${RUNTIME_BINARY_DST}" \
     "${EXPLORATION_BINARY_DST}" \
-    "${TRAJ_SERVER_BINARY_DST}"; do
+    "${TRAJ_SERVER_BINARY_DST}" \
+    "${RVIZ_PLUGIN_LIBRARY_DST}"; do
     if ldd "${binary}" | grep -q 'not found'; then
       echo "[build_release] Unresolved runtime dependency in ${binary}:" >&2
       ldd "${binary}" | grep 'not found' >&2 || true

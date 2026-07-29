@@ -513,6 +513,7 @@ ExpTrajOpt::ExpTrajOpt(const traj_opt::Config &cfg,
                        const ros_interface::RosInterface::Ptr &ros_ptr)
     : cfg_(cfg), ros_ptr_(ros_ptr)
 {
+  const auto active_penalties = cfg_.activePenaltyWeights();
   if (cfg_.save_log_en)
   {
     failed_traj_log_.open(DEBUG_FILE_DIR("exp_opt_log.csv"), std::ios::out | std::ios::trunc);
@@ -523,11 +524,14 @@ ExpTrajOpt::ExpTrajOpt(const traj_opt::Config &cfg,
   opt_vars_.penalty_weights.resize(7);
   opt_vars_.magnitude_bounds << cfg_.max_vel, cfg_.max_acc, cfg_.max_jerk,
       cfg_.max_omg, cfg_.min_acc_thr * cfg_.mass, cfg_.max_acc_thr * cfg_.mass;
-  opt_vars_.penalty_weights << cfg_.penna_pos, cfg_.penna_vel,
-      cfg_.penna_acc, cfg_.penna_jerk,
-      cfg_.penna_attract, cfg_.penna_omg,
-      cfg_.penna_thr;
-  opt_vars_.rho = cfg_.penna_t;
+  opt_vars_.penalty_weights << active_penalties.position,
+      active_penalties.velocity,
+      active_penalties.acceleration,
+      active_penalties.jerk,
+      active_penalties.attractor,
+      active_penalties.angular_rate,
+      active_penalties.thrust;
+  opt_vars_.rho = active_penalties.time;
   opt_vars_.pos_constraint_type = cfg_.pos_constraint_type;
   opt_vars_.block_energy_cost = cfg_.block_energy_cost;
   opt_vars_.smooth_eps = cfg_.smooth_eps;
@@ -621,7 +625,9 @@ ExpTrajOpt::ExpTrajOpt(const traj_opt::Config &cfg,
   opt_vars_.guide_path_huber_delta = std::max(0.0, cfg_.guide_path_huber_delta);
   opt_vars_.guide_path_time_gradient_en = cfg_.guide_path_time_gradient_en;
   opt_vars_.weight_guide_z_tube =
-      opt_vars_.guide_z_tube_radius > 0.0 ? std::max(0.0, cfg_.penna_guide_z_tube) : 0.0;
+      opt_vars_.guide_z_tube_radius > 0.0
+          ? std::max(0.0, active_penalties.guide_z_tube)
+          : 0.0;
 
   linear_time_cost_.weight = opt_vars_.rho;
   optimizer_.setTimeMap(&time_map_);
@@ -663,8 +669,10 @@ ExpTrajOpt::ExpTrajOpt(const traj_opt::Config &cfg,
       flat_cfg.min_thrust = cfg_.min_acc_thr * cfg_.mass;
       flat_cfg.max_thrust = cfg_.max_acc_thr * cfg_.mass;
       flat_cfg.smooth_epsilon = cfg_.smooth_eps;
-      flat_cfg.weights.angular_rate = std::max(0.0, cfg_.penna_omg);
-      flat_cfg.weights.thrust = std::max(0.0, cfg_.penna_thr);
+      flat_cfg.weights.angular_rate =
+          std::max(0.0, active_penalties.angular_rate);
+      flat_cfg.weights.thrust =
+          std::max(0.0, active_penalties.thrust);
       flat_cfg.weights.tilt = std::max(flat_cfg.weights.thrust,
                                        flat_cfg.weights.angular_rate);
       flat_cfg.weights.force_projection = flat_cfg.weights.thrust;

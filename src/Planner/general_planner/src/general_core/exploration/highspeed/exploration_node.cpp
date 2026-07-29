@@ -10,9 +10,11 @@
 
 #include <general_core/exploration/highspeed/fast_exploration_fsm.h>
 #include <general_core/exploration/highspeed/fast_exploration_manager.h>
+#include <general_core/exploration/highspeed/dynamic_bounding_box_selector.h>
 #include <general_core/exploration/exploration_utils/frontier_manager/frontier_manager.h>
 #include <general_core/exploration/highspeed/planner_manager.h>
 #include <ros/ros.h>
+#include <vector>
 
 namespace backward {
 backward::SignalHandling sh;
@@ -34,7 +36,44 @@ int main(int argc, char **argv) {
       std::make_shared<FastExplorationManager>();
   FastExplorationFSM expl_fsm;
 
+  DynamicBoundingBoxSelector bbox_selector;
+  bbox_selector.init(nh);
+  bool dynamic_box_selected = false;
+  Eigen::Vector3f selected_min;
+  Eigen::Vector3f selected_max;
+  if (bbox_selector.enabled()) {
+    if (bbox_selector.waitForSelection(selected_min, selected_max)) {
+      dynamic_box_selected = true;
+      const std::vector<double> min_param = {
+          selected_min.x(), selected_min.y(), selected_min.z()};
+      const std::vector<double> max_param = {
+          selected_max.x(), selected_max.y(), selected_max.z()};
+      // Override the private box parameters before LIOInterface reads them.
+      // Consequently dynamic mode never even initializes from box_0/box_1.
+      nh.setParam("box_num", 1);
+      nh.setParam("box_0/down", min_param);
+      nh.setParam("box_0/up", max_param);
+    } else {
+      if (!ros::ok()) {
+        return 0;
+      }
+      ROS_FATAL("[dynamic bbox] selection failed; fixed YAML bounds are "
+                "disabled while dynamic selection is enabled");
+      return 3;
+    }
+  }
+
   lio_interface->init(nh);
+  if (dynamic_box_selected) {
+    if (!lio_interface->setSingleExplorationBox(selected_min, selected_max)) {
+      ROS_FATAL("[dynamic bbox] selected box could not be applied");
+      return 2;
+    }
+    ROS_INFO_STREAM(
+        "[dynamic bbox] applied before LIO/graph/frontier/planner initialization"
+        << " min=[" << selected_min.transpose() << "] max=["
+        << selected_max.transpose() << "]");
+  }
   graph->init(nh, lio_interface, parallel_path_finder);
   parallel_path_finder->init(nh, lio_interface);
   planner_manager->initPlanModules(nh, parallel_path_finder, graph);

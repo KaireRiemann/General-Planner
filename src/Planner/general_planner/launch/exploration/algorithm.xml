@@ -38,7 +38,6 @@
     <param name="view_graph" value="$(arg view_graph)" type="bool" />
     <param name="FrontierManager/view_frt" value="$(arg view_frontier)" type="bool" />
     <param name="FrontierManager/view_cluster" value="$(arg view_cluster)" type="bool" />
-
     <!-- Fsm -->
     <param name="fsm/thresh_replan" value="0.5" type="double" />
     <param name="fsm/emergency_replan_control_error" value="1.5" type="double" />

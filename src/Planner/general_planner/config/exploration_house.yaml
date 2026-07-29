@@ -196,6 +196,23 @@ ViewpointManager/top_candidate_num: 2
 # first-floor ceiling/staircase so topology can remain connected vertically.
 # The upper box is limited to the house footprint to avoid exploring empty sky
 # around the outside of the building.
+# When enabled, two RViz 3D Nav Goal gestures define the full XYZ diagonal,
+# including the lower and upper Z limits. No fixed box is displayed or used;
+# planning modules initialize only after the dynamic box is accepted. Set
+# enabled=false to use box_0/box_1 below.
+dynamic_bounding_box/enabled: true
+dynamic_bounding_box/mode: diagonal_3d
+dynamic_bounding_box/frame_id: world
+dynamic_bounding_box/goal_topic: dynamic_bounding_box/corner_3d
+dynamic_bounding_box/reset_topic: dynamic_bounding_box/reset
+dynamic_bounding_box/marker_topic: dynamic_bounding_box/markers
+# Used only if mode is changed back to footprint.
+dynamic_bounding_box/min_z: -0.2
+dynamic_bounding_box/max_z: 6.4
+dynamic_bounding_box/min_xy_extent: 1.0
+dynamic_bounding_box/min_z_extent: 0.5
+dynamic_bounding_box/selection_timeout: 0.0
+dynamic_bounding_box/line_width: 0.08
 box_num: 2
 box_0/down: [-20.0, -20.0, -0.2]
 box_0/up: [20.0, 20.2, 3.8]
