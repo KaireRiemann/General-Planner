@@ -47,7 +47,6 @@ public:
     Eigen::Vector3f position;
     double g_score;
     double f_score;
-    double clearance{std::numeric_limits<double>::quiet_NaN()};
   };
 
   struct NodeCompre {
@@ -59,7 +58,7 @@ public:
   ros::Publisher open_set_pub_;
   // FrontierManager::Ptr frontier_manager_;
   double resolution_, inv_resolution_, lambda_heu_, safe_distance_, tie_breaker_;
-  int allocate_num_, safe_cache_max_cells_;
+  int allocate_num_;
   bool debug_;
   double max_vel_, max_acc_;
   LIOInterface::Ptr lidar_map_interface_;
@@ -73,9 +72,7 @@ public:
   void posToIndex(const Eigen::Vector3f &pt, Eigen::Vector3i &idx);
   void IndexToPos(Eigen::Vector3f &pt, Eigen::Vector3i &idx);
   bool isNodeSafe(Node::Ptr node, const Eigen::Vector3f &bbox_min, const Eigen::Vector3f &bbox_max,
-                  unordered_set<Eigen::Vector3i, v3i_hash> &safe_set,
-                  unordered_set<Eigen::Vector3i, v3i_hash> &danger_set,
-                  unordered_map<Eigen::Vector3i, double, v3i_hash> &clearance_cache);
+                  unordered_set<Eigen::Vector3i, v3i_hash> &safe_set, unordered_set<Eigen::Vector3i, v3i_hash> &danger_set);
   bool segmentInValidBoxes(const Eigen::Vector3f &start,
                            const Eigen::Vector3f &end) const;
 

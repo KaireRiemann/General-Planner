@@ -149,7 +149,6 @@ bubble_topo/odom_astar_fallback_max: 12
 # without declaring a 1.2 m doorway geometrically closed.
 bubble_astar/resolution_astar: 0.25
 bubble_astar/safe_distance: 0.45
-bubble_astar/safe_cache_max_cells: 8
 # map param
 max_update_region_num: 99999999
 frontier/candidate_dphi: 0.26

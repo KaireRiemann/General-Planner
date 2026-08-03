@@ -908,6 +908,7 @@ void TopoGraph::updateOdomNode(Eigen::Vector3f &odom_pos, float &yaw) {
   std::unordered_map<std::pair<TopoNode::Ptr, TopoNode::Ptr>, vector<Eigen::Vector3f>, PairPtrHash> edge2insert;
   mutex edge2insert_mtx;
   vector<uint8_t> direct_connected(pre_nbrs.size(), 0U);
+  vector<int> direct_results(pre_nbrs.size(), ParallelBubbleAstar::NO_PATH);
   omp_set_num_threads(4);
   // clang-format off
   #pragma omp parallel for
@@ -918,6 +919,7 @@ void TopoGraph::updateOdomNode(Eigen::Vector3f &odom_pos, float &yaw) {
     const int res = parallel_bubble_astar_->search(
         odom_pos, nbr->center_, path, update_connection_timeout,
         true, true);
+    direct_results[i] = res;
     if (res == ParallelBubbleAstar::REACH_END && parallel_bubble_astar_->collisionCheck_shortenPath(path)) {
       std::lock_guard<mutex> lock(edge2insert_mtx);
       edge2insert.insert({std::make_pair(odom_node_, nbr), path});
@@ -944,6 +946,8 @@ void TopoGraph::updateOdomNode(Eigen::Vector3f &odom_pos, float &yaw) {
       fallback_indices.emplace_back(i);
     }
   }
+  vector<int> fallback_results(fallback_indices.size(),
+                               ParallelBubbleAstar::NO_PATH);
   // clang-format off
   #pragma omp parallel for
   // clang-format on
@@ -953,17 +957,43 @@ void TopoGraph::updateOdomNode(Eigen::Vector3f &odom_pos, float &yaw) {
     vector<Eigen::Vector3f> path;
     const int res = parallel_bubble_astar_->search(
         odom_pos, nbr->center_, path, update_connection_timeout, true);
+    fallback_results[j] = res;
     if (res == ParallelBubbleAstar::REACH_END &&
         parallel_bubble_astar_->collisionCheck_shortenPath(path)) {
       std::lock_guard<mutex> lock(edge2insert_mtx);
       edge2insert.insert({std::make_pair(odom_node_, nbr), path});
     }
   }
+  auto resultSummary = [](const vector<int> &results) {
+    int reached = 0;
+    int no_path = 0;
+    int start_fail = 0;
+    int end_fail = 0;
+    int timeout = 0;
+    for (const int result : results) {
+      reached += result == ParallelBubbleAstar::REACH_END;
+      no_path += result == ParallelBubbleAstar::NO_PATH;
+      start_fail += result == ParallelBubbleAstar::START_FAIL;
+      end_fail += result == ParallelBubbleAstar::END_FAIL;
+      timeout += result == ParallelBubbleAstar::TIME_OUT;
+    }
+    return string("reach=") + to_string(reached) +
+           ",no_path=" + to_string(no_path) +
+           ",start_fail=" + to_string(start_fail) +
+           ",end_fail=" + to_string(end_fail) +
+           ",timeout=" + to_string(timeout);
+  };
   ROS_INFO_STREAM_THROTTLE(
       1.0, "[topology odom] candidates=" << pre_nbrs.size()
                                          << " direct=" << direct_count
+                                         << " direct_rc={"
+                                         << resultSummary(direct_results)
+                                         << "}"
                                          << " fallback="
                                          << fallback_indices.size()
+                                         << " fallback_rc={"
+                                         << resultSummary(fallback_results)
+                                         << "}"
                                          << " connected="
                                          << edge2insert.size());
   if (edge2insert.empty())

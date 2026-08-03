@@ -13,8 +13,6 @@ void ParallelBubbleAstar::init(ros::NodeHandle &nh, const LIOInterface::Ptr &lid
   nh.param("bubble_astar/lambda_heu", lambda_heu_, 1.0);
   nh.param("bubble_astar/allocate_num", allocate_num_, -1);
   nh.param("bubble_astar/safe_distance", safe_distance_, -1.0);
-  nh.param("bubble_astar/safe_cache_max_cells", safe_cache_max_cells_, 8);
-  safe_cache_max_cells_ = std::clamp(safe_cache_max_cells_, 0, 24);
   nh.param("bubble_astar/debug", debug_, false);
   tie_breaker_ = 1.0 + 1.0 / 1000;
   this->lidar_map_interface_ = lidar_map;
@@ -24,9 +22,7 @@ void ParallelBubbleAstar::init(ros::NodeHandle &nh, const LIOInterface::Ptr &lid
 }
 
 bool ParallelBubbleAstar::isNodeSafe(Node::Ptr node, const Eigen::Vector3f &bbox_min, const Eigen::Vector3f &bbox_max,
-                                     unordered_set<Eigen::Vector3i, v3i_hash> &safe_set,
-                                     unordered_set<Eigen::Vector3i, v3i_hash> &danger_set,
-                                     unordered_map<Eigen::Vector3i, double, v3i_hash> &clearance_cache) {
+                                     unordered_set<Eigen::Vector3i, v3i_hash> &safe_set, unordered_set<Eigen::Vector3i, v3i_hash> &danger_set) {
 
   // IsInMap() only checks the axis-aligned envelope of every exploration
   // box.  For a stacked two-floor profile that envelope also contains the
@@ -41,26 +37,16 @@ bool ParallelBubbleAstar::isNodeSafe(Node::Ptr node, const Eigen::Vector3f &bbox
     return false;
   Eigen::Vector3i idx;
   posToIndex(node->position, idx);
-  const auto clearance_it = clearance_cache.find(idx);
-  if (clearance_it != clearance_cache.end()) {
-    node->clearance = clearance_it->second;
-    return node->clearance > safe_distance_ + 1e-1;
-  }
   if (safe_set.count(idx))
     return true;
   if (danger_set.count(idx))
     return false;
 
-  node->clearance = lidar_map_interface_->getDisToOcc(node->position);
-  clearance_cache.emplace(idx, node->clearance);
-  double radius = node->clearance - safe_distance_ - 1e-1;
+  double radius = lidar_map_interface_->getDisToOcc(node->position) - safe_distance_ - 1e-1;
 
   if (radius > 0) {
     int width = (int)((radius * 0.57737) * inv_resolution_) - 1;
-    // Cache the largest axis-aligned cube inscribed in the known free sphere.
-    // The old min(0, width) typo disabled this expansion for every positive
-    // width, forcing another KD-tree query for nearly every A* neighbor.
-    width = std::clamp(width, 0, safe_cache_max_cells_);
+    width = min(0, width);
     for (int i = -width; i <= width; i++) {
       for (int j = -width; j <= width; j++) {
         for (int k = -width; k <= width; k++) {
@@ -168,24 +154,20 @@ int ParallelBubbleAstar::search(const Eigen::Vector3f &start, const Eigen::Vecto
   std::priority_queue<Node::Ptr, std::vector<Node::Ptr>, NodeCompre> open_set;
   std::unordered_map<Eigen::Vector3i, Node::Ptr, v3i_hash> open_set_map;
   std::unordered_set<Eigen::Vector3i, v3i_hash> close_set, safe_set, danger_set;
-  std::unordered_map<Eigen::Vector3i, double, v3i_hash> clearance_cache;
   safe_set.reserve(1000);
   danger_set.reserve(1000);
   close_set.reserve(1000);
   open_set_map.reserve(1000);
-  clearance_cache.reserve(1000);
   Node::Ptr curr_node = std::make_shared<Node>();
   Node::Ptr end_node = std::make_shared<Node>();
   curr_node->parent = nullptr;
   curr_node->position = start;
   end_node->position = goal;
-  if (!isNodeSafe(curr_node, bbox_min, bbox_max, safe_set, danger_set,
-                  clearance_cache)) {
+  if (!isNodeSafe(curr_node, bbox_min, bbox_max, safe_set, danger_set)) {
     // ROS_ERROR("ParallelBubbleAstar: unsafe start point");
     return ParallelBubbleAstar::START_FAIL;
   }
-  if (!isNodeSafe(end_node, bbox_min, bbox_max, safe_set, danger_set,
-                  clearance_cache)) {
+  if (!isNodeSafe(end_node, bbox_min, bbox_max, safe_set, danger_set)) {
     // ROS_ERROR("ParallelBubbleAstar: unsafe end point");
     return ParallelBubbleAstar::END_FAIL;
   }
@@ -214,25 +196,7 @@ int ParallelBubbleAstar::search(const Eigen::Vector3f &start, const Eigen::Vecto
 
   while (!open_set.empty()) {
     auto curr_node = open_set.top();
-    open_set.pop();
-    posToIndex(curr_node->position, curr_idx);
-    const auto active_it = open_set_map.find(curr_idx);
-    if (active_it == open_set_map.end() ||
-        active_it->second.get() != curr_node.get()) {
-      continue;
-    }
-    double curr_clearance = curr_node->clearance;
-    if (!std::isfinite(curr_clearance)) {
-      const auto cached = clearance_cache.find(curr_idx);
-      if (cached != clearance_cache.end()) {
-        curr_clearance = cached->second;
-      } else {
-        curr_clearance = lidar_map_interface_->getDisToOcc(curr_node->position);
-        clearance_cache.emplace(curr_idx, curr_clearance);
-      }
-      curr_node->clearance = curr_clearance;
-    }
-    double curr_radius = curr_clearance - safe_distance_;
+    double curr_radius = lidar_map_interface_->getDisToOcc(curr_node->position) - safe_distance_;
     if (arriveGoal(curr_node->position, curr_radius)) {
       backtrack(curr_node);
       bool safe = collisionCheck_shortenPath(path);
@@ -249,6 +213,8 @@ int ParallelBubbleAstar::search(const Eigen::Vector3f &start, const Eigen::Vecto
       // ROS_ERROR("ParallelBubbleAstar: TIME_OUT");
       return ParallelBubbleAstar::TIME_OUT;
     }
+    open_set.pop();
+    posToIndex(curr_node->position, curr_idx);
     open_set_map.erase(curr_idx);
     close_set.insert(curr_idx);
     vector<Eigen::Vector3f> step_lis{
@@ -274,8 +240,7 @@ int ParallelBubbleAstar::search(const Eigen::Vector3f &start, const Eigen::Vecto
       auto nei_node = std::make_shared<Node>();
       nei_node->position = nbr_pos;
 
-      if (!isNodeSafe(nei_node, bbox_min, bbox_max, safe_set, danger_set,
-                      clearance_cache))
+      if (!isNodeSafe(nei_node, bbox_min, bbox_max, safe_set, danger_set))
         continue;
       nei_node->parent = curr_node;
       double tmp_g_score = step.norm() + curr_node->g_score;
@@ -290,13 +255,7 @@ int ParallelBubbleAstar::search(const Eigen::Vector3f &start, const Eigen::Vecto
         open_set_map.insert(make_pair(nbr_idx, nei_node));
         open_set.push(nei_node);
       } else if (tmp_g_score < node_iter->second->g_score) {
-        nei_node->g_score = tmp_g_score;
-        if (!best_result)
-          nei_node->f_score = lambda_heu_ * getHeu(nbr_pos, goal) + tmp_g_score;
-        else
-          nei_node->f_score = getHeu(nbr_pos, goal) + tmp_g_score;
-        open_set_map[nbr_idx] = nei_node;
-        open_set.push(nei_node);
+        nei_node = node_iter->second;
       } else {
         continue;
       }

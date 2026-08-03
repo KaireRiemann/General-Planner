@@ -1119,8 +1119,12 @@ void FastExplorationManager::deferCoverageRecovery(
     case CoverageRecoveryOutcome::TRAJECTORY_FAILURE:
       ++matched->failure_attempts;
       break;
-    case CoverageRecoveryOutcome::UNSAFE:
     case CoverageRecoveryOutcome::DISCONNECTED:
+      // A skeleton/map update may make this approach reachable later. Apply
+      // the normal cooldown and require repeated failures before exhaustion.
+      ++matched->failure_attempts;
+      break;
+    case CoverageRecoveryOutcome::UNSAFE:
     case CoverageRecoveryOutcome::OCCLUDED:
       matched->exhausted = true;
       break;
@@ -1801,8 +1805,28 @@ int FastExplorationManager::planGlobalPath(const Eigen::Vector3d &pos,
     viewpoint_reachable_edges.emplace_back(edge_odom2vp[i]);
     viewpoint_reachable.emplace_back(viewpoints[i]);
   }
+  const bool odom_topology_connected =
+      planner_manager_->topo_graph_ &&
+      planner_manager_->topo_graph_->odom_node_ &&
+      !planner_manager_->topo_graph_->odom_node_->neighbors_.empty();
   if (viewpoint_reachable.empty()) {
     last_plan_no_reachable_ = true;
+    if (!odom_topology_connected) {
+      // A missing odom-to-skeleton edge is transient. Do not enter the
+      // coverage-only recursion below: it would classify every promoted
+      // approach as permanently disconnected before the root reconnects.
+      last_plan_empty_frontier_ = false;
+      last_plan_requires_reorientation_ = false;
+      planner_manager_->topo_graph_->removeNodes(viewpoints);
+      planner_manager_->graph_visualizer_->vizTour({}, VizColor::RED,
+                                                   "global");
+      ROS_WARN_STREAM_THROTTLE(
+          0.5, "[topology gate] odom root is disconnected; preserve frontier "
+               "and coverage recovery state until topology reconnects. "
+               "candidates="
+                   << viewpoints.size());
+      return FAIL;
+    }
     if (moving && !reversal_indices.empty()) {
       last_plan_requires_reorientation_ = true;
       ROS_WARN_STREAM_THROTTLE(
