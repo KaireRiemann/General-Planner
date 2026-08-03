@@ -67,6 +67,7 @@ void LIOInterface::updateCloudMapOdometry(
   last_lidar_pose = lidar_pos_;
   ld_->lidar_pose_ = lidar_pos_;
   ld_->lidar_vel_ = lidar_vel_;
+  //处理雷达姿态
   Eigen::AngleAxisf y_axis_angle(M_PI / 180.0 * lp_->lidar_pitch_,
                                  Eigen::Vector3f::UnitY());
   Eigen::Quaternionf q_y(y_axis_angle);
@@ -75,7 +76,8 @@ void LIOInterface::updateCloudMapOdometry(
                                      odom_->pose.pose.orientation.y,
                                      odom_->pose.pose.orientation.z) *
                   q_y;
-
+  
+  //0.1体素降采样
   pcl::fromROSMsg(*msg, ld_->lidar_cloud_);
   ros::Time start = ros::Time::now();
   // PointVector pcl_map = points.points;

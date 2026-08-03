@@ -22,11 +22,19 @@ TopologyGraphROS1::TopologyGraphROS1(
     const std::string prefix = parameter_namespace.empty()
         ? std::string{} : parameter_namespace + "/";
     node_.param(prefix + "enabled", config.enabled, config.enabled);
+    std::string construction_mode =
+        config.dense_known_free ? "dense_known_free" : "bubble_topology";
+    node_.param(prefix + "construction_mode", construction_mode,
+                construction_mode);
+    config.dense_known_free = construction_mode == "dense_known_free";
     node_.param(prefix + "planar_mode", config.planar_mode, config.planar_mode);
     node_.param(prefix + "navigation_altitude", config.navigation_altitude,
                 config.navigation_altitude);
     node_.param(prefix + "region_size", config.region_size, config.region_size);
     node_.param(prefix + "sample_spacing", config.sample_spacing, config.sample_spacing);
+    node_.param(prefix + "evidence_vertical_tolerance",
+                config.dense_evidence_vertical_tolerance,
+                config.dense_evidence_vertical_tolerance);
     node_.param(prefix + "min_clearance", config.min_clearance, config.min_clearance);
     node_.param(prefix + "max_clearance", config.max_clearance, config.max_clearance);
     node_.param(prefix + "candidate_separation", config.candidate_separation,
@@ -42,6 +50,9 @@ TopologyGraphROS1::TopologyGraphROS1(
                 config.bubble_overlap_margin);
     node_.param(prefix + "unknown_as_free", config.unknown_as_free,
                 config.unknown_as_free);
+    node_.param(prefix + "snapshot_every_update",
+                config.snapshot_every_update,
+                config.snapshot_every_update);
 
     int max_nodes = static_cast<int>(config.max_nodes_per_region);
     int max_bubbles = static_cast<int>(config.max_bubbles_per_region);
@@ -57,11 +68,16 @@ TopologyGraphROS1::TopologyGraphROS1(
     config.max_regions_per_update = static_cast<std::size_t>(std::max(1, max_regions));
     max_regions_per_tick_ = config.max_regions_per_update;
 
+    double update_period = config.update_period;
+    double publish_period = config.publish_period;
     std::string topic{"map_manager/topology"};
-    double update_period = 0.20;
     node_.param(prefix + "frame_id", frame_id_, frame_id_);
     node_.param(prefix + "topic", topic, topic);
     node_.param(prefix + "update_period", update_period, update_period);
+    node_.param(prefix + "publish_period", publish_period, publish_period);
+    publish_period_ = std::max(0.05, publish_period);
+    config.update_period = std::max(0.02, update_period);
+    config.publish_period = publish_period_;
     node_.param(prefix + "node_scale", node_scale_, node_scale_);
     node_.param(prefix + "edge_scale", edge_scale_, edge_scale_);
 
@@ -78,9 +94,14 @@ TopologyGraphROS1::TopologyGraphROS1(
     if (missionActive()) {
         updateAndPublish();
     }
-    ROS_INFO_STREAM("[map_manager] State2state incremental topology enabled, topic: "
+    ROS_INFO_STREAM("[map_manager] State2state incremental topology enabled, mode: "
+                    << (config.dense_known_free
+                            ? "dense_known_free" : "bubble_topology")
+                    << ", topic: "
                     << node_.resolveName(topic)
-                    << ", asynchronous worker active");
+                    << ", update=" << config.update_period
+                    << "s, publish=" << publish_period_
+                    << "s, asynchronous worker active");
 }
 
 TopologyGraphROS1::~TopologyGraphROS1() {
@@ -141,7 +162,13 @@ void TopologyGraphROS1::workerLoop() {
             continue;
         }
         manager->updateTopology(max_regions_per_tick_);
-        publisher_.publish(makeMarkers(manager->topologySnapshot()));
+        const ros::WallTime now = ros::WallTime::now();
+        if (last_publish_time_.isZero() ||
+            (now - last_publish_time_).toSec() >= publish_period_) {
+            manager->topologyGraph()->refreshSnapshot();
+            publisher_.publish(makeMarkers(manager->topologySnapshot()));
+            last_publish_time_ = now;
+        }
     }
 }
 
@@ -234,8 +261,13 @@ visualization_msgs::MarkerArray TopologyGraphROS1::makeMarkers(
     status.color.g = 1.0F;
     status.color.b = 1.0F;
     status.color.a = 0.9F;
-    status.text = "topology nodes=" + std::to_string(snapshot.nodes.size()) +
+    status.text = std::string{"topology mode="} +
+                  (snapshot.dense_known_free
+                       ? "dense_known_free" : "bubble_topology") +
+                  " nodes=" + std::to_string(snapshot.nodes.size()) +
                   " edges=" + std::to_string(snapshot.edges.size()) +
+                  " evidence=" +
+                  std::to_string(snapshot.dense_evidence_cell_count) +
                   " dirty=" + std::to_string(snapshot.dirty_region_count) +
                   " rev=" + std::to_string(snapshot.revision) +
                   " empty=" + std::to_string(snapshot.empty_region_count) +

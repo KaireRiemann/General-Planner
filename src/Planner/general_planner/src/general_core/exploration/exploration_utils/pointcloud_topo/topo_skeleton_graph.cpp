@@ -174,7 +174,7 @@ bool TopoGraph::graphSearch(const TopoNode::Ptr &start_node, const TopoNode::Ptr
   path.clear();
   std::unordered_map<TopoNode::Ptr, float> g_score, f_score;
   std::unordered_map<TopoNode::Ptr, TopoNode::Ptr> parent_map;
-  std::unordered_set<TopoNode::Ptr> close_set, open_set_set_;
+  std::unordered_set<TopoNode::Ptr> close_set;
   float tie_breaker_ = 1.0 + 1.0 / 1000;
   std::priority_queue<std::pair<float, TopoNode::Ptr>, std::vector<std::pair<float, TopoNode::Ptr>>, std::greater<std::pair<float, TopoNode::Ptr>>>
   open_set;
@@ -193,12 +193,17 @@ bool TopoGraph::graphSearch(const TopoNode::Ptr &start_node, const TopoNode::Ptr
   g_score[cur_node] = 0.0;
   f_score[cur_node] = getHeuristic(cur_node);
   open_set.push({f_score[cur_node], cur_node});
-  open_set_set_.insert(cur_node);
   const auto t1 = ros::Time::now();
   while (!open_set.empty()) {
-    cur_node = open_set.top().second;
-    open_set_set_.erase(cur_node);
+    const auto queued = open_set.top();
     open_set.pop();
+    cur_node = queued.second;
+    const auto current_f = f_score.find(cur_node);
+    if (current_f == f_score.end() ||
+        queued.first > current_f->second + 1.0e-5f ||
+        close_set.find(cur_node) != close_set.end()) {
+      continue;
+    }
     close_set.insert(cur_node);
     if (cur_node == end_node) {
       backtrack();
@@ -230,12 +235,13 @@ bool TopoGraph::graphSearch(const TopoNode::Ptr &start_node, const TopoNode::Ptr
       } else {
         tentative_g_score = g_score[cur_node] + cur_node->weight_[neighbor];
       }
-      if (open_set_set_.find(neighbor) == open_set_set_.end() || tentative_g_score < g_score[neighbor]) {
+      const auto previous_g = g_score.find(neighbor);
+      if (previous_g == g_score.end() ||
+          tentative_g_score < previous_g->second) {
         parent_map[neighbor] = cur_node;
         g_score[neighbor] = tentative_g_score;
         f_score[neighbor] = g_score[neighbor] + getHeuristic(neighbor);
         open_set.push({f_score[neighbor], neighbor});
-        open_set_set_.insert(neighbor);
       } else
         continue;
     }

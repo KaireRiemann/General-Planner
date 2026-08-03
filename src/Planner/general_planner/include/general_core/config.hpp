@@ -87,12 +87,17 @@ namespace general_planner {
         bool state2state_direct_line_frontend_enable{true};
         bool state2state_topology_enable{false};
         bool state2state_topology_query_enable{false};
+        std::string state2state_topology_construction_mode{"bubble_topology"};
         bool state2state_topology_unknown_as_free{false};
         bool state2state_topology_planar_mode{false};
+        double state2state_topology_navigation_altitude{-1.0e6};
         double state2state_topology_min_query_distance{3.0};
         int state2state_topology_update_budget{1};
+        double state2state_topology_update_period{0.20};
+        double state2state_topology_publish_period{0.50};
         double state2state_topology_region_size{4.0};
         double state2state_topology_sample_spacing{1.0};
+        double state2state_topology_evidence_vertical_tolerance{0.50};
         double state2state_topology_min_clearance{0.45};
         double state2state_topology_max_clearance{2.5};
         double state2state_topology_connection_radius{6.0};
@@ -466,18 +471,30 @@ namespace general_planner {
                              state2state_topology_enable, false);
             loader.LoadParam("general_planner/state2state/topology/query_enable",
                              state2state_topology_query_enable, false);
+            loader.LoadParam("general_planner/state2state/topology/construction_mode",
+                             state2state_topology_construction_mode,
+                             std::string{"bubble_topology"});
             loader.LoadParam("general_planner/state2state/topology/unknown_as_free",
                              state2state_topology_unknown_as_free, false);
             loader.LoadParam("general_planner/state2state/topology/planar_mode",
                              state2state_topology_planar_mode, false);
+            loader.LoadParam("general_planner/state2state/topology/navigation_altitude",
+                             state2state_topology_navigation_altitude, -1.0e6);
             loader.LoadParam("general_planner/state2state/topology/min_query_distance",
                              state2state_topology_min_query_distance, 3.0);
             loader.LoadParam("general_planner/state2state/topology/update_budget",
                              state2state_topology_update_budget, 1);
+            loader.LoadParam("general_planner/state2state/topology/update_period",
+                             state2state_topology_update_period, 0.20);
+            loader.LoadParam("general_planner/state2state/topology/publish_period",
+                             state2state_topology_publish_period, 0.50);
             loader.LoadParam("general_planner/state2state/topology/region_size",
                              state2state_topology_region_size, 4.0);
             loader.LoadParam("general_planner/state2state/topology/sample_spacing",
                              state2state_topology_sample_spacing, 1.0);
+            loader.LoadParam(
+                "general_planner/state2state/topology/evidence_vertical_tolerance",
+                state2state_topology_evidence_vertical_tolerance, 0.50);
             loader.LoadParam("general_planner/state2state/topology/min_clearance",
                              state2state_topology_min_clearance, 0.45);
             loader.LoadParam("general_planner/state2state/topology/max_clearance",

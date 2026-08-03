@@ -51,21 +51,25 @@ general_planner:
       # Build and visualize the persistent graph without changing the
       # state2state frontend selection.
       query_enable: false
+      construction_mode: dense_known_free
       # Keep the topology graph on the center plane of the configured
       # navigation-height band.
       planar_mode: true
-      unknown_as_free: true
+      navigation_altitude: 1.25
+      unknown_as_free: false
       min_query_distance: 3.0
-      # Bound each asynchronous topology update to avoid planner jitter.
-      update_budget: 1
+      update_budget: 4
+      update_period: 0.05
+      publish_period: 0.50
       region_size: 4.0
       sample_spacing: 1.0
+      evidence_vertical_tolerance: 0.50
       min_clearance: 0.45
       max_clearance: 2.5
-      connection_radius: 6.0
-      dirty_padding: 2.5
+      connection_radius: 1.75
+      dirty_padding: 0.0
       bubble_overlap_margin: 0.10
-      max_nodes_per_region: 4
+      max_nodes_per_region: 32
       max_bubbles_per_region: 256
       max_neighbors: 8
     altitude_guard_enable: false
@@ -232,7 +236,8 @@ rog_map:
   raycasting:
     # if disable, the map will only maintain occupied information, and all other grid
     # will be considered as unknown.
-    enable: false
+    # Required by dense_known_free topology to create observed free voxels.
+    enable: true
     batch_update_size: 1
     local_update_box: [ 100,100,5 ]
     # The range of raycasting [m].

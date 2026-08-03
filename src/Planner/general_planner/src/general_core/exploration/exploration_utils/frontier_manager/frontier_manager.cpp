@@ -1090,6 +1090,7 @@ bool FrontierManager::is_fov_edge(const PointType &pt) {
 void FrontierManager::updateFrontierClusters(
     vector<ClusterInfo::Ptr> &cluster_updated, vector<int> &cluster_removed) {
   PointVector frt_new;
+  //26领域检测是否有dense邻居或者sparse邻居
   auto has_dense_nbr = [&](const Eigen::Vector3i &idx) -> bool {
     for (int i = -1; i <= 1; i++) {
       for (int j = -1; j <= 1; j++) {
@@ -1136,6 +1137,7 @@ void FrontierManager::updateFrontierClusters(
     pts_vec[idx] = lidar_map_interface_->ld_->lidar_cloud_.points;
     idx++;
   }
+  //将点云投影到深度图上，更新gap点和fov边缘点
   vector<float> depth = vector<float>(20000, -0.1);
   project_pts_2_depth_image(lidar_map_interface_->ld_->lidar_cloud_.points, depth);
   update_lidar_fov_edge(depth); // handle 雷达保护罩/旋翼/近点之类的东西

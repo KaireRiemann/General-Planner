@@ -26,14 +26,11 @@ int main(int argc, char **argv) {
   ros::init(argc, argv, "exploration_node");
   ros::NodeHandle nh("~");
   LIOInterface::Ptr lio_interface = std::make_shared<LIOInterface>();
-  ParallelBubbleAstar::Ptr parallel_path_finder =
-      std::make_shared<ParallelBubbleAstar>();
+  ParallelBubbleAstar::Ptr parallel_path_finder = std::make_shared<ParallelBubbleAstar>();
   FrontierManager::Ptr frontier_manager = std::make_shared<FrontierManager>();
   TopoGraph::Ptr graph = std::make_shared<TopoGraph>();
-  FastPlannerManager::Ptr planner_manager =
-      std::make_shared<FastPlannerManager>();
-  FastExplorationManager::Ptr explore_manager =
-      std::make_shared<FastExplorationManager>();
+  FastPlannerManager::Ptr planner_manager = std::make_shared<FastPlannerManager>();
+  FastExplorationManager::Ptr explore_manager = std::make_shared<FastExplorationManager>();
   FastExplorationFSM expl_fsm;
 
   DynamicBoundingBoxSelector bbox_selector;
@@ -41,6 +38,7 @@ int main(int argc, char **argv) {
   bool dynamic_box_selected = false;
   Eigen::Vector3f selected_min;
   Eigen::Vector3f selected_max;
+  //阻塞等待动态搜索范围
   if (bbox_selector.enabled()) {
     if (bbox_selector.waitForSelection(selected_min, selected_max)) {
       dynamic_box_selected = true;
@@ -62,7 +60,7 @@ int main(int argc, char **argv) {
       return 3;
     }
   }
-
+  //再依次初始化所有模块，注意初始化顺序，LIOInterface必须最先初始化
   lio_interface->init(nh);
   if (dynamic_box_selected) {
     if (!lio_interface->setSingleExplorationBox(selected_min, selected_max)) {

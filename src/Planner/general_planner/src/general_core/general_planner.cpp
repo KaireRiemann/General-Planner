@@ -180,14 +180,27 @@ namespace general_planner {
         }
         IncrementalTopologyGraph::Config topology_config;
         topology_config.enabled = cfg_.state2state_topology_enable;
+        topology_config.dense_known_free =
+            cfg_.state2state_topology_construction_mode == "dense_known_free";
         topology_config.unknown_as_free = cfg_.state2state_topology_unknown_as_free;
+        topology_config.snapshot_every_update =
+            cfg_.state2state_topology_query_enable;
         topology_config.planar_mode = cfg_.state2state_topology_planar_mode;
         const auto topology_map_config = map_manager_->getMapConfig();
-        topology_config.navigation_altitude = 0.5 *
-            (topology_map_config.virtual_ground_height +
-             topology_map_config.virtual_ceil_height);
+        const bool explicit_topology_altitude =
+            std::isfinite(cfg_.state2state_topology_navigation_altitude) &&
+            cfg_.state2state_topology_navigation_altitude >
+                topology_map_config.virtual_ground_height &&
+            cfg_.state2state_topology_navigation_altitude <
+                topology_map_config.virtual_ceil_height;
+        topology_config.navigation_altitude = explicit_topology_altitude
+            ? cfg_.state2state_topology_navigation_altitude
+            : 0.5 * (topology_map_config.virtual_ground_height +
+                     topology_map_config.virtual_ceil_height);
         topology_config.region_size = cfg_.state2state_topology_region_size;
         topology_config.sample_spacing = cfg_.state2state_topology_sample_spacing;
+        topology_config.dense_evidence_vertical_tolerance =
+            cfg_.state2state_topology_evidence_vertical_tolerance;
         topology_config.min_clearance = std::max(
             cfg_.state2state_topology_min_clearance, cfg_.robot_r);
         topology_config.max_clearance = cfg_.state2state_topology_max_clearance;
@@ -204,10 +217,16 @@ namespace general_planner {
             std::max(1, cfg_.state2state_topology_max_neighbors));
         topology_config.max_regions_per_update = static_cast<std::size_t>(
             std::max(1, cfg_.state2state_topology_update_budget));
+        topology_config.update_period =
+            cfg_.state2state_topology_update_period;
+        topology_config.publish_period =
+            cfg_.state2state_topology_publish_period;
         map_manager_->configureTopology(topology_config);
         if (topology_config.enabled) {
             ros_ptr_->info(
-                " -- [GeneralPlanner] Incremental topology enabled: region={:.2f}m, cell={:.2f}m, clearance={:.2f}m, unknown_as_free={}, planar={}, navigation_z={:.3f}m, planning_query={}.",
+                " -- [GeneralPlanner] Incremental topology enabled: mode={}, region={:.2f}m, cell={:.2f}m, clearance={:.2f}m, unknown_as_free={}, planar={}, navigation_z={:.3f}m, planning_query={}.",
+                topology_config.dense_known_free
+                    ? "dense_known_free" : "bubble_topology",
                 topology_config.region_size,
                 topology_config.sample_spacing,
                 topology_config.min_clearance,

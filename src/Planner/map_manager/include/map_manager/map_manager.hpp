@@ -3,8 +3,10 @@
 #include <algorithm>
 #include <atomic>
 #include <cmath>
+#include <cstdint>
 #include <limits>
 #include <memory>
+#include <mutex>
 #include <vector>
 
 #include <map_manager/boundary_map.hpp>
@@ -21,6 +23,14 @@ class MapManager
 public:
     using Ptr = std::shared_ptr<MapManager>;
 
+    struct UpdateSnapshot
+    {
+        std::uint64_t revision{0};
+        bool changed_box_valid{false};
+        rog_map::Vec3f changed_min{rog_map::Vec3f::Zero()};
+        rog_map::Vec3f changed_max{rog_map::Vec3f::Zero()};
+    };
+
     MapManager() = default;
 
     explicit MapManager(const rog_map::ROGMapROS::Ptr &map)
@@ -35,6 +45,11 @@ public:
             map_->setRobotStateCallback({});
         }
         map_ = map;
+        map_revision_.store(0, std::memory_order_release);
+        {
+            std::lock_guard<std::mutex> lock(update_snapshot_mutex_);
+            latest_update_ = UpdateSnapshot{};
+        }
         topology_seeded_.store(false, std::memory_order_release);
         boundary_map_.reset();
         if (!topology_graph_) {
@@ -62,10 +77,9 @@ public:
                 }
             });
 
-            // Odom drives where the persistent graph expands, but performs no
-            // occupancy sampling or edge construction in the odom callback.
-            // The ROS topology worker consumes these dirty/focus hints with a
-            // bounded asynchronous budget.
+            // Odom only prioritizes asynchronous maintenance in dense
+            // known-free mode. New graph content comes from post-integration
+            // occupancy transitions, never from robot motion itself.
             struct OdomTopologyTrigger {
                 std::mutex mutex;
                 bool initialized{false};
@@ -97,7 +111,7 @@ public:
                             trigger->last_marked = robot.p;
                         }
                     }
-                    if (mark) {
+                    if (mark && !config.dense_known_free) {
                         topology->markDirty(robot.p);
                     }
                 });
@@ -129,9 +143,35 @@ public:
         return map_->getMapConfig();
     }
 
-    void updateMap(const rog_map::PointCloud &cloud, const general_utils::Pose &pose) const
+    UpdateSnapshot updateMap(const rog_map::PointCloud &cloud,
+                             const general_utils::Pose &pose) const
     {
+        if (!map_) {
+            return latestUpdate();
+        }
         map_->updateMap(cloud, pose);
+
+        UpdateSnapshot snapshot;
+        snapshot.revision =
+            map_revision_.fetch_add(1, std::memory_order_acq_rel) + 1;
+        snapshot.changed_box_valid =
+            map_->getUpdatedBox(snapshot.changed_min, snapshot.changed_max);
+        {
+            std::lock_guard<std::mutex> lock(update_snapshot_mutex_);
+            latest_update_ = snapshot;
+        }
+        return snapshot;
+    }
+
+    std::uint64_t mapRevision() const
+    {
+        return map_revision_.load(std::memory_order_acquire);
+    }
+
+    UpdateSnapshot latestUpdate() const
+    {
+        std::lock_guard<std::mutex> lock(update_snapshot_mutex_);
+        return latest_update_;
     }
 
     /** Synchronize pending ROG discrete transitions into the sparse global map. */
@@ -551,9 +591,9 @@ public:
 private:
     /**
      * Delay the initial dirty-window seed until the first real odometry has
-     * initialized ROG's sliding-map origin. Otherwise unknown_as_free could
-     * create persistent nodes around the default origin before the robot's
-     * actual window exists.
+     * initialized ROG's sliding-map origin. Dense mode then samples only
+     * observed known-free cells; legacy unknown-as-free mode is likewise
+     * prevented from creating nodes around the default origin.
      */
     bool seedTopologyFromCurrentWindow() const
     {
@@ -567,6 +607,12 @@ private:
         bool expected = false;
         if (topology_seeded_.compare_exchange_strong(
                 expected, true, std::memory_order_acq_rel)) {
+            if (topology_graph_->config().dense_known_free) {
+                // Dense mode persists map transitions while state2state owns
+                // it. Seeding the full rolling window would enqueue hundreds
+                // of mostly empty regions and starve moving updates.
+                return true;
+            }
             rog_map::Vec3f box_min(-1.0e6, -1.0e6, -1.0e6);
             rog_map::Vec3f box_max(1.0e6, 1.0e6, 1.0e6);
             map_->boundBoxByLocalMap(box_min, box_max);
@@ -582,9 +628,15 @@ private:
     IncrementalTopologyGraph::Query makeTopologyQuery() const
     {
         IncrementalTopologyGraph::Query query;
-        const bool unknown_as_free = topology_graph_ &&
-                                     topology_graph_->config().unknown_as_free;
-        query.traversable = [this, unknown_as_free](const rog_map::Vec3f &position) {
+        const auto topology_config = topology_graph_
+            ? topology_graph_->config()
+            : IncrementalTopologyGraph::Config{};
+        const bool unknown_as_free =
+            topology_config.unknown_as_free &&
+            !topology_config.dense_known_free;
+        const bool dense_known_free = topology_config.dense_known_free;
+        query.traversable = [this, unknown_as_free, dense_known_free](
+                                const rog_map::Vec3f &position) {
             if (!map_ || !position.allFinite()) {
                 return false;
             }
@@ -595,13 +647,28 @@ private:
             }
             if (map_->insideLocalMap(position)) {
                 const rog_map::GridType raw = map_->getGridType(position);
+                const rog_map::GridType inflated =
+                    map_->getInfGridType(position);
+                const bool inflation_safe =
+                    inflated != rog_map::GridType::OCCUPIED &&
+                    inflated != rog_map::GridType::OUT_OF_MAP;
                 if (raw == rog_map::GridType::KNOWN_FREE) {
-                    const rog_map::GridType inflated = map_->getInfGridType(position);
-                    return inflated != rog_map::GridType::OCCUPIED &&
-                           inflated != rog_map::GridType::OUT_OF_MAP &&
+                    // Dense topology records observed free-space evidence.
+                    // The inflated layer is a planning/safety representation
+                    // and may conservatively mark an entire narrow flight
+                    // layer occupied. It must not erase valid raw-map memory.
+                    if (dense_known_free) {
+                        return true;
+                    }
+                    return inflation_safe &&
                            (unknown_as_free || inflated == rog_map::GridType::KNOWN_FREE);
                 }
                 if (raw == rog_map::GridType::OCCUPIED) {
+                    return false;
+                }
+                if (dense_known_free) {
+                    // Never promote UNKNOWN via lattice proximity. Every
+                    // stored dense node must lie in a raw KNOWN_FREE voxel.
                     return false;
                 }
                 // This option is explicit because ordinary state2state may be
@@ -609,9 +676,7 @@ private:
                 // to the current local map; unseen global space is never
                 // promoted to persistent free space.
                 if (unknown_as_free) {
-                    const rog_map::GridType inflated = map_->getInfGridType(position);
-                    return inflated != rog_map::GridType::OCCUPIED &&
-                           inflated != rog_map::GridType::OUT_OF_MAP;
+                    return inflation_safe;
                 }
             }
             return boundary_map_ &&
@@ -633,5 +698,8 @@ private:
     IncrementalTopologyGraph::Ptr topology_graph_{
         std::make_shared<IncrementalTopologyGraph>()};
     mutable std::atomic<bool> topology_seeded_{false};
+    mutable std::atomic<std::uint64_t> map_revision_{0};
+    mutable std::mutex update_snapshot_mutex_;
+    mutable UpdateSnapshot latest_update_;
 };
 } // namespace general_planner
