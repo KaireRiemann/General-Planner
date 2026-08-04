@@ -41,6 +41,8 @@ namespace cost_functional_manager
         double guide_path_z_tube_radius{0.0};
         double guide_path_huber_delta{0.0};
         bool guide_path_time_gradient_en{false};
+        double weight_guide_z_lower{0.0};
+        double guide_z_lower_tolerance{0.0};
 
         void reset(const general_utils::PolyhedraH *h_polys_in,
                    const Eigen::VectorXi *h_poly_idx_in,
@@ -59,7 +61,9 @@ namespace cost_functional_manager
                    double guide_path_tube_radius_in = 0.0,
                    double guide_path_z_tube_radius_in = 0.0,
                    double guide_path_huber_delta_in = 0.0,
-                   bool guide_path_time_gradient_en_in = false)
+                   bool guide_path_time_gradient_en_in = false,
+                   double weight_guide_z_lower_in = 0.0,
+                   double guide_z_lower_tolerance_in = 0.0)
         {
             h_polys = h_polys_in;
             h_poly_idx = h_poly_idx_in;
@@ -79,6 +83,8 @@ namespace cost_functional_manager
             guide_path_z_tube_radius = std::max(0.0, guide_path_z_tube_radius_in);
             guide_path_huber_delta = std::max(0.0, guide_path_huber_delta_in);
             guide_path_time_gradient_en = guide_path_time_gradient_en_in;
+            weight_guide_z_lower = std::max(0.0, weight_guide_z_lower_in);
+            guide_z_lower_tolerance = std::max(0.0, guide_z_lower_tolerance_in);
         }
 
         void beginEvaluation(const std::vector<double> *times)
@@ -90,6 +96,7 @@ namespace cost_functional_manager
             guide_cost_log_ = 0.0;
             guide_max_abs_time_grad_ = 0.0;
             guide_out_of_time_range_samples_ = 0;
+            guide_z_lower_violation_ = 0.0;
         }
 
         const general_utils::VecDf &getPenaltyLog() const { return max_violation_; }
@@ -97,6 +104,7 @@ namespace cost_functional_manager
         double guideCostLog() const { return guide_cost_log_; }
         double guideMaxAbsTimeGrad() const { return guide_max_abs_time_grad_; }
         int guideOutOfTimeRangeSamples() const { return guide_out_of_time_range_samples_; }
+        double guideZLowerViolation() const { return guide_z_lower_violation_; }
         bool usesSampleCost() const { return false; }
 
         double evaluateIntegral(int logical_idx,
@@ -194,10 +202,13 @@ namespace cost_functional_manager
                                                                                  guide_path_time_gradient_en,
                                                                                  grad_pos,
                                                                                  gt,
+                                                                                 weight_guide_z_lower,
+                                                                                 guide_z_lower_tolerance,
                                                                                  &guide_integral_violation_,
                                                                                  &guide_cost_log_,
                                                                                  &guide_max_abs_time_grad_,
-                                                                                 &guide_out_of_time_range_samples_);
+                                                                                 &guide_out_of_time_range_samples_,
+                                                                                 &guide_z_lower_violation_);
             local_cost += cost_functional::accumulateVelocityBoundPenalty(v,
                                                                             magnitude_bounds(0) * magnitude_bounds(0),
                                                                             smooth_eps,
@@ -299,6 +310,7 @@ namespace cost_functional_manager
         mutable double guide_cost_log_{0.0};
         mutable double guide_max_abs_time_grad_{0.0};
         mutable int guide_out_of_time_range_samples_{0};
+        mutable double guide_z_lower_violation_{0.0};
     };
 
 }//namespace cost_functional_manager

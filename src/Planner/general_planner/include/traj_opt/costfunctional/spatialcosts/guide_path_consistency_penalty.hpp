@@ -108,12 +108,15 @@ namespace cost_functional
                                                         bool enable_time_gradient,
                                                         Vec3T &grad_position,
                                                         double &grad_time,
+                                                        double weight_z_lower = 0.0,
+                                                        double z_lower_tolerance = 0.0,
                                                         double *max_violation = nullptr,
                                                         double *cost_log = nullptr,
                                                         double *max_abs_time_grad = nullptr,
-                                                        int *out_of_time_range_samples = nullptr)
+                                                        int *out_of_time_range_samples = nullptr,
+                                                        double *max_z_lower_violation = nullptr)
     {
-        if (weight <= 0.0 || !position.allFinite())
+        if ((weight <= 0.0 && weight_z_lower <= 0.0) || !position.allFinite())
         {
             return 0.0;
         }
@@ -136,7 +139,9 @@ namespace cost_functional
         const Vec3T diff = position - ref_position;
         Vec3T guide_grad = Vec3T::Zero();
         lateral_tube_radius = std::max(0.0, lateral_tube_radius);
-        vertical_tube_radius = std::max(0.0, vertical_tube_radius);
+        // Retained in the API for existing lateral-guide callers. Vertical
+        // tracking is now handled exclusively by the one-sided z term below.
+        (void)vertical_tube_radius;
         huber_delta = std::max(0.0, huber_delta);
 
         const double tangent_xy_norm =
@@ -165,16 +170,21 @@ namespace cost_functional
             guide_grad.y() += lateral_grad_excess * lateral_y / lateral_norm;
         }
 
-        const double vertical_error = diff.z();
-        const double vertical_excess = std::abs(vertical_error) - vertical_tube_radius;
-        double vertical_grad_excess = 0.0;
-        cost += robustTubeCost(vertical_excess,
-                               weight,
+        // A guide is allowed to climb above its reference to clear an obstacle,
+        // but it must not sink below the reference by more than the configured
+        // tolerance. This is intentionally one-sided.
+        const double z_lower_shortfall =
+            ref_position.z() - position.z() - std::max(0.0, z_lower_tolerance);
+        double z_lower_grad_excess = 0.0;
+        cost += robustTubeCost(z_lower_shortfall,
+                               weight_z_lower,
                                huber_delta,
-                               vertical_grad_excess);
-        if (vertical_grad_excess > 0.0)
+                               z_lower_grad_excess);
+        if (z_lower_grad_excess > 0.0)
         {
-            guide_grad.z() += vertical_grad_excess * (vertical_error >= 0.0 ? 1.0 : -1.0);
+            // d(ref_z - z - tolerance) / dz = -1. A descent step therefore
+            // raises z, exactly matching the lower-bound semantics.
+            guide_grad.z() -= z_lower_grad_excess;
         }
 
         grad_position += guide_grad;
@@ -195,8 +205,12 @@ namespace cost_functional
         if (max_violation != nullptr)
         {
             *max_violation = std::max(*max_violation,
-                                      std::max(std::max(0.0, lateral_excess),
-                                               std::max(0.0, vertical_excess)));
+                                      std::max(0.0, lateral_excess));
+        }
+        if (max_z_lower_violation != nullptr)
+        {
+            *max_z_lower_violation = std::max(*max_z_lower_violation,
+                                               std::max(0.0, z_lower_shortfall));
         }
         if (cost_log != nullptr)
         {

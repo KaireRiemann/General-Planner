@@ -97,6 +97,13 @@ general_planner:
     altitude_band: 0.25
     altitude_escape_enable: true
     altitude_escape_band: 3.5
+    # Fresh A* guides stop an optimized z dip from becoming the next guide
+    # prefix. The hard post-solve check uses the same one-sided 5 cm margin as
+    # the ExpTrajOpt continuous z-lower objective below.
+    z_lower_guard_enable: true
+    z_lower_guard_tolerance: 0.05
+    z_lower_guard_sample_dt: 0.02
+    replan_use_command_guide: false
     over_goal_guard_enable: true
     over_goal_tolerance: 0.25
     near_goal_radius: 2.0
@@ -192,7 +199,9 @@ traj_opt:
     guide_path_huber_delta: 0.40
     guide_path_time_gradient_en: false
     penna_guide_z_tube: 1.0e+7
-    guide_z_tube_radius: 0.00
+    # One-sided lower bound: z may rise for clearance, but may not fall more
+    # than 5 cm below the time-aligned frontend guide.
+    guide_z_tube_radius: 0.05
     penna_omg: 5.0e+6
     penna_thr: 2.0e+6
 
@@ -260,7 +269,7 @@ rog_map:
   frontier_extraction_en: false
 
   # Virtual ceil and ground
-  virtual_ceil_height: 2.5
+  virtual_ceil_height: 5.5
   virtual_ground_height: -0.1
 
   load_pcd_en: false

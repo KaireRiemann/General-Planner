@@ -76,7 +76,9 @@ public:
              double guide_path_tube_radius = 0.0,
              double guide_path_z_tube_radius = 0.0,
              double guide_path_huber_delta = 0.0,
-             bool guide_path_time_gradient_en = false)
+             bool guide_path_time_gradient_en = false,
+             double weight_guide_z_lower = 0.0,
+             double guide_z_lower_tolerance = 0.0)
   {
     h_polys_ = h_polys;
     h_poly_idx_ = h_poly_idx;
@@ -104,7 +106,9 @@ public:
                             guide_path_tube_radius,
                             guide_path_z_tube_radius,
                             guide_path_huber_delta,
-                            guide_path_time_gradient_en);
+                            guide_path_time_gradient_en,
+                            weight_guide_z_lower,
+                            guide_z_lower_tolerance);
 
     packed_ = PackedConstraintSet{};
     multipliers_.resize(0);
@@ -305,6 +309,11 @@ public:
   double guideIntegralViolation() const
   {
     return residual_manager_.guideIntegralViolation();
+  }
+
+  double guideZLowerViolation() const
+  {
+    return residual_manager_.guideZLowerViolation();
   }
   double guideCostLog() const { return residual_manager_.guideCostLog(); }
   double guideMaxAbsTimeGrad() const

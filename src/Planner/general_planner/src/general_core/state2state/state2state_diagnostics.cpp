@@ -43,7 +43,14 @@ namespace general_planner {
             << ";exp_full_z_start=" << d.exp_full.start
             << ";exp_full_z_end=" << d.exp_full.end
             << ";exp_full_z_min=" << d.exp_full.min
-            << ";exp_full_z_max=" << d.exp_full.max;
+            << ";exp_full_z_max=" << d.exp_full.max
+            << ";guide_reused_command_prefix=" << static_cast<int>(d.guide_reused_command_prefix)
+            << ";z_lower_guard_enabled=" << static_cast<int>(d.z_lower_guard_enabled)
+            << ";z_lower_guard_passed=" << static_cast<int>(d.z_lower_guard_passed)
+            << ";z_lower_guard_samples=" << d.z_lower_guard_samples
+            << ";z_lower_guard_tolerance=" << d.z_lower_guard_tolerance
+            << ";z_lower_guard_min_margin=" << d.z_lower_guard_min_margin
+            << ";z_lower_guard_max_violation=" << d.z_lower_guard_max_violation;
         return oss.str();
     }
 

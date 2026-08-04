@@ -618,7 +618,9 @@ ExpTrajOpt::ExpTrajOpt(const traj_opt::Config &cfg,
       cfg_.convex_hull_en && cfg_.convex_hull_flatness_en;
   opt_vars_.quadrotor_flatness = cfg_.quadrotot_flatness;
   opt_vars_.guide_z_tube_radius = std::max(0.0, cfg_.guide_z_tube_radius);
-  // Guide-path integral cost is disabled until its planner-level semantics are redesigned.
+  // The generic lateral guide integral remains disabled.  The dedicated z
+  // lower-bound term below is independently wired into every ExpTrajOpt
+  // evaluator and therefore cannot silently disappear with this legacy path.
   opt_vars_.weight_guide_integral = 0.0;
   opt_vars_.guide_path_tube_radius = std::max(0.0, cfg_.guide_path_tube_radius);
   opt_vars_.guide_path_z_tube_radius = std::max(0.0, cfg_.guide_path_z_tube_radius);
@@ -1332,6 +1334,8 @@ double ExpTrajOpt::evaluateMincoCost(const VecDf &x, VecDf &g)
         exp_packed_corrector_cost_manager_.guideOutOfTimeRangeSamples();
     opt_vars_.penalty_log.tail(7) =
         exp_packed_corrector_cost_manager_.getPenaltyLog().segment(1, 7);
+    opt_vars_.guide_z_tube_violation =
+        exp_packed_corrector_cost_manager_.guideZLowerViolation();
   }
   else if (opt_vars_.convex_hull_enabled)
   {
@@ -1347,6 +1351,8 @@ double ExpTrajOpt::evaluateMincoCost(const VecDf &x, VecDf &g)
         exp_convex_cost_manager_.guideOutOfTimeRangeSamples();
     opt_vars_.penalty_log.tail(7) =
         exp_convex_cost_manager_.getPenaltyLog().segment(1, 7);
+    opt_vars_.guide_z_tube_violation =
+        exp_convex_cost_manager_.guideZLowerViolation();
   }
   else
   {
@@ -1358,8 +1364,8 @@ double ExpTrajOpt::evaluateMincoCost(const VecDf &x, VecDf &g)
         exp_cost_manager_.guideOutOfTimeRangeSamples();
     opt_vars_.penalty_log.tail(7) =
         exp_cost_manager_.getPenaltyLog().segment(1, 7);
+    opt_vars_.guide_z_tube_violation = exp_cost_manager_.guideZLowerViolation();
   }
-  opt_vars_.guide_z_tube_violation = 0.0;
   opt_vars_.penalty_log(0) = optimizer_.lastEnergyCost();
   opt_vars_.penalty_log(5) = std::max({opt_vars_.penalty_log(5),
                                        opt_vars_.guide_integral_violation});
@@ -1849,7 +1855,9 @@ double ExpTrajOpt::optimize(Trajectory &traj, double rel_cost_tol)
                           opt_vars_.guide_path_tube_radius,
                           opt_vars_.guide_path_z_tube_radius,
                           opt_vars_.guide_path_huber_delta,
-                          opt_vars_.guide_path_time_gradient_en);
+                          opt_vars_.guide_path_time_gradient_en,
+                          opt_vars_.weight_guide_z_tube,
+                          opt_vars_.guide_z_tube_radius);
 
   exp_convex_cost_manager_.reset(&opt_vars_.h_polytopes,
                                  &opt_vars_.h_poly_idx,
@@ -1868,7 +1876,9 @@ double ExpTrajOpt::optimize(Trajectory &traj, double rel_cost_tol)
                                  opt_vars_.guide_path_tube_radius,
                                  opt_vars_.guide_path_z_tube_radius,
                                  opt_vars_.guide_path_huber_delta,
-                                 opt_vars_.guide_path_time_gradient_en);
+                                 opt_vars_.guide_path_time_gradient_en,
+                                 opt_vars_.weight_guide_z_tube,
+                                 opt_vars_.guide_z_tube_radius);
   exp_packed_corrector_cost_manager_.reset(
       &opt_vars_.h_polytopes,
       &opt_vars_.h_poly_idx,
@@ -1887,7 +1897,9 @@ double ExpTrajOpt::optimize(Trajectory &traj, double rel_cost_tol)
       opt_vars_.guide_path_tube_radius,
       opt_vars_.guide_path_z_tube_radius,
       opt_vars_.guide_path_huber_delta,
-      opt_vars_.guide_path_time_gradient_en);
+      opt_vars_.guide_path_time_gradient_en,
+      opt_vars_.weight_guide_z_tube,
+      opt_vars_.guide_z_tube_radius);
   opt_vars_.convex_hull_phase2_objective_active = false;
   opt_vars_.phase2_triggered = false;
   opt_vars_.phase2_packed_constraints = 0;

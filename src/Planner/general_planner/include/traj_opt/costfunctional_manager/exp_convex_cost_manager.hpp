@@ -149,7 +149,9 @@ public:
              double guide_path_tube_radius = 0.0,
              double guide_path_z_tube_radius = 0.0,
              double guide_path_huber_delta = 0.0,
-             bool guide_path_time_gradient_en = false)
+             bool guide_path_time_gradient_en = false,
+             double weight_guide_z_lower = 0.0,
+             double guide_z_lower_tolerance = 0.0)
   {
     h_polys_ = h_polys;
     h_poly_idx_ = h_poly_idx;
@@ -188,7 +190,9 @@ public:
                                  guide_path_tube_radius,
                                  guide_path_z_tube_radius,
                                  guide_path_huber_delta,
-                                 guide_path_time_gradient_en);
+                                 guide_path_time_gradient_en,
+                                 weight_guide_z_lower,
+                                 guide_z_lower_tolerance);
 
     discrete_attractor_active_ =
         penalty_weights_.size() > 4 && penalty_weights_(4) > 0.0 &&
@@ -200,7 +204,8 @@ public:
     const bool thrust_active =
         residual_weights.size() > 6 &&
         residual_weights(6) > 0.0;
-    const bool guide_active = weight_guide_integral > 0.0;
+    const bool guide_active = weight_guide_integral > 0.0 ||
+                              weight_guide_z_lower > 0.0;
     const bool swarm_active =
         swarm_trajs != nullptr &&
         ((swarm_config.enable && swarm_config.weight > 0.0) ||
@@ -314,6 +319,11 @@ public:
   double guideIntegralViolation() const
   {
     return residual_cost_manager_.guideIntegralViolation();
+  }
+
+  double guideZLowerViolation() const
+  {
+    return residual_cost_manager_.guideZLowerViolation();
   }
 
   double guideCostLog() const
