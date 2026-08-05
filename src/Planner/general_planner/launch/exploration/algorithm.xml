@@ -22,6 +22,7 @@
   <arg name="cloud_odom_mode" default="approximate_sync" />
   <arg name="latest_odom_timeout" default="0.5" />
   <arg name="max_cloud_age" default="0.5" />
+  <arg name="task_control_enable" default="true" />
   <arg name="rog_map_enable" default="true" />
   <arg name="rog_map_config" default="$(find general_planner)/config/exploration_rog_map.yaml" />
   <arg name="view_graph" default="false" />
@@ -55,6 +56,10 @@
     <param name="fsm/cloud_odom_mode" value="$(arg cloud_odom_mode)" type="string" />
     <param name="fsm/latest_odom_timeout" value="$(arg latest_odom_timeout)" type="double" />
     <param name="fsm/max_cloud_age" value="$(arg max_cloud_age)" type="double" />
+    <param name="fsm/task_control_enable" value="$(arg task_control_enable)" type="bool" />
+    <param name="fsm/task_status_topic" value="/planning/exploration/status" type="string" />
+    <param name="fsm/execution_enabled_topic"
+           value="/planning/exploration/command_enabled" type="string" />
 
     <!-- Exploration manager -->
     <param name="exploration/original_frontend_compatibility" value="$(arg original_frontend_compatibility)" type="bool" />

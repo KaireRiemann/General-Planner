@@ -32,6 +32,7 @@ FastExplorationFSM::~FastExplorationFSM() {
   battary_sub_.shutdown();
   raw_odom_sub_.shutdown();
   latest_cloud_sub_.shutdown();
+  task_command_sub_.shutdown();
 
   if (cloud_sub_)
     cloud_sub_->unsubscribe();
@@ -110,6 +111,10 @@ void FastExplorationFSM::FSMCallback(const ros::TimerEvent &e) {
   }
 
   case FINISH: {
+    if (task_control_enable_) {
+      beginPause("exploration finished", true);
+      break;
+    }
     // stopTraj();
     double collision_time = 0.0;
     bool safe = planner_manager_->checkTrajCollision(collision_time);
@@ -144,6 +149,26 @@ void FastExplorationFSM::FSMCallback(const ros::TimerEvent &e) {
     }
     break;
   }
+
+  case PAUSING: {
+    if (!pause_stop_issued_) {
+      pause_stop_issued_ = true;
+      stopTraj("task handover");
+    }
+    if (handoverSafe()) {
+      fd_->static_state_ = true;
+      transitState(PAUSED, "task handover safe");
+      ROS_INFO_STREAM("[exploration task] handover ready, task_id="
+                      << active_task_id_);
+    }
+    break;
+  }
+
+  case PAUSED:
+    // Keep cloud/odometry callbacks active so map and frontier maintenance do
+    // not stop while another task controller owns the vehicle.  Only the
+    // exploration tour/trajectory generation is suspended.
+    break;
 
   case PLAN_TRAJ: {
     if (!fd_->trigger_)
@@ -632,6 +657,14 @@ void FastExplorationFSM::init(ros::NodeHandle &nh,
            fp_->controlled_reorientation_enable_, true);
   nh.param("fsm/controlled_stop_min_speed",
            fp_->controlled_stop_min_speed_, 0.10);
+  nh.param("fsm/handover_slow_speed", fp_->handover_slow_speed_, 0.10);
+  nh.param("fsm/task_control_enable", task_control_enable_, false);
+  nh.param<string>("fsm/task_command_topic", task_command_topic_,
+                   "/planning/exploration/command");
+  nh.param<string>("fsm/task_status_topic", task_status_topic_,
+                   "/planning/exploration/status");
+  nh.param<string>("fsm/execution_enabled_topic", execution_enabled_topic_,
+                   "/planning/exploration/command_enabled");
   nh.param("fsm/stationary_hold_retry_interval",
            fp_->stationary_hold_retry_interval_, 0.75);
   nh.param("fsm/plan_failure_retry_delay",
@@ -651,6 +684,9 @@ void FastExplorationFSM::init(ros::NodeHandle &nh,
   fp_->max_odom_age_ = std::clamp(fp_->max_odom_age_, 0.1, 5.0);
   fp_->controlled_stop_min_speed_ =
       std::clamp(fp_->controlled_stop_min_speed_, 0.02, 0.30);
+  fp_->handover_slow_speed_ =
+      std::clamp(fp_->handover_slow_speed_, 0.02, 0.30);
+  handover_slow_speed_ = fp_->handover_slow_speed_;
   fp_->stationary_hold_retry_interval_ =
       std::clamp(fp_->stationary_hold_retry_interval_, 0.2, 5.0);
   fp_->plan_failure_retry_delay_ =
@@ -668,7 +704,8 @@ void FastExplorationFSM::init(ros::NodeHandle &nh,
   state_ = EXPL_STATE::INIT;
   fd_->have_odom_ = false;
   fd_->state_str_ = {"INIT",       "WAIT_TRIGGER", "PLAN_TRAJ", "CAUTION",
-                     "EXEC_TRAJ",  "REORIENT",     "FINISH",    "LAND"};
+                     "EXEC_TRAJ",  "REORIENT",     "PAUSING",   "PAUSED",
+                     "FINISH",     "LAND"};
   fd_->static_state_ = true;
   fd_->trigger_ = false;
   fd_->auto_triggered_ = false;
@@ -713,9 +750,16 @@ void FastExplorationFSM::init(ros::NodeHandle &nh,
         nh.subscribe(fp_->trigger_topic_, 1,
                      &FastExplorationFSM::navGoalTriggerCallback, this);
   }
+  if (task_control_enable_ && !task_command_topic_.empty()) {
+    task_command_sub_ = nh.subscribe(task_command_topic_, 10,
+                                     &FastExplorationFSM::taskCommandCallback,
+                                     this);
+  }
   ROS_INFO_STREAM("[exploration trigger] auto=" << fp_->auto_trigger_enable_
                   << " nav_goal_topic=" << fp_->trigger_topic_
-                  << " legacy_path_topic=" << fp_->legacy_trigger_topic_);
+                  << " legacy_path_topic=" << fp_->legacy_trigger_topic_
+                  << " task_control=" << task_control_enable_
+                  << " task_command_topic=" << task_command_topic_);
   replan_pub_ = nh.advertise<std_msgs::Empty>("/planning/replan", 10);
 
   heartbeat_pub_ = nh.advertise<std_msgs::Empty>("/planning/heartbeat", 10);
@@ -730,6 +774,14 @@ void FastExplorationFSM::init(ros::NodeHandle &nh,
   static_pub_ = nh.advertise<std_msgs::Bool>("/planning/static", 10);
   state_pub_ = nh.advertise<visualization_msgs::Marker>("/planning/state", 10);
   speed_pub_ = nh.advertise<visualization_msgs::Marker>("/planning/speed", 10);
+  if (!execution_enabled_topic_.empty()) {
+    execution_enabled_pub_ = nh.advertise<std_msgs::Bool>(
+        execution_enabled_topic_, 1, true);
+  }
+  if (task_control_enable_ && !task_status_topic_.empty()) {
+    task_status_pub_ = nh.advertise<std_msgs::String>(task_status_topic_, 10,
+                                                       true);
+  }
   string odom_topic, cloud_topic;
   nh.getParam("odometry_topic", odom_topic);
   nh.getParam("cloud_topic", cloud_topic);

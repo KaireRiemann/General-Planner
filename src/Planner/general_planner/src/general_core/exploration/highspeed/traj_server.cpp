@@ -2,6 +2,7 @@
 #include <nav_msgs/Odometry.h>
 #include <quadrotor_msgs/PositionCommand.h>
 #include <ros/ros.h>
+#include <std_msgs/Bool.h>
 #include <std_msgs/Empty.h>
 #include <traj_utils/PolyTraj.h>
 #include <visualization_msgs/Marker.h>
@@ -35,6 +36,7 @@ int traj_id = 0;
 bool receive_traj = false;
 bool position_hold_active = false;
 bool yaw_hold_active = false;
+bool execution_enabled = true;
 Eigen::Vector3d hold_pos = Eigen::Vector3d::Zero();
 double hold_yaw = 0.0;
 
@@ -64,6 +66,19 @@ std::pair<double, double> getYaw(double current_yaw, double t_cur)
 void heartbeatCallback(const std_msgs::EmptyConstPtr &)
 {
   heartbeat_time = ros::Time::now();
+}
+
+void executionEnabledCallback(const std_msgs::BoolConstPtr &msg)
+{
+  if (!msg)
+  {
+    return;
+  }
+  execution_enabled = msg->data;
+  if (!execution_enabled)
+  {
+    ROS_INFO("[highspeed_traj_server] exploration command output disabled");
+  }
 }
 
 void drawCmd(const Eigen::Vector3d &pos,
@@ -205,7 +220,8 @@ void publishCmd(const Eigen::Vector3d &pos,
 
 void cmdTimerCallback(const ros::TimerEvent &)
 {
-  if (heartbeat_time.toSec() <= 1.0e-5 || !receive_traj || !traj)
+  if (!execution_enabled || heartbeat_time.toSec() <= 1.0e-5 ||
+      !receive_traj || !traj)
   {
     return;
   }
@@ -349,7 +365,12 @@ int main(int argc, char **argv)
   ros::NodeHandle nh("~");
 
   std::string odom_topic;
+  std::string pos_cmd_topic;
+  std::string execution_enabled_topic;
   nh.param<std::string>("odometry_topic", odom_topic, "/lidar_slam/odom");
+  nh.param<std::string>("pos_cmd_topic", pos_cmd_topic, "/planning/pos_cmd");
+  nh.param<std::string>("execution_enabled_topic", execution_enabled_topic,
+                        "/planning/exploration/command_enabled");
   nh.param("replan_time", replan_time, 0.1);
   nh.param("heartbeat_timeout", heartbeat_timeout, 1.5);
   heartbeat_timeout = std::max(0.5, heartbeat_timeout);
@@ -357,18 +378,26 @@ int main(int argc, char **argv)
   ros::Subscriber poly_traj_sub = nh.subscribe("/planning/trajectory", 10, polyTrajCallback);
   ros::Subscriber poly_yaw_traj_sub = nh.subscribe("/planning/yaw_trajectory", 10, polyYawTrajCallback);
   ros::Subscriber heartbeat_sub = nh.subscribe("/planning/heartbeat", 10, heartbeatCallback);
+  ros::Subscriber execution_enabled_sub;
+  if (!execution_enabled_topic.empty())
+  {
+    execution_enabled_sub = nh.subscribe(execution_enabled_topic, 1,
+                                         executionEnabledCallback);
+  }
   ros::Subscriber odom_sub = nh.subscribe(odom_topic, 50, odomCallback);
   ros::Subscriber replan_sub = nh.subscribe("/planning/replan", 10, replanCallback);
   ros::Subscriber new_sub = nh.subscribe("/planning/new", 10, newCallback);
 
-  pos_cmd_pub = nh.advertise<quadrotor_msgs::PositionCommand>("/planning/pos_cmd", 50);
+  pos_cmd_pub = nh.advertise<quadrotor_msgs::PositionCommand>(pos_cmd_topic, 50);
   cmd_vis_pub = nh.advertise<visualization_msgs::Marker>("/planning/position_cmd_vis", 10);
   traj_pub = nh.advertise<visualization_msgs::Marker>("/planning/travel_traj", 10);
 
   ros::Timer vis_timer = nh.createTimer(ros::Duration(0.25), visTimerCallback);
   ros::Timer cmd_timer = nh.createTimer(ros::Duration(0.01), cmdTimerCallback);
 
-  ROS_INFO("[highspeed_traj_server] ready. odom=%s", odom_topic.c_str());
+  ROS_INFO("[highspeed_traj_server] ready. odom=%s pos_cmd=%s enabled_topic=%s",
+           odom_topic.c_str(), pos_cmd_topic.c_str(),
+           execution_enabled_topic.c_str());
   ros::spin();
   return 0;
 }

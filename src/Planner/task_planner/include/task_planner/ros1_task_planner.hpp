@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <mutex>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -23,6 +25,8 @@ namespace task_planner {
         TaskPlannerConfig cfg_;
         ros::NodeHandle nh_;
         ros::Publisher task_mode_pub_;
+        ros::Publisher navigation_task_mode_pub_;
+        ros::Publisher exploration_command_pub_;
         ros::Publisher goal_pub_;
         ros::Publisher tracking_target_pub_;
         ros::Publisher tracking_target_path_pub_;
@@ -33,6 +37,7 @@ namespace task_planner {
         ros::Subscriber click_sub_;
         ros::Subscriber mavros_sub_;
         ros::Subscriber odom_sub_;
+        ros::Subscriber exploration_status_sub_;
         ros::Timer task_timer_;
 
         Eigen::Vector3d cur_position_{Eigen::Vector3d::Zero()};
@@ -45,6 +50,11 @@ namespace task_planner {
         double system_start_time_{0.0};
         double task_start_time_{0.0};
         double last_pub_time_{0.0};
+        mutable std::mutex exploration_status_mutex_;
+        std::string exploration_status_;
+        std::string exploration_status_task_id_;
+        std::string exploration_running_task_id_;
+        bool exploration_task_started_{false};
 
         void odomCallback(const nav_msgs::OdometryConstPtr &msg) {
             had_odom_ = true;
@@ -52,6 +62,29 @@ namespace task_planner {
             cur_position_ = Eigen::Vector3d(msg->pose.pose.position.x,
                                             msg->pose.pose.position.y,
                                             msg->pose.pose.position.z);
+        }
+
+        void explorationStatusCallback(const std_msgs::StringConstPtr &msg) {
+            if (!msg) {
+                return;
+            }
+            std::istringstream stream(msg->data);
+            std::string status;
+            stream >> status;
+            std::string task_id;
+            std::getline(stream, task_id);
+            const auto first = task_id.find_first_not_of(" \t");
+            task_id = first == std::string::npos ? std::string() : task_id.substr(first);
+            if (status.empty() || task_id.empty()) {
+                return;
+            }
+            std::lock_guard<std::mutex> lock(exploration_status_mutex_);
+            exploration_status_ = status;
+            exploration_status_task_id_ = task_id;
+            if (status == "RUNNING") {
+                exploration_task_started_ = true;
+                exploration_running_task_id_ = task_id;
+            }
         }
 
         void rvizClickCallback(const geometry_msgs::PoseStampedConstPtr &) {
@@ -178,6 +211,22 @@ namespace task_planner {
             return (task.position - cur_position_).norm() < task.switch_dis;
         }
 
+        std::string currentTaskKey() const {
+            if (task_id_ < 0 || task_id_ >= static_cast<int>(cfg_.tasks.size())) {
+                return std::string();
+            }
+            const auto &task = cfg_.tasks[static_cast<size_t>(task_id_)];
+            const std::string logical_id = task.region_id.empty() ? task.name : task.region_id;
+            return std::to_string(task_id_) + ":" + logical_id;
+        }
+
+        bool explorationTaskSucceeded() const {
+            std::lock_guard<std::mutex> lock(exploration_status_mutex_);
+            return exploration_task_started_ && exploration_status_ == "SUCCEEDED" &&
+                   exploration_running_task_id_ == currentTaskKey() &&
+                   exploration_status_task_id_ == currentTaskKey();
+        }
+
         double trackingPathDuration(const ManagedTask &task) const {
             if (task.waypoints.size() < 2) {
                 return std::max(0.0, task.hold_duration);
@@ -199,6 +248,12 @@ namespace task_planner {
             if (task.mode == ManagedTaskMode::PERCHING) {
                 return task.hold_duration > 0.0 && elapsed > task.hold_duration;
             }
+            if (task.mode == ManagedTaskMode::WAIT) {
+                return task.hold_duration >= 0.0 && elapsed >= task.hold_duration;
+            }
+            if (task.mode == ManagedTaskMode::EXPLORATION) {
+                return explorationTaskSucceeded();
+            }
             return false;
         }
 
@@ -207,6 +262,11 @@ namespace task_planner {
             task_start_time_ = ros::Time::now().toSec();
             last_pub_time_ = 0.0;
             new_task_ = true;
+            {
+                std::lock_guard<std::mutex> lock(exploration_status_mutex_);
+                exploration_task_started_ = false;
+                exploration_running_task_id_.clear();
+            }
             if (task_id_ >= 0 && task_id_ < static_cast<int>(cfg_.tasks.size())) {
                 const auto &task = cfg_.tasks[static_cast<size_t>(task_id_)];
                 std::cout << GREEN << " -- [TASK_PLANNER] Switch to task " << task_id_
@@ -232,6 +292,18 @@ namespace task_planner {
             std_msgs::String msg;
             msg.data = taskModeToString(task.mode);
             task_mode_pub_.publish(msg);
+            if ((task.mode == ManagedTaskMode::STATE_TO_STATE ||
+                 task.mode == ManagedTaskMode::TRACKING ||
+                 task.mode == ManagedTaskMode::PERCHING) &&
+                cfg_.navigation_task_mode_topic != cfg_.task_mode_topic) {
+                navigation_task_mode_pub_.publish(msg);
+            }
+        }
+
+        void publishExplorationCommand(const ManagedTask &) {
+            std_msgs::String command;
+            command.data = "START " + currentTaskKey();
+            exploration_command_pub_.publish(command);
         }
 
         void publishStateToStateGoal(const ManagedTask &task) {
@@ -349,6 +421,8 @@ namespace task_planner {
                 publishTrackingTarget(task, elapsed);
             } else if (task.mode == ManagedTaskMode::PERCHING) {
                 publishPerchingSurface(task, elapsed);
+            } else if (task.mode == ManagedTaskMode::EXPLORATION) {
+                publishExplorationCommand(task);
             }
         }
 
@@ -444,7 +518,16 @@ namespace task_planner {
             }
 
             odom_sub_ = nh_.subscribe(cfg_.odom_topic, 10, &TaskPlanner::odomCallback, this);
+            exploration_status_sub_ = nh_.subscribe(
+                cfg_.exploration_status_topic, 10,
+                &TaskPlanner::explorationStatusCallback, this);
             task_mode_pub_ = nh_.advertise<std_msgs::String>(cfg_.task_mode_topic, 10, true);
+            if (cfg_.navigation_task_mode_topic != cfg_.task_mode_topic) {
+                navigation_task_mode_pub_ = nh_.advertise<std_msgs::String>(
+                    cfg_.navigation_task_mode_topic, 10, true);
+            }
+            exploration_command_pub_ = nh_.advertise<std_msgs::String>(
+                cfg_.exploration_command_topic, 10);
             goal_pub_ = nh_.advertise<geometry_msgs::PoseStamped>(cfg_.goal_pub_topic, 10);
             tracking_target_pub_ = nh_.advertise<nav_msgs::Odometry>(cfg_.tracking_target_odom_topic, 10);
             tracking_target_path_pub_ = nh_.advertise<nav_msgs::Path>(cfg_.tracking_target_path_topic, 1, true);

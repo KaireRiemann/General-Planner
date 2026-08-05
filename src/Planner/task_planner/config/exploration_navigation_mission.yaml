@@ -1,0 +1,45 @@
+task_planner:
+  # A single mission mode topic controls the command mux.  Point-to-point
+  # modes are additionally relayed to the navigation FSM on the dedicated
+  # navigation_task_mode_topic, so the navigation FSM never owns exploration.
+  start_trigger_type: 0
+  start_program_delay: 1.0
+  odom_timeout: 0.5
+  publish_dt: 0.2
+  switch_dis: 0.7
+  frame_id: "world"
+  odom_topic: "/lidar_slam/odom"
+  task_mode_topic: "/mission/task_mode"
+  navigation_task_mode_topic: "/planning/navigation_task_mode"
+  goal_pub_topic: "/planning/click_goal"
+  exploration_command_topic: "/planning/exploration/command"
+  exploration_status_topic: "/planning/exploration/status"
+  path_pub_topic: "/task_planner/path"
+  marker_topic: "mkr"
+
+  # All listed exploration regions must initially be included in the
+  # exploration_node bounding-box union for this first delivery. Region ids
+  # identify lifecycle/status only; live replacement of LIO boxes belongs to
+  # the next world-model phase.
+  tasks:
+    - name: "navigate_to_region_a"
+      mode: "state2state"
+      position: [2.0, 0.0, 1.5]
+      switch_dis: 0.7
+
+    - name: "explore_region_a"
+      mode: "exploration"
+      region_id: "region_a"
+
+    - name: "post_region_a_wait"
+      mode: "wait"
+      hold_duration: 2.0
+
+    - name: "navigate_to_region_b"
+      mode: "state2state"
+      position: [10.0, 0.0, 1.5]
+      switch_dis: 0.7
+
+    - name: "explore_region_b"
+      mode: "exploration"
+      region_id: "region_b"

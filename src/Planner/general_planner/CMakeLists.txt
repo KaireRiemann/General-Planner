@@ -187,6 +187,17 @@ target_link_libraries(highspeed_traj_server
         ${THIRD_PARTY}
 )
 
+add_executable(mission_command_mux
+        ${GENERAL_PLANNER_EXPLORATION_DIR}/mission_command_mux.cpp
+)
+add_dependencies(mission_command_mux
+        ${${PROJECT_NAME}_EXPORTED_TARGETS}
+        ${catkin_EXPORTED_TARGETS}
+)
+target_link_libraries(mission_command_mux
+        ${THIRD_PARTY}
+)
+
 add_executable(coverage_guidance_self_test
         ${GENERAL_PLANNER_EXPLORATION_UTILS_DIR}/coverage_guidance/coverage_guidance_self_test.cpp
 )

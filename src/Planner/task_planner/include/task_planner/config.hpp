@@ -23,7 +23,9 @@ namespace task_planner {
     enum class ManagedTaskMode {
         STATE_TO_STATE = 0,
         TRACKING = 1,
-        PERCHING = 2
+        PERCHING = 2,
+        WAIT = 3,
+        EXPLORATION = 4
     };
 
     inline std::string normalizeTaskMode(std::string mode) {
@@ -39,6 +41,12 @@ namespace task_planner {
         if (mode == "perch" || mode == "perching") {
             return "perching";
         }
+        if (mode == "wait" || mode == "hold" || mode == "idle") {
+            return "wait";
+        }
+        if (mode == "explore" || mode == "exploration") {
+            return "exploration";
+        }
         return "state2state";
     }
 
@@ -50,6 +58,12 @@ namespace task_planner {
         if (normalized == "perching") {
             return ManagedTaskMode::PERCHING;
         }
+        if (normalized == "wait") {
+            return ManagedTaskMode::WAIT;
+        }
+        if (normalized == "exploration") {
+            return ManagedTaskMode::EXPLORATION;
+        }
         return ManagedTaskMode::STATE_TO_STATE;
     }
 
@@ -59,6 +73,10 @@ namespace task_planner {
                 return "tracking";
             case ManagedTaskMode::PERCHING:
                 return "perching";
+            case ManagedTaskMode::WAIT:
+                return "wait";
+            case ManagedTaskMode::EXPLORATION:
+                return "exploration";
             case ManagedTaskMode::STATE_TO_STATE:
             default:
                 return "state2state";
@@ -78,6 +96,7 @@ namespace task_planner {
         double speed{1.0};
         double hold_duration{-1.0};
         bool loop{false};
+        std::string region_id;
         vec_E<Vec3f> waypoints;
     };
 
@@ -92,6 +111,9 @@ namespace task_planner {
         std::string odom_topic{"/lidar_slam/odom"};
         std::string goal_pub_topic{"/planning/click_goal"};
         std::string task_mode_topic{"/planning/task_mode"};
+        std::string navigation_task_mode_topic{"/planning/task_mode"};
+        std::string exploration_command_topic{"/planning/exploration/command"};
+        std::string exploration_status_topic{"/planning/exploration/status"};
         std::string tracking_target_odom_topic{"/tracking/target_odom"};
         std::string tracking_target_path_topic{"/tracking/target_path"};
         std::string tracking_target_prediction_topic{"/tracking/target_prediction"};
@@ -124,6 +146,12 @@ namespace task_planner {
             odom_topic = readScalar(root, "odom_topic", odom_topic);
             goal_pub_topic = readScalar(root, "goal_pub_topic", goal_pub_topic);
             task_mode_topic = readScalar(root, "task_mode_topic", task_mode_topic);
+            navigation_task_mode_topic =
+                readScalar(root, "navigation_task_mode_topic", navigation_task_mode_topic);
+            exploration_command_topic =
+                readScalar(root, "exploration_command_topic", exploration_command_topic);
+            exploration_status_topic =
+                readScalar(root, "exploration_status_topic", exploration_status_topic);
             tracking_target_odom_topic =
                 readScalar(root, "tracking_target_odom_topic", tracking_target_odom_topic);
             tracking_target_path_topic =
@@ -242,6 +270,7 @@ namespace task_planner {
             task.speed = readScalar(node, "speed", task.speed);
             task.hold_duration = readScalar(node, "hold_duration", task.hold_duration);
             task.loop = readScalar(node, "loop", task.loop);
+            task.region_id = readScalar(node, "region_id", task.region_id);
             task.waypoints = readVec3List(node["waypoints"]);
             if (!task.waypoints.empty()) {
                 task.position = task.waypoints.front();

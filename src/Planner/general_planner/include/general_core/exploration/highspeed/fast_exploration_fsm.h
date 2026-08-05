@@ -25,6 +25,7 @@
 #include <sensor_msgs/BatteryState.h>
 #include <std_msgs/Bool.h>
 #include <std_msgs/Empty.h>
+#include <std_msgs/String.h>
 #include <string>
 #include <vector>
 #include <visualization_msgs/Marker.h>
@@ -49,6 +50,8 @@ enum EXPL_STATE {
   CAUTION,
   EXEC_TRAJ,
   REORIENT,
+  PAUSING,
+  PAUSED,
   FINISH,
   LAND
 };
@@ -91,9 +94,17 @@ private:
   ros::NodeHandle node_;
   ros::Timer exec_timer_, global_path_update_timer_;
   ros::Subscriber trigger_sub_, nav_goal_trigger_sub_, map_update_sub_,
-      battary_sub_, raw_odom_sub_, latest_cloud_sub_;
+      battary_sub_, raw_odom_sub_, latest_cloud_sub_, task_command_sub_;
   ros::Publisher stop_pub_, new_pub_, replan_pub_, poly_traj_pub_, heartbeat_pub_, time_cost_pub_, poly_yaw_traj_pub_, static_pub_, state_pub_,
-  speed_pub_, land_pub_;
+  speed_pub_, land_pub_, task_status_pub_, execution_enabled_pub_;
+  bool task_control_enable_{false};
+  bool pause_stop_issued_{false};
+  bool completion_pending_{false};
+  std::string active_task_id_;
+  std::string task_command_topic_;
+  std::string task_status_topic_;
+  std::string execution_enabled_topic_;
+  double handover_slow_speed_{0.10};
   double total_time_;
 
   /*cloud odom callback*/
@@ -127,7 +138,13 @@ private:
   void globalPathUpdateCallback(const ros::TimerEvent &e);
   void triggerCallback(const nav_msgs::PathConstPtr &msg);
   void navGoalTriggerCallback(const geometry_msgs::PoseStampedConstPtr &msg);
+  void taskCommandCallback(const std_msgs::StringConstPtr &msg);
   void acceptManualTrigger(const string &source);
+  void startExplorationTask(const std::string &task_id,
+                            const std::string &source);
+  void beginPause(const std::string &reason, bool completed);
+  bool handoverSafe() const;
+  void publishTaskStatus();
   void odometryCallback(const nav_msgs::OdometryConstPtr &msg);
   void stopTraj(const string &reason);
 

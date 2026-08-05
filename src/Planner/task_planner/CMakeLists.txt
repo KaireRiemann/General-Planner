@@ -68,6 +68,17 @@ target_link_libraries(task_planner
         ${THIRD_PARTY}
         )
 
+add_executable(mission_task_config_self_test
+        Tests/mission_task_config_self_test.cpp
+        )
+add_dependencies(mission_task_config_self_test
+        ${${PROJECT_NAME}_EXPORTED_TARGETS}
+        ${catkin_EXPORTED_TARGETS}
+        )
+target_link_libraries(mission_task_config_self_test
+        ${THIRD_PARTY}
+        )
+
 add_executable(swarm_task_source
         Apps/swarm_task_source.cpp
         )

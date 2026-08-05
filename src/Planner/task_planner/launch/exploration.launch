@@ -40,6 +40,9 @@
   <arg name="latest_odom_timeout" default="0.5" />
   <arg name="max_cloud_age" default="0.5" />
   <arg name="heartbeat_timeout" default="1.5" />
+  <!-- Finish releases /planning/pos_cmd so an upper-layer controller may
+       start state2state or another task without stopping exploration_node. -->
+  <arg name="task_control_enable" default="true" />
 
   <arg name="original_frontend_compatibility" default="true" />
   <arg name="use_lkh" default="true" />
@@ -104,6 +107,12 @@
     <param name="fsm/latest_odom_timeout"
            value="$(arg latest_odom_timeout)" type="double" />
     <param name="fsm/max_cloud_age" value="$(arg max_cloud_age)" type="double" />
+    <param name="fsm/task_control_enable"
+           value="$(arg task_control_enable)" type="bool" />
+    <param name="fsm/task_status_topic"
+           value="/planning/exploration/status" type="string" />
+    <param name="fsm/execution_enabled_topic"
+           value="/planning/exploration/command_enabled" type="string" />
 
     <param name="exploration/original_frontend_compatibility"
            value="$(arg original_frontend_compatibility)" type="bool" />
@@ -125,6 +134,8 @@
     <param name="odometry_topic" value="$(arg odom_topic)" type="string" />
     <param name="replan_time" value="$(arg fsm_replan_time)" type="double" />
     <param name="heartbeat_timeout" value="$(arg heartbeat_timeout)" type="double" />
+    <param name="execution_enabled_topic"
+           value="/planning/exploration/command_enabled" type="string" />
   </node>
 
   <group if="$(arg rviz)">

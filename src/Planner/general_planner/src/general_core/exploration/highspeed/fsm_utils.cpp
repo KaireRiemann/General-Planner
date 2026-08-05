@@ -1,6 +1,7 @@
 #include <general_core/exploration/highspeed/expl_data.h>
 #include <general_core/exploration/highspeed/fast_exploration_fsm.h>
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdint>
 #include <iomanip>
@@ -92,6 +93,14 @@ vector<Eigen::Vector3d> truncatePathHorizon(
 void FastExplorationFSM::pubState() {
   std_msgs::Empty heartbeat_msg;
   heartbeat_pub_.publish(heartbeat_msg);
+  if (execution_enabled_pub_) {
+    // A PAUSED exploration node must keep mapping alive but must no longer
+    // compete for the vehicle command topic.  PAUSING remains enabled until
+    // the braking trajectory and the handover safety gate have completed.
+    std_msgs::Bool execution_enabled;
+    execution_enabled.data = state_ != PAUSED;
+    execution_enabled_pub_.publish(execution_enabled);
+  }
   std_msgs::Bool msg;
   msg.data = fd_->static_state_;
   static_pub_.publish(msg);
@@ -140,6 +149,7 @@ void FastExplorationFSM::pubState() {
   speed_marker.header.stamp = state_marker.header.stamp;
 
   speed_pub_.publish(speed_marker);
+  publishTaskStatus();
 }
 
 void FastExplorationFSM::resetFinishGate(const string &reason) {
@@ -802,22 +812,143 @@ void FastExplorationFSM::navGoalTriggerCallback(
 }
 
 void FastExplorationFSM::acceptManualTrigger(const string &source) {
-  if (state_ != INIT && state_ != WAIT_TRIGGER) {
-    ROS_WARN_STREAM("[exploration trigger] ignore " << source
+  startExplorationTask("manual", source);
+}
+
+void FastExplorationFSM::taskCommandCallback(
+    const std_msgs::StringConstPtr &msg) {
+  if (!task_control_enable_ || !msg) {
+    return;
+  }
+
+  std::istringstream stream(msg->data);
+  std::string command;
+  stream >> command;
+  std::string task_id;
+  std::getline(stream, task_id);
+  const auto first = task_id.find_first_not_of(" \t");
+  task_id = first == std::string::npos ? std::string() : task_id.substr(first);
+  std::transform(command.begin(), command.end(), command.begin(),
+                 [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
+
+  if (command == "START" || command == "RESUME") {
+    if (task_id.empty()) {
+      ROS_WARN("[exploration task] ignore START/RESUME without task id");
+      return;
+    }
+    startExplorationTask(task_id, "task command " + command);
+    return;
+  }
+
+  if (command == "PAUSE" || command == "CANCEL") {
+    if (!task_id.empty() && !active_task_id_.empty() &&
+        task_id != active_task_id_) {
+      ROS_WARN_STREAM("[exploration task] ignore " << command
+                      << " for inactive task_id=" << task_id);
+      return;
+    }
+    beginPause("task command " + command, false);
+    return;
+  }
+
+  ROS_WARN_STREAM("[exploration task] ignore unknown command='" << command
+                  << "'");
+}
+
+void FastExplorationFSM::startExplorationTask(const std::string &task_id,
+                                              const std::string &source) {
+  if (task_id.empty()) {
+    return;
+  }
+  if (state_ == LAND || state_ == PAUSING) {
+    ROS_WARN_STREAM("[exploration task] cannot start task_id=" << task_id
                     << " while state=" << fd_->state_str_[state_]);
     return;
   }
+
+  const bool already_running = active_task_id_ == task_id &&
+      (state_ == WAIT_TRIGGER || state_ == PLAN_TRAJ || state_ == CAUTION ||
+       state_ == EXEC_TRAJ || state_ == REORIENT);
+  if (already_running) {
+    return;
+  }
+
+  active_task_id_ = task_id;
+  completion_pending_ = false;
+  pause_stop_issued_ = false;
   fd_->trigger_ = true;
+  fd_->auto_triggered_ = true;
+  fd_->static_state_ = true;
+  fd_->next_plan_retry_time_ = ros::Time(0);
+  fd_->consecutive_plan_failures_ = 0;
+  fd_->stationary_failure_refreshes_ = 0;
+  expl_manager_->ed_->global_tour_.clear();
+  expl_manager_->ed_->path_next_goal_.clear();
+  expl_manager_->ed_->has_goal_lock_ = false;
+  resetFinishGate(source);
+  total_time_ = ros::Time::now().toSec();
+  global_path_update_timer_.start();
+
   if (state_ == INIT) {
-    ROS_INFO_STREAM("[exploration trigger] queued " << source
+    ROS_INFO_STREAM("[exploration task] queued task_id=" << task_id
                     << "; waiting for first odometry sample");
     return;
   }
 
-  ROS_INFO_STREAM("[exploration trigger] accepted " << source);
-  total_time_ = ros::Time::now().toSec();
-  resetFinishGate(source);
+  ROS_INFO_STREAM("[exploration task] start task_id=" << task_id
+                  << " source=" << source);
   transitState(PLAN_TRAJ, source);
+}
+
+void FastExplorationFSM::beginPause(const std::string &reason,
+                                    const bool completed) {
+  if (state_ == LAND) {
+    return;
+  }
+  completion_pending_ = completion_pending_ || completed;
+  fd_->trigger_ = false;
+  expl_manager_->ed_->global_tour_.clear();
+  expl_manager_->ed_->path_next_goal_.clear();
+  expl_manager_->ed_->has_goal_lock_ = false;
+
+  if (state_ == PAUSED || state_ == PAUSING) {
+    return;
+  }
+  pause_stop_issued_ = false;
+  transitState(PAUSING, reason);
+}
+
+bool FastExplorationFSM::handoverSafe() const {
+  if (!fd_->have_odom_ || fd_->last_odom_receive_time_.isZero()) {
+    return false;
+  }
+  const double odom_age =
+      (ros::Time::now() - fd_->last_odom_receive_time_).toSec();
+  return odom_age <= fp_->max_odom_age_ &&
+         fd_->odom_vel_.norm() <= handover_slow_speed_ && trajectoryEnded();
+}
+
+void FastExplorationFSM::publishTaskStatus() {
+  if (!task_control_enable_ || !task_status_pub_ || active_task_id_.empty()) {
+    return;
+  }
+  std::string state_name;
+  if (state_ == PAUSED && completion_pending_) {
+    state_name = "SUCCEEDED";
+  } else if (state_ == PAUSED) {
+    state_name = "PAUSED";
+  } else if (state_ == PAUSING || state_ == FINISH) {
+    state_name = "PAUSING";
+  } else if (state_ == LAND) {
+    state_name = "FAILED";
+  } else if (state_ == INIT || state_ == WAIT_TRIGGER) {
+    state_name = "IDLE";
+  } else {
+    state_name = "RUNNING";
+  }
+  std_msgs::String msg;
+  msg.data = state_name + " " + active_task_id_;
+  task_status_pub_.publish(msg);
 }
 
 void FastExplorationFSM::odometryCallback(
