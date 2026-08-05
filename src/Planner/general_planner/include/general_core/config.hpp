@@ -111,11 +111,9 @@ namespace general_planner {
         bool state2state_altitude_escape_enable{false};
         double state2state_altitude_escape_band{3.5};
         // Keep the guide independent from a potentially overshooting command
-        // trajectory and enforce a one-sided, guide-relative z lower bound.
-        // These controls apply to the corridor ExpTrajOpt backend only.
-        bool state2state_z_lower_guard_enable{false};
-        double state2state_z_lower_guard_tolerance{0.05};
-        double state2state_z_lower_guard_sample_dt{0.02};
+        // trajectory. The corridor backend uses the guide only as a soft
+        // altitude-floor reference; it never rejects a feasible trajectory
+        // merely for following a different timing profile.
         bool state2state_replan_use_command_guide{true};
         bool state2state_over_goal_guard_enable{true};
         double state2state_over_goal_tolerance{0.25};
@@ -526,12 +524,6 @@ namespace general_planner {
                              state2state_altitude_escape_enable, false);
             loader.LoadParam("general_planner/state2state/altitude_escape_band",
                              state2state_altitude_escape_band, 3.5);
-            loader.LoadParam("general_planner/state2state/z_lower_guard_enable",
-                             state2state_z_lower_guard_enable, false);
-            loader.LoadParam("general_planner/state2state/z_lower_guard_tolerance",
-                             state2state_z_lower_guard_tolerance, 0.05);
-            loader.LoadParam("general_planner/state2state/z_lower_guard_sample_dt",
-                             state2state_z_lower_guard_sample_dt, 0.02);
             loader.LoadParam("general_planner/state2state/replan_use_command_guide",
                              state2state_replan_use_command_guide, true);
             loader.LoadParam("general_planner/state2state/over_goal_guard_enable",

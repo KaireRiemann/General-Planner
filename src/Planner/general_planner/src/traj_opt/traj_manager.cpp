@@ -747,6 +747,13 @@ void ExpTrajOpt::setSwarmCurrentWallTime(double wall_time)
   swarm_current_wall_time_ = wall_time;
 }
 
+void ExpTrajOpt::setGuideZFloorReference(double altitude)
+{
+  opt_vars_.guide_z_floor_reference = std::isfinite(altitude)
+                                     ? altitude
+                                     : std::numeric_limits<double>::quiet_NaN();
+}
+
 SnapBoundaryState ExpTrajOpt::toSnapBoundary(const StatePVAJ &state)
 {
   SnapBoundaryState out;
@@ -1857,7 +1864,8 @@ double ExpTrajOpt::optimize(Trajectory &traj, double rel_cost_tol)
                           opt_vars_.guide_path_huber_delta,
                           opt_vars_.guide_path_time_gradient_en,
                           opt_vars_.weight_guide_z_tube,
-                          opt_vars_.guide_z_tube_radius);
+                          opt_vars_.guide_z_tube_radius,
+                          opt_vars_.guide_z_floor_reference);
 
   exp_convex_cost_manager_.reset(&opt_vars_.h_polytopes,
                                  &opt_vars_.h_poly_idx,
@@ -1878,7 +1886,8 @@ double ExpTrajOpt::optimize(Trajectory &traj, double rel_cost_tol)
                                  opt_vars_.guide_path_huber_delta,
                                  opt_vars_.guide_path_time_gradient_en,
                                  opt_vars_.weight_guide_z_tube,
-                                 opt_vars_.guide_z_tube_radius);
+                                 opt_vars_.guide_z_tube_radius,
+                                 opt_vars_.guide_z_floor_reference);
   exp_packed_corrector_cost_manager_.reset(
       &opt_vars_.h_polytopes,
       &opt_vars_.h_poly_idx,
@@ -1899,7 +1908,8 @@ double ExpTrajOpt::optimize(Trajectory &traj, double rel_cost_tol)
       opt_vars_.guide_path_huber_delta,
       opt_vars_.guide_path_time_gradient_en,
       opt_vars_.weight_guide_z_tube,
-      opt_vars_.guide_z_tube_radius);
+      opt_vars_.guide_z_tube_radius,
+      opt_vars_.guide_z_floor_reference);
   opt_vars_.convex_hull_phase2_objective_active = false;
   opt_vars_.phase2_triggered = false;
   opt_vars_.phase2_packed_constraints = 0;

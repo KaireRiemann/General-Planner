@@ -485,6 +485,9 @@ public:
   void setSwarmConfig(const SwarmPenaltyConfig &config);
   void setSwarmTrajectories(const SwarmTrajectoriesConstPtr &trajectories);
   void setSwarmCurrentWallTime(double wall_time);
+  // State2state supplies the precomputed soft z-floor reference. It affects
+  // only the objective and never determines optimizer success/failure.
+  void setGuideZFloorReference(double altitude);
 
   const TimingReport &lastTimingReport() const
   {
@@ -621,6 +624,7 @@ private:
     double weight_guide_z_tube{0.0};
     double guide_z_tube_radius{0.0};
     double guide_z_tube_violation{0.0};
+    double guide_z_floor_reference{std::numeric_limits<double>::quiet_NaN()};
 
     VecDf penalty_log;
   };

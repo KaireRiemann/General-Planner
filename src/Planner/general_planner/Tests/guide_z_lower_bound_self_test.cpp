@@ -97,6 +97,77 @@ int main()
     return 1;
   }
 
+  // The optimizer may be behind a climbing frontend guide in time while still
+  // being spatially feasible.  The soft floor must stay at the supplied
+  // mission-height reference rather than force an impossible time-matched
+  // ascent.
+  const std::vector<Vec3> climbing_guide{{0.0, 0.0, 1.5},
+                                         {0.5, 0.0, 2.6},
+                                         {2.0, 0.0, 2.6}};
+  const std::vector<double> climbing_times{0.0, 0.2, 1.0};
+  Vec3 delayed_climb_grad = Vec3::Zero();
+  double delayed_grad_time = 0.0;
+  double delayed_z_violation = 0.0;
+  const double delayed_climb_cost =
+      cost_functional::accumulateGuidePathConsistencyPenalty(
+          &climbing_guide,
+          &climbing_times,
+          /*query_time=*/0.2,
+          /*position=*/Vec3{0.5, 0.0, 1.5},
+          /*lateral_weight=*/0.0,
+          /*lateral_tube_radius=*/0.0,
+          /*legacy_vertical_tube_radius=*/0.0,
+          /*huber_delta=*/0.4,
+          /*enable_time_gradient=*/false,
+          delayed_climb_grad,
+          delayed_grad_time,
+          /*z_lower_weight=*/100.0,
+          /*z_lower_tolerance=*/0.05,
+          nullptr,
+          nullptr,
+          nullptr,
+          nullptr,
+          &delayed_z_violation,
+          /*z_floor_reference=*/1.5);
+  if (!require(std::abs(delayed_climb_cost) < 1.0e-12,
+               "a delayed climb was compared against guide time instead of the z floor") ||
+      !require(std::abs(delayed_z_violation) < 1.0e-12,
+               "a delayed climb produced a spurious z-floor violation") ||
+      !require(delayed_climb_grad.norm() < 1.0e-12,
+               "a delayed climb produced a spurious z-floor gradient")) {
+    return 1;
+  }
+
+  Vec3 drift_grad = Vec3::Zero();
+  double drift_grad_time = 0.0;
+  double drift_violation = 0.0;
+  const double drift_cost = cost_functional::accumulateGuidePathConsistencyPenalty(
+      &climbing_guide,
+      &climbing_times,
+      /*query_time=*/0.2,
+      /*position=*/Vec3{0.5, 0.0, 1.40},
+      /*lateral_weight=*/0.0,
+      /*lateral_tube_radius=*/0.0,
+      /*legacy_vertical_tube_radius=*/0.0,
+      /*huber_delta=*/0.4,
+      /*enable_time_gradient=*/false,
+      drift_grad,
+      drift_grad_time,
+      /*z_lower_weight=*/100.0,
+      /*z_lower_tolerance=*/0.05,
+      nullptr,
+      nullptr,
+      nullptr,
+      nullptr,
+      &drift_violation,
+      /*z_floor_reference=*/1.5);
+  if (!require(drift_cost > 0.0 && drift_violation > 0.049 && drift_violation < 0.051,
+               "the mission-height floor did not penalize downward drift") ||
+      !require(drift_grad.z() < 0.0,
+               "the mission-height floor did not pull a downward drift upward")) {
+    return 1;
+  }
+
   std::cout << "guide_z_lower_bound_self_test: PASS" << std::endl;
   return 0;
 }

@@ -43,6 +43,7 @@ namespace cost_functional_manager
         bool guide_path_time_gradient_en{false};
         double weight_guide_z_lower{0.0};
         double guide_z_lower_tolerance{0.0};
+        double guide_z_floor_reference{std::numeric_limits<double>::quiet_NaN()};
 
         void reset(const general_utils::PolyhedraH *h_polys_in,
                    const Eigen::VectorXi *h_poly_idx_in,
@@ -63,7 +64,8 @@ namespace cost_functional_manager
                    double guide_path_huber_delta_in = 0.0,
                    bool guide_path_time_gradient_en_in = false,
                    double weight_guide_z_lower_in = 0.0,
-                   double guide_z_lower_tolerance_in = 0.0)
+                   double guide_z_lower_tolerance_in = 0.0,
+                   double guide_z_floor_reference_in = std::numeric_limits<double>::quiet_NaN())
         {
             h_polys = h_polys_in;
             h_poly_idx = h_poly_idx_in;
@@ -85,6 +87,7 @@ namespace cost_functional_manager
             guide_path_time_gradient_en = guide_path_time_gradient_en_in;
             weight_guide_z_lower = std::max(0.0, weight_guide_z_lower_in);
             guide_z_lower_tolerance = std::max(0.0, guide_z_lower_tolerance_in);
+            guide_z_floor_reference = guide_z_floor_reference_in;
         }
 
         void beginEvaluation(const std::vector<double> *times)
@@ -208,7 +211,8 @@ namespace cost_functional_manager
                                                                                  &guide_cost_log_,
                                                                                  &guide_max_abs_time_grad_,
                                                                                  &guide_out_of_time_range_samples_,
-                                                                                 &guide_z_lower_violation_);
+                                                                                 &guide_z_lower_violation_,
+                                                                                 guide_z_floor_reference);
             local_cost += cost_functional::accumulateVelocityBoundPenalty(v,
                                                                             magnitude_bounds(0) * magnitude_bounds(0),
                                                                             smooth_eps,

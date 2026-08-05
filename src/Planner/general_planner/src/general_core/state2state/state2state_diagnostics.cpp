@@ -45,12 +45,11 @@ namespace general_planner {
             << ";exp_full_z_min=" << d.exp_full.min
             << ";exp_full_z_max=" << d.exp_full.max
             << ";guide_reused_command_prefix=" << static_cast<int>(d.guide_reused_command_prefix)
-            << ";z_lower_guard_enabled=" << static_cast<int>(d.z_lower_guard_enabled)
-            << ";z_lower_guard_passed=" << static_cast<int>(d.z_lower_guard_passed)
-            << ";z_lower_guard_samples=" << d.z_lower_guard_samples
-            << ";z_lower_guard_tolerance=" << d.z_lower_guard_tolerance
-            << ";z_lower_guard_min_margin=" << d.z_lower_guard_min_margin
-            << ";z_lower_guard_max_violation=" << d.z_lower_guard_max_violation;
+            << ";z_floor_enabled=" << static_cast<int>(d.z_floor_enabled)
+            << ";z_floor_anchor=" << d.z_floor_anchor
+            << ";z_floor_reference=" << d.z_floor_reference
+            << ";z_floor_tolerance=" << d.z_floor_tolerance
+            << ";z_floor_min_margin=" << d.z_floor_min_margin;
         return oss.str();
     }
 

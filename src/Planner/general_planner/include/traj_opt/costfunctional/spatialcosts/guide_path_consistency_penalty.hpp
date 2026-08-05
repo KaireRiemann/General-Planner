@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 
 namespace cost_functional
 {
@@ -96,6 +97,41 @@ namespace cost_functional
         return 0.5 * weight * excess * excess;
     }
 
+    // The frontend guide is a spatial/topological seed, not a trajectory with
+    // an execution-time contract. In particular, a smooth polynomial may
+    // legitimately climb later than the piecewise-linear guide. State2state
+    // therefore supplies a precomputed soft-floor reference. The guide-min
+    // fallback is retained only for legacy callers without that reference.
+    template <typename GuidePathT>
+    inline bool computeGuideZFloor(const GuidePathT *guide_path,
+                                   double z_floor_reference,
+                                   double &z_floor)
+    {
+        if (std::isfinite(z_floor_reference))
+        {
+            z_floor = z_floor_reference;
+            return true;
+        }
+
+        z_floor = std::numeric_limits<double>::infinity();
+        bool have_reference = false;
+        if (guide_path == nullptr)
+        {
+            return have_reference;
+        }
+
+        for (const auto &point : *guide_path)
+        {
+            if (!point.allFinite())
+            {
+                continue;
+            }
+            z_floor = std::min(z_floor, static_cast<double>(point.z()));
+            have_reference = true;
+        }
+        return have_reference && std::isfinite(z_floor);
+    }
+
     template <typename GuidePathT, typename GuideTimesT, typename Vec3T>
     inline double accumulateGuidePathConsistencyPenalty(const GuidePathT *guide_path,
                                                         const GuideTimesT *guide_times,
@@ -114,67 +150,91 @@ namespace cost_functional
                                                         double *cost_log = nullptr,
                                                         double *max_abs_time_grad = nullptr,
                                                         int *out_of_time_range_samples = nullptr,
-                                                        double *max_z_lower_violation = nullptr)
+                                                        double *max_z_lower_violation = nullptr,
+                                                        double z_floor_reference =
+                                                            std::numeric_limits<double>::quiet_NaN())
     {
         if ((weight <= 0.0 && weight_z_lower <= 0.0) || !position.allFinite())
         {
             return 0.0;
         }
 
+        // The z-floor term has superseded the legacy time-aligned vertical
+        // tube. Keep this argument for ABI/source compatibility with callers
+        // that share this generic lateral-guide helper.
+        (void)vertical_tube_radius;
+
+        Vec3T guide_grad = Vec3T::Zero();
+        Vec3T timed_guide_grad = Vec3T::Zero();
+        const double z_tolerance = std::max(0.0, z_lower_tolerance);
+        huber_delta = std::max(0.0, huber_delta);
+        double cost = 0.0;
+        double lateral_excess = 0.0;
+
+        // Lateral tracking retains the old time-interpolated interpretation.
+        // It is not used by the state2state corridor profile, but keeping it
+        // here preserves callers that intentionally enable it.
         Vec3T ref_position = Vec3T::Zero();
         Vec3T ref_velocity = Vec3T::Zero();
         Vec3T ref_tangent = Vec3T::Zero();
         bool inside_time_range = true;
-        if (!interpolateGuidePathByTime(guide_path,
-                                        guide_times,
-                                        query_time,
-                                        ref_position,
-                                        ref_velocity,
-                                        ref_tangent,
-                                        inside_time_range))
+        const bool have_timed_reference =
+            weight > 0.0 && interpolateGuidePathByTime(guide_path,
+                                                        guide_times,
+                                                        query_time,
+                                                        ref_position,
+                                                        ref_velocity,
+                                                        ref_tangent,
+                                                        inside_time_range);
+        if (have_timed_reference)
         {
-            return 0.0;
+            const Vec3T diff = position - ref_position;
+            lateral_tube_radius = std::max(0.0, lateral_tube_radius);
+            const double tangent_xy_norm =
+                std::hypot(ref_tangent.x(), ref_tangent.y());
+            double lateral_x = diff.x();
+            double lateral_y = diff.y();
+            if (tangent_xy_norm > 1.0e-6)
+            {
+                const double tx = ref_tangent.x() / tangent_xy_norm;
+                const double ty = ref_tangent.y() / tangent_xy_norm;
+                const double along = diff.x() * tx + diff.y() * ty;
+                lateral_x -= along * tx;
+                lateral_y -= along * ty;
+            }
+
+            const double lateral_norm = std::hypot(lateral_x, lateral_y);
+            lateral_excess = lateral_norm - lateral_tube_radius;
+            double lateral_grad_excess = 0.0;
+            cost += robustTubeCost(lateral_excess,
+                                   weight,
+                                   huber_delta,
+                                   lateral_grad_excess);
+            if (lateral_grad_excess > 0.0 && lateral_norm > 1.0e-9)
+            {
+                timed_guide_grad.x() += lateral_grad_excess * lateral_x / lateral_norm;
+                timed_guide_grad.y() += lateral_grad_excess * lateral_y / lateral_norm;
+                guide_grad += timed_guide_grad;
+            }
+        }
+        else if (weight > 0.0 && out_of_time_range_samples != nullptr)
+        {
+            ++(*out_of_time_range_samples);
         }
 
-        const Vec3T diff = position - ref_position;
-        Vec3T guide_grad = Vec3T::Zero();
-        lateral_tube_radius = std::max(0.0, lateral_tube_radius);
-        // Retained in the API for existing lateral-guide callers. Vertical
-        // tracking is now handled exclusively by the one-sided z term below.
-        (void)vertical_tube_radius;
-        huber_delta = std::max(0.0, huber_delta);
-
-        const double tangent_xy_norm =
-            std::hypot(ref_tangent.x(), ref_tangent.y());
-        double lateral_x = diff.x();
-        double lateral_y = diff.y();
-        if (tangent_xy_norm > 1.0e-6)
-        {
-            const double tx = ref_tangent.x() / tangent_xy_norm;
-            const double ty = ref_tangent.y() / tangent_xy_norm;
-            const double along = diff.x() * tx + diff.y() * ty;
-            lateral_x -= along * tx;
-            lateral_y -= along * ty;
-        }
-
-        const double lateral_norm = std::hypot(lateral_x, lateral_y);
-        const double lateral_excess = lateral_norm - lateral_tube_radius;
-        double lateral_grad_excess = 0.0;
-        double cost = robustTubeCost(lateral_excess,
-                                     weight,
-                                     huber_delta,
-                                     lateral_grad_excess);
-        if (lateral_grad_excess > 0.0 && lateral_norm > 1.0e-9)
-        {
-            guide_grad.x() += lateral_grad_excess * lateral_x / lateral_norm;
-            guide_grad.y() += lateral_grad_excess * lateral_y / lateral_norm;
-        }
-
-        // A guide is allowed to climb above its reference to clear an obstacle,
-        // but it must not sink below the reference by more than the configured
-        // tolerance. This is intentionally one-sided.
-        const double z_lower_shortfall =
-            ref_position.z() - position.z() - std::max(0.0, z_lower_tolerance);
+        // A strong *soft* altitude floor prevents downward drift without
+        // imposing the guide's arbitrary time schedule on the optimizer.
+        // The guide can lower the floor for a genuine low passage; otherwise
+        // the task-height anchor keeps a previously drifted start from
+        // redefining the desired cruise altitude.
+        double z_floor = 0.0;
+        const bool have_z_floor =
+            weight_z_lower > 0.0 && computeGuideZFloor(guide_path,
+                                                        z_floor_reference,
+                                                        z_floor);
+        const double z_lower_shortfall = have_z_floor
+                                             ? z_floor - position.z() - z_tolerance
+                                             : 0.0;
         double z_lower_grad_excess = 0.0;
         cost += robustTubeCost(z_lower_shortfall,
                                weight_z_lower,
@@ -188,16 +248,16 @@ namespace cost_functional
         }
 
         grad_position += guide_grad;
-        if (enable_time_gradient && inside_time_range)
+        if (have_timed_reference && enable_time_gradient && inside_time_range)
         {
             const double before = grad_time;
-            grad_time += -guide_grad.dot(ref_velocity);
+            grad_time += -timed_guide_grad.dot(ref_velocity);
             if (max_abs_time_grad != nullptr)
             {
                 *max_abs_time_grad = std::max(*max_abs_time_grad, std::abs(grad_time - before));
             }
         }
-        else if (!inside_time_range && out_of_time_range_samples != nullptr)
+        else if (have_timed_reference && !inside_time_range && out_of_time_range_samples != nullptr)
         {
             ++(*out_of_time_range_samples);
         }

@@ -103,91 +103,6 @@ namespace general_planner {
             return out;
         }
 
-        struct GuideZLowerGuardReport {
-            bool enabled{false};
-            bool valid{true};
-            int samples{0};
-            double min_margin{0.0};
-            double max_violation{0.0};
-
-            bool passed() const {
-                return valid && max_violation <= 1.0e-6;
-            }
-        };
-
-        bool interpolateGuideZ(const vec_Vec3f &guide_path,
-                               const std::vector<double> &guide_stamp,
-                               double query_t,
-                               double &z) {
-            if (guide_path.size() < 2 || guide_path.size() != guide_stamp.size() ||
-                !std::isfinite(query_t)) {
-                return false;
-            }
-            const double start_t = guide_stamp.front();
-            const double end_t = guide_stamp.back();
-            if (!std::isfinite(start_t) || !std::isfinite(end_t) || end_t <= start_t) {
-                return false;
-            }
-            const double clamped_t = std::clamp(query_t, start_t, end_t);
-            for (std::size_t i = 0; i + 1 < guide_path.size(); ++i) {
-                const double t0 = guide_stamp[i];
-                const double t1 = guide_stamp[i + 1];
-                if (!std::isfinite(t0) || !std::isfinite(t1) || t1 <= t0 ||
-                    !guide_path[i].allFinite() || !guide_path[i + 1].allFinite()) {
-                    continue;
-                }
-                if (clamped_t < t0 || (clamped_t > t1 && i + 2 < guide_path.size())) {
-                    continue;
-                }
-                const double alpha = std::clamp((clamped_t - t0) / (t1 - t0), 0.0, 1.0);
-                z = guide_path[i].z() + alpha * (guide_path[i + 1].z() - guide_path[i].z());
-                return std::isfinite(z);
-            }
-            return false;
-        }
-
-        GuideZLowerGuardReport checkGuideZLowerBound(const Trajectory &traj,
-                                                      const vec_Vec3f &guide_path,
-                                                      const std::vector<double> &guide_stamp,
-                                                      bool enabled,
-                                                      double tolerance,
-                                                      double sample_dt) {
-            GuideZLowerGuardReport report;
-            report.enabled = enabled;
-            if (!enabled) {
-                return report;
-            }
-            tolerance = std::max(0.0, tolerance);
-            sample_dt = std::max(0.01, sample_dt);
-            const double duration = traj.getTotalDuration();
-            if (traj.empty() || !std::isfinite(duration) || duration < 0.0) {
-                report.valid = false;
-                return report;
-            }
-            report.min_margin = std::numeric_limits<double>::infinity();
-            auto evaluate = [&](const double t) {
-                double guide_z = 0.0;
-                const Vec3f pos = traj.getPos(std::clamp(t, 0.0, duration));
-                if (!pos.allFinite() || !interpolateGuideZ(guide_path, guide_stamp, t, guide_z)) {
-                    report.valid = false;
-                    return;
-                }
-                const double margin = pos.z() - (guide_z - tolerance);
-                report.min_margin = std::min(report.min_margin, margin);
-                report.max_violation = std::max(report.max_violation, std::max(0.0, -margin));
-                ++report.samples;
-            };
-            evaluate(0.0);
-            for (double t = sample_dt; t < duration; t += sample_dt) {
-                evaluate(t);
-            }
-            evaluate(duration);
-            if (report.samples == 0 || !std::isfinite(report.min_margin)) {
-                report.valid = false;
-            }
-            return report;
-        }
-
         void logCheckResult(const ros_interface::RosInterface::Ptr &ros_ptr,
                             const std::string &context,
                             const checker::CheckResult &result) {
@@ -646,11 +561,53 @@ namespace general_planner {
         services.z_debug.local_target_goal_z_err = pos_fina_state(2, 0) - services.goal_p.z();
         services.z_debug.local_target_is_global_goal = local_endpoint_is_global_goal;
         services.z_debug.guide_reused_command_prefix = reuse_command_guide_prefix;
-        services.z_debug.z_lower_guard_enabled =
-                services.cfg.state2state_z_lower_guard_enable &&
-                !use_distance_field_exp_traj;
-        services.z_debug.z_lower_guard_tolerance =
-                services.cfg.state2state_z_lower_guard_tolerance;
+        double z_floor_anchor = services.goal_p.z();
+        // -1e6 is the Config sentinel for an unspecified topology altitude;
+        // never propagate it into a trajectory objective as a real height.
+        if (!std::isfinite(z_floor_anchor) || z_floor_anchor <= -1.0e5) {
+            z_floor_anchor = services.cfg.state2state_topology_navigation_altitude;
+        }
+        if (!std::isfinite(z_floor_anchor) || z_floor_anchor <= -1.0e5) {
+            z_floor_anchor = std::numeric_limits<double>::quiet_NaN();
+        }
+        double z_floor_reference = z_floor_anchor;
+        if (std::isfinite(z_floor_anchor)) {
+            // Do not let a previously drifted start lower the altitude target.
+            // A lower guide point is admitted only when the map says that the
+            // mission-height probe at the same XY is occupied, i.e. the route
+            // really needs to pass beneath an obstacle/ceiling.
+            for (std::size_t i = 1; i < guide_path.size(); ++i) {
+                const Vec3f &point = guide_path[i];
+                if (!point.allFinite() || !std::isfinite(point.z()) ||
+                    point.z() >= z_floor_reference || services.map_manager == nullptr) {
+                    continue;
+                }
+                Vec3f anchor_probe = point;
+                anchor_probe.z() = z_floor_anchor;
+                if (services.map_manager->isOccupiedInflate(anchor_probe)) {
+                    z_floor_reference = point.z();
+                }
+            }
+        } else {
+            for (const auto &point : guide_path) {
+                if (!point.allFinite() || !std::isfinite(point.z())) {
+                    continue;
+                }
+                if (!std::isfinite(z_floor_reference)) {
+                    z_floor_reference = point.z();
+                } else {
+                    z_floor_reference = std::min(z_floor_reference, point.z());
+                }
+            }
+        }
+        services.z_debug.z_floor_enabled = !use_distance_field_exp_traj &&
+                                            std::isfinite(z_floor_reference) &&
+                                            services.cfg.exp_traj_cfg.guide_z_tube_radius > 0.0 &&
+                                            services.cfg.exp_traj_cfg.activePenaltyWeights().guide_z_tube > 0.0;
+        services.z_debug.z_floor_anchor = z_floor_anchor;
+        services.z_debug.z_floor_reference = z_floor_reference;
+        services.z_debug.z_floor_tolerance =
+                std::max(0.0, services.cfg.exp_traj_cfg.guide_z_tube_radius);
 
         bool temp_ret;
         Trajectory out_traj;
@@ -695,6 +652,7 @@ namespace general_planner {
                 return FAILED;
             }
         } else {
+            services.traj_manager->exp()->setGuideZFloorReference(z_floor_reference);
             temp_ret = services.traj_manager->exp()->optimize(pos_init_state,
                                                       pos_fina_state,
                                                       guide_path,
@@ -730,31 +688,9 @@ namespace general_planner {
             services.ros_ptr->warn(" -- [GeneralPlanner] OptimizationExpTraj for new path failed");
             return FAILED;
         }
-        const GuideZLowerGuardReport z_guard = checkGuideZLowerBound(
-                out_traj,
-                guide_path,
-                guide_stamp,
-                services.z_debug.z_lower_guard_enabled,
-                services.cfg.state2state_z_lower_guard_tolerance,
-                services.cfg.state2state_z_lower_guard_sample_dt);
-        services.z_debug.z_lower_guard_passed = z_guard.passed();
-        services.z_debug.z_lower_guard_samples = z_guard.samples;
-        services.z_debug.z_lower_guard_min_margin = z_guard.min_margin;
-        services.z_debug.z_lower_guard_max_violation = z_guard.max_violation;
-        if (!z_guard.passed()) {
-            services.ros_ptr->warn(
-                    " -- [GeneralPlanner] Reject z-lower candidate: valid={}, samples={}, min_margin={:.3f}, max_violation={:.3f}, tolerance={:.3f}.",
-                    z_guard.valid,
-                    z_guard.samples,
-                    z_guard.min_margin,
-                    z_guard.max_violation,
-                    services.cfg.state2state_z_lower_guard_tolerance);
-            if (!planning_from_rest && last_exp_traj_info.wholeTrajKnownFree() &&
-                currentTrajectorySafeForNoNeed(services, guide_pos_traj, replan_state_TT)) {
-                out_exp_traj_info = last_exp_traj_info;
-                return NO_NEED;
-            }
-            return FAILED;
+        if (services.z_debug.optimized.valid && std::isfinite(z_floor_reference)) {
+            services.z_debug.z_floor_min_margin = services.z_debug.optimized.min -
+                    (z_floor_reference - services.z_debug.z_floor_tolerance);
         }
         double replan_total_t = (services.ros_ptr->getSimTime() - replan_process_start_WT);
         if (replan_total_t > services.cfg.replan_forward_dt) {

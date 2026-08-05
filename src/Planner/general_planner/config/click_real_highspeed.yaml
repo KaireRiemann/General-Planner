@@ -97,12 +97,9 @@ general_planner:
     altitude_band: 0.25
     altitude_escape_enable: true
     altitude_escape_band: 3.5
-    # Fresh A* guides stop an optimized z dip from becoming the next guide
-    # prefix. The hard post-solve check uses the same one-sided 5 cm margin as
-    # the ExpTrajOpt continuous z-lower objective below.
-    z_lower_guard_enable: true
-    z_lower_guard_tolerance: 0.05
-    z_lower_guard_sample_dt: 0.02
+    # A fresh A* guide prevents a previous command's altitude excursion from
+    # becoming the next seed. It is a spatial reference only; ExpTrajOpt never
+    # uses it as a time-synchronised post-solve rejection condition.
     replan_use_command_guide: false
     over_goal_guard_enable: true
     over_goal_tolerance: 0.25
@@ -199,8 +196,9 @@ traj_opt:
     guide_path_huber_delta: 0.40
     guide_path_time_gradient_en: false
     penna_guide_z_tube: 1.0e+7
-    # One-sided lower bound: z may rise for clearance, but may not fall more
-    # than 5 cm below the time-aligned frontend guide.
+    # Strong soft altitude floor. State2state starts from goal.z and lowers
+    # the reference only for map-confirmed low passages, so a drifted start
+    # cannot redefine the cruise height. This is never a hard reject.
     guide_z_tube_radius: 0.05
     penna_omg: 5.0e+6
     penna_thr: 2.0e+6

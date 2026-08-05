@@ -59,12 +59,11 @@ struct State2StateZDebug {
     double opt_end_local_target_z_err{0.0};
     bool local_target_is_global_goal{false};
     bool guide_reused_command_prefix{false};
-    bool z_lower_guard_enabled{false};
-    bool z_lower_guard_passed{true};
-    int z_lower_guard_samples{0};
-    double z_lower_guard_tolerance{0.0};
-    double z_lower_guard_min_margin{0.0};
-    double z_lower_guard_max_violation{0.0};
+    bool z_floor_enabled{false};
+    double z_floor_anchor{0.0};
+    double z_floor_reference{0.0};
+    double z_floor_tolerance{0.0};
+    double z_floor_min_margin{0.0};
 };
 
 struct StateToStateExpBackendServices {

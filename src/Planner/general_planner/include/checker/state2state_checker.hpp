@@ -55,25 +55,6 @@ namespace general_planner::checker {
             return CheckResult::Fatal("CONFIG_BAD_STATE2STATE_ALTITUDE_ESCAPE_BAND",
                                       "state2state altitude_escape_band must be >= altitude_band");
         }
-        if (!std::isfinite(cfg.state2state_z_lower_guard_tolerance) ||
-            cfg.state2state_z_lower_guard_tolerance < 0.0) {
-            return CheckResult::Fatal("CONFIG_BAD_STATE2STATE_Z_LOWER_TOLERANCE",
-                                      "state2state z_lower_guard_tolerance must be non-negative");
-        }
-        if (!std::isfinite(cfg.state2state_z_lower_guard_sample_dt) ||
-            cfg.state2state_z_lower_guard_sample_dt <= 0.0) {
-            return CheckResult::Fatal("CONFIG_BAD_STATE2STATE_Z_LOWER_SAMPLE_DT",
-                                      "state2state z_lower_guard_sample_dt must be positive");
-        }
-        if (cfg.state2state_z_lower_guard_enable &&
-            !cfg.esdf_traj_en && !cfg.plain_traj_en) {
-            const auto active_penalties = cfg.exp_traj_cfg.activePenaltyWeights();
-            if (cfg.exp_traj_cfg.guide_z_tube_radius <= 0.0 ||
-                active_penalties.guide_z_tube <= 0.0) {
-                return CheckResult::Fatal("CONFIG_Z_LOWER_GUARD_NO_OBJECTIVE",
-                                          "z lower guard requires positive exp_traj guide_z_tube_radius and penna_guide_z_tube");
-            }
-        }
         if (!std::isfinite(cfg.state2state_over_goal_tolerance) ||
             cfg.state2state_over_goal_tolerance < 0.0) {
             return CheckResult::Fatal("CONFIG_BAD_STATE2STATE_OVER_GOAL_TOLERANCE",
