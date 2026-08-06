@@ -200,7 +200,7 @@ ViewpointManager/top_candidate_num: 2
 # including the lower and upper Z limits. No fixed box is displayed or used;
 # planning modules initialize only after the dynamic box is accepted. Set
 # enabled=false to use box_0/box_1 below.
-dynamic_bounding_box/enabled: true
+dynamic_bounding_box/enabled: false
 dynamic_bounding_box/mode: diagonal_3d
 dynamic_bounding_box/frame_id: world
 dynamic_bounding_box/goal_topic: dynamic_bounding_box/corner_3d
