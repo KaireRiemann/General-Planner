@@ -46,6 +46,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <cmath>
 #include <exception>
 #include <functional>
@@ -62,6 +63,7 @@ namespace fsm {
         ros::Subscriber goal_sub_;
         ros::Subscriber goal_3d_sub_;
         ros::Subscriber task_mode_sub_;
+        ros::Subscriber navigation_command_sub_;
         ros::Subscriber tracking_target_sub_;
         ros::Subscriber tracking_prediction_sub_;
         ros::Subscriber perching_surface_sub_;
@@ -72,7 +74,9 @@ namespace fsm {
         ros::Publisher cmd_pub, so3_cmd_pub_, mpc_cmd_pub_, path_pub_;
         ros::Publisher swarm_traj_pub_, swarm_state_pub_;
         ros::Publisher diagnostic_event_pub_;
+        ros::Publisher navigation_status_pub_;
         ros::Timer execution_timer_, replan_timer_, cmd_timer_, perception_safety_timer_;
+        ros::Timer navigation_status_timer_;
         quadrotor_msgs::PositionCommand pid_cmd_;
         rog_map::ROGMapROS::Ptr map_ptr_;
         general_planner::TopologyGraphROS1::Ptr topology_graph_ros1_;
@@ -1199,6 +1203,51 @@ namespace fsm {
             setTaskModeFromString(msg->data);
         }
 
+        void navigationCommandCallback(const std_msgs::StringConstPtr &msg) {
+            if (!msg) {
+                return;
+            }
+            std::istringstream stream(msg->data);
+            std::string command;
+            stream >> command;
+            std::string payload;
+            std::getline(stream, payload);
+            const auto first = payload.find_first_not_of(" \t");
+            payload = first == std::string::npos ? std::string() : payload.substr(first);
+            std::transform(command.begin(), command.end(), command.begin(),
+                           [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
+            if (command == "PAUSE" || command == "CANCEL") {
+                requestControlledStop("navigation command " + command);
+                return;
+            }
+            if (command == "CLEAR") {
+                clearNavigationTask("navigation command CLEAR");
+                return;
+            }
+            if (command == "ARM" || command == "RESUME") {
+                std::uint64_t epoch = navigationTaskEpoch();
+                if (!payload.empty()) {
+                    try {
+                        epoch = static_cast<std::uint64_t>(std::stoull(payload));
+                    } catch (...) {
+                    }
+                }
+                armNavigationTask(epoch);
+                return;
+            }
+            ROS_WARN_STREAM("[Fsm] ignore unknown navigation command='" << msg->data << "'");
+        }
+
+        void navigationStatusTimerCallback(const ros::TimerEvent &) {
+            if (!navigation_status_pub_) {
+                return;
+            }
+            std_msgs::String status;
+            status.data = std::string(machineStateName()) + " " +
+                          std::to_string(navigationTaskEpoch());
+            navigation_status_pub_.publish(status);
+        }
+
         void applyLaunchOverrides() {
             int swarm_drone_id = cfg_.swarm_drone_id;
             bool swarm_id_overridden = nh_.getParam("swarm_drone_id", swarm_drone_id);
@@ -1251,6 +1300,14 @@ namespace fsm {
             }
             mpc_cmd_pub_ = nh_.advertise<quadrotor_msgs::PolynomialTrajectory>(cfg_.mpc_cmd_topic, 10);
             path_pub_ = nh_.advertise<nav_msgs::Path>("fsm/path", 100);
+            navigation_status_pub_ =
+                nh_.advertise<std_msgs::String>("/planning/navigation/status", 10, true);
+            navigation_command_sub_ =
+                nh_.subscribe("/planning/navigation/command", 10,
+                              &FsmRos1::navigationCommandCallback, this);
+            navigation_status_timer_ =
+                nh_.createTimer(ros::Duration(0.1),
+                                &FsmRos1::navigationStatusTimerCallback, this);
             if (cfg_.diagnostic_log_en) {
                 diagnostic_event_pub_ = nh_.advertise<std_msgs::String>(cfg_.diagnostic_event_topic, 100);
             }
@@ -1541,6 +1598,9 @@ namespace fsm {
 
         void pubCmdTimerCallback(const ros::TimerEvent &event) {
             if (stop) {
+                return;
+            }
+            if (!navigationExecutionEnabled()) {
                 return;
             }
             if (machine_state_ != FOLLOW_TRAJ &&

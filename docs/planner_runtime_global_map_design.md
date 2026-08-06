@@ -1,8 +1,12 @@
 # 统一规划运行时、控制权切换与全局地图/拓扑图设计
 
-> 状态：设计与实施基线（未完成项以“实施项”标注）  
-> 范围：ROS1 Noetic 下的 HighSpeedExp exploration、state2state、ROG map、LIO map 和增量 topo 图。  
-> 目标：上层只做“执行什么任务”的决策；底层保证模式切换安全，并持续维护所有任务共享的全局地图和 topo 图。
+> 状态：设计与实施基线（未完成项以“实施项”标注）\
+> 范围：ROS1 Noetic 下的 HighSpeedExp exploration、state2state、ROG map、LIO map 和增量 topo 图。\
+> 目标：上层只做“执行什么任务”的决策；底层保证模式切换安全，并持续维护所有任务共享的全局地图和 topo 图。\
+>\
+> **M1 进度（已落地）**：`planner_runtime_node`（Supervisor + Gateway）、`/planner/status`、\
+> `/planner/mode_request(_text)`、悬停切换、`task_epoch`、导航 `PAUSE/ARM/CLEAR`、\
+> launch：`task_planner/launch/planner_runtime.launch`。M2 共享地图尚未实施。
 
 ## 1. 需求与结论
 
@@ -651,4 +655,3 @@ BoundaryMap + topology snapshot + topology configuration + world frame metadata
 - GlobalMapRuntime 持续维护全局地图；
 - 每个模式都读取同一份全局 topo 图；
 - 旧任务的轨迹和异步规划结果永远不能跨 `task_epoch` 生效。
-

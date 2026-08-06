@@ -100,6 +100,8 @@ private:
   bool task_control_enable_{false};
   bool pause_stop_issued_{false};
   bool completion_pending_{false};
+  bool execution_enabled_published_{false};
+  bool last_execution_enabled_{true};
   std::string active_task_id_;
   std::string task_command_topic_;
   std::string task_status_topic_;

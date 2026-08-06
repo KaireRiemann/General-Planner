@@ -1,0 +1,111 @@
+<launch>
+  <!-- Unified planner runtime (original design):
+       1) start once with initial_mode (e.g. exploration)
+       2) follow that mode's input flow (region / trigger / goal)
+       3) when stable, pub /planner/mode_request(_text) to switch modes
+       4) inspect everything on latched /planner/status
+
+       Both exploration_node and navigation fsm_node stay alive; only the
+       active mode owns flight authority through planner_runtime_node. -->
+  <arg name="marsim" default="true" />
+  <arg name="rviz" default="true" />
+  <arg name="traj_server" default="true" />
+  <arg name="initial_mode" default="hold" />
+  <arg name="enable_navigation" default="true" />
+  <arg name="enable_exploration" default="true" />
+  <arg name="sim_config"
+       default="$(find general_planner)/config/exploration_sim.yaml" />
+  <arg name="navigation_config"
+       default="$(find general_planner)/config/task_planner_ros1.yaml" />
+  <arg name="exploration_config"
+       default="$(find general_planner)/config/exploration_house.yaml" />
+  <arg name="rog_map_config"
+       default="$(find general_planner)/config/exploration_rog_map.yaml" />
+  <!-- Keep the HighSpeedExp topology search allocation identical to the
+       established exploration.launch profile.  Without this explicit value
+       BubbleAstar used its invalid -1 fallback and exploration_node aborted
+       while initializing. -->
+  <arg name="bubble_astar_allocate_num" default="1000000" />
+  <arg name="bubble_astar_lambda_heu" default="100.0" />
+  <arg name="bubble_astar_resolution" default="0.25" />
+  <arg name="bubble_topo_cube_discrete_size" default="0.30" />
+  <arg name="rviz_config"
+       default="$(find general_planner)/rviz/planner_runtime.rviz" />
+  <arg name="odom_topic" default="/lidar_slam/odom" />
+  <arg name="cloud_topic" default="/cloud_registered" />
+  <node if="$(arg marsim)" pkg="perfect_drone_sim" type="perfect_drone"
+        name="perfect_drone" output="screen" clear_params="true">
+    <param name="config_path" value="$(arg sim_config)" type="string" />
+  </node>
+
+  <node if="$(arg enable_exploration)" pkg="general_planner"
+        type="exploration_node" name="exploration_node"
+        output="screen" clear_params="true">
+    <rosparam file="$(arg exploration_config)" command="load" />
+    <param name="odometry_topic" value="$(arg odom_topic)" type="string" />
+    <param name="cloud_topic" value="$(arg cloud_topic)" type="string" />
+    <param name="RogMapConfigPath" value="$(arg rog_map_config)" type="string" />
+    <param name="bubble_astar/allocate_num"
+           value="$(arg bubble_astar_allocate_num)" type="int" />
+    <param name="bubble_astar/lambda_heu"
+           value="$(arg bubble_astar_lambda_heu)" type="double" />
+    <param name="bubble_astar/resolution_astar"
+           value="$(arg bubble_astar_resolution)" type="double" />
+    <param name="bubble_topo/cube_discrete_size"
+           value="$(arg bubble_topo_cube_discrete_size)" type="double" />
+    <param name="fsm/auto_trigger" value="false" type="bool" />
+    <param name="fsm/task_control_enable" value="true" type="bool" />
+    <param name="fsm/task_command_topic" value="/planning/exploration/command" type="string" />
+    <param name="fsm/task_status_topic" value="/planning/exploration/status" type="string" />
+    <param name="fsm/execution_enabled_topic" value="/planning/exploration/command_enabled" type="string" />
+    <!-- In the unified runtime only planner_runtime_node accepts an RViz
+         trigger.  It validates the active mode/hover transition then issues
+         START with a task id.  Subscribing exploration_node directly would
+         create two independent starts for one click. -->
+    <param name="fsm/trigger_topic" value="" type="string" />
+    <param name="fsm/legacy_trigger_topic" value="" type="string" />
+    <param name="fsm/handover_slow_speed" value="0.10" type="double" />
+  </node>
+
+  <node if="$(arg traj_server)" pkg="general_planner" type="highspeed_traj_server"
+        name="highspeed_traj_server" output="screen">
+    <param name="odometry_topic" value="$(arg odom_topic)" type="string" />
+    <param name="pos_cmd_topic" value="/planning/exploration/pos_cmd" type="string" />
+    <param name="execution_enabled_topic" value="/planning/exploration/command_enabled" type="string" />
+  </node>
+
+  <node if="$(arg enable_navigation)" pkg="general_planner" type="fsm_node"
+        name="navigation_fsm_node" output="screen" clear_params="true">
+    <param name="config_path" value="$(arg navigation_config)" type="string" />
+    <remap from="/planning/task_mode" to="/planning/navigation_task_mode" />
+    <remap from="/planning/pos_cmd" to="/planning/navigation/pos_cmd" />
+  </node>
+
+  <node pkg="general_planner" type="planner_runtime_node" name="planner_runtime_node"
+        output="screen">
+    <param name="initial_mode" value="$(arg initial_mode)" type="string" />
+    <param name="navigation_enabled" value="$(arg enable_navigation)" type="bool" />
+    <param name="exploration_enabled" value="$(arg enable_exploration)" type="bool" />
+    <param name="odometry_topic" value="$(arg odom_topic)" type="string" />
+    <param name="navigation_cmd_topic" value="/planning/navigation/pos_cmd" type="string" />
+    <param name="exploration_cmd_topic" value="/planning/exploration/pos_cmd" type="string" />
+    <param name="output_cmd_topic" value="/planning/pos_cmd" type="string" />
+    <param name="exploration_command_topic" value="/planning/exploration/command" type="string" />
+    <param name="exploration_status_topic" value="/planning/exploration/status" type="string" />
+    <param name="navigation_command_topic" value="/planning/navigation/command" type="string" />
+    <param name="navigation_status_topic" value="/planning/navigation/status" type="string" />
+    <param name="navigation_task_mode_topic" value="/planning/navigation_task_mode" type="string" />
+    <param name="navigation_goal_out_topic" value="/planning/click_goal" type="string" />
+    <param name="hover_speed_threshold" value="0.10" type="double" />
+    <param name="hover_yaw_rate_threshold" value="0.10" type="double" />
+    <param name="hover_hold_duration" value="0.50" type="double" />
+    <param name="max_odom_age" value="0.20" type="double" />
+  </node>
+
+  <group if="$(arg rviz)">
+    <node pkg="rviz" type="rviz" name="rvizvisualisation" output="log"
+          args="-d $(arg rviz_config)" />
+    <node pkg="tf" type="static_transform_publisher" name="exploration_world_tf"
+          args="0 0 0 0 0 0 world navigation 100" />
+  </group>
+</launch>

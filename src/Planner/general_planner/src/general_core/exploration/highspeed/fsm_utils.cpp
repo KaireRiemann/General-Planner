@@ -95,11 +95,18 @@ void FastExplorationFSM::pubState() {
   heartbeat_pub_.publish(heartbeat_msg);
   if (execution_enabled_pub_) {
     // A PAUSED exploration node must keep mapping alive but must no longer
-    // compete for the vehicle command topic.  PAUSING remains enabled until
-    // the braking trajectory and the handover safety gate have completed.
-    std_msgs::Bool execution_enabled;
-    execution_enabled.data = state_ != PAUSED;
-    execution_enabled_pub_.publish(execution_enabled);
+    // compete for the vehicle command topic.  The publisher is latched, so
+    // transmit only transitions rather than the same Bool at the 100 Hz FSM
+    // rate; this also keeps the trajectory-server log readable.
+    const bool execution_enabled = state_ != PAUSED;
+    if (!execution_enabled_published_ ||
+        execution_enabled != last_execution_enabled_) {
+      std_msgs::Bool msg;
+      msg.data = execution_enabled;
+      execution_enabled_pub_.publish(msg);
+      execution_enabled_published_ = true;
+      last_execution_enabled_ = execution_enabled;
+    }
   }
   std_msgs::Bool msg;
   msg.data = fd_->static_state_;
@@ -870,6 +877,16 @@ void FastExplorationFSM::startExplorationTask(const std::string &task_id,
       (state_ == WAIT_TRIGGER || state_ == PLAN_TRAJ || state_ == CAUTION ||
        state_ == EXEC_TRAJ || state_ == REORIENT);
   if (already_running) {
+    return;
+  }
+
+  // A completed task must stay PAUSED/SUCCEEDED until the supervisor issues a
+  // new task_id. Repeated START with the same id is a common race with
+  // periodic mission publishers and must not reopen planning.
+  if (state_ == PAUSED && completion_pending_ && active_task_id_ == task_id) {
+    ROS_INFO_STREAM("[exploration task] ignore START for completed task_id="
+                    << task_id << " source=" << source);
+    publishTaskStatus();
     return;
   }
 

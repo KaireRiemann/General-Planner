@@ -275,6 +275,9 @@ namespace fsm {
         // the FSM lock free while it runs, but do not allow a plan-from-rest
         // request to enter the same planner concurrently.
         std::atomic<bool> state2state_replan_in_progress_{false};
+        std::atomic<bool> navigation_execution_enabled_{true};
+        std::atomic<bool> accept_external_goals_{true};
+        std::atomic<std::uint64_t> navigation_task_epoch_{0};
         mutable std::mutex replan_logs_mutex_;
         mutable std::mutex diagnostic_events_mutex_;
         std::ofstream diagnostic_event_log_;
@@ -389,6 +392,25 @@ namespace fsm {
         bool se3AggressiveMode() const;
 
         void setTaskModeFromString(const std::string &mode);
+
+        // Supervisor-facing navigation handover API. PAUSE/CLEAR disable
+        // planning and command output; ARM re-enables goal acceptance for a
+        // fresh task_epoch so stale async plans cannot resume flight.
+        void requestControlledStop(const std::string &reason);
+        void clearNavigationTask(const std::string &reason);
+        void armNavigationTask(std::uint64_t task_epoch);
+        bool navigationExecutionEnabled() const {
+            return navigation_execution_enabled_.load();
+        }
+        bool acceptExternalGoals() const {
+            return accept_external_goals_.load();
+        }
+        std::uint64_t navigationTaskEpoch() const {
+            return navigation_task_epoch_.load();
+        }
+        const char *machineStateName() const {
+            return MACHINE_STATE_STR[machine_state_].c_str();
+        }
 
         bool trackingTaskReady();
 

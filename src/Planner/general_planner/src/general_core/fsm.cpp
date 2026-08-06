@@ -615,6 +615,9 @@ namespace fsm {
         if (stop) {
             return;
         }
+        if (!navigation_execution_enabled_.load()) {
+            return;
+        }
 
         TaskExecutor &executor = taskExecutor();
         if (!executor.replanAllowed(*this)) {
@@ -955,6 +958,14 @@ namespace fsm {
             }
         }
         if (stop) {
+            return;
+        }
+        if (!navigation_execution_enabled_.load()) {
+            if (machine_state_ != INIT && machine_state_ != WAIT_GOAL) {
+                ChangeState("NavigationHandoverGate", WAIT_GOAL);
+            }
+            gi_.new_goal = false;
+            finish_plan = true;
             return;
         }
         static double fsm_start_time = ros_ptr_->getSimTime();
@@ -1310,6 +1321,49 @@ namespace fsm {
                (trackingMode() || composite_tracking_perching) &&
                planner_ptr_ &&
                planner_ptr_->trackingPerchingPerchingActive();
+    }
+
+    void Fsm::requestControlledStop(const std::string &reason) {
+        navigation_execution_enabled_ = false;
+        accept_external_goals_ = false;
+        gi_.new_goal = false;
+        finish_plan = true;
+        plan_from_rest_ = false;
+        task_new_ = false;
+        ++navigation_task_epoch_;
+        if (machine_state_ != INIT && machine_state_ != WAIT_GOAL) {
+            ChangeState("requestControlledStop", WAIT_GOAL);
+        } else if (machine_state_ != INIT) {
+            machine_state_ = WAIT_GOAL;
+        }
+        cout << YELLOW << " -- [Fsm] Controlled stop: " << reason
+             << " epoch=" << navigation_task_epoch_.load() << RESET << endl;
+    }
+
+    void Fsm::clearNavigationTask(const std::string &reason) {
+        requestControlledStop(reason);
+        gi_.goal_p = Vec3f::Zero();
+        gi_.goal_yaw = 0.0;
+        gi_.new_goal = false;
+        started_ = false;
+        cout << YELLOW << " -- [Fsm] Cleared navigation task: " << reason << RESET << endl;
+    }
+
+    void Fsm::armNavigationTask(const std::uint64_t task_epoch) {
+        navigation_task_epoch_ = task_epoch;
+        navigation_execution_enabled_ = true;
+        accept_external_goals_ = true;
+        finish_plan = false;
+        plan_from_rest_ = false;
+        gi_.new_goal = false;
+        if (machine_state_ == INIT) {
+            started_ = true;
+            ChangeState("armNavigationTask", WAIT_GOAL);
+        } else {
+            machine_state_ = WAIT_GOAL;
+        }
+        cout << GREEN << " -- [Fsm] Armed navigation task epoch=" << task_epoch
+             << RESET << endl;
     }
 
     void Fsm::setTaskModeFromString(const std::string &mode) {
@@ -1914,6 +1968,20 @@ namespace fsm {
     void Fsm::setGoalPosiAndYaw(const Vec3f &p,
                                 const Quatf &q,
                                 const GoalHeightMode height_mode) {
+        if (!accept_external_goals_.load()) {
+            recordDiagnosticEvent("WARN",
+                                  "goal_rejected",
+                                  "reason=navigation_not_armed",
+                                  -1,
+                                  -1,
+                                  false,
+                                  -1,
+                                  0);
+            cout << YELLOW
+                 << " -- [Fsm] Ignore goal while navigation handover gate is closed."
+                 << RESET << endl;
+            return;
+        }
 
         if (!p.allFinite()) {
             recordDiagnosticEvent("WARN",

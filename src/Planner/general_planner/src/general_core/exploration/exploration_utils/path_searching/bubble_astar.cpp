@@ -34,9 +34,14 @@ void BubbleAstar::init(ros::NodeHandle &nh,
                        const LIOInterface::Ptr &lidar_map) {
   nh.param("bubble_astar/resolution_astar", resolution_, 0.1);
   nh.param("bubble_astar/lambda_heu", lambda_heu_, 1.0);
-  nh.param("bubble_astar/allocate_num", allocate_num_, -1);
+  nh.param("bubble_astar/allocate_num", allocate_num_, 1000000);
   nh.param("bubble_astar/safe_distance", safe_distance_, -1.0);
   nh.param("bubble_astar/debug", debug_, false);
+  if (allocate_num_ <= 0) {
+    ROS_WARN_STREAM("[BubbleAstar] invalid bubble_astar/allocate_num="
+                    << allocate_num_ << "; using safe default 1000000");
+    allocate_num_ = 1000000;
+  }
   vizer.init(nh);
   safeArea_.reserve(100000);
   tie_breaker_ = 1.0 + 1.0 / 1000;

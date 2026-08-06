@@ -74,10 +74,15 @@ void executionEnabledCallback(const std_msgs::BoolConstPtr &msg)
   {
     return;
   }
+  const bool was_enabled = execution_enabled;
   execution_enabled = msg->data;
-  if (!execution_enabled)
+  if (was_enabled && !execution_enabled)
   {
     ROS_INFO("[highspeed_traj_server] exploration command output disabled");
+  }
+  else if (!was_enabled && execution_enabled)
+  {
+    ROS_INFO("[highspeed_traj_server] exploration command output enabled");
   }
 }
 

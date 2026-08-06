@@ -40,6 +40,18 @@ find_package(catkin REQUIRED COMPONENTS
         tf
 )
 
+add_message_files(
+        FILES
+        PlannerModeRequest.msg
+        PlannerStatus.msg
+)
+
+generate_messages(
+        DEPENDENCIES
+        std_msgs
+        geometry_msgs
+)
+
 find_package(OpenMP REQUIRED)
 find_package(OpenCV REQUIRED)
 find_package(yaml-cpp REQUIRED)
@@ -51,7 +63,7 @@ catkin_package(
         LIBRARIES general_planner_core general_planner_exploration_utils general_planner_exploration
         CATKIN_DEPENDS roscpp rospy std_msgs geometry_msgs nav_msgs sensor_msgs
                        visualization_msgs message_filters cv_bridge map_manager
-                       lkh_tsp_solver traj_utils tf
+                       lkh_tsp_solver traj_utils tf message_runtime
         #  DEPENDS system_lib
 )
 
@@ -79,6 +91,7 @@ set(THIRD_PARTY
 
 file(GLOB_RECURSE srcs CONFIGURE_DEPENDS src/*.cpp include/*.h include/*.hpp)
 list(FILTER srcs EXCLUDE REGEX ".*/(src|include)/general_core/exploration/(highspeed|exploration_utils)/.*$")
+list(FILTER srcs EXCLUDE REGEX ".*/src/general_core/planner_runtime/.*$")
 list(FILTER srcs EXCLUDE REGEX ".*/src/traj_opt/exp_traj_optimizer_s4\\.cpp$")
 list(FILTER srcs EXCLUDE REGEX ".*/src/traj_opt/backup_traj_optimizer_s4\\.cpp$")
 list(FILTER srcs EXCLUDE REGEX ".*/src/traj_opt/yaw_traj_opt\\.cpp$")
@@ -197,6 +210,25 @@ add_dependencies(mission_command_mux
 target_link_libraries(mission_command_mux
         ${THIRD_PARTY}
 )
+
+add_executable(planner_runtime_node
+        Apps/planner_runtime_node_ros1.cpp
+        src/general_core/planner_runtime/planner_command_gateway.cpp
+        src/general_core/planner_runtime/planner_supervisor.cpp
+)
+add_dependencies(planner_runtime_node
+        ${${PROJECT_NAME}_EXPORTED_TARGETS}
+        ${catkin_EXPORTED_TARGETS}
+)
+target_include_directories(planner_runtime_node PRIVATE include)
+target_link_libraries(planner_runtime_node
+        ${THIRD_PARTY}
+)
+
+add_executable(planner_status_self_test
+        tests/planner_status_self_test.cpp
+)
+target_include_directories(planner_status_self_test PRIVATE include)
 
 add_executable(coverage_guidance_self_test
         ${GENERAL_PLANNER_EXPLORATION_UTILS_DIR}/coverage_guidance/coverage_guidance_self_test.cpp
