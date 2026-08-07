@@ -1,5 +1,5 @@
 #############| For UAV simulation |#################################
-pcd_name: "cave_straight_turn.pcd"
+pcd_name: "cloud3.pcd"
 mesh_resource: "package://perfect_drone_sim/meshes/yunque-M.dae"
 init_position:
   x: 74.5

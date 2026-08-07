@@ -25,6 +25,10 @@ private:
   void modeRequestTextCallback(const std_msgs::StringConstPtr &msg);
   void navigationGoalCallback(const geometry_msgs::PoseStampedConstPtr &msg);
   void explorationTriggerCallback(const geometry_msgs::PoseStampedConstPtr &msg);
+  // Shared RViz / click PoseStamped entry: route by active_mode.
+  void clickGoalCallback(const geometry_msgs::PoseStampedConstPtr &msg);
+  bool acceptNavigationGoalLocked(const geometry_msgs::PoseStamped &msg);
+  bool acceptExplorationTriggerLocked(const geometry_msgs::PoseStamped &msg);
   void explorationStatusCallback(const std_msgs::StringConstPtr &msg);
   void navigationStatusCallback(const std_msgs::StringConstPtr &msg);
   void odometryCallback(const nav_msgs::OdometryConstPtr &msg);

@@ -444,7 +444,7 @@ Visualization Manager:
     - Class: rviz/FocusCamera
     - Class: rviz/Measure
     - Class: rviz/SetGoal
-      Topic: /planner/exploration/trigger
+      Topic: /planner/click_goal
   Value: true
   Views:
     Current:

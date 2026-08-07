@@ -80,12 +80,15 @@ PlannerSupervisor::PlannerSupervisor(ros::NodeHandle &nh,
                     &PlannerSupervisor::navigationGoalCallback, this);
   exploration_trigger_sub_ =
       nh_.subscribe("/planner/exploration/trigger", 10,
-                    &PlannerSupervisor::explorationTriggerCallback, this);
+                    &PlannerSupervisor::clickGoalCallback, this);
+  // Mode-aware click entry used by planner_runtime.rviz SetGoal.
+  exploration_rviz_trigger_subs_.push_back(
+      nh_.subscribe("/planner/click_goal", 10,
+                    &PlannerSupervisor::clickGoalCallback, this));
   // Match exploration.rviz (/goal) and exploration.launch (/move_base_simple/goal).
   for (const char *topic : {"/goal", "/move_base_simple/goal"}) {
     exploration_rviz_trigger_subs_.push_back(
-        nh_.subscribe(topic, 10,
-                      &PlannerSupervisor::explorationTriggerCallback, this));
+        nh_.subscribe(topic, 10, &PlannerSupervisor::clickGoalCallback, this));
   }
   exploration_status_sub_ =
       nh_.subscribe(exploration_status_topic_, 10,
@@ -397,12 +400,8 @@ void PlannerSupervisor::requestExplorationStartLocked(const std::string &reason)
                   << status_.task_id << " reason=" << reason);
 }
 
-void PlannerSupervisor::navigationGoalCallback(
-    const geometry_msgs::PoseStampedConstPtr &msg) {
-  if (!msg) {
-    return;
-  }
-  std::lock_guard<std::mutex> lock(mutex_);
+bool PlannerSupervisor::acceptNavigationGoalLocked(
+    const geometry_msgs::PoseStamped &msg) {
   if (!status_.ready_for_new_task ||
       status_.active_mode != PlannerMode::STATE2STATE || transition_active_) {
     ROS_WARN_THROTTLE(1.0,
@@ -410,7 +409,7 @@ void PlannerSupervisor::navigationGoalCallback(
                       "(ready=%d mode=%s transition=%d)",
                       status_.ready_for_new_task,
                       toString(status_.active_mode), transition_active_);
-    return;
+    return false;
   }
   status_.task_result = PlannerTaskResult::NONE;
   status_.phase = PlannerPhase::PLANNING;
@@ -419,15 +418,53 @@ void PlannerSupervisor::navigationGoalCallback(
   status_.command_owner = CommandOwner::STATE2STATE;
   status_.reason = "navigation goal accepted";
   gateway_.setAuthorizedOwner(CommandOwner::STATE2STATE, status_.task_epoch);
-  navigation_goal_pub_.publish(*msg);
+  navigation_goal_pub_.publish(msg);
+  ROS_INFO_STREAM("[planner_supervisor] navigation goal accepted epoch="
+                  << status_.task_epoch << " p=(" << msg.pose.position.x << ","
+                  << msg.pose.position.y << "," << msg.pose.position.z << ")");
+  return true;
 }
 
-void PlannerSupervisor::explorationTriggerCallback(
+void PlannerSupervisor::navigationGoalCallback(
     const geometry_msgs::PoseStampedConstPtr &msg) {
   if (!msg) {
     return;
   }
   std::lock_guard<std::mutex> lock(mutex_);
+  acceptNavigationGoalLocked(*msg);
+}
+
+void PlannerSupervisor::clickGoalCallback(
+    const geometry_msgs::PoseStampedConstPtr &msg) {
+  if (!msg) {
+    return;
+  }
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (!boot_complete_ || transition_active_) {
+    ROS_WARN_THROTTLE(1.0,
+                      "[planner_supervisor] drop click goal: boot=%d "
+                      "transition=%d mode=%s",
+                      boot_complete_, transition_active_,
+                      toString(status_.active_mode));
+    return;
+  }
+  if (status_.active_mode == PlannerMode::STATE2STATE) {
+    acceptNavigationGoalLocked(*msg);
+    return;
+  }
+  if (status_.active_mode == PlannerMode::EXPLORATION) {
+    acceptExplorationTriggerLocked(*msg);
+    return;
+  }
+  ROS_WARN_THROTTLE(1.0,
+                    "[planner_supervisor] drop click goal: mode=%s "
+                    "(need exploration or state2state)",
+                    toString(status_.active_mode));
+}
+
+bool PlannerSupervisor::acceptExplorationTriggerLocked(
+    const geometry_msgs::PoseStamped &msg) {
+  (void)msg;
   if (!boot_complete_ || status_.active_mode != PlannerMode::EXPLORATION ||
       transition_active_) {
     ROS_WARN_THROTTLE(1.0,
@@ -435,7 +472,7 @@ void PlannerSupervisor::explorationTriggerCallback(
                       "boot=%d transition=%d",
                       toString(status_.active_mode), boot_complete_,
                       transition_active_);
-    return;
+    return false;
   }
   // Only accept a new trigger while idle / waiting / finished. Ignore clicks
   // during active planning/execution to avoid restarting mid-flight.
@@ -447,7 +484,7 @@ void PlannerSupervisor::explorationTriggerCallback(
                       "[planner_supervisor] drop exploration trigger while "
                       "phase=%s",
                       toString(status_.phase));
-    return;
+    return false;
   }
 
   // RViz 2D Nav Goal (or /planner/exploration/trigger) starts exploration.
@@ -465,6 +502,16 @@ void PlannerSupervisor::explorationTriggerCallback(
   status_.task_id = makeTaskId(PlannerMode::EXPLORATION);
   gateway_.setAuthorizedOwner(CommandOwner::HOLD, status_.task_epoch);
   requestExplorationStartLocked("rviz/manual trigger");
+  return true;
+}
+
+void PlannerSupervisor::explorationTriggerCallback(
+    const geometry_msgs::PoseStampedConstPtr &msg) {
+  if (!msg) {
+    return;
+  }
+  std::lock_guard<std::mutex> lock(mutex_);
+  acceptExplorationTriggerLocked(*msg);
 }
 
 void PlannerSupervisor::explorationStatusCallback(
@@ -562,8 +609,16 @@ void PlannerSupervisor::navigationStatusCallback(
     } else if (state == "GENERATE_TRAJ") {
       status_.phase = PlannerPhase::PLANNING;
       status_.ready_for_new_task = false;
+      status_.command_owner = CommandOwner::STATE2STATE;
+      gateway_.setAuthorizedOwner(CommandOwner::STATE2STATE, status_.task_epoch);
       status_.reason = "navigation planning";
     } else if (state == "WAIT_GOAL") {
+      // Do not demote an in-flight goal acceptance: FSM still publishes
+      // WAIT_GOAL until the goal callback flips it to GENERATE_TRAJ.
+      if (status_.phase == PlannerPhase::PLANNING ||
+          status_.phase == PlannerPhase::EXECUTING) {
+        return;
+      }
       status_.phase = PlannerPhase::WAITING_INPUT;
       status_.ready_for_new_task = true;
       status_.stable_hover = hoverConditionMetLocked();
