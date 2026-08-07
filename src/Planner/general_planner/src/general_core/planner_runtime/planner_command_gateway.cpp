@@ -96,6 +96,21 @@ std::uint64_t PlannerCommandGateway::authorizedEpoch() const {
   return authorized_epoch_;
 }
 
+void PlannerCommandGateway::setPublishingEnabled(const bool enabled) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (publishing_enabled_ == enabled) {
+    return;
+  }
+  publishing_enabled_ = enabled;
+  ROS_INFO_STREAM("[planner_command_gateway] publishing_enabled="
+                  << (enabled ? "true" : "false"));
+}
+
+bool PlannerCommandGateway::publishingEnabled() const {
+  std::lock_guard<std::mutex> lock(mutex_);
+  return publishing_enabled_;
+}
+
 void PlannerCommandGateway::navigationCallback(
     const quadrotor_msgs::PositionCommandConstPtr &msg) {
   if (!msg) {
@@ -166,6 +181,9 @@ void PlannerCommandGateway::timerCallback(const ros::WallTimerEvent &) {
   bool publish = false;
   {
     std::lock_guard<std::mutex> lock(mutex_);
+    if (!publishing_enabled_) {
+      return;
+    }
     const ros::WallTime now = ros::WallTime::now();
     const bool navigation_fresh =
         have_navigation_cmd_ && navigation_rx_time_ >= authorization_time_ &&

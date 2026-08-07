@@ -32,6 +32,12 @@ PlannerSupervisor::PlannerSupervisor(ros::NodeHandle &nh,
                          "/planning/navigation_task_mode");
   nh_.param<std::string>("navigation_goal_out_topic", navigation_goal_out_topic_,
                          "/planning/click_goal");
+  nh_.param<std::string>("click_demo_goal_topic", click_demo_goal_topic_,
+                         "/goal");
+  nh_.param<std::string>("handover_command_topic", handover_command_topic_,
+                         "/planner/handover");
+  nh_.param<std::string>("handover_status_topic", handover_status_topic_,
+                         "/planner/handover_status");
   nh_.param<std::string>("odometry_topic", odometry_topic_, "/lidar_slam/odom");
   nh_.param("hover_speed_threshold", hover_speed_threshold_, 0.10);
   nh_.param("hover_yaw_rate_threshold", hover_yaw_rate_threshold_, 0.10);
@@ -40,6 +46,7 @@ PlannerSupervisor::PlannerSupervisor(ros::NodeHandle &nh,
   nh_.param("status_rate", status_rate_, 10.0);
   nh_.param("navigation_enabled", navigation_enabled_, true);
   nh_.param("exploration_enabled", exploration_enabled_, true);
+  nh_.param("serial_handover", serial_handover_, true);
   nh_.param("exploration_start_retry_period", exploration_start_retry_period_,
             0.5);
   hover_speed_threshold_ = std::clamp(hover_speed_threshold_, 0.01, 1.0);
@@ -68,6 +75,11 @@ PlannerSupervisor::PlannerSupervisor(ros::NodeHandle &nh,
       nh_.advertise<std_msgs::String>(navigation_task_mode_topic_, 10, true);
   navigation_goal_pub_ =
       nh_.advertise<geometry_msgs::PoseStamped>(navigation_goal_out_topic_, 10);
+  click_demo_goal_pub_ =
+      nh_.advertise<geometry_msgs::PoseStamped>(click_demo_goal_topic_, 10);
+  // Latched so a late-starting handover helper still sees the latest request.
+  handover_command_pub_ =
+      nh_.advertise<std_msgs::String>(handover_command_topic_, 10, true);
 
   mode_request_sub_ = nh_.subscribe("/planner/mode_request", 10,
                                     &PlannerSupervisor::modeRequestCallback,
@@ -85,10 +97,17 @@ PlannerSupervisor::PlannerSupervisor(ros::NodeHandle &nh,
   exploration_rviz_trigger_subs_.push_back(
       nh_.subscribe("/planner/click_goal", 10,
                     &PlannerSupervisor::clickGoalCallback, this));
-  // Match exploration.rviz (/goal) and exploration.launch (/move_base_simple/goal).
-  for (const char *topic : {"/goal", "/move_base_simple/goal"}) {
+  // In serial handover mode the click-demo fsm owns /goal after state2state,
+  // so supervisor must not also subscribe there (would create a publish loop).
+  if (!serial_handover_) {
+    for (const char *topic : {"/goal", "/move_base_simple/goal"}) {
+      exploration_rviz_trigger_subs_.push_back(
+          nh_.subscribe(topic, 10, &PlannerSupervisor::clickGoalCallback, this));
+    }
+  } else {
     exploration_rviz_trigger_subs_.push_back(
-        nh_.subscribe(topic, 10, &PlannerSupervisor::clickGoalCallback, this));
+        nh_.subscribe("/move_base_simple/goal", 10,
+                      &PlannerSupervisor::clickGoalCallback, this));
   }
   exploration_status_sub_ =
       nh_.subscribe(exploration_status_topic_, 10,
@@ -96,6 +115,9 @@ PlannerSupervisor::PlannerSupervisor(ros::NodeHandle &nh,
   navigation_status_sub_ =
       nh_.subscribe(navigation_status_topic_, 10,
                     &PlannerSupervisor::navigationStatusCallback, this);
+  handover_status_sub_ =
+      nh_.subscribe(handover_status_topic_, 10,
+                    &PlannerSupervisor::handoverStatusCallback, this);
   odom_sub_ = nh_.subscribe(odometry_topic_, 50,
                             &PlannerSupervisor::odometryCallback, this);
   timer_ = nh_.createTimer(ros::Duration(1.0 / status_rate_),
@@ -103,13 +125,14 @@ PlannerSupervisor::PlannerSupervisor(ros::NodeHandle &nh,
 
   gateway_.setAuthorizedOwner(CommandOwner::HOLD, status_.task_epoch);
   // Keep navigation disarmed until an explicit state2state activation.
-  if (navigation_enabled_) {
+  if (navigation_enabled_ && !serial_handover_) {
     publishNavigationCommand("CLEAR 0");
   }
   ROS_INFO_STREAM("[planner_supervisor] initial_mode="
                   << toString(initial_mode_)
                   << " navigation_enabled=" << navigation_enabled_
                   << " exploration_enabled=" << exploration_enabled_
+                  << " serial_handover=" << serial_handover_
                   << " status=/planner/status");
 }
 
@@ -157,11 +180,13 @@ void PlannerSupervisor::handleModeRequest(const std::uint64_t request_id,
                                           const std::string &task_id,
                                           const std::string &source) {
   std::lock_guard<std::mutex> lock(mutex_);
-  if (mode == PlannerMode::STATE2STATE && !navigation_enabled_) {
+  if (mode == PlannerMode::STATE2STATE && !navigation_enabled_ &&
+      !serial_handover_) {
     status_.accepted_request_id = request_id;
     status_.phase = PlannerPhase::FAILED;
     status_.reason =
-        "navigation fsm disabled (relaunch with enable_navigation:=true)";
+        "navigation fsm disabled (relaunch with enable_navigation:=true or "
+        "serial_handover:=true)";
     ROS_WARN_STREAM("[planner_supervisor] reject state2state: "
                     << status_.reason);
     return;
@@ -341,7 +366,7 @@ void PlannerSupervisor::activateMode(const PlannerMode mode,
   }
 
   if (mode == PlannerMode::STATE2STATE) {
-    if (!navigation_enabled_) {
+    if (!serial_handover_ && !navigation_enabled_) {
       status_.phase = PlannerPhase::FAILED;
       status_.reason =
           "cannot activate state2state without navigation fsm_node";
@@ -351,10 +376,24 @@ void PlannerSupervisor::activateMode(const PlannerMode mode,
     status_.phase = PlannerPhase::WAITING_INPUT;
     status_.mode_state = ModeState::S2S_WAIT_GOAL;
     status_.stable_hover = true;
-    status_.ready_for_new_task = true;
     status_.command_owner = CommandOwner::HOLD;
-    status_.reason = reason;
     gateway_.setAuthorizedOwner(CommandOwner::HOLD, status_.task_epoch);
+    if (serial_handover_) {
+      // Keep publishing HOLD until the click-demo fsm is up, then release the
+      // command bus so fsm_node owns /planning/pos_cmd directly.
+      serial_state2state_ready_ = false;
+      serial_handover_pending_ = true;
+      status_.ready_for_new_task = false;
+      status_.reason = reason + "; serial handover to click-demo fsm";
+      publishExplorationCommand("PAUSE " + status_.task_id);
+      publishHandoverCommand("start_state2state");
+      ROS_INFO_STREAM(
+          "[planner_supervisor] serial handover requested: kill exploration, "
+          "start click-demo fsm_node");
+      return;
+    }
+    status_.ready_for_new_task = true;
+    status_.reason = reason;
     publishNavigationTaskMode("state2state");
     publishNavigationCommand("ARM " + std::to_string(status_.task_epoch));
     return;
@@ -366,13 +405,18 @@ void PlannerSupervisor::activateMode(const PlannerMode mode,
       status_.reason = "cannot activate exploration without exploration_node";
       return;
     }
-    // Keep navigation fsm alive but disarmed so a later mode_request can
-    // switch to state2state without relaunch. Do NOT auto-START exploration:
-    // wait for region/trigger exactly like standalone exploration.launch.
+    // Parallel mode: keep navigation fsm alive but disarmed. Serial mode:
+    // exploration stack is owned by handover helper / launch.
     exploration_start_pending_ = false;
-    if (navigation_enabled_) {
+    serial_state2state_ready_ = false;
+    serial_handover_pending_ = false;
+    gateway_.setPublishingEnabled(true);
+    if (navigation_enabled_ && !serial_handover_) {
       publishNavigationCommand("CLEAR " + std::to_string(status_.task_epoch));
       publishNavigationTaskMode("hold");
+    }
+    if (serial_handover_) {
+      publishHandoverCommand("start_exploration");
     }
     status_.phase = PlannerPhase::WAITING_INPUT;
     status_.mode_state = ModeState::EXP_WAIT_TRIGGER;
@@ -381,7 +425,7 @@ void PlannerSupervisor::activateMode(const PlannerMode mode,
     status_.command_owner = CommandOwner::HOLD;
     status_.task_result = PlannerTaskResult::NONE;
     status_.reason =
-        reason + "; waiting for exploration trigger (/goal or /planner/exploration/trigger)";
+        reason + "; waiting for exploration trigger (/planner/click_goal)";
     gateway_.setAuthorizedOwner(CommandOwner::HOLD, status_.task_epoch);
     ROS_INFO_STREAM("[planner_supervisor] exploration armed and waiting for "
                     "trigger (task_id will be assigned on trigger)");
@@ -410,6 +454,26 @@ bool PlannerSupervisor::acceptNavigationGoalLocked(
                       status_.ready_for_new_task,
                       toString(status_.active_mode), transition_active_);
     return false;
+  }
+  if (serial_handover_) {
+    if (!serial_state2state_ready_) {
+      ROS_WARN_THROTTLE(1.0,
+                        "[planner_supervisor] drop navigation goal: waiting "
+                        "for serial click-demo fsm handover");
+      return false;
+    }
+    // Click-demo fsm owns planning; only forward the goal and keep accepting
+    // subsequent clicks (fsm handles busy/replan itself).
+    status_.task_result = PlannerTaskResult::NONE;
+    status_.phase = PlannerPhase::PLANNING;
+    status_.ready_for_new_task = true;
+    status_.reason = "forwarded click goal to serial fsm";
+    click_demo_goal_pub_.publish(msg);
+    ROS_INFO_STREAM("[planner_supervisor] serial click goal -> "
+                    << click_demo_goal_topic_ << " p=(" << msg.pose.position.x
+                    << "," << msg.pose.position.y << "," << msg.pose.position.z
+                    << ")");
+    return true;
   }
   status_.task_result = PlannerTaskResult::NONE;
   status_.phase = PlannerPhase::PLANNING;
@@ -596,6 +660,9 @@ void PlannerSupervisor::navigationStatusCallback(
   stream >> state;
   std::lock_guard<std::mutex> lock(mutex_);
   navigation_status_ = state;
+  if (serial_handover_) {
+    return;
+  }
   if (status_.active_mode == PlannerMode::STATE2STATE && !transition_active_) {
     status_.mode_state = modeStateFromNavigationString(state);
     if (state == "FOLLOW_TRAJ" || state == "STATIC_TRACKING" ||
@@ -685,6 +752,59 @@ void PlannerSupervisor::publishNavigationTaskMode(const std::string &mode) {
   std_msgs::String msg;
   msg.data = mode;
   navigation_task_mode_pub_.publish(msg);
+}
+
+void PlannerSupervisor::publishHandoverCommand(const std::string &command) {
+  std_msgs::String msg;
+  msg.data = command;
+  handover_command_pub_.publish(msg);
+}
+
+void PlannerSupervisor::handoverStatusCallback(
+    const std_msgs::StringConstPtr &msg) {
+  if (!msg) {
+    return;
+  }
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (!serial_handover_) {
+    return;
+  }
+  const std::string &state = msg->data;
+  if (state == "state2state_ready") {
+    serial_handover_pending_ = false;
+    serial_state2state_ready_ = true;
+    status_.active_mode = PlannerMode::STATE2STATE;
+    status_.requested_mode = PlannerMode::STATE2STATE;
+    status_.phase = PlannerPhase::WAITING_INPUT;
+    status_.mode_state = ModeState::S2S_WAIT_GOAL;
+    status_.ready_for_new_task = true;
+    status_.stable_hover = hoverConditionMetLocked();
+    status_.command_owner = CommandOwner::STATE2STATE;
+    status_.reason =
+        "serial click-demo fsm ready; publish goals to /planner/click_goal";
+    // Click-demo fsm_node now owns /planning/pos_cmd.
+    gateway_.setPublishingEnabled(false);
+    ROS_INFO("[planner_supervisor] serial state2state ready; gateway released");
+    return;
+  }
+  if (state == "exploration_ready") {
+    serial_handover_pending_ = false;
+    serial_state2state_ready_ = false;
+    gateway_.setPublishingEnabled(true);
+    gateway_.setAuthorizedOwner(CommandOwner::HOLD, status_.task_epoch);
+    status_.reason = "serial exploration stack ready";
+    ROS_INFO("[planner_supervisor] serial exploration ready; gateway enabled");
+    return;
+  }
+  if (state.rfind("failed", 0) == 0) {
+    serial_handover_pending_ = false;
+    status_.phase = PlannerPhase::FAILED;
+    status_.ready_for_new_task = false;
+    status_.reason = "serial handover failed: " + state;
+    gateway_.setPublishingEnabled(true);
+    gateway_.setAuthorizedOwner(CommandOwner::HOLD, status_.task_epoch);
+    ROS_ERROR_STREAM("[planner_supervisor] " << status_.reason);
+  }
 }
 
 void PlannerSupervisor::publishStatus() {

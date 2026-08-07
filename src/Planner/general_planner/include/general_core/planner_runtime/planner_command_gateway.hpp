@@ -22,6 +22,10 @@ public:
   bool hasHoldAnchor() const;
   CommandOwner authorizedOwner() const;
   std::uint64_t authorizedEpoch() const;
+  // When false, gateway stops publishing /planning/pos_cmd so an external
+  // click-demo fsm_node can own the command bus after serial handover.
+  void setPublishingEnabled(bool enabled);
+  bool publishingEnabled() const;
 
 private:
   void navigationCallback(const quadrotor_msgs::PositionCommandConstPtr &msg);
@@ -66,6 +70,7 @@ private:
   double hold_z_{0.0};
   double hold_yaw_{0.0};
   std::uint32_t hold_sequence_{0};
+  bool publishing_enabled_{true};
 };
 
 } // namespace general_planner::planner_runtime

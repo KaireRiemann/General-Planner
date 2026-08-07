@@ -3,7 +3,8 @@ fsm:
   task_planner_en: true
   task_mode_topic: "/planning/task_mode"
   click_goal_en: true
-  click_goal_topic: "/planning/click_goal"
+  # Serial handover starts a click-demo style fsm that consumes /goal directly.
+  click_goal_topic: "/goal"
   click_height: 1.5
   click_yaw_en: true
   tracking_target_odom_topic: "/tracking/target_odom"

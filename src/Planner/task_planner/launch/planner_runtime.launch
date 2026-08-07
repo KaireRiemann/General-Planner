@@ -1,18 +1,26 @@
 <launch>
-  <!-- Unified planner runtime (original design):
+  <!-- Unified planner runtime:
        1) start once with initial_mode (e.g. exploration)
        2) follow that mode's input flow (region / trigger / goal)
        3) when stable, pub /planner/mode_request(_text) to switch modes
        4) inspect everything on latched /planner/status
 
-       Exploration FSM/traj_server tuning matches exploration.launch.
-       Runtime-only differences: supervisor trigger gate, remapped exploration
-       pos_cmd through the gateway, and optional parallel navigation_fsm_node. -->
+       Default serial_handover:=true (interim until shared GlobalMapRuntime):
+       on state2state, kill exploration stack and start a click-demo style
+       fsm_node that owns /planning/pos_cmd directly. Parallel navigation
+       (enable_navigation:=true + serial_handover:=false) remains available. -->
   <arg name="marsim" default="true" />
   <arg name="rviz" default="true" />
+  <!-- Chosen viz scheme: switch dedicated RViz configs by mode.
+       exploration  -> LIO /cloud_registered (decay) + traj markers
+       state2state  -> sliding ROG /fsm_node/rog_map/* + fsm traj
+       auto_rviz_switch:=true (default) lets planner_rviz_switcher own rviz. -->
+  <arg name="auto_rviz_switch" default="true" />
   <arg name="traj_server" default="true" />
   <arg name="initial_mode" default="hold" />
-  <arg name="enable_navigation" default="true" />
+  <arg name="serial_handover" default="true" />
+  <!-- Parallel nav fsm is off by default when using serial handover. -->
+  <arg name="enable_navigation" default="false" />
   <arg name="enable_exploration" default="true" />
   <arg name="sim_config"
        default="$(find general_planner)/config/exploration_sim.yaml" />
@@ -23,8 +31,13 @@
        default="$(find general_planner)/config/exploration_house.yaml" />
   <arg name="rog_map_config"
        default="$(find general_planner)/config/exploration_rog_map.yaml" />
+  <!-- Fallback single-config path when auto_rviz_switch:=false. -->
   <arg name="rviz_config"
-       default="$(find general_planner)/rviz/planner_runtime.rviz" />
+       default="$(find general_planner)/rviz/planner_runtime_exploration.rviz" />
+  <arg name="exploration_rviz_config"
+       default="$(find general_planner)/rviz/planner_runtime_exploration.rviz" />
+  <arg name="state2state_rviz_config"
+       default="$(find general_planner)/rviz/planner_runtime_state2state.rviz" />
   <arg name="odom_topic" default="/lidar_slam/odom" />
   <arg name="cloud_topic" default="/cloud_registered" />
   <arg name="coverage_guidance_mode" default="full" />
@@ -144,11 +157,21 @@
     <remap from="/planning/pos_cmd" to="/planning/navigation/pos_cmd" />
   </node>
 
+  <node if="$(arg serial_handover)" pkg="general_planner"
+        type="planner_serial_handover.py" name="planner_serial_handover"
+        output="screen">
+    <param name="fsm_config_path" value="$(arg navigation_config)" type="string" />
+    <param name="handover_command_topic" value="/planner/handover" type="string" />
+    <param name="handover_status_topic" value="/planner/handover_status" type="string" />
+    <param name="fsm_node_name" value="fsm_node" type="string" />
+  </node>
+
   <node pkg="general_planner" type="planner_runtime_node" name="planner_runtime_node"
         output="screen">
     <param name="initial_mode" value="$(arg initial_mode)" type="string" />
     <param name="navigation_enabled" value="$(arg enable_navigation)" type="bool" />
     <param name="exploration_enabled" value="$(arg enable_exploration)" type="bool" />
+    <param name="serial_handover" value="$(arg serial_handover)" type="bool" />
     <param name="odometry_topic" value="$(arg odom_topic)" type="string" />
     <param name="navigation_cmd_topic" value="/planning/navigation/pos_cmd" type="string" />
     <param name="exploration_cmd_topic" value="/planning/exploration/pos_cmd" type="string" />
@@ -159,6 +182,9 @@
     <param name="navigation_status_topic" value="/planning/navigation/status" type="string" />
     <param name="navigation_task_mode_topic" value="/planning/navigation_task_mode" type="string" />
     <param name="navigation_goal_out_topic" value="/planning/click_goal" type="string" />
+    <param name="click_demo_goal_topic" value="/goal" type="string" />
+    <param name="handover_command_topic" value="/planner/handover" type="string" />
+    <param name="handover_status_topic" value="/planner/handover_status" type="string" />
     <param name="hover_speed_threshold" value="0.10" type="double" />
     <param name="hover_yaw_rate_threshold" value="0.10" type="double" />
     <param name="hover_hold_duration" value="0.50" type="double" />
@@ -166,8 +192,25 @@
   </node>
 
   <group if="$(arg rviz)">
-    <node pkg="rviz" type="rviz" name="rvizvisualisation" output="log"
+    <!-- Static RViz only when auto switch is disabled. -->
+    <node unless="$(arg auto_rviz_switch)" pkg="rviz" type="rviz"
+          name="rvizvisualisation" output="log"
           args="-d $(arg rviz_config)" />
+    <node if="$(arg auto_rviz_switch)" pkg="general_planner"
+          type="planner_rviz_switcher.py" name="planner_rviz_switcher"
+          output="screen">
+      <param name="rviz_node_name" value="rvizvisualisation" type="string" />
+      <param name="exploration_rviz_config"
+             value="$(arg exploration_rviz_config)" type="string" />
+      <param name="state2state_rviz_config"
+             value="$(arg state2state_rviz_config)" type="string" />
+      <param name="hold_rviz_config"
+             value="$(arg exploration_rviz_config)" type="string" />
+      <param name="initial_mode" value="$(arg initial_mode)" type="string" />
+      <param name="status_topic" value="/planner/status" type="string" />
+      <param name="handover_status_topic"
+             value="/planner/handover_status" type="string" />
+    </node>
     <node pkg="tf" type="static_transform_publisher" name="exploration_world_tf"
           args="0 0 0 0 0 0 world navigation 100" />
   </group>

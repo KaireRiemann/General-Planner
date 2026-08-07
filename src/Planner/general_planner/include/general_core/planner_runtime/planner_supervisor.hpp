@@ -31,6 +31,7 @@ private:
   bool acceptExplorationTriggerLocked(const geometry_msgs::PoseStamped &msg);
   void explorationStatusCallback(const std_msgs::StringConstPtr &msg);
   void navigationStatusCallback(const std_msgs::StringConstPtr &msg);
+  void handoverStatusCallback(const std_msgs::StringConstPtr &msg);
   void odometryCallback(const nav_msgs::OdometryConstPtr &msg);
   void timerCallback(const ros::TimerEvent &);
 
@@ -46,6 +47,7 @@ private:
   void publishExplorationCommand(const std::string &command);
   void publishNavigationCommand(const std::string &command);
   void publishNavigationTaskMode(const std::string &mode);
+  void publishHandoverCommand(const std::string &command);
   void requestExplorationStartLocked(const std::string &reason);
   bool hoverConditionMetLocked() const;
   std::string makeTaskId(PlannerMode mode) const;
@@ -61,12 +63,15 @@ private:
   std::vector<ros::Subscriber> exploration_rviz_trigger_subs_;
   ros::Subscriber exploration_status_sub_;
   ros::Subscriber navigation_status_sub_;
+  ros::Subscriber handover_status_sub_;
   ros::Subscriber odom_sub_;
   ros::Publisher status_pub_;
   ros::Publisher exploration_command_pub_;
   ros::Publisher navigation_command_pub_;
   ros::Publisher navigation_task_mode_pub_;
   ros::Publisher navigation_goal_pub_;
+  ros::Publisher click_demo_goal_pub_;
+  ros::Publisher handover_command_pub_;
   ros::Timer timer_;
 
   mutable std::mutex mutex_;
@@ -80,6 +85,11 @@ private:
   bool exploration_start_pending_{false};
   bool navigation_enabled_{true};
   bool exploration_enabled_{true};
+  // After exploration, kill exploration stack and start a standalone click-demo
+  // fsm_node that owns /planning/pos_cmd directly (no parallel nav + gateway).
+  bool serial_handover_{true};
+  bool serial_state2state_ready_{false};
+  bool serial_handover_pending_{false};
   ros::Time hover_satisfied_since_;
   ros::Time last_odom_time_;
   ros::Time last_exploration_start_pub_;
@@ -100,6 +110,9 @@ private:
   std::string navigation_status_topic_;
   std::string navigation_task_mode_topic_;
   std::string navigation_goal_out_topic_;
+  std::string click_demo_goal_topic_;
+  std::string handover_command_topic_;
+  std::string handover_status_topic_;
   std::string odometry_topic_;
 
   double hover_speed_threshold_{0.10};
