@@ -118,7 +118,7 @@ ViewpointManager/top_candidate_num: 2
 # after the box is accepted are TopoGraph, A*, FrontierManager,
 # CoverageGuidance and the FSM initialized. box_0 is used only when dynamic
 # selection is disabled.
-dynamic_bounding_box/enabled: true
+dynamic_bounding_box/enabled: false
 dynamic_bounding_box/mode: diagonal_3d
 dynamic_bounding_box/frame_id: world
 dynamic_bounding_box/goal_topic: dynamic_bounding_box/corner_3d
@@ -132,7 +132,7 @@ dynamic_bounding_box/min_z_extent: 0.5
 dynamic_bounding_box/selection_timeout: 0.0
 dynamic_bounding_box/line_width: 0.08
 box_num: 1
-box_0/down: [-10.0, -6.0, -0.2]
+box_0/down: [-20.0, -20.0, -0.2]
 box_0/up: [182.0, 150.2, 3.8]
 dead_area_num: 0
 # trajectory param

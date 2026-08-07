@@ -7,6 +7,7 @@
   <license>Proprietary deployment wrapper; keep upstream licenses for bundled dependencies.</license>
 
   <exec_depend>roscpp</exec_depend>
+  <exec_depend>rospy</exec_depend>
   <exec_depend>std_msgs</exec_depend>
   <exec_depend>geometry_msgs</exec_depend>
   <exec_depend>nav_msgs</exec_depend>
@@ -14,6 +15,7 @@
   <exec_depend>visualization_msgs</exec_depend>
   <exec_depend>quadrotor_msgs</exec_depend>
   <exec_depend>traj_utils</exec_depend>
+  <exec_depend>general_planner</exec_depend>
   <exec_depend>message_filters</exec_depend>
   <exec_depend>pcl_ros</exec_depend>
   <exec_depend>tf</exec_depend>

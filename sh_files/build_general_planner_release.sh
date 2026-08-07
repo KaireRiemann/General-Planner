@@ -26,8 +26,12 @@ Environment overrides:
 
 What is synced:
   - devel/lib/general_planner/general_planner_runtime_node
+  - devel/lib/general_planner/planner_runtime_node
   - devel/lib/general_planner/exploration_node
   - devel/lib/general_planner/highspeed_traj_server
+  - planner_serial_handover.py / planner_rviz_switcher.py
+  - planner_runtime.launch + mode RViz configs
+  - general_planner PlannerStatus/PlannerModeRequest msgs
   - devel/lib/liblkh_tsp_solver.so
   - General Planner 3D Nav Goal RViz plugin
   - General Planner garage exploration YAML/RViz configs
@@ -131,6 +135,8 @@ echo "[build_release] Build command: ${catkin_cmd[*]}"
 
 RUNTIME_BINARY_SRC="${WORKSPACE_ROOT}/devel/lib/general_planner/general_planner_runtime_node"
 RUNTIME_BINARY_DST="${RELEASE_ROOT}/src/general_planner_release/bin/general_planner_runtime_node.bin"
+PLANNER_RUNTIME_BINARY_SRC="${WORKSPACE_ROOT}/devel/lib/general_planner/planner_runtime_node"
+PLANNER_RUNTIME_BINARY_DST="${RELEASE_ROOT}/src/general_planner_release/bin/planner_runtime_node.bin"
 EXPLORATION_BINARY_SRC="${WORKSPACE_ROOT}/devel/lib/general_planner/exploration_node"
 EXPLORATION_BINARY_DST="${RELEASE_ROOT}/src/general_planner_release/bin/exploration_node.bin"
 TRAJ_SERVER_BINARY_SRC="${WORKSPACE_ROOT}/devel/lib/general_planner/highspeed_traj_server"
@@ -144,11 +150,25 @@ RVIZ_PLUGIN_LIBRARY_DST="${RVIZ_PLUGIN_DST}/lib/libgeneral_planner_rviz_plugins.
 LEGACY_RVIZ_PLUGIN_LIBRARY_DST="${RELEASE_ROOT}/lib/libgeneral_planner_rviz_plugins.so"
 
 PLANNER_CONFIG_DIR="${REPO_ROOT}/src/Planner/general_planner/config"
-RELEASE_CONFIG_DIR="${RELEASE_ROOT}/src/general_planner_release/config"
+PLANNER_RVIZ_DIR="${REPO_ROOT}/src/Planner/general_planner/rviz"
+PLANNER_SCRIPTS_DIR="${REPO_ROOT}/src/Planner/general_planner/scripts"
+PLANNER_MSG_DIR="${REPO_ROOT}/src/Planner/general_planner/msg"
+RELEASE_PKG_DIR="${RELEASE_ROOT}/src/general_planner_release"
+RELEASE_CONFIG_DIR="${RELEASE_PKG_DIR}/config"
 EXPLORATION_CONFIG_SRC="${PLANNER_CONFIG_DIR}/exploration.yaml"
+EXPLORATION_HOUSE_CONFIG_SRC="${PLANNER_CONFIG_DIR}/exploration_house.yaml"
 EXPLORATION_SIM_CONFIG_SRC="${PLANNER_CONFIG_DIR}/exploration_sim.yaml"
 EXPLORATION_ROG_MAP_CONFIG_SRC="${PLANNER_CONFIG_DIR}/exploration_rog_map.yaml"
 EXPLORATION_RVIZ_CONFIG_SRC="${PLANNER_CONFIG_DIR}/exploration/highspeed/traj.rviz"
+RUNTIME_EXPLORATION_RVIZ_SRC="${PLANNER_RVIZ_DIR}/planner_runtime_exploration.rviz"
+RUNTIME_STATE2STATE_RVIZ_SRC="${PLANNER_RVIZ_DIR}/planner_runtime_state2state.rviz"
+SERIAL_HANDOVER_SCRIPT_SRC="${PLANNER_SCRIPTS_DIR}/planner_serial_handover.py"
+RVIZ_SWITCHER_SCRIPT_SRC="${PLANNER_SCRIPTS_DIR}/planner_rviz_switcher.py"
+GP_MSG_PKG_DST="${RELEASE_ROOT}/src/general_planner"
+GP_CPP_MSG_SRC="${WORKSPACE_ROOT}/devel/include/general_planner"
+GP_CPP_MSG_DST="${RELEASE_ROOT}/include/general_planner"
+GP_PY_MSG_SRC="${WORKSPACE_ROOT}/devel/lib/python3/dist-packages/general_planner"
+GP_PY_MSG_DST="${RELEASE_ROOT}/lib/python3/dist-packages/general_planner"
 
 MSG_SRC="${REPO_ROOT}/src/Utils/quadrotor_msgs/msg"
 MSG_DST="${RELEASE_ROOT}/src/quadrotor_msgs/msg"
@@ -166,6 +186,7 @@ TRAJ_PY_MSG_DST="${RELEASE_ROOT}/lib/python3/dist-packages/traj_utils"
 
 for required in \
   "${RUNTIME_BINARY_SRC}" \
+  "${PLANNER_RUNTIME_BINARY_SRC}" \
   "${EXPLORATION_BINARY_SRC}" \
   "${TRAJ_SERVER_BINARY_SRC}" \
   "${LKH_LIBRARY_SRC}" \
@@ -174,9 +195,20 @@ for required in \
   "${RVIZ_PLUGIN_SRC}/plugin_description.xml" \
   "${RVIZ_PLUGIN_SRC}/LICENSE" \
   "${EXPLORATION_CONFIG_SRC}" \
+  "${EXPLORATION_HOUSE_CONFIG_SRC}" \
   "${EXPLORATION_SIM_CONFIG_SRC}" \
   "${EXPLORATION_ROG_MAP_CONFIG_SRC}" \
   "${EXPLORATION_RVIZ_CONFIG_SRC}" \
+  "${RUNTIME_EXPLORATION_RVIZ_SRC}" \
+  "${RUNTIME_STATE2STATE_RVIZ_SRC}" \
+  "${SERIAL_HANDOVER_SCRIPT_SRC}" \
+  "${RVIZ_SWITCHER_SCRIPT_SRC}" \
+  "${PLANNER_MSG_DIR}/PlannerStatus.msg" \
+  "${PLANNER_MSG_DIR}/PlannerModeRequest.msg" \
+  "${GP_CPP_MSG_SRC}" \
+  "${GP_PY_MSG_SRC}" \
+  "${RELEASE_PKG_DIR}/launch/planner_runtime.launch" \
+  "${RELEASE_PKG_DIR}/planner_runtime_node" \
   "${MSG_SRC}" \
   "${CPP_MSG_SRC}" \
   "${PY_MSG_SRC}" \
@@ -202,8 +234,17 @@ sync_binary() {
 
 echo "[build_release] Sync planner runtime binaries"
 sync_binary "${RUNTIME_BINARY_SRC}" "${RUNTIME_BINARY_DST}"
+sync_binary "${PLANNER_RUNTIME_BINARY_SRC}" "${PLANNER_RUNTIME_BINARY_DST}"
 sync_binary "${EXPLORATION_BINARY_SRC}" "${EXPLORATION_BINARY_DST}"
 sync_binary "${TRAJ_SERVER_BINARY_SRC}" "${TRAJ_SERVER_BINARY_DST}"
+
+echo "[build_release] Sync planner_runtime helper scripts"
+cp "${SERIAL_HANDOVER_SCRIPT_SRC}" "${RELEASE_PKG_DIR}/planner_serial_handover.py"
+cp "${RVIZ_SWITCHER_SCRIPT_SRC}" "${RELEASE_PKG_DIR}/planner_rviz_switcher.py"
+chmod +x \
+  "${RELEASE_PKG_DIR}/planner_runtime_node" \
+  "${RELEASE_PKG_DIR}/planner_serial_handover.py" \
+  "${RELEASE_PKG_DIR}/planner_rviz_switcher.py"
 
 echo "[build_release] Sync exploration runtime library"
 mkdir -p "$(dirname "${LKH_LIBRARY_DST}")"
@@ -230,9 +271,42 @@ cp "${RVIZ_PLUGIN_SRC}/LICENSE" "${RVIZ_PLUGIN_DST}/LICENSE"
 echo "[build_release] Sync garage exploration configs"
 mkdir -p "${RELEASE_CONFIG_DIR}"
 cp "${EXPLORATION_CONFIG_SRC}" "${RELEASE_CONFIG_DIR}/exploration.yaml"
+cp "${EXPLORATION_HOUSE_CONFIG_SRC}" "${RELEASE_CONFIG_DIR}/exploration_house.yaml"
 cp "${EXPLORATION_SIM_CONFIG_SRC}" "${RELEASE_CONFIG_DIR}/exploration_sim.yaml"
 cp "${EXPLORATION_ROG_MAP_CONFIG_SRC}" "${RELEASE_CONFIG_DIR}/exploration_rog_map.yaml"
 cp "${EXPLORATION_RVIZ_CONFIG_SRC}" "${RELEASE_CONFIG_DIR}/exploration.rviz"
+cp "${RUNTIME_EXPLORATION_RVIZ_SRC}" \
+  "${RELEASE_CONFIG_DIR}/planner_runtime_exploration.rviz"
+cp "${RUNTIME_STATE2STATE_RVIZ_SRC}" \
+  "${RELEASE_CONFIG_DIR}/planner_runtime_state2state.rviz"
+
+echo "[build_release] Sync general_planner runtime messages"
+mkdir -p "${GP_MSG_PKG_DST}/msg"
+cp "${PLANNER_MSG_DIR}/PlannerStatus.msg" "${GP_MSG_PKG_DST}/msg/PlannerStatus.msg"
+cp "${PLANNER_MSG_DIR}/PlannerModeRequest.msg" "${GP_MSG_PKG_DST}/msg/PlannerModeRequest.msg"
+if [[ ! -f "${GP_MSG_PKG_DST}/package.xml" ]]; then
+  cat >"${GP_MSG_PKG_DST}/package.xml" <<'EOF'
+<?xml version="1.0"?>
+<package format="2">
+  <name>general_planner</name>
+  <version>0.1.0</version>
+  <description>Message interfaces required by planner_runtime in the binary release.</description>
+  <maintainer email="release@example.com">general_planner_release</maintainer>
+  <license>Interface definitions only.</license>
+  <buildtool_depend>catkin</buildtool_depend>
+  <build_depend>message_generation</build_depend>
+  <build_depend>std_msgs</build_depend>
+  <exec_depend>message_runtime</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+</package>
+EOF
+fi
+rm -rf "${GP_CPP_MSG_DST}"
+mkdir -p "$(dirname "${GP_CPP_MSG_DST}")"
+cp -a "${GP_CPP_MSG_SRC}" "${GP_CPP_MSG_DST}"
+rm -rf "${GP_PY_MSG_DST}"
+mkdir -p "$(dirname "${GP_PY_MSG_DST}")"
+cp -a "${GP_PY_MSG_SRC}" "${GP_PY_MSG_DST}"
 
 echo "[build_release] Sync quadrotor_msgs source definitions"
 rm -rf "${MSG_DST}"
@@ -264,8 +338,11 @@ cp -a "${TRAJ_PY_MSG_SRC}" "${TRAJ_PY_MSG_DST}"
 
 chmod +x \
   "${RELEASE_ROOT}/src/general_planner_release/general_planner_runtime_node" \
+  "${RELEASE_ROOT}/src/general_planner_release/planner_runtime_node" \
   "${RELEASE_ROOT}/src/general_planner_release/exploration_node" \
-  "${RELEASE_ROOT}/src/general_planner_release/highspeed_traj_server"
+  "${RELEASE_ROOT}/src/general_planner_release/highspeed_traj_server" \
+  "${RELEASE_ROOT}/src/general_planner_release/planner_serial_handover.py" \
+  "${RELEASE_ROOT}/src/general_planner_release/planner_rviz_switcher.py"
 
 run_smoke_tests() {
   echo "[build_release] Run release smoke tests"
@@ -297,9 +374,19 @@ PY
   done
   roslaunch --files general_planner_release exploration.launch >/dev/null
   roslaunch --files general_planner_release exploration_sim.launch rviz:=false >/dev/null
+  roslaunch --files general_planner_release planner_runtime.launch \
+    marsim:=false rviz:=false >/dev/null
+  roslaunch --files general_planner_release planner_runtime_sim.launch \
+    rviz:=false >/dev/null
+  rospack find general_planner >/dev/null
+  python3 - <<'PY'
+from general_planner.msg import PlannerStatus, PlannerModeRequest
+print("general_planner runtime msgs import ok")
+PY
 
   for binary in \
     "${RUNTIME_BINARY_DST}" \
+    "${PLANNER_RUNTIME_BINARY_DST}" \
     "${EXPLORATION_BINARY_DST}" \
     "${TRAJ_SERVER_BINARY_DST}" \
     "${RVIZ_PLUGIN_LIBRARY_DST}"; do

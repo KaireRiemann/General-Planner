@@ -1,49 +1,45 @@
 <launch>
-  <!-- Unified planner runtime:
-       1) start once with initial_mode (e.g. exploration)
-       2) follow that mode's input flow (region / trigger / goal)
-       3) when stable, pub /planner/mode_request(_text) to switch modes
-       4) inspect everything on latched /planner/status
+  <!-- Unified planner runtime (binary release, planner-only):
+       exploration -> serial handover -> state2state via general_planner_runtime_node
+       Mode-switched RViz: LIO+traj / sliding ROG+fsm traj.
 
-       Default serial_handover:=true (interim until shared GlobalMapRuntime):
-       on state2state, kill exploration stack and start a click-demo style
-       fsm_node that owns /planning/pos_cmd directly. Parallel navigation
-       (enable_navigation:=true + serial_handover:=false) remains available. -->
-  <arg name="marsim" default="true" />
+       For garage sim testing use planner_runtime_sim.launch (starts perfect_drone).
+       With external sensors / rosbag:
+         roslaunch general_planner_release planner_runtime.launch
+  -->
+  <arg name="marsim" default="false" />
   <arg name="rviz" default="true" />
-  <!-- Chosen viz scheme: switch dedicated RViz configs by mode.
-       exploration  -> LIO /cloud_registered (decay) + traj markers
-       state2state  -> sliding ROG /fsm_node/rog_map/* + fsm traj
-       auto_rviz_switch:=true (default) lets planner_rviz_switcher own rviz. -->
   <arg name="auto_rviz_switch" default="true" />
   <arg name="traj_server" default="true" />
-  <!-- Ready-to-run default: start in exploration with serial handover + mode RViz. -->
   <arg name="initial_mode" default="exploration" />
   <arg name="serial_handover" default="true" />
-  <!-- Parallel nav fsm is off by default when using serial handover. -->
   <arg name="enable_navigation" default="false" />
   <arg name="enable_exploration" default="true" />
+
   <arg name="sim_config"
-       default="$(find general_planner)/config/exploration_sim.yaml" />
-  <!-- Aligned with exploration_rog_map (ceil/z/no static PCD) until M2. -->
+       default="$(find general_planner_release)/config/exploration_sim.yaml" />
   <arg name="navigation_config"
-       default="$(find general_planner)/config/task_planner_runtime_ros1.yaml" />
+       default="$(find general_planner_release)/config/interface_state2state_esdf.yaml" />
+  <arg name="generated_config_path"
+       default="$(env HOME)/.ros/general_planner_runtime/planner_runtime_state2state.yaml" />
+  <!-- Match task_planner/planner_runtime.launch: house box contains sim spawn (-17,0,2).
+       The garage exploration.yaml box previously started at x=-10 and left the
+       drone outside the exploration region (topology start_fail, no traj). -->
   <arg name="exploration_config"
-       default="$(find general_planner)/config/exploration_house.yaml" />
+       default="$(find general_planner_release)/config/exploration_house.yaml" />
   <arg name="rog_map_config"
-       default="$(find general_planner)/config/exploration_rog_map.yaml" />
-  <!-- Fallback single-config path when auto_rviz_switch:=false. -->
+       default="$(find general_planner_release)/config/exploration_rog_map.yaml" />
   <arg name="rviz_config"
-       default="$(find general_planner)/rviz/planner_runtime_exploration.rviz" />
+       default="$(find general_planner_release)/config/planner_runtime_exploration.rviz" />
   <arg name="exploration_rviz_config"
-       default="$(find general_planner)/rviz/planner_runtime_exploration.rviz" />
+       default="$(find general_planner_release)/config/planner_runtime_exploration.rviz" />
   <arg name="state2state_rviz_config"
-       default="$(find general_planner)/rviz/planner_runtime_state2state.rviz" />
+       default="$(find general_planner_release)/config/planner_runtime_state2state.rviz" />
+
   <arg name="odom_topic" default="/lidar_slam/odom" />
   <arg name="cloud_topic" default="/cloud_registered" />
   <arg name="coverage_guidance_mode" default="full" />
 
-  <!-- Same first-delivery frontend / replanning settings as exploration.launch. -->
   <arg name="fsm_replan_time" default="0.25" />
   <arg name="fsm_replan_time_after_traj_start" default="0.35" />
   <arg name="fsm_replan_time_before_traj_end" default="1.0" />
@@ -75,7 +71,7 @@
     <param name="config_path" value="$(arg sim_config)" type="string" />
   </node>
 
-  <node if="$(arg enable_exploration)" pkg="general_planner"
+  <node if="$(arg enable_exploration)" pkg="general_planner_release"
         type="exploration_node" name="exploration_node"
         output="screen" clear_params="true">
     <rosparam file="$(arg exploration_config)" command="load" />
@@ -120,8 +116,6 @@
            value="/planning/exploration/status" type="string" />
     <param name="fsm/execution_enabled_topic"
            value="/planning/exploration/command_enabled" type="string" />
-    <!-- Runtime owns click routing via /planner/click_goal; exploration_node
-         must not also subscribe to RViz goals or one click starts twice. -->
     <param name="fsm/trigger_topic" value="" type="string" />
     <param name="fsm/legacy_trigger_topic" value="" type="string" />
     <param name="fsm/handover_slow_speed" value="0.10" type="double" />
@@ -141,8 +135,8 @@
            value="$(arg bubble_topo_cube_discrete_size)" type="double" />
   </node>
 
-  <node if="$(arg traj_server)" pkg="general_planner" type="highspeed_traj_server"
-        name="highspeed_traj_server" output="screen">
+  <node if="$(arg traj_server)" pkg="general_planner_release"
+        type="highspeed_traj_server" name="highspeed_traj_server" output="screen">
     <param name="odometry_topic" value="$(arg odom_topic)" type="string" />
     <param name="replan_time" value="$(arg fsm_replan_time)" type="double" />
     <param name="heartbeat_timeout" value="$(arg heartbeat_timeout)" type="double" />
@@ -151,24 +145,26 @@
            value="/planning/exploration/command_enabled" type="string" />
   </node>
 
-  <node if="$(arg enable_navigation)" pkg="general_planner" type="fsm_node"
-        name="navigation_fsm_node" output="screen" clear_params="true">
-    <param name="config_path" value="$(arg navigation_config)" type="string" />
-    <remap from="/planning/task_mode" to="/planning/navigation_task_mode" />
-    <remap from="/planning/pos_cmd" to="/planning/navigation/pos_cmd" />
-  </node>
-
-  <node if="$(arg serial_handover)" pkg="general_planner"
+  <node if="$(arg serial_handover)" pkg="general_planner_release"
         type="planner_serial_handover.py" name="planner_serial_handover"
         output="screen">
+    <param name="fsm_package" value="general_planner_release" type="string" />
+    <param name="fsm_type" value="general_planner_runtime_node" type="string" />
+    <param name="fsm_node_name" value="fsm_node" type="string" />
+    <param name="fsm_config_param" value="interface_config_path" type="string" />
     <param name="fsm_config_path" value="$(arg navigation_config)" type="string" />
+    <param name="fsm_extra_args"
+           value="_generated_config_path:=$(arg generated_config_path)"
+           type="string" />
+    <param name="exploration_launch_pkg" value="general_planner_release" type="string" />
+    <param name="exploration_launch_file" value="exploration.launch" type="string" />
+    <param name="exploration_launch_args" value="traj_server:=true" type="string" />
     <param name="handover_command_topic" value="/planner/handover" type="string" />
     <param name="handover_status_topic" value="/planner/handover_status" type="string" />
-    <param name="fsm_node_name" value="fsm_node" type="string" />
   </node>
 
-  <node pkg="general_planner" type="planner_runtime_node" name="planner_runtime_node"
-        output="screen">
+  <node pkg="general_planner_release" type="planner_runtime_node"
+        name="planner_runtime_node" output="screen">
     <param name="initial_mode" value="$(arg initial_mode)" type="string" />
     <param name="navigation_enabled" value="$(arg enable_navigation)" type="bool" />
     <param name="exploration_enabled" value="$(arg enable_exploration)" type="bool" />
@@ -193,11 +189,10 @@
   </node>
 
   <group if="$(arg rviz)">
-    <!-- Static RViz only when auto switch is disabled. -->
     <node unless="$(arg auto_rviz_switch)" pkg="rviz" type="rviz"
           name="rvizvisualisation" output="log"
           args="-d $(arg rviz_config)" />
-    <node if="$(arg auto_rviz_switch)" pkg="general_planner"
+    <node if="$(arg auto_rviz_switch)" pkg="general_planner_release"
           type="planner_rviz_switcher.py" name="planner_rviz_switcher"
           output="screen">
       <param name="rviz_node_name" value="rvizvisualisation" type="string" />

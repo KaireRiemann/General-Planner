@@ -1,0 +1,57 @@
+<launch>
+  <!-- Garage simulator + planner_runtime, parallel to exploration_sim.launch /
+       state2state_sim.launch: start perfect_drone, then include planner-only runtime. -->
+  <arg name="exploration_config"
+       default="$(find general_planner_release)/config/exploration_house.yaml"/>
+  <arg name="sim_config"
+       default="$(find general_planner_release)/config/exploration_sim.yaml"/>
+  <arg name="rog_map_config"
+       default="$(find general_planner_release)/config/exploration_rog_map.yaml"/>
+  <arg name="navigation_config"
+       default="$(find general_planner_release)/config/interface_state2state_esdf.yaml"/>
+  <arg name="generated_config_path"
+       default="$(env HOME)/.ros/general_planner_runtime/planner_runtime_state2state.yaml"/>
+  <arg name="rviz_config"
+       default="$(find general_planner_release)/config/planner_runtime_exploration.rviz"/>
+  <arg name="exploration_rviz_config"
+       default="$(find general_planner_release)/config/planner_runtime_exploration.rviz"/>
+  <arg name="state2state_rviz_config"
+       default="$(find general_planner_release)/config/planner_runtime_state2state.rviz"/>
+
+  <arg name="odom_topic" default="/lidar_slam/odom"/>
+  <arg name="cloud_topic" default="/cloud_registered"/>
+  <arg name="coverage_guidance_mode" default="full"/>
+  <arg name="traj_server" default="true"/>
+  <arg name="rviz" default="true"/>
+  <arg name="auto_rviz_switch" default="true"/>
+  <arg name="initial_mode" default="exploration"/>
+  <arg name="serial_handover" default="true"/>
+
+  <node pkg="perfect_drone_sim"
+        type="perfect_drone"
+        name="perfect_drone"
+        output="screen"
+        clear_params="true">
+    <param name="config_path" value="$(arg sim_config)" type="string"/>
+  </node>
+
+  <include file="$(find general_planner_release)/launch/planner_runtime.launch">
+    <arg name="marsim" value="false"/>
+    <arg name="rviz" value="$(arg rviz)"/>
+    <arg name="auto_rviz_switch" value="$(arg auto_rviz_switch)"/>
+    <arg name="traj_server" value="$(arg traj_server)"/>
+    <arg name="initial_mode" value="$(arg initial_mode)"/>
+    <arg name="serial_handover" value="$(arg serial_handover)"/>
+    <arg name="sim_config" value="$(arg sim_config)"/>
+    <arg name="navigation_config" value="$(arg navigation_config)"/>
+    <arg name="generated_config_path" value="$(arg generated_config_path)"/>
+    <arg name="exploration_config" value="$(arg exploration_config)"/>
+    <arg name="rog_map_config" value="$(arg rog_map_config)"/>
+    <arg name="rviz_config" value="$(arg rviz_config)"/>
+    <arg name="exploration_rviz_config" value="$(arg exploration_rviz_config)"/>
+    <arg name="state2state_rviz_config" value="$(arg state2state_rviz_config)"/>
+    <arg name="odom_topic" value="$(arg odom_topic)"/>
+    <arg name="cloud_topic" value="$(arg cloud_topic)"/>
+    <arg name="coverage_guidance_mode" value="$(arg coverage_guidance_mode)"/>
+  </include>
+</launch>

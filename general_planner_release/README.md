@@ -84,6 +84,24 @@ Run exploration with real sensors, rosbag or an externally started simulator:
 roslaunch general_planner_release exploration.launch
 ```
 
+Unified explore → state2state runtime (serial handover + mode RViz).
+
+With the bundled garage simulator (same pattern as `exploration_sim.launch` /
+`state2state_sim.launch`):
+
+```bash
+roslaunch general_planner_release planner_runtime_sim.launch
+# 3D Nav Goal: exploration bbox; 2D Nav Goal: /planner/click_goal
+# after exploration is stable / finished:
+rostopic pub -1 /planner/mode_request_text std_msgs/String "data: state2state"
+```
+
+Planner-only (real sensors / rosbag / external sim):
+
+```bash
+roslaunch general_planner_release planner_runtime.launch
+```
+
 The delivered `config/exploration.yaml` enables pre-flight dynamic exploration
 boundary selection. After launch, RViz `3D Nav Goal` sends two opposite XYZ
 corners to `/exploration_node/dynamic_bounding_box/corner_3d`. Their Z values
