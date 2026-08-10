@@ -7,6 +7,7 @@
 #include <memory>
 #include <mutex>
 #include <shared_mutex>
+#include <string>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -24,8 +25,23 @@ namespace general_planner {
  */
 class TopologyMapView {
 public:
+    enum class EvidenceState : std::uint8_t {
+        UNKNOWN = 0,
+        KNOWN_FREE = 1,
+        OCCUPIED = 2
+    };
+
     virtual ~TopologyMapView() = default;
-    virtual bool isTraversable(const rog_map::Vec3f &position) const = 0;
+    /**
+     * Persistent topology must distinguish missing evidence from a confirmed
+     * obstacle. UNKNOWN may neither create new graph geometry nor erase
+     * geometry committed from an earlier KNOWN_FREE observation.
+     */
+    virtual EvidenceState evidenceState(
+        const rog_map::Vec3f &position) const = 0;
+    bool isTraversable(const rog_map::Vec3f &position) const {
+        return evidenceState(position) == EvidenceState::KNOWN_FREE;
+    }
     virtual bool getClearance(const rog_map::Vec3f &position,
                               double &distance) const = 0;
 };
@@ -35,6 +51,20 @@ class IncrementalTopologyGraph {
 public:
     using Ptr = std::shared_ptr<IncrementalTopologyGraph>;
     using NodeId = std::uint64_t;
+
+    enum class ConstructionMode : std::uint8_t {
+        PERSISTENT_BUBBLE_SKELETON = 0,
+        DENSE_KNOWN_FREE_DEBUG = 1
+    };
+
+    enum class NodeState : std::uint8_t {
+        ACTIVE = 0,
+        HISTORICAL = 1
+    };
+
+    static const char *constructionModeName(ConstructionMode mode);
+    static ConstructionMode constructionModeFromString(
+        const std::string &name);
 
     struct Config {
         bool enabled{false};
@@ -48,7 +78,8 @@ public:
          * unknown_as_free. Traversability comes directly from the map view
          * supplied by MapManager (current ROG Map with global-map fallback).
          */
-        bool dense_known_free{false};
+        ConstructionMode construction_mode{
+            ConstructionMode::PERSISTENT_BUBBLE_SKELETON};
         /**
          * Build a 2.5D graph on navigation_altitude. This is intended for
          * state2state flight in a narrow inflated altitude band: virtual
@@ -83,13 +114,22 @@ public:
     };
 
     struct Query final : TopologyMapView {
+        /** Preferred tri-state global occupancy query. */
+        std::function<EvidenceState(const rog_map::Vec3f &)> evidence;
         /** True only for free space satisfying the desired robot inflation. */
         std::function<bool(const rog_map::Vec3f &)> traversable;
         /** Optional ESDF/clearance query. Return false when unavailable. */
         std::function<bool(const rog_map::Vec3f &, double &)> clearance;
 
-        bool isTraversable(const rog_map::Vec3f &position) const override {
-            return traversable && traversable(position);
+        EvidenceState evidenceState(
+            const rog_map::Vec3f &position) const override {
+            if (evidence) {
+                return evidence(position);
+            }
+            // Compatibility for standalone users/tests which still provide a
+            // binary map. A false binary result is conservative OCCUPIED.
+            return traversable && traversable(position)
+                ? EvidenceState::KNOWN_FREE : EvidenceState::OCCUPIED;
         }
 
         bool getClearance(const rog_map::Vec3f &position,
@@ -104,18 +144,23 @@ public:
         rog_map::Vec3f position{rog_map::Vec3f::Zero()};
         double clearance{0.0};
         std::uint64_t revision{0};
+        std::uint64_t last_observed_revision{0};
+        NodeState state{NodeState::ACTIVE};
     };
 
     struct Edge {
         NodeId from{0};
         NodeId to{0};
         double cost{0.0};
+        rog_map::vec_Vec3f polyline;
+        std::uint64_t validated_revision{0};
     };
 
     struct Snapshot {
         std::vector<Node, Eigen::aligned_allocator<Node>> nodes;
         std::vector<Edge> edges;
-        bool dense_known_free{false};
+        ConstructionMode construction_mode{
+            ConstructionMode::PERSISTENT_BUBBLE_SKELETON};
         std::uint64_t revision{0};
         std::size_t known_free_cell_count{0};
         std::size_t dirty_region_count{0};
@@ -242,6 +287,11 @@ private:
     RegionKey denseCellOf(const rog_map::Vec3f &position) const;
     bool constructionTraversable(const rog_map::Vec3f &position,
                                  const TopologyMapView &map_view) const;
+    TopologyMapView::EvidenceState lineEvidence(
+        const rog_map::Vec3f &start,
+        const rog_map::Vec3f &goal,
+        const TopologyMapView &map_view,
+        double sample_spacing = 0.0) const;
     bool lineTraversable(const rog_map::Vec3f &start,
                          const rog_map::Vec3f &goal,
                          const TopologyMapView &map_view,
@@ -250,12 +300,16 @@ private:
                              const TopologyMapView &map_view) const;
     std::vector<Node, Eigen::aligned_allocator<Node>> generateCandidates(
         const RegionKey &region, const TopologyMapView &map_view,
-        CandidateDiagnostics &diagnostics) const;
+        CandidateDiagnostics &diagnostics,
+        const rog_map::vec_Vec3f &evidence_seeds,
+        bool evidence_only) const;
     bool popDirtyRegion(RegionKey &region,
                         std::vector<RegionKey> &changed_dense_cells,
+                        rog_map::vec_Vec3f &evidence_seeds,
                         const rog_map::Vec3f *focus);
     void rebuildRegion(const RegionKey &region,
                        const std::vector<RegionKey> &changed_dense_cells,
+                       const rog_map::vec_Vec3f &evidence_seeds,
                        const TopologyMapView &map_view);
     void rebuildIncidentEdges(const std::vector<NodeId> &source_ids,
                               const TopologyMapView &map_view);
@@ -272,6 +326,8 @@ private:
     SearchSnapshotPtr search_snapshot_;
     NodeMap nodes_;
     RegionMap regions_;
+    /** Regions which already completed their one-time full bubble sampling. */
+    std::unordered_set<RegionKey, RegionKeyHash> initialized_regions_;
     /** Present only in dense mode; maps one lattice cell to its live node. */
     std::unordered_map<RegionKey, NodeId, RegionKeyHash> dense_node_index_;
     std::unordered_set<RegionKey, RegionKeyHash> dirty_regions_;
@@ -280,6 +336,9 @@ private:
         RegionKey,
         std::unordered_set<RegionKey, RegionKeyHash>,
         RegionKeyHash> dirty_dense_cells_;
+    /** Exact ROG transition voxel centers used as evidence-aligned bubble seeds. */
+    std::unordered_map<RegionKey, rog_map::vec_Vec3f, RegionKeyHash>
+        dirty_evidence_seeds_;
     std::unordered_set<RegionKey, RegionKeyHash> observed_route_regions_;
     NodeId next_node_id_{1};
     std::uint64_t revision_{0};

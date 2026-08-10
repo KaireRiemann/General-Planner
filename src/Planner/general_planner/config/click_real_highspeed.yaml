@@ -62,35 +62,36 @@ general_planner:
     direct_line_frontend_enable: true
     topology:
       enable: true
-      # Build, record and visualize only. Keep topology completely outside the
-      # latency-sensitive state2state frontend.
+      # Global bubble A* supplies a route; the local planner executes only the
+      # collision-checked prefix inside the rolling ROG window.
       query_enable: false
-      # Persistent, globally aligned dense roadmap over sensor-observed free
-      # space. Unknown cells and planned-but-unobserved routes are excluded.
-      construction_mode: dense_known_free
-      # Delivery uses a true 3D dense lattice. Edges remain evidence-validated,
-      # with a valid upper/lower portal reserved to prevent layer separation.
+      # Sparse persistent 3D skeleton over sensor-observed global free space.
+      construction_mode: persistent_bubble_skeleton
       planar_mode: false
       navigation_altitude: 1.5
       unknown_as_free: false
       min_query_distance: 3.0
-      # Dirty regions nearest to the current odom are consumed at 20 Hz.
-      # Dense lattice hashing keeps this budget bounded while the robot moves.
-      update_budget: 32
+      # Dirty regions nearest to current odom are consumed asynchronously.
+      update_budget: 8
       update_period: 0.05
       publish_period: 0.20
       region_size: 4.0
-      sample_spacing: 1.0
-      min_clearance: 0.0
+      sample_spacing: 0.8
+      # Nodes still require KNOWN_FREE and inflated-safe edges; 0.20 m lets
+      # first-pass LiDAR ray evidence seed the graph at robot-radius clearance.
+      min_clearance: 0.20
       max_clearance: 2.5
-      # 1.8 m retains all 26 immediate 3D lattice neighbors at 1 m spacing,
-      # without the expensive two-cell shortcut search.
-      connection_radius: 1.8
-      dirty_padding: 0.0
+      # Committed nodes never move; global spacing prevents clusters at dirty
+      # region boundaries while later observations fill uncovered gaps.
+      candidate_separation: 1.5
+      stable_match_distance: 1.0
+      connection_radius: 6.0
+      edge_sample_spacing: 0.20
+      dirty_padding: 2.5
       bubble_overlap_margin: 0.10
-      max_nodes_per_region: 256
-      max_bubbles_per_region: 256
-      max_neighbors: 26
+      max_nodes_per_region: 12
+      max_bubbles_per_region: 192
+      max_neighbors: 8
     altitude_guard_enable: true
     altitude_band: 0.25
     altitude_escape_enable: true
@@ -307,8 +308,8 @@ rog_map:
   raycasting:
     # if disable, the map will only maintain occupied information, and all other grid
     # will be considered as unknown.
-    # Dense observed-free topology requires miss-ray integration; otherwise
-    # ROG contains OCCUPIED and UNKNOWN only and cannot supply KNOWN_FREE.
+    # Persistent topology requires miss-ray integration; otherwise ROG contains
+    # OCCUPIED and UNKNOWN only and cannot supply observed KNOWN_FREE evidence.
     enable: true
     batch_update_size: 1
     local_update_box: [ 100,100,5 ]

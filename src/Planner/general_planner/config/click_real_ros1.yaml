@@ -45,30 +45,30 @@ general_planner:
     direct_line_frontend_enable: true
     topology:
       enable: true
-      # Build, record and visualize only; do not use it as a planner frontend.
-      query_enable: false
-      construction_mode: dense_known_free
-      # Use the center of ROG's effective height band and horizontal clearance
-      # for the persistent state2state topology graph.
+      # Global bubble routing with locally checked receding-horizon execution.
+      query_enable: true
+      construction_mode: persistent_bubble_skeleton
       planar_mode: false
       navigation_altitude: 1.5
       # Persistent topology accepts sensor-observed known-free cells only.
       unknown_as_free: false
       min_query_distance: 3.0
-      update_budget: 32
+      update_budget: 8
       update_period: 0.05
       publish_period: 0.20
       region_size: 4.0
-      sample_spacing: 1.0
-      min_clearance: 0.0
+      sample_spacing: 0.8
+      min_clearance: 0.20
       max_clearance: 2.5
-      # Keep the complete 26-neighbor 3D lattice, without two-cell shortcuts.
-      connection_radius: 1.8
-      dirty_padding: 0.0
+      candidate_separation: 1.5
+      stable_match_distance: 1.0
+      connection_radius: 6.0
+      edge_sample_spacing: 0.20
+      dirty_padding: 2.5
       bubble_overlap_margin: 0.10
-      max_nodes_per_region: 256
-      max_bubbles_per_region: 256
-      max_neighbors: 26
+      max_nodes_per_region: 12
+      max_bubbles_per_region: 192
+      max_neighbors: 8
     altitude_guard_enable: true
     altitude_band: 0.25
     altitude_escape_enable: true
@@ -238,7 +238,7 @@ rog_map:
   raycasting:
     # if disable, the map will only maintain occupied information, and all other grid
     # will be considered as unknown.
-    # Required by dense_known_free topology to create observed free voxels.
+    # Required by persistent topology to create observed KNOWN_FREE voxels.
     enable: true
     batch_update_size: 1
     local_update_box: [ 100,100,5 ]

@@ -20,9 +20,14 @@ exploration FSM 独占的数据结构；探索只是它的一个消费者和更�
 
 当前实现把普通规划需要的部分放入 `MapManager`：
 
-- `TopologyMapView`：只定义可通行性和净空距离，不依赖 LIO、ROGMap 或 FSM。
-- `IncrementalTopologyGraph`：脏区域内自适应细分，生成 clearance bubble，合并
-  重叠 bubble，并为每个局部连通分量保留稳定代表节点。
+- `TopologyMapView`：显式返回 `KNOWN_FREE/OCCUPIED/UNKNOWN` 三态证据和净空，
+  不依赖 LIO、ROGMap 或 FSM。UNKNOWN 不新增节点，也不删除已提交节点。
+- `IncrementalTopologyGraph`：脏区域内自适应细分，并将 ROG 实际状态变化体素作为
+  对齐传感器证据的 bubble seed；每个连通分量保留核心节点和跨 region portal，避免
+  门洞、转弯及上下层连接被单一代表点压缩。
+- region 首次观测时执行完整抽样；提交后只消费新的 ROG seed。已提交节点的 ID 和
+  坐标不再重抽样或覆盖，新节点必须满足跨 region 的全局最小间距，只有明确 OCCUPIED
+  才能删除。既有边优先保留，新边同时受两端无向度数上限约束。
 - 对受窄高度带约束的 state2state 配置，`planar_mode` 将脏区压缩为 XY 区域，在
   ROG 实际高度边界的中心层采样，并只用水平射线计算 bubble 净空；虚拟上下边界
   仍参与节点合法性判断，所有边仍使用三维膨胀地图逐段验证。
@@ -34,9 +39,9 @@ exploration FSM 独占的数据结构；探索只是它的一个消费者和更�
   避免 `unknown_as_free` 在默认原点产生伪历史节点。
 - `TopologyGraphROS1`：独立 worker 低频消费脏区域；ROS timer 只唤醒 worker 和
   发布快照，建图不运行在 state2state 重规划线程中。
-- state2state 当前配置为 `topology.enable=true`、`query_enable=false`：拓扑只在
-  后台构建、记录和可视化，前端不获取拓扑快照、不执行图搜索或可见性挂接，正常
-  规划继续使用原有直连与局部 A*。图查询代码保留为显式实验能力，不是默认路径。
+- click state2state 配置为 `topology.enable=true`、`query_enable=true`：不可变快照
+  执行全局 topology A*，前端只截取当前 ROG 内的可执行前缀，再交给原有局部
+  corridor/轨迹优化；未建图区域继续回退直连和局部 A*。
 - 成功 guide path 调用 `observePlannedTopologyPath()`，只为沿途未观察区域播种增量
   构图任务。规划折线不会未经地图验证直接固化成安全边。
 
@@ -56,8 +61,8 @@ ROS 状态 Marker 同时发布最近一次区域重建的 sampled/free/clearance
 - `MapManager/IncrementalTopologyGraph` 只服务 state2state 的长期导航记忆。
 - ROS adapter 通过 mission gate 管理运行期所有权：进入 exploration 时停止脏区域
   跟踪、后台构图和拓扑规划查询；返回 state2state 后重新标记当前局部窗口并恢复。
-- state2state 默认不查询 topology，因此 15 Hz 重规划线程没有拓扑挂接、图搜索或
-  路径重复验证开销。
+- state2state 查询不可变稀疏快照，不等待后台构图锁；只验证全局路由的局部前缀，
+  不再用当前 ROG 重复检查整条历史路线。
 
 因此，启用 state2state topology 不会改变 exploration TopoGraph 的建立过程，也
 不会让 exploration 为这套图支付后台构图开销。
@@ -68,7 +73,7 @@ ROS 状态 Marker 同时发布最近一次区域重建的 sampled/free/clearance
 |---|---|---|
 | 全局自由空间导航骨架 | 已对齐 | 多面体骨架 |
 | 增量扩展与运行期记忆 | 已对齐 | 位姿附近扩展 |
-| 规划查询参与全局引导 | 能力保留，当前配置关闭 | Skeleton A* |
+| 规划查询参与全局引导 | 已启用，全局图 A* + 局部前缀 | Skeleton A* |
 | 局部规划器最终安全负责 | 已对齐 | EGO/A* |
 | 地图变化后边重验证 | 更严格 | 以追加和回环为主 |
 | 几何原语 | bubble 代表节点 | 多面体和 gate |

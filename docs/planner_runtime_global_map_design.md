@@ -41,7 +41,8 @@
 
 - `MapManager` 持有 `ROGMapROS`、`BoundaryMap` 和 `IncrementalTopologyGraph`；
 - `BoundaryMap` 在 ROG 滑动窗口移出旧区域后，保留全局已知空间的稀疏边界记忆；
-- `IncrementalTopologyGraph` 接收 ROG 状态变化，只重建脏 region；
+- `IncrementalTopologyGraph` 接收 ROG 状态变化；region 首次完整抽样，提交后只按新
+  证据增量补点，不再覆盖已经保存的节点；
 - 查询侧使用不可变 `SearchSnapshot`，规划线程可以安全读取图快照；
 - `MapManager` 有 `mapRevision()`；拓扑图 snapshot/statistics 有独立 `revision`；
 - state2state 已可以通过 `findTopologyPath()` 做 topo A* 查询，当前部分配置仅构图/可视化，未默认启用查询。
@@ -214,7 +215,7 @@ struct GlobalMapContext {
 - 节点只能由传感器证实的 `KNOWN_FREE` 空间生成；
 - 边必须经当前地图可通行性验证；
 - ROG 滑窗外区域通过 `BoundaryMap` 的持久证据参与查询；
-- 新障碍、占据变化会使关联 region 和边进入脏状态并重建；
+- 新障碍、占据变化只增量补充未覆盖自由空间或失效明确占据的节点/边，不重抽样已提交图；
 - 规划路径最多用于“优先更新哪些 region”，不能被当作自由空间证据写回；
 - topo A* 输出仅是全局引导，最终可执行轨迹仍须由局部 planner 和碰撞检查负责。
 
@@ -223,11 +224,11 @@ struct GlobalMapContext {
 ```yaml
 global_topology:
   enabled: true
-  construction_mode: dense_known_free
+  construction_mode: persistent_bubble_skeleton
   unknown_as_free: false
   snapshot_every_update: true
-  min_clearance: <机体半径 + 统一安全裕量>
-  update_budget: 4
+  min_clearance: <至少机体半径；边仍使用膨胀地图验证>
+  update_budget: 8
   update_period: 0.05
   publish_period: 0.50
 ```

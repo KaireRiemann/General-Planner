@@ -1,6 +1,6 @@
 topology:
   enabled: false
-  construction_mode: dense_known_free
+  construction_mode: persistent_bubble_skeleton
   planar_mode: false
   navigation_altitude: 0.0
   frame_id: world
@@ -8,19 +8,19 @@ topology:
   update_period: 0.05
   publish_period: 0.2
   region_size: 4.0
-  sample_spacing: 1.0
-  min_clearance: 0.0
+  sample_spacing: 0.8
+  min_clearance: 0.20
   max_clearance: 2.5
   candidate_separation: 1.5
   stable_match_distance: 1.0
-  connection_radius: 1.8
+  connection_radius: 6.0
   edge_sample_spacing: 0.2
-  dirty_padding: 0.0
+  dirty_padding: 2.5
   bubble_overlap_margin: 0.1
   unknown_as_free: false
-  max_nodes_per_region: 256
-  max_bubbles_per_region: 256
-  max_neighbors: 26
-  max_regions_per_update: 32
+  max_nodes_per_region: 12
+  max_bubbles_per_region: 192
+  max_neighbors: 8
+  max_regions_per_update: 8
   node_scale: 0.22
   edge_scale: 0.06

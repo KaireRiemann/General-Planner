@@ -180,8 +180,9 @@ namespace general_planner {
         }
         IncrementalTopologyGraph::Config topology_config;
         topology_config.enabled = cfg_.state2state_topology_enable;
-        topology_config.dense_known_free =
-            cfg_.state2state_topology_construction_mode == "dense_known_free";
+        topology_config.construction_mode =
+            IncrementalTopologyGraph::constructionModeFromString(
+                cfg_.state2state_topology_construction_mode);
         topology_config.unknown_as_free = cfg_.state2state_topology_unknown_as_free;
         topology_config.snapshot_every_update =
             cfg_.state2state_topology_query_enable;
@@ -202,8 +203,14 @@ namespace general_planner {
         topology_config.min_clearance = std::max(
             cfg_.state2state_topology_min_clearance, cfg_.robot_r);
         topology_config.max_clearance = cfg_.state2state_topology_max_clearance;
+        topology_config.candidate_separation =
+            cfg_.state2state_topology_candidate_separation;
+        topology_config.stable_match_distance =
+            cfg_.state2state_topology_stable_match_distance;
         topology_config.connection_radius =
             cfg_.state2state_topology_connection_radius;
+        topology_config.edge_sample_spacing =
+            cfg_.state2state_topology_edge_sample_spacing;
         topology_config.dirty_padding = cfg_.state2state_topology_dirty_padding;
         topology_config.bubble_overlap_margin =
             cfg_.state2state_topology_bubble_overlap_margin;
@@ -223,8 +230,8 @@ namespace general_planner {
         if (topology_config.enabled) {
             ros_ptr_->info(
                 " -- [GeneralPlanner] Incremental topology enabled: mode={}, region={:.2f}m, cell={:.2f}m, clearance={:.2f}m, unknown_as_free={}, planar={}, navigation_z={:.3f}m, planning_query={}.",
-                topology_config.dense_known_free
-                    ? "dense_known_free" : "bubble_topology",
+                IncrementalTopologyGraph::constructionModeName(
+                    topology_config.construction_mode),
                 topology_config.region_size,
                 topology_config.sample_spacing,
                 topology_config.min_clearance,

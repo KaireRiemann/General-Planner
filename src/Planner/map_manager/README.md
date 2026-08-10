@@ -33,23 +33,28 @@ dirty. Odometry updates the topology expansion focus and marks a new robot
 neighborhood after sufficient motion, but does no topology sampling in the
 odom callback. `TopologyGraphROS1` owns a dedicated low-rate worker; its ROS timer only
 wakes that worker, so graph construction never runs in the state2state replanning
-thread. Each worker pass rebuilds a configured number of regions, preserves
-matching node IDs, removes invalid incident edges, and validates new edges
-against the current map.
-Within each dirty region it adaptively subdivides space, creates clearance
-bubbles, unions overlapping bubbles, and keeps one representative per connected
-component. Odometry submits the lightweight robot-position priority hint.
+thread. A region receives one full bubble sampling pass. After commit, updates
+only consume new ROG evidence seeds: existing node IDs and positions never move,
+new nodes fill uncovered gaps subject to a global separation radius, and only a
+confirmed occupied observation removes committed geometry.
+Within each dirty region it adaptively subdivides space, injects exact
+sensor-transition voxels as evidence-aligned seeds, creates clearance bubbles,
+and unions overlapping bubbles. Every component keeps a core plus bounded face
+portals, so bends, doors, and vertical region connections are not collapsed to
+one point. Existing edges are retained while valid; new undirected edges are
+added only when both endpoints remain below `max_neighbors`. Odometry submits
+only the lightweight robot-position priority hint.
 `updateTopologyAround()` remains a synchronous maintenance API for tests and
 tools and must not be called by real-time planners.
 Successful state2state guide paths call `observePlannedTopologyPath()`. This
 seeds previously unseen route regions for later budgeted expansion; it does not
 trust a planned polyline as a permanent edge without map validation.
 
-The graph core depends only on `TopologyMapView` (`isTraversable()` and
-`getClearance()`), not on ROGMap, LIO or any planner state machine. MapManager's
-adapter uses local inflated ROG occupancy plus persistent BoundaryMap evidence.
-If `unknown_as_free` is selected it applies only inside the current local map;
-unknown global volume is never stored as historical free space.
+The graph core depends only on the tri-state `TopologyMapView`
+(`KNOWN_FREE/OCCUPIED/UNKNOWN` plus `getClearance()`), not on ROGMap, LIO or any
+planner state machine. MapManager's adapter uses local inflated ROG occupancy
+plus persistent BoundaryMap evidence. UNKNOWN never creates geometry and never
+erases committed geometry; only confirmed OCCUPIED evidence invalidates it.
 
 For state2state profiles constrained to a narrow inflated height band,
 `planar_mode` collapses dirty regions to XY, samples a configured navigation
@@ -76,14 +81,15 @@ private parameters, performs budgeted updates on its worker, and publishes
 ```yaml
 topology:
   enabled: true
-  planar_mode: true
-  navigation_altitude: 1.1
+  construction_mode: persistent_bubble_skeleton
+  planar_mode: false
+  navigation_altitude: 1.5
   frame_id: world
   topic: map_manager/topology
   update_period: 0.2
   region_size: 4.0
-  sample_spacing: 1.0
-  min_clearance: 0.45
+  sample_spacing: 0.8
+  min_clearance: 0.20
   max_clearance: 2.5
   candidate_separation: 1.5
   stable_match_distance: 1.0
@@ -92,10 +98,10 @@ topology:
   dirty_padding: 2.5
   bubble_overlap_margin: 0.1
   unknown_as_free: false
-  max_nodes_per_region: 4
-  max_bubbles_per_region: 256
+  max_nodes_per_region: 12
+  max_bubbles_per_region: 192
   max_neighbors: 8
-  max_regions_per_update: 4
+  max_regions_per_update: 8
   node_scale: 0.22
   edge_scale: 0.06
 ```
@@ -104,11 +110,11 @@ General Planner derives `navigation_altitude` from the center of ROG's actual
 post-inflation virtual height bounds. Standalone users of `MapManager` should
 set it explicitly when enabling `planar_mode`.
 
-General Planner separates construction from consumption. Its state2state YAML
-uses `topology.enable: true` with `topology.query_enable: false`: the graph is
-built, updated, recorded and visualized, but the latency-sensitive frontend does
-not acquire a topology snapshot or run graph routing. `query_enable` is an
-explicit opt-in for future experiments and defaults to false.
+General Planner separates construction from consumption. The click profiles use
+`topology.enable: true` with `topology.query_enable: true`: immutable graph A*
+produces a global route, then state2state clips and collision-checks only the
+prefix inside the current rolling ROG window. Direct line and local A* remain
+fallbacks when the graph has not yet observed the requested area.
 
 The first full-window seed is delayed until real odometry has initialized the
 ROG sliding-map origin. This prevents `unknown_as_free` from creating persistent

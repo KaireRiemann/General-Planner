@@ -328,26 +328,12 @@ namespace state2state_task {
             }
 
             vec_Vec3f topology_path;
-            auto routeUsable = [&](const vec_Vec3f &route) {
-                if (route.size() < 2) {
-                    return false;
-                }
-                for (std::size_t i = 1; i < route.size(); ++i) {
-                    if (!lineUsable(route[i - 1], route[i])) {
-                        return false;
-                    }
-                }
-                return true;
-            };
-
             bool reaches_goal = services.map_manager->findTopologyPath(
-                                    topology_snapshot, temp_start_point, goal,
-                                    topology_path) &&
-                                routeUsable(topology_path);
+                topology_snapshot, temp_start_point, goal, topology_path);
 
-            // A distant click goal can lie outside the rolling local map. In
-            // that case choose a reachable graph node which advances toward
-            // it; the next replanning cycle continues over the persistent map.
+            // If the goal is not attachable yet, choose a known global anchor
+            // which advances toward it. The anchor may be outside the rolling
+            // window; only its executable prefix is checked locally below.
             if (!reaches_goal) {
                 struct RouteTarget {
                     Vec3f position;
@@ -364,13 +350,13 @@ namespace state2state_task {
                     const double radial_distance = offset.norm();
                     const double progress = offset.dot(direction);
                     if (progress <= services.cfg.resolution ||
-                        radial_distance > searching_horizon * 1.35 ||
-                        !pointUsable(node.position)) {
+                        radial_distance > std::max(3.0 * searching_horizon,
+                                                   searching_horizon + 5.0)) {
                         continue;
                     }
                     targets.push_back({node.position,
-                                       progress - 0.15 * std::abs(
-                                           radial_distance - searching_horizon)});
+                                       progress - 0.10 * radial_distance -
+                                           0.05 * (goal - node.position).norm()});
                 }
                 std::sort(targets.begin(), targets.end(),
                           [](const RouteTarget &lhs, const RouteTarget &rhs) {
@@ -383,14 +369,13 @@ namespace state2state_task {
                 // first safe route instead of ray-checking several equivalent
                 // graph paths in the latency-sensitive frontend.
                 const std::size_t attempts = std::min<std::size_t>(3, targets.size());
-                const double required_length = 0.65 * std::min(
+                const double required_length = 0.35 * std::min(
                     searching_horizon, query_distance);
                 for (std::size_t i = 0; i < attempts; ++i) {
                     vec_Vec3f route;
                     if (!services.map_manager->findTopologyPath(
                             topology_snapshot, temp_start_point,
-                            targets[i].position, route) ||
-                        !routeUsable(route)) {
+                            targets[i].position, route)) {
                         continue;
                     }
                     double route_length = 0.0;
@@ -412,27 +397,53 @@ namespace state2state_task {
                 }
             }
 
+            // A global route is trusted only as high-level connectivity. Feed
+            // the existing local planner a collision-checked receding-horizon
+            // prefix instead of rejecting historic nodes outside local ROG.
             appendPathPointUnique(temp_start_point, candidate);
             double remaining = std::max(0.0, searching_horizon);
+            const double prefix_step = std::max(
+                0.25, std::max(services.cfg.resolution,
+                               services.map_manager->getInfResolution()));
+            bool complete_route = true;
             for (std::size_t i = 1; i < topology_path.size(); ++i) {
                 const Vec3f segment = topology_path[i] - topology_path[i - 1];
                 const double length = segment.norm();
                 if (length <= 1.0e-9) {
                     continue;
                 }
-                if (length <= remaining + 1.0e-9) {
-                    appendPathPointUnique(topology_path[i], candidate);
-                    remaining -= length;
-                    continue;
+                const double usable_length = std::min(length, remaining);
+                const int steps = std::max(
+                    1, static_cast<int>(std::ceil(usable_length / prefix_step)));
+                bool segment_complete = true;
+                for (int step = 1; step <= steps; ++step) {
+                    const double distance = usable_length *
+                        static_cast<double>(step) / static_cast<double>(steps);
+                    const Vec3f point = topology_path[i - 1] +
+                        segment * (distance / length);
+                    if (!lineUsable(candidate.back(), point)) {
+                        segment_complete = false;
+                        complete_route = false;
+                        break;
+                    }
+                    appendPathPointUnique(point, candidate);
                 }
-                appendPathPointUnique(topology_path[i - 1] +
-                                      segment * (remaining / length), candidate);
-                candidate_ret = REACH_HORIZON;
-                return candidate.size() >= 2;
+                remaining -= usable_length;
+                if (!segment_complete || usable_length + 1.0e-9 < length ||
+                    remaining <= 1.0e-9) {
+                    complete_route = false;
+                    break;
+                }
             }
 
-            candidate_ret = reaches_goal ? REACH_GOAL : REACH_HORIZON;
-            if (reaches_goal) {
+            if (candidate.size() < 2 ||
+                (candidate.back() - candidate.front()).norm() <
+                    2.0 * services.cfg.resolution) {
+                return false;
+            }
+            candidate_ret = reaches_goal && complete_route
+                ? REACH_GOAL : REACH_HORIZON;
+            if (candidate_ret == REACH_GOAL) {
                 appendPathPointUnique(goal, candidate);
             }
             return candidate.size() >= 2;
@@ -444,10 +455,10 @@ namespace state2state_task {
 
         vec_Vec3f normal_path;
         RET_CODE ret_code = FAILED;
-        const bool direct_line_frontend =
-                buildDirectLineCandidate(normal_path, ret_code);
-        const bool topology_frontend = !direct_line_frontend &&
+        const bool topology_frontend =
                 buildTopologyCandidate(normal_path, ret_code);
+        const bool direct_line_frontend = !topology_frontend &&
+                buildDirectLineCandidate(normal_path, ret_code);
         if (!direct_line_frontend && !topology_frontend) {
             ret_code = services.astar->pointToPointPathSearch(temp_start_point,
                                                           goal,

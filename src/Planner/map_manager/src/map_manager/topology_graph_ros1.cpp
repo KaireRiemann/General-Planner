@@ -23,10 +23,13 @@ TopologyGraphROS1::TopologyGraphROS1(
         ? std::string{} : parameter_namespace + "/";
     node_.param(prefix + "enabled", config.enabled, config.enabled);
     std::string construction_mode =
-        config.dense_known_free ? "dense_known_free" : "bubble_topology";
+        IncrementalTopologyGraph::constructionModeName(
+            config.construction_mode);
     node_.param(prefix + "construction_mode", construction_mode,
                 construction_mode);
-    config.dense_known_free = construction_mode == "dense_known_free";
+    config.construction_mode =
+        IncrementalTopologyGraph::constructionModeFromString(
+            construction_mode);
     node_.param(prefix + "planar_mode", config.planar_mode, config.planar_mode);
     node_.param(prefix + "navigation_altitude", config.navigation_altitude,
                 config.navigation_altitude);
@@ -93,8 +96,8 @@ TopologyGraphROS1::TopologyGraphROS1(
         updateAndPublish();
     }
     ROS_INFO_STREAM("[map_manager] State2state incremental topology enabled, mode: "
-                    << (config.dense_known_free
-                            ? "dense_known_free" : "bubble_topology")
+                    << IncrementalTopologyGraph::constructionModeName(
+                           config.construction_mode)
                     << ", topic: "
                     << node_.resolveName(topic)
                     << ", update=" << config.update_period
@@ -160,13 +163,13 @@ void TopologyGraphROS1::workerLoop() {
             continue;
         }
         const ros::WallTime update_begin = ros::WallTime::now();
-        const std::size_t rebuilt =
+        const std::size_t processed =
             manager->updateTopology(max_regions_per_tick_);
         const double update_ms =
             (ros::WallTime::now() - update_begin).toSec() * 1000.0;
         const auto stats = manager->topologyGraph()->stats();
         ROS_INFO_STREAM_THROTTLE(
-            1.0, "[topology update] rebuilt=" << rebuilt
+            1.0, "[topology update] processed=" << processed
                  << " dirty=" << stats.dirty_region_count
                  << " nodes=" << stats.node_count
                  << " edges=" << stats.edge_count
@@ -193,12 +196,6 @@ visualization_msgs::MarkerArray TopologyGraphROS1::makeMarkers(
     visualization_msgs::MarkerArray output;
     const ros::Time stamp = ros::Time::now();
 
-    visualization_msgs::Marker clear;
-    clear.header.frame_id = frame_id_;
-    clear.header.stamp = stamp;
-    clear.action = visualization_msgs::Marker::DELETEALL;
-    output.markers.push_back(clear);
-
     visualization_msgs::Marker nodes;
     nodes.header.frame_id = frame_id_;
     nodes.header.stamp = stamp;
@@ -210,19 +207,34 @@ visualization_msgs::MarkerArray TopologyGraphROS1::makeMarkers(
     nodes.scale.x = node_scale_;
     nodes.scale.y = node_scale_;
     nodes.scale.z = node_scale_;
-    nodes.color.r = 0.10F;
-    nodes.color.g = 0.85F;
-    nodes.color.b = 0.95F;
-    nodes.color.a = 0.95F;
+    nodes.color.r = 1.0F;
+    nodes.color.g = 1.0F;
+    nodes.color.b = 1.0F;
+    nodes.color.a = 1.0F;
 
     std::unordered_map<IncrementalTopologyGraph::NodeId, rog_map::Vec3f> positions;
     positions.reserve(snapshot.nodes.size());
+    std::size_t historical_nodes = 0;
     for (const auto &node : snapshot.nodes) {
         geometry_msgs::Point point;
         point.x = node.position.x();
         point.y = node.position.y();
         point.z = node.position.z();
         nodes.points.push_back(point);
+        std_msgs::ColorRGBA color;
+        if (node.state == IncrementalTopologyGraph::NodeState::HISTORICAL) {
+            color.r = 0.95F;
+            color.g = 0.65F;
+            color.b = 0.15F;
+            color.a = 0.80F;
+            ++historical_nodes;
+        } else {
+            color.r = 0.10F;
+            color.g = 0.85F;
+            color.b = 0.95F;
+            color.a = 0.95F;
+        }
+        nodes.colors.push_back(color);
         positions.emplace(node.id, node.position);
     }
     output.markers.push_back(nodes);
@@ -278,9 +290,12 @@ visualization_msgs::MarkerArray TopologyGraphROS1::makeMarkers(
     status.color.b = 1.0F;
     status.color.a = 0.9F;
     status.text = std::string{"topology mode="} +
-                  (snapshot.dense_known_free
-                       ? "dense_known_free" : "bubble_topology") +
+                  IncrementalTopologyGraph::constructionModeName(
+                      snapshot.construction_mode) +
                   " nodes=" + std::to_string(snapshot.nodes.size()) +
+                  " active=" +
+                  std::to_string(snapshot.nodes.size() - historical_nodes) +
+                  " historical=" + std::to_string(historical_nodes) +
                   " edges=" + std::to_string(snapshot.edges.size()) +
                   " known_free=" +
                   std::to_string(snapshot.known_free_cell_count) +

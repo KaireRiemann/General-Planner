@@ -273,6 +273,7 @@ public:
             path.clear();
             return false;
         }
+        syncBoundaryMap();
         return topology_graph_->findPath(start, goal, makeTopologyQuery(),
                                          path, attach_radius);
     }
@@ -288,6 +289,7 @@ public:
             path.clear();
             return false;
         }
+        syncBoundaryMap();
         return topology_graph_->findPath(snapshot, start, goal,
                                          makeTopologyQuery(), path,
                                          attach_radius);
@@ -578,9 +580,9 @@ public:
 private:
     /**
      * Delay the initial dirty-window seed until the first real odometry has
-     * initialized ROG's sliding-map origin. Dense mode then samples only
-     * observed known-free cells; legacy unknown-as-free mode is likewise
-     * prevented from creating nodes around the default origin.
+     * initialized ROG's sliding-map origin. Construction then samples only
+     * observed known-free cells and cannot create nodes around the default
+     * origin before the first sensor/odometry update.
      */
     bool seedTopologyFromCurrentWindow() const
     {
@@ -610,55 +612,46 @@ private:
     IncrementalTopologyGraph::Query makeTopologyQuery() const
     {
         IncrementalTopologyGraph::Query query;
-        const auto topology_config = topology_graph_
-            ? topology_graph_->config()
-            : IncrementalTopologyGraph::Config{};
-        const bool unknown_as_free =
-            topology_config.unknown_as_free &&
-            !topology_config.dense_known_free;
-        const bool dense_known_free = topology_config.dense_known_free;
         const rog_map::Config map_config = map_
             ? map_->getMapConfig() : rog_map::Config{};
-        query.traversable = [this, unknown_as_free, dense_known_free, map_config](
-                                const rog_map::Vec3f &position) {
+        query.evidence = [this, map_config](const rog_map::Vec3f &position) {
+            using EvidenceState = TopologyMapView::EvidenceState;
             if (!map_ || !position.allFinite()) {
-                return false;
+                return EvidenceState::UNKNOWN;
             }
             if (position.z() <= map_config.virtual_ground_height ||
                 position.z() >= map_config.virtual_ceil_height) {
-                return false;
+                return EvidenceState::OCCUPIED;
             }
             if (map_->insideLocalMap(position)) {
                 const rog_map::GridType raw = map_->getGridType(position);
-                if (dense_known_free) {
-                    // Dense construction records the raw ROG observation.
-                    // Reading the inflation map here doubled every node/edge
-                    // query but could not change this result.
-                    return raw == rog_map::GridType::KNOWN_FREE;
-                }
-                const rog_map::GridType inflated =
-                    map_->getInfGridType(position);
-                const bool inflation_safe =
-                    inflated != rog_map::GridType::OCCUPIED &&
-                    inflated != rog_map::GridType::OUT_OF_MAP;
-                if (raw == rog_map::GridType::KNOWN_FREE) {
-                    return inflation_safe &&
-                           (unknown_as_free || inflated == rog_map::GridType::KNOWN_FREE);
-                }
                 if (raw == rog_map::GridType::OCCUPIED) {
-                    return false;
+                    return EvidenceState::OCCUPIED;
                 }
-                // This option is explicit because ordinary state2state may be
-                // configured to plan through unknown cells. It is restricted
-                // to the current local map; unseen global space is never
-                // promoted to persistent free space.
-                if (unknown_as_free) {
-                    return inflation_safe;
+                if (raw == rog_map::GridType::KNOWN_FREE) {
+                    const rog_map::GridType inflated =
+                        map_->getInfGridType(position);
+                    return inflated == rog_map::GridType::OCCUPIED ||
+                           inflated == rog_map::GridType::OUT_OF_MAP
+                        ? EvidenceState::OCCUPIED
+                        : EvidenceState::KNOWN_FREE;
                 }
+                // A local ring-buffer UNKNOWN does not override older global
+                // evidence. This is the persistence rule which prevents ROG
+                // sliding from erasing the committed topology.
             }
-            return boundary_map_ &&
-                   boundary_map_->getGridType(position) ==
-                   rog_map::GridType::KNOWN_FREE;
+            if (!boundary_map_) {
+                return EvidenceState::UNKNOWN;
+            }
+            const rog_map::GridType global =
+                boundary_map_->getGridType(position);
+            if (global == rog_map::GridType::KNOWN_FREE) {
+                return EvidenceState::KNOWN_FREE;
+            }
+            if (global == rog_map::GridType::OCCUPIED) {
+                return EvidenceState::OCCUPIED;
+            }
+            return EvidenceState::UNKNOWN;
         };
         query.clearance = [this](const rog_map::Vec3f &position, double &distance) {
             if (!map_ || !map_->insideLocalMap(position) || !map_->hasESDF()) {
