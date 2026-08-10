@@ -324,6 +324,15 @@ public:
     uniform_time_mode_ = enabled;
   }
 
+  /** Remove duration variables while retaining the reference physical times. */
+  void setOptimizeTime(bool enabled)
+  {
+    optimize_time_ = enabled;
+  }
+
+  bool optimizesTime() const { return optimize_time_; }
+  int timeDecisionDim() const { return getTimeDecisionDim(); }
+
   bool setInitState(const std::vector<double> &time_segments,
                     const WaypointsType &waypoints,
                     const BoundaryState &boundary_head,
@@ -383,7 +392,18 @@ public:
     const int total_dim = getCoreDecisionDim() + extra_dim;
 
     Eigen::VectorXd x(total_dim);
-    if (uniform_time_mode_)
+    if (!optimize_time_)
+    {
+      for (int i = 0; i < piece_num_; ++i)
+      {
+        const double T = physical_times[static_cast<std::size_t>(i)];
+        if (!std::isfinite(T) || T <= 0.0)
+        {
+          return Eigen::VectorXd{};
+        }
+      }
+    }
+    else if (uniform_time_mode_)
     {
       double total_time = 0.0;
       for (int i = 0; i < piece_num_; ++i)
@@ -762,6 +782,10 @@ public:
 private:
   int getTimeDecisionDim() const
   {
+    if (!optimize_time_)
+    {
+      return 0;
+    }
     return uniform_time_mode_ ? 1 : piece_num_;
   }
 
@@ -779,7 +803,21 @@ private:
                                Eigen::Ref<Eigen::VectorXd> grad_out,
                                double &total_cost)
   {
-    if (uniform_time_mode_)
+    if (!optimize_time_)
+    {
+      if (static_cast<int>(ref_times_.size()) != piece_num_)
+      {
+        workspace_->cache_T.setConstant(1.0);
+      }
+      else
+      {
+        for (int i = 0; i < piece_num_; ++i)
+        {
+          workspace_->cache_T(i) = ref_times_[static_cast<std::size_t>(i)];
+        }
+      }
+    }
+    else if (uniform_time_mode_)
     {
       const double total_time = active_time_map_->toTime(x(0));
       workspace_->cache_T.setConstant(total_time / static_cast<double>(std::max(1, piece_num_)));
@@ -1110,7 +1148,11 @@ private:
   void writeDecisionGradient(const Eigen::Ref<const Eigen::VectorXd> &x,
                              Eigen::Ref<Eigen::VectorXd> grad_out) const
   {
-    if (uniform_time_mode_)
+    if (!optimize_time_)
+    {
+      // Fixed-time mode has no tau decision coordinates.
+    }
+    else if (uniform_time_mode_)
     {
       grad_out(0) += active_time_map_->backward(
           x(0),
@@ -1145,6 +1187,7 @@ private:
   std::vector<double> sample_trap_weights_;
   double rho_energy_{1.0};
   bool uniform_time_mode_{false};
+  bool optimize_time_{true};
   double last_energy_cost_{0.0};
   double last_time_cost_{0.0};
   double last_integral_cost_{0.0};

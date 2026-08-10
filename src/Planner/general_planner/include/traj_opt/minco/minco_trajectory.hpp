@@ -737,6 +737,21 @@ public:
     BoundaryState grad_by_tail_state{BoundaryState::Zero()};
   };
 
+  /**
+   * A tangent vector of the reduced MINCO coordinates.  The coefficient
+   * tangent is populated by propagateTangent().  Keeping this next to the
+   * adjoint result makes the forward/JVP and reverse/VJP conventions explicit
+   * and prevents callers from having to reconstruct the MINCO RHS layout.
+   */
+  struct MINCOTangent
+  {
+    InnerPointsMat delta_points;
+    Eigen::VectorXd delta_times;
+    BoundaryState delta_head_state{BoundaryState::Zero()};
+    BoundaryState delta_tail_state{BoundaryState::Zero()};
+    CoeffMat delta_coeffs;
+  };
+
   MINCOTrajectory() = default;
   ~MINCOTrajectory()
   {
@@ -776,6 +791,7 @@ public:
     system_.create(COEFF_NUM * piece_num_, COEFF_NUM, COEFF_NUM);
     coeffs_.resize(COEFF_NUM * piece_num_, DIM);
     durations_.resize(piece_num_);
+    system_ready_ = false;
   }
 
   bool generate(const InnerPointsMat &inner_points,
@@ -810,6 +826,7 @@ public:
 
     system_.factorizeLU();
     system_.solve(coeffs_);
+    system_ready_ = true;
     return true;
   }
 
@@ -863,6 +880,7 @@ public:
 	    durations_ = durations;
 	    coeffs_ = coeffs;
 	    system_.destroy();
+	    system_ready_ = false;
 
 	    for (int d = 0; d < S; ++d)
 	    {
@@ -1079,6 +1097,111 @@ public:
     }
   }
 
+  /**
+   * Forward differentiation of the MINCO elimination system.
+   *
+   * The trajectory satisfies A(T) C = b(P, head, tail).  This routine solves
+   *
+   *   A delta_C = delta_b - delta_A C,
+   *
+   * using the LU factorization already prepared by generate().  It is the
+   * forward counterpart of propagateGradFull() and is intentionally exposed
+   * at the trajectory layer so metrics can stay independent of objectives.
+   */
+  bool propagateTangent(const InnerPointsMat &delta_points,
+                        const Eigen::VectorXd &delta_times,
+                        const BoundaryState &delta_head_state,
+                        const BoundaryState &delta_tail_state,
+                        CoeffMat &delta_coeffs) const
+  {
+    const int expected_inner_points = std::max(0, piece_num_ - 1);
+    if (!system_ready_ || piece_num_ <= 0 ||
+        delta_points.rows() != DIM ||
+        delta_points.cols() != expected_inner_points ||
+        delta_times.size() != piece_num_ ||
+        !delta_points.allFinite() || !delta_times.allFinite() ||
+        !delta_head_state.allFinite() || !delta_tail_state.allFinite())
+    {
+      return false;
+    }
+
+    // rhs is delta_b - delta_A * C.  The original generator stores b in
+    // coeffs_ before the solve, so create a clean RHS rather than trying to
+    // recover it from the solved coefficients.
+    delta_coeffs.resize(COEFF_NUM * piece_num_, DIM);
+    delta_coeffs.setZero();
+
+    for (int r = 0; r < S; ++r)
+    {
+      delta_coeffs.row(r) = delta_head_state.col(r).transpose();
+    }
+
+    for (int i = 0; i < piece_num_ - 1; ++i)
+    {
+      const double T = durations_(i);
+      const double dT = delta_times(i);
+      int row = i * COEFF_NUM + S;
+
+      // High-order continuity constraints.
+      for (int r = S; r <= ORDER - 1; ++r, ++row)
+      {
+        delta_coeffs.row(row) =
+            (-dT * evaluatePiece(i, T, r + 1)).transpose();
+      }
+
+      // The left endpoint of the next segment is the free inner waypoint.
+      delta_coeffs.row(row) =
+          (delta_points.col(i) - dT * evaluatePiece(i, T, 1)).transpose();
+      ++row;
+
+      // Position continuity, followed by velocity through S-1 continuity.
+      delta_coeffs.row(row) =
+          (-dT * evaluatePiece(i, T, 1)).transpose();
+      ++row;
+      for (int r = 1; r <= S - 1; ++r, ++row)
+      {
+        delta_coeffs.row(row) =
+            (-dT * evaluatePiece(i, T, r + 1)).transpose();
+      }
+    }
+
+    const int last_piece = piece_num_ - 1;
+    const double T_last = durations_(last_piece);
+    const double dT_last = delta_times(last_piece);
+    const int tail_start_row = COEFF_NUM * piece_num_ - S;
+    for (int r = 0; r < S; ++r)
+    {
+      delta_coeffs.row(tail_start_row + r) =
+          (delta_tail_state.col(r) -
+           dT_last * evaluatePiece(last_piece, T_last, r + 1))
+              .transpose();
+    }
+
+    system_.solve(delta_coeffs);
+    return delta_coeffs.allFinite();
+  }
+
+  bool propagateTangent(const InnerPointsMat &delta_points,
+                        const Eigen::VectorXd &delta_times,
+                        CoeffMat &delta_coeffs) const
+  {
+    return propagateTangent(delta_points,
+                            delta_times,
+                            BoundaryState::Zero(),
+                            BoundaryState::Zero(),
+                            delta_coeffs);
+  }
+
+  bool propagateTangentByPoints(const InnerPointsMat &delta_points,
+                                CoeffMat &delta_coeffs) const
+  {
+    return propagateTangent(delta_points,
+                            Eigen::VectorXd::Zero(piece_num_),
+                            BoundaryState::Zero(),
+                            BoundaryState::Zero(),
+                            delta_coeffs);
+  }
+
 private:
   void buildHeadRows()
   {
@@ -1192,6 +1315,7 @@ private:
   BandedSystem system_;
   CoeffMat coeffs_;
   Eigen::VectorXd durations_;
+  bool system_ready_{false};
 };
 
 template <int DIM, int S = 3>

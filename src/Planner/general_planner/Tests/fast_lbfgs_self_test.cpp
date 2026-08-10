@@ -185,6 +185,66 @@ void testFallbackRestartsFromSeed()
   require(x.norm() < 1.0e-4, "fallback should optimize from seed toward 0");
 }
 
+void testMetricH0Callback()
+{
+  struct AnisotropicQuadratic
+  {
+    Eigen::VectorXd diagonal;
+
+    static double evaluate(void *ptr,
+                           const Eigen::VectorXd &x,
+                           Eigen::VectorXd &g)
+    {
+      const auto *self = static_cast<AnisotropicQuadratic *>(ptr);
+      g = self->diagonal.cwiseProduct(x);
+      return 0.5 * x.dot(g);
+    }
+
+    static bool inverseHessian(void *ptr,
+                               const Eigen::VectorXd &,
+                               const Eigen::VectorXd &q,
+                               Eigen::VectorXd &r)
+    {
+      const auto *self = static_cast<AnisotropicQuadratic *>(ptr);
+      if (q.size() != self->diagonal.size())
+      {
+        return false;
+      }
+      r = q.cwiseQuotient(self->diagonal);
+      return r.allFinite();
+    }
+  };
+
+  AnisotropicQuadratic problem;
+  problem.diagonal.resize(4);
+  problem.diagonal << 1.0, 7.0, 35.0, 180.0;
+  Eigen::VectorXd x(4);
+  x << 1.5, -0.8, 0.45, -0.2;
+  double f = 0.0;
+
+  math_utils::FastLbfgs solver;
+  math_utils::FastLbfgs::Options options;
+  options.early_stop_enabled = false;
+  options.mem_size = 8;
+  options.delta = 1.0e-14;
+  options.g_epsilon = 1.0e-12;
+  solver.setOptions(options);
+  solver.reset();
+
+  const int status = solver.run(x,
+                                f,
+                                &AnisotropicQuadratic::evaluate,
+                                nullptr,
+                                &problem,
+                                nullptr,
+                                /*allow_fallback=*/false,
+                                nullptr,
+                                &AnisotropicQuadratic::inverseHessian);
+  require(status >= 0, "metric H0 L-BFGS solve should succeed");
+  require(x.norm() < 1.0e-8,
+          "metric H0 should preserve a valid descent direction and solve the quadratic");
+}
+
 } // namespace
 
 int main()
@@ -194,6 +254,7 @@ int main()
     testClassicalSolve();
     testFastStopCancels();
     testFallbackRestartsFromSeed();
+    testMetricH0Callback();
     std::cout << "[fast_lbfgs_self_test] OK\n";
     return 0;
   }

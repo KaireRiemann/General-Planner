@@ -245,6 +245,18 @@ namespace math_utils{
                                         const int ls);
 
         /**
+         * Optional initial-inverse-Hessian operator used by the L-BFGS
+         * two-loop recursion.  The callback applies r = H0(x) q; it must not
+         * modify the evaluator gradient and should return false when the
+         * supplied metric is unavailable so L-BFGS can retain its legacy
+         * scalar initialization.
+         */
+        typedef bool (*lbfgs_h0_t)(void *instance,
+                                   const Eigen::VectorXd &x,
+                                   const Eigen::VectorXd &q,
+                                   Eigen::VectorXd &r);
+
+        /**
          * Callback data struct
          */
         struct callback_data_t {
@@ -252,6 +264,7 @@ namespace math_utils{
             lbfgs_evaluate_t proc_evaluate = nullptr;
             lbfgs_stepbound_t proc_stepbound = nullptr;
             lbfgs_progress_t proc_progress = nullptr;
+            lbfgs_h0_t proc_h0 = nullptr;
         };
 
         // ----------------------- L-BFGS Part -----------------------
@@ -335,7 +348,8 @@ namespace math_utils{
                                   lbfgs_stepbound_t proc_stepbound,
                                   lbfgs_progress_t proc_progress,
                                   void *instance,
-                                  const lbfgs_parameter_t &param);
+                                  const lbfgs_parameter_t &param,
+                                  lbfgs_h0_t proc_h0 = nullptr);
 
         /**
          * Get string description of an lbfgs_optimize() return code.

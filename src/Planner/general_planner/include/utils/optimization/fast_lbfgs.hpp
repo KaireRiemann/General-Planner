@@ -159,10 +159,12 @@ public:
           void *user,
           SnapshotCallback snapshot,
           bool allow_fallback = true,
-          const Vector *fallback_restart = nullptr)
+          const Vector *fallback_restart = nullptr,
+          lbfgs::lbfgs_h0_t h0 = nullptr)
   {
     evaluate_ = evaluate;
     stepbound_ = stepbound;
+    h0_ = h0;
     user_ = user;
     snapshot_ = snapshot;
     early_stop_active_ = options_.early_stop_enabled;
@@ -187,7 +189,8 @@ public:
             : nullptr,
         &FastLbfgs::progressThunk,
         this,
-        params);
+        params,
+        h0_ != nullptr ? &FastLbfgs::h0Thunk : nullptr);
 
     const bool accepted_fast_stop =
         status == lbfgs::LBFGS_CANCELED && report_.fast_stop_satisfied;
@@ -217,7 +220,8 @@ public:
                                      nullptr,
                                      &FastLbfgs::progressThunk,
                                      this,
-                                     fallback);
+                                     fallback,
+                                     h0_ != nullptr ? &FastLbfgs::h0Thunk : nullptr);
     }
 
     report_.status = status;
@@ -238,6 +242,7 @@ private:
 
   lbfgs::lbfgs_evaluate_t evaluate_{nullptr};
   lbfgs::lbfgs_stepbound_t stepbound_{nullptr};
+  lbfgs::lbfgs_h0_t h0_{nullptr};
   void *user_{nullptr};
   SnapshotCallback snapshot_{nullptr};
 
@@ -283,6 +288,15 @@ private:
       return 1.0e20;
     }
     return self->stepbound_(self->user_, x, direction);
+  }
+
+  static bool h0Thunk(void *instance,
+                      const Vector &x,
+                      const Vector &q,
+                      Vector &r)
+  {
+    auto *self = static_cast<FastLbfgs *>(instance);
+    return self->h0_ != nullptr && self->h0_(self->user_, x, q, r);
   }
 
   static int progressThunk(void *instance,

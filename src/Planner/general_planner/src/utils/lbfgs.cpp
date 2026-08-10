@@ -81,7 +81,8 @@ int math_utils::lbfgs::lbfgs_optimize(Eigen::VectorXd &x, double &f,
                                       lbfgs_stepbound_t proc_stepbound,
                                       lbfgs_progress_t proc_progress,
                                       void *instance,
-                                      const lbfgs_parameter_t &param) {
+                                      const lbfgs_parameter_t &param,
+                                      lbfgs_h0_t proc_h0) {
     int ret, i, j, k, ls, end, bound;
     double step, step_min, step_max, fx, ys, yy;
     double gnorm_inf, xnorm_inf, beta, rate, cau;
@@ -145,6 +146,7 @@ int math_utils::lbfgs::lbfgs_optimize(Eigen::VectorXd &x, double &f,
     cd.proc_evaluate = proc_evaluate;
     cd.proc_stepbound = proc_stepbound;
     cd.proc_progress = proc_progress;
+    cd.proc_h0 = proc_h0;
 
     /* Evaluate the function value and its gradient. */
     fx = cd.proc_evaluate(cd.instance, x, g);
@@ -157,6 +159,13 @@ int math_utils::lbfgs::lbfgs_optimize(Eigen::VectorXd &x, double &f,
     we assume the initial hessian matrix H_0 as the identity matrix.
     */
     d = -g;
+    if (cd.proc_h0) {
+        Eigen::VectorXd h0_direction;
+        if (cd.proc_h0(cd.instance, x, d, h0_direction) &&
+            h0_direction.size() == n && h0_direction.allFinite()) {
+            d = h0_direction;
+        }
+    }
 
     /*
     Make sure that the initial variables are not a stationary point.
@@ -310,7 +319,18 @@ int math_utils::lbfgs::lbfgs_optimize(Eigen::VectorXd &x, double &f,
                     d += (-lm_alpha(j)) * lm_y.col(j);
                 }
 
-                d *= ys / yy;
+                bool applied_h0 = false;
+                if (cd.proc_h0) {
+                    Eigen::VectorXd h0_direction;
+                    if (cd.proc_h0(cd.instance, x, d, h0_direction) &&
+                        h0_direction.size() == n && h0_direction.allFinite()) {
+                        d = h0_direction;
+                        applied_h0 = true;
+                    }
+                }
+                if (!applied_h0) {
+                    d *= ys / yy;
+                }
 
                 for (i = 0; i < bound; ++i) {
                     /* \beta_{j} = \rho_{j} y^t_{j} \cdot \gamm_{i}. */

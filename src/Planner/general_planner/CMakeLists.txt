@@ -297,6 +297,14 @@ target_link_libraries(fast_lbfgs_self_test
         general_planner_core
 )
 
+add_executable(minco_metric_self_test
+        Tests/minco_metric_self_test.cpp
+)
+target_include_directories(minco_metric_self_test PRIVATE include)
+target_link_libraries(minco_metric_self_test
+        general_planner_core
+)
+
 add_executable(guide_z_lower_bound_self_test
         Tests/guide_z_lower_bound_self_test.cpp
 )

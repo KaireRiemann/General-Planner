@@ -109,6 +109,92 @@ public:
         return grad_xi;
     }
 
+    /**
+     * Differential of xi -> physical waypoint.  Corridor coordinates have a
+     * radial gauge and are therefore not a diffeomorphism; callers needing a
+     * trajectory-space metric must work through this Jacobian rather than
+     * treating the raw xi vector as Euclidean waypoint coordinates.
+     */
+    bool physicalJacobian(const Eigen::VectorXd &xi,
+                          int index,
+                          Eigen::MatrixXd &jacobian) const
+    {
+        if (identity_mode)
+        {
+            if (xi.size() != 3)
+            {
+                return false;
+            }
+            jacobian = Eigen::Matrix3d::Identity();
+            return true;
+        }
+
+        if (!v_polys || !v_poly_idx || index <= 0 || index > num_segments)
+        {
+            return false;
+        }
+
+        const int poly_id = (*v_poly_idx)(index - 1);
+        const auto &poly = (*v_polys)[poly_id];
+        const int k = poly.cols();
+        if (xi.size() != k)
+        {
+            return false;
+        }
+        const double norm = xi.norm();
+        if (!std::isfinite(norm) || norm < 1.0e-9)
+        {
+            return false;
+        }
+
+        const Eigen::VectorXd unit_xi = xi / norm;
+        Eigen::MatrixXd dp_du = Eigen::MatrixXd::Zero(3, k);
+        dp_du.leftCols(k - 1) =
+            poly.rightCols(k - 1) *
+            (2.0 * unit_xi.head(k - 1)).asDiagonal();
+        jacobian = dp_du *
+                   (Eigen::MatrixXd::Identity(k, k) -
+                    unit_xi * unit_xi.transpose()) /
+                   norm;
+        return jacobian.allFinite();
+    }
+
+    /**
+     * Return the minimum-norm right inverse J^dagger and optionally the
+     * orthogonal gauge projection I - J^dagger J.  J must have full physical
+     * row rank, otherwise a metric lift would be ill-defined.
+     */
+    bool pseudoInverse(const Eigen::VectorXd &xi,
+                       int index,
+                       Eigen::MatrixXd &jacobian_pinv,
+                       Eigen::MatrixXd *gauge_projection = nullptr) const
+    {
+        Eigen::MatrixXd jacobian;
+        if (!physicalJacobian(xi, index, jacobian))
+        {
+            return false;
+        }
+        const Eigen::MatrixXd gram = jacobian * jacobian.transpose();
+        Eigen::LDLT<Eigen::MatrixXd> ldlt(gram);
+        if (ldlt.info() != Eigen::Success || !ldlt.isPositive())
+        {
+            return false;
+        }
+        jacobian_pinv = jacobian.transpose() *
+                         ldlt.solve(Eigen::MatrixXd::Identity(gram.rows(), gram.cols()));
+        if (!jacobian_pinv.allFinite())
+        {
+            return false;
+        }
+        if (gauge_projection != nullptr)
+        {
+            *gauge_projection = Eigen::MatrixXd::Identity(jacobian.cols(), jacobian.cols()) -
+                                jacobian_pinv * jacobian;
+            *gauge_projection = 0.5 * (*gauge_projection + gauge_projection->transpose());
+        }
+        return true;
+    }
+
     void addNormPenalty(const Eigen::VectorXd &xi,
                         double &cost,
                         Eigen::VectorXd &grad_xi) const

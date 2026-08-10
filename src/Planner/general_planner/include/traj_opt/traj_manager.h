@@ -10,6 +10,7 @@
 #include "traj_opt/config.hpp"
 #include "traj_opt/minco/minco_trajectory.hpp"
 #include "traj_opt/minco/minco_optimizer.hpp"
+#include "traj_opt/minco/minco_metric.hpp"
 #include "traj_opt/costfunctional/temporalcosts/linear_time_cost.hpp"
 #include "traj_opt/costfunctional/spatialmap/polytope_spatial_map.hpp"
 #include "traj_opt/costfunctional/temporalmap/quad_inv_time_map.hpp"
@@ -635,11 +636,19 @@ private:
                                     const VecDf &direction);
   static math_utils::FastLbfgs::PhysicalSnapshot fastLbfgsSnapshot(
       void *ptr, const Eigen::VectorXd &x);
+  static bool metricH0Functional(void *ptr,
+                                 const VecDf &x,
+                                 const VecDf &q,
+                                 VecDf &r);
 
   void configureFastLbfgs(double rel_cost_tol,
                           bool early_stop_enabled,
                           int decision_dim);
   void syncFastLbfgsReport();
+  bool prepareMincoMetric(const VecDf &x);
+  bool applyMincoMetricH0(const VecDf &x,
+                          const VecDf &q,
+                          VecDf &r);
   bool buildWarmStartCandidate(VecDf &candidate);
   void updateWarmStartCache(const Trajectory &traj);
 
@@ -661,6 +670,7 @@ private:
   ros_interface::RosInterface::Ptr ros_ptr_;
 
   SnapOptimizer optimizer_;
+  minco::MincoMetric<TRAJ_DIM, SNAP_TRAJ_S> minco_metric_;
   temporal_map::QuadInvTimeMap time_map_;
   spatial_map::PolytopeSpatialMap spatial_map_;
   cost_functional::LinearTimeCost linear_time_cost_;
@@ -676,6 +686,7 @@ private:
   TimingReport last_timing_report_;
   TimingReport cumulative_timing_report_;
   SolverQualityReport last_quality_report_;
+  bool minco_metric_frozen_ready_{false};
 
   struct WarmStartCache
   {

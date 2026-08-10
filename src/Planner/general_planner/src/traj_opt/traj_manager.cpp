@@ -1003,16 +1003,17 @@ math_utils::FastLbfgs::PhysicalSnapshot ExpTrajOpt::fastLbfgsSnapshot(
   snap.corridor_scale =
       std::max(1.0e-3, self->cfg_.convex_hull_position_scale);
 
-  const int time_dim =
-      std::min<int>(vars.piece_num, static_cast<int>(x.size()));
-  snap.durations.resize(time_dim);
-  for (int i = 0; i < time_dim; ++i)
+  // The evaluator has just decoded x before this progress callback, so the
+  // physical durations also cover fixed-time metric solves where x has no
+  // tau block at all.
+  const auto &current_times = self->optimizer_.getCurrentTimes();
+  if (current_times.size() == vars.piece_num && current_times.allFinite())
   {
-    snap.durations(i) = self->time_map_.toTime(x(i));
+    snap.durations = current_times;
   }
 
   snap.waypoints.resize(3, std::max(0, vars.piece_num - 1));
-  int offset = time_dim;
+  int offset = self->optimizer_.timeDecisionDim();
   for (int i = 1; i < vars.piece_num; ++i)
   {
     const int dof = self->spatial_map_.getUnconstrainedDim(i);
@@ -1025,6 +1026,201 @@ math_utils::FastLbfgs::PhysicalSnapshot ExpTrajOpt::fastLbfgsSnapshot(
     offset += dof;
   }
   return snap;
+}
+
+bool ExpTrajOpt::metricH0Functional(void *ptr,
+                                    const VecDf &x,
+                                    const VecDf &q,
+                                    VecDf &r)
+{
+  return static_cast<ExpTrajOpt *>(ptr)->applyMincoMetricH0(x, q, r);
+}
+
+bool ExpTrajOpt::prepareMincoMetric(const VecDf &x)
+{
+  const int requested_mode = std::clamp(cfg_.minco_metric_mode, 0, 4);
+  if (requested_mode == 0)
+  {
+    minco_metric_.clear();
+    minco_metric_frozen_ready_ = false;
+    return false;
+  }
+
+  auto mode = static_cast<minco::MincoMetricMode>(requested_mode);
+  // A full space-time metric has no valid time tangent when the optimizer is
+  // intentionally running a fixed-duration waypoint experiment.  In that
+  // case use its mathematically restricted fixed-time metric instead.
+  if (!optimizer_.optimizesTime() &&
+      (mode == minco::MincoMetricMode::kBlockSpaceTime ||
+       mode == minco::MincoMetricMode::kFullSpaceTimeGaussNewton))
+  {
+    mode = minco::MincoMetricMode::kFrozenWaypoint;
+  }
+
+  const bool frozen_mode =
+      mode == minco::MincoMetricMode::kFrozenWaypoint ||
+      mode == minco::MincoMetricMode::kBlockSpaceTime;
+  if (frozen_mode && minco_metric_frozen_ready_ && minco_metric_.ready())
+  {
+    return true;
+  }
+
+  minco::MincoMetricOptions options;
+  options.mode = mode;
+  options.regularization = std::max(0.0, cfg_.minco_metric_regularization);
+  options.time_metric_weight = std::max(0.0, cfg_.minco_metric_time_weight);
+  minco_metric_.setOptions(options);
+
+  if (!optimizer_.updateTrajectoryFromDecisionVector(x) ||
+      !minco_metric_.update(optimizer_.getTrajectory()))
+  {
+    minco_metric_frozen_ready_ = false;
+    return false;
+  }
+
+  minco_metric_frozen_ready_ = frozen_mode;
+  if (cfg_.print_optimizer_log)
+  {
+    std::cout << " -- [ExpTrajOpt] MCE metric mode=" << requested_mode
+              << " dim=" << minco_metric_.selectedMetric().rows()
+              << " condition=" << minco_metric_.conditionNumber()
+              << " frozen=" << (minco_metric_frozen_ready_ ? 1 : 0)
+              << std::endl;
+  }
+  return true;
+}
+
+bool ExpTrajOpt::applyMincoMetricH0(const VecDf &x,
+                                    const VecDf &q,
+                                    VecDf &r)
+{
+  const int requested_mode = std::clamp(cfg_.minco_metric_mode, 0, 4);
+  if (requested_mode == 0 || x.size() != q.size() || !x.allFinite() ||
+      !q.allFinite() || !prepareMincoMetric(x))
+  {
+    return false;
+  }
+
+  const int pieces = optimizer_.getPieceNum();
+  const int time_dim = optimizer_.timeDecisionDim();
+  const int waypoint_dim = TRAJ_DIM * std::max(0, pieces - 1);
+  if (pieces <= 0 || q.size() < time_dim ||
+      minco_metric_.waypointDim() != waypoint_dim)
+  {
+    return false;
+  }
+
+  struct SpatialLift
+  {
+    int offset{0};
+    int dof{0};
+    Eigen::MatrixXd pinv;
+    Eigen::MatrixXd gauge;
+  };
+  std::vector<SpatialLift> lifts;
+  lifts.reserve(static_cast<std::size_t>(std::max(0, pieces - 1)));
+
+  Eigen::VectorXd physical_q_points = Eigen::VectorXd::Zero(waypoint_dim);
+  int offset = time_dim;
+  for (int i = 1; i < pieces; ++i)
+  {
+    const int dof = spatial_map_.getUnconstrainedDim(i);
+    if (dof <= 0 || offset + dof > q.size())
+    {
+      return false;
+    }
+    SpatialLift lift;
+    lift.offset = offset;
+    lift.dof = dof;
+    if (!spatial_map_.pseudoInverse(x.segment(offset, dof),
+                                    i,
+                                    lift.pinv,
+                                    &lift.gauge) ||
+        lift.pinv.rows() != dof || lift.pinv.cols() != TRAJ_DIM)
+    {
+      return false;
+    }
+    physical_q_points.segment(TRAJ_DIM * (i - 1), TRAJ_DIM) =
+        lift.pinv.transpose() * q.segment(offset, dof);
+    lifts.emplace_back(std::move(lift));
+    offset += dof;
+  }
+  if (offset != q.size())
+  {
+    return false;
+  }
+
+  Eigen::VectorXd physical_direction_points;
+  Eigen::VectorXd physical_direction_times;
+  if (minco_metric_.isSpaceTimeMetric())
+  {
+    // ExpTrajOpt uses per-segment time variables.  Do not silently apply an
+    // incorrect metric to an unsupported uniform-time chart.
+    if (time_dim != pieces)
+    {
+      return false;
+    }
+    Eigen::VectorXd physical_q = Eigen::VectorXd::Zero(pieces + waypoint_dim);
+    const auto &times = optimizer_.getCurrentTimes();
+    if (times.size() != pieces)
+    {
+      return false;
+    }
+    for (int i = 0; i < pieces; ++i)
+    {
+      const double dT_dTau = time_map_.backward(x(i), times(i), 1.0);
+      if (!std::isfinite(dT_dTau) || std::abs(dT_dTau) < 1.0e-12)
+      {
+        return false;
+      }
+      physical_q(i) = q(i) / dT_dTau;
+    }
+    physical_q.tail(waypoint_dim) = physical_q_points;
+    Eigen::VectorXd physical_direction;
+    if (!minco_metric_.solve(physical_q, physical_direction) ||
+        physical_direction.size() != physical_q.size())
+    {
+      return false;
+    }
+    physical_direction_times = physical_direction.head(pieces);
+    physical_direction_points = physical_direction.tail(waypoint_dim);
+
+    r = Eigen::VectorXd::Zero(q.size());
+    for (int i = 0; i < pieces; ++i)
+    {
+      const double dT_dTau = time_map_.backward(x(i), times(i), 1.0);
+      r(i) = physical_direction_times(i) / dT_dTau;
+    }
+  }
+  else
+  {
+    if (!minco_metric_.solve(physical_q_points, physical_direction_points) ||
+        physical_direction_points.size() != waypoint_dim)
+    {
+      return false;
+    }
+    // Preserve legacy Euclidean scaling for a still-active time block.  A
+    // true fixed-time experiment removes that block via setOptimizeTime().
+    r = Eigen::VectorXd::Zero(q.size());
+    if (time_dim > 0)
+    {
+      r.head(time_dim) = q.head(time_dim);
+    }
+  }
+
+  const double gauge_weight =
+      std::max(1.0e-12, cfg_.minco_metric_gauge_weight);
+  for (int i = 1; i < pieces; ++i)
+  {
+    const auto &lift = lifts[static_cast<std::size_t>(i - 1)];
+    const Eigen::VectorXd physical_direction =
+        physical_direction_points.segment(TRAJ_DIM * (i - 1), TRAJ_DIM);
+    r.segment(lift.offset, lift.dof) =
+        lift.pinv * physical_direction +
+        gauge_weight * lift.gauge * q.segment(lift.offset, lift.dof);
+  }
+
+  return r.allFinite() && q.dot(r) > 0.0;
 }
 
 void ExpTrajOpt::configureFastLbfgs(double rel_cost_tol,
@@ -1286,7 +1482,7 @@ double ExpTrajOpt::stepBoundFunctional(void *ptr,
   }
 
   const int time_dim =
-      std::min<int>(vars.piece_num, static_cast<int>(x.size()));
+      std::min(self->optimizer_.timeDecisionDim(), static_cast<int>(x.size()));
   double step_bound = 1.0e20;
   for (int i = 0; i < time_dim; ++i)
   {
@@ -1620,7 +1816,11 @@ bool ExpTrajOpt::runPhase2PackedCorrection(
                                        nullptr,
                                        this,
                                        &ExpTrajOpt::fastLbfgsSnapshot,
-                                       /*allow_fallback=*/false);
+                                       /*allow_fallback=*/false,
+                                       nullptr,
+                                       cfg_.minco_metric_mode > 0
+                                           ? &ExpTrajOpt::metricH0Functional
+                                           : nullptr);
     syncFastLbfgsReport();
     const bool accepted_fast = fast_lbfgs_.acceptedFastStop();
     if (status < 0 && !accepted_fast)
@@ -1826,6 +2026,17 @@ double ExpTrajOpt::optimize(Trajectory &traj, double rel_cost_tol)
   }
 
   optimizer_.setUniformTimeMode(false);
+  const int requested_metric_mode = std::clamp(cfg_.minco_metric_mode, 0, 4);
+  // The Phase-A fixed-time experiment is selected explicitly through
+  // minco_metric_optimize_time=false.  Keeping the legacy tau block active is
+  // useful in the production click demo: waypoint modes then precondition the
+  // MCE coordinates while time retains the established Euclidean treatment.
+  // This avoids silently changing the feasible space merely by choosing mode
+  // 1 or 2.
+  optimizer_.setOptimizeTime(requested_metric_mode == 0 ||
+                              cfg_.minco_metric_optimize_time);
+  minco_metric_.clear();
+  minco_metric_frozen_ready_ = false;
   optimizer_.setEnergyWeight(opt_vars_.block_energy_cost ? 0.0 : 1.0);
   // Hull covers pos/vel/acc continuously; keep residual dense grid coarse.
   optimizer_.setSamplesPerPiece(
@@ -2030,6 +2241,16 @@ double ExpTrajOpt::optimize(Trajectory &traj, double rel_cost_tol)
   }
   const VecDf initial_decision = x;
 
+  const bool metric_ready =
+      requested_metric_mode > 0 && prepareMincoMetric(x);
+  if (requested_metric_mode > 0 && !metric_ready)
+  {
+    std::cout << YELLOW
+              << " -- [ExpTrajOpt] MCE metric unavailable; falling back to "
+                 "legacy L-BFGS H0"
+              << RESET << std::endl;
+  }
+
   const bool early_stop_enabled = opt_vars_.lbfgs_fast_enabled;
   configureFastLbfgs(rel_cost_tol,
                      early_stop_enabled,
@@ -2053,7 +2274,9 @@ double ExpTrajOpt::optimize(Trajectory &traj, double rel_cost_tol)
                         this,
                         &ExpTrajOpt::fastLbfgsSnapshot,
                         /*allow_fallback=*/true,
-                        &initial_decision);
+                        &initial_decision,
+                        metric_ready ? &ExpTrajOpt::metricH0Functional
+                                     : nullptr);
   syncFastLbfgsReport();
 
   // The stable production line keeps the continuous oracle read-only. The

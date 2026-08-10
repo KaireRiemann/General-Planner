@@ -153,6 +153,14 @@ traj_opt:
     lbfgs_fast_min_step: 1.0e-8
     lbfgs_fast_penalty_tol: 1.0e-2
     lbfgs_fast_small_step_limit: 3
+    # MCE intrinsic-metric benchmark switch.  The test harness changes only
+    # minco_metric_mode while keeping the forest, goal, corridor and objective
+    # configuration identical.
+    minco_metric_mode: 0
+    minco_metric_optimize_time: true
+    minco_metric_regularization: 1.0e-10
+    minco_metric_time_weight: 1.0
+    minco_metric_gauge_weight: 1.0e-6
     # Reuse the previous successful physical MINCO solution only when it is
     # compatible with the new corridor. The fresh guide seed and cached seed
     # are evaluated with the same real objective; the cached seed wins only
