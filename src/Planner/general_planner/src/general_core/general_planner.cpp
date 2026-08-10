@@ -199,8 +199,6 @@ namespace general_planner {
                      topology_map_config.virtual_ceil_height);
         topology_config.region_size = cfg_.state2state_topology_region_size;
         topology_config.sample_spacing = cfg_.state2state_topology_sample_spacing;
-        topology_config.dense_evidence_vertical_tolerance =
-            cfg_.state2state_topology_evidence_vertical_tolerance;
         topology_config.min_clearance = std::max(
             cfg_.state2state_topology_min_clearance, cfg_.robot_r);
         topology_config.max_clearance = cfg_.state2state_topology_max_clearance;

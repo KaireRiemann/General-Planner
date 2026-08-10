@@ -6,22 +6,21 @@ topology:
   frame_id: world
   topic: map_manager/topology
   update_period: 0.05
-  publish_period: 0.5
+  publish_period: 0.2
   region_size: 4.0
   sample_spacing: 1.0
-  evidence_vertical_tolerance: 0.5
-  min_clearance: 0.45
+  min_clearance: 0.0
   max_clearance: 2.5
   candidate_separation: 1.5
   stable_match_distance: 1.0
-  connection_radius: 1.75
+  connection_radius: 1.8
   edge_sample_spacing: 0.2
   dirty_padding: 0.0
   bubble_overlap_margin: 0.1
   unknown_as_free: false
-  max_nodes_per_region: 64
+  max_nodes_per_region: 256
   max_bubbles_per_region: 256
-  max_neighbors: 8
-  max_regions_per_update: 4
+  max_neighbors: 26
+  max_regions_per_update: 32
   node_scale: 0.22
   edge_scale: 0.06

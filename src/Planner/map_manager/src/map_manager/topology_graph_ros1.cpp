@@ -32,9 +32,6 @@ TopologyGraphROS1::TopologyGraphROS1(
                 config.navigation_altitude);
     node_.param(prefix + "region_size", config.region_size, config.region_size);
     node_.param(prefix + "sample_spacing", config.sample_spacing, config.sample_spacing);
-    node_.param(prefix + "evidence_vertical_tolerance",
-                config.dense_evidence_vertical_tolerance,
-                config.dense_evidence_vertical_tolerance);
     node_.param(prefix + "min_clearance", config.min_clearance, config.min_clearance);
     node_.param(prefix + "max_clearance", config.max_clearance, config.max_clearance);
     node_.param(prefix + "candidate_separation", config.candidate_separation,
@@ -75,8 +72,9 @@ TopologyGraphROS1::TopologyGraphROS1(
     node_.param(prefix + "topic", topic, topic);
     node_.param(prefix + "update_period", update_period, update_period);
     node_.param(prefix + "publish_period", publish_period, publish_period);
+    update_period_ = std::max(0.02, update_period);
     publish_period_ = std::max(0.05, publish_period);
-    config.update_period = std::max(0.02, update_period);
+    config.update_period = update_period_;
     config.publish_period = publish_period_;
     node_.param(prefix + "node_scale", node_scale_, node_scale_);
     node_.param(prefix + "edge_scale", edge_scale_, edge_scale_);
@@ -89,7 +87,7 @@ TopologyGraphROS1::TopologyGraphROS1(
     map_manager->setTopologyActive(missionActive());
     publisher_ = node_.advertise<visualization_msgs::MarkerArray>(topic, 1, true);
     worker_ = std::thread(&TopologyGraphROS1::workerLoop, this);
-    timer_ = node_.createTimer(ros::Duration(std::max(0.02, update_period)),
+    timer_ = node_.createTimer(ros::Duration(update_period_),
                                &TopologyGraphROS1::timerCallback, this);
     if (missionActive()) {
         updateAndPublish();
@@ -161,7 +159,25 @@ void TopologyGraphROS1::workerLoop() {
         if (!manager || !manager->topologyReady()) {
             continue;
         }
-        manager->updateTopology(max_regions_per_tick_);
+        const ros::WallTime update_begin = ros::WallTime::now();
+        const std::size_t rebuilt =
+            manager->updateTopology(max_regions_per_tick_);
+        const double update_ms =
+            (ros::WallTime::now() - update_begin).toSec() * 1000.0;
+        const auto stats = manager->topologyGraph()->stats();
+        ROS_INFO_STREAM_THROTTLE(
+            1.0, "[topology update] rebuilt=" << rebuilt
+                 << " dirty=" << stats.dirty_region_count
+                 << " nodes=" << stats.node_count
+                 << " edges=" << stats.edge_count
+                 << " cost=" << update_ms << "ms");
+        if (update_ms > update_period_ * 1000.0) {
+            ROS_WARN_STREAM_THROTTLE(
+                1.0, "[topology update] worker exceeds period: cost="
+                     << update_ms << "ms period="
+                     << update_period_ * 1000.0
+                     << "ms; updates are being coalesced");
+        }
         const ros::WallTime now = ros::WallTime::now();
         if (last_publish_time_.isZero() ||
             (now - last_publish_time_).toSec() >= publish_period_) {
@@ -266,8 +282,8 @@ visualization_msgs::MarkerArray TopologyGraphROS1::makeMarkers(
                        ? "dense_known_free" : "bubble_topology") +
                   " nodes=" + std::to_string(snapshot.nodes.size()) +
                   " edges=" + std::to_string(snapshot.edges.size()) +
-                  " evidence=" +
-                  std::to_string(snapshot.dense_evidence_cell_count) +
+                  " known_free=" +
+                  std::to_string(snapshot.known_free_cell_count) +
                   " dirty=" + std::to_string(snapshot.dirty_region_count) +
                   " rev=" + std::to_string(snapshot.revision) +
                   " empty=" + std::to_string(snapshot.empty_region_count) +

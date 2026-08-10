@@ -257,8 +257,7 @@ Visualization Manager:
           Marker Topic: /general_planner_runtime_node/visualization/frontend_path
           Name: Astar
           Namespaces:
-            guide_path: true
-            guide_path_line: true
+            {}
           Queue Size: 100
           Value: true
         - Class: rviz/MarkerArray
@@ -354,9 +353,7 @@ Visualization Manager:
           Marker Topic: /general_planner_runtime_node/visualization/backup_traj
           Name: BackUp
           Namespaces:
-            backup_traj: true
-            backup_traj_start: true
-            backup_traj_waypoints: true
+            {}
           Queue Size: 100
           Value: true
         - Class: rviz/MarkerArray
@@ -364,8 +361,7 @@ Visualization Manager:
           Marker Topic: /general_planner_runtime_node/visualization/exp_traj
           Name: Exp
           Namespaces:
-            exp_traj: true
-            exp_traj_waypoints: true
+            {}
           Queue Size: 100
           Value: true
         - Class: rviz/MarkerArray
@@ -505,6 +501,16 @@ Visualization Manager:
       Shaft Length: 0.10000000149011612
       Topic: /waypoint_mission
       Unreliable: false
+      Value: true
+    - Class: rviz/MarkerArray
+      Enabled: true
+      Marker Topic: /general_planner_runtime_node/map_manager/topology
+      Name: Topo Map
+      Namespaces:
+        incremental_topology_edges: true
+        incremental_topology_nodes: true
+        incremental_topology_status: true
+      Queue Size: 100
       Value: true
   Enabled: true
   Global Options:

@@ -633,6 +633,8 @@ namespace fsm {
                 execution_timer_.stop();
                 replan_timer_.stop();
                 cmd_timer_.stop();
+                perception_safety_timer_.stop();
+                navigation_status_timer_.stop();
             } catch (const std::exception &e) {
                 fmt::print(stderr, " -- [Fsm] Failed to stop ROS timers: {}\n", e.what());
             } catch (...) {
@@ -645,6 +647,12 @@ namespace fsm {
             } catch (...) {
                 fmt::print(stderr, " -- [Fsm] Failed to save final replan log: unknown exception\n");
             }
+            // Stop and join topology maintenance before GeneralPlanner and
+            // MapManager release their graph/map resources. Relying only on
+            // implicit member destruction made Ctrl-C teardown order opaque.
+            topology_graph_ros1_.reset();
+            planner_ptr_.reset();
+            map_ptr_.reset();
         };
 
         typedef std::shared_ptr<FsmRos1> Ptr;

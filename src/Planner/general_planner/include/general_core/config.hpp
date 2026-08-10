@@ -97,7 +97,6 @@ namespace general_planner {
         double state2state_topology_publish_period{0.50};
         double state2state_topology_region_size{4.0};
         double state2state_topology_sample_spacing{1.0};
-        double state2state_topology_evidence_vertical_tolerance{0.50};
         double state2state_topology_min_clearance{0.45};
         double state2state_topology_max_clearance{2.5};
         double state2state_topology_connection_radius{6.0};
@@ -497,9 +496,6 @@ namespace general_planner {
                              state2state_topology_region_size, 4.0);
             loader.LoadParam("general_planner/state2state/topology/sample_spacing",
                              state2state_topology_sample_spacing, 1.0);
-            loader.LoadParam(
-                "general_planner/state2state/topology/evidence_vertical_tolerance",
-                state2state_topology_evidence_vertical_tolerance, 0.50);
             loader.LoadParam("general_planner/state2state/topology/min_clearance",
                              state2state_topology_min_clearance, 0.45);
             loader.LoadParam("general_planner/state2state/topology/max_clearance",

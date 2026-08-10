@@ -68,31 +68,29 @@ general_planner:
       # Persistent, globally aligned dense roadmap over sensor-observed free
       # space. Unknown cells and planned-but-unobserved routes are excluded.
       construction_mode: dense_known_free
-      # State2state in this profile navigates inside a narrow inflated height
-      # band. Sample the sensor-observed plane at the actual flight/LiDAR
-      # height; the virtual-height midpoint is not necessarily observed.
-      planar_mode: true
+      # Delivery uses a true 3D dense lattice. Edges remain evidence-validated,
+      # with a valid upper/lower portal reserved to prevent layer separation.
+      planar_mode: false
       navigation_altitude: 1.5
       unknown_as_free: false
       min_query_distance: 3.0
-      # Four 4x4 m regions at 20 Hz can follow a fast moving observation
-      # window, while RViz receives a bounded 2 Hz immutable snapshot.
-      update_budget: 4
+      # Dirty regions nearest to the current odom are consumed at 20 Hz.
+      # Dense lattice hashing keeps this budget bounded while the robot moves.
+      update_budget: 32
       update_period: 0.05
-      publish_period: 0.50
+      publish_period: 0.20
       region_size: 4.0
       sample_spacing: 1.0
-      # Project observed voxels in this vertical band into the 2.5D evidence
-      # grid so a single moving LiDAR pass can populate stable topology cells.
-      evidence_vertical_tolerance: 0.50
-      min_clearance: 0.45
+      min_clearance: 0.0
       max_clearance: 2.5
-      connection_radius: 1.75
+      # 1.8 m retains all 26 immediate 3D lattice neighbors at 1 m spacing,
+      # without the expensive two-cell shortcut search.
+      connection_radius: 1.8
       dirty_padding: 0.0
       bubble_overlap_margin: 0.10
-      max_nodes_per_region: 32
+      max_nodes_per_region: 256
       max_bubbles_per_region: 256
-      max_neighbors: 8
+      max_neighbors: 26
     altitude_guard_enable: true
     altitude_band: 0.25
     altitude_escape_enable: true
@@ -174,7 +172,7 @@ traj_opt:
     # Representation selection. All convex-hull formulation parameters and its
     # independent penalty weights live in the dedicated profile below.
     # Set false to run dense using only the penna_* block in this file.
-    convex_hull_en: false
+    convex_hull_en: true
     convex_hull_config: "traj_opt/convex_hull/click_real_highspeed.yaml"
     smooth_eps: 0.01
     # Dense-integral-only penalty set. It is ignored by the convex-hull

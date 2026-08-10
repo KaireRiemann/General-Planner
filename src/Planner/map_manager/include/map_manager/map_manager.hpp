@@ -38,6 +38,20 @@ public:
         setMap(map);
     }
 
+    ~MapManager()
+    {
+        // Detach ROG callbacks while every member they refer to is still
+        // alive. This makes Ctrl-C shutdown deterministic and prevents a late
+        // map callback from racing topology container destruction.
+        if (map_) {
+            map_->setStateChangeCallback({});
+            map_->setRobotStateCallback({});
+        }
+        if (topology_graph_) {
+            topology_graph_->setActive(false);
+        }
+    }
+
     void setMap(const rog_map::ROGMapROS::Ptr &map)
     {
         if (map_) {
@@ -77,43 +91,16 @@ public:
                 }
             });
 
-            // Odom only prioritizes asynchronous maintenance in dense
-            // known-free mode. New graph content comes from post-integration
-            // occupancy transitions, never from robot motion itself.
-            struct OdomTopologyTrigger {
-                std::mutex mutex;
-                bool initialized{false};
-                rog_map::Vec3f last_marked{rog_map::Vec3f::Zero()};
-            };
-            const auto trigger = std::make_shared<OdomTopologyTrigger>();
+            // Odom only prioritizes maintenance near the robot. Free-space
+            // topology is sourced exclusively from ROG/BoundaryMap queries.
             map_->setRobotStateCallback(
-                [weak_topology, trigger](const rog_map::RobotState &robot) {
+                [weak_topology](const rog_map::RobotState &robot) {
                     const auto topology = weak_topology.lock();
                     if (!topology || !topology->active() || !robot.rcv ||
                         !robot.p.allFinite()) {
                         return;
                     }
                     topology->requestUpdateFocus(robot.p);
-                    const auto config = topology->config();
-                    const double trigger_distance =
-                        std::max(0.5, 0.5 * config.region_size);
-                    bool mark = false;
-                    {
-                        std::lock_guard<std::mutex> lock(trigger->mutex);
-                        rog_map::Vec3f delta = robot.p - trigger->last_marked;
-                        if (config.planar_mode) {
-                            delta.z() = 0.0;
-                        }
-                        mark = !trigger->initialized ||
-                               delta.norm() >= trigger_distance;
-                        if (mark) {
-                            trigger->initialized = true;
-                            trigger->last_marked = robot.p;
-                        }
-                    }
-                    if (mark && !config.dense_known_free) {
-                        topology->markDirty(robot.p);
-                    }
                 });
         }
     }
@@ -607,15 +594,10 @@ private:
         bool expected = false;
         if (topology_seeded_.compare_exchange_strong(
                 expected, true, std::memory_order_acq_rel)) {
-            if (topology_graph_->config().dense_known_free) {
-                // Dense mode persists map transitions while state2state owns
-                // it. Seeding the full rolling window would enqueue hundreds
-                // of mostly empty regions and starve moving updates.
-                return true;
-            }
             rog_map::Vec3f box_min(-1.0e6, -1.0e6, -1.0e6);
             rog_map::Vec3f box_max(1.0e6, 1.0e6, 1.0e6);
             map_->boundBoxByLocalMap(box_min, box_max);
+            topology_graph_->requestUpdateFocus(robot.p);
             topology_graph_->markDirtyBox(box_min, box_max);
         }
         return true;
@@ -635,40 +617,35 @@ private:
             topology_config.unknown_as_free &&
             !topology_config.dense_known_free;
         const bool dense_known_free = topology_config.dense_known_free;
-        query.traversable = [this, unknown_as_free, dense_known_free](
+        const rog_map::Config map_config = map_
+            ? map_->getMapConfig() : rog_map::Config{};
+        query.traversable = [this, unknown_as_free, dense_known_free, map_config](
                                 const rog_map::Vec3f &position) {
             if (!map_ || !position.allFinite()) {
                 return false;
             }
-            const rog_map::Config config = map_->getMapConfig();
-            if (position.z() <= config.virtual_ground_height ||
-                position.z() >= config.virtual_ceil_height) {
+            if (position.z() <= map_config.virtual_ground_height ||
+                position.z() >= map_config.virtual_ceil_height) {
                 return false;
             }
             if (map_->insideLocalMap(position)) {
                 const rog_map::GridType raw = map_->getGridType(position);
+                if (dense_known_free) {
+                    // Dense construction records the raw ROG observation.
+                    // Reading the inflation map here doubled every node/edge
+                    // query but could not change this result.
+                    return raw == rog_map::GridType::KNOWN_FREE;
+                }
                 const rog_map::GridType inflated =
                     map_->getInfGridType(position);
                 const bool inflation_safe =
                     inflated != rog_map::GridType::OCCUPIED &&
                     inflated != rog_map::GridType::OUT_OF_MAP;
                 if (raw == rog_map::GridType::KNOWN_FREE) {
-                    // Dense topology records observed free-space evidence.
-                    // The inflated layer is a planning/safety representation
-                    // and may conservatively mark an entire narrow flight
-                    // layer occupied. It must not erase valid raw-map memory.
-                    if (dense_known_free) {
-                        return true;
-                    }
                     return inflation_safe &&
                            (unknown_as_free || inflated == rog_map::GridType::KNOWN_FREE);
                 }
                 if (raw == rog_map::GridType::OCCUPIED) {
-                    return false;
-                }
-                if (dense_known_free) {
-                    // Never promote UNKNOWN via lattice proximity. Every
-                    // stored dense node must lie in a raw KNOWN_FREE voxel.
                     return false;
                 }
                 // This option is explicit because ordinary state2state may be

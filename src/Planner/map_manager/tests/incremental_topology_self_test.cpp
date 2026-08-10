@@ -26,7 +26,6 @@ bool expect(const bool condition, const std::string &message) {
 int main() {
     using general_planner::IncrementalTopologyGraph;
     using rog_map::Vec3f;
-    using rog_map::Vec3i;
 
     IncrementalTopologyGraph::Config config;
     config.enabled = true;
@@ -201,9 +200,8 @@ int main() {
     ok &= expect(crossing_graph.active(),
                  "configured topology must reactivate for state2state");
 
-    // Dense known-free mode represents every safe point on one globally
-    // aligned lattice and keeps earlier observed regions when the robot/map
-    // focus moves forward. A planned path alone must not create evidence.
+    // Dense known-free mode samples the complete map-view KNOWN_FREE volume.
+    // Odom/planned paths do not provide free-space evidence.
     IncrementalTopologyGraph::Config dense_config = config;
     dense_config.dense_known_free = true;
     dense_config.unknown_as_free = true; // sanitized to false by dense mode.
@@ -218,9 +216,17 @@ int main() {
     IncrementalTopologyGraph dense_graph(dense_config);
     ok &= expect(!dense_graph.config().unknown_as_free,
                  "dense persistent topology must force unknown_as_free off");
+    int dense_phase = 0;
+    bool first_cell_occupied = false;
     IncrementalTopologyGraph::Query dense_query;
-    dense_query.traversable = [](const Vec3f &) {
-        return false;
+    dense_query.traversable = [&](const Vec3f &point) {
+        const int x = static_cast<int>(std::floor(point.x()));
+        const int y = static_cast<int>(std::floor(point.y()));
+        if (y < 0 || y >= 2) return false;
+        if (x >= 0 && x < 2) {
+            return !(first_cell_occupied && x == 0 && y == 0);
+        }
+        return dense_phase >= 1 && x >= 4 && x < 6;
     };
     dense_query.clearance = [](const Vec3f &, double &distance) {
         distance = 0.8;
@@ -230,40 +236,48 @@ int main() {
         {Vec3f(0.5, 0.5, 1.0), Vec3f(5.5, 0.5, 1.0)});
     ok &= expect(dense_graph.stats().dirty_region_count == 0,
                  "planned paths must not seed dense known-free nodes");
-    std::vector<IncrementalTopologyGraph::VoxelEvidenceDelta>
-        first_dense_observation;
-    for (int x = 0; x < 2; ++x) {
-        for (int y = 0; y < 2; ++y) {
-            first_dense_observation.push_back(
-                {Vec3i(x, y, 0), 1, 0});
-        }
-    }
-    dense_graph.integrateDenseEvidence(
-        first_dense_observation, 1.0);
+    dense_graph.markDirty(Vec3f(0.5, 0.5, 1.0));
     ok &= expect(dense_graph.update(dense_query, 1) == 1,
-                 "the first observed dense region must rebuild");
+                 "the current ROG free-space region must rebuild");
     const auto dense_initial = dense_graph.snapshot();
     ok &= expect(dense_initial.nodes.size() == 4,
-                 "a 2x2 m planar region at 1 m spacing must retain four nodes");
+                 "all four KNOWN_FREE samples in a 2x2 region must become nodes");
+    ok &= expect(dense_initial.edges.size() >= 3,
+                 "the complete KNOWN_FREE region must be connected");
     std::unordered_map<std::uint64_t, Vec3f> dense_history;
     for (const auto &node : dense_initial.nodes) {
         dense_history.emplace(node.id, node.position);
     }
 
-    std::vector<IncrementalTopologyGraph::VoxelEvidenceDelta>
-        moved_dense_observation;
-    for (int x = 4; x < 6; ++x) {
-        for (int y = 0; y < 2; ++y) {
-            moved_dense_observation.push_back(
-                {Vec3i(x, y, 0), 1, 0});
-        }
+    // Direct dense-cell indexing must preserve adjacency across region
+    // boundaries; this is the common case as the odom-centred ROG window
+    // advances into a newly observed region.
+    IncrementalTopologyGraph dense_boundary_graph(dense_config);
+    IncrementalTopologyGraph::Query dense_boundary_query;
+    dense_boundary_query.traversable = [](const Vec3f &point) {
+        const int x = static_cast<int>(std::floor(point.x()));
+        const int y = static_cast<int>(std::floor(point.y()));
+        return y == 0 && (x == 1 || x == 2);
+    };
+    dense_boundary_query.clearance = dense_query.clearance;
+    dense_boundary_graph.markDirty(Vec3f(1.5, 0.5, 1.0));
+    dense_boundary_graph.markDirty(Vec3f(2.5, 0.5, 1.0));
+    while (dense_boundary_graph.stats().dirty_region_count > 0) {
+        dense_boundary_graph.update(dense_boundary_query, 4);
     }
-    dense_graph.integrateDenseEvidence(
-        moved_dense_observation, 1.0);
-    dense_graph.update(dense_query, 1);
+    const auto dense_boundary_snapshot = dense_boundary_graph.snapshot();
+    ok &= expect(dense_boundary_snapshot.nodes.size() == 2 &&
+                     dense_boundary_snapshot.edges.size() == 1,
+                 "dense lattice nodes across adjacent regions must connect");
+
+    dense_phase = 1;
+    dense_graph.markDirty(Vec3f(4.5, 0.5, 1.0));
+    while (dense_graph.stats().dirty_region_count > 0) {
+        dense_graph.update(dense_query, 4);
+    }
     const auto dense_moved = dense_graph.snapshot();
     ok &= expect(dense_moved.nodes.size() == 8,
-                 "moving observation must append a dense region without erasing history");
+                 "new ROG KNOWN_FREE regions must append without odom gating");
     for (const auto &historic : dense_history) {
         bool found = false;
         for (const auto &node : dense_moved.nodes) {
@@ -273,11 +287,83 @@ int main() {
         ok &= expect(found,
                      "previously observed dense nodes must persist after movement");
     }
-    dense_graph.integrateDenseEvidence(
-        {{Vec3i(0, 0, 0), -1, 1}}, 1.0);
+    first_cell_occupied = true;
+    dense_graph.markDirty(Vec3f(0.5, 0.5, 1.0));
     dense_graph.update(dense_query, 1);
     ok &= expect(dense_graph.snapshot().nodes.size() == 7,
-                 "new occupied evidence must invalidate its coarse free cell");
+                 "ROG occupied updates must remove a formerly free node");
+
+    // Unknown gaps are not fabricated merely to force connectivity.
+    IncrementalTopologyGraph::Config gap_config = dense_config;
+    gap_config.connection_radius = 2.5;
+    gap_config.max_nodes_per_region = 64;
+    IncrementalTopologyGraph gap_graph(gap_config);
+    IncrementalTopologyGraph::Query gap_query = dense_query;
+    gap_query.traversable = [](const Vec3f &point) {
+        const int x = static_cast<int>(std::floor(point.x()));
+        const int y = static_cast<int>(std::floor(point.y()));
+        return y == 0 && (x == 0 || x == 2);
+    };
+    gap_graph.markDirty(Vec3f(0.5, 0.5, 1.0));
+    gap_graph.markDirty(Vec3f(2.5, 0.5, 1.0));
+    while (gap_graph.stats().dirty_region_count > 0) {
+        gap_graph.update(gap_query, 4);
+    }
+    const auto gap_snap = gap_graph.snapshot();
+    ok &= expect(gap_snap.nodes.size() == 2,
+                 "both ROG KNOWN_FREE endpoints must remain");
+    ok &= expect(gap_snap.edges.empty(),
+                 "an unknown middle cell must prevent a fabricated bridge");
+
+    // Valid adjacent lattice edges are mandatory and cannot be removed by a
+    // small max_neighbors budget, including in the vertical direction.
+    IncrementalTopologyGraph::Config layer_config = dense_config;
+    layer_config.planar_mode = false;
+    layer_config.region_size = 4.0;
+    layer_config.connection_radius = 1.1;
+    layer_config.max_neighbors = 2;
+    IncrementalTopologyGraph layer_graph(layer_config);
+    IncrementalTopologyGraph::Query layer_query;
+    layer_query.traversable = [](const Vec3f &point) {
+        const int x = static_cast<int>(std::floor(point.x()));
+        const int y = static_cast<int>(std::floor(point.y()));
+        const int z = static_cast<int>(std::floor(point.z()));
+        return (x == 0 && y == 0 && z >= 0 && z <= 2) ||
+               (z == 1 && ((x == 1 && y == 0) ||
+                            (x == 0 && y == 1)));
+    };
+    layer_query.clearance = dense_query.clearance;
+    layer_graph.markDirty(Vec3f(0.5, 0.5, 1.5));
+    while (layer_graph.stats().dirty_region_count > 0) {
+        layer_graph.update(layer_query, 4);
+    }
+    const auto layer_snap = layer_graph.snapshot();
+    std::uint64_t lower_id = 0;
+    std::uint64_t middle_id = 0;
+    std::uint64_t upper_id = 0;
+    for (const auto &node : layer_snap.nodes) {
+        if (std::abs(node.position.x() - 0.5) > 1.0e-9 ||
+            std::abs(node.position.y() - 0.5) > 1.0e-9) {
+            continue;
+        }
+        if (std::abs(node.position.z() - 0.5) < 1.0e-9) lower_id = node.id;
+        if (std::abs(node.position.z() - 1.5) < 1.0e-9) middle_id = node.id;
+        if (std::abs(node.position.z() - 2.5) < 1.0e-9) upper_id = node.id;
+    }
+    bool lower_connected = false;
+    bool upper_connected = false;
+    for (const auto &edge : layer_snap.edges) {
+        lower_connected = lower_connected ||
+            ((edge.from == lower_id && edge.to == middle_id) ||
+             (edge.from == middle_id && edge.to == lower_id));
+        upper_connected = upper_connected ||
+            ((edge.from == upper_id && edge.to == middle_id) ||
+             (edge.from == middle_id && edge.to == upper_id));
+    }
+    ok &= expect(lower_id != 0 && middle_id != 0 && upper_id != 0,
+                 "ROG KNOWN_FREE samples must include lower/middle/upper layers");
+    ok &= expect(lower_connected && upper_connected,
+                 "dense 3D graph must retain valid portals to both height layers");
 
     // A graph rebuild may be expensive. A planner query must use the already
     // available graph instead of waiting for the maintenance update mutex.

@@ -19,26 +19,7 @@ void MapManager::syncBoundaryMapImpl(const rog_map::ROGMapROS::Ptr &map,
 
     if (topology_graph) {
         const auto topology_config = topology_graph->config();
-        if (topology_graph->active() &&
-            topology_config.enabled &&
-            topology_config.dense_known_free) {
-            std::vector<
-                IncrementalTopologyGraph::VoxelEvidenceDelta> deltas;
-            deltas.reserve(changes.size());
-            for (const auto &change : changes) {
-                IncrementalTopologyGraph::VoxelEvidenceDelta delta;
-                delta.index = change.id_g;
-                delta.free_delta =
-                    (change.to_type == rog_map::GridType::KNOWN_FREE ? 1 : 0) -
-                    (change.from_type == rog_map::GridType::KNOWN_FREE ? 1 : 0);
-                delta.occupied_delta =
-                    (change.to_type == rog_map::GridType::OCCUPIED ? 1 : 0) -
-                    (change.from_type == rog_map::GridType::OCCUPIED ? 1 : 0);
-                deltas.push_back(delta);
-            }
-            topology_graph->integrateDenseEvidence(
-                deltas, map->getResolution());
-        } else if (topology_graph->active()) {
+        if (topology_graph->active() && topology_config.enabled) {
             std::vector<rog_map::Vec3i> changed_indices;
             changed_indices.reserve(changes.size());
             for (const auto &change : changes) {

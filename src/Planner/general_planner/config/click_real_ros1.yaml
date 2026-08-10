@@ -50,25 +50,25 @@ general_planner:
       construction_mode: dense_known_free
       # Use the center of ROG's effective height band and horizontal clearance
       # for the persistent state2state topology graph.
-      planar_mode: true
+      planar_mode: false
       navigation_altitude: 1.5
       # Persistent topology accepts sensor-observed known-free cells only.
       unknown_as_free: false
       min_query_distance: 3.0
-      update_budget: 4
+      update_budget: 32
       update_period: 0.05
-      publish_period: 0.50
+      publish_period: 0.20
       region_size: 4.0
       sample_spacing: 1.0
-      evidence_vertical_tolerance: 0.50
-      min_clearance: 0.45
+      min_clearance: 0.0
       max_clearance: 2.5
-      connection_radius: 1.75
+      # Keep the complete 26-neighbor 3D lattice, without two-cell shortcuts.
+      connection_radius: 1.8
       dirty_padding: 0.0
       bubble_overlap_margin: 0.10
-      max_nodes_per_region: 32
+      max_nodes_per_region: 256
       max_bubbles_per_region: 256
-      max_neighbors: 8
+      max_neighbors: 26
     altitude_guard_enable: true
     altitude_band: 0.25
     altitude_escape_enable: true

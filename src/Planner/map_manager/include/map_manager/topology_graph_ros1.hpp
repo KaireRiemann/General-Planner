@@ -51,6 +51,7 @@ private:
     bool enabled_{false};
     double node_scale_{0.22};
     double edge_scale_{0.06};
+    double update_period_{0.20};
     double publish_period_{0.50};
     ros::WallTime last_publish_time_;
     std::size_t max_regions_per_tick_{4};
