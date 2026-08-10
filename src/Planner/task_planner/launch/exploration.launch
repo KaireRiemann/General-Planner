@@ -26,7 +26,11 @@
   <arg name="auto_start" default="false" />
   <arg name="auto_start_delay" default="2.0" />
   <arg name="trigger_topic" default="/move_base_simple/goal" />
+  <arg name="legacy_trigger_topic" default="" />
   <arg name="coverage_guidance_mode" default="full" />
+  <!-- planner_runtime serial handover: take START only from task command. -->
+  <arg name="disable_local_trigger" default="false" />
+  <arg name="pos_cmd_topic" default="/planning/pos_cmd" />
 
   <!-- First-delivery frontend and replanning settings. -->
   <arg name="fsm_replan_time" default="0.25" />
@@ -92,7 +96,15 @@
     <param name="fsm/debug_planner" value="false" type="bool" />
     <param name="fsm/auto_trigger" value="$(arg auto_start)" type="bool" />
     <param name="fsm/auto_trigger_delay" value="$(arg auto_start_delay)" type="double" />
-    <param name="fsm/trigger_topic" value="$(arg trigger_topic)" type="string" />
+    <param unless="$(arg disable_local_trigger)"
+           name="fsm/trigger_topic" value="$(arg trigger_topic)" type="string" />
+    <param if="$(arg disable_local_trigger)"
+           name="fsm/trigger_topic" value="" type="string" />
+    <param unless="$(arg disable_local_trigger)"
+           name="fsm/legacy_trigger_topic"
+           value="$(arg legacy_trigger_topic)" type="string" />
+    <param if="$(arg disable_local_trigger)"
+           name="fsm/legacy_trigger_topic" value="" type="string" />
     <param name="coverage_guidance/mode"
            value="$(arg coverage_guidance_mode)" type="string" />
     <param name="fsm/global_path_update_min_interval"
@@ -109,10 +121,13 @@
     <param name="fsm/max_cloud_age" value="$(arg max_cloud_age)" type="double" />
     <param name="fsm/task_control_enable"
            value="$(arg task_control_enable)" type="bool" />
+    <param name="fsm/task_command_topic"
+           value="/planning/exploration/command" type="string" />
     <param name="fsm/task_status_topic"
            value="/planning/exploration/status" type="string" />
     <param name="fsm/execution_enabled_topic"
            value="/planning/exploration/command_enabled" type="string" />
+    <param name="fsm/handover_slow_speed" value="0.10" type="double" />
 
     <param name="exploration/original_frontend_compatibility"
            value="$(arg original_frontend_compatibility)" type="bool" />
@@ -130,10 +145,11 @@
   </node>
 
   <node if="$(arg traj_server)" pkg="general_planner" type="highspeed_traj_server"
-        name="traj_server" output="screen">
+        name="highspeed_traj_server" output="screen">
     <param name="odometry_topic" value="$(arg odom_topic)" type="string" />
     <param name="replan_time" value="$(arg fsm_replan_time)" type="double" />
     <param name="heartbeat_timeout" value="$(arg heartbeat_timeout)" type="double" />
+    <param name="pos_cmd_topic" value="$(arg pos_cmd_topic)" type="string" />
     <param name="execution_enabled_topic"
            value="/planning/exploration/command_enabled" type="string" />
   </node>

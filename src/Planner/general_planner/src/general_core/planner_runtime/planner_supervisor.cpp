@@ -416,19 +416,27 @@ void PlannerSupervisor::activateMode(const PlannerMode mode,
       publishNavigationTaskMode("hold");
     }
     if (serial_handover_) {
+      // Stack may still be relaunching; accept triggers only after
+      // exploration_ready replaces the latched PAUSE from state2state.
+      serial_handover_pending_ = true;
+      status_.ready_for_new_task = false;
+      status_.reason =
+          reason + "; relaunching exploration stack via serial handover";
       publishHandoverCommand("start_exploration");
+    } else {
+      status_.ready_for_new_task = true;
+      status_.reason =
+          reason + "; waiting for exploration trigger (/planner/click_goal)";
     }
     status_.phase = PlannerPhase::WAITING_INPUT;
     status_.mode_state = ModeState::EXP_WAIT_TRIGGER;
     status_.stable_hover = true;
-    status_.ready_for_new_task = true;
     status_.command_owner = CommandOwner::HOLD;
     status_.task_result = PlannerTaskResult::NONE;
-    status_.reason =
-        reason + "; waiting for exploration trigger (/planner/click_goal)";
     gateway_.setAuthorizedOwner(CommandOwner::HOLD, status_.task_epoch);
-    ROS_INFO_STREAM("[planner_supervisor] exploration armed and waiting for "
-                    "trigger (task_id will be assigned on trigger)");
+    ROS_INFO_STREAM("[planner_supervisor] exploration armed"
+                    << (serial_handover_ ? " (waiting for stack relaunch)"
+                                         : " and waiting for trigger"));
     return;
   }
 }
@@ -530,12 +538,12 @@ bool PlannerSupervisor::acceptExplorationTriggerLocked(
     const geometry_msgs::PoseStamped &msg) {
   (void)msg;
   if (!boot_complete_ || status_.active_mode != PlannerMode::EXPLORATION ||
-      transition_active_) {
+      transition_active_ || !status_.ready_for_new_task) {
     ROS_WARN_THROTTLE(1.0,
                       "[planner_supervisor] drop exploration trigger: mode=%s "
-                      "boot=%d transition=%d",
+                      "boot=%d transition=%d ready=%d",
                       toString(status_.active_mode), boot_complete_,
-                      transition_active_);
+                      transition_active_, status_.ready_for_new_task);
     return false;
   }
   // Only accept a new trigger while idle / waiting / finished. Ignore clicks
@@ -792,7 +800,19 @@ void PlannerSupervisor::handoverStatusCallback(
     serial_state2state_ready_ = false;
     gateway_.setPublishingEnabled(true);
     gateway_.setAuthorizedOwner(CommandOwner::HOLD, status_.task_epoch);
-    status_.reason = "serial exploration stack ready";
+    // Replace the latched PAUSE left from the previous state2state handover so
+    // a freshly started exploration_node does not immediately pause itself.
+    publishExplorationCommand("READY");
+    if (exploration_start_pending_) {
+      requestExplorationStartLocked("reissue after exploration_ready");
+    }
+    status_.reason =
+        "serial exploration stack ready; waiting for /planner/exploration/trigger";
+    status_.ready_for_new_task = true;
+    status_.phase = PlannerPhase::WAITING_INPUT;
+    status_.mode_state = ModeState::EXP_WAIT_TRIGGER;
+    status_.active_mode = PlannerMode::EXPLORATION;
+    status_.requested_mode = PlannerMode::EXPLORATION;
     ROS_INFO("[planner_supervisor] serial exploration ready; gateway enabled");
     return;
   }

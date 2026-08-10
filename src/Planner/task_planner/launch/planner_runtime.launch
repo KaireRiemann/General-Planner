@@ -162,9 +162,14 @@
         type="planner_serial_handover.py" name="planner_serial_handover"
         output="screen">
     <param name="fsm_config_path" value="$(arg navigation_config)" type="string" />
+    <param name="fsm_node_name" value="fsm_node" type="string" />
+    <param name="exploration_launch_pkg" value="task_planner" type="string" />
+    <param name="exploration_launch_file" value="exploration.launch" type="string" />
+    <param name="exploration_launch_args"
+           value="marsim:=false rviz:=false traj_server:=true task_control_enable:=true disable_local_trigger:=true pos_cmd_topic:=/planning/exploration/pos_cmd exploration_config:=$(arg exploration_config) rog_map_config:=$(arg rog_map_config) odom_topic:=$(arg odom_topic) cloud_topic:=$(arg cloud_topic) cloud_odom_mode:=$(arg cloud_odom_mode) coverage_guidance_mode:=$(arg coverage_guidance_mode) bubble_astar_resolution:=$(arg bubble_astar_resolution) bubble_topo_cube_discrete_size:=$(arg bubble_topo_cube_discrete_size) view_graph:=$(arg view_graph) view_frontier:=$(arg view_frontier) view_cluster:=$(arg view_cluster)"
+           type="string" />
     <param name="handover_command_topic" value="/planner/handover" type="string" />
     <param name="handover_status_topic" value="/planner/handover_status" type="string" />
-    <param name="fsm_node_name" value="fsm_node" type="string" />
   </node>
 
   <node pkg="general_planner" type="planner_runtime_node" name="planner_runtime_node"

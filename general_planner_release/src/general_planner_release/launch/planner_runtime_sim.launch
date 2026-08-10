@@ -8,7 +8,7 @@
   <arg name="rog_map_config"
        default="$(find general_planner_release)/config/exploration_rog_map.yaml"/>
   <arg name="navigation_config"
-       default="$(find general_planner_release)/config/interface_state2state_esdf.yaml"/>
+       default="$(find general_planner_release)/config/interface_state2state_corridor.yaml"/>
   <arg name="generated_config_path"
        default="$(env HOME)/.ros/general_planner_runtime/planner_runtime_state2state.yaml"/>
   <arg name="rviz_config"

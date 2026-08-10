@@ -19,7 +19,7 @@
   <arg name="sim_config"
        default="$(find general_planner_release)/config/exploration_sim.yaml" />
   <arg name="navigation_config"
-       default="$(find general_planner_release)/config/interface_state2state_esdf.yaml" />
+       default="$(find general_planner_release)/config/interface_state2state_corridor.yaml" />
   <arg name="generated_config_path"
        default="$(env HOME)/.ros/general_planner_runtime/planner_runtime_state2state.yaml" />
   <!-- Match task_planner/planner_runtime.launch: house box contains sim spawn (-17,0,2).
@@ -158,7 +158,12 @@
            type="string" />
     <param name="exploration_launch_pkg" value="general_planner_release" type="string" />
     <param name="exploration_launch_file" value="exploration.launch" type="string" />
-    <param name="exploration_launch_args" value="traj_server:=true" type="string" />
+    <!-- Must mirror the exploration_node / traj_server wiring above so a
+         state2state -> exploration relaunch still accepts
+         /planner/exploration/trigger via /planning/exploration/command. -->
+    <param name="exploration_launch_args"
+           value="traj_server:=true task_control_enable:=true disable_local_trigger:=true pos_cmd_topic:=/planning/exploration/pos_cmd exploration_config:=$(arg exploration_config) rog_map_config:=$(arg rog_map_config) odom_topic:=$(arg odom_topic) cloud_topic:=$(arg cloud_topic) cloud_odom_mode:=$(arg cloud_odom_mode) coverage_guidance_mode:=$(arg coverage_guidance_mode) bubble_astar_resolution:=$(arg bubble_astar_resolution) bubble_topo_cube_discrete_size:=$(arg bubble_topo_cube_discrete_size) view_graph:=$(arg view_graph) view_frontier:=$(arg view_frontier) view_cluster:=$(arg view_cluster)"
+           type="string" />
     <param name="handover_command_topic" value="/planner/handover" type="string" />
     <param name="handover_status_topic" value="/planner/handover_status" type="string" />
   </node>
