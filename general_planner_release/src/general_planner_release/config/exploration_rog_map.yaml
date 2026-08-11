@@ -29,7 +29,9 @@ rog_map:
   inflation_resolution: 0.15
   unk_inflation_en: false
   unk_inflation_step: 1
-  inflation_step: 2
+  # Shared world map for every runtime mode.  Keep the navigation safety
+  # margin aligned with click_real_highspeed (3 * 0.15 m = 0.45 m).
+  inflation_step: 3
   intensity_thresh: -10
   map_size: [72.0, 72.0, 8.0]
   point_filt_num: 1

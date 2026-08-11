@@ -1,14 +1,15 @@
+# Runtime state2state profile: click-demo corridor + fast-LBFGS route with
+# conservative 5 m/s flight limits. GlobalMapRuntime owns the world map from
+# config/exploration_rog_map.yaml; the mirrored ROG section below therefore
+# uses the same Villa exploration bounds and has no ROS callbacks.
 fsm:
   task_mode: "state2state"
   task_planner_en: true
-  # M2 composed runtime: PlannerSupervisor is the only state2state mode
-  # authority and publishes this topic once the hover hand-over is complete.
   task_mode_topic: "/planning/navigation_task_mode"
   click_goal_en: true
-  # Goals accepted by PlannerSupervisor are forwarded here after it has
-  # checked readiness/task epoch.  Do not subscribe to raw RViz /goal in the
-  # navigation adapter or it could bypass the ownership fence.
   click_goal_topic: "/planning/click_goal"
+  click_goal_3d_en: true
+  click_goal_3d_topic: "/goal_3d"
   click_height: 1.5
   click_yaw_en: true
   tracking_target_odom_topic: "/tracking/target_odom"
@@ -25,56 +26,94 @@ fsm:
   cmd_topic: "/planning/pos_cmd"
   mpc_cmd_topic: "/planning_cmd/poly_traj"
   timer_en: true
-  # Runtime navigation must continuously validate the committed prefix against
-  # the shared map.  This is the final guard if a new cloud invalidates a
-  # trajectory between regular replans.
-  perception_replan_check_en: true
-  perception_replan_check_rate: 30.0
+  # click_demo leaves the enable flag unset (false by Config default).  Keep
+  # the same policy in this comparison baseline; do not inherit runtime's
+  # additional perception-triggered replans.
+  perception_replan_check_en: false
+  perception_replan_check_rate: 60.0
   perception_replan_check_horizon: 2.0
-  perception_replan_check_dt: 0.08
+  perception_replan_check_dt: 0.06
   perception_replan_min_interval: 0.08
   perception_replan_consecutive_hits: 1
-  perception_replan_unknown_as_occupied: true
+  perception_replan_unknown_as_occupied: false
   perception_replan_emergency_horizon: 0.45
-  perception_replan_log_period: 0.5
 
 general_planner:
   backup_traj_en: true
   esdf_traj_en: false
-  esdf_safe_distance: 0.65
+  esdf_safe_distance: 0.3
   detailed_log_en: false
   visualization_en: true
   use_fov_cut: false
   print_log: false
   visual_process: false
-  # Do not turn unseen voxels into a shortcut.  Long-range navigation must
-  # advance via observed free space and its collision-checked local prefix.
-  frontend_in_known_free: true
-  goal_yaw_en: true
+  frontend_in_known_free: false
+  goal_yaw_en: false
   goal_vel_en: false
-  corridor_bound_dis: 1.0
-  corridor_line_max_length: 1.2
-  safe_corridor_line_max_length: 5.0
+  corridor_bound_dis: 2.0
+  corridor_line_max_length: 2.0
+  safe_corridor_line_max_length: 8.0
   iris_iter_num: 2
   ellipsoid_optimizer: classic
   ellipsoid_optimizer_fallback: false
   obs_skip_num: 2
   replan_forward_dt: 0.1
-  planning_horizon: 9.0
+  planning_horizon: 8.0
   sensing_horizon: -1
-  receding_dis: 4.0
+  receding_dis: 5.0
   robot_r: 0.2
-  frontend_astar_time_out: 0.2
-  # GlobalMapRuntime still constructs and publishes the world-lifetime graph,
-  # but it is intentionally not an executable frontend until the topology
-  # edge-clearance certificate is complete.  These keys must use the nested
-  # schema read by Config; the old flat state2state_topology_* keys were inert.
+  frontend_astar_time_out: 0.35
+  over_wall_search_en: true
+  over_wall_max_climb: 3.0
+  over_wall_height_step: 0.3
+  over_wall_min_blocked_span: 0.8
+  over_wall_min_progress_gain: 0.5
+  over_wall_forward_ratio: 0.9
+  dynamic_obstacle_layer:
+    enable: false
+    cloud_topic: "/cloud_registered"
+    cloud_queue_size: 3
+    odom_timeout: 0.2
+    ttl: 0.35
+    voxel_size: 0.20
+    inflation_radius: 0.40
+    line_check_step: 0.05
+    max_points_per_frame: 30000
+    local_half_size: [ 12, 12, 3 ]
   state2state:
     direct_line_frontend_enable: true
     topology:
       enable: true
+      # Global bubble A* supplies a route; the local planner executes only the
+      # collision-checked prefix inside the rolling ROG window.
       query_enable: false
+      # Sparse persistent 3D skeleton over sensor-observed global free space.
+      construction_mode: persistent_bubble_skeleton
+      planar_mode: false
+      navigation_altitude: 1.5
+      unknown_as_free: false
       min_query_distance: 3.0
+      # Dirty regions nearest to current odom are consumed asynchronously.
+      update_budget: 8
+      update_period: 0.05
+      publish_period: 0.20
+      region_size: 4.0
+      sample_spacing: 0.8
+      # Nodes still require KNOWN_FREE and inflated-safe edges; 0.20 m lets
+      # first-pass LiDAR ray evidence seed the graph at robot-radius clearance.
+      min_clearance: 0.20
+      max_clearance: 2.5
+      # Committed nodes never move; global spacing prevents clusters at dirty
+      # region boundaries while later observations fill uncovered gaps.
+      candidate_separation: 1.5
+      stable_match_distance: 1.0
+      connection_radius: 6.0
+      edge_sample_spacing: 0.20
+      dirty_padding: 2.5
+      bubble_overlap_margin: 0.10
+      max_nodes_per_region: 12
+      max_bubbles_per_region: 192
+      max_neighbors: 8
     altitude_guard_enable: true
     altitude_band: 0.25
     altitude_escape_enable: true
@@ -83,82 +122,23 @@ general_planner:
     over_goal_tolerance: 0.25
     near_goal_radius: 2.0
     accept_exp_without_backup_near_goal: true
-  # An automatic vertical overflight is unsafe in the current villa map: it
-  # can select sparsely observed upper space.  Re-enable only with an explicit
-  # 3-D corridor/certificate policy.
-  over_wall_search_en: false
-  over_wall_max_climb: 3.0
-  over_wall_height_step: 0.3
-  over_wall_min_blocked_span: 0.8
-  over_wall_min_progress_gain: 0.5
-  over_wall_forward_ratio: 0.9
   unknown_goal_reveal_en: true
   yaw_dot_max: 3.0
   # Yaw mode: 1 heading to velocity, 2 heading to goal
   yaw_mode: 1
   mpc_horizon: 15
-  tracking:
-    distance: 2.2
-    distance_tolerance: 0.8
-    height_offset: 0.7
-    height_tolerance: 0.6
-    safe_distance: 0.35
-    visibility_safe_distance: 0.25
-    visibility_cone_ratio: 0.12
-    visibility_angle_clearance: 0.0872664626
-    reacquire_distance: 6.0
-    min_commit_duration: 0.8
-    low_speed_velocity_threshold: 0.25
-    angular_hysteresis: 0.35
-    anti_rollback_enable: true
-    anti_rollback_horizon: 1.0
-    anti_rollback_dt: 0.25
-    anti_rollback_margin: 0.35
-    keep_old_horizon: 1.0
-    keep_old_safety_dt: 0.05
-    candidate_angle_step: 0.3926990817
-    candidate_radius_num: 3
-    visibility_samples: 5
-    fallback_relax_enable: true
-    fallback_distance_tolerance_scale: 1.6
-    fallback_height_tolerance_scale: 1.5
-    fallback_candidate_radius_extra: 2
-    fallback_candidate_angle_step_scale: 0.5
-    fallback_search_horizon_scale: 1.3
-    weight_visible_region: 3.0
-    unknown_as_occupied: false
-    use_visible_region: true
-    frontend_astar: true
-    use_snap: false
-  perching:
-    robot_l: 0.28
-    v_plus: 0.8
-    pre_contact_distance: 0.55
-    terminal_relax_time: 0.35
-    safe_distance: 0.0
-    platform_radius: 0.35
-    robot_radius: 0.25
-    platform_clearance: 0.05
-    thrust_nominal: 9.81
-    thrust_range: 2.0
-    weight_nu: 1.0e-2
-    weight_tau_f: 1.0e-3
-    frontend_astar: true
-    use_dynamics_terminal_accel: true
 
 
 traj_opt:
   switch:
-    save_log_en: true
+    save_log_en: false
+    # Keep per-optimization details in CSV; print only the final aggregate summary.
     print_optimizer_log: false
 
   boundary:
-    # State2state dynamics match click_real_highspeed.yaml.  The previous
-    # runtime-only 5 m/s cap was the direct cause of the 4.97 m/s plateau in
-    # the recorded run.
-    max_vel: 15.0
-    max_acc: 20.0
-    max_jerk: 120.0
+    max_vel: 5.0
+    max_acc: 7.0
+    max_jerk: 70.0
     max_omg: 3.5
     max_tilt: 1.05
     max_acc_thr: 22.0
@@ -171,8 +151,9 @@ traj_opt:
     energy_cost_type: 4
     block_energy_cost: false
     opt_accuracy: 5.0e-6
-    # Use the validated click-demo optimizer profile.  M2 replaces map
-    # ownership, not state2state trajectory dynamics.
+    # Shared LBFGS fast path for the ordinary state2state ExpTrajOpt. It is
+    # representation-independent and therefore applies to both dense and
+    # fixed-depth convex-hull objectives.
     lbfgs_fast_en: true
     lbfgs_mem_size: 32
     lbfgs_step_bound_en: false
@@ -184,6 +165,10 @@ traj_opt:
     lbfgs_fast_rel_cost: 1.0e-3
     lbfgs_fast_rel_step: 2.0e-2
     lbfgs_fast_rel_penalty: 5.0e-2
+    # Keep the stable fast-stop rule based on objective/decision-step/penalty
+    # changes. The phase-0 raw-gradient guard is scale-sensitive under the
+    # large corridor weights and otherwise prevents nearly every fast stop.
+    # Continuous-time feasibility is checked independently by the certificate.
     lbfgs_fast_phase0_guards_en: false
     lbfgs_fast_rel_time: 2.0e-2
     lbfgs_fast_rel_waypoint: 2.0e-2
@@ -191,6 +176,10 @@ traj_opt:
     lbfgs_fast_min_step: 1.0e-8
     lbfgs_fast_penalty_tol: 1.0e-2
     lbfgs_fast_small_step_limit: 3
+    # Reuse the previous successful physical MINCO solution only when it is
+    # compatible with the new corridor. The fresh guide seed and cached seed
+    # are evaluated with the same real objective; the cached seed wins only
+    # when it improves the guide cost by at least 25%.
     lbfgs_warm_start_en: false
     lbfgs_warm_start_max_endpoint_shift: 3.0
     lbfgs_warm_start_max_waypoint_shift: 2.0
@@ -198,16 +187,24 @@ traj_opt:
     lbfgs_warm_start_cost_ratio: 0.75
     lbfgs_warm_start_gradient_ratio: 1.0
     lbfgs_warm_start_penalty_ratio: 1.0
+    # Preserve the timing of the already feasible guide trajectory. The old
+    # implicit 0.8 scale manufactured dynamic violations before every solve.
     guide_initial_time_scale: 1.0
     scale_factor: 1.0
     integral_reso: 15
+    # Representation selection. All convex-hull formulation parameters and its
+    # independent penalty weights live in the dedicated profile below.
+    # Set false to run dense using only the penna_* block in this file.
     convex_hull_en: true
     convex_hull_config: "traj_opt/convex_hull/click_real_highspeed.yaml"
     smooth_eps: 0.01
+    # Dense-integral-only penalty set. It is ignored by the convex-hull
+    # polynomial/control-point terms whenever the profile above is active.
     penna_t: 2.0e+5
     penna_pos: 5.0e+7
     penna_vel: 1.0e+7
     penna_acc: 1.0e+7
+    # penna_jerk <= 0 disables both the penalty and continuous jerk certificate.
     penna_jerk: -1.0e+5
     penna_attract: 1.0e+3
     penna_guide_path: 0.0
@@ -272,27 +269,22 @@ astar:
   debug_visualization_en: false
 
 
-# Runtime-shared exploration/navigation world bounds. Keep these aligned with
-# exploration_rog_map.yaml until GlobalMapRuntime (M2) owns one ROG map.
 rog_map:
   resolution: 0.15
   inflation_resolution: 0.15
-  # Match the validated click-demo clearance: 3 * 0.15 m = 0.45 m.
   inflation_step: 3
   unk_inflation_en: false
   unk_inflation_step: 1
-  map_size: [ 72.0, 72.0, 8.0 ]
+  map_size: [ 72.0,72.0,8.0 ]
   # If the map rolling is disable, the map origin [m] should be set.
   fix_map_origin: [ 0,0,1.5 ]
   frontier_extraction_en: false
 
-  # Virtual ceil and ground (two-storey house / exploration volume).
-  virtual_ceil_height: 6.40
-  virtual_ground_height: -0.10
+  # Virtual ceil and ground
+  virtual_ceil_height: 6.4
+  virtual_ground_height: -0.1
 
-  # Live cloud only: a tracking PCD would disagree with the exploration house.
   load_pcd_en: false
-  pcd_name: ""
 
   map_sliding:
     enable: true
@@ -300,18 +292,19 @@ rog_map:
     threshold: 0.3
 
   esdf:
-    enable: true
-    resolution: 0.15
+    enable: false
+    resolution: 0.1
     # The range of esdf around the odom [m].
-    local_update_box: [ 12.0, 12.0, 4.0 ]
+    local_update_box: [ 12.0,12.0,4.0 ]
 
   # If [enable = true], the ROG-Map will actively take ros topic as input.
   #  else user should call function [updateMap] to update the map.
   ros_callback:
-    enable: true
+    enable: false
+    cloud_enable: false
     cloud_topic: "/cloud_registered"
     odom_topic: "/lidar_slam/odom"
-    odom_timeout: 2.0
+    odom_timeout: 0.10
 
 
   visualization:
@@ -319,11 +312,11 @@ rog_map:
     # when enabled, use rqt_reconfigure to change the visualization parameters.
     use_dynamic_reconfigure: false
     # The rate of visualization [Hz], if set to 0, the visualization will not be triggered by frame.
-    time_rate: 2
+    time_rate: 1.0
     # The frame rate of visualization [Hz], if set to 0, the visualization will not be triggered by frame.
     frame_rate: 0
     # visualization range along the odom [m].
-    range: [ 15, 15,4 ]
+    range: [ 30.0,30.0,5.0 ]
     frame_id: "world"
     pub_unknown_map_en: false
 
@@ -338,18 +331,20 @@ rog_map:
   raycasting:
     # if disable, the map will only maintain occupied information, and all other grid
     # will be considered as unknown.
-    enable: false
+    # Persistent topology requires miss-ray integration; otherwise ROG contains
+    # OCCUPIED and UNKNOWN only and cannot supply observed KNOWN_FREE evidence.
+    enable: true
     batch_update_size: 1
-    local_update_box: [ 70.0, 70.0, 6.0 ]
+    local_update_box: [ 70.0,70.0,6.0 ]
     # The range of raycasting [m].
-    ray_range: [0.5, 100 ]
+    ray_range: [0.50, 60.0 ]
 
     p_min: 0.12
     p_miss: 0.49
     p_free: 0.499
     p_occ: 0.85
     p_hit: 0.9
-    p_max: 0.98
+    p_max: 0.97
     # The threshold of a non-occupied inf map grid to be considered as free. [0.0-1.0]
     # for counter map, if each cell contains N cells in prob map, then only when
     # N_unk > N * unk_thresh cells are unknown, the cell will be considered as unknown.

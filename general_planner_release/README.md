@@ -84,16 +84,18 @@ Run exploration with real sensors, rosbag or an externally started simulator:
 roslaunch general_planner_release exploration.launch
 ```
 
-Unified explore → state2state runtime (serial handover + mode RViz).
+Unified M2 explore ↔ state2state runtime.  One persistent
+`planner_runtime_node` owns the world ROG map, global topology and both task
+adapters; a mode switch never kills a planner or rebuilds the map.
 
 With the bundled garage simulator (same pattern as `exploration_sim.launch` /
 `state2state_sim.launch`):
 
 ```bash
 roslaunch general_planner_release planner_runtime_sim.launch
-# 3D Nav Goal: exploration bbox; 2D Nav Goal: /planner/click_goal
-# after exploration is stable / finished:
-rostopic pub -1 /planner/mode_request_text std_msgs/String "data: state2state"
+# inspect readiness/mode:
+rostopic echo /planner/status
+# In state2state mode, RViz 2D Nav Goal publishes /goal directly.
 ```
 
 Planner-only (real sensors / rosbag / external sim):
@@ -101,6 +103,18 @@ Planner-only (real sensors / rosbag / external sim):
 ```bash
 roslaunch general_planner_release planner_runtime.launch
 ```
+
+Start directly in state2state and send a target:
+
+```bash
+roslaunch general_planner_release planner_runtime_sim.launch initial_mode:=state2state
+rostopic pub -1 /goal geometry_msgs/PoseStamped \
+  "{header: {frame_id: world}, pose: {position: {x: -12.57, y: -13.32, z: 1.5}, orientation: {w: 1.0}}}"
+```
+
+Switch modes only when `/planner/status.ready_for_new_task` is true.  The
+upper-level controller sends `/planner/mode_request_text` (`exploration`,
+`state2state` or `hold`); `/planner/status` is the single lifecycle source.
 
 The delivered `config/exploration.yaml` enables pre-flight dynamic exploration
 boundary selection. After launch, RViz `3D Nav Goal` sends two opposite XYZ

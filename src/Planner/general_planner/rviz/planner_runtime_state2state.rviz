@@ -530,10 +530,10 @@ Visualization Manager:
     - Class: rviz/Interact
       Hide Inactive Objects: true
     - Class: rviz/SetGoal
-      Topic: /planner/click_goal
-    - 3D Topic: /planner/click_goal
+      Topic: /goal
+    - 3D Topic: /goal
       Class: general_planner_rviz_plugins/Goal3DTool
-      Fallback 2D Topic: /planner/click_goal
+      Fallback 2D Topic: /goal
   Value: true
   Views:
     Current:

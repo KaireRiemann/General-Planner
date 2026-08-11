@@ -141,7 +141,7 @@ Visualization Manager:
           Size (Pixels): 2
           Size (m): 0.009999999776482582
           Style: Points
-          Topic: /cloud_registered
+          Topic: /global_pc
           Unreliable: false
           Use Fixed Frame: false
           Use rainbow: true
@@ -409,13 +409,13 @@ Visualization Manager:
     - Class: rviz/Group
       Displays:
         - Class: rviz/Marker
-          Enabled: true
+          Enabled: false
           Marker Topic: /planning/state
           Name: PlannerState
           Namespaces:
             {}
           Queue Size: 10
-          Value: true
+          Value: false
         - Class: rviz/Marker
           Enabled: true
           Marker Topic: /planning/speed
@@ -425,13 +425,13 @@ Visualization Manager:
           Queue Size: 10
           Value: true
         - Class: rviz/Marker
-          Enabled: true
+          Enabled: false
           Marker Topic: /planning/position_cmd_vis
           Name: PositionCommand
           Namespaces:
             {}
           Queue Size: 10
-          Value: true
+          Value: false
         - Class: rviz/Marker
           Enabled: true
           Marker Topic: /planning/travel_traj
@@ -639,7 +639,7 @@ Visualization Manager:
     - Class: rviz/Interact
       Hide Inactive Objects: true
     - Class: rviz/SetGoal
-      Topic: /planner/click_goal
+      Topic: /goal
   Value: true
   Views:
     Current:

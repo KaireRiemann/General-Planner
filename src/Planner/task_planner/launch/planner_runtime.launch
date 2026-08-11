@@ -13,7 +13,7 @@
   <arg name="sim_config"
        default="$(find general_planner)/config/exploration_sim.yaml" />
   <arg name="navigation_config"
-       default="$(find general_planner)/config/task_planner_runtime_ros1.yaml" />
+       default="$(find general_planner)/config/task_planner_runtime_state2state.yaml" />
   <arg name="exploration_config"
        default="$(find general_planner)/config/exploration_house.yaml" />
   <!-- Must keep rog_map/ros_callback/enable=false: GlobalMapRuntime is the

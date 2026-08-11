@@ -1,0 +1,66 @@
+# click_demo ROG-map baseline for PlannerRuntime.
+# ros_callback is disabled because GlobalMapRuntime injects cloud/odom.
+rog_map:
+  resolution: 0.15
+  inflation_resolution: 0.15
+  inflation_step: 3
+  unk_inflation_en: false
+  unk_inflation_step: 1
+  map_size:
+  - 50
+  - 50
+  - 6
+  fix_map_origin:
+  - 0
+  - 0
+  - 1.5
+  frontier_extraction_en: false
+  virtual_ceil_height: 2.5
+  virtual_ground_height: -0.1
+  load_pcd_en: false
+  map_sliding:
+    enable: true
+    threshold: 0.3
+  esdf:
+    enable: false
+    resolution: 0.1
+    local_update_box:
+    - 5
+    - 5
+    - 3
+  ros_callback:
+    enable: false
+    cloud_enable: false
+    cloud_topic: /cloud_registered
+    odom_topic: /lidar_slam/odom
+    odom_timeout: 0.1
+  visualization:
+    enable: true
+    use_dynamic_reconfigure: false
+    time_rate: 2
+    frame_rate: 0
+    range:
+    - 20
+    - 20
+    - 4
+    frame_id: world
+    pub_unknown_map_en: false
+  intensity_thresh: -10
+  point_filt_num: 1
+  raycasting:
+    enable: true
+    batch_update_size: 1
+    local_update_box:
+    - 100
+    - 100
+    - 5
+    ray_range:
+    - 0.5
+    - 100
+    p_min: 0.12
+    p_miss: 0.49
+    p_free: 0.499
+    p_occ: 0.85
+    p_hit: 0.9
+    p_max: 0.98
+    unk_thresh: 1.0

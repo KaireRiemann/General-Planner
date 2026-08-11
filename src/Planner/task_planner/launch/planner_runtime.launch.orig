@@ -1,24 +1,37 @@
 <launch>
-  <!-- M2 binary-release runtime entry point.  The included launch keeps one
-       planner_runtime_node alive for the entire mission: it owns the shared
-       ROG/MapManager/global-topology resources and composes exploration plus
-       state2state adapters in-process. -->
-  <arg name="marsim" default="false" />
+  <!-- M2 composed runtime. planner_runtime_node owns exactly one ROG map,
+       MapManager, BoundaryMap and global topology worker.  Exploration and
+       state2state are in-process adapters; switching modes never kills a
+       planner or recreates a map. -->
+  <arg name="marsim" default="true" />
   <arg name="rviz" default="true" />
   <arg name="auto_rviz_switch" default="true" />
   <arg name="traj_server" default="true" />
   <arg name="initial_mode" default="exploration" />
   <arg name="enable_exploration" default="true" />
-  <arg name="sim_config" default="$(find general_planner_release)/config/exploration_sim.yaml" />
-  <arg name="navigation_config" default="$(find general_planner_release)/config/task_planner_runtime_state2state.yaml" />
-  <arg name="exploration_config" default="$(find general_planner_release)/config/exploration_house.yaml" />
-  <arg name="rog_map_config" default="$(find general_planner_release)/config/exploration_rog_map.yaml" />
-  <arg name="global_topology_config" default="$(find general_planner_release)/config/global_topology.yaml" />
-  <arg name="rviz_config" default="$(find general_planner_release)/config/planner_runtime_exploration.rviz" />
-  <arg name="exploration_rviz_config" default="$(find general_planner_release)/config/planner_runtime_exploration.rviz" />
-  <arg name="state2state_rviz_config" default="$(find general_planner_release)/config/planner_runtime_state2state.rviz" />
+
+  <arg name="sim_config"
+       default="$(find perfect_drone_sim)/config/click.yaml" />
+  <arg name="navigation_config"
+       default="$(find general_planner)/config/task_planner_runtime_click_baseline.yaml" />
+  <arg name="exploration_config"
+       default="$(find general_planner)/config/exploration_house.yaml" />
+  <!-- Must keep rog_map/ros_callback/enable=false: GlobalMapRuntime is the
+       only cloud/odom fusion owner. -->
+  <arg name="rog_map_config"
+       default="$(find general_planner)/config/planner_runtime_click_baseline_rog_map.yaml" />
+  <arg name="global_topology_config"
+       default="$(find general_planner)/config/global_topology.yaml" />
+
+  <arg name="rviz_config"
+       default="$(find general_planner)/rviz/planner_runtime_exploration.rviz" />
+  <arg name="exploration_rviz_config"
+       default="$(find general_planner)/rviz/planner_runtime_exploration.rviz" />
+  <arg name="state2state_rviz_config"
+       default="$(find general_planner)/rviz/planner_runtime_state2state.rviz" />
   <arg name="odom_topic" default="/lidar_slam/odom" />
   <arg name="cloud_topic" default="/cloud_registered" />
+
   <arg name="fsm_replan_time" default="0.25" />
   <arg name="fsm_replan_time_after_traj_start" default="0.35" />
   <arg name="fsm_replan_time_before_traj_end" default="1.0" />
@@ -49,18 +62,20 @@
     <param name="config_path" value="$(arg sim_config)" type="string" />
   </node>
 
-  <!-- Execution has no map ownership and remains separate. -->
-  <node if="$(arg traj_server)" pkg="general_planner_release"
-        type="highspeed_traj_server" name="highspeed_traj_server" output="screen">
+  <!-- Trajectory execution has no map ownership; it remains a separate
+       process and publishes only the exploration source topic. -->
+  <node if="$(arg traj_server)" pkg="general_planner" type="highspeed_traj_server"
+        name="highspeed_traj_server" output="screen">
     <param name="odometry_topic" value="$(arg odom_topic)" type="string" />
     <param name="replan_time" value="$(arg fsm_replan_time)" type="double" />
     <param name="heartbeat_timeout" value="$(arg heartbeat_timeout)" type="double" />
     <param name="pos_cmd_topic" value="/planning/exploration/pos_cmd" type="string" />
-    <param name="execution_enabled_topic" value="/planning/exploration/command_enabled" type="string" />
+    <param name="execution_enabled_topic"
+           value="/planning/exploration/command_enabled" type="string" />
   </node>
 
-  <node pkg="general_planner_release" type="planner_runtime_node"
-        name="planner_runtime_node" output="screen" clear_params="true">
+  <node pkg="general_planner" type="planner_runtime_node" name="planner_runtime_node"
+        output="screen" clear_params="true">
     <rosparam file="$(arg exploration_config)" command="load" />
     <rosparam file="$(arg global_topology_config)" command="load" />
 
@@ -89,8 +104,8 @@
     <param name="hover_hold_duration" value="0.50" type="double" />
     <param name="max_odom_age" value="0.20" type="double" />
 
-    <!-- The composed exploration adapter owns only task-local LIO, Bubble and
-         frontier state.  GlobalMapRuntime remains the sole cloud/odom owner. -->
+    <!-- Exploration adapter configuration.  It owns only LIO/Bubble/frontier
+         task state; cloud/odom subscriptions are disabled by composition. -->
     <param name="view_graph" value="$(arg view_graph)" type="bool" />
     <param name="FrontierManager/view_frt" value="$(arg view_frontier)" type="bool" />
     <param name="FrontierManager/view_cluster" value="$(arg view_cluster)" type="bool" />
@@ -130,7 +145,7 @@
     <node unless="$(arg auto_rviz_switch)" pkg="rviz" type="rviz"
           name="rvizvisualisation" output="log"
           args="-d $(arg rviz_config)" />
-    <node if="$(arg auto_rviz_switch)" pkg="general_planner_release"
+    <node if="$(arg auto_rviz_switch)" pkg="general_planner"
           type="planner_rviz_switcher.py" name="planner_rviz_switcher"
           output="screen">
       <param name="rviz_node_name" value="rvizvisualisation" type="string" />

@@ -29,8 +29,8 @@ What is synced:
   - devel/lib/general_planner/planner_runtime_node
   - devel/lib/general_planner/exploration_node
   - devel/lib/general_planner/highspeed_traj_server
-  - planner_serial_handover.py / planner_rviz_switcher.py
-  - planner_runtime.launch + mode RViz configs
+  - M2 planner_runtime launch + mode RViz configs
+  - M2 state2state and global-topology configuration
   - general_planner PlannerStatus/PlannerModeRequest msgs
   - devel/lib/liblkh_tsp_solver.so
   - General Planner 3D Nav Goal RViz plugin
@@ -159,6 +159,9 @@ EXPLORATION_CONFIG_SRC="${PLANNER_CONFIG_DIR}/exploration.yaml"
 EXPLORATION_HOUSE_CONFIG_SRC="${PLANNER_CONFIG_DIR}/exploration_house.yaml"
 EXPLORATION_SIM_CONFIG_SRC="${PLANNER_CONFIG_DIR}/exploration_sim.yaml"
 EXPLORATION_ROG_MAP_CONFIG_SRC="${PLANNER_CONFIG_DIR}/exploration_rog_map.yaml"
+M2_STATE2STATE_CONFIG_SRC="${PLANNER_CONFIG_DIR}/task_planner_runtime_state2state.yaml"
+GLOBAL_TOPOLOGY_CONFIG_SRC="${PLANNER_CONFIG_DIR}/global_topology.yaml"
+M2_CONVEX_HULL_CONFIG_SRC="${PLANNER_CONFIG_DIR}/traj_opt/convex_hull/click_real_highspeed.yaml"
 EXPLORATION_RVIZ_CONFIG_SRC="${PLANNER_CONFIG_DIR}/exploration/highspeed/traj.rviz"
 RUNTIME_EXPLORATION_RVIZ_SRC="${PLANNER_RVIZ_DIR}/planner_runtime_exploration.rviz"
 RUNTIME_STATE2STATE_RVIZ_SRC="${PLANNER_RVIZ_DIR}/planner_runtime_state2state.rviz"
@@ -198,6 +201,9 @@ for required in \
   "${EXPLORATION_HOUSE_CONFIG_SRC}" \
   "${EXPLORATION_SIM_CONFIG_SRC}" \
   "${EXPLORATION_ROG_MAP_CONFIG_SRC}" \
+  "${M2_STATE2STATE_CONFIG_SRC}" \
+  "${GLOBAL_TOPOLOGY_CONFIG_SRC}" \
+  "${M2_CONVEX_HULL_CONFIG_SRC}" \
   "${EXPLORATION_RVIZ_CONFIG_SRC}" \
   "${RUNTIME_EXPLORATION_RVIZ_SRC}" \
   "${RUNTIME_STATE2STATE_RVIZ_SRC}" \
@@ -274,6 +280,13 @@ cp "${EXPLORATION_CONFIG_SRC}" "${RELEASE_CONFIG_DIR}/exploration.yaml"
 cp "${EXPLORATION_HOUSE_CONFIG_SRC}" "${RELEASE_CONFIG_DIR}/exploration_house.yaml"
 cp "${EXPLORATION_SIM_CONFIG_SRC}" "${RELEASE_CONFIG_DIR}/exploration_sim.yaml"
 cp "${EXPLORATION_ROG_MAP_CONFIG_SRC}" "${RELEASE_CONFIG_DIR}/exploration_rog_map.yaml"
+cp "${M2_STATE2STATE_CONFIG_SRC}" \
+  "${RELEASE_CONFIG_DIR}/task_planner_runtime_state2state.yaml"
+cp "${GLOBAL_TOPOLOGY_CONFIG_SRC}" \
+  "${RELEASE_CONFIG_DIR}/global_topology.yaml"
+mkdir -p "${RELEASE_CONFIG_DIR}/traj_opt/convex_hull"
+cp "${M2_CONVEX_HULL_CONFIG_SRC}" \
+  "${RELEASE_CONFIG_DIR}/traj_opt/convex_hull/click_real_highspeed.yaml"
 cp "${EXPLORATION_RVIZ_CONFIG_SRC}" "${RELEASE_CONFIG_DIR}/exploration.rviz"
 cp "${RUNTIME_EXPLORATION_RVIZ_SRC}" \
   "${RELEASE_CONFIG_DIR}/planner_runtime_exploration.rviz"
@@ -476,6 +489,64 @@ for name, (mode, switches, replan_rate, cmd_topic, odom_topic) in checks.items()
 
 print("runtime config generation ok")
 PY
+
+  # Launch the composed M2 release for real.  `roslaunch --files` above only
+  # validates XML; this catches a missing M2 runtime parameter before an
+  # archive is produced.  Start in state2state so /goal must be owned by the
+  # persistent planner_runtime_node (never by serial handover).
+  local m2_runtime_log="/tmp/general_planner_release_m2_runtime.log"
+  local m2_status="/tmp/general_planner_release_m2_status.yaml"
+  local m2_runtime_pid=0
+  rm -f "${m2_runtime_log}" "${m2_status}"
+  roslaunch general_planner_release planner_runtime_sim.launch \
+    initial_mode:=state2state rviz:=false >"${m2_runtime_log}" 2>&1 &
+  m2_runtime_pid=$!
+  trap 'kill ${m2_runtime_pid} >/dev/null 2>&1 || true; kill ${roscore_pid} >/dev/null 2>&1 || true' RETURN
+
+  local m2_ready=0
+  for _ in $(seq 1 24); do
+    if timeout 2s rostopic echo -n 1 /planner/status >"${m2_status}" 2>/dev/null; then
+      m2_ready=1
+      break
+    fi
+    if ! kill -0 "${m2_runtime_pid}" >/dev/null 2>&1; then
+      break
+    fi
+    sleep 0.5
+  done
+  if [[ "${m2_ready}" != "1" ]]; then
+    echo "[build_release] M2 planner_runtime did not publish /planner/status" >&2
+    cat "${m2_runtime_log}" >&2 || true
+    exit 1
+  fi
+  grep -q 'active_mode_str: "state2state"' "${m2_status}"
+  grep -q 'mode_state_str: "s2s_wait_goal"' "${m2_status}"
+  if ! rostopic info /goal | grep -q '/planner_runtime_node'; then
+    echo "[build_release] M2 runtime does not subscribe to /goal" >&2
+    rostopic info /goal >&2 || true
+    cat "${m2_runtime_log}" >&2 || true
+    exit 1
+  fi
+  rostopic pub -1 /goal geometry_msgs/PoseStamped \
+    "{header: {frame_id: world}, pose: {position: {x: -12.57, y: -13.32, z: 1.5}, orientation: {w: 1.0}}}" \
+    >/dev/null
+  local goal_accepted=0
+  for _ in $(seq 1 20); do
+    if grep -q '\[planner_supervisor\] navigation goal accepted' "${m2_runtime_log}"; then
+      goal_accepted=1
+      break
+    fi
+    sleep 0.25
+  done
+  if [[ "${goal_accepted}" != "1" ]]; then
+    echo "[build_release] M2 runtime did not accept the /goal test target" >&2
+    cat "${m2_runtime_log}" >&2 || true
+    exit 1
+  fi
+
+  kill "${m2_runtime_pid}" >/dev/null 2>&1 || true
+  wait "${m2_runtime_pid}" 2>/dev/null || true
+  trap 'kill ${roscore_pid} >/dev/null 2>&1 || true' RETURN
 
   kill "${roscore_pid}" >/dev/null 2>&1 || true
   trap - RETURN
