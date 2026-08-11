@@ -278,6 +278,11 @@ namespace fsm {
         std::atomic<bool> navigation_execution_enabled_{true};
         std::atomic<bool> accept_external_goals_{true};
         std::atomic<std::uint64_t> navigation_task_epoch_{0};
+        // Monotonic within a navigation task epoch.  This is published with
+        // the FSM state so the runtime supervisor can distinguish a latched
+        // idle WAIT_GOAL from completion of a goal it dispatched.
+        std::atomic<std::uint64_t> navigation_goal_sequence_{0};
+        std::atomic<bool> navigation_goal_active_{false};
         mutable std::mutex replan_logs_mutex_;
         mutable std::mutex diagnostic_events_mutex_;
         std::ofstream diagnostic_event_log_;
@@ -407,6 +412,12 @@ namespace fsm {
         }
         std::uint64_t navigationTaskEpoch() const {
             return navigation_task_epoch_.load();
+        }
+        std::uint64_t navigationGoalSequence() const {
+            return navigation_goal_sequence_.load();
+        }
+        bool navigationGoalActive() const {
+            return navigation_goal_active_.load();
         }
         const char *machineStateName() const {
             return MACHINE_STATE_STR[machine_state_].c_str();

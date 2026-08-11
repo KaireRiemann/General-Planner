@@ -109,6 +109,10 @@ private:
   // not restart the supervisor's hover-confirmation transition.
   std::string completed_exploration_task_id_;
   std::string navigation_status_{"INIT"};
+  std::uint64_t navigation_status_epoch_{0};
+  std::uint64_t navigation_goal_sequence_{0};
+  std::uint64_t navigation_goal_sequence_before_dispatch_{0};
+  bool navigation_goal_dispatch_pending_{false};
 
   std::string exploration_command_topic_;
   std::string exploration_status_topic_;

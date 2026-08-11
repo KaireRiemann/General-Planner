@@ -25,6 +25,18 @@ fsm:
   cmd_topic: "/planning/pos_cmd"
   mpc_cmd_topic: "/planning_cmd/poly_traj"
   timer_en: true
+  # Runtime navigation must continuously validate the committed prefix against
+  # the shared map.  This is the final guard if a new cloud invalidates a
+  # trajectory between regular replans.
+  perception_replan_check_en: true
+  perception_replan_check_rate: 30.0
+  perception_replan_check_horizon: 2.0
+  perception_replan_check_dt: 0.08
+  perception_replan_min_interval: 0.08
+  perception_replan_consecutive_hits: 1
+  perception_replan_unknown_as_occupied: true
+  perception_replan_emergency_horizon: 0.45
+  perception_replan_log_period: 0.5
 
 general_planner:
   backup_traj_en: true
@@ -35,7 +47,9 @@ general_planner:
   use_fov_cut: false
   print_log: false
   visual_process: false
-  frontend_in_known_free: false
+  # Do not turn unseen voxels into a shortcut.  Long-range navigation must
+  # advance via observed free space and its collision-checked local prefix.
+  frontend_in_known_free: true
   goal_yaw_en: true
   goal_vel_en: false
   corridor_bound_dis: 1.0
@@ -51,12 +65,28 @@ general_planner:
   receding_dis: 4.0
   robot_r: 0.2
   frontend_astar_time_out: 0.2
-  # M2 only uses these as a query policy.  Construction/configuration belongs
-  # to GlobalMapRuntime/global_topology.yaml and is never reset on a task swap.
-  state2state_topology_enable: true
-  state2state_topology_query_enable: true
-  state2state_topology_min_query_distance: 3.0
-  over_wall_search_en: true
+  # GlobalMapRuntime still constructs and publishes the world-lifetime graph,
+  # but it is intentionally not an executable frontend until the topology
+  # edge-clearance certificate is complete.  These keys must use the nested
+  # schema read by Config; the old flat state2state_topology_* keys were inert.
+  state2state:
+    direct_line_frontend_enable: true
+    topology:
+      enable: true
+      query_enable: false
+      min_query_distance: 3.0
+    altitude_guard_enable: true
+    altitude_band: 0.25
+    altitude_escape_enable: true
+    altitude_escape_band: 3.5
+    over_goal_guard_enable: true
+    over_goal_tolerance: 0.25
+    near_goal_radius: 2.0
+    accept_exp_without_backup_near_goal: true
+  # An automatic vertical overflight is unsafe in the current villa map: it
+  # can select sparsely observed upper space.  Re-enable only with an explicit
+  # 3-D corridor/certificate policy.
+  over_wall_search_en: false
   over_wall_max_climb: 3.0
   over_wall_height_step: 0.3
   over_wall_min_blocked_span: 0.8
@@ -123,11 +153,15 @@ traj_opt:
     print_optimizer_log: false
 
   boundary:
-    max_vel: 5.0
-    max_acc: 5.0
+    # State2state dynamics match click_real_highspeed.yaml.  The previous
+    # runtime-only 5 m/s cap was the direct cause of the 4.97 m/s plateau in
+    # the recorded run.
+    max_vel: 15.0
+    max_acc: 20.0
     max_jerk: 120.0
-    max_omg: 2.5
-    max_acc_thr: 20.0
+    max_omg: 3.5
+    max_tilt: 1.05
+    max_acc_thr: 22.0
     min_acc_thr: 6.0
     penna_margin: 0.05
 
@@ -137,50 +171,88 @@ traj_opt:
     energy_cost_type: 4
     block_energy_cost: false
     opt_accuracy: 5.0e-6
+    # Use the validated click-demo optimizer profile.  M2 replaces map
+    # ownership, not state2state trajectory dynamics.
+    lbfgs_fast_en: true
+    lbfgs_mem_size: 32
+    lbfgs_step_bound_en: false
+    lbfgs_time_ratio_min: 0.5
+    lbfgs_time_ratio_max: 2.0
+    lbfgs_fast_window: 3
+    lbfgs_fast_min_iterations: 10
+    lbfgs_fast_consecutive: 1
+    lbfgs_fast_rel_cost: 1.0e-3
+    lbfgs_fast_rel_step: 2.0e-2
+    lbfgs_fast_rel_penalty: 5.0e-2
+    lbfgs_fast_phase0_guards_en: false
+    lbfgs_fast_rel_time: 2.0e-2
+    lbfgs_fast_rel_waypoint: 2.0e-2
+    lbfgs_fast_scaled_grad: 5.0e-2
+    lbfgs_fast_min_step: 1.0e-8
+    lbfgs_fast_penalty_tol: 1.0e-2
+    lbfgs_fast_small_step_limit: 3
+    lbfgs_warm_start_en: false
+    lbfgs_warm_start_max_endpoint_shift: 3.0
+    lbfgs_warm_start_max_waypoint_shift: 2.0
+    lbfgs_warm_start_duration_blend: 0.75
+    lbfgs_warm_start_cost_ratio: 0.75
+    lbfgs_warm_start_gradient_ratio: 1.0
+    lbfgs_warm_start_penalty_ratio: 1.0
+    guide_initial_time_scale: 1.0
     scale_factor: 1.0
     integral_reso: 15
+    convex_hull_en: true
+    convex_hull_config: "traj_opt/convex_hull/click_real_highspeed.yaml"
     smooth_eps: 0.01
-    penna_t: 12000.0
-    penna_pos: 5.0e+6
-    penna_vel: 5.0e+5
-    penna_acc: 5.0e+5
-    penna_jerk: -5.0e+5
+    penna_t: 2.0e+5
+    penna_pos: 5.0e+7
+    penna_vel: 1.0e+7
+    penna_acc: 1.0e+7
+    penna_jerk: -1.0e+5
     penna_attract: 1.0e+3
-    penna_omg:  5.0e+5
-    penna_thr: 1.0e+5
+    penna_guide_path: 0.0
+    guide_path_tube_radius: 0.05
+    guide_path_z_tube_radius: 0.05
+    guide_path_huber_delta: 0.40
+    guide_path_time_gradient_en: false
+    penna_guide_z_tube: 1.0e+7
+    guide_z_tube_radius: 0.00
+    penna_omg: 5.0e+6
+    penna_thr: 2.0e+6
 
   backup_traj:
     uniform_time_en: true
     pos_constraint_type: 1
     piece_num: 2
     energy_cost_type: 4
-    block_energy_cost: true
+    block_energy_cost: false
     opt_accuracy: 1.0e-6
     scale_factor: 1.0
     integral_reso: 12
     smooth_eps: 0.01
-    penna_t: 1200.0
-    penna_ts: 1.0e+5
-    penna_pos: 1.0e+6
-    penna_vel: 1.0e+5
-    penna_acc: 1.0e+5
-    penna_jerk: -1.0e+5
-    penna_omg: 1.0e+5
-    penna_thr: 1.0e+5
+    penna_t: 5.0e+4
+    penna_ts: 1.0e+6
+    penna_pos: 1.0e+8
+    penna_vel: 1.0e+7
+    penna_acc: 1.0e+7
+    penna_jerk: -1.0e+7
+    penna_guide_z_tube: 5.0e+6
+    guide_z_tube_radius: 0.00
+    penna_omg: 5.0e+6
+    penna_thr: 2.0e+6
 
   esdf_traj:
     block_energy_cost: false
     opt_accuracy: 5.0e-6
-    integral_reso: 16
+    integral_reso: 15
     smooth_eps: 0.01
-    penna_t: 12.0
-    penna_pos: 500.0
-    penna_vel: 500.0
-    penna_acc: 500.0
-    penna_jerk: 500.0
-    penna_attract: 100.0
-    penna_omg: 0.0
-    penna_thr: 0.0
+    penna_t: 12000.0
+    penna_pos: 5.0e+6
+    penna_vel: 5.0e+5
+    penna_acc: 5.0e+5
+    penna_jerk: 5.0e+5
+    penna_omg: 5.0e+5
+    penna_thr: 1.0e+5
 
   flatness:
     mass: 1.64
@@ -205,7 +277,8 @@ astar:
 rog_map:
   resolution: 0.15
   inflation_resolution: 0.15
-  inflation_step: 2
+  # Match the validated click-demo clearance: 3 * 0.15 m = 0.45 m.
+  inflation_step: 3
   unk_inflation_en: false
   unk_inflation_step: 1
   map_size: [ 72.0, 72.0, 8.0 ]

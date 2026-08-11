@@ -1326,6 +1326,7 @@ namespace fsm {
     void Fsm::requestControlledStop(const std::string &reason) {
         navigation_execution_enabled_ = false;
         accept_external_goals_ = false;
+        navigation_goal_active_ = false;
         gi_.new_goal = false;
         finish_plan = true;
         plan_from_rest_ = false;
@@ -1351,6 +1352,10 @@ namespace fsm {
 
     void Fsm::armNavigationTask(const std::uint64_t task_epoch) {
         navigation_task_epoch_ = task_epoch;
+        // Do not reset the sequence here.  ARM/CLEAR status messages can
+        // briefly overlap on ROS queues; a process-lifetime monotonic counter
+        // lets the supervisor reject an old terminal WAIT_GOAL reliably.
+        navigation_goal_active_ = false;
         navigation_execution_enabled_ = true;
         accept_external_goals_ = true;
         finish_plan = false;
@@ -2096,6 +2101,10 @@ namespace fsm {
 
         started_ = true;
         gi_.new_goal = true;
+        if (state2stateMode()) {
+            ++navigation_goal_sequence_;
+            navigation_goal_active_ = true;
+        }
         state2state_plan_from_rest_fail_count_ = 0;
         recordDiagnosticEvent("INFO",
                               "goal_accepted",
@@ -2120,6 +2129,13 @@ namespace fsm {
                                           call_func,
                                           MACHINE_STATE_STR[int(machine_state_)],
                                           MACHINE_STATE_STR[int(new_state)]));
+        // A state2state goal is terminal only after it has been accepted and
+        // the FSM returns to WAIT_GOAL.  Initial arm/clear transitions have
+        // navigation_goal_active_ == false and therefore remain plain idle
+        // notifications to the runtime supervisor.
+        if (new_state == WAIT_GOAL && navigation_goal_active_.load()) {
+            navigation_goal_active_ = false;
+        }
         machine_state_ = new_state;
         mission_orchestrator_.setExecutionPhase(executionPhase(), call_func);
     }

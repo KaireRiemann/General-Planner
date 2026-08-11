@@ -301,20 +301,18 @@ void PlannerSupervisor::beginTransition(const PlannerMode target,
   }
 
   requestAdapterStop(status_.active_mode, "mode transition");
-  // Keep the current flight source during braking so adapters can decelerate;
-  // switch to locked HOLD only after the vehicle is slow enough.
-  const CommandOwner braking_owner = ownerForMode(status_.active_mode);
-  if (braking_owner == CommandOwner::HOLD) {
-    gateway_.setAuthorizedOwner(CommandOwner::HOLD, status_.task_epoch);
-    gateway_.lockHoldAnchorFromOdom();
-    hold_anchor_locked_for_transition_ = true;
-    status_.command_owner = CommandOwner::HOLD;
-    status_.phase = PlannerPhase::HOLD_VERIFY;
-    status_.reason = "hold verify for " + std::string(toString(target));
-  } else {
-    gateway_.setAuthorizedOwner(braking_owner, status_.task_epoch);
-    status_.command_owner = braking_owner;
-  }
+  // PAUSE/CLEAR stops the active adapter immediately.  If the gateway were
+  // left on the old source while it became stale, its fallback would use the
+  // hold anchor from a previous task (often the take-off point) and command a
+  // return flight.  Always capture the *current* odometry first, then hold it
+  // while the existing hover-duration verification runs.  The next adapter is
+  // still not armed until that verification completes.
+  gateway_.setAuthorizedOwner(CommandOwner::HOLD, status_.task_epoch);
+  gateway_.lockHoldAnchorFromOdom();
+  hold_anchor_locked_for_transition_ = true;
+  status_.command_owner = CommandOwner::HOLD;
+  status_.phase = PlannerPhase::HOLD_VERIFY;
+  status_.reason = "hold verify for " + std::string(toString(target));
 }
 
 void PlannerSupervisor::requestAdapterStop(const PlannerMode mode,
@@ -376,6 +374,13 @@ void PlannerSupervisor::activateMode(const PlannerMode mode,
       return;
     }
     exploration_start_pending_ = false;
+    // Bind subsequent lifecycle observations to the new supervisor epoch.
+    navigation_status_epoch_ = status_.task_epoch;
+    // Keep the last observed monotonic goal sequence.  Resetting it would
+    // make a delayed terminal status from the previous ARM look newer than a
+    // freshly dispatched goal.
+    navigation_goal_sequence_before_dispatch_ = navigation_goal_sequence_;
+    navigation_goal_dispatch_pending_ = false;
     status_.phase = PlannerPhase::WAITING_INPUT;
     status_.mode_state = ModeState::S2S_WAIT_GOAL;
     status_.stable_hover = true;
@@ -492,6 +497,10 @@ bool PlannerSupervisor::acceptNavigationGoalLocked(
   status_.stable_hover = false;
   status_.command_owner = CommandOwner::STATE2STATE;
   status_.reason = "navigation goal accepted";
+  navigation_goal_sequence_before_dispatch_ =
+      navigation_status_epoch_ == status_.task_epoch
+          ? navigation_goal_sequence_ : 0;
+  navigation_goal_dispatch_pending_ = true;
   gateway_.setAuthorizedOwner(CommandOwner::STATE2STATE, status_.task_epoch);
   navigation_goal_pub_.publish(msg);
   ROS_INFO_STREAM("[planner_supervisor] navigation goal accepted epoch="
@@ -666,13 +675,24 @@ void PlannerSupervisor::navigationStatusCallback(
   if (!msg) {
     return;
   }
-  std::istringstream stream(msg->data);
-  std::string state;
-  stream >> state;
+  NavigationAdapterStatus adapter_status;
+  if (!parseNavigationAdapterStatus(msg->data, adapter_status)) {
+    return;
+  }
+  const std::string &state = adapter_status.state;
   std::lock_guard<std::mutex> lock(mutex_);
   navigation_status_ = state;
   if (serial_handover_) {
     return;
+  }
+  if (adapter_status.has_lifecycle) {
+    // PAUSE/CLEAR can still produce a latched status from the previous task.
+    // It must never complete or unlock the current supervisor epoch.
+    if (adapter_status.task_epoch != status_.task_epoch) {
+      return;
+    }
+    navigation_status_epoch_ = adapter_status.task_epoch;
+    navigation_goal_sequence_ = adapter_status.goal_sequence;
   }
   if (status_.active_mode == PlannerMode::STATE2STATE && !transition_active_) {
     status_.mode_state = modeStateFromNavigationString(state);
@@ -691,10 +711,27 @@ void PlannerSupervisor::navigationStatusCallback(
       gateway_.setAuthorizedOwner(CommandOwner::STATE2STATE, status_.task_epoch);
       status_.reason = "navigation planning";
     } else if (state == "WAIT_GOAL") {
-      // Do not demote an in-flight goal acceptance: FSM still publishes
-      // WAIT_GOAL until the goal callback flips it to GENERATE_TRAJ.
-      if (status_.phase == PlannerPhase::PLANNING ||
-          status_.phase == PlannerPhase::EXECUTING) {
+      const bool completed_dispatched_goal =
+          adapter_status.has_lifecycle &&
+          navigation_goal_dispatch_pending_ &&
+          adapter_status.goal_sequence >
+              navigation_goal_sequence_before_dispatch_ &&
+          !adapter_status.goal_active;
+      if (completed_dispatched_goal) {
+        // Reuse the normal transition path so stale commands are cleared and
+        // the next navigation task is accepted only after a verified hover.
+        navigation_goal_dispatch_pending_ = false;
+        beginTransition(PlannerMode::STATE2STATE,
+                        status_.accepted_request_id,
+                        "",
+                        "navigation goal completed");
+        status_.task_result = PlannerTaskResult::SUCCEEDED;
+        return;
+      }
+      // The FSM has accepted this goal but is still in the one-tick
+      // WAIT_GOAL-to-GENERATE_TRAJ window.  The old implementation mistook
+      // this for a terminal wait; do not expose readiness yet.
+      if (navigation_goal_dispatch_pending_) {
         return;
       }
       status_.phase = PlannerPhase::WAITING_INPUT;

@@ -1269,7 +1269,9 @@ namespace fsm {
             }
             std_msgs::String status;
             status.data = std::string(machineStateName()) + " " +
-                          std::to_string(navigationTaskEpoch());
+                          std::to_string(navigationTaskEpoch()) + " " +
+                          std::to_string(navigationGoalSequence()) + " " +
+                          (navigationGoalActive() ? "ACTIVE" : "IDLE");
             navigation_status_pub_.publish(status);
         }
 

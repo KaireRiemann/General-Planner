@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
-# Record the unified planner_runtime decision / handover / execution chain:
-# supervisor status, mode requests, exploration + navigation side commands,
-# gateway output, and the same exploration diagnostics used by
-# record_exploration.sh.
+# Record the planner_runtime decision / map / execution chain.
+#
+# M2 runs exploration and state2state in one /planner_runtime_node process.
+# The legacy serial runtime instead creates /exploration_node and
+# /navigation_fsm_node.  Record the M2 topics first and retain the legacy
+# namespaces only so a wrongly launched old runtime can still be diagnosed.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -13,8 +15,14 @@ BAG_PREFIX="${BAG_PREFIX:-runtime_$(date +%Y%m%d_%H%M%S)}"
 EXPLORATION_NS="${EXPLORATION_NS:-/exploration_node}"
 NAVIGATION_NS="${NAVIGATION_NS:-/navigation_fsm_node}"
 RUNTIME_NS="${RUNTIME_NS:-/planner_runtime_node}"
+GLOBAL_TOPOLOGY_TOPIC="${GLOBAL_TOPOLOGY_TOPIC:-}"
+TOPOLOGY_ROUTE_TOPIC="${TOPOLOGY_ROUTE_TOPIC:-/planner/topology/raw_route}"
+TOPOLOGY_SAFE_PREFIX_TOPIC="${TOPOLOGY_SAFE_PREFIX_TOPIC:-/planner/topology/safe_prefix}"
+TOPOLOGY_DECISION_TOPIC="${TOPOLOGY_DECISION_TOPIC:-/planner/topology/decision}"
 SPLIT_DURATION="${SPLIT_DURATION:-10m}"
 COMPRESSION="${COMPRESSION:-lz4}"
+CHECK_TOPOLOGY="${CHECK_TOPOLOGY:-1}"
+DRY_RUN="${DRY_RUN:-0}"
 
 normalize_ns() {
   local ns="$1"
@@ -38,9 +46,18 @@ fi
 
 mkdir -p "${BAG_DIR}"
 
-# Prefer topics configured on the running exploration node when available.
+# Prefer the composed M2 runtime parameters. Fall back to the legacy
+# exploration process for old serial-handover recordings.
 ODOM_TOPIC="${ODOM_TOPIC:-}"
 CLOUD_TOPIC="${CLOUD_TOPIC:-}"
+if command -v rosparam >/dev/null 2>&1 && [[ -n "${RUNTIME_NS}" ]]; then
+  if [[ -z "${ODOM_TOPIC}" ]]; then
+    ODOM_TOPIC="$(rosparam get "${RUNTIME_NS}/odometry_topic" 2>/dev/null || true)"
+  fi
+  if [[ -z "${CLOUD_TOPIC}" ]]; then
+    CLOUD_TOPIC="$(rosparam get "${RUNTIME_NS}/cloud_topic" 2>/dev/null || true)"
+  fi
+fi
 if command -v rosparam >/dev/null 2>&1 && [[ -n "${EXPLORATION_NS}" ]]; then
   if [[ -z "${ODOM_TOPIC}" ]]; then
     ODOM_TOPIC="$(rosparam get "${EXPLORATION_NS}/odometry_topic" 2>/dev/null || true)"
@@ -49,11 +66,15 @@ if command -v rosparam >/dev/null 2>&1 && [[ -n "${EXPLORATION_NS}" ]]; then
     CLOUD_TOPIC="$(rosparam get "${EXPLORATION_NS}/cloud_topic" 2>/dev/null || true)"
   fi
 fi
-if command -v rosparam >/dev/null 2>&1 && [[ -z "${ODOM_TOPIC}" && -n "${RUNTIME_NS}" ]]; then
-  ODOM_TOPIC="$(rosparam get "${RUNTIME_NS}/odometry_topic" 2>/dev/null || true)"
-fi
 ODOM_TOPIC="${ODOM_TOPIC:-/lidar_slam/odom}"
 CLOUD_TOPIC="${CLOUD_TOPIC:-/cloud_registered}"
+
+if [[ -z "${GLOBAL_TOPOLOGY_TOPIC}" ]] && command -v rosparam >/dev/null 2>&1 &&
+   [[ -n "${RUNTIME_NS}" ]]; then
+  GLOBAL_TOPOLOGY_TOPIC="$(rosparam get "${RUNTIME_NS}/global_topology/topic" \
+    2>/dev/null || true)"
+fi
+GLOBAL_TOPOLOGY_TOPIC="${GLOBAL_TOPOLOGY_TOPIC:-/planner/global_topology}"
 
 declare -A seen_topics=()
 topics=()
@@ -69,6 +90,54 @@ add_topic() {
   fi
   seen_topics["${topic}"]=1
   topics+=("${topic}")
+}
+
+add_map_topics() {
+  local namespace="$1"
+  if [[ -z "${namespace}" ]]; then
+    return
+  fi
+  add_topic "${namespace}/rog_map/occ"
+  add_topic "${namespace}/rog_map/inf_occ"
+  add_topic "${namespace}/rog_map/unk"
+  add_topic "${namespace}/rog_map/inf_unk"
+  add_topic "${namespace}/rog_map/frontier"
+  add_topic "${namespace}/rog_map/esdf"
+  add_topic "${namespace}/rog_map/esdf/neg"
+  add_topic "${namespace}/rog_map/esdf/occ"
+  add_topic "${namespace}/rog_map/map_bound"
+}
+
+add_runtime_visualization_topics() {
+  local namespace="$1"
+  if [[ -z "${namespace}" ]]; then
+    return
+  fi
+  add_topic "${namespace}/fsm/path"
+  add_topic "${namespace}/debug"
+  add_topic "${namespace}/frt"
+  add_topic "${namespace}/occ"
+  add_topic "${namespace}/pocc"
+  add_topic "${namespace}/sf_cluster_marker"
+  add_topic "${namespace}/norm_directions"
+  add_topic "${namespace}/viewpoint_centers"
+  add_topic "${namespace}/bad_obs"
+  add_topic "${namespace}/good_obs"
+  add_topic "${namespace}/coverage_guidance/route"
+  add_topic "${namespace}/visualization/frontend_path"
+  add_topic "${namespace}/visualization/goal"
+  add_topic "${namespace}/visualization/exploration_box"
+  add_topic "${namespace}/visualization/points"
+  add_topic "${namespace}/visualization/exp_sfc"
+  add_topic "${namespace}/visualization/backup_sfc"
+  add_topic "${namespace}/visualization/exp_traj"
+  add_topic "${namespace}/visualization/backup_traj"
+  add_topic "${namespace}/visualization/receding_traj"
+  add_topic "${namespace}/visualization/yaw_traj"
+  add_topic "${namespace}/visualization/astar_debug"
+  add_topic "${namespace}/visualization/replan_log_mkr"
+  add_topic "${namespace}/visualization/replan_log_pc"
+  add_topic "${namespace}/visualization/ciri_debug_mkr"
 }
 
 # Time, transforms, logs, and structured planner diagnostics.
@@ -88,8 +157,18 @@ add_topic /planner/mode_request_text
 add_topic /planner/click_goal
 add_topic /planner/navigation/goal
 add_topic /planner/exploration/trigger
+add_topic /planner/handover
+add_topic /planner/handover_status
 add_topic /goal
 add_topic /move_base_simple/goal
+
+# World-lifetime M2 topology. The latter three are reserved structured
+# diagnostics for topo-route selection; recording unavailable topics is safe
+# and makes bags forward-compatible when the publishers are added.
+add_topic "${GLOBAL_TOPOLOGY_TOPIC}"
+add_topic "${TOPOLOGY_ROUTE_TOPIC}"
+add_topic "${TOPOLOGY_SAFE_PREFIX_TOPIC}"
+add_topic "${TOPOLOGY_DECISION_TOPIC}"
 
 # Perception / state inputs.
 add_topic "${ODOM_TOPIC}"
@@ -157,6 +236,10 @@ add_topic /mem_cost
 add_topic /mem_cost_2
 add_topic /mem_cost_3
 
+# M2 adapters share RUNTIME_NS. These are the exact ROG, frontend, trajectory
+# and frontier topics used by planner_runtime_{exploration,state2state}.rviz.
+add_runtime_visualization_topics "${RUNTIME_NS}"
+
 # Navigation FSM visualization and topology.
 add_topic "${NAVIGATION_NS}/fsm/path"
 add_topic "${NAVIGATION_NS}/visualization/committed_traj"
@@ -172,25 +255,10 @@ add_topic "${NAVIGATION_NS}/topology/markers"
 add_topic "${NAVIGATION_NS}/topology/graph"
 
 if [[ "${RECORD_MAP:-1}" == "1" ]]; then
-  add_topic "${EXPLORATION_NS}/rog_map/occ"
-  add_topic "${EXPLORATION_NS}/rog_map/inf_occ"
-  add_topic "${EXPLORATION_NS}/rog_map/unk"
-  add_topic "${EXPLORATION_NS}/rog_map/inf_unk"
-  add_topic "${EXPLORATION_NS}/rog_map/frontier"
-  add_topic "${EXPLORATION_NS}/rog_map/esdf"
-  add_topic "${EXPLORATION_NS}/rog_map/esdf/neg"
-  add_topic "${EXPLORATION_NS}/rog_map/esdf/occ"
-  add_topic "${EXPLORATION_NS}/rog_map/map_bound"
-
-  add_topic "${NAVIGATION_NS}/rog_map/occ"
-  add_topic "${NAVIGATION_NS}/rog_map/inf_occ"
-  add_topic "${NAVIGATION_NS}/rog_map/unk"
-  add_topic "${NAVIGATION_NS}/rog_map/inf_unk"
-  add_topic "${NAVIGATION_NS}/rog_map/frontier"
-  add_topic "${NAVIGATION_NS}/rog_map/esdf"
-  add_topic "${NAVIGATION_NS}/rog_map/esdf/neg"
-  add_topic "${NAVIGATION_NS}/rog_map/esdf/occ"
-  add_topic "${NAVIGATION_NS}/rog_map/map_bound"
+  add_map_topics "${RUNTIME_NS}"
+  # Old serial runtime compatibility only.
+  add_map_topics "${EXPLORATION_NS}"
+  add_map_topics "${NAVIGATION_NS}"
 fi
 
 if [[ "${RECORD_RAW_LIDAR:-0}" == "1" ]]; then
@@ -218,6 +286,42 @@ if [[ "${RECORD_PARAMS:-1}" == "1" ]] && command -v rosparam >/dev/null 2>&1; th
   else
     echo "[record_runtime] warning: failed to snapshot ROS parameters" >&2
     rm -f "${PARAM_FILE}"
+  fi
+fi
+
+# Keep a compact, human-readable provenance sidecar beside the parameter dump.
+# The bag alone cannot tell whether it was recorded from M2 or a release/serial
+# runtime when source paths differ between host and Docker containers.
+if [[ "${RECORD_MANIFEST:-1}" == "1" ]]; then
+  MANIFEST_FILE="${BAG_DIR}/${BAG_PREFIX}_manifest.txt"
+  {
+    printf 'recorded_at_utc=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    printf 'record_runtime_script=%s\n' "${SCRIPT_DIR}/$(basename "${BASH_SOURCE[0]}")"
+    printf 'runtime_namespace=%s\n' "${RUNTIME_NS:-/}"
+    printf 'legacy_exploration_namespace=%s\n' "${EXPLORATION_NS:-/}"
+    printf 'legacy_navigation_namespace=%s\n' "${NAVIGATION_NS:-/}"
+    printf 'odom_topic=%s\n' "${ODOM_TOPIC}"
+    printf 'cloud_topic=%s\n' "${CLOUD_TOPIC}"
+    printf 'global_topology_topic=%s\n' "${GLOBAL_TOPOLOGY_TOPIC}"
+    printf 'topic_count=%s\n' "${#topics[@]}"
+    if command -v git >/dev/null 2>&1 && git -C "${REPO_ROOT}" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+      printf 'git_commit=%s\n' "$(git -C "${REPO_ROOT}" rev-parse HEAD)"
+      printf 'git_status=\n'
+      git -C "${REPO_ROOT}" status --short
+    fi
+  } >"${MANIFEST_FILE}"
+  echo "[record_runtime] manifest: ${MANIFEST_FILE}"
+fi
+
+if [[ "${CHECK_TOPOLOGY}" == "1" ]] && command -v rostopic >/dev/null 2>&1; then
+  if rostopic list 2>/dev/null | grep -Fxq "${GLOBAL_TOPOLOGY_TOPIC}"; then
+    echo "[record_runtime] M2 global topology detected: ${GLOBAL_TOPOLOGY_TOPIC}"
+  else
+    echo "[record_runtime] warning: ${GLOBAL_TOPOLOGY_TOPIC} is not advertised." >&2
+    echo "  This may be expected during startup, but a completed M2 test bag must contain it." >&2
+    if [[ "${REQUIRE_M2:-0}" == "1" ]]; then
+      exit 2
+    fi
   fi
 fi
 
@@ -250,5 +354,10 @@ echo "[record_runtime] odometry topic: ${ODOM_TOPIC}"
 echo "[record_runtime] cloud topic: ${CLOUD_TOPIC}"
 echo "[record_runtime] topics: ${#topics[@]}"
 printf '  %s\n' "${topics[@]}"
+
+if [[ "${DRY_RUN}" == "1" ]]; then
+  echo "[record_runtime] dry run: rosbag record was not started"
+  exit 0
+fi
 
 exec rosbag record "${record_args[@]}" "${topics[@]}"

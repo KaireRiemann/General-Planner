@@ -2,6 +2,7 @@
 
 #include <cctype>
 #include <cstdint>
+#include <sstream>
 #include <string>
 
 namespace general_planner::planner_runtime {
@@ -82,6 +83,49 @@ struct PlannerStatusData {
   float yaw_rate_rps{0.0f};
   std::string reason;
 };
+
+// Wire format published by the state2state FSM on
+// /planning/navigation/status:
+//   <fsm_state> <task_epoch> <goal_sequence> <ACTIVE|IDLE>
+//
+// The first two fields are retained for compatibility with the original
+// status topic.  The lifecycle fields remove the ambiguity of WAIT_GOAL:
+// it may mean either "armed and waiting for the first goal" or "the current
+// goal has finished".  Supervisor handover must never use the former as a
+// completion event.
+struct NavigationAdapterStatus {
+  std::string state;
+  std::uint64_t task_epoch{0};
+  std::uint64_t goal_sequence{0};
+  bool goal_active{false};
+  bool has_lifecycle{false};
+};
+
+inline bool parseNavigationAdapterStatus(const std::string &text,
+                                         NavigationAdapterStatus &status) {
+  status = NavigationAdapterStatus{};
+  std::istringstream stream(text);
+  if (!(stream >> status.state)) {
+    return false;
+  }
+  // A legacy state-only publisher is accepted as best effort, but it never
+  // supplies enough information to declare a navigation task complete.
+  if (!(stream >> status.task_epoch)) {
+    return true;
+  }
+  std::string lifecycle;
+  if (!(stream >> status.goal_sequence >> lifecycle)) {
+    return true;
+  }
+  if (lifecycle == "ACTIVE") {
+    status.goal_active = true;
+    status.has_lifecycle = true;
+  } else if (lifecycle == "IDLE") {
+    status.goal_active = false;
+    status.has_lifecycle = true;
+  }
+  return true;
+}
 
 inline const char *toString(const PlannerMode mode) {
   switch (mode) {
