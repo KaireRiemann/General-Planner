@@ -406,7 +406,9 @@ public:
   void polyYawTraj2ROSMsg(traj_utils::PolyTraj &poly_msg, const ros::Time &start_time);
   void initPlanModules(ros::NodeHandle &nh,
                        ParallelBubbleAstar::Ptr &parallel_path_finder,
-                       TopoGraph::Ptr &graph);
+                       TopoGraph::Ptr &graph,
+                       const std::shared_ptr<general_planner::MapManager>
+                           &shared_map_manager = nullptr);
 
   bool checkTrajCollision(double &collision_time);
   bool checkTrajVelocity();
@@ -423,6 +425,8 @@ public:
                                    double *switch_delay = nullptr);
   bool updateRogMap(const sensor_msgs::PointCloud2ConstPtr &cloud_msg,
                     const nav_msgs::Odometry::ConstPtr &odom_msg);
+  /** M2: GlobalMapRuntime has already fused this frame into the shared map. */
+  void notifyGlobalMapUpdated(std::uint64_t map_revision = 0);
   bool sampleCoverageMap(const CoverageMapSpec &spec,
                          CoverageMapDelta &delta) const;
   bool isSafetyMapReady() const;

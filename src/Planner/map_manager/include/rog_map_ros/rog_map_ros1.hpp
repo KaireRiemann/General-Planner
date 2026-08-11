@@ -327,6 +327,31 @@ namespace rog_map {
             }
         }
 
+        /**
+         * Manual odometry ingress used by the composed planner runtime.
+         *
+         * ROGMap::updateRobotState is intentionally protected because normal
+         * users either call updateMap(cloud, pose) or enable ROG's own ROS
+         * callbacks.  M2 owns the single sensor ingress above ROG, so it must
+         * refresh the sliding window even between two point-cloud frames.
+         */
+        void ingestOdometry(const nav_msgs::OdometryConstPtr& odom_msg) {
+            if (!odom_msg) {
+                return;
+            }
+            updateRobotState(std::make_pair(
+                Vec3f(odom_msg->pose.pose.position.x,
+                      odom_msg->pose.pose.position.y,
+                      odom_msg->pose.pose.position.z),
+                Quatf(odom_msg->pose.pose.orientation.w,
+                      odom_msg->pose.pose.orientation.x,
+                      odom_msg->pose.pose.orientation.y,
+                      odom_msg->pose.pose.orientation.z)));
+            robot_state_.v = Vec3f(odom_msg->twist.twist.linear.x,
+                                   odom_msg->twist.twist.linear.y,
+                                   odom_msg->twist.twist.linear.z);
+        }
+
     private:
         static void visualizeBoundingBox(visualization_msgs::MarkerArray& mkrarr,
                                          const Vec3f& box_min,

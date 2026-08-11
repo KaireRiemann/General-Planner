@@ -119,6 +119,11 @@ namespace general_planner {
 
         FOVChecker::Ptr fov_checker_;
 
+        GeneralPlanner(const std::string &cfg_path,
+                       const ros_interface::RosInterface::Ptr &ros_ptr,
+                       const MapManager::Ptr &map_manager,
+                       bool configure_private_topology);
+
 	        CmdTraj cmd_traj_info_;
 	        ExpTraj last_exp_traj_info_;
 
@@ -208,6 +213,15 @@ namespace general_planner {
         explicit GeneralPlanner(const std::string &cfg_path,
                               const ros_interface::RosInterface::Ptr &ros_ptr,
                               const rog_map::ROGMapROS::Ptr &map_ptr);
+
+        /**
+         * M2 constructor: callers inject the world-lifetime MapManager.
+         * The planner may query it, but may not replace or reconfigure its
+         * topology.  Standalone fsm_node keeps using the ROGMap constructor.
+         */
+        GeneralPlanner(const std::string &cfg_path,
+                       const ros_interface::RosInterface::Ptr &ros_ptr,
+                       const MapManager::Ptr &shared_map_manager);
 
         ~GeneralPlanner();
 

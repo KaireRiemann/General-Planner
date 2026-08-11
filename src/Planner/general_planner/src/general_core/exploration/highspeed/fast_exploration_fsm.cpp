@@ -571,7 +571,9 @@ void FastExplorationFSM::FSMCallback(const ros::TimerEvent &e) {
 }
 
 void FastExplorationFSM::init(ros::NodeHandle &nh,
-                              FastExplorationManager::Ptr &explorer) {
+                              FastExplorationManager::Ptr &explorer,
+                              const bool external_sensor_ingress) {
+  external_sensor_ingress_ = external_sensor_ingress;
   fp_.reset(new FSMParam);
   fd_.reset(new FSMData);
 
@@ -785,6 +787,11 @@ void FastExplorationFSM::init(ros::NodeHandle &nh,
   string odom_topic, cloud_topic;
   nh.getParam("odometry_topic", odom_topic);
   nh.getParam("cloud_topic", cloud_topic);
+  if (external_sensor_ingress_) {
+    ROS_INFO("[cloud input] GlobalMapRuntime owns cloud/odom subscriptions; "
+             "exploration receives accepted shared-map frames only");
+    return;
+  }
   // Keep current vehicle state independent of point-cloud synchronization.
   // The synchronized callback can legitimately pause while pairing or while a
   // stale cloud is dropped; braking and FSM transitions must still see every

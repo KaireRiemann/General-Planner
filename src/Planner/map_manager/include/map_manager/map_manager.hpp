@@ -596,11 +596,27 @@ private:
         bool expected = false;
         if (topology_seeded_.compare_exchange_strong(
                 expected, true, std::memory_order_acq_rel)) {
-            rog_map::Vec3f box_min(-1.0e6, -1.0e6, -1.0e6);
-            rog_map::Vec3f box_max(1.0e6, 1.0e6, 1.0e6);
-            map_->boundBoxByLocalMap(box_min, box_max);
             topology_graph_->requestUpdateFocus(robot.p);
-            topology_graph_->markDirtyBox(box_min, box_max);
+            // Normal composed-runtime startup has already delivered the first
+            // cloud update.  Its state-change callback has precisely marked
+            // the observed cells dirty, so do not enqueue every 4 m region of
+            // the 72 m rolling map just to seed the graph.  This matters for
+            // a global 3-D dense roadmap: an empty, unseen local window must
+            // not delay useful nearby topology by hundreds of regions.
+            //
+            // Retain the full-window fallback for a late-attached manager
+            // (for example a standalone tool configured after map updates),
+            // where there is no retained update snapshot to replay.
+            const UpdateSnapshot latest = latestUpdate();
+            if (latest.revision > 0 && latest.changed_box_valid) {
+                topology_graph_->markDirtyBox(latest.changed_min,
+                                               latest.changed_max);
+            } else {
+                rog_map::Vec3f box_min(-1.0e6, -1.0e6, -1.0e6);
+                rog_map::Vec3f box_max(1.0e6, 1.0e6, 1.0e6);
+                map_->boundBoxByLocalMap(box_min, box_max);
+                topology_graph_->markDirtyBox(box_min, box_max);
+            }
         }
         return true;
     }

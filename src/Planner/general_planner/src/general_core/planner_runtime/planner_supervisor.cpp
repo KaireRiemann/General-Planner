@@ -3,12 +3,15 @@
 #include <algorithm>
 #include <cmath>
 #include <sstream>
+#include <utility>
 
 namespace general_planner::planner_runtime {
 
 PlannerSupervisor::PlannerSupervisor(ros::NodeHandle &nh,
-                                     PlannerCommandGateway &gateway)
-    : nh_(nh), gateway_(gateway) {
+                                     PlannerCommandGateway &gateway,
+                                     MapStatusProvider map_status_provider)
+    : nh_(nh), gateway_(gateway),
+      map_status_provider_(std::move(map_status_provider)) {
   std::string initial_mode_text = "hold";
   nh_.param<std::string>("initial_mode", initial_mode_text, initial_mode_text);
   PlannerMode parsed_initial = PlannerMode::HOLD;
@@ -866,16 +869,29 @@ void PlannerSupervisor::publishStatus() {
 }
 
 void PlannerSupervisor::timerCallback(const ros::TimerEvent &) {
+  const GlobalMapStatus map_status = map_status_provider_
+      ? map_status_provider_() : GlobalMapStatus{};
   PlannerMode boot_activate_mode = PlannerMode::HOLD;
   bool do_boot_activate = false;
   {
     std::lock_guard<std::mutex> lock(mutex_);
-    status_.odom_valid =
+    const bool supervisor_odom_valid =
         have_odom_ &&
         (ros::Time::now() - last_odom_time_).toSec() <= max_odom_age_;
-    // Map/topology readiness are filled by GlobalMapRuntime in M2.
-    status_.map_ready = status_.odom_valid;
-    status_.topology_ready = status_.odom_valid;
+    if (map_status_provider_) {
+      status_.odom_valid = supervisor_odom_valid && map_status.odom_valid;
+      status_.world_epoch = map_status.world_epoch;
+      status_.map_revision = map_status.map_revision;
+      status_.topo_revision = map_status.topo_revision;
+      status_.map_ready = map_status.map_ready;
+      status_.topology_ready = map_status.topology_ready;
+    } else {
+      // Legacy non-composed launch compatibility only. M2 always supplies the
+      // provider above, so no map field is inferred from odometry there.
+      status_.odom_valid = supervisor_odom_valid;
+      status_.map_ready = supervisor_odom_valid;
+      status_.topology_ready = supervisor_odom_valid;
+    }
 
     if (!boot_complete_) {
       if (!status_.odom_valid) {

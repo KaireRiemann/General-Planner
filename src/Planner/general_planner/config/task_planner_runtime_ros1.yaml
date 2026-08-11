@@ -1,10 +1,14 @@
 fsm:
   task_mode: "state2state"
   task_planner_en: true
-  task_mode_topic: "/planning/task_mode"
+  # M2 composed runtime: PlannerSupervisor is the only state2state mode
+  # authority and publishes this topic once the hover hand-over is complete.
+  task_mode_topic: "/planning/navigation_task_mode"
   click_goal_en: true
-  # Serial handover starts a click-demo style fsm that consumes /goal directly.
-  click_goal_topic: "/goal"
+  # Goals accepted by PlannerSupervisor are forwarded here after it has
+  # checked readiness/task epoch.  Do not subscribe to raw RViz /goal in the
+  # navigation adapter or it could bypass the ownership fence.
+  click_goal_topic: "/planning/click_goal"
   click_height: 1.5
   click_yaw_en: true
   tracking_target_odom_topic: "/tracking/target_odom"
@@ -47,6 +51,11 @@ general_planner:
   receding_dis: 4.0
   robot_r: 0.2
   frontend_astar_time_out: 0.2
+  # M2 only uses these as a query policy.  Construction/configuration belongs
+  # to GlobalMapRuntime/global_topology.yaml and is never reset on a task swap.
+  state2state_topology_enable: true
+  state2state_topology_query_enable: true
+  state2state_topology_min_query_distance: 3.0
   over_wall_search_en: true
   over_wall_max_climb: 3.0
   over_wall_height_step: 0.3

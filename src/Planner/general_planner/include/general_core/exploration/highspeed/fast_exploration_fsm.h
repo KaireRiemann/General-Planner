@@ -102,6 +102,9 @@ private:
   bool completion_pending_{false};
   bool execution_enabled_published_{false};
   bool last_execution_enabled_{true};
+  // In M2 GlobalMapRuntime owns the only cloud/odom subscriptions.  This FSM
+  // still receives every accepted frame, but never fuses LIO/ROG itself.
+  bool external_sensor_ingress_{false};
   std::string active_task_id_;
   std::string task_command_topic_;
   std::string task_status_topic_;
@@ -159,7 +162,14 @@ public:
 
   ~FastExplorationFSM();
 
-  void init(ros::NodeHandle &nh, FastExplorationManager::Ptr &explorer);
+  void init(ros::NodeHandle &nh, FastExplorationManager::Ptr &explorer,
+            bool external_sensor_ingress = false);
+
+  /** Feed one already-accepted global-map frame (M2 composed runtime). */
+  void ingestCloudOdom(const sensor_msgs::PointCloud2ConstPtr &msg,
+                       const nav_msgs::OdometryConstPtr &odom);
+  /** Feed raw odometry while GlobalMapRuntime owns the ROS subscription. */
+  void ingestOdometry(const nav_msgs::OdometryConstPtr &msg);
 
   EIGEN_MAKE_ALIGNED_OPERATOR_NEW
 };

@@ -213,8 +213,12 @@ target_link_libraries(mission_command_mux
 
 add_executable(planner_runtime_node
         Apps/planner_runtime_node_ros1.cpp
+        src/general_core/planner_runtime/global_map_runtime.cpp
         src/general_core/planner_runtime/planner_command_gateway.cpp
         src/general_core/planner_runtime/planner_supervisor.cpp
+        ${GENERAL_PLANNER_EXPLORATION_DIR}/dynamic_bounding_box_selector.cpp
+        ${GENERAL_PLANNER_EXPLORATION_DIR}/fast_exploration_fsm.cpp
+        ${GENERAL_PLANNER_EXPLORATION_DIR}/fsm_utils.cpp
 )
 add_dependencies(planner_runtime_node
         ${${PROJECT_NAME}_EXPORTED_TARGETS}
@@ -222,7 +226,10 @@ add_dependencies(planner_runtime_node
 )
 target_include_directories(planner_runtime_node PRIVATE include)
 target_link_libraries(planner_runtime_node
+        general_planner_core
+        general_planner_exploration
         ${THIRD_PARTY}
+        OpenMP::OpenMP_CXX
 )
 
 add_executable(planner_status_self_test

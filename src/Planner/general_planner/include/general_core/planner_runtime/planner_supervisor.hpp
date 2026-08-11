@@ -1,11 +1,13 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <mutex>
 #include <string>
 #include <vector>
 
 #include <general_core/planner_runtime/planner_command_gateway.hpp>
+#include <general_core/planner_runtime/global_map_runtime.hpp>
 #include <general_core/planner_runtime/planner_status.hpp>
 #include <general_planner/PlannerModeRequest.h>
 #include <general_planner/PlannerStatus.h>
@@ -18,7 +20,10 @@ namespace general_planner::planner_runtime {
 
 class PlannerSupervisor {
 public:
-  PlannerSupervisor(ros::NodeHandle &nh, PlannerCommandGateway &gateway);
+  using MapStatusProvider = std::function<GlobalMapStatus()>;
+
+  PlannerSupervisor(ros::NodeHandle &nh, PlannerCommandGateway &gateway,
+                    MapStatusProvider map_status_provider = {});
 
 private:
   void modeRequestCallback(const general_planner::PlannerModeRequestConstPtr &msg);
@@ -55,6 +60,7 @@ private:
 
   ros::NodeHandle nh_;
   PlannerCommandGateway &gateway_;
+  MapStatusProvider map_status_provider_;
 
   ros::Subscriber mode_request_sub_;
   ros::Subscriber mode_request_text_sub_;

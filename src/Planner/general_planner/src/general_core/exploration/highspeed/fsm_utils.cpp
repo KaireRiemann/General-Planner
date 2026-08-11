@@ -1095,8 +1095,15 @@ void FastExplorationFSM::CloudOdomCallback(
                                    << "s stamp_valid=" << valid_age);
 
   ros::Time t1 = ros::Time::now();
-  planner_manager_->lidar_map_interface_->updateCloudMapOdometry(msg, odom_);
-  planner_manager_->updateRogMap(msg, odom_);
+  if (external_sensor_ingress_) {
+    // GlobalMapRuntime already updated the shared LIO + ROG maps exactly once
+    // before dispatching this callback.  Only mark the revision as visible to
+    // exploration's local frontier/Bubble consumers.
+    planner_manager_->notifyGlobalMapUpdated();
+  } else {
+    planner_manager_->lidar_map_interface_->updateCloudMapOdometry(msg, odom_);
+    planner_manager_->updateRogMap(msg, odom_);
+  }
   // The topology timer runs faster than the point-cloud input. Track accepted
   // map updates so the same cloud does not rebuild the skeleton and historical
   // graph two or three times.
@@ -1137,6 +1144,17 @@ void FastExplorationFSM::CloudOdomCallback(
   ROS_INFO_STREAM_THROTTLE(1.0, "cloud odom callback cost: " << "map update:" << (t2 - t1).toSec() * 1000 << "ms  "
                                                              << "update frontier clusters: " << (t4 - t3).toSec() * 1000 << "ms  "
                                                              << "total: " << (t4 - t1).toSec() * 1000 << "ms" << endl);
+}
+
+void FastExplorationFSM::ingestCloudOdom(
+    const sensor_msgs::PointCloud2ConstPtr &msg,
+    const nav_msgs::OdometryConstPtr &odom) {
+  CloudOdomCallback(msg, odom);
+}
+
+void FastExplorationFSM::ingestOdometry(
+    const nav_msgs::OdometryConstPtr &msg) {
+  odometryCallback(msg);
 }
 
 void FastExplorationFSM::transitState(EXPL_STATE new_state, string pos_call, bool red) {

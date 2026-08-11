@@ -1,0 +1,208 @@
+#include <general_core/planner_runtime/global_map_runtime.hpp>
+
+#include <general_core/exploration/exploration_utils/lidar_map/lidar_map.h>
+
+#include <pcl_conversions/pcl_conversions.h>
+
+#include <algorithm>
+#include <cmath>
+#include <stdexcept>
+#include <utility>
+
+namespace general_planner::planner_runtime {
+
+GlobalMapRuntime::~GlobalMapRuntime() {
+  sync_.reset();
+  cloud_sub_.reset();
+  odom_sync_sub_.reset();
+  odom_sub_.shutdown();
+  topology_maintainer_.reset();
+}
+
+void GlobalMapRuntime::init(ros::NodeHandle nh,
+                            const std::string &map_config_path) {
+  if (initialized_) {
+    throw std::logic_error("GlobalMapRuntime::init called twice");
+  }
+  if (map_config_path.empty()) {
+    throw std::invalid_argument("global map config path is empty");
+  }
+
+  nh_ = std::move(nh);
+  nh_.param("global_map/max_odom_age", max_odom_age_, 0.20);
+  nh_.param("global_map/max_cloud_age", max_cloud_age_, 0.50);
+  max_odom_age_ = std::clamp(max_odom_age_, 0.05, 5.0);
+  max_cloud_age_ = std::max(0.0, max_cloud_age_);
+
+  context_ = std::make_shared<GlobalMapContext>();
+  context_->rog_map = std::make_shared<rog_map::ROGMapROS>(nh_, map_config_path);
+  if (context_->rog_map->getMapConfig().ros_callback_en) {
+    throw std::invalid_argument(
+        "GlobalMapRuntime requires rog_map/ros_callback/enable=false; "
+        "otherwise ROGMapROS would fuse cloud frames a second time");
+  }
+  context_->map_manager = std::make_shared<MapManager>(context_->rog_map);
+
+  // No task-mode callback: topology remains active in exploration, navigation,
+  // WAIT and stable hold for the complete world lifetime.
+  topology_maintainer_ = std::make_unique<TopologyGraphROS1>(
+      nh_, context_->map_manager, "global_topology");
+
+  std::string odom_topic{"/lidar_slam/odom"};
+  std::string cloud_topic{"/cloud_registered"};
+  int odom_queue = 50;
+  int cloud_queue = 1;
+  int sync_queue = 20;
+  nh_.param<std::string>("odometry_topic", odom_topic, odom_topic);
+  nh_.param<std::string>("cloud_topic", cloud_topic, cloud_topic);
+  nh_.param("global_map/odom_queue", odom_queue, odom_queue);
+  nh_.param("global_map/cloud_queue", cloud_queue, cloud_queue);
+  nh_.param("global_map/sync_queue", sync_queue, sync_queue);
+  odom_queue = std::max(1, odom_queue);
+  cloud_queue = std::max(1, cloud_queue);
+  sync_queue = std::max(1, sync_queue);
+
+  odom_sub_ = nh_.subscribe(odom_topic, odom_queue,
+                             &GlobalMapRuntime::odomCallback, this,
+                             ros::TransportHints().tcpNoDelay());
+  cloud_sub_ = std::make_shared<message_filters::Subscriber<sensor_msgs::PointCloud2>>(
+      nh_, cloud_topic, cloud_queue);
+  odom_sync_sub_ = std::make_shared<message_filters::Subscriber<nav_msgs::Odometry>>(
+      nh_, odom_topic, odom_queue);
+  sync_ = std::make_shared<message_filters::Synchronizer<SyncPolicy>>(
+      SyncPolicy(sync_queue), *cloud_sub_, *odom_sync_sub_);
+  sync_->registerCallback(
+      boost::bind(&GlobalMapRuntime::cloudOdomCallback, this, _1, _2));
+
+  initialized_ = true;
+  ROS_INFO_STREAM("[global_map_runtime] unique ROG/MapManager ready: cloud="
+                  << cloud_topic << " odom=" << odom_topic
+                  << " topology="
+                  << (topology_maintainer_->enabled() ? "enabled" : "disabled")
+                  << " map_config=" << map_config_path);
+}
+
+void GlobalMapRuntime::attachLioMap(
+    const std::shared_ptr<fast_planner::LIOInterface> &lio_map) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (!context_) {
+    throw std::logic_error("attachLioMap before GlobalMapRuntime::init");
+  }
+  context_->lio_map = lio_map;
+}
+
+void GlobalMapRuntime::addCloudConsumer(CloudConsumer consumer) {
+  if (!consumer) {
+    return;
+  }
+  std::lock_guard<std::mutex> lock(mutex_);
+  cloud_consumers_.push_back(std::move(consumer));
+}
+
+void GlobalMapRuntime::addOdomConsumer(OdomConsumer consumer) {
+  if (!consumer) {
+    return;
+  }
+  std::lock_guard<std::mutex> lock(mutex_);
+  odom_consumers_.push_back(std::move(consumer));
+}
+
+void GlobalMapRuntime::odomCallback(const nav_msgs::OdometryConstPtr &msg) {
+  if (!msg || !context_ || !context_->rog_map) {
+    return;
+  }
+  context_->rog_map->ingestOdometry(msg);
+
+  std::vector<OdomConsumer> consumers;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    last_odom_time_ = ros::Time::now();
+    consumers = odom_consumers_;
+  }
+  for (const auto &consumer : consumers) {
+    consumer(msg);
+  }
+}
+
+void GlobalMapRuntime::cloudOdomCallback(
+    const sensor_msgs::PointCloud2ConstPtr &cloud,
+    const nav_msgs::OdometryConstPtr &odom) {
+  if (!cloud || !odom || !context_ || !context_->map_manager) {
+    return;
+  }
+  const ros::Time now = ros::Time::now();
+  if (max_cloud_age_ > 0.0 && !now.isZero() && !cloud->header.stamp.isZero() &&
+      (now - cloud->header.stamp).toSec() > max_cloud_age_) {
+    ROS_WARN_STREAM_THROTTLE(1.0,
+        "[global_map_runtime] drop stale cloud age="
+        << (now - cloud->header.stamp).toSec()
+        << "s max=" << max_cloud_age_);
+    return;
+  }
+
+  rog_map::PointCloud rog_cloud;
+  pcl::fromROSMsg(*cloud, rog_cloud);
+  if (rog_cloud.empty()) {
+    return;
+  }
+  general_utils::Pose pose;
+  pose.first = rog_map::Vec3f(odom->pose.pose.position.x,
+                               odom->pose.pose.position.y,
+                               odom->pose.pose.position.z);
+  pose.second = rog_map::Quatf(odom->pose.pose.orientation.w,
+                                odom->pose.pose.orientation.x,
+                                odom->pose.pose.orientation.y,
+                                odom->pose.pose.orientation.z);
+
+  std::shared_ptr<fast_planner::LIOInterface> lio_map;
+  std::vector<CloudConsumer> consumers;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    lio_map = context_->lio_map;
+    consumers = cloud_consumers_;
+  }
+  // LIO and ROG are each updated exactly once for an accepted sensor pair.
+  if (lio_map) {
+    lio_map->updateCloudMapOdometry(cloud, odom);
+  }
+  const MapManager::UpdateSnapshot update =
+      context_->map_manager->updateMap(rog_cloud, pose);
+  context_->sensor_revision.fetch_add(1, std::memory_order_acq_rel);
+
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    last_map_time_ = now;
+  }
+  for (const auto &consumer : consumers) {
+    consumer(cloud, odom, update);
+  }
+}
+
+GlobalMapStatus GlobalMapRuntime::status() const {
+  GlobalMapStatus result;
+  if (!context_ || !context_->map_manager) {
+    return result;
+  }
+  const ros::Time now = ros::Time::now();
+  ros::Time last_odom;
+  ros::Time last_map;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    last_odom = last_odom_time_;
+    last_map = last_map_time_;
+  }
+  result.world_epoch = context_->world_epoch.load(std::memory_order_acquire);
+  result.sensor_revision =
+      context_->sensor_revision.load(std::memory_order_acquire);
+  result.map_revision = context_->map_manager->mapRevision();
+  result.odom_valid = !last_odom.isZero() &&
+      (now - last_odom).toSec() <= max_odom_age_;
+  result.map_ready = !last_map.isZero() && result.map_revision > 0;
+  const auto snapshot = context_->map_manager->topologySearchSnapshot();
+  result.topo_revision = snapshot ? snapshot->revision : 0;
+  result.topology_ready = result.map_ready &&
+      context_->map_manager->topologyReady() && result.topo_revision > 0;
+  return result;
+}
+
+}  // namespace general_planner::planner_runtime

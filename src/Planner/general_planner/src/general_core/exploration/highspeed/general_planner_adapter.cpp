@@ -1171,7 +1171,9 @@ void FastPlannerManager::printTimeCost(double time_threshold, double time_cost, 
 
 void FastPlannerManager::initPlanModules(ros::NodeHandle &nh,
                                          ParallelBubbleAstar::Ptr &parallel_path_finder,
-                                         TopoGraph::Ptr &graph)
+                                         TopoGraph::Ptr &graph,
+                                         const std::shared_ptr<general_planner::MapManager>
+                                             &shared_map_manager)
 {
   gcopter_config_->init(nh);
   nh.param("max_traj_len", max_traj_len_, 12.0);
@@ -1186,7 +1188,15 @@ void FastPlannerManager::initPlanModules(ros::NodeHandle &nh,
   yaw_traj_opt_ = std::make_shared<traj_opt::YawTrajOpt>(std::max(0.2, gcopter_config_->yaw_max_vel));
 
   rog_map_updated_ = false;
-  if (gcopter_config_->rogMapEnable)
+  if (shared_map_manager)
+  {
+    // M2 ownership rule: exploration is a reader of the same world model as
+    // state2state.  It never constructs a second ROG map or calls updateMap.
+    map_manager_ = shared_map_manager;
+    rog_map_ = map_manager_->rawRosMap();
+    ROS_INFO("[highspeed_exp adapter] using injected global MapManager");
+  }
+  else if (gcopter_config_->rogMapEnable)
   {
     if (gcopter_config_->rogMapConfigPath.empty())
     {
@@ -1198,41 +1208,6 @@ void FastPlannerManager::initPlanModules(ros::NodeHandle &nh,
       {
         rog_map_ = std::make_shared<rog_map::ROGMapROS>(nh, gcopter_config_->rogMapConfigPath);
         map_manager_ = std::make_shared<general_planner::MapManager>(rog_map_);
-        corridor_generator_ = std::make_shared<general_planner::CorridorGenerator>(
-            ros_ptr_,
-            map_manager_,
-            std::max(0.2, gcopter_config_->corridor_size),
-            std::max(0.2, gcopter_config_->corridorLineMaxLength),
-            std::max(0.01, gcopter_config_->corridorMinOverlapThreshold),
-            gcopter_config_->corridorVirtualGroundHeight,
-            gcopter_config_->corridorVirtualCeilHeight,
-            std::max(0.0, gcopter_config_->corridorRobotRadius),
-            std::max(1, gcopter_config_->corridorBoxSearchSkipNum),
-            std::max(1, gcopter_config_->corridorIrisIterNum));
-        const int neighbor_step = static_cast<int>(std::ceil(
-            std::max(0.0, gcopter_config_->corridorRobotRadius) /
-            std::max(0.01, map_manager_->getResolution())));
-        rog_map::vec_E<rog_map::Vec3i> seed_neighbors;
-        for (int x = -neighbor_step; x <= neighbor_step; ++x)
-        {
-          for (int y = -neighbor_step; y <= neighbor_step; ++y)
-          {
-            for (int z = -neighbor_step; z <= neighbor_step; ++z)
-            {
-              if (x * x + y * y + z * z <= neighbor_step * neighbor_step)
-              {
-                seed_neighbors.emplace_back(x, y, z);
-              }
-            }
-          }
-        }
-        std::sort(seed_neighbors.begin(), seed_neighbors.end(),
-                  [](const rog_map::Vec3i &a, const rog_map::Vec3i &b) {
-                    return a.squaredNorm() < b.squaredNorm();
-                  });
-        corridor_generator_->SetLineNeighborList(seed_neighbors);
-        ROS_INFO_STREAM("[highspeed_exp adapter] ROG corridor backend initialized: "
-                        << gcopter_config_->rogMapConfigPath);
       }
       catch (const std::exception &e)
       {
@@ -1240,9 +1215,45 @@ void FastPlannerManager::initPlanModules(ros::NodeHandle &nh,
                         << e.what());
         rog_map_.reset();
         map_manager_.reset();
-        corridor_generator_.reset();
       }
     }
+  }
+
+  if (map_manager_)
+  {
+    corridor_generator_ = std::make_shared<general_planner::CorridorGenerator>(
+        ros_ptr_,
+        map_manager_,
+        std::max(0.2, gcopter_config_->corridor_size),
+        std::max(0.2, gcopter_config_->corridorLineMaxLength),
+        std::max(0.01, gcopter_config_->corridorMinOverlapThreshold),
+        gcopter_config_->corridorVirtualGroundHeight,
+        gcopter_config_->corridorVirtualCeilHeight,
+        std::max(0.0, gcopter_config_->corridorRobotRadius),
+        std::max(1, gcopter_config_->corridorBoxSearchSkipNum),
+        std::max(1, gcopter_config_->corridorIrisIterNum));
+    const int neighbor_step = static_cast<int>(std::ceil(
+        std::max(0.0, gcopter_config_->corridorRobotRadius) /
+        std::max(0.01, map_manager_->getResolution())));
+    rog_map::vec_E<rog_map::Vec3i> seed_neighbors;
+    for (int x = -neighbor_step; x <= neighbor_step; ++x)
+    {
+      for (int y = -neighbor_step; y <= neighbor_step; ++y)
+      {
+        for (int z = -neighbor_step; z <= neighbor_step; ++z)
+        {
+          if (x * x + y * y + z * z <= neighbor_step * neighbor_step)
+          {
+            seed_neighbors.emplace_back(x, y, z);
+          }
+        }
+      }
+    }
+    std::sort(seed_neighbors.begin(), seed_neighbors.end(),
+              [](const rog_map::Vec3i &a, const rog_map::Vec3i &b) {
+                return a.squaredNorm() < b.squaredNorm();
+              });
+    corridor_generator_->SetLineNeighborList(seed_neighbors);
   }
 
   bubble_path_finder_ = std::make_shared<BubbleAstar>();
@@ -3345,6 +3356,17 @@ bool FastPlannerManager::updateRogMap(const sensor_msgs::PointCloud2ConstPtr &cl
   return true;
 }
 
+void FastPlannerManager::notifyGlobalMapUpdated(
+    const std::uint64_t map_revision)
+{
+  if (!map_manager_)
+  {
+    return;
+  }
+  rog_map_updated_ = map_revision == 0 ||
+      map_manager_->mapRevision() >= map_revision;
+}
+
 bool FastPlannerManager::sampleCoverageMap(const CoverageMapSpec &spec,
                                            CoverageMapDelta &delta) const
 {
@@ -3354,12 +3376,13 @@ bool FastPlannerManager::sampleCoverageMap(const CoverageMapSpec &spec,
     return false;
   }
 
-  rog_map::Vec3f updated_min;
-  rog_map::Vec3f updated_max;
-  if (!map_manager_->getUpdatedBox(updated_min, updated_max))
+  const auto update = map_manager_->latestUpdate();
+  if (!update.changed_box_valid)
   {
     return false;
   }
+  const rog_map::Vec3f updated_min = update.changed_min;
+  const rog_map::Vec3f updated_max = update.changed_max;
   Eigen::Vector3d bounded_min = updated_min.cast<double>();
   Eigen::Vector3d bounded_max = updated_max.cast<double>();
   bounded_min = bounded_min.cwiseMax(spec.min);

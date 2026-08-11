@@ -95,7 +95,7 @@ TopologyGraphROS1::TopologyGraphROS1(
     if (missionActive()) {
         updateAndPublish();
     }
-    ROS_INFO_STREAM("[map_manager] State2state incremental topology enabled, mode: "
+    ROS_INFO_STREAM("[map_manager] Incremental topology enabled, mode: "
                     << IncrementalTopologyGraph::constructionModeName(
                            config.construction_mode)
                     << ", topic: "

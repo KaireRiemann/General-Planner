@@ -1,12 +1,16 @@
 # 统一规划运行时、控制权切换与全局地图/拓扑图设计
 
-> 状态：设计与实施基线（未完成项以“实施项”标注）\
+> 状态：M1、M2 已实施；M3 的 exploration 全局路线消费仍为后续项。\
 > 范围：ROS1 Noetic 下的 HighSpeedExp exploration、state2state、ROG map、LIO map 和增量 topo 图。\
 > 目标：上层只做“执行什么任务”的决策；底层保证模式切换安全，并持续维护所有任务共享的全局地图和 topo 图。\
 >\
 > **M1 进度（已落地）**：`planner_runtime_node`（Supervisor + Gateway）、`/planner/status`、\
 > `/planner/mode_request(_text)`、悬停切换、`task_epoch`、导航 `PAUSE/ARM/CLEAR`、\
-> launch：`task_planner/launch/planner_runtime.launch`。M2 共享地图尚未实施。
+> launch：`task_planner/launch/planner_runtime.launch`。\
+> **M2 进度（已落地）**：同一进程中的 `GlobalMapRuntime` 现在是唯一 cloud/odom\
+> 融合入口和唯一 `ROGMapROS`/`MapManager`/`BoundaryMap`/global topo 所有者；\
+> exploration 与 state2state 均注入同一 `MapManager::Ptr`。全局 topo 默认采用\
+> 真 3D、`dense_known_free` 的增量路网，并发布 `/planner/global_topology`。
 
 ## 1. 需求与结论
 
@@ -27,7 +31,8 @@
 2. 任意模式切换都必须先受控减速并确认稳定悬停；
 3. 任务切换不复用上一任务的轨迹、目标和异步规划结果；
 4. ROG map、LIO map 和增量 topo 图是跨任务常驻的世界模型，不因任务切换清空；
-5. 所有模式都从同一份全局 topo 图读取长距离连通性，探索仍可保留其专用的局部 Bubble/frontier 图。
+5. 所有模式把新观测贡献给同一份全局 topo 图；M2 中 state2state 已读取它做长距引导，
+   exploration 仍保留专用 Bubble/frontier 图，后续 M3 再把全局 route 作为其跨区域代价/骨架。
 
 核心结论是：
 
@@ -88,6 +93,24 @@ exploration_node / HighSpeedExp
 一个传感器融合入口
 任意数量的模式适配器（只读/请求更新优先级）
 ```
+
+### 2.3 M2 已落地的边界
+
+M2 已把地图所有权和持续构图从任务模式中剥离，但没有把任务专属算法混为一体：
+
+- `GlobalMapRuntime`（`general_core/planner_runtime/global_map_runtime.*`）订阅一次原始
+  odom 和一次 cloud+odom 同步对；一帧被接受后依次更新 LIO、ROG、`MapManager`，随后才通知
+  exploration adapter。`rog_map/ros_callback/enable` 被强制要求为 `false`，因此不存在第二条
+  ROG 融合回调；
+- `FsmRos1` 的 state2state 实例使用被注入的 `MapManager`，不再创建 `ROGMapROS` 或
+  `TopologyGraphROS1`；`FastPlannerManager` 同样使用该指针，且 exploration FSM 的传感器
+  入口改为由 `GlobalMapRuntime` 调用；
+- 全局维护器使用 `TopologyGraphROS1(..., "global_topology")`，但不传入
+  `state2stateMode()` gate，因此 exploration、state2state、WAIT 和 hold 均持续维护；
+- `/planner/status` 从该 runtime 读取实际 `world_epoch`、`map_revision`、`topo_revision`、
+  `map_ready` 和 `topology_ready`，不再由模式状态伪造地图就绪；
+- `planner_runtime.launch` 只启动一个组合式 `planner_runtime_node`，`serial_handover=false`。
+  模式切换不会 kill/restart exploration 或 navigation，也不会重新创建地图。
 
 ### 2.3 为什么仅用一个 launch 不够
 
@@ -224,14 +247,27 @@ struct GlobalMapContext {
 ```yaml
 global_topology:
   enabled: true
-  construction_mode: persistent_bubble_skeleton
+  construction_mode: dense_known_free
+  planar_mode: false
   unknown_as_free: false
-  snapshot_every_update: true
+  sample_spacing: 0.45
+  snapshot_every_update: false
   min_clearance: <至少机体半径；边仍使用膨胀地图验证>
-  update_budget: 8
+  max_regions_per_update: 4
   update_period: 0.05
   publish_period: 0.50
 ```
+
+M2 的默认 `global_topology.yaml` 是此配置的具体版本。`dense_known_free` 不是把每个 ROG
+体素复制一份：它在全局对齐的 0.45 m lattice 上，为每个传感器确认的 `KNOWN_FREE` 样本保留
+节点，3D 模式保留 collision-validated 的 26 邻接连接。它因此是**真实 3D 的稠密自由空间
+路网**，但不是“完整占据栅格”的替代品：地图真相仍属于 ROG + BoundaryMap，未知空间不会被
+提升为 free，最终轨迹仍必须在当前局部 ROG 上重验证。
+
+为控制全局图增长的实时性，脏 region 默认按 10 Hz 更新（避免稠密 3D region 重建超过 Noetic
+目标机的 50 ms 周期），而 immutable SearchSnapshot 按
+`publish_period`（默认 2 Hz）复制发布。首次传感器更新会优先处理实际 changed box，不会把
+整个 72 m 滚动窗口的未观测 region 都排队重建。
 
 不要在切换 exploration/state2state 时改变 `min_clearance`、`planar_mode` 或 construction mode；当前 `configureTopology()` 的语义会重置/重建拓扑，这是任务切换时不可接受的。
 
@@ -581,6 +617,12 @@ mode_state=EXP_WAIT_TRIGGER
 - 将 topo worker 迁移到 global runtime。
 
 验收：任务切换前后 `world_epoch` 不变，`map_revision/topo_revision` 单调递增；两模式查询到同一 topo snapshot revision。
+
+**实施状态：已完成。** 具体配置位于
+`general_planner/config/global_topology.yaml`，组合入口位于
+`general_planner/Apps/planner_runtime_node_ros1.cpp`。M2 验收还应确认启动后只存在一个
+`planner_runtime_node`（而不是额外的 `exploration_node`/`fsm_node`），并且全局 topo 可视化
+话题为 `/planner/global_topology`。
 
 ### M3：全局 topo 路由接入
 

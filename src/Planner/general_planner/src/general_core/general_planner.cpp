@@ -157,13 +157,32 @@ namespace general_planner {
         gi_.new_goal = false;
     }
 
-    GeneralPlanner::GeneralPlanner
-            (const std::string &cfg_path,
-             const ros_interface::RosInterface::Ptr &ros_ptr,
-             const rog_map::ROGMapROS::Ptr &map_ptr
-            ) : cfg_(Config(cfg_path)),
-                map_manager_(std::make_shared<MapManager>(map_ptr)),
+    GeneralPlanner::GeneralPlanner(
+            const std::string &cfg_path,
+            const ros_interface::RosInterface::Ptr &ros_ptr,
+            const rog_map::ROGMapROS::Ptr &map_ptr)
+            : GeneralPlanner(cfg_path, ros_ptr,
+                             std::make_shared<MapManager>(map_ptr), true) {}
+
+    GeneralPlanner::GeneralPlanner(
+            const std::string &cfg_path,
+            const ros_interface::RosInterface::Ptr &ros_ptr,
+            const MapManager::Ptr &shared_map_manager)
+            : GeneralPlanner(cfg_path, ros_ptr, shared_map_manager, false) {}
+
+    GeneralPlanner::GeneralPlanner(
+            const std::string &cfg_path,
+            const ros_interface::RosInterface::Ptr &ros_ptr,
+            const MapManager::Ptr &map_manager,
+            const bool configure_private_topology)
+            : cfg_(Config(cfg_path)),
+                map_manager_(map_manager),
                 ros_ptr_(ros_ptr) {
+
+        if (!map_manager_ || !map_manager_->ready()) {
+            throw std::invalid_argument(
+                "GeneralPlanner requires a ready MapManager");
+        }
 
         state2state_backend_context_ =
                 std::make_unique<StateToStateBackendContextAdapter>(*this);
@@ -178,67 +197,72 @@ namespace general_planner {
             throw std::invalid_argument("state2state config invalid: " + config_check.code +
                                         " " + config_check.message);
         }
-        IncrementalTopologyGraph::Config topology_config;
-        topology_config.enabled = cfg_.state2state_topology_enable;
-        topology_config.construction_mode =
-            IncrementalTopologyGraph::constructionModeFromString(
-                cfg_.state2state_topology_construction_mode);
-        topology_config.unknown_as_free = cfg_.state2state_topology_unknown_as_free;
-        topology_config.snapshot_every_update =
-            cfg_.state2state_topology_query_enable;
-        topology_config.planar_mode = cfg_.state2state_topology_planar_mode;
-        const auto topology_map_config = map_manager_->getMapConfig();
-        const bool explicit_topology_altitude =
-            std::isfinite(cfg_.state2state_topology_navigation_altitude) &&
-            cfg_.state2state_topology_navigation_altitude >
-                topology_map_config.virtual_ground_height &&
-            cfg_.state2state_topology_navigation_altitude <
-                topology_map_config.virtual_ceil_height;
-        topology_config.navigation_altitude = explicit_topology_altitude
-            ? cfg_.state2state_topology_navigation_altitude
-            : 0.5 * (topology_map_config.virtual_ground_height +
-                     topology_map_config.virtual_ceil_height);
-        topology_config.region_size = cfg_.state2state_topology_region_size;
-        topology_config.sample_spacing = cfg_.state2state_topology_sample_spacing;
-        topology_config.min_clearance = std::max(
-            cfg_.state2state_topology_min_clearance, cfg_.robot_r);
-        topology_config.max_clearance = cfg_.state2state_topology_max_clearance;
-        topology_config.candidate_separation =
-            cfg_.state2state_topology_candidate_separation;
-        topology_config.stable_match_distance =
-            cfg_.state2state_topology_stable_match_distance;
-        topology_config.connection_radius =
-            cfg_.state2state_topology_connection_radius;
-        topology_config.edge_sample_spacing =
-            cfg_.state2state_topology_edge_sample_spacing;
-        topology_config.dirty_padding = cfg_.state2state_topology_dirty_padding;
-        topology_config.bubble_overlap_margin =
-            cfg_.state2state_topology_bubble_overlap_margin;
-        topology_config.max_nodes_per_region = static_cast<std::size_t>(
-            std::max(1, cfg_.state2state_topology_max_nodes_per_region));
-        topology_config.max_bubbles_per_region = static_cast<std::size_t>(
-            std::max(1, cfg_.state2state_topology_max_bubbles_per_region));
-        topology_config.max_neighbors = static_cast<std::size_t>(
-            std::max(1, cfg_.state2state_topology_max_neighbors));
-        topology_config.max_regions_per_update = static_cast<std::size_t>(
-            std::max(1, cfg_.state2state_topology_update_budget));
-        topology_config.update_period =
-            cfg_.state2state_topology_update_period;
-        topology_config.publish_period =
-            cfg_.state2state_topology_publish_period;
-        map_manager_->configureTopology(topology_config);
-        if (topology_config.enabled) {
+        if (configure_private_topology) {
+            IncrementalTopologyGraph::Config topology_config;
+            topology_config.enabled = cfg_.state2state_topology_enable;
+            topology_config.construction_mode =
+                IncrementalTopologyGraph::constructionModeFromString(
+                    cfg_.state2state_topology_construction_mode);
+            topology_config.unknown_as_free = cfg_.state2state_topology_unknown_as_free;
+            topology_config.snapshot_every_update =
+                cfg_.state2state_topology_query_enable;
+            topology_config.planar_mode = cfg_.state2state_topology_planar_mode;
+            const auto topology_map_config = map_manager_->getMapConfig();
+            const bool explicit_topology_altitude =
+                std::isfinite(cfg_.state2state_topology_navigation_altitude) &&
+                cfg_.state2state_topology_navigation_altitude >
+                    topology_map_config.virtual_ground_height &&
+                cfg_.state2state_topology_navigation_altitude <
+                    topology_map_config.virtual_ceil_height;
+            topology_config.navigation_altitude = explicit_topology_altitude
+                ? cfg_.state2state_topology_navigation_altitude
+                : 0.5 * (topology_map_config.virtual_ground_height +
+                         topology_map_config.virtual_ceil_height);
+            topology_config.region_size = cfg_.state2state_topology_region_size;
+            topology_config.sample_spacing = cfg_.state2state_topology_sample_spacing;
+            topology_config.min_clearance = std::max(
+                cfg_.state2state_topology_min_clearance, cfg_.robot_r);
+            topology_config.max_clearance = cfg_.state2state_topology_max_clearance;
+            topology_config.candidate_separation =
+                cfg_.state2state_topology_candidate_separation;
+            topology_config.stable_match_distance =
+                cfg_.state2state_topology_stable_match_distance;
+            topology_config.connection_radius =
+                cfg_.state2state_topology_connection_radius;
+            topology_config.edge_sample_spacing =
+                cfg_.state2state_topology_edge_sample_spacing;
+            topology_config.dirty_padding = cfg_.state2state_topology_dirty_padding;
+            topology_config.bubble_overlap_margin =
+                cfg_.state2state_topology_bubble_overlap_margin;
+            topology_config.max_nodes_per_region = static_cast<std::size_t>(
+                std::max(1, cfg_.state2state_topology_max_nodes_per_region));
+            topology_config.max_bubbles_per_region = static_cast<std::size_t>(
+                std::max(1, cfg_.state2state_topology_max_bubbles_per_region));
+            topology_config.max_neighbors = static_cast<std::size_t>(
+                std::max(1, cfg_.state2state_topology_max_neighbors));
+            topology_config.max_regions_per_update = static_cast<std::size_t>(
+                std::max(1, cfg_.state2state_topology_update_budget));
+            topology_config.update_period =
+                cfg_.state2state_topology_update_period;
+            topology_config.publish_period =
+                cfg_.state2state_topology_publish_period;
+            map_manager_->configureTopology(topology_config);
+            if (topology_config.enabled) {
+                ros_ptr_->info(
+                    " -- [GeneralPlanner] Incremental topology enabled: mode={}, region={:.2f}m, cell={:.2f}m, clearance={:.2f}m, unknown_as_free={}, planar={}, navigation_z={:.3f}m, planning_query={}.",
+                    IncrementalTopologyGraph::constructionModeName(
+                        topology_config.construction_mode),
+                    topology_config.region_size,
+                    topology_config.sample_spacing,
+                    topology_config.min_clearance,
+                    topology_config.unknown_as_free,
+                    topology_config.planar_mode,
+                    topology_config.navigation_altitude,
+                    cfg_.state2state_topology_query_enable);
+            }
+        } else {
             ros_ptr_->info(
-                " -- [GeneralPlanner] Incremental topology enabled: mode={}, region={:.2f}m, cell={:.2f}m, clearance={:.2f}m, unknown_as_free={}, planar={}, navigation_z={:.3f}m, planning_query={}.",
-                IncrementalTopologyGraph::constructionModeName(
-                    topology_config.construction_mode),
-                topology_config.region_size,
-                topology_config.sample_spacing,
-                topology_config.min_clearance,
-                topology_config.unknown_as_free,
-                topology_config.planar_mode,
-                topology_config.navigation_altitude,
-                cfg_.state2state_topology_query_enable);
+                " -- [GeneralPlanner] Using injected global MapManager; topology configuration remains owned by GlobalMapRuntime.");
         }
         ros_ptr_->setResolution(cfg_.resolution);
         ros_ptr_->setVisualizationEn(cfg_.visualization_en);

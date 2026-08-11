@@ -114,7 +114,7 @@ Visualization Manager:
           Size (Pixels): 3
           Size (m): 0.1
           Style: Flat Squares
-          Topic: /fsm_node/rog_map/occ
+          Topic: /planner_runtime_node/rog_map/occ
           Unreliable: false
           Use Fixed Frame: true
           Use rainbow: true
@@ -142,18 +142,26 @@ Visualization Manager:
           Size (Pixels): 2
           Size (m): 0.08
           Style: Flat Squares
-          Topic: /fsm_node/rog_map/inf_occ
+          Topic: /planner_runtime_node/rog_map/inf_occ
           Unreliable: false
           Use Fixed Frame: true
           Use rainbow: true
           Value: true
         - Class: rviz/MarkerArray
           Enabled: true
-          Marker Topic: /fsm_node/rog_map/map_bound
+          Marker Topic: /planner_runtime_node/rog_map/map_bound
           Name: MapBound
           Namespaces:
             {}
           Queue Size: 10
+          Value: true
+        - Class: rviz/MarkerArray
+          Enabled: true
+          Marker Topic: /planner/global_topology
+          Name: GlobalTopo3D
+          Namespaces:
+            {}
+          Queue Size: 2
           Value: true
       Enabled: true
       Name: Sensing
@@ -161,7 +169,7 @@ Visualization Manager:
       Displays:
         - Class: rviz/MarkerArray
           Enabled: true
-          Marker Topic: /fsm_node/visualization/frontend_path
+          Marker Topic: /planner_runtime_node/visualization/frontend_path
           Name: FrontendPath
           Namespaces:
             {}
@@ -169,7 +177,7 @@ Visualization Manager:
           Value: true
         - Class: rviz/MarkerArray
           Enabled: true
-          Marker Topic: /fsm_node/visualization/goal
+          Marker Topic: /planner_runtime_node/visualization/goal
           Name: Goal
           Namespaces:
             {}
@@ -177,7 +185,7 @@ Visualization Manager:
           Value: true
         - Class: rviz/MarkerArray
           Enabled: true
-          Marker Topic: /fsm_node/visualization/exp_traj
+          Marker Topic: /planner_runtime_node/visualization/exp_traj
           Name: ExpTraj
           Namespaces:
             {}
@@ -185,7 +193,7 @@ Visualization Manager:
           Value: true
         - Class: rviz/MarkerArray
           Enabled: true
-          Marker Topic: /fsm_node/visualization/receding_traj
+          Marker Topic: /planner_runtime_node/visualization/receding_traj
           Name: RecedingTraj
           Namespaces:
             {}
@@ -193,7 +201,7 @@ Visualization Manager:
           Value: true
         - Class: rviz/MarkerArray
           Enabled: true
-          Marker Topic: /fsm_node/visualization/yaw_traj
+          Marker Topic: /planner_runtime_node/visualization/yaw_traj
           Name: YawTraj
           Namespaces:
             {}
@@ -218,7 +226,7 @@ Visualization Manager:
           Radius: 0.03
           Shaft Diameter: 0.1
           Shaft Length: 0.1
-          Topic: /fsm_node/fsm/path
+          Topic: /planner_runtime_node/fsm/path
           Unreliable: false
           Value: true
       Enabled: true

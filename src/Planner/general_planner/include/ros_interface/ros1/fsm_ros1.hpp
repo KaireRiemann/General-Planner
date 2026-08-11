@@ -54,6 +54,7 @@
 #include <map>
 #include <queue>
 #include <sstream>
+#include <stdexcept>
 #include <utility>
 
 
@@ -1208,6 +1209,22 @@ namespace fsm {
         }
 
         void taskModeCallback(const std_msgs::StringConstPtr &msg) {
+            if (!msg) {
+                return;
+            }
+            // `hold` is a Supervisor control state, not one of the legacy
+            // Fsm TaskMode values.  Treating it as an unknown string would
+            // normalize it to state2state and could accidentally alter a
+            // future tracking/perching adapter during a safe hand-over.
+            std::string mode = msg->data;
+            std::transform(mode.begin(), mode.end(), mode.begin(),
+                           [](unsigned char c) {
+                               return static_cast<char>(std::tolower(c));
+                           });
+            if (mode == "hold" || mode == "wait") {
+                requestControlledStop("navigation task mode " + mode);
+                return;
+            }
             setTaskModeFromString(msg->data);
         }
 
@@ -1269,26 +1286,50 @@ namespace fsm {
             }
         }
 
-        void init(const ros::NodeHandle &nh, const std::string &cfg_path) {
+        void init(const ros::NodeHandle &nh,
+                  const std::string &cfg_path,
+                  const general_planner::MapManager::Ptr &shared_map_manager =
+                      general_planner::MapManager::Ptr{},
+                  const std::string &command_topic_override = "") {
             // 初始化参数读取
             nh_ = nh;
             cfg_ = Config(cfg_path);
             applyLaunchOverrides();
+            if (!command_topic_override.empty()) {
+                cfg_.cmd_topic = command_topic_override;
+            }
             ros_adapter_contract_.adapter_name = "ros1";
             ros_adapter_contract_.cloud_topic = cfg_.dynamic_obstacle_layer_cloud_topic;
             ros_adapter_contract_.target_topic = cfg_.tracking_target_odom_topic;
             ros_adapter_contract_.command_topic = cfg_.cmd_topic;
             ros_adapter_contract_.trajectory_topic = cfg_.mpc_cmd_topic;
             ros_adapter_contract_.mission = cfg_.mission_mode;
-            map_ptr_ = std::make_shared<rog_map::ROGMapROS>(nh, cfg_path);
+            if (shared_map_manager) {
+                map_ptr_ = shared_map_manager->rawRosMap();
+                if (!map_ptr_) {
+                    throw std::invalid_argument(
+                        "FsmRos1 received a MapManager without ROGMapROS");
+                }
+            } else {
+                map_ptr_ = std::make_shared<rog_map::ROGMapROS>(nh, cfg_path);
+            }
             // 初始化Planner
             auto ros1_ptr = std::make_shared<ros_interface::Ros1Interface>(nh_);
             ros_ptr_ = ros1_ptr;
-            planner_ptr_ = std::make_shared<GeneralPlanner>(cfg_path, ros_ptr_, map_ptr_);
+            planner_ptr_ = shared_map_manager
+                ? std::make_shared<GeneralPlanner>(cfg_path, ros_ptr_,
+                                                    shared_map_manager)
+                : std::make_shared<GeneralPlanner>(cfg_path, ros_ptr_, map_ptr_);
             planner_ptr_->setSwarmDroneId(cfg_.swarm_drone_id);
-            topology_graph_ros1_ = std::make_shared<general_planner::TopologyGraphROS1>(
-                    nh_, planner_ptr_->getMapManager(), "topology",
-                    [this]() { return state2stateMode(); });
+            if (!shared_map_manager) {
+                topology_graph_ros1_ =
+                    std::make_shared<general_planner::TopologyGraphROS1>(
+                        nh_, planner_ptr_->getMapManager(), "topology",
+                        [this]() { return state2stateMode(); });
+            } else {
+                // GlobalMapRuntime is the only topology maintainer in M2.
+                topology_graph_ros1_.reset();
+            }
             if (cfg_.dynamic_obstacle_layer_enable) {
                 dynamic_obstacle_cloud_sub_ =
                         nh_.subscribe<sensor_msgs::PointCloud2>(
