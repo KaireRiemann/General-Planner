@@ -199,6 +199,9 @@ namespace fsm {
         double task_timeout{0.6};
         int state2state_plan_from_rest_max_failures{0};
         bool state2state_clear_goal_on_plan_failure{false};
+        bool state2state_topology_query_capability_enable{false};
+        string state2state_topology_selection_topic{
+                "/planner/navigation/use_global_topology"};
         double yaw_dot_max{};
         bool diagnostic_log_en{true};
         string diagnostic_event_topic{"/planning/diagnostics/events"};
@@ -348,6 +351,17 @@ namespace fsm {
             loader.LoadParam("fsm/state2state_clear_goal_on_plan_failure",
                              state2state_clear_goal_on_plan_failure,
                              false);
+            if (!loader.LoadParam(
+                    "general_planner/state2state/topology/query_capability_enable",
+                    state2state_topology_query_capability_enable,
+                    false)) {
+                loader.LoadParam("general_planner/state2state/topology/query_enable",
+                                 state2state_topology_query_capability_enable,
+                                 false);
+            }
+            loader.LoadParam("general_planner/state2state/topology/selection_topic",
+                             state2state_topology_selection_topic,
+                             string("/planner/navigation/use_global_topology"));
             loader.LoadParam("fsm/diagnostic_log_en", diagnostic_log_en, true);
             loader.LoadParam("fsm/diagnostic_event_topic", diagnostic_event_topic,
                              string("/planning/diagnostics/events"));

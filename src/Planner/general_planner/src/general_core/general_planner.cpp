@@ -157,6 +157,15 @@ namespace general_planner {
         gi_.new_goal = false;
     }
 
+    void GeneralPlanner::setState2StateTopologyPolicy(const bool enabled) {
+        state2state_topology_route_runtime_.setPolicy(enabled);
+    }
+
+    void GeneralPlanner::setState2StateTopologyTaskEpoch(
+            const std::uint64_t epoch) {
+        state2state_topology_route_runtime_.setTaskEpoch(epoch);
+    }
+
     GeneralPlanner::GeneralPlanner(
             const std::string &cfg_path,
             const ros_interface::RosInterface::Ptr &ros_ptr,
@@ -205,7 +214,7 @@ namespace general_planner {
                     cfg_.state2state_topology_construction_mode);
             topology_config.unknown_as_free = cfg_.state2state_topology_unknown_as_free;
             topology_config.snapshot_every_update =
-                cfg_.state2state_topology_query_enable;
+                cfg_.state2state_topology_query_capability_enable;
             topology_config.planar_mode = cfg_.state2state_topology_planar_mode;
             const auto topology_map_config = map_manager_->getMapConfig();
             const bool explicit_topology_altitude =
@@ -258,7 +267,7 @@ namespace general_planner {
                     topology_config.unknown_as_free,
                     topology_config.planar_mode,
                     topology_config.navigation_altitude,
-                    cfg_.state2state_topology_query_enable);
+                    cfg_.state2state_topology_query_capability_enable);
             }
         } else {
             ros_ptr_->info(

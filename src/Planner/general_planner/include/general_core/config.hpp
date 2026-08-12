@@ -86,13 +86,22 @@ namespace general_planner {
         general_utils::Vec3f dynamic_obstacle_layer_local_half_size{10.0, 10.0, 3.0};
         bool state2state_direct_line_frontend_enable{true};
         bool state2state_topology_enable{false};
-        bool state2state_topology_query_enable{false};
+        // Build/profile capability only. Runtime policy is selected with the
+        // non-latched /planner/navigation/use_global_topology topic.
+        bool state2state_topology_query_capability_enable{false};
+        std::string state2state_topology_selection_topic{
+            "/planner/navigation/use_global_topology"};
         std::string state2state_topology_construction_mode{
             "persistent_bubble_skeleton"};
         bool state2state_topology_unknown_as_free{false};
         bool state2state_topology_planar_mode{false};
         double state2state_topology_navigation_altitude{-1.0e6};
         double state2state_topology_min_query_distance{3.0};
+        double state2state_topology_local_prefix_length{8.0};
+        double state2state_topology_local_boundary_margin{0.8};
+        int state2state_topology_route_rejoin_max_candidates{3};
+        double state2state_topology_route_deviation_requery_distance{1.0};
+        double state2state_topology_route_query_min_interval{0.5};
         int state2state_topology_update_budget{1};
         double state2state_topology_update_period{0.20};
         double state2state_topology_publish_period{0.50};
@@ -477,8 +486,18 @@ namespace general_planner {
                              state2state_direct_line_frontend_enable, true);
             loader.LoadParam("general_planner/state2state/topology/enable",
                              state2state_topology_enable, false);
-            loader.LoadParam("general_planner/state2state/topology/query_enable",
-                             state2state_topology_query_enable, false);
+            if (!loader.LoadParam(
+                    "general_planner/state2state/topology/query_capability_enable",
+                    state2state_topology_query_capability_enable, false)) {
+                // Compatibility with M2 profiles. This key was a capability
+                // gate in practice; M3 moves user selection to a topic.
+                loader.LoadParam("general_planner/state2state/topology/query_enable",
+                                 state2state_topology_query_capability_enable,
+                                 false);
+            }
+            loader.LoadParam("general_planner/state2state/topology/selection_topic",
+                             state2state_topology_selection_topic,
+                             std::string{"/planner/navigation/use_global_topology"});
             loader.LoadParam("general_planner/state2state/topology/construction_mode",
                              state2state_topology_construction_mode,
                              std::string{"persistent_bubble_skeleton"});
@@ -490,6 +509,16 @@ namespace general_planner {
                              state2state_topology_navigation_altitude, -1.0e6);
             loader.LoadParam("general_planner/state2state/topology/min_query_distance",
                              state2state_topology_min_query_distance, 3.0);
+            loader.LoadParam("general_planner/state2state/topology/local_prefix_length",
+                             state2state_topology_local_prefix_length, 8.0);
+            loader.LoadParam("general_planner/state2state/topology/local_boundary_margin",
+                             state2state_topology_local_boundary_margin, 0.8);
+            loader.LoadParam("general_planner/state2state/topology/route_rejoin_max_candidates",
+                             state2state_topology_route_rejoin_max_candidates, 3);
+            loader.LoadParam("general_planner/state2state/topology/route_deviation_requery_distance",
+                             state2state_topology_route_deviation_requery_distance, 1.0);
+            loader.LoadParam("general_planner/state2state/topology/route_query_min_interval",
+                             state2state_topology_route_query_min_interval, 0.5);
             loader.LoadParam("general_planner/state2state/topology/update_budget",
                              state2state_topology_update_budget, 1);
             loader.LoadParam("general_planner/state2state/topology/update_period",

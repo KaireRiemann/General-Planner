@@ -155,6 +155,20 @@ public:
         return map_revision_.load(std::memory_order_acquire);
     }
 
+    // The composed runtime owns world resets. Read-side task adapters use
+    // this generation only to invalidate cached global-route intent; it never
+    // changes map or topology ownership.
+    std::uint64_t worldEpoch() const
+    {
+        return world_epoch_.load(std::memory_order_acquire);
+    }
+
+    void setWorldEpoch(const std::uint64_t epoch)
+    {
+        world_epoch_.store(std::max<std::uint64_t>(1, epoch),
+                           std::memory_order_release);
+    }
+
     UpdateSnapshot latestUpdate() const
     {
         std::lock_guard<std::mutex> lock(update_snapshot_mutex_);
@@ -685,6 +699,7 @@ private:
         std::make_shared<IncrementalTopologyGraph>()};
     mutable std::atomic<bool> topology_seeded_{false};
     mutable std::atomic<std::uint64_t> map_revision_{0};
+    std::atomic<std::uint64_t> world_epoch_{1};
     mutable std::mutex update_snapshot_mutex_;
     mutable UpdateSnapshot latest_update_;
 };

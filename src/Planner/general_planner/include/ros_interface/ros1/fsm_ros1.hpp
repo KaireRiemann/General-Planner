@@ -40,6 +40,7 @@
 #include "quadrotor_msgs/PolynomialTrajectory.h"
 #include "quadrotor_msgs/SO3Command.h"
 #include "std_msgs/String.h"
+#include "std_msgs/Bool.h"
 #include "utils/geometry/quadrotor_flatness.hpp"
 
 #include <pcl_conversions/pcl_conversions.h>
@@ -65,6 +66,7 @@ namespace fsm {
         ros::Subscriber goal_3d_sub_;
         ros::Subscriber task_mode_sub_;
         ros::Subscriber navigation_command_sub_;
+        ros::Subscriber topology_selection_sub_;
         ros::Subscriber tracking_target_sub_;
         ros::Subscriber tracking_prediction_sub_;
         ros::Subscriber perching_surface_sub_;
@@ -269,6 +271,8 @@ namespace fsm {
             const double corridor_time = planner_ptr_->getLatestCorridorTime();
             const std::string state2state_z_debug =
                     state2stateMode() ? planner_ptr_->getLatestState2StateZDebugInfo() : "";
+            const std::string state2state_topology_debug =
+                    state2stateMode() ? planner_ptr_->getLatestState2StateTopologyDebugInfo() : "";
             const char *task_phase = "state_to_state";
             if (perchingMode()) {
                 task_phase = "perching";
@@ -302,7 +306,8 @@ namespace fsm {
                 << ";total_replan_time_ms=" << planner_ptr_->getLatestTotalReplanTime() * 1000.0
                 << ";trajectory_optimization_success=1"
                 << ";optimization_time_ms=" << planner_ptr_->getLatestOptimizationTime() * 1000.0
-                << state2state_z_debug;
+                << state2state_z_debug
+                << state2state_topology_debug;
             return oss.str();
         }
 
@@ -1263,6 +1268,17 @@ namespace fsm {
             ROS_WARN_STREAM("[Fsm] ignore unknown navigation command='" << msg->data << "'");
         }
 
+        void topologySelectionCallback(const std_msgs::BoolConstPtr &msg) {
+            if (!msg || planner_ptr_ == nullptr) {
+                return;
+            }
+            // This callback only records policy. The next state2state
+            // plan/replan owns route invalidation and topology work.
+            planner_ptr_->setState2StateTopologyPolicy(msg->data);
+            ROS_INFO_STREAM("[Fsm] global topology navigation policy="
+                            << (msg->data ? "enabled" : "disabled"));
+        }
+
         void navigationStatusTimerCallback(const ros::TimerEvent &) {
             if (!navigation_status_pub_) {
                 return;
@@ -1359,6 +1375,15 @@ namespace fsm {
             navigation_status_timer_ =
                 nh_.createTimer(ros::Duration(0.1),
                                 &FsmRos1::navigationStatusTimerCallback, this);
+            if (cfg_.state2state_topology_query_capability_enable) {
+                topology_selection_sub_ = nh_.subscribe<std_msgs::Bool>(
+                    cfg_.state2state_topology_selection_topic, 10,
+                    &FsmRos1::topologySelectionCallback, this);
+                ROS_INFO_STREAM("[Fsm] M3 topology policy topic="
+                                << nh_.resolveName(
+                                       cfg_.state2state_topology_selection_topic)
+                                << " default=local_only");
+            }
             if (cfg_.diagnostic_log_en) {
                 diagnostic_event_pub_ = nh_.advertise<std_msgs::String>(cfg_.diagnostic_event_topic, 100);
             }

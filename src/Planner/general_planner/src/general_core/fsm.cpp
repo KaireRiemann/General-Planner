@@ -1332,6 +1332,10 @@ namespace fsm {
         plan_from_rest_ = false;
         task_new_ = false;
         ++navigation_task_epoch_;
+        if (planner_ptr_) {
+            planner_ptr_->setState2StateTopologyTaskEpoch(
+                    navigation_task_epoch_.load());
+        }
         if (machine_state_ != INIT && machine_state_ != WAIT_GOAL) {
             ChangeState("requestControlledStop", WAIT_GOAL);
         } else if (machine_state_ != INIT) {
@@ -1352,6 +1356,9 @@ namespace fsm {
 
     void Fsm::armNavigationTask(const std::uint64_t task_epoch) {
         navigation_task_epoch_ = task_epoch;
+        if (planner_ptr_) {
+            planner_ptr_->setState2StateTopologyTaskEpoch(task_epoch);
+        }
         // Do not reset the sequence here.  ARM/CLEAR status messages can
         // briefly overlap on ROS queues; a process-lifetime monotonic counter
         // lets the supervisor reject an old terminal WAIT_GOAL reliably.

@@ -303,155 +303,377 @@ namespace state2state_task {
             return true;
         };
 
+        int flag = ON_INF_MAP |
+                   (unknown_as_occupied_for_frontend ? UNKNOWN_AS_OCCUPIED : UNKNOWN_AS_FREE) |
+                   DONT_USE_INF_NEIGHBOR;
+
         auto buildTopologyCandidate = [&](vec_Vec3f &candidate,
                                           RET_CODE &candidate_ret) {
             candidate.clear();
             candidate_ret = FAILED;
-            const double query_distance = (goal - temp_start_point).norm();
-            if (!services.cfg.state2state_topology_query_enable ||
+            if (!services.cfg.state2state_topology_query_capability_enable ||
                 !services.cfg.state2state_topology_enable ||
-                !services.map_manager->topologyReady() ||
-                query_distance < std::max(0.0,
+                services.topology_route_runtime == nullptr) {
+                return false;
+            }
+
+            auto &runtime = *services.topology_route_runtime;
+            auto &route = runtime.route;
+            const auto clearRoute = [&](const std::string &reason,
+                                        const bool reset_query_timer) {
+                resetGlobalTopologyRoute(route, reason);
+                if (reset_query_timer) {
+                    route.last_query_time = -std::numeric_limits<double>::infinity();
+                }
+            };
+
+            const std::uint64_t policy_generation = runtime.policy_generation.load(
+                std::memory_order_acquire);
+            if (runtime.consumed_policy_generation != policy_generation) {
+                runtime.consumed_policy_generation = policy_generation;
+                clearRoute(runtime.policy_enabled.load(std::memory_order_acquire)
+                               ? "TOPO_POLICY_ENABLED" : "LOCAL_ONLY",
+                           true);
+            }
+            const std::uint64_t task_generation = runtime.task_generation.load(
+                std::memory_order_acquire);
+            if (runtime.consumed_task_generation != task_generation) {
+                runtime.consumed_task_generation = task_generation;
+                clearRoute("TASK_EPOCH_CHANGED", true);
+            }
+            if (!runtime.policy_enabled.load(std::memory_order_acquire)) {
+                return false;
+            }
+
+            const double query_distance = (goal - temp_start_point).norm();
+            if (query_distance < std::max(0.0,
                     services.cfg.state2state_topology_min_query_distance)) {
+                route.last_result = "LOCAL_ONLY_SHORT_GOAL";
                 return false;
             }
-
-            // Match USS-Nav's build/query separation: planning only tells the
-            // persistent map where the robot currently is. Expanding from the
-            // robot (not a possibly unobserved goal midpoint) lets the graph
-            // accumulate connected navigation memory along executed routes.
-            services.map_manager->requestTopologyUpdateAround(temp_start_point);
-            const auto topology_snapshot =
-                services.map_manager->topologySearchSnapshot();
-            if (!topology_snapshot || topology_snapshot->graph.empty()) {
-                return false;
+            const std::uint64_t task_epoch = runtime.task_epoch.load(
+                std::memory_order_acquire);
+            const std::uint64_t world_epoch = services.map_manager->worldEpoch();
+            const double goal_change_tolerance = std::max(
+                0.05, 0.5 * services.cfg.resolution);
+            if (route.valid &&
+                ((route.goal - goal).norm() > goal_change_tolerance ||
+                 route.task_epoch != task_epoch ||
+                 route.world_epoch != world_epoch)) {
+                clearRoute(route.world_epoch != world_epoch
+                               ? "WORLD_EPOCH_CHANGED" : "GOAL_CHANGED",
+                           true);
             }
 
-            vec_Vec3f topology_path;
-            bool reaches_goal = services.map_manager->findTopologyPath(
-                topology_snapshot, temp_start_point, goal, topology_path);
-
-            // If the goal is not attachable yet, choose a known global anchor
-            // which advances toward it. The anchor may be outside the rolling
-            // window; only its executable prefix is checked locally below.
-            if (!reaches_goal) {
-                struct RouteTarget {
-                    Vec3f position;
-                    double score{0.0};
-                };
-                std::vector<RouteTarget> targets;
-                Vec3f direction = Vec3f::Zero();
-                if (query_distance > 1.0e-9) {
-                    direction = (goal - temp_start_point) / query_distance;
+            const double now = services.ros_ptr->getSimTime();
+            const double query_interval = std::max(
+                0.0, services.cfg.state2state_topology_route_query_min_interval);
+            const auto queryGlobalRoute = [&](const bool forced) {
+                if (!forced && std::isfinite(route.last_query_time) &&
+                    now - route.last_query_time < query_interval) {
+                    route.last_result = "TOPO_QUERY_RATE_LIMIT";
+                    return false;
                 }
-                for (const auto &entry : topology_snapshot->graph) {
-                    const auto &node = entry.second.node;
-                    const Vec3f offset = node.position - temp_start_point;
-                    const double radial_distance = offset.norm();
-                    const double progress = offset.dot(direction);
-                    if (progress <= services.cfg.resolution ||
-                        radial_distance > std::max(3.0 * searching_horizon,
-                                                   searching_horizon + 5.0)) {
-                        continue;
-                    }
-                    targets.push_back({node.position,
-                                       progress - 0.10 * radial_distance -
-                                           0.05 * (goal - node.position).norm()});
+                route.last_query_time = now;
+                if (!services.map_manager->topologyReady()) {
+                    route.last_result = "NO_TOPO_SNAPSHOT";
+                    return false;
                 }
-                std::sort(targets.begin(), targets.end(),
-                          [](const RouteTarget &lhs, const RouteTarget &rhs) {
-                              return lhs.score > rhs.score;
-                          });
+                services.map_manager->requestTopologyUpdateAround(temp_start_point);
+                const auto snapshot = services.map_manager->topologySearchSnapshot();
+                if (!snapshot || snapshot->graph.empty()) {
+                    route.last_result = "NO_TOPO_SNAPSHOT";
+                    return false;
+                }
 
-                vec_Vec3f best_route;
-                double best_progress = -1.0;
-                // Targets are already ordered by goal progress. Stop at the
-                // first safe route instead of ray-checking several equivalent
-                // graph paths in the latency-sensitive frontend.
-                const std::size_t attempts = std::min<std::size_t>(3, targets.size());
-                const double required_length = 0.35 * std::min(
-                    searching_horizon, query_distance);
-                for (std::size_t i = 0; i < attempts; ++i) {
-                    vec_Vec3f route;
-                    if (!services.map_manager->findTopologyPath(
-                            topology_snapshot, temp_start_point,
-                            targets[i].position, route)) {
-                        continue;
+                vec_Vec3f raw_route;
+                bool reaches_goal = services.map_manager->findTopologyPath(
+                    snapshot, temp_start_point, goal, raw_route);
+                if (!reaches_goal) {
+                    struct RouteTarget {
+                        Vec3f position;
+                        double score{0.0};
+                    };
+                    std::vector<RouteTarget> targets;
+                    Vec3f direction = Vec3f::Zero();
+                    if (query_distance > 1.0e-9) {
+                        direction = (goal - temp_start_point) / query_distance;
                     }
-                    double route_length = 0.0;
-                    for (std::size_t j = 1; j < route.size(); ++j) {
-                        route_length += (route[j] - route[j - 1]).norm();
+                    for (const auto &entry : snapshot->graph) {
+                        const Vec3f offset = entry.second.node.position - temp_start_point;
+                        const double radial_distance = offset.norm();
+                        const double progress = offset.dot(direction);
+                        if (progress <= services.cfg.resolution ||
+                            radial_distance > std::max(3.0 * searching_horizon,
+                                                       searching_horizon + 5.0)) {
+                            continue;
+                        }
+                        targets.push_back({entry.second.node.position,
+                                           progress - 0.10 * radial_distance -
+                                               0.05 * (goal - entry.second.node.position).norm()});
                     }
-                    const double progress =
-                        (route.back() - temp_start_point).dot(direction);
-                    if (route_length + services.cfg.resolution >= required_length &&
-                        progress > best_progress) {
-                        best_progress = progress;
-                        best_route = std::move(route);
+                    std::sort(targets.begin(), targets.end(),
+                              [](const RouteTarget &lhs, const RouteTarget &rhs) {
+                                  return lhs.score > rhs.score;
+                              });
+                    const std::size_t attempts = std::min<std::size_t>(3, targets.size());
+                    const double required_length = 0.35 * std::min(
+                        searching_horizon, query_distance);
+                    for (std::size_t i = 0; i < attempts; ++i) {
+                        vec_Vec3f anchor_route;
+                        if (!services.map_manager->findTopologyPath(
+                                snapshot, temp_start_point,
+                                targets[i].position, anchor_route)) {
+                            continue;
+                        }
+                        if (geometry_utils::computePathLength(anchor_route) +
+                                services.cfg.resolution < required_length) {
+                            continue;
+                        }
+                        raw_route = std::move(anchor_route);
                         break;
                     }
                 }
-                topology_path = std::move(best_route);
-                if (topology_path.size() < 2) {
+                if (raw_route.size() < 2) {
+                    route.last_result = "NO_TOPO_ROUTE";
+                    return false;
+                }
+
+                route.valid = true;
+                route.reaches_goal = reaches_goal;
+                ++route.route_id;
+                route.task_epoch = task_epoch;
+                route.world_epoch = world_epoch;
+                route.map_revision_at_query = services.map_manager->mapRevision();
+                route.topo_revision = snapshot->revision;
+                route.goal = goal;
+                route.raw_topology_route = std::move(raw_route);
+                buildRouteArcLength(route.raw_topology_route, route.arc_length);
+                route.committed_route_s = 0.0;
+                route.last_result = reaches_goal ? "TOPO_ROUTE_READY"
+                                                  : "TOPO_PROGRESS_ANCHOR";
+                return true;
+            };
+
+            if (!route.valid && !queryGlobalRoute(false)) {
+                return false;
+            }
+
+            const double projection_tolerance = std::max(
+                services.cfg.resolution,
+                std::max(0.0, services.cfg.state2state_topology_route_deviation_requery_distance));
+            const double minimum_projection_s = std::max(
+                0.0, route.committed_route_s - projection_tolerance);
+            double route_start_s = 0.0;
+            Vec3f route_start;
+            const auto acquireRouteProjection = [&]() {
+                if (!route.valid ||
+                    !projectRouteMonotonically(route.raw_topology_route,
+                                                route.arc_length,
+                                                temp_start_point,
+                                                minimum_projection_s,
+                                                route_start_s, route_start)) {
+                    return false;
+                }
+                return (route_start - temp_start_point).norm() <=
+                    std::max(services.cfg.state2state_topology_route_deviation_requery_distance,
+                             2.0 * services.cfg.resolution);
+            };
+            if (!acquireRouteProjection()) {
+                clearRoute("TOPO_ROUTE_DEVIATED", false);
+                if (!queryGlobalRoute(true) || !acquireRouteProjection()) {
+                    route.last_result = "TOPO_ROUTE_REJOIN_FAILED";
                     return false;
                 }
             }
+            route.committed_route_s = std::max(route.committed_route_s, route_start_s);
 
-            // A global route is trusted only as high-level connectivity. Feed
-            // the existing local planner a collision-checked receding-horizon
-            // prefix instead of rejecting historic nodes outside local ROG.
-            appendPathPointUnique(temp_start_point, candidate);
-            double remaining = std::max(0.0, searching_horizon);
+            const double configured_prefix =
+                services.cfg.state2state_topology_local_prefix_length > 0.0
+                    ? services.cfg.state2state_topology_local_prefix_length
+                    : searching_horizon;
+            const double prefix_length = std::max(0.0, std::min(
+                searching_horizon, configured_prefix));
+            const double route_end_s = std::min(route.arc_length.back(),
+                                                route_start_s + prefix_length);
+            vec_Vec3f route_prefix;
+            if (!sliceRouteByArcLength(route.raw_topology_route, route.arc_length,
+                                       route_start_s, route_end_s, route_prefix)) {
+                clearRoute("TOPO_ROUTE_SLICE_FAILED", false);
+                return false;
+            }
+
+            Vec3f local_min(-1.0e6, -1.0e6, -1.0e6);
+            Vec3f local_max(1.0e6, 1.0e6, 1.0e6);
+            services.map_manager->boundBoxByLocalMap(local_min, local_max);
+            const double boundary_margin = std::max(
+                0.0, services.cfg.state2state_topology_local_boundary_margin);
+            const auto insideLocalInterior = [&](const Vec3f &point) {
+                return services.map_manager->insideLocalMap(point) &&
+                    (point.array() >= (local_min.array() + boundary_margin)).all() &&
+                    (point.array() <= (local_max.array() - boundary_margin)).all();
+            };
             const double prefix_step = std::max(
                 0.25, std::max(services.cfg.resolution,
                                services.map_manager->getInfResolution()));
-            bool complete_route = true;
-            for (std::size_t i = 1; i < topology_path.size(); ++i) {
-                const Vec3f segment = topology_path[i] - topology_path[i - 1];
-                const double length = segment.norm();
-                if (length <= 1.0e-9) {
-                    continue;
-                }
-                const double usable_length = std::min(length, remaining);
-                const int steps = std::max(
-                    1, static_cast<int>(std::ceil(usable_length / prefix_step)));
-                bool segment_complete = true;
-                for (int step = 1; step <= steps; ++step) {
-                    const double distance = usable_length *
-                        static_cast<double>(step) / static_cast<double>(steps);
-                    const Vec3f point = topology_path[i - 1] +
-                        segment * (distance / length);
-                    if (!lineUsable(candidate.back(), point)) {
-                        segment_complete = false;
-                        complete_route = false;
-                        break;
+            const auto appendCheckedSegment = [&](const Vec3f &end,
+                                                  const bool require_interior,
+                                                  vec_Vec3f &out,
+                                                  bool &boundary_limited) {
+                const Vec3f start = out.back();
+                const double length = (end - start).norm();
+                const int steps = std::max(1, static_cast<int>(
+                    std::ceil(length / prefix_step)));
+                for (int i = 1; i <= steps; ++i) {
+                    const Vec3f sample = start +
+                        (static_cast<double>(i) / static_cast<double>(steps)) *
+                        (end - start);
+                    if (require_interior && !insideLocalInterior(sample)) {
+                        boundary_limited = true;
+                        return false;
                     }
-                    appendPathPointUnique(point, candidate);
+                    if (!lineUsable(out.back(), sample)) {
+                        return false;
+                    }
+                    appendPathPointUnique(sample, out);
                 }
-                remaining -= usable_length;
-                if (!segment_complete || usable_length + 1.0e-9 < length ||
-                    remaining <= 1.0e-9) {
-                    complete_route = false;
-                    break;
-                }
-            }
+                return true;
+            };
 
-            if (candidate.size() < 2 ||
-                (candidate.back() - candidate.front()).norm() <
+            const auto buildVerifiedPrefix = [&](vec_Vec3f &out,
+                                                 bool &blocked,
+                                                 bool &boundary_limited) {
+                out.clear();
+                blocked = false;
+                boundary_limited = false;
+                appendPathPointUnique(temp_start_point, out);
+                // The vehicle may not sit in the interior after a local-map
+                // slide. Attach to the projected route with normal local
+                // safety checks, then reserve the margin for future anchors.
+                if (!appendCheckedSegment(route_prefix.front(), false, out,
+                                          boundary_limited)) {
+                    blocked = !boundary_limited;
+                    return false;
+                }
+                for (std::size_t i = 1; i < route_prefix.size(); ++i) {
+                    if (!appendCheckedSegment(route_prefix[i], true, out,
+                                              boundary_limited)) {
+                        blocked = !boundary_limited;
+                        return false;
+                    }
+                }
+                return true;
+            };
+
+            bool blocked = false;
+            bool boundary_limited = false;
+            const bool prefix_verified = buildVerifiedPrefix(candidate, blocked,
+                                                             boundary_limited);
+            // Reaching the interior margin is an expected rolling-window
+            // horizon, not a topology failure. Keep the safe portion already
+            // sampled so the local corridor can advance the vehicle toward
+            // the next window without needlessly discarding the global route.
+            if ((prefix_verified || (boundary_limited && !blocked)) &&
+                candidate.size() >= 2 &&
+                (candidate.back() - candidate.front()).norm() >=
                     2.0 * services.cfg.resolution) {
-                return false;
+                const bool reaches_route_end = prefix_verified &&
+                    route_end_s >= route.arc_length.back() -
+                    services.cfg.resolution;
+                candidate_ret = route.reaches_goal && reaches_route_end
+                    ? REACH_GOAL : REACH_HORIZON;
+                route.last_result = candidate_ret == REACH_GOAL
+                    ? "TOPO_PREFIX_GOAL"
+                    : (boundary_limited ? "TOPO_PREFIX_LOCAL_BOUNDARY"
+                                        : "TOPO_PREFIX_HORIZON");
+                return true;
             }
-            candidate_ret = reaches_goal && complete_route
-                ? REACH_GOAL : REACH_HORIZON;
-            if (candidate_ret == REACH_GOAL) {
-                appendPathPointUnique(goal, candidate);
-            }
-            return candidate.size() >= 2;
-        };
 
-        int flag = ON_INF_MAP |
-                   (unknown_as_occupied_for_frontend ? UNKNOWN_AS_OCCUPIED : UNKNOWN_AS_FREE) |
-                   DONT_USE_INF_NEIGHBOR;
+            const auto repairToRouteSuffix = [&]() {
+                struct RejoinAnchor {
+                    std::size_t index{0};
+                    double s{0.0};
+                };
+                std::vector<RejoinAnchor> anchors;
+                for (std::size_t i = 1; i < route.raw_topology_route.size(); ++i) {
+                    if (route.arc_length[i] <= route_start_s + services.cfg.resolution ||
+                        route.arc_length[i] > route_end_s + services.cfg.resolution ||
+                        !insideLocalInterior(route.raw_topology_route[i]) ||
+                        !pointUsable(route.raw_topology_route[i])) {
+                        continue;
+                    }
+                    anchors.push_back({i, route.arc_length[i]});
+                }
+                std::sort(anchors.begin(), anchors.end(),
+                          [](const RejoinAnchor &lhs, const RejoinAnchor &rhs) {
+                              return lhs.s > rhs.s;
+                          });
+                const std::size_t attempts = std::min<std::size_t>(
+                    static_cast<std::size_t>(std::max(
+                        1, services.cfg.state2state_topology_route_rejoin_max_candidates)),
+                    anchors.size());
+                for (std::size_t attempt = 0; attempt < attempts; ++attempt) {
+                    vec_Vec3f repair_path;
+                    const RET_CODE repair_ret = services.astar->pointToPointPathSearch(
+                        temp_start_point, route.raw_topology_route[anchors[attempt].index],
+                        flag, prefix_length, repair_path,
+                        services.cfg.frontend_astar_time_out);
+                    if (repair_ret != REACH_GOAL || repair_path.size() < 2) {
+                        continue;
+                    }
+                    vec_Vec3f repaired;
+                    appendPathPointUnique(temp_start_point, repaired);
+                    bool repair_safe = true;
+                    bool repair_boundary = false;
+                    for (const auto &point : repair_path) {
+                        if (!appendCheckedSegment(point, false, repaired,
+                                                  repair_boundary)) {
+                            repair_safe = false;
+                            break;
+                        }
+                    }
+                    if (!repair_safe) {
+                        continue;
+                    }
+                    vec_Vec3f suffix;
+                    if (!sliceRouteByArcLength(route.raw_topology_route,
+                                               route.arc_length,
+                                               anchors[attempt].s,
+                                               route_end_s, suffix)) {
+                        continue;
+                    }
+                    for (std::size_t i = 1; i < suffix.size(); ++i) {
+                        if (!appendCheckedSegment(suffix[i], true, repaired,
+                                                  repair_boundary)) {
+                            repair_safe = false;
+                            break;
+                        }
+                    }
+                    if (!repair_safe || repaired.size() < 2) {
+                        continue;
+                    }
+                    candidate = std::move(repaired);
+                    candidate_ret = REACH_HORIZON;
+                    route.last_result = "TOPO_LOCAL_REPAIR";
+                    return true;
+                }
+                return false;
+            };
+
+            if (blocked && repairToRouteSuffix()) {
+                return true;
+            }
+            clearRoute(blocked ? "TOPO_PREFIX_BLOCKED" : "TOPO_PREFIX_OUT_OF_LOCAL_WINDOW",
+                       false);
+            if (queryGlobalRoute(true)) {
+                // A fresh route can become locally attachable after topology
+                // maintenance catches up. Defer consuming it to the next
+                // local replan rather than recursively starting another global
+                // search in this tick; local-only remains the safe fallback.
+                route.last_result = "TOPO_REQUERY_READY_LOCAL_FALLBACK";
+            }
+            return false;
+        };
 
         vec_Vec3f normal_path;
         RET_CODE ret_code = FAILED;

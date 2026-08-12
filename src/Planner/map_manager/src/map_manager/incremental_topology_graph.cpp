@@ -1718,15 +1718,35 @@ bool IncrementalTopologyGraph::findPath(
     const std::size_t max_attach = std::min(query_config.max_neighbors,
                                              start_candidates.size());
 
-    using QueueEntry = std::pair<double, NodeId>;
+    struct QueueEntry {
+        double estimated_total_cost{0.0};
+        double path_cost{0.0};
+        NodeId node_id{0};
+    };
+    // Edge cost is Euclidean node distance, so Euclidean distance to the goal
+    // is admissible and consistent.  The tie-breaker keeps route selection
+    // deterministic when two nodes have the same f score.
+    const auto lowerEstimatedCost = [](const QueueEntry &lhs,
+                                       const QueueEntry &rhs) {
+        if (std::abs(lhs.estimated_total_cost - rhs.estimated_total_cost) > 1.0e-12) {
+            return lhs.estimated_total_cost > rhs.estimated_total_cost;
+        }
+        if (std::abs(lhs.path_cost - rhs.path_cost) > 1.0e-12) {
+            return lhs.path_cost > rhs.path_cost;
+        }
+        return lhs.node_id > rhs.node_id;
+    };
     std::priority_queue<QueueEntry, std::vector<QueueEntry>,
-                        std::greater<QueueEntry>> queue;
+                        decltype(lowerEstimatedCost)> queue(lowerEstimatedCost);
     std::unordered_map<NodeId, double> distance;
     std::unordered_map<NodeId, NodeId> parent;
     for (std::size_t i = 0; i < max_attach; ++i) {
-        distance[start_candidates[i].second] = start_candidates[i].first;
-        parent[start_candidates[i].second] = 0;
-        queue.push(start_candidates[i]);
+        const NodeId start_id = start_candidates[i].second;
+        const double path_cost = start_candidates[i].first;
+        distance[start_id] = path_cost;
+        parent[start_id] = 0;
+        queue.push({path_cost + (graph.at(start_id).node.position - goal).norm(),
+                    path_cost, start_id});
     }
 
     double best_goal_cost = std::numeric_limits<double>::infinity();
@@ -1734,19 +1754,21 @@ bool IncrementalTopologyGraph::findPath(
     while (!queue.empty()) {
         const QueueEntry current = queue.top();
         queue.pop();
-        const auto distance_it = distance.find(current.second);
-        if (distance_it == distance.end() || current.first > distance_it->second + 1.0e-12) {
+        const auto distance_it = distance.find(current.node_id);
+        if (distance_it == distance.end() ||
+            current.path_cost > distance_it->second + 1.0e-12) {
             continue;
         }
-        if (current.first >= best_goal_cost) {
+        if (current.estimated_total_cost >= best_goal_cost) {
             break;
         }
-        const auto goal_it = goal_links.find(current.second);
-        if (goal_it != goal_links.end() && current.first + goal_it->second < best_goal_cost) {
-            best_goal_cost = current.first + goal_it->second;
-            best_goal_parent = current.second;
+        const auto goal_it = goal_links.find(current.node_id);
+        if (goal_it != goal_links.end() &&
+            current.path_cost + goal_it->second < best_goal_cost) {
+            best_goal_cost = current.path_cost + goal_it->second;
+            best_goal_parent = current.node_id;
         }
-        const auto graph_it = graph.find(current.second);
+        const auto graph_it = graph.find(current.node_id);
         if (graph_it == graph.end()) {
             continue;
         }
@@ -1754,12 +1776,14 @@ bool IncrementalTopologyGraph::findPath(
             if (graph.count(neighbor.first) == 0U) {
                 continue;
             }
-            const double proposed = current.first + neighbor.second;
+            const double proposed = current.path_cost + neighbor.second;
             const auto known = distance.find(neighbor.first);
             if (known == distance.end() || proposed < known->second) {
                 distance[neighbor.first] = proposed;
-                parent[neighbor.first] = current.second;
-                queue.emplace(proposed, neighbor.first);
+                parent[neighbor.first] = current.node_id;
+                queue.push({proposed +
+                                (graph.at(neighbor.first).node.position - goal).norm(),
+                            proposed, neighbor.first});
             }
         }
     }

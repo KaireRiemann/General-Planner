@@ -237,6 +237,11 @@ add_executable(planner_status_self_test
 )
 target_include_directories(planner_status_self_test PRIVATE include)
 
+add_executable(state2state_topology_route_self_test
+        tests/state2state_topology_route_self_test.cpp
+)
+target_include_directories(state2state_topology_route_self_test PRIVATE include)
+
 add_executable(coverage_guidance_self_test
         ${GENERAL_PLANNER_EXPLORATION_UTILS_DIR}/coverage_guidance/coverage_guidance_self_test.cpp
 )

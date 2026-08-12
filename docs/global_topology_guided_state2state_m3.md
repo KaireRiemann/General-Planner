@@ -1,8 +1,7 @@
 # M3 简版：用户选择的全局 Topo 引导 State2State 导航
 
-> 状态：设计与后续实现契约。M2 的共享 `GlobalMapRuntime`、全局稀疏 topo 图和
-> `MapManager::findTopologyPath()` 已存在；本文件定义下一步的最小可用 M3，不表示接口
-> 已经实现。\
+> 状态：M3 已实现。M2 的共享 `GlobalMapRuntime`、全局稀疏 topo 图和
+> `MapManager::findTopologyPath()` 提供全局连通性；本文件是已实现接口和后续扩展的约束。\
 > 范围：仅 `STATE2STATE` 长距离导航。exploration 消费全局 topo、跨进程持久化和 topo
 > 图重构不在本阶段。\
 > 相关背景：[统一规划运行时、控制权切换与全局地图/拓扑图设计](planner_runtime_global_map_design.md)、
@@ -34,7 +33,7 @@
 - 不在每一个 local replan tick 都重跑 global topo A*。
 - 不把未经当前地图验证的 RDP、直线 shortcut 或滑窗外历史边送入 corridor。
 
-## 2. 运行时接口：一个选择话题、一个观测话题
+## 2. 运行时接口：一个选择话题
 
 ### 2.1 用户选择话题
 
@@ -46,7 +45,7 @@
 
 | `data` | 行为 |
 | --- | --- |
-| `false` | 对后续 state2state 规划使用普通 local-only pipeline；立即废弃缓存的 global route。 |
+| `false` | 对下一次 state2state 规划使用普通 local-only pipeline；届时废弃缓存的 global route。 |
 | `true` | 对长距离 state2state 任务优先查询和复用 global topo route；最终仍必须经过 local pipeline。 |
 
 约束：
@@ -73,22 +72,7 @@ rostopic pub -1 /planner/navigation/use_global_topology std_msgs/Bool '{data: tr
 rostopic pub -1 /planner/navigation/use_global_topology std_msgs/Bool '{data: false}'
 ```
 
-### 2.2 全局路线观测话题
-
-```text
-/planner/navigation/global_topology_route    nav_msgs/Path    非 latched
-```
-
-仅在 global route 新建、失效或清空时发布，用于 RViz 和诊断：
-
-- `header.frame_id=world`；点必须是 global topo A* 的**原始路线**，而非 RDP/LOS 简化后的
-  local prefix；
-- route 失效、切换到 local-only、`task_epoch` 或 `world_epoch` 改变时，发布空 `Path` 清除显示；
-- 此话题不携带控制权，不得被 trajectory server 或 command gateway 订阅为命令输入；
-- `nav_msgs/Path` 只做可视化，revision/失败原因以结构化诊断日志记录。后续如需上层机器读取，
-  再增加版本化 `GlobalTopologyRouteStatus.msg`，本阶段不为此引入新消息。
-
-建议新增的配置仅负责设置接口名称和算法阈值，不能覆盖 `global_topology.yaml`：
+建议新增的配置只设置这个话题和算法阈值，不能覆盖 `global_topology.yaml`：
 
 ```yaml
 general_planner:
@@ -96,7 +80,6 @@ general_planner:
     topology:
       query_capability_enable: true  # 启动期能力开关；不是用户策略
       selection_topic: /planner/navigation/use_global_topology
-      route_topic: /planner/navigation/global_topology_route
       min_query_distance: 8.0
       local_prefix_length: 8.0
       local_boundary_margin: 0.8
@@ -127,6 +110,18 @@ State2State route consumer
 无论用户是否选择 topo-guided，地图和稀疏骨架都持续构建。关闭策略只是停止**消费** topo，
 不是停止维护世界模型。
 
+### 3.1 维护调度保证
+
+全局 topo 的正确性不能依赖某个 ROS callback queue 恰好空闲。`GlobalMapRuntime` 每次成功融合
+cloud/odom 后，必须在 `MapManager` 已记录该帧 revision 与 dirty bounds 后请求一次 topology
+maintenance；请求只唤醒异步 worker，并按 `global_topology/update_period` 合并、限频，绝不在
+点云回调内执行 region rebuild。worker 同时以 `steady_clock` 周期兜底，并在 worker 内执行
+`missionActive()` gate；ROS timer 仅是兼容性的额外 wake-up。
+
+因此，即使 exploration/LIO 占满单一 ROS spinner，世界生命周期 topo 仍持续消费已融合的
+known-free evidence。验收状态为 `map_ready=true` 后 `topo_revision` 必须推进，且
+`topology_ready=true`；`/planner/navigation/use_global_topology=false` 不得改变这三个维护条件。
+
 全局图必须保持稀疏导航骨架配置：
 
 ```yaml
@@ -152,6 +147,7 @@ sample。`ROG + BoundaryMap` 才是地图事实；topo route 只保存连通性�
 ```cpp
 struct GlobalRouteContext {
   bool valid{false};
+  bool reaches_goal{false};
   std::uint64_t route_id{0};
   std::uint64_t task_epoch{0};
   std::uint64_t world_epoch{0};
@@ -162,7 +158,8 @@ struct GlobalRouteContext {
   vec_Vec3f raw_topology_route;  // global A* 原始输出，绝不被 RDP 覆盖
   std::vector<double> arc_length;
   double committed_route_s{0.0}; // 单调推进，防止投影跳回已走段
-  ros::Time query_time;
+  double last_query_time;
+  std::string last_result;
 };
 ```
 
@@ -171,8 +168,8 @@ struct GlobalRouteContext {
 | 事件 | 处理 |
 | --- | --- |
 | 新 navigation goal / 新 `task_epoch` | 清空 route；若用户已选 topo，则为新目标查询。 |
-| `world_epoch` 改变 | 无条件清空 route、轨迹和任务意图，进入既有安全 hold 流程。 |
-| 用户发布 `false` | 清空 route，发布空 `Path`；下次规划 local-only。 |
+| `world_epoch` 改变 | 无条件清空 route；任务/轨迹的安全处理仍由既有 runtime 控制。 |
+| 用户发布 `false` | 下次规划清空 route 并使用 local-only；当前已提交的安全轨迹不被硬中断。 |
 | route 已执行完或无法投影到 suffix | 重新 global topo A*。 |
 | 当前 local prefix 被地图变化阻断 | 先 local repair；repair 失败再重新 global topo A*。 |
 | topo revision 单纯增长 | 不立即废弃 route；先只重验当前 local prefix。新节点不应导致高频路线抖动。 |
@@ -225,6 +222,18 @@ ROG 滑窗边缘。
 
 `findTopologyPath()` 的 endpoint attachment、起点接入边、目标接入边和图边都必须通过当前
 `MapManager` 查询。它返回的路线可能有滑窗外历史点，因此不能直接进入 corridor。
+
+具体的 graph query 使用欧氏代价的 A*：
+
+1. `start` 与 `goal` 必须先是可通行的已知 free 点；若当前 MapManager 证明直连安全，直接返回
+   两点路线。
+2. 否则在 `connection_radius` 内找起点、终点周围的候选 topo node，只对有限个近邻做当前
+   line-traversable attachment 检查。
+3. 图内边的代价是两 node 的欧氏长度；open set 的优先级为
+   `f(n)=g(n)+||node(n)-goal||`。这个启发式与边代价一致，因此保持最短路正确性并避免 Dijkstra
+   扩展整张长距离图。
+4. 将起点接入边、A* node 序列和终点接入边拼为 `raw_topology_route`。任何 attachment 或图搜索失败
+   都返回失败，绝不以“到目标的直线”伪造路线。
 
 ### 6.2 每次 local replan：投影、截取、验证
 
@@ -349,8 +358,7 @@ topo prefix -> 未简化 topo prefix -> local A* repair
 ### M3-S1：策略话题与可观测性
 
 - 在 `FsmRos1` 订阅 `std_msgs/Bool`，只保存 task-local policy；不让回调直接规划。
-- 在 `Config` 新增 topic 和 route-policy 参数，将旧 `query_enable` 迁移为 capability gate。
-- 增加 `/planner/navigation/global_topology_route` publisher；路由失效时发布空 path。
+- 在 `Config` 新增 selection topic 和 route-policy 参数，将旧 `query_enable` 迁移为 capability gate。
 - 在 diagnostics 中输出 policy、route_id、world/map/topo revision、route result 和 fallback reason。
 
 主要文件：
@@ -399,30 +407,31 @@ src/general_core/state2state/state2state_pipeline.cpp
 | 场景 | 期望结果 |
 | --- | --- |
 | 用户未发布策略话题 | 默认 local-only；global topo 仍持续构建。 |
-| 发布 `true` 后发送 30 m 已知 free goal | 查询一次 topo A*，发布 global route；每次 replan 仅截取 local prefix 并生成 corridor。 |
-| 发布 `false` | 清空 route 可视化；后续 replan 不读取 global route，当前安全轨迹不被硬中断。 |
+| 发布 `true` 后发送 30 m 已知 free goal | 查询一次 topo A* 并缓存 raw route；每次 replan 仅截取 local prefix 并生成 corridor。 |
+| 发布 `false` | 后续 replan 不读取 global route，当前安全轨迹不被硬中断。 |
 | topo route 在当前 local ROG 中完整可见 | 不重复 local A*；prefix 直接成为 corridor seed。 |
 | route 一段被新障碍阻断 | local A* 可重接时生成 repair guide；不能重接时 requery topo。 |
 | topo 未就绪或 target 不可 attach | 输出明确 `NO_TOPO_SNAPSHOT` / `NO_TOPO_ROUTE`；不产生跨未知直线。 |
+| 单一 spinner 被 LIO/exploration 回调持续占用 | 已融合地图仍触发 topology worker；`topo_revision` 推进且 Marker 非空。 |
 | 地图在优化期间改变 | commit 前 revalidation 拒绝不安全 candidate。 |
 | exploration 后切到 state2state | 不重建地图；route 的 `topo_revision` 来自 exploration 已构建的同一图。 |
-| world reset | route、任务和可视化 path 均失效，进入既有安全 hold。 |
+| world reset | route 缓存失效；任务与轨迹由既有 runtime 安全流程处理。 |
 
 至少增加：
 
-1. 策略话题 `false/true` 的状态机单测，验证不会直接发布或切换命令源；
-2. raw route 弧长截取、单调投影与 local boundary margin 单测；
+1. 策略运行时 `false/true` 代际单测，验证默认 local-only、重复消息幂等；
+2. raw route 弧长截取与单调投影单测；
 3. 安全 shortcut/RDP 测试：几何可简化但线段撞障时必须保留转角；
 4. local repair 成功、失败后 requery、requery 失败后 hold 的回退测试；
 5. map revision 在 query 与 commit 之间变化时的 candidate 丢弃测试；
-6. ROS 集成测试：探索构图后，state2state 发布 topo-guided route 并只对局部 prefix 生成 corridor。
+6. ROS 集成测试：探索构图后，state2state 选择 topo-guided 并只对局部 prefix 生成 corridor。
 
 ## 10. 完成定义
 
 M3 简版完成必须同时满足：
 
 - 用户能通过一个非 latched `Bool` 选择是否优先消费 global topo；
-- global topo A* 的原始路径可在独立观测话题查看，但永不直接成为控制命令；
+- global topo A* 的原始路径只保存在 task-local route cache，永不直接成为控制命令；
 - 长距离 topo-guided 模式使用“全局 route 缓存 + 高频 local prefix replan”，不是每 tick 重跑
   global A*；
 - 每个最终轨迹仍经过当前 local ROG corridor、优化、backup 和 commit validation；

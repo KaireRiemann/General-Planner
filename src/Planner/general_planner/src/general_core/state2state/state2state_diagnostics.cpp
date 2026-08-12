@@ -53,4 +53,24 @@ namespace general_planner {
         return oss.str();
     }
 
+    std::string GeneralPlanner::getLatestState2StateTopologyDebugInfo() const {
+        std::lock_guard<std::mutex> lock(replan_lock_);
+        const auto &runtime = state2state_topology_route_runtime_;
+        const auto &route = runtime.route;
+        std::ostringstream oss;
+        oss << ";topology_policy_enabled="
+            << static_cast<int>(runtime.policy_enabled.load(std::memory_order_acquire))
+            << ";topology_route_valid=" << static_cast<int>(route.valid)
+            << ";topology_route_id=" << route.route_id
+            << ";topology_route_points=" << route.raw_topology_route.size()
+            << ";topology_route_reaches_goal=" << static_cast<int>(route.reaches_goal)
+            << ";topology_route_task_epoch=" << route.task_epoch
+            << ";topology_route_world_epoch=" << route.world_epoch
+            << ";topology_route_map_revision=" << route.map_revision_at_query
+            << ";topology_route_revision=" << route.topo_revision
+            << ";topology_route_committed_s=" << route.committed_route_s
+            << ";topology_route_result=" << route.last_result;
+        return oss.str();
+    }
+
 }

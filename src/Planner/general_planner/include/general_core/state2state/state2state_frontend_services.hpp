@@ -4,6 +4,7 @@
 #include <vector>
 
 #include <utils/header/type_utils.hpp>
+#include <general_core/state2state/state2state_topology_route.hpp>
 
 namespace path_search {
 class Astar;
@@ -27,6 +28,7 @@ struct StateToStateFrontendServices {
     std::shared_ptr<ros_interface::RosInterface> ros_ptr;
     std::shared_ptr<path_search::Astar> astar;
     DynamicObstacleLayer *dynamic_obstacle_layer{nullptr};
+    State2StateTopologyRouteRuntime *topology_route_runtime{nullptr};
     general_utils::Vec3f &local_start_p;
     const general_utils::Vec3f &goal_p;
     bool &goal_valid;

@@ -3,6 +3,7 @@
 #ifdef USE_ROS1
 
 #include <algorithm>
+#include <chrono>
 #include <unordered_map>
 #include <utility>
 
@@ -122,15 +123,10 @@ bool TopologyGraphROS1::missionActive() const {
 }
 
 void TopologyGraphROS1::timerCallback(const ros::TimerEvent &) {
-    const auto manager = map_manager_.lock();
-    if (!enabled_ || !manager) {
-        return;
-    }
-    const bool active = missionActive();
-    manager->setTopologyActive(active);
-    if (!active) {
-        return;
-    }
+    // The worker performs the mission gate and owns the periodic fallback.
+    // Keep this ROS-timer path as a compatibility wake-up only: when the
+    // shared queue is busy it may be delayed indefinitely, which must not
+    // suppress maintenance of the global topology.
     updateAndPublish();
 }
 
@@ -146,48 +142,77 @@ void TopologyGraphROS1::updateAndPublish() {
 }
 
 void TopologyGraphROS1::workerLoop() {
+    using Clock = std::chrono::steady_clock;
+    const auto period = std::chrono::duration_cast<Clock::duration>(
+        std::chrono::duration<double>(update_period_));
+    // Run once immediately for startup, then no faster than update_period_.
+    // Requests received in between are intentionally coalesced.
+    auto next_update = Clock::now();
     for (;;) {
         {
             std::unique_lock<std::mutex> lock(worker_mutex_);
-            worker_cv_.wait(lock, [this]() {
+            worker_cv_.wait_until(lock, next_update, [this]() {
                 return stopping_ || update_requested_;
             });
             if (stopping_) {
                 return;
             }
+            // A map-fusion request may arrive before the configured budget is
+            // available.  Preserve the rate limit while retaining the request
+            // as coalesced work for this tick.  Only shutdown may interrupt
+            // this wait; otherwise a high-rate cloud topic could spin the
+            // worker at sensor rate.
+            if (Clock::now() < next_update) {
+                worker_cv_.wait_until(lock, next_update, [this]() {
+                    return stopping_;
+                });
+                if (stopping_) {
+                    return;
+                }
+            }
             update_requested_ = false;
         }
 
         const auto manager = map_manager_.lock();
-        if (!manager || !manager->topologyReady()) {
-            continue;
+        if (enabled_ && manager) {
+            // This must live in the worker rather than the ROS timer.  The
+            // runtime-wide graph has no mode callback and remains active;
+            // standalone state2state users still receive the same mission
+            // gate at the configured maintenance cadence.
+            const bool active = missionActive();
+            manager->setTopologyActive(active);
+            if (active && manager->topologyReady()) {
+                const ros::WallTime update_begin = ros::WallTime::now();
+                const std::size_t processed =
+                    manager->updateTopology(max_regions_per_tick_);
+                const double update_ms =
+                    (ros::WallTime::now() - update_begin).toSec() * 1000.0;
+                const auto stats = manager->topologyGraph()->stats();
+                ROS_INFO_STREAM_THROTTLE(
+                    1.0, "[topology update] processed=" << processed
+                         << " dirty=" << stats.dirty_region_count
+                         << " nodes=" << stats.node_count
+                         << " edges=" << stats.edge_count
+                         << " cost=" << update_ms << "ms");
+                if (update_ms > update_period_ * 1000.0) {
+                    ROS_WARN_STREAM_THROTTLE(
+                        1.0, "[topology update] worker exceeds period: cost="
+                             << update_ms << "ms period="
+                             << update_period_ * 1000.0
+                             << "ms; updates are being coalesced");
+                }
+                const ros::WallTime now = ros::WallTime::now();
+                if (last_publish_time_.isZero() ||
+                    (now - last_publish_time_).toSec() >= publish_period_) {
+                    manager->topologyGraph()->refreshSnapshot();
+                    publisher_.publish(makeMarkers(manager->topologySnapshot()));
+                    last_publish_time_ = now;
+                }
+            }
         }
-        const ros::WallTime update_begin = ros::WallTime::now();
-        const std::size_t processed =
-            manager->updateTopology(max_regions_per_tick_);
-        const double update_ms =
-            (ros::WallTime::now() - update_begin).toSec() * 1000.0;
-        const auto stats = manager->topologyGraph()->stats();
-        ROS_INFO_STREAM_THROTTLE(
-            1.0, "[topology update] processed=" << processed
-                 << " dirty=" << stats.dirty_region_count
-                 << " nodes=" << stats.node_count
-                 << " edges=" << stats.edge_count
-                 << " cost=" << update_ms << "ms");
-        if (update_ms > update_period_ * 1000.0) {
-            ROS_WARN_STREAM_THROTTLE(
-                1.0, "[topology update] worker exceeds period: cost="
-                     << update_ms << "ms period="
-                     << update_period_ * 1000.0
-                     << "ms; updates are being coalesced");
-        }
-        const ros::WallTime now = ros::WallTime::now();
-        if (last_publish_time_.isZero() ||
-            (now - last_publish_time_).toSec() >= publish_period_) {
-            manager->topologyGraph()->refreshSnapshot();
-            publisher_.publish(makeMarkers(manager->topologySnapshot()));
-            last_publish_time_ = now;
-        }
+        // Do not attempt to catch up after a costly rebuild: a bounded rate
+        // keeps topology maintenance from competing with map fusion.
+        next_update = Clock::now() + period;
     }
 }
 

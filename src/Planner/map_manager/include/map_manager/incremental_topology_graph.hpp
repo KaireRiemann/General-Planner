@@ -234,7 +234,7 @@ public:
     /** Publish the current mutable graph as a new immutable snapshot. */
     void refreshSnapshot();
 
-    /** Weighted shortest path. Failure never fabricates a direct connection. */
+    /** Euclidean-heuristic A* path. Failure never fabricates a direct connection. */
     bool findPath(const rog_map::Vec3f &start,
                   const rog_map::Vec3f &goal,
                   const TopologyMapView &map_view,

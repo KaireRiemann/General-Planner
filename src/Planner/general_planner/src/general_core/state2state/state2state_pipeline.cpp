@@ -47,6 +47,7 @@ namespace general_planner {
                 ros_ptr_,
                 astar_ptr_,
                 dynamic_obstacle_layer_.get(),
+                &state2state_topology_route_runtime_,
                 local_start_p_,
                 gi_.goal_p,
                 gi_.goal_valid

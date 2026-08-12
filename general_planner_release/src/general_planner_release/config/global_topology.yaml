@@ -1,47 +1,47 @@
-# M2 world-lifetime topology.  This configuration is loaded exactly once by
+# M2 world-lifetime topology. This configuration is loaded exactly once by
 # planner_runtime_node / GlobalMapRuntime; individual planner modes must not
-# override it.
+# override it. The graph is intentionally a sparse long-range navigation
+# skeleton, not a second dense free-space map.
 global_topology:
   enabled: true
-  # Every retained node is a sensor-confirmed KNOWN_FREE lattice sample.  This
-  # is intentionally a 3-D roadmap (planar_mode=false), not a 2.5-D skeleton.
-  construction_mode: dense_known_free
+  # Keep a maximum-clearance core and boundary portals for each observed-free
+  # component. Nodes and edges remain collision-validated, while open rooms
+  # need only a few representatives instead of one node per 0.45 m cell.
+  construction_mode: persistent_bubble_skeleton
   planar_mode: false
   navigation_altitude: 1.6
   frame_id: world
   topic: /planner/global_topology
-  # Dense 3-D region rebuilds occasionally take 50-70 ms on the Noetic
-  # target.  10 Hz keeps the worker below its deadline; dirty updates are
-  # coalesced and map revisions remain available immediately to local safety.
+  # Dirty updates are coalesced and map revisions remain available immediately
+  # to local safety. The immutable query snapshot is copied at 2 Hz.
   update_period: 0.10
   publish_period: 0.50
-  # 0.45 m bounds the memory of an observed 3-D volume while retaining enough
-  # free-space detail for topo A* guidance. Local planners still validate at
-  # native ROG resolution before committing a trajectory.
+  # These bounds prioritize long-range connectivity and memory. Local planners
+  # still validate every guide prefix and final trajectory at native ROG
+  # resolution before committing a command.
   region_size: 4.0
-  sample_spacing: 0.45
-  min_clearance: 0.35
+  sample_spacing: 0.80
+  min_clearance: 0.40
   max_clearance: 2.5
-  candidate_separation: 0.45
-  stable_match_distance: 0.20
-  connection_radius: 1.20
-  edge_sample_spacing: 0.15
-  dirty_padding: 0.60
+  candidate_separation: 1.50
+  stable_match_distance: 1.00
+  connection_radius: 6.00
+  edge_sample_spacing: 0.20
+  dirty_padding: 2.50
   bubble_overlap_margin: 0.10
   unknown_as_free: false
-  # Dense graph maintenance runs at update_period, but copying its immutable
-  # search snapshot is intentionally bounded by publish_period (2 Hz). This
-  # keeps topo A* lock-free for readers without repeatedly copying a growing
-  # world graph on every sensor batch.
-  snapshot_every_update: false
-  max_nodes_per_region: 4096
-  max_bubbles_per_region: 256
-  # Dense mode preserves all collision-validated 26-neighbour lattice links;
-  # this budget is only used for longer shortcut edges.
-  max_neighbors: 26
+  # A component contributes its core plus only the portals needed to preserve
+  # room, corridor and vertical connectivity. This hard cap is the primary
+  # memory bound for the persistent graph.
+  max_nodes_per_region: 12
+  max_bubbles_per_region: 192
+  max_neighbors: 8
   max_regions_per_update: 4
-  node_scale: 0.10
-  edge_scale: 0.025
+  # SearchSnapshot is immutable for readers and refreshed at publish_period,
+  # avoiding per-sensor copying of a world-lifetime graph.
+  snapshot_every_update: false
+  node_scale: 0.22
+  edge_scale: 0.06
 
 global_map:
   max_odom_age: 0.20

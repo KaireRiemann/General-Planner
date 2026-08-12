@@ -55,6 +55,7 @@
 #include "general_core/tracking/tracking_plan_operations.hpp"
 #include "general_core/runtime_trajectory_safety.hpp"
 #include "general_core/state2state/state2state_exp_backup_backend.hpp"
+#include "general_core/state2state/state2state_topology_route.hpp"
 #include "general_core/state2state/state2state_plan_operations.hpp"
 #include "general_core/state2state/state2state_se3_backend.hpp"
 #include "general_core/state2state/se3_aggressive_manager.hpp"
@@ -109,6 +110,8 @@ namespace general_planner {
         double planner_process_start_WT_;
 
         state2state_task::State2StateZDebug latest_state2state_z_debug_;
+        state2state_task::State2StateTopologyRouteRuntime
+                state2state_topology_route_runtime_;
 
         struct GoalInfo {
             Vec3f goal_p{0, 0, 0};
@@ -349,6 +352,12 @@ namespace general_planner {
         }
 
         std::string getLatestState2StateZDebugInfo() const;
+
+        // M3 runtime entry points. They only change task-local route-consumer
+        // state; MapManager remains the sole global topology owner.
+        void setState2StateTopologyPolicy(bool enabled);
+        void setState2StateTopologyTaskEpoch(std::uint64_t epoch);
+        std::string getLatestState2StateTopologyDebugInfo() const;
 
         void setSwarmTrajectories(const traj_opt::SwarmTrajectories &trajectories);
         void setSwarmDroneId(int drone_id);

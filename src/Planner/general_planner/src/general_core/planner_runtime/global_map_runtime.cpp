@@ -42,6 +42,8 @@ void GlobalMapRuntime::init(ros::NodeHandle nh,
         "otherwise ROGMapROS would fuse cloud frames a second time");
   }
   context_->map_manager = std::make_shared<MapManager>(context_->rog_map);
+  context_->map_manager->setWorldEpoch(
+      context_->world_epoch.load(std::memory_order_acquire));
 
   // No task-mode callback: topology remains active in exploration, navigation,
   // WAIT and stable hold for the complete world lifetime.
@@ -167,6 +169,14 @@ void GlobalMapRuntime::cloudOdomCallback(
   }
   const MapManager::UpdateSnapshot update =
       context_->map_manager->updateMap(rog_cloud, pose);
+  // Topology is a world-lifetime map product, not a navigation-mode timer
+  // side effect.  Request maintenance only after MapManager has stored this
+  // accepted fusion's revision and dirty bounds, so the worker can seed from
+  // valid odometry and consume the new free-space evidence immediately.
+  // The request is coalesced and the worker remains rate-limited.
+  if (topology_maintainer_) {
+    topology_maintainer_->updateAndPublish();
+  }
   context_->sensor_revision.fetch_add(1, std::memory_order_acq_rel);
 
   {
