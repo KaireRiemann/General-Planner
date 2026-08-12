@@ -462,12 +462,13 @@ void PlannerSupervisor::requestExplorationStartLocked(const std::string &reason)
 
 bool PlannerSupervisor::acceptNavigationGoalLocked(
     const geometry_msgs::PoseStamped &msg) {
-  if (!status_.ready_for_new_task ||
-      status_.active_mode != PlannerMode::STATE2STATE || transition_active_) {
+  // A state2state goal replaces the current goal within the same navigation
+  // task.  ready_for_new_task only governs starting a distinct task; it must
+  // not block a rolling replan while this task is executing.
+  if (status_.active_mode != PlannerMode::STATE2STATE || transition_active_) {
     ROS_WARN_THROTTLE(1.0,
-                      "[planner_supervisor] drop navigation goal: not ready "
-                      "(ready=%d mode=%s transition=%d)",
-                      status_.ready_for_new_task,
+                      "[planner_supervisor] drop navigation goal: inactive "
+                      "or transitioning (mode=%s transition=%d)",
                       toString(status_.active_mode), transition_active_);
     return false;
   }
