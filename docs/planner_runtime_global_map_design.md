@@ -375,10 +375,17 @@ uint8 mode              # HOLD / STATE2STATE / EXPLORATION / ...
 
 ```text
 /planner/navigation/goal         geometry_msgs/PoseStamped
+/goal_3d                         geometry_msgs/PoseStamped
 /planner/exploration/trigger     geometry_msgs/PoseStamped 或区域定义
 ```
 
-正式统一接口可使用 `PlannerTaskRequest.msg`，其中含 `request_id`、`task_id`、目标 mode 和 mode-specific payload。无论采用哪种形式，Supervisor 都只在 `ready_for_new_task=true` 时向目标 adapter 下发；过早到达的任务可缓存一份最新请求，模式再次变化时立即废弃。
+在组合式 `planner_runtime` 中，以上两种导航目标都必须先经过
+`PlannerSupervisor`。2D goal 被转发到内部 `/planning/click_goal`，3D goal 被转发到
+内部 `/planning/click_goal_3d`；后者由 state2state 的 3D callback 消费，保留消息中的
+`z`。FSM 不直接订阅外部 `/goal_3d`，因此 Supervisor 能为两类目标统一维护 task epoch、
+goal sequence、命令所有者和终点悬停交接。
+
+正式统一接口可使用 `PlannerTaskRequest.msg`，其中含 `request_id`、`task_id`、目标 mode 和 mode-specific payload。`ready_for_new_task=true` 只约束开始一个不同任务；已激活的 state2state 任务可接受新的 2D 或 3D goal，并在同一 task epoch 内滚动重规划。模式变化期间到达的请求会被拒绝。
 
 ### 6.3 统一状态
 

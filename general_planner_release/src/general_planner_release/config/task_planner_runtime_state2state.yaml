@@ -9,7 +9,10 @@ fsm:
   click_goal_en: true
   click_goal_topic: "/planning/click_goal"
   click_goal_3d_en: true
-  click_goal_3d_topic: "/goal_3d"
+  # In composed planner_runtime, PlannerSupervisor owns the external
+  # /goal_3d ingress and forwards accepted goals here.  Do not subscribe to
+  # /goal_3d directly, or a 3D goal bypasses task lifecycle/command handover.
+  click_goal_3d_topic: "/planning/click_goal_3d"
   click_height: 1.5
   click_yaw_en: true
   tracking_target_odom_topic: "/tracking/target_odom"

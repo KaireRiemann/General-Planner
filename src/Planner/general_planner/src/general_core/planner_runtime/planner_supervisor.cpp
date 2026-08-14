@@ -35,6 +35,11 @@ PlannerSupervisor::PlannerSupervisor(ros::NodeHandle &nh,
                          "/planning/navigation_task_mode");
   nh_.param<std::string>("navigation_goal_out_topic", navigation_goal_out_topic_,
                          "/planning/click_goal");
+  nh_.param<std::string>("navigation_goal_3d_in_topic",
+                         navigation_goal_3d_in_topic_, "/goal_3d");
+  nh_.param<std::string>("navigation_goal_3d_out_topic",
+                         navigation_goal_3d_out_topic_,
+                         "/planning/click_goal_3d");
   nh_.param<std::string>("click_demo_goal_topic", click_demo_goal_topic_,
                          "/goal");
   nh_.param<std::string>("handover_command_topic", handover_command_topic_,
@@ -78,6 +83,9 @@ PlannerSupervisor::PlannerSupervisor(ros::NodeHandle &nh,
       nh_.advertise<std_msgs::String>(navigation_task_mode_topic_, 10, true);
   navigation_goal_pub_ =
       nh_.advertise<geometry_msgs::PoseStamped>(navigation_goal_out_topic_, 10);
+  navigation_goal_3d_pub_ =
+      nh_.advertise<geometry_msgs::PoseStamped>(navigation_goal_3d_out_topic_,
+                                                 10);
   click_demo_goal_pub_ =
       nh_.advertise<geometry_msgs::PoseStamped>(click_demo_goal_topic_, 10);
   // Latched so a late-starting handover helper still sees the latest request.
@@ -93,6 +101,9 @@ PlannerSupervisor::PlannerSupervisor(ros::NodeHandle &nh,
   navigation_goal_sub_ =
       nh_.subscribe("/planner/navigation/goal", 10,
                     &PlannerSupervisor::navigationGoalCallback, this);
+  navigation_goal_3d_sub_ =
+      nh_.subscribe(navigation_goal_3d_in_topic_, 10,
+                    &PlannerSupervisor::navigationGoal3DCallback, this);
   exploration_trigger_sub_ =
       nh_.subscribe("/planner/exploration/trigger", 10,
                     &PlannerSupervisor::clickGoalCallback, this);
@@ -136,6 +147,8 @@ PlannerSupervisor::PlannerSupervisor(ros::NodeHandle &nh,
                   << " navigation_enabled=" << navigation_enabled_
                   << " exploration_enabled=" << exploration_enabled_
                   << " serial_handover=" << serial_handover_
+                  << " nav_goal_3d=" << navigation_goal_3d_in_topic_
+                  << " -> " << navigation_goal_3d_out_topic_
                   << " status=/planner/status");
 }
 
@@ -461,7 +474,7 @@ void PlannerSupervisor::requestExplorationStartLocked(const std::string &reason)
 }
 
 bool PlannerSupervisor::acceptNavigationGoalLocked(
-    const geometry_msgs::PoseStamped &msg) {
+    const geometry_msgs::PoseStamped &msg, const bool preserve_message_height) {
   // A state2state goal replaces the current goal within the same navigation
   // task.  ready_for_new_task only governs starting a distinct task; it must
   // not block a rolling replan while this task is executing.
@@ -497,14 +510,21 @@ bool PlannerSupervisor::acceptNavigationGoalLocked(
   status_.ready_for_new_task = false;
   status_.stable_hover = false;
   status_.command_owner = CommandOwner::STATE2STATE;
-  status_.reason = "navigation goal accepted";
+  status_.reason = preserve_message_height ? "navigation 3d goal accepted"
+                                           : "navigation goal accepted";
   navigation_goal_sequence_before_dispatch_ =
       navigation_status_epoch_ == status_.task_epoch
           ? navigation_goal_sequence_ : 0;
   navigation_goal_dispatch_pending_ = true;
   gateway_.setAuthorizedOwner(CommandOwner::STATE2STATE, status_.task_epoch);
-  navigation_goal_pub_.publish(msg);
-  ROS_INFO_STREAM("[planner_supervisor] navigation goal accepted epoch="
+  if (preserve_message_height) {
+    navigation_goal_3d_pub_.publish(msg);
+  } else {
+    navigation_goal_pub_.publish(msg);
+  }
+  ROS_INFO_STREAM("[planner_supervisor] navigation "
+                  << (preserve_message_height ? "3d " : "")
+                  << "goal accepted epoch="
                   << status_.task_epoch << " p=(" << msg.pose.position.x << ","
                   << msg.pose.position.y << "," << msg.pose.position.z << ")");
   return true;
@@ -517,6 +537,15 @@ void PlannerSupervisor::navigationGoalCallback(
   }
   std::lock_guard<std::mutex> lock(mutex_);
   acceptNavigationGoalLocked(*msg);
+}
+
+void PlannerSupervisor::navigationGoal3DCallback(
+    const geometry_msgs::PoseStampedConstPtr &msg) {
+  if (!msg) {
+    return;
+  }
+  std::lock_guard<std::mutex> lock(mutex_);
+  acceptNavigationGoalLocked(*msg, true);
 }
 
 void PlannerSupervisor::clickGoalCallback(

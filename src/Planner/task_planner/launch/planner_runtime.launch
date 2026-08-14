@@ -98,6 +98,10 @@
     <param name="navigation_status_topic" value="/planning/navigation/status" type="string" />
     <param name="navigation_task_mode_topic" value="/planning/navigation_task_mode" type="string" />
     <param name="navigation_goal_out_topic" value="/planning/click_goal" type="string" />
+    <!-- External 3D RViz goals pass through PlannerSupervisor before the FSM.
+         The internal topic is distinct to prevent a direct bypass/feedback loop. -->
+    <param name="navigation_goal_3d_in_topic" value="/goal_3d" type="string" />
+    <param name="navigation_goal_3d_out_topic" value="/planning/click_goal_3d" type="string" />
     <param name="click_demo_goal_topic" value="/goal" type="string" />
     <param name="hover_speed_threshold" value="0.10" type="double" />
     <param name="hover_yaw_rate_threshold" value="0.10" type="double" />

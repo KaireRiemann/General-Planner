@@ -29,10 +29,14 @@ private:
   void modeRequestCallback(const general_planner::PlannerModeRequestConstPtr &msg);
   void modeRequestTextCallback(const std_msgs::StringConstPtr &msg);
   void navigationGoalCallback(const geometry_msgs::PoseStampedConstPtr &msg);
+  void navigationGoal3DCallback(const geometry_msgs::PoseStampedConstPtr &msg);
   void explorationTriggerCallback(const geometry_msgs::PoseStampedConstPtr &msg);
   // Shared RViz / click PoseStamped entry: route by active_mode.
   void clickGoalCallback(const geometry_msgs::PoseStampedConstPtr &msg);
-  bool acceptNavigationGoalLocked(const geometry_msgs::PoseStamped &msg);
+  // `preserve_message_height` selects the FSM's 3D ingress so z is not
+  // replaced by the configured 2D click height.
+  bool acceptNavigationGoalLocked(const geometry_msgs::PoseStamped &msg,
+                                  bool preserve_message_height = false);
   bool acceptExplorationTriggerLocked(const geometry_msgs::PoseStamped &msg);
   void explorationStatusCallback(const std_msgs::StringConstPtr &msg);
   void navigationStatusCallback(const std_msgs::StringConstPtr &msg);
@@ -65,6 +69,7 @@ private:
   ros::Subscriber mode_request_sub_;
   ros::Subscriber mode_request_text_sub_;
   ros::Subscriber navigation_goal_sub_;
+  ros::Subscriber navigation_goal_3d_sub_;
   ros::Subscriber exploration_trigger_sub_;
   std::vector<ros::Subscriber> exploration_rviz_trigger_subs_;
   ros::Subscriber exploration_status_sub_;
@@ -76,6 +81,7 @@ private:
   ros::Publisher navigation_command_pub_;
   ros::Publisher navigation_task_mode_pub_;
   ros::Publisher navigation_goal_pub_;
+  ros::Publisher navigation_goal_3d_pub_;
   ros::Publisher click_demo_goal_pub_;
   ros::Publisher handover_command_pub_;
   ros::Timer timer_;
@@ -120,6 +126,8 @@ private:
   std::string navigation_status_topic_;
   std::string navigation_task_mode_topic_;
   std::string navigation_goal_out_topic_;
+  std::string navigation_goal_3d_in_topic_;
+  std::string navigation_goal_3d_out_topic_;
   std::string click_demo_goal_topic_;
   std::string handover_command_topic_;
   std::string handover_status_topic_;
