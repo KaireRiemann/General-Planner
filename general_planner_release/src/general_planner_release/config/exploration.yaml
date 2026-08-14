@@ -55,6 +55,7 @@ viewpoint_param/global_viewpoint_num: 14
 viewpoint_param/local_viewpoint_num: 6
 #viz
 view_graph: false
+FrontierManager/publish_frontier_topic: true
 FrontierManager/view_cluster: false
 FrontierManager/view_frt: false
 # graph

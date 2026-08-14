@@ -31,7 +31,7 @@ What is synced:
   - devel/lib/general_planner/highspeed_traj_server
   - M2 planner_runtime launch + mode RViz configs
   - M2 state2state and global-topology configuration
-  - general_planner PlannerStatus/PlannerModeRequest msgs
+  - general_planner PlannerStatus/PlannerModeRequest/FrontierCluster msgs
   - devel/lib/liblkh_tsp_solver.so
   - General Planner 3D Nav Goal RViz plugin
   - General Planner garage exploration YAML/RViz configs
@@ -211,6 +211,8 @@ for required in \
   "${RVIZ_SWITCHER_SCRIPT_SRC}" \
   "${PLANNER_MSG_DIR}/PlannerStatus.msg" \
   "${PLANNER_MSG_DIR}/PlannerModeRequest.msg" \
+  "${PLANNER_MSG_DIR}/FrontierCluster.msg" \
+  "${PLANNER_MSG_DIR}/FrontierClusterArray.msg" \
   "${GP_CPP_MSG_SRC}" \
   "${GP_PY_MSG_SRC}" \
   "${RELEASE_PKG_DIR}/launch/planner_runtime.launch" \
@@ -297,8 +299,9 @@ echo "[build_release] Sync general_planner runtime messages"
 mkdir -p "${GP_MSG_PKG_DST}/msg"
 cp "${PLANNER_MSG_DIR}/PlannerStatus.msg" "${GP_MSG_PKG_DST}/msg/PlannerStatus.msg"
 cp "${PLANNER_MSG_DIR}/PlannerModeRequest.msg" "${GP_MSG_PKG_DST}/msg/PlannerModeRequest.msg"
-if [[ ! -f "${GP_MSG_PKG_DST}/package.xml" ]]; then
-  cat >"${GP_MSG_PKG_DST}/package.xml" <<'EOF'
+cp "${PLANNER_MSG_DIR}/FrontierCluster.msg" "${GP_MSG_PKG_DST}/msg/FrontierCluster.msg"
+cp "${PLANNER_MSG_DIR}/FrontierClusterArray.msg" "${GP_MSG_PKG_DST}/msg/FrontierClusterArray.msg"
+cat >"${GP_MSG_PKG_DST}/package.xml" <<'EOF'
 <?xml version="1.0"?>
 <package format="2">
   <name>general_planner</name>
@@ -309,11 +312,12 @@ if [[ ! -f "${GP_MSG_PKG_DST}/package.xml" ]]; then
   <buildtool_depend>catkin</buildtool_depend>
   <build_depend>message_generation</build_depend>
   <build_depend>std_msgs</build_depend>
+  <build_depend>geometry_msgs</build_depend>
   <exec_depend>message_runtime</exec_depend>
   <exec_depend>std_msgs</exec_depend>
+  <exec_depend>geometry_msgs</exec_depend>
 </package>
 EOF
-fi
 rm -rf "${GP_CPP_MSG_DST}"
 mkdir -p "$(dirname "${GP_CPP_MSG_DST}")"
 cp -a "${GP_CPP_MSG_SRC}" "${GP_CPP_MSG_DST}"
@@ -393,7 +397,7 @@ PY
     rviz:=false >/dev/null
   rospack find general_planner >/dev/null
   python3 - <<'PY'
-from general_planner.msg import PlannerStatus, PlannerModeRequest
+from general_planner.msg import PlannerStatus, PlannerModeRequest, FrontierCluster, FrontierClusterArray
 print("general_planner runtime msgs import ok")
 PY
 

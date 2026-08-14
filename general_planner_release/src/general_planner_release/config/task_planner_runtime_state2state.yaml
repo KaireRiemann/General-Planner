@@ -84,15 +84,24 @@ general_planner:
     direct_line_frontend_enable: true
     topology:
       enable: true
+      # This profile permits the M3 global-topology option. It does not turn
+      # the option on: local-only remains the default until the user publishes
+      # true on /planner/navigation/use_global_topology.
+      query_capability_enable: true
+      selection_topic: /planner/navigation/use_global_topology
       # Global bubble A* supplies a route; the local planner executes only the
       # collision-checked prefix inside the rolling ROG window.
-      query_enable: false
       # Sparse persistent 3D skeleton over sensor-observed global free space.
       construction_mode: persistent_bubble_skeleton
       planar_mode: false
       navigation_altitude: 1.5
       unknown_as_free: false
-      min_query_distance: 3.0
+      min_query_distance: 8.0
+      local_prefix_length: 8.0
+      local_boundary_margin: 0.8
+      route_rejoin_max_candidates: 3
+      route_deviation_requery_distance: 1.0
+      route_query_min_interval: 0.5
       # Dirty regions nearest to current odom are consumed asynchronously.
       update_budget: 8
       update_period: 0.05

@@ -42,6 +42,8 @@ find_package(catkin REQUIRED COMPONENTS
 
 add_message_files(
         FILES
+        FrontierCluster.msg
+        FrontierClusterArray.msg
         PlannerModeRequest.msg
         PlannerStatus.msg
 )

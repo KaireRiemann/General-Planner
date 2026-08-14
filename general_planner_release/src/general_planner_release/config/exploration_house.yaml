@@ -123,6 +123,7 @@ viewpoint_param/local_viewpoint_num: 6
 # topology graph.  The previous run ended with 74k skeleton marker endpoints
 # and stretched a configured 200 ms update to roughly 400 ms.
 view_graph: false
+FrontierManager/publish_frontier_topic: true
 FrontierManager/view_cluster: true
 FrontierManager/view_frt: true
 # Narrow-passage graph.  The villa door is only about 1.2--1.5 m wide, so the

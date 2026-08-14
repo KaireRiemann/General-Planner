@@ -7,6 +7,7 @@
  * @Copyright (c) 2024 by ning-zelin, All Rights Reserved.
  */
 #include <general_core/exploration/exploration_utils/frontier_manager/frontier_manager.h>
+#include <general_planner/FrontierClusterArray.h>
 #include <general_core/exploration/exploration_utils/frontier_manager/yaw_candidate_selector.h>
 #include <pcl/filters/voxel_grid.h>
 #include <visualization_msgs/MarkerArray.h>
@@ -444,6 +445,13 @@ void FrontierManager::init(ros::NodeHandle &nh, LIOInterface::Ptr &lio_interface
   nh.getParam("FrontierManager/update_length", frtp_.update_length_);
   nh.getParam("FrontierManager/view_frt", frtp_.view_frt_);
   nh.getParam("FrontierManager/view_cluster", frtp_.view_cluster_);
+  nh.param("FrontierManager/publish_frontier_topic",
+           frtp_.publish_frontier_topic_, true);
+  if (frtp_.publish_frontier_topic_) {
+    frontier_clusters_pub_ =
+        nh_.advertise<general_planner::FrontierClusterArray>(
+            "frontier_clusters", 5);
+  }
 
   nh.getParam("FrontierManager/cluster_min_radius", frtp_.cluster_min_radius_);
   nh.getParam("FrontierManager/cluster_min_size", frtp_.cluster_min_size_);
