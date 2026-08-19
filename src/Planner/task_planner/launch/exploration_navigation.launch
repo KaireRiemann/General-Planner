@@ -1,0 +1,59 @@
+<launch>
+  <!--
+    Forest test entry for the composed exploration-navigation runtime.
+
+    It deliberately includes planner_runtime.launch instead of click_demo:
+    PlannerSupervisor, target_exploration, the shared ROG map and the
+    persistent global topology are all active.  The simulator is the exact
+    click-demo forest scene (perfect_drone_sim/config/click.yaml).
+  -->
+  <arg name="marsim" default="true" />
+  <arg name="rviz" default="true" />
+  <arg name="auto_rviz_switch" default="true" />
+  <arg name="traj_server" default="true" />
+  <arg name="initial_mode" default="target_exploration" />
+  <arg name="exploration_mission_mode" default="target" />
+  <arg name="target_exploration_auto_workspace" default="true" />
+  <arg name="target_exploration_workspace_half_extent_xy" default="120.0" />
+  <arg name="target_exploration_workspace_below_odom" default="2.0" />
+  <!-- forest.pcd is a single-level click-demo scene; keep the automatic
+       capacity below the 2.5 m navigation ceiling instead of inheriting the
+       villa's second-floor airspace. -->
+  <arg name="target_exploration_workspace_above_odom" default="1.2" />
+  <arg name="sim_config"
+       default="$(find perfect_drone_sim)/config/click.yaml" />
+  <arg name="exploration_config"
+       default="$(find general_planner)/config/exploration_house.yaml" />
+  <arg name="exploration_overlay_config"
+       default="$(find general_planner)/config/exploration_forest_overlay.yaml" />
+  <arg name="rog_map_config"
+       default="$(find general_planner)/config/exploration_rog_map.yaml" />
+  <arg name="global_topology_config"
+       default="$(find general_planner)/config/global_topology.yaml" />
+  <arg name="coverage_guidance_mode" default="off" />
+
+  <include file="$(find task_planner)/launch/planner_runtime.launch">
+    <arg name="marsim" value="$(arg marsim)" />
+    <arg name="rviz" value="$(arg rviz)" />
+    <arg name="auto_rviz_switch" value="$(arg auto_rviz_switch)" />
+    <arg name="traj_server" value="$(arg traj_server)" />
+    <arg name="initial_mode" value="$(arg initial_mode)" />
+    <arg name="exploration_mission_mode"
+         value="$(arg exploration_mission_mode)" />
+    <arg name="target_exploration_auto_workspace"
+         value="$(arg target_exploration_auto_workspace)" />
+    <arg name="target_exploration_workspace_half_extent_xy"
+         value="$(arg target_exploration_workspace_half_extent_xy)" />
+    <arg name="target_exploration_workspace_below_odom"
+         value="$(arg target_exploration_workspace_below_odom)" />
+    <arg name="target_exploration_workspace_above_odom"
+         value="$(arg target_exploration_workspace_above_odom)" />
+    <arg name="sim_config" value="$(arg sim_config)" />
+    <arg name="exploration_config" value="$(arg exploration_config)" />
+    <arg name="exploration_overlay_config"
+         value="$(arg exploration_overlay_config)" />
+    <arg name="rog_map_config" value="$(arg rog_map_config)" />
+    <arg name="global_topology_config" value="$(arg global_topology_config)" />
+    <arg name="coverage_guidance_mode" value="$(arg coverage_guidance_mode)" />
+  </include>
+</launch>

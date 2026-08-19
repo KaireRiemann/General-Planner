@@ -549,7 +549,7 @@ void geometry_utils::GetFovPlanes(const Eigen::Matrix3d R, const Eigen::Vector3d
     // 4）转为平面方程输出
 }
 
-
+//求解给定多面体的Chebyshev中心点，并且返回距离
 double geometry_utils::findInteriorDist(const Eigen::MatrixX4d& hPoly,
                                         Eigen::Vector3d& interior) {
     const int m = hPoly.rows();
@@ -571,6 +571,7 @@ double geometry_utils::findInteriorDist(const Eigen::MatrixX4d& hPoly,
 
 // Each row of hPoly is defined by h0, h1, h2, h3 as
 // h0*x + h1*y + h2*z + h3 <= 0
+//求解给定多面体的Chebyshev中心点
 bool geometry_utils::findInterior(const Eigen::MatrixX4d& hPoly,
                                   Eigen::Vector3d& interior) {
     const int m = hPoly.rows();
@@ -591,6 +592,7 @@ bool geometry_utils::findInterior(const Eigen::MatrixX4d& hPoly,
     return minmaxsd < 0.0 && !std::isinf(minmaxsd);
 }
 
+//两个凸多面体是否具有正厚度的交叠
 bool geometry_utils::overlap(const Eigen::MatrixX4d& hPoly0,
                              const Eigen::MatrixX4d& hPoly1,
                              const double eps) {

@@ -22,6 +22,7 @@ TOPOLOGY_DECISION_TOPIC="${TOPOLOGY_DECISION_TOPIC:-/planner/topology/decision}"
 SPLIT_DURATION="${SPLIT_DURATION:-10m}"
 COMPRESSION="${COMPRESSION:-lz4}"
 CHECK_TOPOLOGY="${CHECK_TOPOLOGY:-1}"
+REQUIRE_TARGET_EXPLORATION="${REQUIRE_TARGET_EXPLORATION:-0}"
 DRY_RUN="${DRY_RUN:-0}"
 
 normalize_ns() {
@@ -157,6 +158,14 @@ add_topic /planner/mode_request_text
 add_topic /planner/click_goal
 add_topic /planner/navigation/goal
 add_topic /planner/exploration/trigger
+# Target-directed exploration has an explicit ingress, an atomic request sent
+# to the exploration FSM, and a legacy pose/START fan-out. Keep all of them:
+# the atomic request identifies the task epoch and mission target, while the
+# other three show whether a supervisor routing issue occurred before the FSM.
+add_topic /planner/exploration/target_goal
+add_topic /planning/exploration/task_request
+add_topic /planning/exploration/target_goal
+add_topic /planning/exploration/command
 add_topic /planner/handover
 add_topic /planner/handover_status
 add_topic /goal
@@ -321,6 +330,21 @@ if [[ "${CHECK_TOPOLOGY}" == "1" ]] && command -v rostopic >/dev/null 2>&1; then
     echo "  This may be expected during startup, but a completed M2 test bag must contain it." >&2
     if [[ "${REQUIRE_M2:-0}" == "1" ]]; then
       exit 2
+    fi
+  fi
+fi
+
+# A target-exploration recording is only useful when the rebuilt composed
+# runtime is present. Old planner_runtime processes predate the atomic request
+# protocol and otherwise produce a misleading bag with no task/target chain.
+if command -v rostopic >/dev/null 2>&1; then
+  if rostopic list 2>/dev/null | grep -Fxq /planning/exploration/task_request; then
+    echo "[record_runtime] target-exploration task protocol detected"
+  else
+    echo "[record_runtime] warning: /planning/exploration/task_request is not advertised." >&2
+    echo "  Restart the rebuilt planner_runtime before recording a target-exploration failure." >&2
+    if [[ "${REQUIRE_TARGET_EXPLORATION}" == "1" ]]; then
+      exit 3
     fi
   fi
 fi

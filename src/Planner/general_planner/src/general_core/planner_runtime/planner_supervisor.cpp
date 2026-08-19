@@ -24,6 +24,9 @@ PlannerSupervisor::PlannerSupervisor(ros::NodeHandle &nh,
 
   nh_.param<std::string>("exploration_command_topic", exploration_command_topic_,
                          "/planning/exploration/command");
+  nh_.param<std::string>("exploration_task_request_topic",
+                         exploration_task_request_topic_,
+                         "/planning/exploration/task_request");
   nh_.param<std::string>("exploration_status_topic", exploration_status_topic_,
                          "/planning/exploration/status");
   nh_.param<std::string>("navigation_command_topic", navigation_command_topic_,
@@ -40,6 +43,12 @@ PlannerSupervisor::PlannerSupervisor(ros::NodeHandle &nh,
   nh_.param<std::string>("navigation_goal_3d_out_topic",
                          navigation_goal_3d_out_topic_,
                          "/planning/click_goal_3d");
+  nh_.param<std::string>("exploration_target_goal_in_topic",
+                         exploration_target_goal_in_topic_,
+                         "/planner/exploration/target_goal");
+  nh_.param<std::string>("exploration_target_goal_out_topic",
+                         exploration_target_goal_out_topic_,
+                         "/planning/exploration/target_goal");
   nh_.param<std::string>("click_demo_goal_topic", click_demo_goal_topic_,
                          "/goal");
   nh_.param<std::string>("handover_command_topic", handover_command_topic_,
@@ -77,6 +86,11 @@ PlannerSupervisor::PlannerSupervisor(ros::NodeHandle &nh,
   // Latched so late-joining exploration_node still receives the latest START.
   exploration_command_pub_ =
       nh_.advertise<std_msgs::String>(exploration_command_topic_, 10, true);
+  // The request is latched for the same reason as the legacy START command:
+  // a late adapter must receive its target and start bit as one unit.
+  exploration_task_request_pub_ =
+      nh_.advertise<general_planner::ExplorationTaskRequest>(
+          exploration_task_request_topic_, 10, true);
   navigation_command_pub_ =
       nh_.advertise<std_msgs::String>(navigation_command_topic_, 10, true);
   navigation_task_mode_pub_ =
@@ -86,6 +100,9 @@ PlannerSupervisor::PlannerSupervisor(ros::NodeHandle &nh,
   navigation_goal_3d_pub_ =
       nh_.advertise<geometry_msgs::PoseStamped>(navigation_goal_3d_out_topic_,
                                                  10);
+  exploration_target_goal_pub_ =
+      nh_.advertise<geometry_msgs::PoseStamped>(
+          exploration_target_goal_out_topic_, 10);
   click_demo_goal_pub_ =
       nh_.advertise<geometry_msgs::PoseStamped>(click_demo_goal_topic_, 10);
   // Latched so a late-starting handover helper still sees the latest request.
@@ -107,6 +124,9 @@ PlannerSupervisor::PlannerSupervisor(ros::NodeHandle &nh,
   exploration_trigger_sub_ =
       nh_.subscribe("/planner/exploration/trigger", 10,
                     &PlannerSupervisor::clickGoalCallback, this);
+  exploration_target_goal_sub_ =
+      nh_.subscribe(exploration_target_goal_in_topic_, 10,
+                    &PlannerSupervisor::explorationTargetGoalCallback, this);
   // Mode-aware click entry used by planner_runtime.rviz SetGoal.
   exploration_rviz_trigger_subs_.push_back(
       nh_.subscribe("/planner/click_goal", 10,
@@ -149,7 +169,11 @@ PlannerSupervisor::PlannerSupervisor(ros::NodeHandle &nh,
                   << " serial_handover=" << serial_handover_
                   << " nav_goal_3d=" << navigation_goal_3d_in_topic_
                   << " -> " << navigation_goal_3d_out_topic_
+                  << " target_goal=" << exploration_target_goal_in_topic_
+                  << " -> " << exploration_target_goal_out_topic_
+                  << " task_request=" << exploration_task_request_topic_
                   << " status=/planner/status");
+  runtime_session_id_ = std::to_string(ros::WallTime::now().toNSec());
 }
 
 void PlannerSupervisor::modeRequestCallback(
@@ -164,6 +188,9 @@ void PlannerSupervisor::modeRequestCallback(
     break;
   case general_planner::PlannerModeRequest::MODE_EXPLORATION:
     mode = PlannerMode::EXPLORATION;
+    break;
+  case general_planner::PlannerModeRequest::MODE_TARGET_EXPLORATION:
+    mode = PlannerMode::TARGET_EXPLORATION;
     break;
   case general_planner::PlannerModeRequest::MODE_EMERGENCY_STOP:
     mode = PlannerMode::EMERGENCY_STOP;
@@ -207,7 +234,7 @@ void PlannerSupervisor::handleModeRequest(const std::uint64_t request_id,
                     << status_.reason);
     return;
   }
-  if (mode == PlannerMode::EXPLORATION && !exploration_enabled_) {
+  if (isExplorationMode(mode) && !exploration_enabled_) {
     status_.accepted_request_id = request_id;
     status_.phase = PlannerPhase::FAILED;
     status_.reason =
@@ -275,7 +302,7 @@ void PlannerSupervisor::handleModeRequest(const std::uint64_t request_id,
     status_.reason = "mode already active (" + source + ")";
     // Finished exploration can be re-armed explicitly; waiting-for-trigger is
     // already the correct idle state and should not restart a transition.
-    if (mode == PlannerMode::EXPLORATION &&
+    if (isExplorationMode(mode) &&
         (status_.phase == PlannerPhase::STABLE_HOLD ||
          exploration_status_ == "PAUSED" ||
          exploration_status_ == "SUCCEEDED") &&
@@ -330,7 +357,7 @@ void PlannerSupervisor::beginTransition(const PlannerMode target,
 
 void PlannerSupervisor::requestAdapterStop(const PlannerMode mode,
                                            const std::string &reason) {
-  if (mode == PlannerMode::EXPLORATION) {
+  if (isExplorationMode(mode)) {
     publishExplorationCommand("PAUSE " + status_.task_id);
   }
   if (mode == PlannerMode::STATE2STATE) {
@@ -341,7 +368,7 @@ void PlannerSupervisor::requestAdapterStop(const PlannerMode mode,
 }
 
 void PlannerSupervisor::resetAdapterTaskState(const PlannerMode mode) {
-  if (mode == PlannerMode::EXPLORATION) {
+  if (isExplorationMode(mode)) {
     publishExplorationCommand("PAUSE " + status_.task_id);
   }
   if (mode == PlannerMode::STATE2STATE) {
@@ -420,7 +447,7 @@ void PlannerSupervisor::activateMode(const PlannerMode mode,
     return;
   }
 
-  if (mode == PlannerMode::EXPLORATION) {
+  if (isExplorationMode(mode)) {
     if (!exploration_enabled_) {
       status_.phase = PlannerPhase::FAILED;
       status_.reason = "cannot activate exploration without exploration_node";
@@ -429,6 +456,12 @@ void PlannerSupervisor::activateMode(const PlannerMode mode,
     // Parallel mode: keep navigation fsm alive but disarmed. Serial mode:
     // exploration stack is owned by handover helper / launch.
     exploration_start_pending_ = false;
+    // This command is accepted only while the exploration FSM is idle or
+    // paused, which is exactly the state after the verified handover above.
+    // Keep coverage exploration available as the legacy sibling mode.
+    publishExplorationCommand(
+        std::string("MODE ") +
+        (isTargetExplorationMode(mode) ? "target" : "coverage"));
     serial_state2state_ready_ = false;
     serial_handover_pending_ = false;
     gateway_.setPublishingEnabled(true);
@@ -464,13 +497,34 @@ void PlannerSupervisor::activateMode(const PlannerMode mode,
 
 void PlannerSupervisor::requestExplorationStartLocked(const std::string &reason) {
   if (status_.task_id.empty()) {
-    status_.task_id = makeTaskId(PlannerMode::EXPLORATION);
+    status_.task_id = makeTaskId(status_.active_mode);
   }
   exploration_start_pending_ = true;
   last_exploration_start_pub_ = ros::Time::now();
+  publishExplorationTaskRequestLocked(true);
   publishExplorationCommand("START " + status_.task_id);
   ROS_INFO_STREAM("[planner_supervisor] START exploration task_id="
                   << status_.task_id << " reason=" << reason);
+}
+
+void PlannerSupervisor::publishExplorationTaskRequestLocked(const bool start) {
+  if (!exploration_task_request_pub_) {
+    return;
+  }
+  general_planner::ExplorationTaskRequest request;
+  request.header.stamp = ros::Time::now();
+  request.task_epoch = status_.task_epoch;
+  request.task_id = status_.task_id;
+  request.mission_mode = isTargetExplorationMode(status_.active_mode)
+                             ? general_planner::ExplorationTaskRequest::MODE_TARGET
+                             : general_planner::ExplorationTaskRequest::MODE_COVERAGE;
+  request.has_target = isTargetExplorationMode(status_.active_mode) &&
+                       have_exploration_target_goal_;
+  if (request.has_target) {
+    request.target = exploration_target_goal_;
+  }
+  request.start = start;
+  exploration_task_request_pub_.publish(request);
 }
 
 bool PlannerSupervisor::acceptNavigationGoalLocked(
@@ -566,7 +620,7 @@ void PlannerSupervisor::clickGoalCallback(
     acceptNavigationGoalLocked(*msg);
     return;
   }
-  if (status_.active_mode == PlannerMode::EXPLORATION) {
+  if (isExplorationMode(status_.active_mode)) {
     acceptExplorationTriggerLocked(*msg);
     return;
   }
@@ -578,8 +632,7 @@ void PlannerSupervisor::clickGoalCallback(
 
 bool PlannerSupervisor::acceptExplorationTriggerLocked(
     const geometry_msgs::PoseStamped &msg) {
-  (void)msg;
-  if (!boot_complete_ || status_.active_mode != PlannerMode::EXPLORATION ||
+  if (!boot_complete_ || !isExplorationMode(status_.active_mode) ||
       transition_active_ || !status_.ready_for_new_task) {
     ROS_WARN_THROTTLE(1.0,
                       "[planner_supervisor] drop exploration trigger: mode=%s "
@@ -601,21 +654,51 @@ bool PlannerSupervisor::acceptExplorationTriggerLocked(
     return false;
   }
 
+  if (isTargetExplorationMode(status_.active_mode) &&
+      !forwardExplorationTargetGoalLocked(msg, "exploration trigger")) {
+    return false;
+  }
+
   // RViz 2D Nav Goal (or /planner/exploration/trigger) starts exploration.
   status_.task_result = PlannerTaskResult::NONE;
+  terminal_exploration_task_id_.clear();
+  terminal_exploration_result_ = PlannerTaskResult::NONE;
+  exploration_terminal_hold_locked_ = false;
   status_.phase = PlannerPhase::PLANNING;
   status_.mode_state = ModeState::EXP_PLAN_TRAJ;
   status_.ready_for_new_task = false;
   status_.stable_hover = false;
   status_.command_owner = CommandOwner::HOLD;
-  status_.reason = "exploration trigger accepted; starting";
+  status_.reason = isTargetExplorationMode(status_.active_mode)
+                       ? "target exploration goal accepted; starting"
+                       : "exploration trigger accepted; starting";
   // A new trigger is a new task even when exploration mode itself did not
   // change.  This makes task ids monotonic and prevents a delayed terminal
   // status from the preceding exploration from affecting the new one.
   ++status_.task_epoch;
-  status_.task_id = makeTaskId(PlannerMode::EXPLORATION);
+  status_.task_id = makeTaskId(status_.active_mode);
   gateway_.setAuthorizedOwner(CommandOwner::HOLD, status_.task_epoch);
   requestExplorationStartLocked("rviz/manual trigger");
+  return true;
+}
+
+bool PlannerSupervisor::forwardExplorationTargetGoalLocked(
+    const geometry_msgs::PoseStamped &msg, const std::string &source) {
+  if (!isTargetExplorationMode(status_.active_mode) || transition_active_) {
+    ROS_WARN_THROTTLE(1.0,
+                      "[planner_supervisor] drop target exploration goal: "
+                      "mode=%s transition=%d",
+                      toString(status_.active_mode), transition_active_);
+    return false;
+  }
+  exploration_target_goal_pub_.publish(msg);
+  exploration_target_goal_ = msg;
+  have_exploration_target_goal_ = true;
+  publishExplorationTaskRequestLocked(false);
+  ROS_INFO_STREAM("[planner_supervisor] target exploration goal from "
+                  << source << " p=(" << msg.pose.position.x << ","
+                  << msg.pose.position.y << "," << msg.pose.position.z
+                  << ")");
   return true;
 }
 
@@ -626,6 +709,15 @@ void PlannerSupervisor::explorationTriggerCallback(
   }
   std::lock_guard<std::mutex> lock(mutex_);
   acceptExplorationTriggerLocked(*msg);
+}
+
+void PlannerSupervisor::explorationTargetGoalCallback(
+    const geometry_msgs::PoseStampedConstPtr &msg) {
+  if (!msg) {
+    return;
+  }
+  std::lock_guard<std::mutex> lock(mutex_);
+  forwardExplorationTargetGoalLocked(*msg, "dedicated target topic");
 }
 
 void PlannerSupervisor::explorationStatusCallback(
@@ -642,7 +734,7 @@ void PlannerSupervisor::explorationStatusCallback(
   task_id = first == std::string::npos ? std::string() : task_id.substr(first);
 
   std::lock_guard<std::mutex> lock(mutex_);
-  if (status_.active_mode == PlannerMode::EXPLORATION &&
+  if (isExplorationMode(status_.active_mode) &&
       !task_id.empty() && task_id != status_.task_id) {
     ROS_WARN_THROTTLE(
         1.0,
@@ -653,7 +745,7 @@ void PlannerSupervisor::explorationStatusCallback(
   }
   exploration_status_ = state;
   exploration_status_task_id_ = task_id;
-  if (status_.active_mode == PlannerMode::EXPLORATION && !transition_active_) {
+  if (isExplorationMode(status_.active_mode) && !transition_active_) {
     status_.mode_state = modeStateFromExplorationString(state);
     if (state == "RUNNING" || state == "PLAN_TRAJ" || state == "EXEC_TRAJ" ||
         state == "REORIENT" || state == "CAUTION") {
@@ -666,22 +758,24 @@ void PlannerSupervisor::explorationStatusCallback(
       status_.command_owner = CommandOwner::EXPLORATION;
       gateway_.setAuthorizedOwner(CommandOwner::EXPLORATION, status_.task_epoch);
       status_.reason = "exploration " + state;
-    } else if (state == "SUCCEEDED" || state == "PAUSED") {
+    } else if (state == "SUCCEEDED") {
       exploration_start_pending_ = false;
       // FastExplorationFSM publishes this terminal status continuously at its
       // FSM rate.  Only the first terminal notification for this task starts
       // the handover-to-HOLD transition; subsequent messages must preserve
       // STABLE_HOLD/ready_for_new_task.
-      if (!task_id.empty() && task_id == completed_exploration_task_id_) {
+      if (!task_id.empty() && task_id == terminal_exploration_task_id_ &&
+          terminal_exploration_result_ == PlannerTaskResult::SUCCEEDED) {
         return;
       }
       if (!task_id.empty()) {
-        completed_exploration_task_id_ = task_id;
+        terminal_exploration_task_id_ = task_id;
+        terminal_exploration_result_ = PlannerTaskResult::SUCCEEDED;
       }
       // Exploration finished but remains commandable after stable hold.
       if (!transition_active_) {
         transition_active_ = true;
-        transition_target_ = PlannerMode::EXPLORATION;
+        transition_target_ = status_.active_mode;
         status_.phase = PlannerPhase::BRAKING;
         status_.ready_for_new_task = false;
         status_.stable_hover = false;
@@ -691,11 +785,45 @@ void PlannerSupervisor::explorationStatusCallback(
         hover_satisfied_since_ = ros::Time();
         gateway_.setAuthorizedOwner(CommandOwner::HOLD, status_.task_epoch);
       }
+    } else if (state == "BLOCKED") {
+      exploration_start_pending_ = false;
+      if (!task_id.empty() && task_id == terminal_exploration_task_id_ &&
+          terminal_exploration_result_ == PlannerTaskResult::BLOCKED) {
+        return;
+      }
+      terminal_exploration_task_id_ = task_id;
+      terminal_exploration_result_ = PlannerTaskResult::BLOCKED;
+      status_.phase = PlannerPhase::STABLE_HOLD;
+      status_.task_result = PlannerTaskResult::BLOCKED;
+      status_.ready_for_new_task = true;
+      status_.stable_hover = true;
+      status_.command_owner = CommandOwner::HOLD;
+      status_.mode_state = ModeState::EXP_PAUSED;
+      status_.reason = "target exploration blocked; topo graph retained";
+      gateway_.setAuthorizedOwner(CommandOwner::HOLD, status_.task_epoch);
+      if (!exploration_terminal_hold_locked_) {
+        gateway_.lockHoldAnchorFromOdom();
+        exploration_terminal_hold_locked_ = true;
+      }
     } else if (state == "FAILED") {
+      exploration_start_pending_ = false;
+      if (!task_id.empty() && task_id == terminal_exploration_task_id_ &&
+          terminal_exploration_result_ == PlannerTaskResult::FAILED) {
+        return;
+      }
+      terminal_exploration_task_id_ = task_id;
+      terminal_exploration_result_ = PlannerTaskResult::FAILED;
       status_.phase = PlannerPhase::FAILED;
       status_.task_result = PlannerTaskResult::FAILED;
       status_.ready_for_new_task = false;
+      status_.stable_hover = false;
+      status_.command_owner = CommandOwner::HOLD;
       status_.reason = "exploration failed";
+      gateway_.setAuthorizedOwner(CommandOwner::HOLD, status_.task_epoch);
+      if (!exploration_terminal_hold_locked_) {
+        gateway_.lockHoldAnchorFromOdom();
+        exploration_terminal_hold_locked_ = true;
+      }
     }
   }
 }
@@ -810,7 +938,8 @@ bool PlannerSupervisor::hoverConditionMetLocked() const {
 
 std::string PlannerSupervisor::makeTaskId(const PlannerMode mode) const {
   std::ostringstream oss;
-  oss << status_.task_epoch << ":" << toString(mode);
+  oss << runtime_session_id_ << ":" << status_.task_epoch << ":"
+      << toString(mode);
   return oss.str();
 }
 
@@ -881,8 +1010,12 @@ void PlannerSupervisor::handoverStatusCallback(
     status_.ready_for_new_task = true;
     status_.phase = PlannerPhase::WAITING_INPUT;
     status_.mode_state = ModeState::EXP_WAIT_TRIGGER;
-    status_.active_mode = PlannerMode::EXPLORATION;
-    status_.requested_mode = PlannerMode::EXPLORATION;
+    const PlannerMode exploration_mode =
+        isExplorationMode(status_.requested_mode)
+            ? status_.requested_mode
+            : PlannerMode::EXPLORATION;
+    status_.active_mode = exploration_mode;
+    status_.requested_mode = exploration_mode;
     ROS_INFO("[planner_supervisor] serial exploration ready; gateway enabled");
     return;
   }
@@ -1002,13 +1135,13 @@ void PlannerSupervisor::timerCallback(const ros::TimerEvent &) {
               hover_hold_duration_) {
             const PlannerMode target = transition_target_;
             const PlannerTaskResult result = status_.task_result;
-            if (target == PlannerMode::EXPLORATION &&
+            if (isExplorationMode(target) &&
                 result == PlannerTaskResult::SUCCEEDED &&
-                status_.active_mode == PlannerMode::EXPLORATION) {
+                isExplorationMode(status_.active_mode)) {
               // Finished exploration stays in exploration mode but idle.
               transition_active_ = false;
               enterStableHold("exploration idle after finish", result);
-              status_.active_mode = PlannerMode::EXPLORATION;
+              status_.active_mode = target;
               status_.mode_state = ModeState::EXP_PAUSED;
               status_.ready_for_new_task = true;
             } else {
@@ -1027,7 +1160,7 @@ void PlannerSupervisor::timerCallback(const ros::TimerEvent &) {
     } else {
       updatePhaseFromActiveModeLocked();
       if (exploration_start_pending_ &&
-          status_.active_mode == PlannerMode::EXPLORATION &&
+          isExplorationMode(status_.active_mode) &&
           !transition_active_) {
         const double since_pub =
             last_exploration_start_pub_.isZero()

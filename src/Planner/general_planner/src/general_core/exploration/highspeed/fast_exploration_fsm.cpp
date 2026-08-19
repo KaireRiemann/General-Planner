@@ -11,6 +11,7 @@
 #include <general_core/exploration/highspeed/fast_exploration_fsm.h>
 #include <general_core/exploration/highspeed/fast_exploration_manager.h>
 #include <general_core/exploration/highspeed/planner_manager.h>
+#include <general_core/exploration/highspeed/target_directed_exploration.h>
 #include <algorithm>
 #include <limits>
 #include <std_msgs/Float32.h>
@@ -28,6 +29,8 @@ FastExplorationFSM::~FastExplorationFSM() {
 
   trigger_sub_.shutdown();
   nav_goal_trigger_sub_.shutdown();
+  mission_goal_sub_.shutdown();
+  task_request_sub_.shutdown();
   map_update_sub_.shutdown();
   battary_sub_.shutdown();
   raw_odom_sub_.shutdown();
@@ -83,7 +86,10 @@ void FastExplorationFSM::FSMCallback(const ros::TimerEvent &e) {
       transitState(PLAN_TRAJ, "queued manual trigger");
       break;
     }
-    if (fp_->auto_trigger_enable_ && fd_->have_odom_ &&
+    const bool target_ready =
+        !expl_manager_->targetDirectedModeConfigured() ||
+        expl_manager_->targetDirectedModeActive();
+    if (fp_->auto_trigger_enable_ && target_ready && fd_->have_odom_ &&
         !fd_->auto_triggered_) {
       if (fd_->first_odom_time_.isZero()) {
         fd_->first_odom_time_ = ros::Time::now();
@@ -105,6 +111,10 @@ void FastExplorationFSM::FSMCallback(const ros::TimerEvent &e) {
                         "auto trigger armed, waiting %.2fs/topology ready=%d",
                         std::max(0.0, fp_->auto_trigger_delay_ - wait_time),
                         topo_ready);
+    } else if (fp_->auto_trigger_enable_ && !target_ready) {
+      ROS_INFO_THROTTLE(1.0,
+                        "target exploration auto trigger waits for a "
+                        "mission target");
     }
     ROS_WARN_THROTTLE(1.0, "wait for trigger.");
     break;
@@ -157,6 +167,32 @@ void FastExplorationFSM::FSMCallback(const ros::TimerEvent &e) {
     }
     if (handoverSafe()) {
       fd_->static_state_ = true;
+      if (target_arrival_verification_pending_) {
+        const double target_error = expl_manager_->missionGoalDistance(
+            fd_->odom_pos_.cast<double>());
+        const bool settled = targetArrivalSettled(
+            target_error, fd_->odom_vel_.norm(), trajectoryEnded(),
+            expl_manager_->ep_->target_reached_radius_, handover_slow_speed_);
+        if (!settled) {
+          ROS_WARN_STREAM(
+              "[target exploration] terminal stop is outside target "
+              "tolerance; resume correction: error="
+              << target_error
+              << " radius=" << expl_manager_->ep_->target_reached_radius_
+              << " speed=" << fd_->odom_vel_.norm()
+              << " correction=" << (target_arrival_correction_count_ + 1));
+          resumeTargetArrivalCorrection();
+          break;
+        }
+        target_arrival_verification_pending_ = false;
+        completion_pending_ = true;
+        ROS_INFO_STREAM("[target exploration] terminal target verified: "
+                        << "error=" << target_error
+                        << " radius="
+                        << expl_manager_->ep_->target_reached_radius_
+                        << " position=(" << fd_->odom_pos_.transpose()
+                        << ")");
+      }
       transitState(PAUSED, "task handover safe");
       ROS_INFO_STREAM("[exploration task] handover ready, task_id="
                       << active_task_id_);
@@ -339,6 +375,7 @@ void FastExplorationFSM::FSMCallback(const ros::TimerEvent &e) {
         expl_manager_->ed_->has_goal_lock_ = false;
         expl_manager_->ed_->locked_goal_cluster_id_ = -1;
         expl_manager_->ed_->locked_goal_is_coverage_ = false;
+        expl_manager_->ed_->locked_goal_is_mission_ = false;
         expl_manager_->ed_->locked_goal_coverage_id_ = 0;
         expl_manager_->ed_->global_tour_.clear();
         expl_manager_->ed_->path_next_goal_.clear();
@@ -624,6 +661,12 @@ void FastExplorationFSM::init(ros::NodeHandle &nh,
   nh.param("fsm/auto_trigger_delay", fp_->auto_trigger_delay_, 2.0);
   nh.param<string>("fsm/trigger_topic", fp_->trigger_topic_,
                    "/move_base_simple/goal");
+  nh.param<string>("fsm/target_goal_topic", fp_->target_goal_topic_,
+                   "/planning/exploration/target_goal");
+  nh.param("fsm/trigger_goal_sets_target", fp_->trigger_goal_sets_target_,
+           true);
+  nh.param("fsm/target_goal_start_on_receive",
+           fp_->target_goal_start_on_receive_, false);
   nh.param<string>("fsm/legacy_trigger_topic", fp_->legacy_trigger_topic_,
                    "/waypoint_generator/waypoints");
   nh.param("fsm/global_path_update_min_interval",
@@ -663,6 +706,8 @@ void FastExplorationFSM::init(ros::NodeHandle &nh,
   nh.param("fsm/task_control_enable", task_control_enable_, false);
   nh.param<string>("fsm/task_command_topic", task_command_topic_,
                    "/planning/exploration/command");
+  nh.param<string>("fsm/task_request_topic", task_request_topic_,
+                   "/planning/exploration/task_request");
   nh.param<string>("fsm/task_status_topic", task_status_topic_,
                    "/planning/exploration/status");
   nh.param<string>("fsm/execution_enabled_topic", execution_enabled_topic_,
@@ -752,16 +797,29 @@ void FastExplorationFSM::init(ros::NodeHandle &nh,
         nh.subscribe(fp_->trigger_topic_, 1,
                      &FastExplorationFSM::navGoalTriggerCallback, this);
   }
+  if (!fp_->target_goal_topic_.empty() &&
+      fp_->target_goal_topic_ != fp_->trigger_topic_) {
+    mission_goal_sub_ = nh.subscribe(fp_->target_goal_topic_, 1,
+                                     &FastExplorationFSM::missionGoalCallback,
+                                     this);
+  }
   if (task_control_enable_ && !task_command_topic_.empty()) {
     task_command_sub_ = nh.subscribe(task_command_topic_, 10,
                                      &FastExplorationFSM::taskCommandCallback,
                                      this);
   }
+  if (task_control_enable_ && !task_request_topic_.empty()) {
+    task_request_sub_ = nh.subscribe(task_request_topic_, 10,
+                                     &FastExplorationFSM::taskRequestCallback,
+                                     this);
+  }
   ROS_INFO_STREAM("[exploration trigger] auto=" << fp_->auto_trigger_enable_
                   << " nav_goal_topic=" << fp_->trigger_topic_
+                  << " target_goal_topic=" << fp_->target_goal_topic_
                   << " legacy_path_topic=" << fp_->legacy_trigger_topic_
                   << " task_control=" << task_control_enable_
-                  << " task_command_topic=" << task_command_topic_);
+                  << " task_command_topic=" << task_command_topic_
+                  << " task_request_topic=" << task_request_topic_);
   replan_pub_ = nh.advertise<std_msgs::Empty>("/planning/replan", 10);
 
   heartbeat_pub_ = nh.advertise<std_msgs::Empty>("/planning/heartbeat", 10);
@@ -986,7 +1044,17 @@ void FastExplorationFSM::updateTopoAndGlobalPath() {
   time_cost_pub_.publish(time_cost);
 
   cout << "total time cost: " << time_cost_now << "ms" << endl;
-  if (res == NO_FRONTIER && state_ != WAIT_TRIGGER) {
+  if (res == TARGET_REACHED && state_ != WAIT_TRIGGER) {
+    beginTargetArrivalVerification(
+        "target exploration: mission target radius entered during global planning");
+  } else if (res == TARGET_UNREACHABLE && state_ != WAIT_TRIGGER) {
+    fd_->static_state_ = true;
+    target_unreachable_pending_ = true;
+    ROS_ERROR_STREAM("[target exploration] pause: no executable bridge to "
+                     "the remote mission target. The accumulated historical "
+                     "topology remains available for the next task.");
+    beginPause("target exploration: mission target unreachable", false);
+  } else if (res == NO_FRONTIER && state_ != WAIT_TRIGGER) {
     handleNoFrontierResult("planGlobalPath: no frontier");
   } else if (fp_->controlled_reorientation_enable_ && res == FAIL &&
              expl_manager_->last_plan_requires_reorientation_ &&

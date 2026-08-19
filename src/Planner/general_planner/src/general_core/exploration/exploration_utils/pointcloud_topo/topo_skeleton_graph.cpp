@@ -103,6 +103,15 @@ RegionNode::Ptr TopoGraph::getRegionNode(const Eigen::Vector3i &region_idx_) {
   return reg_map_idx2ptr_[region_idx_];
 }
 
+bool TopoGraph::hasRegionForPoint(const Eigen::Vector3f &point) {
+  if (!point.allFinite()) {
+    return false;
+  }
+  Eigen::Vector3i region_idx;
+  getIndex(point, region_idx);
+  return getRegionNode(region_idx) != nullptr;
+}
+
 void TopoGraph::getIndex(const Eigen::Vector3f &point, Eigen::Vector3i &region_idx_) {
   region_idx_.x() = int((point[0] - min_bd[0]) / init_region_size_x_);
   region_idx_.y() = int((point[1] - min_bd[1]) / init_region_size_y_);
@@ -410,11 +419,14 @@ void TopoGraph::removeNodes(vector<TopoNode::Ptr> &nodes) {
     Eigen::Vector3i region_idx;
     getIndex(node->center_, region_idx);
     auto region_node = getRegionNode(region_idx);
-    ROS_ASSERT(region_node != nullptr);
-    // if (region_node == nullptr) {
-    //   continue;
-    //   debug_exit("TopoGraph::removeNodes :region_node == nullptr ");
-    // }
+    if (region_node == nullptr) {
+      ROS_WARN_STREAM_THROTTLE(
+          1.0, "[topology] skip removal of node outside initialized regions "
+                   "center=("
+                   << node->center_.transpose() << ") index=("
+                   << region_idx.transpose() << ")");
+      continue;
+    }
     region_node->topo_nodes_.erase(node);
   }
 
@@ -655,18 +667,33 @@ void TopoGraph::insertNodes(vector<TopoNode::Ptr> &nodes, bool only_raycast) {
   // insert到region里
   if (nodes.empty())
     return;
+  // Temporary frontier and mission-endpoint nodes are produced outside of the
+  // topology module.  The configured topology contains only regions that
+  // overlap the exploration volume, therefore a point exactly on an upper
+  // boundary (or an out-of-volume target) has no RegionNode.  ROS_ASSERT is
+  // compiled out in Release; filter these nodes instead of dereferencing null.
+  vector<TopoNode::Ptr> insertable_nodes;
+  insertable_nodes.reserve(nodes.size());
   for (auto &node : nodes) {
-    if (node == nullptr)
+    if (node == nullptr || !node->center_.allFinite())
       continue;
     Eigen::Vector3i region_idx;
     getIndex(node->center_, region_idx);
-    // else
     auto region_node = getRegionNode(region_idx);
-    // if (region_node == nullptr) {
-    //   continue;
-    // }
-    ROS_ASSERT(region_node != nullptr);
+    if (region_node == nullptr) {
+      ROS_WARN_STREAM_THROTTLE(
+          1.0, "[topology] reject temporary node outside initialized regions "
+                   "center=("
+                   << node->center_.transpose() << ") index=("
+                   << region_idx.transpose() << ")");
+      continue;
+    }
     region_node->topo_nodes_.insert(node);
+    insertable_nodes.emplace_back(node);
+  }
+  nodes.swap(insertable_nodes);
+  if (nodes.empty()) {
+    return;
   }
 
   // 找到邻居region和自己region的其他节点

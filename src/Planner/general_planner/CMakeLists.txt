@@ -44,6 +44,7 @@ add_message_files(
         FILES
         FrontierCluster.msg
         FrontierClusterArray.msg
+        ExplorationTaskRequest.msg
         PlannerModeRequest.msg
         PlannerStatus.msg
 )
@@ -238,6 +239,11 @@ add_executable(planner_status_self_test
         tests/planner_status_self_test.cpp
 )
 target_include_directories(planner_status_self_test PRIVATE include)
+
+add_executable(target_directed_exploration_self_test
+        tests/target_directed_exploration_self_test.cpp
+)
+target_include_directories(target_directed_exploration_self_test PRIVATE include)
 
 add_executable(state2state_topology_route_self_test
         tests/state2state_topology_route_self_test.cpp

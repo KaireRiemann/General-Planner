@@ -1,5 +1,6 @@
 #include <general_core/exploration/highspeed/expl_data.h>
 #include <general_core/exploration/highspeed/fast_exploration_fsm.h>
+#include <general_core/exploration/highspeed/target_directed_exploration.h>
 #include <algorithm>
 #include <cctype>
 #include <cmath>
@@ -321,6 +322,7 @@ void FastExplorationFSM::handleNoFrontierResult(const string &source) {
   expl_manager_->ed_->has_goal_lock_ = false;
   expl_manager_->ed_->locked_goal_cluster_id_ = -1;
   expl_manager_->ed_->locked_goal_is_coverage_ = false;
+  expl_manager_->ed_->locked_goal_is_mission_ = false;
   expl_manager_->ed_->locked_goal_coverage_id_ = 0;
   if (finish_gate_.no_frontier_count == 0 ||
       finish_gate_.first_no_frontier_time.isZero()) {
@@ -369,6 +371,10 @@ void FastExplorationFSM::handleNoFrontierResult(const string &source) {
 }
 
 bool FastExplorationFSM::handleGoalReached() {
+  if (expl_manager_->missionGoalReached(fd_->odom_pos_.cast<double>())) {
+    beginTargetArrivalVerification("target exploration: mission target radius entered");
+    return true;
+  }
   if (expl_manager_->ed_->global_tour_.size() < 2) {
     return false;
   }
@@ -397,6 +403,7 @@ bool FastExplorationFSM::handleGoalReached() {
   expl_manager_->ed_->has_goal_lock_ = false;
   expl_manager_->ed_->locked_goal_cluster_id_ = -1;
   expl_manager_->ed_->locked_goal_is_coverage_ = false;
+  expl_manager_->ed_->locked_goal_is_mission_ = false;
   expl_manager_->ed_->locked_goal_coverage_id_ = 0;
   if (expl_manager_->ep_->goal_lock_enable_) {
     ROS_INFO_STREAM("[goal reached] goal=(" << goal.x() << ", " << goal.y()
@@ -435,6 +442,66 @@ bool FastExplorationFSM::handleGoalReached() {
     }
   }
   return true;
+}
+
+void FastExplorationFSM::beginTargetArrivalVerification(
+    const string &source) {
+  if (target_arrival_verification_pending_ || !expl_manager_ ||
+      !expl_manager_->targetDirectedModeActive()) {
+    return;
+  }
+
+  // Standalone exploration has no task-result consumer or supervisor handover
+  // contract. Preserve its historical FINISH behavior; the composed runtime
+  // below owns the stricter task-completion semantics.
+  if (!task_control_enable_) {
+    expl_manager_->ed_->global_tour_.clear();
+    expl_manager_->ed_->path_next_goal_.clear();
+    expl_manager_->ed_->has_goal_lock_ = false;
+    expl_manager_->ed_->locked_goal_is_coverage_ = false;
+    expl_manager_->ed_->locked_goal_is_mission_ = false;
+    expl_manager_->ed_->locked_goal_cluster_id_ = -1;
+    expl_manager_->ed_->locked_goal_coverage_id_ = 0;
+    fd_->static_state_ = true;
+    transitState(FINISH, source);
+    return;
+  }
+
+  target_arrival_verification_pending_ = true;
+  const double target_error = expl_manager_->missionGoalDistance(
+      fd_->odom_pos_.cast<double>());
+  ROS_INFO_STREAM("[target exploration] enter terminal arrival verification: "
+                  << "error=" << target_error
+                  << " radius=" << expl_manager_->ep_->target_reached_radius_
+                  << " speed=" << fd_->odom_vel_.norm()
+                  << " position=(" << fd_->odom_pos_.transpose() << ")");
+  // Do not mark the task completed here. beginPause sends a dynamically safe
+  // brake, then PAUSING validates the stopped odometry against the mission
+  // tolerance before exposing SUCCEEDED to PlannerSupervisor.
+  beginPause(source + "; controlled terminal stop", false);
+}
+
+void FastExplorationFSM::resumeTargetArrivalCorrection() {
+  target_arrival_verification_pending_ = false;
+  completion_pending_ = false;
+  target_unreachable_pending_ = false;
+  pause_stop_issued_ = false;
+  ++target_arrival_correction_count_;
+  fd_->trigger_ = true;
+  fd_->auto_triggered_ = true;
+  fd_->static_state_ = true;
+  fd_->next_plan_retry_time_ = ros::Time(0);
+  expl_manager_->ed_->global_tour_.clear();
+  expl_manager_->ed_->path_next_goal_.clear();
+  expl_manager_->ed_->has_goal_lock_ = false;
+  expl_manager_->ed_->locked_goal_is_coverage_ = false;
+  expl_manager_->ed_->locked_goal_is_mission_ = false;
+  expl_manager_->ed_->locked_goal_cluster_id_ = -1;
+  expl_manager_->ed_->locked_goal_coverage_id_ = 0;
+  resetFinishGate("target terminal correction");
+  transitState(PLAN_TRAJ,
+               "target terminal hold outside tolerance; replan correction",
+               true);
 }
 
 int FastExplorationFSM::callExplorationPlanner() {
@@ -811,15 +878,95 @@ void FastExplorationFSM::navGoalTriggerCallback(
   if (!msg) {
     return;
   }
-  ROS_INFO_STREAM("[exploration trigger] received 2D Nav Goal at ["
-                  << msg->pose.position.x << ", " << msg->pose.position.y
-                  << ", " << msg->pose.position.z
-                  << "]; position is used only as a start trigger");
+  if (fp_->trigger_goal_sets_target_ && expl_manager_ &&
+      expl_manager_->targetDirectedModeConfigured()) {
+    expl_manager_->setMissionGoal(*msg);
+    ROS_INFO_STREAM("[target exploration] received Nav Goal at ["
+                    << msg->pose.position.x << ", " << msg->pose.position.y
+                    << ", " << msg->pose.position.z
+                    << "]; use it as the remote mission destination");
+  } else {
+    ROS_INFO_STREAM("[exploration trigger] received 2D Nav Goal at ["
+                    << msg->pose.position.x << ", " << msg->pose.position.y
+                    << ", " << msg->pose.position.z
+                    << "]; position is used only as a start trigger");
+  }
   acceptManualTrigger("2D Nav Goal");
+}
+
+void FastExplorationFSM::missionGoalCallback(
+    const geometry_msgs::PoseStampedConstPtr &msg) {
+  if (!msg || !expl_manager_) {
+    return;
+  }
+  expl_manager_->setMissionGoal(*msg);
+  ROS_INFO_STREAM("[target exploration] received dedicated target at ["
+                  << msg->pose.position.x << ", " << msg->pose.position.y
+                  << ", " << msg->pose.position.z << "]");
+  if (!pending_target_task_id_.empty()) {
+    const std::string task_id = pending_target_task_id_;
+    startExplorationTask(task_id, "legacy target arrived after START");
+    return;
+  }
+  if (fp_->target_goal_start_on_receive_) {
+    acceptManualTrigger("dedicated mission target");
+  }
+}
+
+void FastExplorationFSM::taskRequestCallback(
+    const general_planner::ExplorationTaskRequestConstPtr &msg) {
+  if (!task_control_enable_ || !msg || !expl_manager_) {
+    return;
+  }
+  if (msg->task_id.empty()) {
+    ROS_WARN("[exploration task] ignore atomic request without task id");
+    return;
+  }
+
+  const std::string mode =
+      msg->mission_mode == general_planner::ExplorationTaskRequest::MODE_TARGET
+          ? "target"
+          : "coverage";
+  if (!expl_manager_->setMissionMode(mode)) {
+    ROS_WARN_STREAM("[exploration task] reject atomic request task_id="
+                    << msg->task_id << " mode=" << mode);
+    return;
+  }
+  if (msg->has_target) {
+    expl_manager_->setMissionGoal(msg->target);
+  }
+  if (msg->start) {
+    startExplorationTask(msg->task_id, "atomic task request");
+  }
 }
 
 void FastExplorationFSM::acceptManualTrigger(const string &source) {
   startExplorationTask("manual", source);
+}
+
+void FastExplorationFSM::waitForMissionTarget(
+    const std::string &task_id, const std::string &source) {
+  active_task_id_ = task_id;
+  pending_target_task_id_ = task_id;
+  completion_pending_ = false;
+  target_arrival_verification_pending_ = false;
+  target_arrival_correction_count_ = 0;
+  target_unreachable_pending_ = false;
+  pause_stop_issued_ = false;
+  fd_->trigger_ = false;
+  fd_->auto_triggered_ = false;
+  fd_->static_state_ = true;
+  expl_manager_->ed_->global_tour_.clear();
+  expl_manager_->ed_->path_next_goal_.clear();
+  expl_manager_->ed_->has_goal_lock_ = false;
+  expl_manager_->ed_->locked_goal_is_mission_ = false;
+  if (state_ != INIT && state_ != WAIT_TRIGGER) {
+    transitState(WAIT_TRIGGER, source + ": waiting for mission target");
+  }
+  ROS_INFO_STREAM("[target exploration] task_id=" << task_id
+                  << " is waiting for its mission target (" << source
+                  << ")");
+  publishTaskStatus();
 }
 
 void FastExplorationFSM::taskCommandCallback(
@@ -838,6 +985,24 @@ void FastExplorationFSM::taskCommandCallback(
   std::transform(command.begin(), command.end(), command.begin(),
                  [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
 
+  if (command == "MODE") {
+    if (task_id.empty()) {
+      ROS_WARN("[exploration task] ignore MODE without target or coverage");
+      return;
+    }
+    if (state_ == PLAN_TRAJ || state_ == CAUTION || state_ == EXEC_TRAJ ||
+        state_ == REORIENT) {
+      ROS_WARN_STREAM("[exploration task] ignore MODE while state="
+                      << fd_->state_str_[state_]);
+      return;
+    }
+    if (!expl_manager_->setMissionMode(task_id)) {
+      ROS_WARN_STREAM("[exploration task] failed to switch mission mode='"
+                      << task_id << "'");
+    }
+    return;
+  }
+
   if (command == "START" || command == "RESUME") {
     if (task_id.empty()) {
       ROS_WARN("[exploration task] ignore START/RESUME without task id");
@@ -854,6 +1019,7 @@ void FastExplorationFSM::taskCommandCallback(
                       << " for inactive task_id=" << task_id);
       return;
     }
+    target_arrival_verification_pending_ = false;
     beginPause("task command " + command, false);
     return;
   }
@@ -873,7 +1039,8 @@ void FastExplorationFSM::startExplorationTask(const std::string &task_id,
     return;
   }
 
-  const bool already_running = active_task_id_ == task_id &&
+  const bool already_running = pending_target_task_id_.empty() &&
+      active_task_id_ == task_id &&
       (state_ == WAIT_TRIGGER || state_ == PLAN_TRAJ || state_ == CAUTION ||
        state_ == EXEC_TRAJ || state_ == REORIENT);
   if (already_running) {
@@ -890,8 +1057,18 @@ void FastExplorationFSM::startExplorationTask(const std::string &task_id,
     return;
   }
 
+  if (expl_manager_->targetDirectedModeConfigured() &&
+      !expl_manager_->targetDirectedModeActive()) {
+    waitForMissionTarget(task_id, source);
+    return;
+  }
+
   active_task_id_ = task_id;
+  pending_target_task_id_.clear();
   completion_pending_ = false;
+  target_arrival_verification_pending_ = false;
+  target_arrival_correction_count_ = 0;
+  target_unreachable_pending_ = false;
   pause_stop_issued_ = false;
   fd_->trigger_ = true;
   fd_->auto_triggered_ = true;
@@ -902,6 +1079,7 @@ void FastExplorationFSM::startExplorationTask(const std::string &task_id,
   expl_manager_->ed_->global_tour_.clear();
   expl_manager_->ed_->path_next_goal_.clear();
   expl_manager_->ed_->has_goal_lock_ = false;
+  expl_manager_->ed_->locked_goal_is_mission_ = false;
   resetFinishGate(source);
   total_time_ = ros::Time::now().toSec();
   global_path_update_timer_.start();
@@ -923,10 +1101,12 @@ void FastExplorationFSM::beginPause(const std::string &reason,
     return;
   }
   completion_pending_ = completion_pending_ || completed;
+  pending_target_task_id_.clear();
   fd_->trigger_ = false;
   expl_manager_->ed_->global_tour_.clear();
   expl_manager_->ed_->path_next_goal_.clear();
   expl_manager_->ed_->has_goal_lock_ = false;
+  expl_manager_->ed_->locked_goal_is_mission_ = false;
 
   if (state_ == PAUSED || state_ == PAUSING) {
     return;
@@ -952,6 +1132,10 @@ void FastExplorationFSM::publishTaskStatus() {
   std::string state_name;
   if (state_ == PAUSED && completion_pending_) {
     state_name = "SUCCEEDED";
+  } else if (!pending_target_task_id_.empty()) {
+    state_name = "WAITING_TARGET";
+  } else if (state_ == PAUSED && target_unreachable_pending_) {
+    state_name = "BLOCKED";
   } else if (state_ == PAUSED) {
     state_name = "PAUSED";
   } else if (state_ == PAUSING || state_ == FINISH) {

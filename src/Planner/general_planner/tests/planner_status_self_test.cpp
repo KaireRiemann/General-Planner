@@ -7,6 +7,9 @@
 using general_planner::planner_runtime::ModeState;
 using general_planner::planner_runtime::NavigationAdapterStatus;
 using general_planner::planner_runtime::PlannerMode;
+using general_planner::planner_runtime::PlannerTaskResult;
+using general_planner::planner_runtime::isExplorationMode;
+using general_planner::planner_runtime::isTargetExplorationMode;
 using general_planner::planner_runtime::modeStateFromExplorationString;
 using general_planner::planner_runtime::modeStateFromNavigationString;
 using general_planner::planner_runtime::parseNavigationAdapterStatus;
@@ -25,6 +28,14 @@ int main() {
   PlannerMode mode = PlannerMode::HOLD;
   expect(parsePlannerMode("exploration", mode), "parse exploration");
   expect(mode == PlannerMode::EXPLORATION, "mode exploration");
+  expect(parsePlannerMode("target_exploration", mode),
+         "parse target exploration");
+  expect(mode == PlannerMode::TARGET_EXPLORATION,
+         "mode target exploration");
+  expect(isExplorationMode(mode), "target exploration uses exploration adapter");
+  expect(isTargetExplorationMode(mode), "target exploration identity");
+  expect(std::strcmp(toString(PlannerTaskResult::BLOCKED), "blocked") == 0,
+         "toString blocked result");
   expect(parsePlannerMode("state2state", mode), "parse state2state");
   expect(mode == PlannerMode::STATE2STATE, "mode state2state");
   expect(parsePlannerMode("hold", mode), "parse hold");
@@ -33,8 +44,16 @@ int main() {
 
   expect(std::strcmp(toString(PlannerMode::EXPLORATION), "exploration") == 0,
          "toString exploration");
+  expect(std::strcmp(toString(PlannerMode::TARGET_EXPLORATION),
+                     "target_exploration") == 0,
+         "toString target exploration");
   expect(modeStateFromNavigationString("WAIT_GOAL") == ModeState::S2S_WAIT_GOAL,
          "nav wait goal");
+  expect(modeStateFromExplorationString("WAITING_TARGET") ==
+             ModeState::EXP_WAIT_TARGET,
+         "target exploration wait target");
+  expect(modeStateFromExplorationString("BLOCKED") == ModeState::EXP_PAUSED,
+         "target exploration blocked");
   expect(modeStateFromNavigationString("FOLLOW_TRAJ") ==
              ModeState::S2S_FOLLOW_TRAJ,
          "nav follow");

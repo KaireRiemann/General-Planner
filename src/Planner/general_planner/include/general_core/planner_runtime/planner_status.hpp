@@ -11,7 +11,11 @@ enum class PlannerMode : std::uint8_t {
   HOLD = 0,
   STATE2STATE = 1,
   EXPLORATION = 2,
-  EMERGENCY_STOP = 3
+  EMERGENCY_STOP = 3,
+  // Destination-directed exploration is an explicit runtime task mode.  It
+  // uses the same HighSpeedExp adapter and command owner as coverage
+  // exploration, but selects safe frontier bridges toward one remote goal.
+  TARGET_EXPLORATION = 4
 };
 
 enum class PlannerPhase : std::uint8_t {
@@ -30,7 +34,11 @@ enum class PlannerTaskResult : std::uint8_t {
   NONE = 0,
   SUCCEEDED = 1,
   FAILED = 2,
-  CANCELED = 3
+  CANCELED = 3,
+  // A target-directed task has exhausted all currently safe frontier/topology
+  // bridges. This is not coverage completion and not an internal failure:
+  // retain the global topo graph for a later explicit navigation task.
+  BLOCKED = 4
 };
 
 enum class CommandOwner : std::uint8_t {
@@ -55,6 +63,7 @@ enum class ModeState : std::uint16_t {
   EXP_PAUSING = 16,
   EXP_PAUSED = 17,
   EXP_FINISH = 18,
+  EXP_WAIT_TARGET = 19,
   HOLD_IDLE = 20
 };
 
@@ -133,6 +142,8 @@ inline const char *toString(const PlannerMode mode) {
     return "state2state";
   case PlannerMode::EXPLORATION:
     return "exploration";
+  case PlannerMode::TARGET_EXPLORATION:
+    return "target_exploration";
   case PlannerMode::EMERGENCY_STOP:
     return "emergency_stop";
   case PlannerMode::HOLD:
@@ -185,6 +196,8 @@ inline const char *toString(const PlannerTaskResult result) {
     return "failed";
   case PlannerTaskResult::CANCELED:
     return "canceled";
+  case PlannerTaskResult::BLOCKED:
+    return "blocked";
   case PlannerTaskResult::NONE:
   default:
     return "none";
@@ -221,6 +234,8 @@ inline const char *toString(const ModeState state) {
     return "exp_paused";
   case ModeState::EXP_FINISH:
     return "exp_finish";
+  case ModeState::EXP_WAIT_TARGET:
+    return "exp_wait_target";
   case ModeState::HOLD_IDLE:
     return "hold_idle";
   case ModeState::UNKNOWN:
@@ -246,11 +261,26 @@ inline bool parsePlannerMode(std::string text, PlannerMode &mode) {
     mode = PlannerMode::EXPLORATION;
     return true;
   }
+  if (text == "target_exploration" || text == "target-exploration" ||
+      text == "targetexploration" || text == "target_explore" ||
+      text == "target-explore") {
+    mode = PlannerMode::TARGET_EXPLORATION;
+    return true;
+  }
   if (text == "emergency_stop" || text == "estop" || text == "emergency") {
     mode = PlannerMode::EMERGENCY_STOP;
     return true;
   }
   return false;
+}
+
+inline bool isExplorationMode(const PlannerMode mode) {
+  return mode == PlannerMode::EXPLORATION ||
+         mode == PlannerMode::TARGET_EXPLORATION;
+}
+
+inline bool isTargetExplorationMode(const PlannerMode mode) {
+  return mode == PlannerMode::TARGET_EXPLORATION;
 }
 
 inline ModeState modeStateFromNavigationString(const std::string &state) {
@@ -279,6 +309,12 @@ inline ModeState modeStateFromExplorationString(const std::string &state) {
   }
   if (state == "WAIT_TRIGGER" || state == "IDLE") {
     return ModeState::EXP_WAIT_TRIGGER;
+  }
+  if (state == "WAITING_TARGET") {
+    return ModeState::EXP_WAIT_TARGET;
+  }
+  if (state == "BLOCKED") {
+    return ModeState::EXP_PAUSED;
   }
   if (state == "PLAN_TRAJ" || state == "RUNNING") {
     return ModeState::EXP_PLAN_TRAJ;
@@ -312,6 +348,7 @@ inline CommandOwner ownerForMode(const PlannerMode mode) {
   case PlannerMode::STATE2STATE:
     return CommandOwner::STATE2STATE;
   case PlannerMode::EXPLORATION:
+  case PlannerMode::TARGET_EXPLORATION:
     return CommandOwner::EXPLORATION;
   case PlannerMode::HOLD:
   case PlannerMode::EMERGENCY_STOP:

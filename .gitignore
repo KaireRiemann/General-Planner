@@ -16,3 +16,7 @@ __pycache__/
 /src/Planner/general_planner/log
 /tmp
 /test_results
+
+# Local planner self-tests, plots, CSVs, and experimental reports.
+# Keep out of version control; run only on the machine that owns the files.
+/src/Planner/general_planner/Tests/

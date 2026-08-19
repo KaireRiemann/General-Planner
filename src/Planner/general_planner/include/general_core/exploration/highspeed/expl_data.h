@@ -57,6 +57,9 @@ struct FSMParam {
   bool auto_trigger_enable_;
   double auto_trigger_delay_;
   string trigger_topic_;
+  string target_goal_topic_;
+  bool trigger_goal_sets_target_;
+  bool target_goal_start_on_receive_;
   string legacy_trigger_topic_;
   double global_path_update_min_interval_;
   int cloud_subscriber_queue_;
@@ -97,12 +100,22 @@ struct ExplorationData {
   vector<Eigen::Vector3f> path_next_goal_;
   bool has_goal_lock_{false};
   bool locked_goal_is_coverage_{false};
+  bool locked_goal_is_mission_{false};
   int locked_goal_cluster_id_{-1};
   std::uint64_t locked_goal_coverage_id_{0};
   Eigen::Vector3f locked_goal_{Eigen::Vector3f::Zero()};
   double locked_goal_yaw_{0.0};
   ros::Time locked_goal_time_;
   double locked_goal_cost_{0.0};
+
+  // The mission target outlives individual frontier/viewpoint selections.
+  // In target-directed mode it is only used to rank safe frontier candidates
+  // until the endpoint itself has been observed and can be inserted safely.
+  bool has_mission_goal_{false};
+  Eigen::Vector3f mission_goal_{Eigen::Vector3f::Zero()};
+  Eigen::Vector3f mission_start_{Eigen::Vector3f::Zero()};
+  ros::Time mission_goal_time_;
+  bool mission_goal_needs_initialization_{false};
 
   // viewpoint planning
   // vector<Vector4d> views_;
@@ -145,6 +158,39 @@ struct ExplorationParam {
   double frontier_pass_debt_max_;
   double failed_goal_cooldown_;
   double failed_goal_penalty_;
+  bool target_directed_mode_{false};
+  bool target_goal_use_message_z_{false};
+  double target_heuristic_weight_{3.0};
+  double target_lateral_weight_{0.15};
+  double target_vertical_weight_{1.0};
+  double target_frontier_min_progress_{0.25};
+  double target_reached_radius_{0.50};
+  double target_direct_retry_delay_{8.0};
+  int target_cluster_shortlist_{8};
+  double target_goal_lock_remaining_margin_{1.0};
+  // Local preflight may reject a bridge that topology still scores as
+  // reachable.  Defer only after repeated failures on the same cluster so a
+  // single narrow-map cycle cannot empty the shortlist.
+  int target_local_preflight_fail_limit_{3};
+  // Extra detour bridges kept beside progressing ones as an escape hatch.
+  int target_progress_detour_budget_{3};
+  // Preflight checks a short executable step, not the full cruise horizon.
+  double target_preflight_horizon_{8.0};
+  // Soft cooldown applied to every bridge that failed a preflight pass so the
+  // planner does not reselect the same dead shortlist at FSM rate.
+  double target_preflight_soft_defer_{1.5};
+  // Minimum wait after the shortlist is fully deferred before unlocking the
+  // oldest cooled bridge (never unlock the whole set at once).
+  double target_empty_pool_escape_wait_{2.5};
+  int target_empty_pool_unlock_count_{1};
+  // Detours weaker than this progress (metres toward the mission) are never
+  // committed.  Prevents large backward flights when the forward map is thin.
+  double target_escape_min_progress_{-1.0};
+  // Inside this remaining distance, only non-regressing bridges may be used.
+  double target_near_goal_remaining_{15.0};
+  // Cluster IDs churn; blacklist failed bridge centers by geometry.
+  double target_spatial_blacklist_radius_{2.5};
+  double target_spatial_blacklist_duration_{8.0};
   bool use_lkh_;
   bool view_graph_;
   string tsp_dir_; // Per-process writable directory used by the LKH solver.

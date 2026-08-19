@@ -125,7 +125,7 @@ traj_opt:
 
   exp_traj:
     # 1 for xi 2 for pos
-    pos_constraint_type: 1
+    pos_constraint_type: 2
     energy_cost_type: 4
     block_energy_cost: false
     opt_accuracy: 5.0e-6

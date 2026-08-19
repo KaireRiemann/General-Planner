@@ -14,6 +14,8 @@
 #include <general_core/exploration/exploration_utils/frontier_manager/frontier_manager.h>
 #include <general_core/exploration/exploration_utils/coverage_guidance/coverage_guidance_manager.h>
 #include <general_core/exploration/exploration_utils/coverage_guidance/coverage_recovery_identity.h>
+#include <general_core/exploration/highspeed/target_directed_exploration.h>
+#include <geometry_msgs/PoseStamped.h>
 #include <limits>
 #include <memory>
 #include <omp.h>
@@ -22,6 +24,7 @@
 #include <general_core/exploration/highspeed/planner_manager.h>
 #include <general_core/exploration/highspeed/swarm_exploration_coordinator.h>
 #include <ros/ros.h>
+#include <unordered_set>
 #include <vector>
 using Eigen::Vector3d;
 using std::shared_ptr;
@@ -35,7 +38,14 @@ class FastPlannerManager;
 struct ExplorationParam;
 struct ExplorationData;
 
-enum EXPL_RESULT { NO_FRONTIER, FAIL, START_FAIL, SUCCEED };
+enum EXPL_RESULT {
+  NO_FRONTIER,
+  FAIL,
+  START_FAIL,
+  SUCCEED,
+  TARGET_REACHED,
+  TARGET_UNREACHABLE
+};
 
 struct CoverageFinishStatus {
   bool guard_enabled{false};
@@ -105,11 +115,30 @@ public:
 
   void surfaceFrtCalllback(const ros::TimerEvent &e);
   void goalCallback(const geometry_msgs::PoseStampedConstPtr &msg);
+  void setMissionGoal(const geometry_msgs::PoseStamped &msg);
+  bool setMissionMode(const std::string &mode);
+  std::string missionMode() const;
+  bool targetDirectedModeConfigured() const;
+  bool targetDirectedModeActive() const;
+  double missionGoalDistance(const Eigen::Vector3d &position) const;
+  bool missionGoalReached(const Eigen::Vector3d &position) const;
   void updateGoalNode();
 
 private:
   struct DeferredGoal {
     int cluster_id{-1};
+    Eigen::Vector3f position{Eigen::Vector3f::Zero()};
+    ros::Time until;
+  };
+
+  struct LocalPreflightFailure {
+    int cluster_id{-1};
+    Eigen::Vector3f position{Eigen::Vector3f::Zero()};
+    int consecutive_failures{0};
+    ros::Time last_failure;
+  };
+
+  struct SpatialBlacklistEntry {
     Eigen::Vector3f position{Eigen::Vector3f::Zero()};
     ros::Time until;
   };
@@ -130,6 +159,7 @@ private:
     Eigen::Vector3f goal{Eigen::Vector3f::Zero()};
     double best_route_cost{std::numeric_limits<double>::infinity()};
     double best_goal_distance{std::numeric_limits<double>::infinity()};
+    double best_remaining_distance{std::numeric_limits<double>::infinity()};
     ros::Time last_progress_time;
     ros::Time last_sample_time;
     int samples{0};
@@ -147,6 +177,8 @@ private:
 
   std::uint64_t coverage_map_version_{0};
   vector<DeferredGoal> deferred_goals_;
+  vector<LocalPreflightFailure> local_preflight_failures_;
+  vector<SpatialBlacklistEntry> target_spatial_blacklist_;
   vector<DeferredCoverageGoal> deferred_coverage_goals_;
   bool has_active_coverage_goal_{false};
   CoverageTarget active_coverage_target_;
@@ -172,6 +204,9 @@ private:
   double coverage_executable_empty_min_duration_{1.5};
   ros::Time coverage_executable_empty_since_;
   bool force_coverage_fallback_once_{false};
+  ros::Time mission_goal_direct_retry_after_;
+  ros::Time target_empty_pool_since_;
+  ros::Time last_target_pool_unlock_time_;
   double coverage_executable_candidate_max_speed_{0.50};
   bool coverage_moving_handoff_enable_{false};
   double coverage_route_rank_weight_{0.15};
@@ -186,9 +221,35 @@ private:
   double frontier_progress_min_distance_drop_{0.75};
 
   double failedGoalPenalty(const TopoNode::Ptr &viewpoint) const;
-  bool updateNormalGoalProgress(const TopoNode::Ptr &viewpoint,
-                                double route_cost,
-                                const Eigen::Vector3d &robot_position);
+  TargetDirectedExplorationConfig targetGuidanceConfig() const;
+  std::unordered_set<int> preferredTargetClusterIds(
+      const Eigen::Vector3d &pos) const;
+  bool targetBridgeLocallyExecutable(const TopoNode::Ptr &candidate,
+                                     const Eigen::Vector3d &pos,
+                                     const Eigen::Vector3d &vel,
+                                     float curr_yaw,
+                                     SegmentSafetyInfo *safety_out);
+  int noteLocalPreflightFailure(const TopoNode::Ptr &viewpoint);
+  void clearLocalPreflightFailure(const TopoNode::Ptr &viewpoint);
+  bool isGoalCurrentlyDeferred(int cluster_id,
+                               const Eigen::Vector3f &position) const;
+  bool isSpatiallyBlacklisted(const Eigen::Vector3f &position) const;
+  void rememberSpatialBlacklist(const Eigen::Vector3f &position,
+                                double duration_sec);
+  void clearSpatialBlacklistAround(const Eigen::Vector3f &position);
+  void deferGoalIdentity(int cluster_id, const Eigen::Vector3f &position,
+                         double cooldown_sec);
+  int unlockOldestDeferredGoals(int max_count);
+  int commitTargetDirectedTour(
+      const Eigen::Vector3d &pos, const Eigen::Vector3d &vel, float curr_yaw,
+      vector<TopoNode::Ptr> &viewpoints,
+      vector<TopoNode::Ptr> &viewpoint_reachable,
+      vector<double> &viewpoint_reachable_distance,
+      vector<EdgeSafetyCost> &viewpoint_reachable_edges);
+  bool updateNormalGoalProgress(
+      const TopoNode::Ptr &viewpoint, double route_cost,
+      const Eigen::Vector3d &robot_position,
+      double mission_remaining = std::numeric_limits<double>::infinity());
   void resetNormalGoalProgress();
   bool coverageRecoveryDeferred(const CoverageTarget &target,
                                 const ros::Time &now) const;
@@ -208,6 +269,7 @@ private:
   int latestCoverageObservedVoxels() const;
   static const char *coverageRecoveryOutcomeName(
       CoverageRecoveryOutcome outcome);
+  bool missionGoalDirectCandidateReady() const;
 };
 
 } // namespace fast_planner

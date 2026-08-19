@@ -13,6 +13,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <geometry_msgs/PoseStamped.h>
+#include <general_planner/ExplorationTaskRequest.h>
 #include <general_core/exploration/highspeed/fast_exploration_manager.h>
 #include <iostream>
 #include <mutex>
@@ -93,20 +94,33 @@ private:
   /* ROS utils */
   ros::NodeHandle node_;
   ros::Timer exec_timer_, global_path_update_timer_;
-  ros::Subscriber trigger_sub_, nav_goal_trigger_sub_, map_update_sub_,
-      battary_sub_, raw_odom_sub_, latest_cloud_sub_, task_command_sub_;
+  ros::Subscriber trigger_sub_, nav_goal_trigger_sub_, mission_goal_sub_,
+      map_update_sub_, battary_sub_, raw_odom_sub_, latest_cloud_sub_,
+      task_command_sub_, task_request_sub_;
   ros::Publisher stop_pub_, new_pub_, replan_pub_, poly_traj_pub_, heartbeat_pub_, time_cost_pub_, poly_yaw_traj_pub_, static_pub_, state_pub_,
   speed_pub_, land_pub_, task_status_pub_, execution_enabled_pub_;
   bool task_control_enable_{false};
   bool pause_stop_issued_{false};
   bool completion_pending_{false};
+  // Target arrival is two-stage: entering the requested radius starts a
+  // controlled stop, but only the resulting stationary pose may complete the
+  // task. A stop that carries the vehicle outside the radius resumes a local
+  // terminal correction instead of publishing SUCCEEDED.
+  bool target_arrival_verification_pending_{false};
+  int target_arrival_correction_count_{0};
+  // A destination task that has no executable bridge is terminally blocked,
+  // not a successful coverage completion or an internal failure. Keep this
+  // separate from PAUSED so PlannerSupervisor preserves the topology graph.
+  bool target_unreachable_pending_{false};
   bool execution_enabled_published_{false};
   bool last_execution_enabled_{true};
   // In M2 GlobalMapRuntime owns the only cloud/odom subscriptions.  This FSM
   // still receives every accepted frame, but never fuses LIO/ROG itself.
   bool external_sensor_ingress_{false};
   std::string active_task_id_;
+  std::string pending_target_task_id_;
   std::string task_command_topic_;
+  std::string task_request_topic_;
   std::string task_status_topic_;
   std::string execution_enabled_topic_;
   double handover_slow_speed_{0.10};
@@ -134,6 +148,8 @@ private:
   bool finishGateSatisfied(const string &reason) const;
   void handleNoFrontierResult(const string &source);
   bool handleGoalReached();
+  void beginTargetArrivalVerification(const string &source);
+  void resumeTargetArrivalCorrection();
   bool trajectoryEnded() const;
   /* ROS functions */
   void FSMCallback(const ros::TimerEvent &e);
@@ -143,8 +159,13 @@ private:
   void globalPathUpdateCallback(const ros::TimerEvent &e);
   void triggerCallback(const nav_msgs::PathConstPtr &msg);
   void navGoalTriggerCallback(const geometry_msgs::PoseStampedConstPtr &msg);
+  void missionGoalCallback(const geometry_msgs::PoseStampedConstPtr &msg);
+  void taskRequestCallback(
+      const general_planner::ExplorationTaskRequestConstPtr &msg);
   void taskCommandCallback(const std_msgs::StringConstPtr &msg);
   void acceptManualTrigger(const string &source);
+  void waitForMissionTarget(const std::string &task_id,
+                            const std::string &source);
   void startExplorationTask(const std::string &task_id,
                             const std::string &source);
   void beginPause(const std::string &reason, bool completed);

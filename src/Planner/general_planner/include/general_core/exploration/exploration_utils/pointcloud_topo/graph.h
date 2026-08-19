@@ -122,6 +122,10 @@ public:
   // trajectory validation path as frontier viewpoints, but must retain their
   // own stable identity and unknown observation direction.
   bool is_coverage_target_ = false;
+  // A temporary known-free endpoint for target-directed exploration. It is
+  // deliberately distinct from frontiers so completion never marks an
+  // unrelated nearby frontier as visited.
+  bool is_mission_goal_target_ = false;
   std::uint64_t coverage_target_id_ = 0;
   Eigen::Vector3f coverage_unknown_ = Eigen::Vector3f::Zero();
   int coverage_voxel_count_ = 0;
@@ -243,6 +247,10 @@ public:
   void getIndex(const Eigen::Vector3f &point, Eigen::Vector3i &region_idx_);
   bool index2boundary(const Eigen::Vector3i &region_idx_, Eigen::Vector3f &low_bd, Eigen::Vector3f &high_bd);
   RegionNode::Ptr getRegionNode(const Eigen::Vector3i &region_idx_);
+  // A topology region exists only for the configured exploration volume.
+  // Callers that create temporary target/viewpoint nodes must check this
+  // before attempting region ownership insertion.
+  bool hasRegionForPoint(const Eigen::Vector3f &point);
   bool graphSearch(const TopoNode::Ptr &start_node, const TopoNode::Ptr &end_node, std::vector<TopoNode::Ptr> &path, double time_out,
                    bool kino = false, std::unordered_set<pair<TopoNode::Ptr, TopoNode::Ptr>, PairPtrHash> last_path = {});
   void init(ros::NodeHandle &nh, LIOInterface::Ptr &lidar_map, ParallelBubbleAstar::Ptr &parallel_bubble_astar);
