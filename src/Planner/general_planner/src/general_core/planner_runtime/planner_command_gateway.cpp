@@ -46,6 +46,7 @@ void PlannerCommandGateway::setAuthorizedOwner(const CommandOwner owner,
   authorized_owner_ = owner;
   authorized_epoch_ = task_epoch;
   authorization_time_ = ros::WallTime::now();
+  clearSourceTimeoutHoldLocked();
   if (owner == CommandOwner::HOLD) {
     ++hold_sequence_;
   }
@@ -65,6 +66,7 @@ void PlannerCommandGateway::lockHoldAnchorFromOdom() {
   hold_yaw_ = yawFromQuat(odom_.pose.pose.orientation);
   hold_anchor_valid_ = true;
   ++hold_sequence_;
+  clearSourceTimeoutHoldLocked();
   ROS_INFO_STREAM("[planner_command_gateway] lock hold anchor x="
                   << hold_x_ << " y=" << hold_y_ << " z=" << hold_z_
                   << " yaw=" << hold_yaw_);
@@ -79,6 +81,7 @@ void PlannerCommandGateway::lockHoldAnchor(const double x, const double y,
   hold_yaw_ = yaw;
   hold_anchor_valid_ = true;
   ++hold_sequence_;
+  clearSourceTimeoutHoldLocked();
 }
 
 bool PlannerCommandGateway::hasHoldAnchor() const {
@@ -176,9 +179,49 @@ PlannerCommandGateway::makeHoldCommandLocked() const {
   return hold;
 }
 
+quadrotor_msgs::PositionCommand
+PlannerCommandGateway::makeSourceTimeoutHoldCommandLocked(
+    const CommandOwner owner) {
+  if (!source_timeout_hold_active_ || source_timeout_hold_owner_ != owner) {
+    // Never use hold_x_/hold_y_/hold_z_ here.  Those are task-transition
+    // anchors and can belong to the take-off point of a previous task.  A
+    // transient source timeout must instead stop at the latest observed pose.
+    source_timeout_hold_ = quadrotor_msgs::PositionCommand();
+    source_timeout_hold_.header.stamp = ros::Time::now();
+    source_timeout_hold_.header.frame_id =
+        odom_.header.frame_id.empty() ? "world" : odom_.header.frame_id;
+    source_timeout_hold_.trajectory_flag =
+        quadrotor_msgs::PositionCommand::TRAJECTORY_STATUS_READY;
+    source_timeout_hold_.trajectory_id = ++hold_sequence_;
+    source_timeout_hold_.position = odom_.pose.pose.position;
+    source_timeout_hold_.yaw = yawFromQuat(odom_.pose.pose.orientation);
+    source_timeout_hold_.velocity.x = source_timeout_hold_.velocity.y =
+        source_timeout_hold_.velocity.z = 0.0;
+    source_timeout_hold_.acceleration.x = source_timeout_hold_.acceleration.y =
+        source_timeout_hold_.acceleration.z = 0.0;
+    source_timeout_hold_.jerk.x = source_timeout_hold_.jerk.y =
+        source_timeout_hold_.jerk.z = 0.0;
+    source_timeout_hold_.yaw_dot = 0.0;
+    source_timeout_hold_.vel_norm = 0.0;
+    source_timeout_hold_.acc_norm = 0.0;
+    source_timeout_hold_active_ = true;
+    source_timeout_hold_owner_ = owner;
+  }
+  return source_timeout_hold_;
+}
+
+void PlannerCommandGateway::clearSourceTimeoutHoldLocked() {
+  source_timeout_hold_active_ = false;
+  source_timeout_hold_owner_ = CommandOwner::HOLD;
+}
+
 void PlannerCommandGateway::timerCallback(const ros::WallTimerEvent &) {
   quadrotor_msgs::PositionCommand output;
   bool publish = false;
+  bool entered_source_timeout_hold = false;
+  bool resumed_source_after_timeout = false;
+  CommandOwner event_owner = CommandOwner::HOLD;
+  double source_age = 0.0;
   {
     std::lock_guard<std::mutex> lock(mutex_);
     if (!publishing_enabled_) {
@@ -192,18 +235,47 @@ void PlannerCommandGateway::timerCallback(const ros::WallTimerEvent &) {
         have_exploration_cmd_ && exploration_rx_time_ >= authorization_time_ &&
         (now - exploration_rx_time_).toSec() <= command_timeout_;
 
-    if (authorized_owner_ == CommandOwner::STATE2STATE && navigation_fresh) {
+    const GatewayOutputMode output_mode = selectGatewayOutputMode(
+        authorized_owner_, navigation_fresh, exploration_fresh);
+    if (output_mode == GatewayOutputMode::NAVIGATION) {
+      resumed_source_after_timeout = source_timeout_hold_active_;
+      event_owner = authorized_owner_;
+      clearSourceTimeoutHoldLocked();
       output = navigation_cmd_;
       publish = true;
-    } else if (authorized_owner_ == CommandOwner::EXPLORATION &&
-               exploration_fresh) {
+    } else if (output_mode == GatewayOutputMode::EXPLORATION) {
+      resumed_source_after_timeout = source_timeout_hold_active_;
+      event_owner = authorized_owner_;
+      clearSourceTimeoutHoldLocked();
       output = exploration_cmd_;
       publish = true;
+    } else if (output_mode == GatewayOutputMode::SOURCE_TIMEOUT_HOLD &&
+               have_odom_) {
+      entered_source_timeout_hold = !source_timeout_hold_active_;
+      event_owner = authorized_owner_;
+      if (authorized_owner_ == CommandOwner::STATE2STATE &&
+          have_navigation_cmd_) {
+        source_age = (now - navigation_rx_time_).toSec();
+      } else if (authorized_owner_ == CommandOwner::EXPLORATION &&
+                 have_exploration_cmd_) {
+        source_age = (now - exploration_rx_time_).toSec();
+      }
+      output = makeSourceTimeoutHoldCommandLocked(authorized_owner_);
+      publish = true;
     } else if (have_odom_ || hold_anchor_valid_) {
-      // Stale or unauthorized source commands never reach the controller.
+      clearSourceTimeoutHoldLocked();
+      // This is an explicit lifecycle HOLD, not a source timeout.
       output = makeHoldCommandLocked();
       publish = true;
     }
+  }
+  if (entered_source_timeout_hold) {
+    ROS_WARN_STREAM("[planner_command_gateway] source timeout: owner="
+                    << toString(event_owner) << " age=" << source_age
+                    << "s; holding current odometry until source resumes");
+  } else if (resumed_source_after_timeout) {
+    ROS_INFO_STREAM("[planner_command_gateway] source resumed safely: owner="
+                    << toString(event_owner));
   }
   if (!publish) {
     ROS_WARN_THROTTLE(1.0,

@@ -240,6 +240,24 @@ add_executable(planner_status_self_test
 )
 target_include_directories(planner_status_self_test PRIVATE include)
 
+add_executable(planner_command_gateway_policy_self_test
+        tests/planner_command_gateway_policy_self_test.cpp
+)
+target_include_directories(planner_command_gateway_policy_self_test PRIVATE include)
+
+add_executable(planner_command_gateway_behavior_self_test
+        tests/planner_command_gateway_behavior_self_test.cpp
+        src/general_core/planner_runtime/planner_command_gateway.cpp
+)
+add_dependencies(planner_command_gateway_behavior_self_test
+        ${${PROJECT_NAME}_EXPORTED_TARGETS}
+        ${catkin_EXPORTED_TARGETS}
+)
+target_include_directories(planner_command_gateway_behavior_self_test PRIVATE include)
+target_link_libraries(planner_command_gateway_behavior_self_test
+        ${catkin_LIBRARIES}
+)
+
 add_executable(target_directed_exploration_self_test
         tests/target_directed_exploration_self_test.cpp
 )

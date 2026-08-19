@@ -4,6 +4,7 @@
 #include <mutex>
 #include <string>
 
+#include <general_core/planner_runtime/planner_command_gateway_policy.hpp>
 #include <general_core/planner_runtime/planner_status.hpp>
 #include <geometry_msgs/Quaternion.h>
 #include <nav_msgs/Odometry.h>
@@ -33,6 +34,9 @@ private:
   void odometryCallback(const nav_msgs::OdometryConstPtr &msg);
   void timerCallback(const ros::WallTimerEvent &);
   quadrotor_msgs::PositionCommand makeHoldCommandLocked() const;
+  quadrotor_msgs::PositionCommand makeSourceTimeoutHoldCommandLocked(
+      CommandOwner owner);
+  void clearSourceTimeoutHoldLocked();
   static double yawFromQuat(const geometry_msgs::Quaternion &q);
 
   ros::NodeHandle nh_;
@@ -70,6 +74,12 @@ private:
   double hold_z_{0.0};
   double hold_yaw_{0.0};
   std::uint32_t hold_sequence_{0};
+  // A stale command source is not an explicit task hold.  This anchor is
+  // captured from the current odometry on timeout and is deliberately kept
+  // separate from the task-transition hold anchor above.
+  bool source_timeout_hold_active_{false};
+  CommandOwner source_timeout_hold_owner_{CommandOwner::HOLD};
+  quadrotor_msgs::PositionCommand source_timeout_hold_;
   bool publishing_enabled_{true};
 };
 

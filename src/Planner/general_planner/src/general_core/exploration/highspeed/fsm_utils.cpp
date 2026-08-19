@@ -1103,6 +1103,10 @@ void FastExplorationFSM::beginPause(const std::string &reason,
   completion_pending_ = completion_pending_ || completed;
   pending_target_task_id_.clear();
   fd_->trigger_ = false;
+  // A paused exploration task keeps its world map, but must not continue the
+  // expensive global topology/path/visualization loop while another runtime
+  // mode owns the command path.
+  global_path_update_timer_.stop();
   expl_manager_->ed_->global_tour_.clear();
   expl_manager_->ed_->path_next_goal_.clear();
   expl_manager_->ed_->has_goal_lock_ = false;

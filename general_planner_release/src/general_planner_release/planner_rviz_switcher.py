@@ -29,6 +29,7 @@ class PlannerRvizSwitcher(object):
     MODE_HOLD = 0
     MODE_STATE2STATE = 1
     MODE_EXPLORATION = 2
+    MODE_TARGET_EXPLORATION = 4
 
     def __init__(self):
         self.rviz_node_name = rospy.get_param(
@@ -101,7 +102,7 @@ class PlannerRvizSwitcher(object):
         mode = int(msg.active_mode)
         if mode == self.MODE_STATE2STATE:
             self._set_desired("state2state", "planner_status")
-        elif mode == self.MODE_EXPLORATION:
+        elif mode in (self.MODE_EXPLORATION, self.MODE_TARGET_EXPLORATION):
             self._set_desired("exploration", "planner_status")
         # HOLD / EMERGENCY: keep current viz.
 

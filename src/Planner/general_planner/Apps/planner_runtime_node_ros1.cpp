@@ -17,6 +17,7 @@
 #include <general_core/exploration/highspeed/fast_exploration_manager.h>
 #include <general_core/exploration/highspeed/planner_manager.h>
 #include <nav_msgs/Odometry.h>
+#include <ros/callback_queue.h>
 #include <ros/ros.h>
 #include <ros/topic.h>
 
@@ -225,17 +226,28 @@ int main(int argc, char **argv) {
                          global_map_runtime->mapManager(),
                          navigation_command_topic);
 
-    general_planner::planner_runtime::PlannerCommandGateway gateway(nh);
+    // The gateway never touches the map: give its subscriptions and 100 Hz
+    // publisher their own callback queue.  Slow PCL/LIO/topology callbacks on
+    // the world-model queue can therefore only make the gateway enter its
+    // current-odometry timeout hold; they cannot create a gap in
+    // /planning/pos_cmd or replay an old task hold anchor.
+    ros::CallbackQueue gateway_callback_queue;
+    ros::NodeHandle gateway_nh(nh);
+    gateway_nh.setCallbackQueue(&gateway_callback_queue);
+    general_planner::planner_runtime::PlannerCommandGateway gateway(gateway_nh);
     general_planner::planner_runtime::PlannerSupervisor supervisor(
         nh, gateway,
         [global_map_runtime]() { return global_map_runtime->status(); });
 
     ROS_INFO("[M2 runtime] composed exploration + state2state adapters share "
              "one GlobalMapRuntime; serial handover must remain disabled");
-    ros::AsyncSpinner spinner(1);
-    spinner.start();
+    ros::AsyncSpinner world_spinner(1);
+    ros::AsyncSpinner gateway_spinner(1, &gateway_callback_queue);
+    world_spinner.start();
+    gateway_spinner.start();
     ros::waitForShutdown();
-    spinner.stop();
+    gateway_spinner.stop();
+    world_spinner.stop();
   } catch (const std::exception &error) {
     ROS_FATAL_STREAM("[M2 runtime] initialization failed: " << error.what());
     return 1;

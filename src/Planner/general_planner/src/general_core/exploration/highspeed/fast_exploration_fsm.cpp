@@ -788,6 +788,13 @@ void FastExplorationFSM::init(ros::NodeHandle &nh,
   global_path_update_timer_ = nh.createTimer(
       ros::Duration(std::max(0.02, fp_->global_path_update_min_interval_)),
       &FastExplorationFSM::globalPathUpdateCallback, this);
+  if (external_sensor_ingress_) {
+    // In the composed runtime, global path maintenance is exploration work.
+    // It must stay dormant until an exploration task starts; otherwise it
+    // serializes topology/visualization work ahead of state2state commands.
+    // Keep the standalone legacy node's auto-start behavior unchanged.
+    global_path_update_timer_.stop();
+  }
   if (!fp_->legacy_trigger_topic_.empty()) {
     trigger_sub_ = nh.subscribe(fp_->legacy_trigger_topic_, 1,
                                 &FastExplorationFSM::triggerCallback, this);
@@ -906,9 +913,6 @@ void FastExplorationFSM::updateTopoAndGlobalPath() {
     // planGlobalPath here repeatedly re-entered the finish gate and could even
     // leave FINISH if a stale target was synthesized.
     global_path_update_timer_.stop();
-    // expl_manager_->frontier_manager_ptr_->viz_pocc();
-    expl_manager_->frontier_manager_ptr_->visfrtcluster();
-    global_path_update_timer_.start();
     return;
   }
 

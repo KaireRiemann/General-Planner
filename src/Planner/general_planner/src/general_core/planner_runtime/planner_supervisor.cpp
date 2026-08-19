@@ -414,6 +414,10 @@ void PlannerSupervisor::activateMode(const PlannerMode mode,
       return;
     }
     exploration_start_pending_ = false;
+    // The composed runtime keeps the shared map alive, but state2state must
+    // not leave the exploration FSM's global topology/visualization timer
+    // running on the same callback queue as its command stream.
+    publishExplorationCommand("PAUSE");
     // Bind subsequent lifecycle observations to the new supervisor epoch.
     navigation_status_epoch_ = status_.task_epoch;
     // Keep the last observed monotonic goal sequence.  Resetting it would

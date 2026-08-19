@@ -9,7 +9,7 @@ import struct
 import std_msgs.msg
 
 class PlannerStatus(genpy.Message):
-  _md5sum = "923c9b743d992dd11a5936af5395d6e7"
+  _md5sum = "e9fd8af440394371ec67478bc266019d"
   _type = "general_planner/PlannerStatus"
   _has_header = True  # flag to mark the presence of a Header object
   _full_text = """std_msgs/Header header
@@ -49,6 +49,7 @@ uint8 MODE_HOLD=0
 uint8 MODE_STATE2STATE=1
 uint8 MODE_EXPLORATION=2
 uint8 MODE_EMERGENCY_STOP=3
+uint8 MODE_TARGET_EXPLORATION=4
 
 uint8 PHASE_BOOT=0
 uint8 PHASE_WAITING_INPUT=1
@@ -64,6 +65,7 @@ uint8 RESULT_NONE=0
 uint8 RESULT_SUCCEEDED=1
 uint8 RESULT_FAILED=2
 uint8 RESULT_CANCELED=3
+uint8 RESULT_BLOCKED=4
 
 uint8 OWNER_HOLD=0
 uint8 OWNER_STATE2STATE=1
@@ -84,6 +86,7 @@ uint16 MODE_STATE_EXP_CAUTION=15
 uint16 MODE_STATE_EXP_PAUSING=16
 uint16 MODE_STATE_EXP_PAUSED=17
 uint16 MODE_STATE_EXP_FINISH=18
+uint16 MODE_STATE_EXP_WAIT_TARGET=19
 uint16 MODE_STATE_HOLD_IDLE=20
 
 ================================================================================
@@ -107,6 +110,7 @@ string frame_id
   MODE_STATE2STATE = 1
   MODE_EXPLORATION = 2
   MODE_EMERGENCY_STOP = 3
+  MODE_TARGET_EXPLORATION = 4
   PHASE_BOOT = 0
   PHASE_WAITING_INPUT = 1
   PHASE_PLANNING = 2
@@ -120,6 +124,7 @@ string frame_id
   RESULT_SUCCEEDED = 1
   RESULT_FAILED = 2
   RESULT_CANCELED = 3
+  RESULT_BLOCKED = 4
   OWNER_HOLD = 0
   OWNER_STATE2STATE = 1
   OWNER_EXPLORATION = 2
@@ -138,6 +143,7 @@ string frame_id
   MODE_STATE_EXP_PAUSING = 16
   MODE_STATE_EXP_PAUSED = 17
   MODE_STATE_EXP_FINISH = 18
+  MODE_STATE_EXP_WAIT_TARGET = 19
   MODE_STATE_HOLD_IDLE = 20
 
   __slots__ = ['header','transition_id','task_epoch','world_epoch','map_revision','topo_revision','accepted_request_id','task_id','active_mode','requested_mode','phase','mode_state','task_result','active_mode_str','requested_mode_str','phase_str','mode_state_str','command_owner_str','task_result_str','stable_hover','ready_for_new_task','odom_valid','map_ready','topology_ready','command_owner','speed_mps','yaw_rate_rps','reason']

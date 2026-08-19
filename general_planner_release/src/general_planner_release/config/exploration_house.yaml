@@ -193,10 +193,44 @@ ViewpointManager/global_recluster_size: 36
 ViewpointManager/view_direction_range: 140.0
 ViewpointManager/local_tsp_size: 10
 ViewpointManager/top_candidate_num: 2
-# Exploration volume for the two-storey villa.  The boxes overlap around the
-# first-floor ceiling/staircase so topology can remain connected vertically.
-# The upper box is limited to the house footprint to avoid exploring empty sky
-# around the outside of the building.
+# Destination-task workspace bootstrap.  The old HighSpeedExp data structures
+# require finite index bounds, but target_exploration must not ask an operator
+# to predefine the whole scene.  planner_runtime enables this automatically
+# for `initial_mode:=target_exploration`: it centers a sparse, 240 m-wide
+# capacity domain on the first odometry pose before Frontier/Bubble-Topo are
+# initialized.  It is an implementation capacity, not a coverage objective;
+# all movement still requires known-free/safety validation from the shared map.
+# A legacy coverage launch keeps this disabled and uses the explicit boxes
+# below, because coverage completion has a genuine finite-area definition.
+target_exploration/auto_workspace/enabled: false
+target_exploration/auto_workspace/half_extent_xy: 120.0
+target_exploration/auto_workspace/below_odom: 2.0
+target_exploration/auto_workspace/above_odom: 5.0
+target_exploration/auto_workspace/min_xy_extent: 20.0
+target_exploration/auto_workspace/min_z_extent: 2.0
+target_exploration/auto_workspace/odom_wait_timeout: 5.0
+
+# A target-directed task keeps only forward frontier bridges when at least one
+# is available.  It automatically falls back to detours if an obstacle blocks
+# every forward option, so this is not a global path monotonicity constraint.
+exploration/target_frontier_min_progress: 0.25
+exploration/target_cluster_shortlist: 8
+exploration/target_goal_lock_remaining_margin: 1.0
+exploration/target_local_preflight_fail_limit: 3
+exploration/target_progress_detour_budget: 3
+exploration/target_preflight_horizon: 8.0
+exploration/target_preflight_soft_defer: 1.5
+exploration/target_empty_pool_escape_wait: 2.5
+exploration/target_empty_pool_unlock_count: 1
+exploration/target_escape_min_progress: -1.0
+exploration/target_near_goal_remaining: 15.0
+exploration/target_spatial_blacklist_radius: 2.5
+exploration/target_spatial_blacklist_duration: 8.0
+
+# Exploration volume for the two-storey villa coverage profile.  The boxes
+# overlap around the first-floor ceiling/staircase so topology can remain
+# connected vertically.  They are deliberately bypassed by the automatic
+# target workspace above.
 # When enabled, two RViz 3D Nav Goal gestures define the full XYZ diagonal,
 # including the lower and upper Z limits. No fixed box is displayed or used;
 # planning modules initialize only after the dynamic box is accepted. Set

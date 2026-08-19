@@ -2,8 +2,29 @@
 # Launch arguments can override both input topics for real-robot deployment.
 odometry_topic: /lidar_slam/odom
 cloud_topic: /cloud_registered
-# Persistent long-horizon coverage guidance.  It only ranks executable
-# HighSpeedExp frontiers; corridor/MINCO/backup/traj_server remain unchanged.
+# Long-distance destination mode. A 2D Nav Goal is the mission endpoint, not
+# merely a start signal. The planner reaches it through safe frontiers and
+# builds the historical/topological map on the way; it never treats unknown
+# space as directly traversable. Set `coverage` to recover legacy full-area
+# exploration behavior.
+exploration/mission_mode: target
+# RViz 2D Nav Goal has z=0, so retain the current flight height. For a 3D or
+# cross-floor target set this true and give target_vertical_weight a positive
+# value.
+exploration/target_goal_use_message_z: false
+exploration/target_heuristic_weight: 3.0
+exploration/target_lateral_weight: 0.15
+exploration/target_vertical_weight: 0.0
+exploration/target_reached_radius: 0.50
+exploration/target_direct_retry_delay: 8.0
+exploration/target_cluster_shortlist: 8
+exploration/target_goal_lock_remaining_margin: 1.0
+fsm/trigger_goal_sets_target: true
+fsm/target_goal_topic: /planning/exploration/target_goal
+fsm/target_goal_start_on_receive: false
+# Persistent long-horizon coverage guidance. Target-directed missions ignore
+# this worker; it is used only when exploration/mission_mode=coverage.
+# Corridor/MINCO/backup/traj_server remain unchanged.
 # Modes: off (legacy), shadow (compute/log only), soft (cost bias), full
 # (coverage order + finish guard). Any missing/stale result falls back to the
 # legacy frontier objective automatically.
