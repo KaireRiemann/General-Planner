@@ -91,6 +91,59 @@ public:
   bool isSpaceTimeMetric() const { return selected_is_space_time_; }
   bool hasKroneckerStructure() const { return has_kronecker_structure_; }
   double conditionNumber() const { return last_condition_number_; }
+  int timeDim() const
+  {
+    return selected_is_space_time_ ? std::max(0, space_time_dim_ - waypoint_dim_)
+                                   : 0;
+  }
+
+  Eigen::MatrixXd Gtt() const
+  {
+    const int m = timeDim();
+    if (m <= 0 || space_time_metric_.rows() < m)
+    {
+      return Eigen::MatrixXd{};
+    }
+    return space_time_metric_.topLeftCorner(m, m);
+  }
+
+  Eigen::MatrixXd Gtp() const
+  {
+    const int m = timeDim();
+    if (m <= 0 || waypoint_dim_ <= 0 ||
+        space_time_metric_.rows() < m + waypoint_dim_)
+    {
+      return Eigen::MatrixXd{};
+    }
+    return space_time_metric_.topRightCorner(m, waypoint_dim_);
+  }
+
+  Eigen::MatrixXd Gpp() const
+  {
+    if (selected_is_space_time_)
+    {
+      if (waypoint_dim_ <= 0 ||
+          space_time_metric_.rows() < timeDim() + waypoint_dim_)
+      {
+        return Eigen::MatrixXd{};
+      }
+      return space_time_metric_.bottomRightCorner(waypoint_dim_, waypoint_dim_);
+    }
+    return waypoint_metric_;
+  }
+
+  double couplingEta() const
+  {
+    const Eigen::MatrixXd tt = Gtt();
+    const Eigen::MatrixXd tp = Gtp();
+    const Eigen::MatrixXd pp = Gpp();
+    if (tt.size() == 0 || tp.size() == 0 || pp.size() == 0)
+    {
+      return 0.0;
+    }
+    const double den = std::sqrt(tt.norm() * pp.norm());
+    return den > 0.0 ? tp.norm() / den : 0.0;
+  }
 
   const Eigen::MatrixXd &waypointMetric() const { return waypoint_metric_; }
   const Eigen::MatrixXd &scalarWaypointMetric() const
@@ -274,6 +327,13 @@ public:
         space_time_metric_(b, a) = value;
       }
     }
+
+    // Residual r already includes sqrt(T) p^{(4)} and Gauss weights, so
+    // ||r||^2 ≈ E_snap (no 1/2).  Matching getEnergy() therefore requires
+    //   G_ctrl = 2 ρ_E J_r^T J_r
+    // before the relative-time term is added.
+    const double control_scale = 2.0 * std::max(0.0, options_.energy_weight);
+    space_time_metric_ *= control_scale;
 
     for (int i = 0; i < pieces; ++i)
     {

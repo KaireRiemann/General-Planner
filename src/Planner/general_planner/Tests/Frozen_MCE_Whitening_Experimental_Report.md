@@ -3,6 +3,7 @@
 - **日期**：2026-08-19
 - **策略文档**：`General_Planner_MCE_Metric_Optimization_Strategy.md`（Production V1）
 - **前置报告**：`Tests/MCE_Metric_Conditioning_Experimental_Report.md`（条件数与隔离 L-BFGS，43/43）
+- **后续报告**：`Tests/FreeTime_Joint_Conditioning_MCE_Whitening.md`（自由时间联合 \(\kappa\) 变差的完整现象与处理）
 - **实现**：`minco_metric.hpp`、`minco_whitening.hpp`、`minco_optimizer.hpp`、`traj_manager.cpp`
 - **自测**：
   - `Tests/minco_metric_self_test.cpp`
@@ -236,6 +237,9 @@ g++ -O2 -std=c++17 -Iinclude -I/usr/include/eigen3 \
 g++ -O2 -std=c++17 -Iinclude -I/usr/include/eigen3 \
   Tests/minco_state2state_rolling_replan_self_test.cpp src/utils/lbfgs.cpp \
   -o /tmp/minco_s2s_replan
+g++ -O2 -std=c++17 -Iinclude -I/usr/include/eigen3 \
+  Tests/minco_freetime_joint_conditioning_self_test.cpp \
+  -o /tmp/minco_freetime_kappa
 ```
 
 真实 click_demo 闭环（ROS1 Noetic，需已编译带 V1 的 `fsm_node`）：
@@ -250,7 +254,11 @@ bash scripts/run_mce_vs_euclidean_state2state_ab.sh
 
 ## 9. 滚动 replan / 自由时间（生产求解图）
 
-隔离实验是**固定时间、经典 L-BFGS、\(g_\epsilon\sim10^{-7}\)**。生产 State2State 是：
+完整现象、分块 Hessian、合同变换推导与处理顺序见独立文档：
+
+**`Tests/FreeTime_Joint_Conditioning_MCE_Whitening.md`**
+
+本节只保留本报告用到的对照数字。隔离实验是**固定时间、经典 L-BFGS、\(g_\epsilon\sim10^{-7}\)**。生产 State2State 是：
 
 - 时间自由，`QuadInvTimeMap` 不白化；
 - 只冻 waypoint 的 \(G_{\mathrm{MCE}}\)；
@@ -268,7 +276,7 @@ bash scripts/run_mce_vs_euclidean_state2state_ab.sh
 | L-BFGS ms/call | 3.47 | 4.57 | **1.32× 更慢** |
 | 度量 ms/call | 0 | 0.039 | 可忽略 |
 
-白化是坐标变换：真正收敛时 \(J\) 相同。但**自由时间问题里，只白化 \(P\) 并不能减少迭代**，时间块仍是欧式，线搜更难，墙钟变慢。
+白化是坐标变换：真正收敛时 \(J\) 相同。但**自由时间问题里，只白化 \(P\) 并不能减少迭代**，时间块仍是欧式，线搜更难，墙钟变慢。联合 Hessian 的条件数在白化后变差约 \(10^2\sim10^3\) 倍（§9.4）。
 
 ### 9.2 生产 Fast L-BFGS（`click_real_highspeed.yaml` 的停机规则）
 
@@ -289,7 +297,40 @@ Fast L-BFGS 的 `rel_step` / `delta` 作用在 \(x=(\tau,z)\) 上。\(z=L^\top(P
 1. Fast L-BFGS 的停机量改成物理 \(P,T,J\)（而不是 \(z\) 上的相对步）；或
 2. 按策略文档做冻结时空度量，而不是只白化 waypoint。
 
-本机只有 ROS 2 Jazzy，没有 Noetic / `libroscpp`，`fsm_node` 无法在这里闭环。click_demo 的 wall-clock 数字要在能 `source /opt/ros/noetic` 的工作空间上跑上述脚本才能给出。
+### 9.4 联合 Hessian 条件数如何变差
+
+同一组自由时间快照上，对求解坐标做有限差分 Hessian（`Tests/minco_freetime_joint_conditioning_self_test.cpp`）。决策是 \(x=(\tau,P)\) 或 \((\tau,z)\)，\(z=L^\top(P-P_0)\)，\(LL^\top=G_{\mathrm{MCE}}(T_0)\)。
+
+| 快照 | \(\kappa(H_{\tau P})\) | \(\kappa(H_{\tau z})\) | 比 | \(\kappa(H_{PP})\) | \(\kappa(H_{zz})\) | \(\kappa(H_{\tau\tau})\) |
+|---|---:|---:|---:|---:|---:|---:|
+| 0 | \(4.4\times10^6\) | \(3.5\times10^8\) | **81×** | \(1.0\times10^4\) | **6.8** | \(6.3\times10^2\) |
+| 4 | \(3.2\times10^6\) | \(1.8\times10^9\) | **563×** | \(1.1\times10^4\) | **5.8** | \(6.8\times10^2\) |
+| 9 | \(1.7\times10^6\) | \(1.7\times10^9\) | **993×** | \(1.1\times10^4\) | **1.35** | \(6.9\times10^2\) |
+
+几何平均：\(\kappa(H_{\tau z})/\kappa(H_{\tau P})\approx 356\)。
+
+分块上发生了三件同时成立的事：
+
+1. **Waypoint 块被修好了**，这就是隔离实验：\(\kappa(H_{PP})\sim10^4\to\kappa(H_{zz})\sim1\sim7\)。
+2. **时间块完全没动**：\(\kappa(H_{\tau\tau})\) 两套坐标相同；消元后的 Schur \(S_\tau=H_{\tau\tau}-H_{\tau P}H_{PP}^{-1}H_{P\tau}\) 也逐元素不变。只白化 \(P\) 不改变「把 \(P\) 消掉之后时间有多难」。
+3. **整体 \(\kappa\) 变差来自 \(\lvert\lambda_{\min}\rvert\) 塌缩，不是 \(\lambda_{\max}\) 变大**。\(\lambda_{\max}\) 始终由 \(H_{\tau\tau}\) 占着（\(\sim10^6\sim10^7\)）。欧式 \(\lvert\lambda_{\min}\rvert\) 几乎等于 \(\lambda_{\min}(H_{PP})\)（软的 waypoint 模态）；白化后这些模态被抬到 \(O(1)\)，新的 \(\lvert\lambda_{\min}\rvert\) 掉到 \(10^{-2}\) 量级，是 \((\tau,z)\) 的混合近零模态。
+
+机制是非正交合同。
+
+\[
+\tilde H = A^\top H A,\qquad
+A=\operatorname{blkdiag}(I_\tau,L^{-T}).
+\]
+
+\(A\) 不正交，特征值不保持。归一化耦合
+
+\[
+\eta=\frac{\|H_{\tau P}\|_F}{\sqrt{\|H_{\tau\tau}\|_F\|H_{PP}\|_F}}\approx 0.74\sim 0.76
+\]
+
+已经很强；白化后 \(\eta\) 不降（快照 9 升到 \(1.05\)）。直观上 \(H_{\tau\tau}\) 比白化后的 \(H_{zz}\sim I\) 大 \(10^6\)，交叉项又去不掉，二维模型 \(\begin{bmatrix}a&c\\c&1\end{bmatrix}\)（\(a\gg1\)，\(c^2\sim \eta^2 a\)）的小特征值会被压到远小于 1。种子处 Hessian 还不定（约 7 个负特征值，在 \(S_\tau\) 里），L-BFGS 面对的不是 SPD 二次型。
+
+所以：V1 精确改善了固定时间的 \(P\) 块，同时把自由时间联合问题的 \(\kappa\) 恶化了两到三个数量级。这不是度量算错，是部分预条件在强耦合块上的必然结果。
 
 ---
 
@@ -300,6 +341,6 @@ Fast L-BFGS 的 `rel_step` / `delta` 作用在 \(x=(\tau,z)\) 上。\(z=L^\top(P
 - 纯 snap：\(\kappa=1\)，**2 次迭代**到最优；
 - 能量+跟踪+速度+加速度+走廊（固定时间）：终值不变，迭代从数十到一百多降到 **5～21**；
 - 时间不均匀时对比最强：欧式 120 步失败，MCE 5 步；
-- **自由时间滚动 replan（生产图）**：终点 \(J\) 仍可对齐，但迭代和墙钟**没有变好**；直接套生产 Fast L-BFGS 还会在更差点停机。
+- **自由时间联合优化**：只白化 \(P\) 后 \(\kappa(H_{\tau z})/\kappa(H_{\tau P})\approx 80\sim 10^3\)（几何平均 356）；终点 \(J\) 仍可对齐，但迭代和墙钟没有变好。直接套生产 Fast L-BFGS 还会在更差点停机。
 
 真实 click_demo A/B 脚本已就绪；在把 mode 1 接到线上之前，先改 Fast L-BFGS 停机尺度或补时空度量。
