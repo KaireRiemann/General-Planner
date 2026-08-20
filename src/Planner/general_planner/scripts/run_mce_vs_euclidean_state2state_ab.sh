@@ -1,13 +1,17 @@
 #!/usr/bin/env bash
-# Real State2State A/B: Euclidean (minco_metric_mode=0) vs Frozen MCE
-# whitening (mode=1). The forest, goal, corridor, hull, Fast L-BFGS and
-# objective weights stay identical. Only the L-BFGS chart changes.
+# Real State2State A/B: Euclidean (minco_metric_mode=0) vs a metric chart.
+# Default: Frozen MCE V1 (mode=1). For full space-time joint whitening use
+#   MODE_B=4 LABEL_B=frozen_joint
+# The forest, goal, corridor, hull, Fast L-BFGS and objective weights stay
+# identical. Only minco_metric_mode changes. Default yaml stays mode 0.
 #
 # Usage (on a ROS1 Noetic workspace that can launch click_demo):
 #   bash scripts/run_mce_vs_euclidean_state2state_ab.sh
+#   MODE_B=4 LABEL_B=frozen_joint bash scripts/run_mce_vs_euclidean_state2state_ab.sh
 #
 # Optional env:
 #   GOAL_X GOAL_Y GOAL_Z MAX_WAIT_SEC GOAL_DIST_THRESH WS_ROOT
+#   MODE_A MODE_B LABEL_A LABEL_B
 set -eo pipefail
 
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -62,6 +66,10 @@ GOAL_Y=${GOAL_Y:-1.901}
 GOAL_Z=${GOAL_Z:-1.500}
 MAX_WAIT_SEC=${MAX_WAIT_SEC:-180}
 GOAL_DIST_THRESH=${GOAL_DIST_THRESH:-0.35}
+MODE_A=${MODE_A:-0}
+MODE_B=${MODE_B:-1}
+LABEL_A=${LABEL_A:-euclidean}
+LABEL_B=${LABEL_B:-frozen_mce}
 
 CFG="$PKG_DIR/config/click_real_highspeed.yaml"
 LOGDIR="$PKG_DIR/log"
@@ -240,20 +248,20 @@ restore_cfg() {
 trap "stop_stack; restore_cfg" EXIT
 
 echo "OUT=$OUT WS_ROOT=$WS_ROOT goal=($GOAL_X,$GOAL_Y,$GOAL_Z) max_wait=${MAX_WAIT_SEC}s"
-echo "Only minco_metric_mode is toggled. Hull / Fast L-BFGS / warm-start stay as in yaml."
+echo "Only minco_metric_mode is toggled ($LABEL_A=$MODE_A vs $LABEL_B=$MODE_B). Hull / Fast L-BFGS / warm-start stay as in yaml."
 
-configure_route euclidean 0
-run_one euclidean || true
+configure_route "$LABEL_A" "$MODE_A"
+run_one "$LABEL_A" || true
 
-configure_route frozen_mce 1
-run_one frozen_mce || true
+configure_route "$LABEL_B" "$MODE_B"
+run_one "$LABEL_B" || true
 
-python3 - "$OUT" <<'PY'
+python3 - "$OUT" "$LABEL_A" "$LABEL_B" <<'PY'
 import csv, math, sys
 from pathlib import Path
 
 out = Path(sys.argv[1])
-labels = ["euclidean", "frozen_mce"]
+labels = [sys.argv[2], sys.argv[3]]
 
 def vals(rows, k):
     v=[]
@@ -295,6 +303,7 @@ def summarize(label):
         "metric_ms_mean": mean("EXP_METRIC_MS"),
         "metric_ms_sum": summ("EXP_METRIC_MS"),
         "metric_hit": rate("EXP_METRIC_CACHE_HIT"),
+        "metric_refresh": mean("EXP_METRIC_REFRESH") if any((r.get("EXP_METRIC_REFRESH") or "").strip() for r in rows) else float("nan"),
         "replan_ms_mean": 1000*mean("TOTAL_REPLAN"),
         "replan_ms_sum": 1000*summ("TOTAL_REPLAN"),
         "evals_mean": mean("EXP_EVALUATIONS"),
@@ -307,7 +316,7 @@ def summarize(label):
         "ctrl_ms": mean("EXP_CONTROL_POINT_FUNCTIONAL_MS"),
     }
 
-print("\n=== Frozen MCE vs Euclidean State2State ===")
+print("\n=== State2State metric A/B ===")
 print(f"{'label':12s} {'mode':28s} {'calls':>5s} {'wall_s':>7s} {'opt/c':>7s} {'opt_sum':>8s} {'lbfgs':>7s} {'metric':>7s} {'iters':>7s} {'evals':>7s} {'fast%':>7s} {'cont%':>7s} {'viol':>7s}")
 stats=[]
 for label in labels:
@@ -320,8 +329,8 @@ for label in labels:
     print(f"{s['label']:12s} {s['mode'][:28]:28s} {s['n']:5d} {s['wall']:7.1f} {s['opt_ms_mean']:7.2f} {s['opt_ms_sum']:8.1f} {s['lbfgs_ms_mean']:7.2f} {s['metric_ms_mean']:7.3f} {s['iters_mean']:7.1f} {s['evals_mean']:7.1f} {pct(s['fast']):>7s} {pct(s['cont']):>7s} {s['viol']:7.3f}")
 
 by={s['label']:s for s in stats}
-base=by.get("euclidean")
-mce=by.get("frozen_mce")
+base=by.get(labels[0])
+mce=by.get(labels[1])
 
 def r(a,b):
     if a is None or b is None or b==0 or math.isnan(a) or math.isnan(b):
@@ -333,7 +342,7 @@ def sp(a,b):
     return f"{b/a:.2f}x"
 
 if base and mce:
-    print("\nfrozen_mce vs euclidean (same forest/goal/corridor/objective):")
+    print(f"\n{labels[1]} vs {labels[0]} (same forest/goal/corridor/objective):")
     print(f"  opt/call     {r(mce['opt_ms_mean'], base['opt_ms_mean'])}, speedup={sp(mce['opt_ms_mean'], base['opt_ms_mean'])}")
     print(f"  opt_sum      {r(mce['opt_ms_sum'], base['opt_ms_sum'])}, speedup={sp(mce['opt_ms_sum'], base['opt_ms_sum'])}")
     print(f"  lbfgs/call   {r(mce['lbfgs_ms_mean'], base['lbfgs_ms_mean'])}, speedup={sp(mce['lbfgs_ms_mean'], base['lbfgs_ms_mean'])}")
@@ -342,20 +351,21 @@ if base and mce:
     print(f"  iters        {r(mce['iters_mean'], base['iters_mean'])}")
     print(f"  evals        {r(mce['evals_mean'], base['evals_mean'])}")
     print(f"  wall_s       {r(mce['wall'], base['wall'])}")
-    print(f"  metric/call  euclidean={base['metric_ms_mean']:.3f} ms  mce={mce['metric_ms_mean']:.3f} ms  cache={100*mce['metric_hit']:.1f}%")
-    print(f"  quality      viol eucl={base['viol']:.4g} mce={mce['viol']:.4g};  cont% eucl={100*base['cont']:.1f} mce={100*mce['cont']:.1f}")
+    print(f"  metric/call  {labels[0]}={base['metric_ms_mean']:.3f} ms  {labels[1]}={mce['metric_ms_mean']:.3f} ms  cache={100*mce['metric_hit']:.1f}%  refresh={mce.get('metric_refresh', float('nan'))}")
+    print(f"  quality      viol {labels[0]}={base['viol']:.4g} {labels[1]}={mce['viol']:.4g};  cont% {labels[0]}={100*base['cont']:.1f} {labels[1]}={100*mce['cont']:.1f}")
 
 sum_path=out/"summary_mce_vs_euclidean.csv"
 with sum_path.open("w", newline="") as f:
     w=csv.writer(f)
     w.writerow(["label","mode","calls","wall_sec","opt_ms_mean","opt_ms_sum","lbfgs_ms_mean","lbfgs_ms_sum",
-                "metric_ms_mean","metric_ms_sum","metric_cache_hit","replan_ms_mean","replan_ms_sum",
+                "metric_ms_mean","metric_ms_sum","metric_cache_hit","metric_refresh","replan_ms_mean","replan_ms_sum",
                 "evals_mean","iters_mean","fast_stop","cont_feas","viol_mean","stationarity_mean",
                 "dense_ms","ctrl_ms"])
     for s in stats:
         w.writerow([s["label"], s["mode"], s["n"], f"{s['wall']:.6f}", f"{s['opt_ms_mean']:.6f}",
                     f"{s['opt_ms_sum']:.6f}", f"{s['lbfgs_ms_mean']:.6f}", f"{s['lbfgs_ms_sum']:.6f}",
                     f"{s['metric_ms_mean']:.6f}", f"{s['metric_ms_sum']:.6f}", f"{s['metric_hit']:.6f}",
+                    f"{s.get('metric_refresh', float('nan')):.6f}",
                     f"{s['replan_ms_mean']:.6f}", f"{s['replan_ms_sum']:.6f}", f"{s['evals_mean']:.6f}",
                     f"{s['iters_mean']:.6f}", f"{s['fast']:.6f}", f"{s['cont']:.6f}", f"{s['viol']:.6f}",
                     f"{s['stat']:.6f}", f"{s['dense_ms']:.6f}", f"{s['ctrl_ms']:.6f}"])

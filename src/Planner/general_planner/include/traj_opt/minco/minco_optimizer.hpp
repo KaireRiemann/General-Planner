@@ -4,6 +4,7 @@
 #include "traj_opt/minco/boundary_mapping.hpp"
 #include "traj_opt/minco/minco_trajectory.hpp"
 #include "traj_opt/minco/minco_whitening.hpp"
+#include "traj_opt/minco/minco_joint_whitening.hpp"
 #include <Eigen/Dense>
 #include <algorithm>
 #include <chrono>
@@ -317,6 +318,16 @@ public:
     return waypoint_whitening_;
   }
 
+  void setJointWhitening(const FrozenJointWhitening *whitening)
+  {
+    joint_whitening_ = whitening;
+  }
+
+  const FrozenJointWhitening *jointWhitening() const
+  {
+    return joint_whitening_;
+  }
+
   const InnerPointsMat &getCurrentInnerPoints() const
   {
     return workspace_->cache_P_inner;
@@ -469,6 +480,13 @@ public:
     if (usesWaypointWhitening())
     {
       if (!waypoint_whitening_->encodeInPlace(x))
+      {
+        return Eigen::VectorXd{};
+      }
+    }
+    if (usesJointWhitening())
+    {
+      if (!joint_whitening_->encodeInPlace(x))
       {
         return Eigen::VectorXd{};
       }
@@ -834,13 +852,44 @@ private:
   {
     return waypoint_whitening_ != nullptr && waypoint_whitening_->ready() &&
            waypoint_whitening_->timeDim() == getTimeDecisionDim() &&
-           waypoint_whitening_->spatialDim() == getSpatialDecisionDim();
+           waypoint_whitening_->spatialDim() == getSpatialDecisionDim() &&
+           !usesJointWhitening();
+  }
+
+  bool usesJointWhitening() const
+  {
+    return joint_whitening_ != nullptr && joint_whitening_->ready() &&
+           joint_whitening_->dim() == getCoreDecisionDim();
   }
 
   void decodeDecisionVariables(const Eigen::Ref<const Eigen::VectorXd> &x,
                                Eigen::Ref<Eigen::VectorXd> grad_out,
                                double &total_cost)
   {
+    const int time_dim = getTimeDecisionDim();
+    const int spatial_dim = getSpatialDecisionDim();
+    const int core_dim = time_dim + spatial_dim;
+    const bool joint = usesJointWhitening();
+    const bool whitened = usesWaypointWhitening();
+    Eigen::VectorXd chart_core;
+    if (joint)
+    {
+      const Eigen::VectorXd z_core = x.head(core_dim);
+      if (!joint_whitening_->toChart(z_core, chart_core) ||
+          chart_core.size() != core_dim)
+      {
+        chart_core = z_core;
+      }
+    }
+
+    const auto tauAt = [&](int i) -> double {
+      if (joint)
+      {
+        return chart_core(i);
+      }
+      return x(i);
+    };
+
     if (!optimize_time_)
     {
       if (static_cast<int>(ref_times_.size()) != piece_num_)
@@ -857,22 +906,23 @@ private:
     }
     else if (uniform_time_mode_)
     {
-      const double total_time = active_time_map_->toTime(x(0));
+      const double total_time = active_time_map_->toTime(tauAt(0));
       workspace_->cache_T.setConstant(total_time / static_cast<double>(std::max(1, piece_num_)));
     }
     else
     {
       for (int i = 0; i < piece_num_; ++i)
       {
-        workspace_->cache_T(i) = active_time_map_->toTime(x(i));
+        workspace_->cache_T(i) = active_time_map_->toTime(tauAt(i));
       }
     }
 
-    const int time_dim = getTimeDecisionDim();
-    const int spatial_dim = getSpatialDecisionDim();
     Eigen::VectorXd spatial_chart;
-    const bool whitened = usesWaypointWhitening();
-    if (whitened)
+    if (joint)
+    {
+      spatial_chart = chart_core.segment(time_dim, spatial_dim);
+    }
+    else if (whitened)
     {
       const Eigen::VectorXd spatial_z = x.segment(time_dim, spatial_dim);
       if (!waypoint_whitening_->toChart(spatial_z, spatial_chart) ||
@@ -888,8 +938,8 @@ private:
     {
       const int dof = active_spatial_map_->getUnconstrainedDim(i);
       const Eigen::VectorXd xi =
-          whitened ? spatial_chart.segment(chart_offset, dof)
-                   : x.segment(offset, dof);
+          (joint || whitened) ? spatial_chart.segment(chart_offset, dof)
+                              : x.segment(offset, dof);
       workspace_->cache_P_inner.col(i - 1) = active_spatial_map_->toPhysical(xi, i);
 
       Eigen::VectorXd grad_xi = Eigen::VectorXd::Zero(dof);
@@ -1204,6 +1254,26 @@ private:
   void writeDecisionGradient(const Eigen::Ref<const Eigen::VectorXd> &x,
                              Eigen::Ref<Eigen::VectorXd> grad_out) const
   {
+    const int time_dim = getTimeDecisionDim();
+    const int spatial_dim = getSpatialDecisionDim();
+    const int core_dim = time_dim + spatial_dim;
+    const bool joint = usesJointWhitening();
+    const bool whitened = usesWaypointWhitening();
+    Eigen::VectorXd chart_core;
+    if (joint)
+    {
+      const Eigen::VectorXd z_core = x.head(core_dim);
+      if (!joint_whitening_->toChart(z_core, chart_core) ||
+          chart_core.size() != core_dim)
+      {
+        chart_core = z_core;
+      }
+    }
+
+    const auto tauAt = [&](int i) -> double {
+      return joint ? chart_core(i) : x(i);
+    };
+
     if (!optimize_time_)
     {
       // Fixed-time mode has no tau decision coordinates.
@@ -1211,7 +1281,7 @@ private:
     else if (uniform_time_mode_)
     {
       grad_out(0) += active_time_map_->backward(
-          x(0),
+          tauAt(0),
           workspace_->cache_T.sum(),
           workspace_->grad_by_times.sum() / static_cast<double>(std::max(1, piece_num_)));
     }
@@ -1219,15 +1289,17 @@ private:
     {
       for (int i = 0; i < piece_num_; ++i)
       {
-        grad_out(i) += active_time_map_->backward(x(i), workspace_->cache_T(i), workspace_->grad_by_times(i));
+        grad_out(i) += active_time_map_->backward(
+            tauAt(i), workspace_->cache_T(i), workspace_->grad_by_times(i));
       }
     }
 
-    const int time_dim = getTimeDecisionDim();
-    const int spatial_dim = getSpatialDecisionDim();
     Eigen::VectorXd spatial_chart;
-    const bool whitened = usesWaypointWhitening();
-    if (whitened)
+    if (joint)
+    {
+      spatial_chart = chart_core.segment(time_dim, spatial_dim);
+    }
+    else if (whitened)
     {
       const Eigen::VectorXd spatial_z = x.segment(time_dim, spatial_dim);
       if (!waypoint_whitening_->toChart(spatial_z, spatial_chart) ||
@@ -1243,8 +1315,8 @@ private:
     {
       const int dof = active_spatial_map_->getUnconstrainedDim(i);
       const Eigen::VectorXd xi =
-          whitened ? spatial_chart.segment(chart_offset, dof)
-                   : x.segment(offset, dof);
+          (joint || whitened) ? spatial_chart.segment(chart_offset, dof)
+                              : x.segment(offset, dof);
       const VectorType grad_p = workspace_->grad_by_points.col(i - 1);
       grad_out.segment(offset, dof) +=
           active_spatial_map_->backwardGrad(xi, grad_p, i);
@@ -1255,6 +1327,10 @@ private:
     if (whitened)
     {
       waypoint_whitening_->transformCovectorInPlace(grad_out);
+    }
+    if (joint)
+    {
+      joint_whitening_->transformCovectorInPlace(grad_out);
     }
   }
 
@@ -1288,6 +1364,7 @@ private:
   const TimeMap *active_time_map_{nullptr};
   const SpatialMap *active_spatial_map_{nullptr};
   const FrozenMceWhitening *waypoint_whitening_{nullptr};
+  const FrozenJointWhitening *joint_whitening_{nullptr};
 
   std::unique_ptr<Workspace> workspace_;
 };

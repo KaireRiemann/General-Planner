@@ -11,6 +11,8 @@
 #include "traj_opt/minco/minco_trajectory.hpp"
 #include "traj_opt/minco/minco_optimizer.hpp"
 #include "traj_opt/minco/minco_metric.hpp"
+#include "traj_opt/minco/minco_whitening.hpp"
+#include "traj_opt/minco/minco_joint_whitening.hpp"
 #include "traj_opt/costfunctional/temporalcosts/linear_time_cost.hpp"
 #include "traj_opt/costfunctional/spatialmap/polytope_spatial_map.hpp"
 #include "traj_opt/costfunctional/temporalmap/quad_inv_time_map.hpp"
@@ -411,6 +413,7 @@ public:
     double minco_evaluation_seconds{0.0};
     double metric_seconds{0.0};
     bool metric_cache_hit{false};
+    int metric_refresh_count{0};
     double optimization_seconds{0.0};
     double dense_share_of_minco_evaluation{0.0};
     double control_point_share_of_minco_evaluation{0.0};
@@ -649,6 +652,8 @@ private:
   void syncFastLbfgsReport();
   bool prepareMincoMetric(const VecDf &x);
   bool configureFrozenWhitening(const VecDf &x);
+  bool configureFrozenJointWhitening(const VecDf &x);
+  bool jointMetricNeedsRefresh() const;
   void finishFrozenWhitening(VecDf &x);
   bool applyMincoMetricH0(const VecDf &x,
                           const VecDf &q,
@@ -676,6 +681,7 @@ private:
   SnapOptimizer optimizer_;
   minco::MincoMetric<TRAJ_DIM, SNAP_TRAJ_S> minco_metric_;
   minco::FrozenMceWhitening minco_whitening_;
+  minco::FrozenJointWhitening minco_joint_whitening_;
   temporal_map::QuadInvTimeMap time_map_;
   spatial_map::PolytopeSpatialMap spatial_map_;
   cost_functional::LinearTimeCost linear_time_cost_;
@@ -694,6 +700,9 @@ private:
   bool minco_metric_frozen_ready_{false};
   double last_metric_seconds_{0.0};
   bool last_metric_cache_hit_{false};
+  int last_metric_refresh_count_{0};
+  VecDf joint_seed_durations_;
+  Mat3Df joint_seed_waypoints_;
 
   struct MincoMetricDurationCache
   {

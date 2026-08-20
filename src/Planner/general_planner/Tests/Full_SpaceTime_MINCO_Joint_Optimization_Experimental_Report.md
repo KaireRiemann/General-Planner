@@ -13,7 +13,8 @@
   - Level B：`Tests/minco_joint_whitening_self_test.cpp`
   - Level C：`Tests/minco_freetime_joint_conditioning_self_test.cpp`
   - Level D/E/F-proxy：`Tests/minco_freetime_joint_whitening_comparison_self_test.cpp`
-- **生产开关**：默认保持 `minco_metric_mode: 0`。本轮**不**把 mode 3/4 设成默认。
+  - Gate G / 生产图：`Tests/minco_production_joint_path_self_test.cpp`
+- **生产开关**：默认保持 `minco_metric_mode: 0`。本轮**不**把 mode 3/4 设成默认。 mode 3/4 现为 Frozen Joint（不再是动态 H0）。
 
 ---
 
@@ -314,7 +315,7 @@ Full Space-Time Control GN
 + At-most-1 refresh，仅当 T/P drift 超阈
 ```
 
-内部 mode 语义建议按计划 §36，避免和现有 1=waypoint / 3=block / 4=GN-H0 混用。当前 `traj_manager` 仍把 mode 3/4 当 **动态 H0**，不是 Frozen Joint chart。要把本轮实验接到线上，必须改 `configureFrozenWhitening` 走 `FrozenJointWhitening`，而不是再给 L-BFGS 塞 \(H_0=G^{-1}\)。
+内部 mode 语义按计划 §36：1=waypoint V1，2=dynamic H0，3=frozen block ST，4=frozen full ST GN。`traj_manager` 现已把 mode 3/4 接到 `FrozenJointWhitening`（不再把 3/4 当动态 H0）。默认 yaml 仍是 mode 0。
 
 ---
 
@@ -336,6 +337,10 @@ g++ -O2 -std=c++17 -Iinclude -I/usr/include/eigen3 \
 g++ -O2 -std=c++17 -Iinclude -I/usr/include/eigen3 \
   Tests/minco_freetime_joint_whitening_comparison_self_test.cpp \
   src/utils/lbfgs.cpp -o /tmp/minco_freetime_joint_cmp
+
+g++ -O2 -std=c++17 -Iinclude -I/usr/include/eigen3 \
+  Tests/minco_production_joint_path_self_test.cpp \
+  -o /tmp/minco_production_joint_path
 ```
 
 期望：
@@ -346,6 +351,14 @@ B3/B4/B6 machine precision
 geometric mean κ_C3/κ_C0 ~ 1e-2（含不均匀点）
 D3 J 与 D0 在均匀时长上相对误差 < 1e-3
 E1 在 Tmax/Tmin=8 上把 J 从 ~470 拉回 ~289
+G1–G4 production chart identity machine precision
+```
+
+Noetic A/B（本机未跑）：
+
+```bash
+MODE_B=4 LABEL_B=frozen_joint \
+  bash scripts/run_mce_vs_euclidean_state2state_ab.sh
 ```
 
 ---
@@ -362,4 +375,78 @@ Tmax/Tmin=8                              需要 1 次 refresh 或 C4
 Fast L-BFGS                              质量可对齐；墙钟尚未稳定优于欧式
 ```
 
-下一步若要进生产：把 Frozen Joint 接到 `minco_optimizer`（整段 \(x\) 白化 + 物理 step bound），按 drift 做最多一次 refresh，再在 Noetic 容器跑 State2State A/B。在那之前默认后端保持欧式。
+生产接线（mode 3/4 Frozen Joint + 至多 1 次 refresh + 物理 Fast stop）已在本分支落地，隔离 Gate G1–G4 / C3–C4 switching / Fast buckets 已跑完。默认 yaml 仍是 `minco_metric_mode: 0`。真实 State2State A/B 需要 ROS1 Noetic 容器，本机只有 Jazzy。
+
+---
+
+## 13. Follow-up：生产接线与 C3/C4 / Fast buckets
+
+日期：2026-08-20。全部改动在 `feature/minco-mce-metric`。默认 `minco_metric_mode: 0` 未改。
+
+### 13.1 生产接线
+
+| 项 | 行为 |
+|---|---|
+| mode 1 | Frozen waypoint MCE（V1，自由时间消融） |
+| mode 2 | 动态 waypoint H0，仅此模式把 \(H_0\) 交给 Fast L-BFGS |
+| mode 3 | Frozen block space-time joint whitening |
+| mode 4 | Frozen full space-time GN joint whitening（Block-Schur，含 \(Y d\tau\)） |
+| 编码 | `FrozenJointWhitening` 作用在整段 \(x=(\tau,\xi)\) |
+| Fast stop | `rel_step=0`，`phase0_guards_en=true`，快照与停机用物理 \(T,P\) |
+| step bound | `toChart` + `transformDirectionToChart`，界在物理 \(\tau\) |
+| refresh | `minco_metric_refresh_max=1`，仅当 \(T\) 相对漂移 \(>0.25\) 或 waypoint 相对漂移 \(>0.25\) |
+| CSV | `EXP_METRIC_REFRESH` |
+
+`MINCOOptimizer` 在 `encode` / `decode` / `writeDecisionGradient` 走联合图。Phase-2 packed 不再对 mode 3/4 注入 H0。
+
+### 13.2 Gate G：生产图恒等
+
+`Tests/minco_production_joint_path_self_test.cpp`（能量 + `LinearTimeCost` + `QuadInvTimeMap` + Frozen Joint）。
+
+| Gate | 结果 |
+|---|---|
+| G1 encode/decode | **PASS** round-trip \(=0\) |
+| G2 \(J(z)=J(x)\) | **PASS** |
+| G2 \(g_x^\top dx=g_z^\top dz\) | **PASS** \(1.27\times10^{-14}\) |
+| G3 物理 \(\tau\) step bound | **PASS**；\(\|Y\|=5.06\neq0\)，用 \(z\) 当 \(\tau\) 会得到不同界 |
+| G4 drift 后 refresh | **PASS** \(z'=0\) 且 \(J\) 不变 |
+
+### 13.3 C3 vs C4 solver switching（紧 L-BFGS max=200）
+
+同一套 rolling / uneven 快照。推荐规则：\(J\) 相对下降 \(>0.5\%\) 才换图。
+
+| 工况 | C3 \(J\) | C4 \(J\) | E1 \(J\) | 推荐 |
+|---|---:|---:|---:|---|
+| 均匀 M=8，\(w_c=25\) | 289.21 | 289.22 | 289.13 | **C3** |
+| 均匀 M=8，\(w_c=10^5\) | 289.22 | 289.46 | 289.16 | **C3** |
+| \(T_{\max}/T_{\min}=8\)，\(w_c=25\) | 510.63 | 349.68 | **289.21** | **E1 refresh** |
+| \(T_{\max}/T_{\min}=8\)，\(w_c=10^5\) | 1482 | 958 | **376** | **E1 refresh** |
+
+\(\kappa\) 扫描（Level C）在均匀时长上 \(w_c=10^5\) 时 C4 才略优于 C3（\(2.05\times10^4\) vs \(2.59\times10^4\)）。**求解器上均匀问题仍选 C3**；极端 duration-ratio 用 **一次 refresh**，比切到 C4 更稳地把 \(J\) 拉回 \(\sim289\)。
+
+### 13.4 Fast L-BFGS buckets（物理停机，`rel_step=0`）
+
+\(w_c=25\)。墙钟含度量构建。
+
+| \(M\) | \(T_{\max}/T_{\min}\) | F0 it / ms / \(J\) | F2 it / ms / \(J\) | F2/F0 wall |
+|---:|---:|---|---|---:|
+| 5 | 1 | 39 / 0.35 / 289 | 34 / 0.45 / 289 | 1.28 |
+| 5 | 8 | 46 / 0.46 / 289 | 93 / 1.03 / 289 | 2.22 |
+| 8 | 1 | 59 / 0.79 / 289 | 55 / 1.06 / 289 | 1.33 |
+| 8 | 8 | 129 / 2.12 / 289 | 169 / 3.90 / **451** | 1.84 |
+| 12 | 1 | 123 / 2.52 / 290 | 108 / 3.16 / 289 | 1.25 |
+| 12 | 8 | 107 / 2.40 / 450 | 190 / 5.31 / **680** | 2.22 |
+
+\(n=6\)：wall F2/F0 **P50=1.58，P95=2.22**。均匀时长质量对齐；不均匀时长 Fast 早停会把 F2 停在坏的冻结图上，必须靠 refresh（E1）而不是 Fast 默认加速。
+
+### 13.5 State2State A/B
+
+脚本已支持 `MODE_B=4 LABEL_B=frozen_joint`。本机 `/opt/ros` 只有 **Jazzy**，`docker` 不可用，真实 click_demo 未跑。默认 yaml 保持 mode 0。
+
+### 13.6 不应当推出的结论
+
+1. **不是** 可以把 mode 4 设成默认。Fast 墙钟 P50 仍是欧式的 \(1.6\times\)。
+2. **不是** 均匀问题上 C4 比 C3 好。高 \(w_c\) 的 \(\kappa\) 优势没有变成更低的 \(J^\star\)。
+3. **不是** Fast 物理停机可以替代 refresh。\(T_{\max}/T_{\min}=8\) 上 F2 的 \(J\) 明显差于欧式。
+4. **不是** 本轮已经在真实森林 replan 上证明延迟下降。那一步仍要 Noetic。
+

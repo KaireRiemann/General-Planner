@@ -37,6 +37,40 @@ inline bool pullbackTimeMap(const Eigen::MatrixXd &G_theta,
 }
 
 /**
+ * Pull physical (T, P) metric to solver (τ, ξ):
+ *
+ *   J = blkdiag(diag(dT/dτ), J_ψ),   P = ψ(ξ).
+ *
+ * Identity spatial charts pass J_ψ = I.
+ */
+inline bool pullbackSolverChart(const Eigen::MatrixXd &G_theta,
+                                const Eigen::VectorXd &dT_dtau,
+                                const Eigen::MatrixXd &J_psi,
+                                Eigen::MatrixXd &G_x)
+{
+  const int m = static_cast<int>(dT_dtau.size());
+  if (m < 0 || G_theta.rows() != G_theta.cols() || G_theta.rows() < m ||
+      J_psi.rows() != G_theta.rows() - m || !G_theta.allFinite() ||
+      !dT_dtau.allFinite() || !J_psi.allFinite())
+  {
+    return false;
+  }
+  const int pdim = static_cast<int>(G_theta.rows()) - m;
+  const int sdim = static_cast<int>(J_psi.cols());
+  Eigen::MatrixXd J = Eigen::MatrixXd::Zero(m + pdim, m + sdim);
+  for (int i = 0; i < m; ++i)
+  {
+    J(i, i) = dT_dtau(i);
+  }
+  if (pdim > 0 && sdim > 0)
+  {
+    J.block(m, m, pdim, sdim) = J_psi;
+  }
+  G_x = J.transpose() * G_theta * J;
+  return G_x.allFinite();
+}
+
+/**
  * Frozen full-joint whitening on solver coordinates x = (τ, ξ):
  *
  *   G_0 = L L^T,
@@ -229,34 +263,49 @@ public:
 
   bool encodeInPlace(Eigen::VectorXd &x) const
   {
-    Eigen::VectorXd z;
-    if (!toWhitened(x, z))
+    if (!ready_ || x.size() < dim())
     {
       return false;
     }
-    x = z;
+    const Eigen::VectorXd core = x.head(dim());
+    Eigen::VectorXd z;
+    if (!toWhitened(core, z))
+    {
+      return false;
+    }
+    x.head(dim()) = z;
     return true;
   }
 
   bool decodeInPlace(Eigen::VectorXd &z) const
   {
-    Eigen::VectorXd x;
-    if (!toChart(z, x))
+    if (!ready_ || z.size() < dim())
     {
       return false;
     }
-    z = x;
+    const Eigen::VectorXd core = z.head(dim());
+    Eigen::VectorXd x;
+    if (!toChart(core, x))
+    {
+      return false;
+    }
+    z.head(dim()) = x;
     return true;
   }
 
   bool transformCovectorInPlace(Eigen::Ref<Eigen::VectorXd> grad) const
   {
-    Eigen::VectorXd gz;
-    if (!transformCovector(grad, gz))
+    if (!ready_ || grad.size() < dim())
     {
       return false;
     }
-    grad = gz;
+    const Eigen::VectorXd gx = grad.head(dim());
+    Eigen::VectorXd gz;
+    if (!transformCovector(gx, gz))
+    {
+      return false;
+    }
+    grad.head(dim()) = gz;
     return true;
   }
 

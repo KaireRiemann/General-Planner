@@ -151,8 +151,8 @@ namespace traj_opt {
         // 0: LEGACY_EUCLIDEAN
         // 1: FROZEN_MCE whitening (production V1, G = rho_E * 2 J^T Q J)
         // 2: dynamic waypoint H0 (experimental)
-        // 3: block space-time H0 (experimental)
-        // 4: full space-time Gauss-Newton H0 (experimental)
+        // 3: frozen block space-time joint whitening
+        // 4: frozen full space-time Gauss-Newton joint whitening
         int minco_metric_mode{0};
         bool minco_metric_optimize_time{true};
         double minco_metric_regularization{1.0e-10};
@@ -160,6 +160,10 @@ namespace traj_opt {
         double minco_metric_gauge_weight{1.0e-6};
         bool minco_metric_cache_enable{true};
         double minco_metric_cache_time_rel_tol{0.05};
+        bool minco_metric_refresh_en{true};
+        int minco_metric_refresh_max{1};
+        double minco_metric_refresh_time_rel{0.25};
+        double minco_metric_refresh_waypoint_rel{0.25};
         // Cross-replan warm start for the ordinary State2State ExpTrajOpt.
         // The cached physical solution is used only when it remains compatible
         // with the new corridor, and only if its real objective beats the
@@ -260,6 +264,16 @@ namespace traj_opt {
             loader.LoadParam("traj_opt" + ns +
                                  "minco_metric_cache_time_rel_tol",
                              minco_metric_cache_time_rel_tol, 0.05);
+            loader.LoadParam("traj_opt" + ns + "minco_metric_refresh_en",
+                             minco_metric_refresh_en, true);
+            loader.LoadParam("traj_opt" + ns + "minco_metric_refresh_max",
+                             minco_metric_refresh_max, 1);
+            loader.LoadParam("traj_opt" + ns +
+                                 "minco_metric_refresh_time_rel",
+                             minco_metric_refresh_time_rel, 0.25);
+            loader.LoadParam("traj_opt" + ns +
+                                 "minco_metric_refresh_waypoint_rel",
+                             minco_metric_refresh_waypoint_rel, 0.25);
             loader.LoadParam("traj_opt" + ns + "lbfgs_warm_start_en",
                              lbfgs_warm_start_en, false);
             loader.LoadParam("traj_opt" + ns +

@@ -788,6 +788,100 @@ int main()
     safeSuite(makeUneven(8, 8.0));
     safeSuite(makeSnapshot(0, 12));
 
+    std::cout << "==== C3 vs C4 solver switching (tight max=200) ====\n";
+    auto switching = [&](const Snapshot &snap, const Weights &ww,
+                         const char *tag) {
+      std::cout << "-- " << tag << "  Tmax/Tmin="
+                << sci(snap.times.maxCoeff() / snap.times.minCoeff())
+                << "  w_c=" << sci(ww.corr) << "\n";
+      const SolveResult c3 =
+          runTight(snap, ww, ChartKind::FullJoint, "C3 full GN", 200);
+      const SolveResult c4 =
+          runTight(snap, ww, ChartKind::FullJointGN, "C4 +corr GN", 200);
+      const SolveResult e1 = runRefresh(snap, ww, 1);
+      printSolve(c3);
+      printSolve(c4);
+      printSolve(e1);
+      const char *pick = "C3";
+      double best = c3.J;
+      if (c4.J < best * 0.995)
+      {
+        pick = "C4";
+        best = c4.J;
+      }
+      if (e1.J < best * 0.995)
+      {
+        pick = "E1 refresh";
+      }
+      std::cout << "  recommend=" << pick << "\n";
+    };
+    {
+      Weights w25 = w;
+      w25.corr = 25.0;
+      Weights w1e5 = w;
+      w1e5.corr = 1.0e5;
+      switching(makeSnapshot(0, 8), w25, "uniform M=8");
+      switching(makeSnapshot(0, 8), w1e5, "uniform M=8 high w_c");
+      switching(makeUneven(8, 8.0), w25, "uneven8 M=8");
+      switching(makeUneven(8, 8.0), w1e5, "uneven8 M=8 high w_c");
+    }
+
+    std::cout << "\n==== Fast L-BFGS buckets (physical stop) ====\n";
+    struct FastSample
+    {
+      double eu_ms{0.0};
+      double jt_ms{0.0};
+    };
+    std::vector<FastSample> buckets;
+    for (int pieces : {5, 8, 12})
+    {
+      for (double ratio : {1.0, 8.0})
+      {
+        const Snapshot snap =
+            ratio <= 1.0 + 1.0e-12 ? makeSnapshot(0, pieces)
+                                   : makeUneven(pieces, ratio);
+        const SolveResult f0 =
+            runFast(snap, w, ChartKind::Euclidean, "F0");
+        const SolveResult f2 =
+            runFast(snap, w, ChartKind::FullJoint, "F2");
+        FastSample s;
+        s.eu_ms = f0.lbfgs_ms + f0.metric_ms;
+        s.jt_ms = f2.lbfgs_ms + f2.metric_ms;
+        buckets.push_back(s);
+        const double ratio_obs = snap.times.maxCoeff() / snap.times.minCoeff();
+        std::cout << "  M=" << pieces
+                  << "  ratio=" << sci(ratio_obs)
+                  << "  F0 it=" << f0.iters << " ms=" << sci(s.eu_ms)
+                  << " J=" << sci(f0.J)
+                  << "  F2 it=" << f2.iters << " ms=" << sci(s.jt_ms)
+                  << " J=" << sci(f2.J)
+                  << "  wall F2/F0=" << sci(s.jt_ms / std::max(1.0e-9, s.eu_ms))
+                  << "\n";
+      }
+    }
+    auto percentile = [](std::vector<double> v, double p) {
+      if (v.empty())
+      {
+        return std::numeric_limits<double>::quiet_NaN();
+      }
+      std::sort(v.begin(), v.end());
+      const double idx = p * static_cast<double>(v.size() - 1);
+      const int lo = static_cast<int>(std::floor(idx));
+      const int hi = static_cast<int>(std::ceil(idx));
+      const double a = v[static_cast<std::size_t>(lo)];
+      const double b = v[static_cast<std::size_t>(hi)];
+      const double t = idx - static_cast<double>(lo);
+      return (1.0 - t) * a + t * b;
+    };
+    std::vector<double> ratios;
+    for (const auto &s : buckets)
+    {
+      ratios.push_back(s.jt_ms / std::max(1.0e-9, s.eu_ms));
+    }
+    std::cout << "  wall F2/F0  P50=" << sci(percentile(ratios, 0.50))
+              << "  P95=" << sci(percentile(ratios, 0.95))
+              << "  n=" << buckets.size() << "\n";
+
     std::cout << "[minco_freetime_joint_whitening_comparison_self_test] OK\n";
     return 0;
   }

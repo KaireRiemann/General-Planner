@@ -1022,7 +1022,11 @@ math_utils::FastLbfgs::PhysicalSnapshot ExpTrajOpt::fastLbfgsSnapshot(
   }
   int offset = self->optimizer_.timeDecisionDim();
   Eigen::VectorXd chart = x;
-  if (self->minco_whitening_.ready())
+  if (self->minco_joint_whitening_.ready())
+  {
+    self->minco_joint_whitening_.decodeInPlace(chart);
+  }
+  else if (self->minco_whitening_.ready())
   {
     self->minco_whitening_.decodeInPlace(chart);
   }
@@ -1074,7 +1078,8 @@ bool ExpTrajOpt::prepareMincoMetric(const VecDf &x)
 
   const bool frozen_mode =
       mode == minco::MincoMetricMode::kFrozenWaypoint ||
-      mode == minco::MincoMetricMode::kBlockSpaceTime;
+      mode == minco::MincoMetricMode::kBlockSpaceTime ||
+      mode == minco::MincoMetricMode::kFullSpaceTimeGaussNewton;
   if (frozen_mode && minco_metric_frozen_ready_ && minco_metric_.ready())
   {
     last_metric_seconds_ = 0.0;
@@ -1279,9 +1284,148 @@ bool ExpTrajOpt::configureFrozenWhitening(const VecDf &x)
   return true;
 }
 
+bool ExpTrajOpt::configureFrozenJointWhitening(const VecDf &x)
+{
+  minco_joint_whitening_.clear();
+  optimizer_.setJointWhitening(nullptr);
+  if (!minco_metric_.ready() || !minco_metric_.isSpaceTimeMetric())
+  {
+    return false;
+  }
+
+  const int pieces = optimizer_.getPieceNum();
+  const int time_dim = optimizer_.timeDecisionDim();
+  const int waypoint_dim = TRAJ_DIM * std::max(0, pieces - 1);
+  if (pieces <= 0 || time_dim != pieces || waypoint_dim <= 0 ||
+      minco_metric_.spaceTimeDim() != pieces + waypoint_dim ||
+      x.size() < time_dim)
+  {
+    return false;
+  }
+
+  int spatial_dim = 0;
+  for (int i = 1; i < pieces; ++i)
+  {
+    const int dof = spatial_map_.getUnconstrainedDim(i);
+    if (dof <= 0)
+    {
+      return false;
+    }
+    spatial_dim += dof;
+  }
+  const int core_dim = time_dim + spatial_dim;
+  if (x.size() < core_dim)
+  {
+    return false;
+  }
+
+  const auto &times = optimizer_.getCurrentTimes();
+  if (times.size() != pieces || !times.allFinite())
+  {
+    return false;
+  }
+
+  Eigen::VectorXd dT_dtau(pieces);
+  for (int i = 0; i < pieces; ++i)
+  {
+    dT_dtau(i) = time_map_.backward(x(i), times(i), 1.0);
+    if (!std::isfinite(dT_dtau(i)))
+    {
+      return false;
+    }
+  }
+
+  Eigen::MatrixXd J_psi = Eigen::MatrixXd::Zero(waypoint_dim, spatial_dim);
+  int point_offset = 0;
+  int chart_offset = 0;
+  for (int i = 1; i < pieces; ++i)
+  {
+    const int dof = spatial_map_.getUnconstrainedDim(i);
+    const Eigen::VectorXd xi = x.segment(time_dim + chart_offset, dof);
+    Eigen::MatrixXd J_i;
+    if (!spatial_map_.physicalJacobian(xi, i, J_i) ||
+        J_i.rows() != TRAJ_DIM || J_i.cols() != dof)
+    {
+      return false;
+    }
+    J_psi.block(point_offset, chart_offset, TRAJ_DIM, dof) = J_i;
+    point_offset += TRAJ_DIM;
+    chart_offset += dof;
+  }
+
+  Eigen::MatrixXd G_x;
+  if (!minco::pullbackSolverChart(minco_metric_.spaceTimeMetric(), dT_dtau,
+                                  J_psi, G_x) ||
+      G_x.rows() != core_dim)
+  {
+    return false;
+  }
+  G_x.diagonal().array() +=
+      1.0e-8 * std::max(1.0, std::abs(G_x.trace())) /
+      static_cast<double>(std::max(1, core_dim));
+
+  const Eigen::VectorXd x_seed = x.head(core_dim);
+  if (!minco_joint_whitening_.configureBlockSchur(time_dim, x_seed, G_x) &&
+      !minco_joint_whitening_.configureDense(x_seed, G_x))
+  {
+    minco_joint_whitening_.clear();
+    return false;
+  }
+
+  joint_seed_durations_ = times;
+  joint_seed_waypoints_ = optimizer_.getCurrentInnerPoints();
+  optimizer_.setWaypointWhitening(nullptr);
+  optimizer_.setJointWhitening(&minco_joint_whitening_);
+  return true;
+}
+
+bool ExpTrajOpt::jointMetricNeedsRefresh() const
+{
+  if (!cfg_.minco_metric_refresh_en ||
+      last_metric_refresh_count_ >= std::max(0, cfg_.minco_metric_refresh_max))
+  {
+    return false;
+  }
+  const auto &times = optimizer_.getCurrentTimes();
+  const auto &inner = optimizer_.getCurrentInnerPoints();
+  if (joint_seed_durations_.size() != times.size() ||
+      times.size() == 0 || !times.allFinite())
+  {
+    return false;
+  }
+  double t_rel = 0.0;
+  for (int i = 0; i < times.size(); ++i)
+  {
+    const double seed = std::max(1.0e-3, std::abs(joint_seed_durations_(i)));
+    t_rel = std::max(t_rel, std::abs(times(i) - joint_seed_durations_(i)) / seed);
+  }
+  double p_rel = 0.0;
+  if (inner.cols() == joint_seed_waypoints_.cols() &&
+      inner.rows() == joint_seed_waypoints_.rows() && inner.cols() > 0)
+  {
+    const double scale = std::max(1.0e-3, cfg_.convex_hull_position_scale);
+    for (int i = 0; i < inner.cols(); ++i)
+    {
+      p_rel = std::max(p_rel, (inner.col(i) - joint_seed_waypoints_.col(i)).norm() /
+                                  scale);
+    }
+  }
+  return t_rel > std::max(0.0, cfg_.minco_metric_refresh_time_rel) ||
+         p_rel > std::max(0.0, cfg_.minco_metric_refresh_waypoint_rel);
+}
+
 void ExpTrajOpt::finishFrozenWhitening(VecDf &x)
 {
-  if (minco_whitening_.ready())
+  if (minco_joint_whitening_.ready())
+  {
+    minco_joint_whitening_.decodeInPlace(x);
+    if (opt_vars_.has_certified_incumbent &&
+        opt_vars_.certified_incumbent_x.size() == x.size())
+    {
+      minco_joint_whitening_.decodeInPlace(opt_vars_.certified_incumbent_x);
+    }
+  }
+  else if (minco_whitening_.ready())
   {
     minco_whitening_.decodeInPlace(x);
     if (opt_vars_.has_certified_incumbent &&
@@ -1290,7 +1434,10 @@ void ExpTrajOpt::finishFrozenWhitening(VecDf &x)
       minco_whitening_.decodeInPlace(opt_vars_.certified_incumbent_x);
     }
   }
+  minco_joint_whitening_.clear();
+  minco_whitening_.clear();
   optimizer_.setWaypointWhitening(nullptr);
+  optimizer_.setJointWhitening(nullptr);
 }
 
 bool ExpTrajOpt::applyMincoMetricH0(const VecDf &x,
@@ -1298,7 +1445,7 @@ bool ExpTrajOpt::applyMincoMetricH0(const VecDf &x,
                                     VecDf &r)
 {
   const int requested_mode = std::clamp(cfg_.minco_metric_mode, 0, 4);
-  if (requested_mode == 0 || x.size() != q.size() || !x.allFinite() ||
+  if (requested_mode != 2 || x.size() != q.size() || !x.allFinite() ||
       !q.allFinite() || !prepareMincoMetric(x))
   {
     return false;
@@ -1448,6 +1595,13 @@ void ExpTrajOpt::configureFastLbfgs(double rel_cost_tol,
   options.rel_step = opt_vars_.lbfgs_fast_rel_step;
   options.rel_penalty = opt_vars_.lbfgs_fast_rel_penalty;
   options.phase0_guards_en = opt_vars_.lbfgs_fast_phase0_guards_en;
+  if (optimizer_.jointWhitening() != nullptr &&
+      optimizer_.jointWhitening()->ready())
+  {
+    // Whitened z mixes τ and ξ.  Stop on physical T/P, not solver step.
+    options.rel_step = 0.0;
+    options.phase0_guards_en = true;
+  }
   options.rel_time = opt_vars_.lbfgs_fast_rel_time;
   options.rel_waypoint = opt_vars_.lbfgs_fast_rel_waypoint;
   options.scaled_grad = opt_vars_.lbfgs_fast_scaled_grad;
@@ -1684,18 +1838,39 @@ double ExpTrajOpt::stepBoundFunctional(void *ptr,
     return 1.0e20;
   }
 
+  Eigen::VectorXd chart = x;
+  Eigen::VectorXd d_chart = direction;
+  if (self->minco_joint_whitening_.ready())
+  {
+    const int n = self->minco_joint_whitening_.dim();
+    if (n <= 0 || x.size() < n || direction.size() < n)
+    {
+      return 1.0e20;
+    }
+    Eigen::VectorXd core_chart;
+    Eigen::VectorXd core_dir;
+    if (!self->minco_joint_whitening_.toChart(x.head(n), core_chart) ||
+        !self->minco_joint_whitening_.transformDirectionToChart(
+            direction.head(n), core_dir))
+    {
+      return 1.0e20;
+    }
+    chart.head(n) = core_chart;
+    d_chart.head(n) = core_dir;
+  }
+
   const int time_dim =
-      std::min(self->optimizer_.timeDecisionDim(), static_cast<int>(x.size()));
+      std::min(self->optimizer_.timeDecisionDim(), static_cast<int>(chart.size()));
   double step_bound = 1.0e20;
   for (int i = 0; i < time_dim; ++i)
   {
-    const double d = direction(i);
+    const double d = d_chart(i);
     if (!std::isfinite(d) || std::abs(d) <= 1.0e-16)
     {
       continue;
     }
 
-    const double duration = self->time_map_.toTime(x(i));
+    const double duration = self->time_map_.toTime(chart(i));
     if (!std::isfinite(duration) || duration <= 0.0)
     {
       continue;
@@ -1705,13 +1880,13 @@ double ExpTrajOpt::stepBoundFunctional(void *ptr,
     {
       const double upper_tau = self->time_map_.toTau(
           duration * vars.lbfgs_time_ratio_max);
-      step_bound = std::min(step_bound, (upper_tau - x(i)) / d);
+      step_bound = std::min(step_bound, (upper_tau - chart(i)) / d);
     }
     else
     {
       const double lower_tau = self->time_map_.toTau(
           duration * vars.lbfgs_time_ratio_min);
-      step_bound = std::min(step_bound, (lower_tau - x(i)) / d);
+      step_bound = std::min(step_bound, (lower_tau - chart(i)) / d);
     }
   }
 
@@ -2021,7 +2196,7 @@ bool ExpTrajOpt::runPhase2PackedCorrection(
                                        &ExpTrajOpt::fastLbfgsSnapshot,
                                        /*allow_fallback=*/false,
                                        nullptr,
-                                       cfg_.minco_metric_mode >= 2
+                                       cfg_.minco_metric_mode == 2
                                            ? &ExpTrajOpt::metricH0Functional
                                            : nullptr);
     syncFastLbfgsReport();
@@ -2241,9 +2416,12 @@ double ExpTrajOpt::optimize(Trajectory &traj, double rel_cost_tol)
   minco_metric_.clear();
   minco_metric_frozen_ready_ = false;
   minco_whitening_.clear();
+  minco_joint_whitening_.clear();
   optimizer_.setWaypointWhitening(nullptr);
+  optimizer_.setJointWhitening(nullptr);
   last_metric_seconds_ = 0.0;
   last_metric_cache_hit_ = false;
+  last_metric_refresh_count_ = 0;
   optimizer_.setEnergyWeight(opt_vars_.block_energy_cost ? 0.0 : 1.0);
   // Hull covers pos/vel/acc continuously; keep residual dense grid coarse.
   optimizer_.setSamplesPerPiece(
@@ -2448,9 +2626,17 @@ double ExpTrajOpt::optimize(Trajectory &traj, double rel_cost_tol)
   }
   const bool metric_ready =
       requested_metric_mode > 0 && prepareMincoMetric(x);
+  double metric_seconds_acc = last_metric_seconds_;
   const bool use_frozen_whitening =
       requested_metric_mode == 1 && metric_ready &&
       configureFrozenWhitening(x) && minco_whitening_.encodeInPlace(x);
+  bool use_joint_whitening = false;
+  if ((requested_metric_mode == 3 || requested_metric_mode == 4) &&
+      metric_ready && configureFrozenJointWhitening(x) &&
+      minco_joint_whitening_.encodeInPlace(x))
+  {
+    use_joint_whitening = true;
+  }
   if (requested_metric_mode == 1 && !use_frozen_whitening)
   {
     minco_whitening_.clear();
@@ -2460,7 +2646,17 @@ double ExpTrajOpt::optimize(Trajectory &traj, double rel_cost_tol)
                  "falling back to Euclidean L-BFGS"
               << RESET << std::endl;
   }
-  else if (requested_metric_mode >= 2 && !metric_ready)
+  else if ((requested_metric_mode == 3 || requested_metric_mode == 4) &&
+           !use_joint_whitening)
+  {
+    minco_joint_whitening_.clear();
+    optimizer_.setJointWhitening(nullptr);
+    std::cout << YELLOW
+              << " -- [ExpTrajOpt] Frozen joint whitening unavailable; "
+                 "falling back to Euclidean L-BFGS"
+              << RESET << std::endl;
+  }
+  else if (requested_metric_mode == 2 && !metric_ready)
   {
     std::cout << YELLOW
               << " -- [ExpTrajOpt] MCE metric unavailable; falling back to "
@@ -2486,6 +2682,7 @@ double ExpTrajOpt::optimize(Trajectory &traj, double rel_cost_tol)
 
   // One and only one hot-path major. It uses the real objective (including
   // exact FlatnessMap residuals). Conservative models are evaluated after it.
+  // Modes 3/4 use frozen joint whitening; H0 is mode 2 only.
   ret = fast_lbfgs_.run(x,
                         min_cost,
                         &ExpTrajOpt::costFunctional,
@@ -2494,10 +2691,54 @@ double ExpTrajOpt::optimize(Trajectory &traj, double rel_cost_tol)
                         &ExpTrajOpt::fastLbfgsSnapshot,
                         /*allow_fallback=*/true,
                         &initial_decision,
-                        requested_metric_mode >= 2 && metric_ready
+                        requested_metric_mode == 2 && metric_ready
                             ? &ExpTrajOpt::metricH0Functional
                             : nullptr);
   syncFastLbfgsReport();
+
+  if (use_joint_whitening && minco_joint_whitening_.ready() &&
+      jointMetricNeedsRefresh())
+  {
+    minco_joint_whitening_.decodeInPlace(x);
+    if (opt_vars_.has_certified_incumbent &&
+        opt_vars_.certified_incumbent_x.size() == x.size())
+    {
+      minco_joint_whitening_.decodeInPlace(opt_vars_.certified_incumbent_x);
+    }
+    optimizer_.setJointWhitening(nullptr);
+    minco_metric_frozen_ready_ = false;
+    if (prepareMincoMetric(x) && configureFrozenJointWhitening(x) &&
+        minco_joint_whitening_.encodeInPlace(x))
+    {
+      if (opt_vars_.has_certified_incumbent &&
+          opt_vars_.certified_incumbent_x.size() == x.size())
+      {
+        minco_joint_whitening_.encodeInPlace(opt_vars_.certified_incumbent_x);
+      }
+      metric_seconds_acc += last_metric_seconds_;
+      last_metric_refresh_count_ += 1;
+      configureFastLbfgs(rel_cost_tol,
+                         early_stop_enabled,
+                         static_cast<int>(x.size()));
+      fast_lbfgs_.reset();
+      ret = fast_lbfgs_.run(x,
+                            min_cost,
+                            &ExpTrajOpt::costFunctional,
+                            &ExpTrajOpt::stepBoundFunctional,
+                            this,
+                            &ExpTrajOpt::fastLbfgsSnapshot,
+                            /*allow_fallback=*/true,
+                            nullptr,
+                            nullptr);
+      syncFastLbfgsReport();
+    }
+    else
+    {
+      minco_joint_whitening_.clear();
+      optimizer_.setJointWhitening(nullptr);
+    }
+  }
+  last_metric_seconds_ = metric_seconds_acc;
 
   // The stable production line keeps the continuous oracle read-only. The
   // experimental hard-certification line may opt in to a certificate-triggered
@@ -2657,6 +2898,7 @@ double ExpTrajOpt::optimize(Trajectory &traj, double rel_cost_tol)
       timing.evaluation_seconds;
   last_timing_report_.metric_seconds = last_metric_seconds_;
   last_timing_report_.metric_cache_hit = last_metric_cache_hit_;
+  last_timing_report_.metric_refresh_count = last_metric_refresh_count_;
   last_timing_report_.optimization_seconds = optimization_seconds;
   last_timing_report_.dense_share_of_minco_evaluation =
       timing.denseIntegralShareOfEvaluation();
@@ -2805,6 +3047,13 @@ double ExpTrajOpt::optimize(Trajectory &traj, double rel_cost_tol)
       last_timing_report_.minco_evaluation_seconds;
   cumulative_timing_report_.optimization_seconds +=
       last_timing_report_.optimization_seconds;
+  cumulative_timing_report_.metric_seconds +=
+      last_timing_report_.metric_seconds;
+  cumulative_timing_report_.metric_cache_hit =
+      cumulative_timing_report_.metric_cache_hit ||
+      last_timing_report_.metric_cache_hit;
+  cumulative_timing_report_.metric_refresh_count +=
+      last_timing_report_.metric_refresh_count;
   cumulative_timing_report_.fast_stop_satisfied =
       cumulative_timing_report_.fast_stop_satisfied ||
       last_timing_report_.fast_stop_satisfied;

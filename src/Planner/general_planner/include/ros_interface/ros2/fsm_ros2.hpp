@@ -421,7 +421,7 @@ namespace fsm {
                                "EXP_ALM_MAX_VIOLATION,EXP_ALM_CERTIFIED,EXP_ALM_WARM_START_MS,"
                                "EXP_DENSE_INTEGRAL_MS,EXP_CONTROL_POINT_FUNCTIONAL_MS,"
                                "EXP_MINCO_EVALUATION_MS,EXP_LBFGS_MS,"
-                               "EXP_METRIC_MS,EXP_METRIC_CACHE_HIT,"
+                               "EXP_METRIC_MS,EXP_METRIC_CACHE_HIT,EXP_METRIC_REFRESH,"
                                "EXP_DENSE_SHARE_MINCO_PERCENT,EXP_CONTROL_POINT_SHARE_MINCO_PERCENT,"
                                "EXP_DENSE_SHARE_OPT_PERCENT,"
                                "EXP_LBFGS_SHARE_MODULE_PERCENT,EXP_MODULE_SHARE_REPLAN_PERCENT";
