@@ -58,7 +58,6 @@ struct FrontierParam {
   Eigen::Vector3i bits_need_;
   uint8_t idx_byte_size_;
   bool view_cluster_, view_frt_;
-  bool publish_frontier_topic_;
 };
 
 struct ViewpointParam {
@@ -242,7 +241,6 @@ private:
                             // sim_lio,去掉不必要的接口,ikd-treeh和odom存储在里面
   TopoGraph::Ptr graph_;
   ros::NodeHandle nh_;
-  ros::Publisher frontier_clusters_pub_;
   vector<Eigen::Vector3f> origin_viewpoints_;
   HighSpeedViewScoreContext high_speed_view_ctx_;
   // frontier update functions:
@@ -314,7 +312,6 @@ public:
   void visfrtnorm(const std::vector<Eigen::Vector3f> &centers,
                   const std::vector<Eigen::Vector3f> &normals);
   void visfrtcluster();
-  void publishFrontierClusters();
   void vizBestViewpoint();
   void updateFrontierClusters(vector<ClusterInfo::Ptr> &cluster_updated,
                               vector<int> &cluster_removed);

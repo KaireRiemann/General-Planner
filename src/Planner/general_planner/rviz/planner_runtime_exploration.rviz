@@ -475,7 +475,7 @@ Visualization Manager:
         - Class: rviz/MarkerArray
           Enabled: true
           Marker Topic: /planner_runtime_node/sf_cluster_marker
-          Name: FrontierClusters
+          Name: ExplorationFrontierMarkers
           Namespaces:
             {}
           Queue Size: 10

@@ -7,8 +7,6 @@
  * @Copyright (c) 2024 by ning-zelin, All Rights Reserved.
  */
 #include <general_core/exploration/exploration_utils/frontier_manager/frontier_manager.h>
-#include <general_planner/FrontierCluster.h>
-#include <general_planner/FrontierClusterArray.h>
 #include <visualization_msgs/Marker.h>
 #include <visualization_msgs/MarkerArray.h>
 typedef visualization_msgs::Marker Marker;
@@ -60,73 +58,7 @@ void inline SetMarker(const VizColor &color, const std::string &ns, const float 
   SetColor(color, alpha, scan_marker);
 }
 
-void FrontierManager::publishFrontierClusters() {
-  if (!frtp_.publish_frontier_topic_) {
-    return;
-  }
-  if (!frontier_clusters_pub_) {
-    frontier_clusters_pub_ =
-        nh_.advertise<general_planner::FrontierClusterArray>(
-            "frontier_clusters", 5);
-  }
-
-  general_planner::FrontierClusterArray msg;
-  msg.header.stamp = ros::Time::now();
-  msg.header.frame_id = "world";
-  msg.clusters.reserve(cluster_list_.size());
-
-  for (const auto &cluster : cluster_list_) {
-    if (!cluster) {
-      continue;
-    }
-    general_planner::FrontierCluster out;
-    out.id = cluster->id_;
-    out.center.x = cluster->center_.x();
-    out.center.y = cluster->center_.y();
-    out.center.z = cluster->center_.z();
-    out.normal.x = cluster->normal_.x();
-    out.normal.y = cluster->normal_.y();
-    out.normal.z = cluster->normal_.z();
-
-    const Eigen::Vector3f &vp =
-        (!cluster->candidate_vps_.empty() ? cluster->candidate_vps_.front()
-                                          : cluster->best_vp_);
-    const float yaw = !cluster->candidate_yaws_.empty()
-                          ? cluster->candidate_yaws_.front()
-                          : cluster->best_vp_yaw_;
-    out.best_viewpoint.position.x = vp.x();
-    out.best_viewpoint.position.y = vp.y();
-    out.best_viewpoint.position.z = vp.z();
-    out.best_viewpoint.orientation.x = 0.0;
-    out.best_viewpoint.orientation.y = 0.0;
-    out.best_viewpoint.orientation.z = std::sin(0.5 * yaw);
-    out.best_viewpoint.orientation.w = std::cos(0.5 * yaw);
-
-    out.box_min.x = cluster->box_min_.x();
-    out.box_min.y = cluster->box_min_.y();
-    out.box_min.z = cluster->box_min_.z();
-    out.box_max.x = cluster->box_max_.x();
-    out.box_max.y = cluster->box_max_.y();
-    out.box_max.z = cluster->box_max_.z();
-
-    out.state = static_cast<uint8_t>(cluster->state_);
-    out.is_reachable = cluster->is_reachable_;
-    out.is_dormant = cluster->is_dormant_;
-    out.is_new_cluster = cluster->is_new_cluster_;
-    out.visible_gain =
-        static_cast<float>(std::max(cluster->last_visible_gain_,
-                                    cluster->stable_visible_gain_));
-    out.score = static_cast<float>(
-        std::max(cluster->last_score_, cluster->stable_score_));
-    out.distance = cluster->distance_;
-    msg.clusters.push_back(out);
-  }
-
-  frontier_clusters_pub_.publish(msg);
-}
-
 void FrontierManager::visfrtcluster() {
-  publishFrontierClusters();
   if (!frtp_.view_cluster_)
     return;
   static ros::Publisher sf_cluster_pub = nh_.advertise<visualization_msgs::MarkerArray>("sf_cluster_marker", 5);

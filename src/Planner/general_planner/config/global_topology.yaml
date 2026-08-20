@@ -12,6 +12,10 @@ global_topology:
   navigation_altitude: 1.6
   frame_id: world
   topic: /planner/global_topology
+  # Independent semantic snapshot. A point is expandable only if one of its
+  # region-face portals has no active connection to another topology region.
+  expansion_topic: /planner/world/topology_expansion_points
+  expansion_publish_period: 0.50
   # Dirty updates are coalesced and map revisions remain available immediately
   # to local safety. The immutable query snapshot is copied at 2 Hz.
   update_period: 0.10

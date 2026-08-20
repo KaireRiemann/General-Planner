@@ -62,6 +62,16 @@ public:
         HISTORICAL = 1
     };
 
+    /** Faces of a topology region reached by a selected bubble portal. */
+    enum PortalFace : std::uint8_t {
+        PORTAL_NEG_X = 1U << 0U,
+        PORTAL_POS_X = 1U << 1U,
+        PORTAL_NEG_Y = 1U << 2U,
+        PORTAL_POS_Y = 1U << 3U,
+        PORTAL_NEG_Z = 1U << 4U,
+        PORTAL_POS_Z = 1U << 5U
+    };
+
     static const char *constructionModeName(ConstructionMode mode);
     static ConstructionMode constructionModeFromString(
         const std::string &name);
@@ -146,6 +156,10 @@ public:
         std::uint64_t revision{0};
         std::uint64_t last_observed_revision{0};
         NodeState state{NodeState::ACTIVE};
+        /** Region faces this bubble reached when it entered the topology. */
+        std::uint8_t portal_mask{0};
+        /** Portal faces not currently connected to another active region. */
+        std::uint8_t expansion_mask{0};
     };
 
     struct Edge {

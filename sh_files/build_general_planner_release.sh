@@ -31,7 +31,7 @@ What is synced:
   - devel/lib/general_planner/highspeed_traj_server
   - M2 planner_runtime launch + mode RViz configs
   - M2 state2state and global-topology configuration
-  - general_planner PlannerStatus/PlannerModeRequest/FrontierCluster msgs
+  - general_planner PlannerStatus/PlannerModeRequest/TopologyExpansionPoint msgs
   - devel/lib/liblkh_tsp_solver.so
   - General Planner 3D Nav Goal RViz plugin
   - General Planner garage exploration YAML/RViz configs
@@ -211,8 +211,8 @@ for required in \
   "${RVIZ_SWITCHER_SCRIPT_SRC}" \
   "${PLANNER_MSG_DIR}/PlannerStatus.msg" \
   "${PLANNER_MSG_DIR}/PlannerModeRequest.msg" \
-  "${PLANNER_MSG_DIR}/FrontierCluster.msg" \
-  "${PLANNER_MSG_DIR}/FrontierClusterArray.msg" \
+  "${PLANNER_MSG_DIR}/TopologyExpansionPoint.msg" \
+  "${PLANNER_MSG_DIR}/TopologyExpansionPointArray.msg" \
   "${GP_CPP_MSG_SRC}" \
   "${GP_PY_MSG_SRC}" \
   "${RELEASE_PKG_DIR}/launch/planner_runtime.launch" \
@@ -296,11 +296,14 @@ cp "${RUNTIME_STATE2STATE_RVIZ_SRC}" \
   "${RELEASE_CONFIG_DIR}/planner_runtime_state2state.rviz"
 
 echo "[build_release] Sync general_planner runtime messages"
+rm -rf "${GP_MSG_PKG_DST}/msg"
 mkdir -p "${GP_MSG_PKG_DST}/msg"
 cp "${PLANNER_MSG_DIR}/PlannerStatus.msg" "${GP_MSG_PKG_DST}/msg/PlannerStatus.msg"
 cp "${PLANNER_MSG_DIR}/PlannerModeRequest.msg" "${GP_MSG_PKG_DST}/msg/PlannerModeRequest.msg"
-cp "${PLANNER_MSG_DIR}/FrontierCluster.msg" "${GP_MSG_PKG_DST}/msg/FrontierCluster.msg"
-cp "${PLANNER_MSG_DIR}/FrontierClusterArray.msg" "${GP_MSG_PKG_DST}/msg/FrontierClusterArray.msg"
+cp "${PLANNER_MSG_DIR}/TopologyExpansionPoint.msg" \
+  "${GP_MSG_PKG_DST}/msg/TopologyExpansionPoint.msg"
+cp "${PLANNER_MSG_DIR}/TopologyExpansionPointArray.msg" \
+  "${GP_MSG_PKG_DST}/msg/TopologyExpansionPointArray.msg"
 cat >"${GP_MSG_PKG_DST}/package.xml" <<'EOF'
 <?xml version="1.0"?>
 <package format="2">
@@ -397,7 +400,12 @@ PY
     rviz:=false >/dev/null
   rospack find general_planner >/dev/null
   python3 - <<'PY'
-from general_planner.msg import PlannerStatus, PlannerModeRequest, FrontierCluster, FrontierClusterArray
+from general_planner.msg import (
+    PlannerStatus,
+    PlannerModeRequest,
+    TopologyExpansionPoint,
+    TopologyExpansionPointArray,
+)
 print("general_planner runtime msgs import ok")
 PY
 

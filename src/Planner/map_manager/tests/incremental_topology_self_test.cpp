@@ -69,6 +69,19 @@ int main() {
     ok &= expect(initial.nodes.size() >= 3 && initial.nodes.size() <= 6,
                  "each free region needs a sparse core plus bounded portal nodes");
     ok &= expect(!initial.edges.empty(), "neighboring regions must be connected");
+    bool has_portal = false;
+    bool has_expandable_portal = false;
+    for (const auto &node : initial.nodes) {
+        has_portal = has_portal || node.portal_mask != 0U;
+        has_expandable_portal = has_expandable_portal ||
+            node.expansion_mask != 0U;
+        ok &= expect((node.expansion_mask & ~node.portal_mask) == 0U,
+                     "an expansion direction must originate from a portal face");
+    }
+    ok &= expect(has_portal,
+                 "sparse bubble topology must retain region-face portal provenance");
+    ok &= expect(has_expandable_portal,
+                 "unconnected endpoint portals must be exposed as expandable");
 
     std::unordered_map<std::uint64_t, Vec3f> stable_nodes;
     for (const auto &node : initial.nodes) {

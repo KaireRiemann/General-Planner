@@ -704,14 +704,26 @@ IncrementalTopologyGraph::generateCandidates(const RegionKey &region,
 
     const rog_map::Vec3f region_center =
         minimum + rog_map::Vec3f::Constant(0.5 * config_.region_size);
-    std::vector<std::size_t> selected;
+    struct SelectedBubble {
+        std::size_t index{0};
+        std::uint8_t portal_mask{0};
+    };
+    std::vector<SelectedBubble> selected;
     selected.reserve(config_.max_nodes_per_region);
-    const auto appendSelected = [&](const std::size_t index) {
-        if (selected.size() >= config_.max_nodes_per_region ||
-            std::find(selected.begin(), selected.end(), index) != selected.end()) {
+    const auto appendSelected = [&](const std::size_t index,
+                                    const std::uint8_t portal_mask = 0U) {
+        const auto existing = std::find_if(
+            selected.begin(), selected.end(), [index](const SelectedBubble &item) {
+                return item.index == index;
+            });
+        if (existing != selected.end()) {
+            existing->portal_mask |= portal_mask;
             return;
         }
-        selected.push_back(index);
+        if (selected.size() >= config_.max_nodes_per_region) {
+            return;
+        }
+        selected.push_back({index, portal_mask});
     };
 
     for (const auto &members : components) {
@@ -765,26 +777,35 @@ IncrementalTopologyGraph::generateCandidates(const RegionKey &region,
                 }
                 if (reaches_face) {
                     bool separated = true;
-                    for (const std::size_t index : selected) {
-                        if ((bubbles[index].center - bubbles[portal].center).norm() <
+                    for (const SelectedBubble &item : selected) {
+                        if ((bubbles[item.index].center - bubbles[portal].center).norm() <
                             0.5 * config_.candidate_separation) {
                             separated = false;
                             break;
                         }
                     }
-                    if (separated) {
-                        appendSelected(portal);
+                    const std::uint8_t face_mask = static_cast<std::uint8_t>(
+                        1U << static_cast<unsigned int>(axis * 2 + side));
+                    const bool already_selected = std::any_of(
+                        selected.begin(), selected.end(),
+                        [portal](const SelectedBubble &item) {
+                            return item.index == portal;
+                        });
+                    if (already_selected || separated) {
+                        appendSelected(portal, face_mask);
                     }
                 }
             }
         }
     }
 
-    for (const std::size_t index : selected) {
+    for (const SelectedBubble &item : selected) {
+        const std::size_t index = item.index;
         Node node;
         node.position = bubbles[index].center;
         node.clearance = bubbles[index].radius;
         node.state = NodeState::ACTIVE;
+        node.portal_mask = item.portal_mask;
         candidates.push_back(node);
     }
 
@@ -1500,9 +1521,39 @@ void IncrementalTopologyGraph::publishSearchSnapshot() {
         next->revision = revision_;
         next->graph.reserve(nodes_.size());
         for (const auto &entry : nodes_) {
+            Node node = entry.second.node;
+            node.expansion_mask = 0U;
+            if (node.state == NodeState::ACTIVE) {
+                std::uint8_t connected_faces = 0U;
+                for (const auto &neighbor : entry.second.neighbors) {
+                    const auto neighbor_it = nodes_.find(neighbor.first);
+                    if (neighbor_it == nodes_.end() ||
+                        neighbor_it->second.node.state != NodeState::ACTIVE) {
+                        continue;
+                    }
+                    const RegionKey &source_region = entry.second.region;
+                    const RegionKey &target_region = neighbor_it->second.region;
+                    if (target_region.x < source_region.x) {
+                        connected_faces |= PORTAL_NEG_X;
+                    } else if (target_region.x > source_region.x) {
+                        connected_faces |= PORTAL_POS_X;
+                    }
+                    if (target_region.y < source_region.y) {
+                        connected_faces |= PORTAL_NEG_Y;
+                    } else if (target_region.y > source_region.y) {
+                        connected_faces |= PORTAL_POS_Y;
+                    }
+                    if (target_region.z < source_region.z) {
+                        connected_faces |= PORTAL_NEG_Z;
+                    } else if (target_region.z > source_region.z) {
+                        connected_faces |= PORTAL_POS_Z;
+                    }
+                }
+                node.expansion_mask = static_cast<std::uint8_t>(
+                    node.portal_mask & static_cast<std::uint8_t>(~connected_faces));
+            }
             next->graph.emplace(entry.first,
-                                SearchNode{entry.second.node,
-                                           entry.second.neighbors});
+                                SearchNode{node, entry.second.neighbors});
         }
     }
     std::atomic_store_explicit(

@@ -42,11 +42,11 @@ find_package(catkin REQUIRED COMPONENTS
 
 add_message_files(
         FILES
-        FrontierCluster.msg
-        FrontierClusterArray.msg
         ExplorationTaskRequest.msg
         PlannerModeRequest.msg
         PlannerStatus.msg
+        TopologyExpansionPoint.msg
+        TopologyExpansionPointArray.msg
 )
 
 generate_messages(

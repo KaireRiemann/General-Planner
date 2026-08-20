@@ -1,12 +1,15 @@
 #include <general_core/planner_runtime/global_map_runtime.hpp>
 
 #include <general_core/exploration/exploration_utils/lidar_map/lidar_map.h>
+#include <general_planner/TopologyExpansionPoint.h>
+#include <general_planner/TopologyExpansionPointArray.h>
 
 #include <pcl_conversions/pcl_conversions.h>
 
 #include <algorithm>
 #include <cmath>
 #include <stdexcept>
+#include <unordered_map>
 #include <utility>
 
 namespace general_planner::planner_runtime {
@@ -16,6 +19,7 @@ GlobalMapRuntime::~GlobalMapRuntime() {
   cloud_sub_.reset();
   odom_sync_sub_.reset();
   odom_sub_.shutdown();
+  topology_expansion_timer_.stop();
   topology_maintainer_.reset();
 }
 
@@ -50,6 +54,22 @@ void GlobalMapRuntime::init(ros::NodeHandle nh,
   topology_maintainer_ = std::make_unique<TopologyGraphROS1>(
       nh_, context_->map_manager, "global_topology");
 
+  std::string topology_expansion_topic{
+      "/planner/world/topology_expansion_points"};
+  nh_.param("global_topology/frame_id", topology_frame_id_, topology_frame_id_);
+  nh_.param("global_topology/expansion_topic", topology_expansion_topic,
+            topology_expansion_topic);
+  nh_.param("global_topology/expansion_publish_period",
+            topology_expansion_publish_period_, topology_expansion_publish_period_);
+  topology_expansion_publish_period_ = std::max(
+      0.05, topology_expansion_publish_period_);
+  topology_expansion_pub_ =
+      nh_.advertise<general_planner::TopologyExpansionPointArray>(
+          topology_expansion_topic, 1, true);
+  topology_expansion_timer_ = nh_.createWallTimer(
+      ros::WallDuration(topology_expansion_publish_period_),
+      &GlobalMapRuntime::topologyExpansionTimerCallback, this);
+
   std::string odom_topic{"/lidar_slam/odom"};
   std::string cloud_topic{"/cloud_registered"};
   int odom_queue = 50;
@@ -81,6 +101,8 @@ void GlobalMapRuntime::init(ros::NodeHandle nh,
                   << cloud_topic << " odom=" << odom_topic
                   << " topology="
                   << (topology_maintainer_->enabled() ? "enabled" : "disabled")
+                  << " topology_expansion_topic="
+                  << nh_.resolveName(topology_expansion_topic)
                   << " map_config=" << map_config_path);
 }
 
@@ -177,6 +199,7 @@ void GlobalMapRuntime::cloudOdomCallback(
   if (topology_maintainer_) {
     topology_maintainer_->updateAndPublish();
   }
+  publishTopologyExpansionSnapshot();
   context_->sensor_revision.fetch_add(1, std::memory_order_acq_rel);
 
   {
@@ -186,6 +209,78 @@ void GlobalMapRuntime::cloudOdomCallback(
   for (const auto &consumer : consumers) {
     consumer(cloud, odom, update);
   }
+}
+
+void GlobalMapRuntime::publishTopologyExpansionSnapshot() {
+  std::lock_guard<std::mutex> lock(topology_expansion_mutex_);
+  if (!context_ || !context_->map_manager || !topology_expansion_pub_) {
+    return;
+  }
+
+  const auto snapshot = context_->map_manager->topologySnapshot();
+  const ros::WallTime now = ros::WallTime::now();
+  const bool revision_changed =
+      !topology_expansion_published_ ||
+      snapshot.revision != last_topology_expansion_revision_;
+  if (!revision_changed && !last_topology_expansion_publish_time_.isZero() &&
+      (now - last_topology_expansion_publish_time_).toSec() <
+          topology_expansion_publish_period_) {
+    return;
+  }
+
+  general_planner::TopologyExpansionPointArray message;
+  message.header.stamp = ros::Time::now();
+  message.header.frame_id = topology_frame_id_;
+  message.world_epoch =
+      context_->world_epoch.load(std::memory_order_acquire);
+  message.map_revision = context_->map_manager->mapRevision();
+  message.topology_revision = snapshot.revision;
+  message.points.reserve(snapshot.nodes.size());
+
+  std::unordered_map<IncrementalTopologyGraph::NodeId, std::uint32_t> degree;
+  degree.reserve(snapshot.nodes.size());
+  for (const auto &edge : snapshot.edges) {
+    ++degree[edge.from];
+    ++degree[edge.to];
+  }
+
+  for (const auto &node : snapshot.nodes) {
+    general_planner::TopologyExpansionPoint point;
+    point.id = node.id;
+    point.position.x = node.position.x();
+    point.position.y = node.position.y();
+    point.position.z = node.position.z();
+    point.clearance = static_cast<float>(node.clearance);
+    const auto degree_it = degree.find(node.id);
+    point.degree = degree_it == degree.end() ? 0U : degree_it->second;
+    point.state = node.state == IncrementalTopologyGraph::NodeState::ACTIVE
+        ? general_planner::TopologyExpansionPoint::STATE_ACTIVE
+        : general_planner::TopologyExpansionPoint::STATE_HISTORICAL;
+    point.portal_mask = node.portal_mask;
+    point.expansion_mask = node.expansion_mask;
+    point.is_expandable =
+        point.state == general_planner::TopologyExpansionPoint::STATE_ACTIVE &&
+        point.expansion_mask != 0U;
+    point.node_revision = node.revision;
+    point.last_observed_revision = node.last_observed_revision;
+    if (point.state == general_planner::TopologyExpansionPoint::STATE_ACTIVE) {
+      ++message.active_count;
+    }
+    if (point.is_expandable) {
+      ++message.expandable_count;
+    }
+    message.points.push_back(std::move(point));
+  }
+
+  topology_expansion_pub_.publish(message);
+  last_topology_expansion_publish_time_ = now;
+  last_topology_expansion_revision_ = snapshot.revision;
+  topology_expansion_published_ = true;
+}
+
+void GlobalMapRuntime::topologyExpansionTimerCallback(
+    const ros::WallTimerEvent &) {
+  publishTopologyExpansionSnapshot();
 }
 
 GlobalMapStatus GlobalMapRuntime::status() const {

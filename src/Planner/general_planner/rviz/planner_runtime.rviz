@@ -164,7 +164,7 @@ Visualization Manager:
         - Class: rviz/MarkerArray
           Enabled: true
           Marker Topic: /exploration_node/sf_cluster_marker
-          Name: frontier_clusters
+          Name: ExplorationFrontierMarkers
           Namespaces:
             aabb: true
             best_viewpoint: true
