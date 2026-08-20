@@ -187,6 +187,9 @@ struct PlannerStatus_
 #if defined(_WIN32) && defined(MODE_EMERGENCY_STOP)
   #undef MODE_EMERGENCY_STOP
 #endif
+#if defined(_WIN32) && defined(MODE_TARGET_EXPLORATION)
+  #undef MODE_TARGET_EXPLORATION
+#endif
 #if defined(_WIN32) && defined(PHASE_BOOT)
   #undef PHASE_BOOT
 #endif
@@ -225,6 +228,9 @@ struct PlannerStatus_
 #endif
 #if defined(_WIN32) && defined(RESULT_CANCELED)
   #undef RESULT_CANCELED
+#endif
+#if defined(_WIN32) && defined(RESULT_BLOCKED)
+  #undef RESULT_BLOCKED
 #endif
 #if defined(_WIN32) && defined(OWNER_HOLD)
   #undef OWNER_HOLD
@@ -280,6 +286,9 @@ struct PlannerStatus_
 #if defined(_WIN32) && defined(MODE_STATE_EXP_FINISH)
   #undef MODE_STATE_EXP_FINISH
 #endif
+#if defined(_WIN32) && defined(MODE_STATE_EXP_WAIT_TARGET)
+  #undef MODE_STATE_EXP_WAIT_TARGET
+#endif
 #if defined(_WIN32) && defined(MODE_STATE_HOLD_IDLE)
   #undef MODE_STATE_HOLD_IDLE
 #endif
@@ -289,6 +298,7 @@ struct PlannerStatus_
     MODE_STATE2STATE = 1u,
     MODE_EXPLORATION = 2u,
     MODE_EMERGENCY_STOP = 3u,
+    MODE_TARGET_EXPLORATION = 4u,
     PHASE_BOOT = 0u,
     PHASE_WAITING_INPUT = 1u,
     PHASE_PLANNING = 2u,
@@ -302,6 +312,7 @@ struct PlannerStatus_
     RESULT_SUCCEEDED = 1u,
     RESULT_FAILED = 2u,
     RESULT_CANCELED = 3u,
+    RESULT_BLOCKED = 4u,
     OWNER_HOLD = 0u,
     OWNER_STATE2STATE = 1u,
     OWNER_EXPLORATION = 2u,
@@ -320,6 +331,7 @@ struct PlannerStatus_
     MODE_STATE_EXP_PAUSING = 16u,
     MODE_STATE_EXP_PAUSED = 17u,
     MODE_STATE_EXP_FINISH = 18u,
+    MODE_STATE_EXP_WAIT_TARGET = 19u,
     MODE_STATE_HOLD_IDLE = 20u,
   };
 
@@ -335,6 +347,12 @@ typedef boost::shared_ptr< ::general_planner::PlannerStatus > PlannerStatusPtr;
 typedef boost::shared_ptr< ::general_planner::PlannerStatus const> PlannerStatusConstPtr;
 
 // constants requiring out of line definition
+
+   
+
+   
+
+   
 
    
 
@@ -505,12 +523,12 @@ struct MD5Sum< ::general_planner::PlannerStatus_<ContainerAllocator> >
 {
   static const char* value()
   {
-    return "923c9b743d992dd11a5936af5395d6e7";
+    return "e9fd8af440394371ec67478bc266019d";
   }
 
   static const char* value(const ::general_planner::PlannerStatus_<ContainerAllocator>&) { return value(); }
-  static const uint64_t static_value1 = 0x923c9b743d992dd1ULL;
-  static const uint64_t static_value2 = 0x1a5936af5395d6e7ULL;
+  static const uint64_t static_value1 = 0xe9fd8af440394371ULL;
+  static const uint64_t static_value2 = 0xec67478bc266019dULL;
 };
 
 template<class ContainerAllocator>
@@ -566,6 +584,7 @@ struct Definition< ::general_planner::PlannerStatus_<ContainerAllocator> >
 "uint8 MODE_STATE2STATE=1\n"
 "uint8 MODE_EXPLORATION=2\n"
 "uint8 MODE_EMERGENCY_STOP=3\n"
+"uint8 MODE_TARGET_EXPLORATION=4\n"
 "\n"
 "uint8 PHASE_BOOT=0\n"
 "uint8 PHASE_WAITING_INPUT=1\n"
@@ -581,6 +600,7 @@ struct Definition< ::general_planner::PlannerStatus_<ContainerAllocator> >
 "uint8 RESULT_SUCCEEDED=1\n"
 "uint8 RESULT_FAILED=2\n"
 "uint8 RESULT_CANCELED=3\n"
+"uint8 RESULT_BLOCKED=4\n"
 "\n"
 "uint8 OWNER_HOLD=0\n"
 "uint8 OWNER_STATE2STATE=1\n"
@@ -601,6 +621,7 @@ struct Definition< ::general_planner::PlannerStatus_<ContainerAllocator> >
 "uint16 MODE_STATE_EXP_PAUSING=16\n"
 "uint16 MODE_STATE_EXP_PAUSED=17\n"
 "uint16 MODE_STATE_EXP_FINISH=18\n"
+"uint16 MODE_STATE_EXP_WAIT_TARGET=19\n"
 "uint16 MODE_STATE_HOLD_IDLE=20\n"
 "\n"
 "================================================================================\n"

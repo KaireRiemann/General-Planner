@@ -409,6 +409,8 @@ public:
     double hull_backward_add_seconds{0.0};
     double hull_discrete_attractor_seconds{0.0};
     double minco_evaluation_seconds{0.0};
+    double metric_seconds{0.0};
+    bool metric_cache_hit{false};
     double optimization_seconds{0.0};
     double dense_share_of_minco_evaluation{0.0};
     double control_point_share_of_minco_evaluation{0.0};
@@ -646,6 +648,8 @@ private:
                           int decision_dim);
   void syncFastLbfgsReport();
   bool prepareMincoMetric(const VecDf &x);
+  bool configureFrozenWhitening(const VecDf &x);
+  void finishFrozenWhitening(VecDf &x);
   bool applyMincoMetricH0(const VecDf &x,
                           const VecDf &q,
                           VecDf &r);
@@ -671,6 +675,7 @@ private:
 
   SnapOptimizer optimizer_;
   minco::MincoMetric<TRAJ_DIM, SNAP_TRAJ_S> minco_metric_;
+  minco::FrozenMceWhitening minco_whitening_;
   temporal_map::QuadInvTimeMap time_map_;
   spatial_map::PolytopeSpatialMap spatial_map_;
   cost_functional::LinearTimeCost linear_time_cost_;
@@ -687,6 +692,21 @@ private:
   TimingReport cumulative_timing_report_;
   SolverQualityReport last_quality_report_;
   bool minco_metric_frozen_ready_{false};
+  double last_metric_seconds_{0.0};
+  bool last_metric_cache_hit_{false};
+
+  struct MincoMetricDurationCache
+  {
+    bool valid{false};
+    int pieces{0};
+    double energy_weight{1.0};
+    double regularization{0.0};
+    VecDf durations;
+    Eigen::MatrixXd waypoint_metric;
+    Eigen::MatrixXd scalar_metric;
+    bool has_kronecker{false};
+  };
+  MincoMetricDurationCache minco_metric_cache_;
 
   struct WarmStartCache
   {

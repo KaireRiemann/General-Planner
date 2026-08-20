@@ -1013,16 +1013,28 @@ math_utils::FastLbfgs::PhysicalSnapshot ExpTrajOpt::fastLbfgsSnapshot(
   }
 
   snap.waypoints.resize(3, std::max(0, vars.piece_num - 1));
+  const auto &inner = self->optimizer_.getCurrentInnerPoints();
+  if (inner.cols() == snap.waypoints.cols() && inner.rows() == 3 &&
+      inner.allFinite())
+  {
+    snap.waypoints = inner;
+    return snap;
+  }
   int offset = self->optimizer_.timeDecisionDim();
+  Eigen::VectorXd chart = x;
+  if (self->minco_whitening_.ready())
+  {
+    self->minco_whitening_.decodeInPlace(chart);
+  }
   for (int i = 1; i < vars.piece_num; ++i)
   {
     const int dof = self->spatial_map_.getUnconstrainedDim(i);
-    if (offset + dof > x.size())
+    if (offset + dof > chart.size())
     {
       break;
     }
     snap.waypoints.col(i - 1) =
-        self->spatial_map_.toPhysical(x.segment(offset, dof), i);
+        self->spatial_map_.toPhysical(chart.segment(offset, dof), i);
     offset += dof;
   }
   return snap;
@@ -1038,11 +1050,14 @@ bool ExpTrajOpt::metricH0Functional(void *ptr,
 
 bool ExpTrajOpt::prepareMincoMetric(const VecDf &x)
 {
+  const auto metric_begin = std::chrono::steady_clock::now();
+  last_metric_cache_hit_ = false;
   const int requested_mode = std::clamp(cfg_.minco_metric_mode, 0, 4);
-  if (requested_mode == 0)
+  if (requested_mode == 0 || optimizer_.energyWeight() <= 0.0)
   {
     minco_metric_.clear();
     minco_metric_frozen_ready_ = false;
+    last_metric_seconds_ = 0.0;
     return false;
   }
 
@@ -1062,6 +1077,8 @@ bool ExpTrajOpt::prepareMincoMetric(const VecDf &x)
       mode == minco::MincoMetricMode::kBlockSpaceTime;
   if (frozen_mode && minco_metric_frozen_ready_ && minco_metric_.ready())
   {
+    last_metric_seconds_ = 0.0;
+    last_metric_cache_hit_ = true;
     return true;
   }
 
@@ -1069,25 +1086,211 @@ bool ExpTrajOpt::prepareMincoMetric(const VecDf &x)
   options.mode = mode;
   options.regularization = std::max(0.0, cfg_.minco_metric_regularization);
   options.time_metric_weight = std::max(0.0, cfg_.minco_metric_time_weight);
+  options.energy_weight = std::max(0.0, optimizer_.energyWeight());
   minco_metric_.setOptions(options);
 
-  if (!optimizer_.updateTrajectoryFromDecisionVector(x) ||
-      !minco_metric_.update(optimizer_.getTrajectory()))
+  if (!optimizer_.updateTrajectoryFromDecisionVector(x))
   {
     minco_metric_frozen_ready_ = false;
+    last_metric_seconds_ =
+        std::chrono::duration<double>(std::chrono::steady_clock::now() -
+                                      metric_begin)
+            .count();
     return false;
   }
 
+  const auto &durations = optimizer_.getCurrentTimes();
+  const bool cache_ok =
+      cfg_.minco_metric_cache_enable &&
+      mode == minco::MincoMetricMode::kFrozenWaypoint &&
+      minco_metric_cache_.valid &&
+      minco_metric_cache_.pieces == optimizer_.getPieceNum() &&
+      minco_metric_cache_.durations.size() == durations.size() &&
+      std::abs(minco_metric_cache_.energy_weight - options.energy_weight) <
+          1.0e-15 &&
+      std::abs(minco_metric_cache_.regularization - options.regularization) <
+          1.0e-18;
+  if (cache_ok)
+  {
+    const double t_scale =
+        std::max(minco_metric_cache_.durations.cwiseAbs().maxCoeff(), 1.0e-12);
+    const double rel =
+        (durations - minco_metric_cache_.durations).cwiseAbs().maxCoeff() /
+        t_scale;
+    if (rel < std::max(0.0, cfg_.minco_metric_cache_time_rel_tol) &&
+        minco_metric_.adoptReadyWaypointMetric(
+            minco_metric_cache_.waypoint_metric,
+            minco_metric_cache_.scalar_metric,
+            minco_metric_cache_.has_kronecker))
+    {
+      minco_metric_frozen_ready_ = frozen_mode;
+      last_metric_cache_hit_ = true;
+      last_metric_seconds_ =
+          std::chrono::duration<double>(std::chrono::steady_clock::now() -
+                                        metric_begin)
+              .count();
+      return true;
+    }
+  }
+
+  if (!minco_metric_.update(optimizer_.getTrajectory()))
+  {
+    minco_metric_frozen_ready_ = false;
+    last_metric_seconds_ =
+        std::chrono::duration<double>(std::chrono::steady_clock::now() -
+                                      metric_begin)
+            .count();
+    return false;
+  }
+
+  if (mode == minco::MincoMetricMode::kFrozenWaypoint)
+  {
+    minco_metric_cache_.valid = true;
+    minco_metric_cache_.pieces = optimizer_.getPieceNum();
+    minco_metric_cache_.energy_weight = options.energy_weight;
+    minco_metric_cache_.regularization = options.regularization;
+    minco_metric_cache_.durations = durations;
+    minco_metric_cache_.waypoint_metric = minco_metric_.waypointMetric();
+    minco_metric_cache_.scalar_metric = minco_metric_.scalarWaypointMetric();
+    minco_metric_cache_.has_kronecker = minco_metric_.hasKroneckerStructure();
+  }
+
   minco_metric_frozen_ready_ = frozen_mode;
+  last_metric_seconds_ =
+      std::chrono::duration<double>(std::chrono::steady_clock::now() -
+                                    metric_begin)
+          .count();
   if (cfg_.print_optimizer_log)
   {
     std::cout << " -- [ExpTrajOpt] MCE metric mode=" << requested_mode
               << " dim=" << minco_metric_.selectedMetric().rows()
               << " condition=" << minco_metric_.conditionNumber()
               << " frozen=" << (minco_metric_frozen_ready_ ? 1 : 0)
+              << " cache=" << (last_metric_cache_hit_ ? 1 : 0)
               << std::endl;
   }
   return true;
+}
+
+bool ExpTrajOpt::configureFrozenWhitening(const VecDf &x)
+{
+  minco_whitening_.clear();
+  optimizer_.setWaypointWhitening(nullptr);
+  if (!minco_metric_.ready() || minco_metric_.isSpaceTimeMetric())
+  {
+    return false;
+  }
+
+  const int pieces = optimizer_.getPieceNum();
+  const int time_dim = optimizer_.timeDecisionDim();
+  const int waypoint_dim = TRAJ_DIM * std::max(0, pieces - 1);
+  if (pieces <= 1 || waypoint_dim <= 0 || x.size() < time_dim)
+  {
+    return false;
+  }
+
+  int spatial_dim = 0;
+  for (int i = 1; i < pieces; ++i)
+  {
+    const int dof = spatial_map_.getUnconstrainedDim(i);
+    if (dof <= 0)
+    {
+      return false;
+    }
+    spatial_dim += dof;
+  }
+  if (x.size() < time_dim + spatial_dim)
+  {
+    return false;
+  }
+
+  const Eigen::VectorXd y_seed = x.segment(time_dim, spatial_dim);
+  if (!y_seed.allFinite())
+  {
+    return false;
+  }
+
+  if (spatial_map_.identity_mode && spatial_dim == waypoint_dim &&
+      minco_metric_.hasKroneckerStructure() &&
+      minco_metric_.scalarWaypointMetric().rows() == pieces - 1)
+  {
+    if (!minco_whitening_.configureKronecker(
+            time_dim, TRAJ_DIM, y_seed, minco_metric_.scalarWaypointMetric()))
+    {
+      minco_whitening_.clear();
+      return false;
+    }
+    optimizer_.setWaypointWhitening(&minco_whitening_);
+    return true;
+  }
+
+  bool identity_chart = spatial_dim == waypoint_dim &&
+                        minco_metric_.hasKroneckerStructure() &&
+                        minco_metric_.scalarWaypointMetric().rows() ==
+                            pieces - 1;
+  Eigen::MatrixXd jacobian =
+      Eigen::MatrixXd::Zero(waypoint_dim, spatial_dim);
+  Eigen::MatrixXd gauge = Eigen::MatrixXd::Zero(spatial_dim, spatial_dim);
+  int point_offset = 0;
+  int chart_offset = 0;
+  for (int i = 1; i < pieces; ++i)
+  {
+    const int dof = spatial_map_.getUnconstrainedDim(i);
+    const Eigen::VectorXd xi = y_seed.segment(chart_offset, dof);
+    Eigen::MatrixXd J_i;
+    Eigen::MatrixXd pinv;
+    Eigen::MatrixXd gauge_i;
+    if (!spatial_map_.physicalJacobian(xi, i, J_i) ||
+        J_i.rows() != TRAJ_DIM || J_i.cols() != dof ||
+        !spatial_map_.pseudoInverse(xi, i, pinv, &gauge_i))
+    {
+      return false;
+    }
+    jacobian.block(point_offset, chart_offset, TRAJ_DIM, dof) = J_i;
+    gauge.block(chart_offset, chart_offset, dof, dof) = gauge_i;
+    if (dof != TRAJ_DIM ||
+        (J_i - Eigen::MatrixXd::Identity(TRAJ_DIM, TRAJ_DIM)).norm() > 1.0e-10)
+    {
+      identity_chart = false;
+    }
+    point_offset += TRAJ_DIM;
+    chart_offset += dof;
+  }
+
+  bool ok = false;
+  if (identity_chart)
+  {
+    ok = minco_whitening_.configureKronecker(
+        time_dim, TRAJ_DIM, y_seed, minco_metric_.scalarWaypointMetric());
+  }
+  else
+  {
+    Eigen::MatrixXd G_chart =
+        jacobian.transpose() * minco_metric_.waypointMetric() * jacobian;
+    G_chart += std::max(1.0e-12, cfg_.minco_metric_gauge_weight) * gauge;
+    ok = minco_whitening_.configure(time_dim, y_seed, G_chart);
+  }
+  if (!ok)
+  {
+    minco_whitening_.clear();
+    return false;
+  }
+  optimizer_.setWaypointWhitening(&minco_whitening_);
+  return true;
+}
+
+void ExpTrajOpt::finishFrozenWhitening(VecDf &x)
+{
+  if (minco_whitening_.ready())
+  {
+    minco_whitening_.decodeInPlace(x);
+    if (opt_vars_.has_certified_incumbent &&
+        opt_vars_.certified_incumbent_x.size() == x.size())
+    {
+      minco_whitening_.decodeInPlace(opt_vars_.certified_incumbent_x);
+    }
+  }
+  optimizer_.setWaypointWhitening(nullptr);
 }
 
 bool ExpTrajOpt::applyMincoMetricH0(const VecDf &x,
@@ -1818,7 +2021,7 @@ bool ExpTrajOpt::runPhase2PackedCorrection(
                                        &ExpTrajOpt::fastLbfgsSnapshot,
                                        /*allow_fallback=*/false,
                                        nullptr,
-                                       cfg_.minco_metric_mode > 0
+                                       cfg_.minco_metric_mode >= 2
                                            ? &ExpTrajOpt::metricH0Functional
                                            : nullptr);
     syncFastLbfgsReport();
@@ -2037,6 +2240,10 @@ double ExpTrajOpt::optimize(Trajectory &traj, double rel_cost_tol)
                               cfg_.minco_metric_optimize_time);
   minco_metric_.clear();
   minco_metric_frozen_ready_ = false;
+  minco_whitening_.clear();
+  optimizer_.setWaypointWhitening(nullptr);
+  last_metric_seconds_ = 0.0;
+  last_metric_cache_hit_ = false;
   optimizer_.setEnergyWeight(opt_vars_.block_energy_cost ? 0.0 : 1.0);
   // Hull covers pos/vel/acc continuously; keep residual dense grid coarse.
   optimizer_.setSamplesPerPiece(
@@ -2239,17 +2446,29 @@ double ExpTrajOpt::optimize(Trajectory &traj, double rel_cost_tol)
                                       warm_begin)
             .count();
   }
-  const VecDf initial_decision = x;
-
   const bool metric_ready =
       requested_metric_mode > 0 && prepareMincoMetric(x);
-  if (requested_metric_mode > 0 && !metric_ready)
+  const bool use_frozen_whitening =
+      requested_metric_mode == 1 && metric_ready &&
+      configureFrozenWhitening(x) && minco_whitening_.encodeInPlace(x);
+  if (requested_metric_mode == 1 && !use_frozen_whitening)
+  {
+    minco_whitening_.clear();
+    optimizer_.setWaypointWhitening(nullptr);
+    std::cout << YELLOW
+              << " -- [ExpTrajOpt] Frozen MCE whitening unavailable; "
+                 "falling back to Euclidean L-BFGS"
+              << RESET << std::endl;
+  }
+  else if (requested_metric_mode >= 2 && !metric_ready)
   {
     std::cout << YELLOW
               << " -- [ExpTrajOpt] MCE metric unavailable; falling back to "
-                 "legacy L-BFGS H0"
+                 "legacy Euclidean L-BFGS"
               << RESET << std::endl;
   }
+
+  const VecDf initial_decision = x;
 
   const bool early_stop_enabled = opt_vars_.lbfgs_fast_enabled;
   configureFastLbfgs(rel_cost_tol,
@@ -2275,8 +2494,9 @@ double ExpTrajOpt::optimize(Trajectory &traj, double rel_cost_tol)
                         &ExpTrajOpt::fastLbfgsSnapshot,
                         /*allow_fallback=*/true,
                         &initial_decision,
-                        metric_ready ? &ExpTrajOpt::metricH0Functional
-                                     : nullptr);
+                        requested_metric_mode >= 2 && metric_ready
+                            ? &ExpTrajOpt::metricH0Functional
+                            : nullptr);
   syncFastLbfgsReport();
 
   // The stable production line keeps the continuous oracle read-only. The
@@ -2304,6 +2524,7 @@ double ExpTrajOpt::optimize(Trajectory &traj, double rel_cost_tol)
     alm_report.constraints =
         exp_packed_corrector_cost_manager_.constraintCount();
   }
+  finishFrozenWhitening(x);
   const double optimization_seconds =
       std::chrono::duration<double>(std::chrono::steady_clock::now() -
                                     optimization_begin)
@@ -2434,6 +2655,8 @@ double ExpTrajOpt::optimize(Trajectory &traj, double rel_cost_tol)
       timing.coefficient_seconds;
   last_timing_report_.minco_evaluation_seconds =
       timing.evaluation_seconds;
+  last_timing_report_.metric_seconds = last_metric_seconds_;
+  last_timing_report_.metric_cache_hit = last_metric_cache_hit_;
   last_timing_report_.optimization_seconds = optimization_seconds;
   last_timing_report_.dense_share_of_minco_evaluation =
       timing.denseIntegralShareOfEvaluation();

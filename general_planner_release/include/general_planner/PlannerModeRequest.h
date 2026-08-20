@@ -67,12 +67,16 @@ struct PlannerModeRequest_
 #if defined(_WIN32) && defined(MODE_EMERGENCY_STOP)
   #undef MODE_EMERGENCY_STOP
 #endif
+#if defined(_WIN32) && defined(MODE_TARGET_EXPLORATION)
+  #undef MODE_TARGET_EXPLORATION
+#endif
 
   enum {
     MODE_HOLD = 0u,
     MODE_STATE2STATE = 1u,
     MODE_EXPLORATION = 2u,
     MODE_EMERGENCY_STOP = 3u,
+    MODE_TARGET_EXPLORATION = 4u,
   };
 
 
@@ -87,6 +91,8 @@ typedef boost::shared_ptr< ::general_planner::PlannerModeRequest > PlannerModeRe
 typedef boost::shared_ptr< ::general_planner::PlannerModeRequest const> PlannerModeRequestConstPtr;
 
 // constants requiring out of line definition
+
+   
 
    
 
@@ -169,12 +175,12 @@ struct MD5Sum< ::general_planner::PlannerModeRequest_<ContainerAllocator> >
 {
   static const char* value()
   {
-    return "b7eb79981248a21660d0d5a0e979e9e7";
+    return "bd2f965348f02733d27f6767c7269ddc";
   }
 
   static const char* value(const ::general_planner::PlannerModeRequest_<ContainerAllocator>&) { return value(); }
-  static const uint64_t static_value1 = 0xb7eb79981248a216ULL;
-  static const uint64_t static_value2 = 0x60d0d5a0e979e9e7ULL;
+  static const uint64_t static_value1 = 0xbd2f965348f02733ULL;
+  static const uint64_t static_value2 = 0xd27f6767c7269ddcULL;
 };
 
 template<class ContainerAllocator>
@@ -202,6 +208,7 @@ struct Definition< ::general_planner::PlannerModeRequest_<ContainerAllocator> >
 "uint8 MODE_STATE2STATE=1\n"
 "uint8 MODE_EXPLORATION=2\n"
 "uint8 MODE_EMERGENCY_STOP=3\n"
+"uint8 MODE_TARGET_EXPLORATION=4\n"
 "\n"
 "================================================================================\n"
 "MSG: std_msgs/Header\n"

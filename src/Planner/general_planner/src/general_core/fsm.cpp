@@ -218,6 +218,8 @@ namespace fsm {
                         << ", " << report.hull_discrete_attractor_seconds * 1.0e3
                         << ", " << report.minco_evaluation_seconds * 1.0e3
                         << ", " << report.optimization_seconds * 1.0e3
+                        << ", " << report.metric_seconds * 1.0e3
+                        << ", " << static_cast<int>(report.metric_cache_hit)
                         << ", " << report.dense_share_of_minco_evaluation * 100.0
                         << ", " << report.control_point_share_of_minco_evaluation * 100.0
                         << ", " << report.dense_share_of_optimization * 100.0

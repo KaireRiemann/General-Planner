@@ -36,6 +36,11 @@ struct MincoMetricOptions
 
   // Weight of sum_i (dT_i / T_i)^2 in the block/GN space-time metrics.
   double time_metric_weight{1.0};
+
+  // Objective energy weight.  Production V1 freezes
+  //   G_0 = rho_E * G_MCE(T_0)
+  // with G_MCE = 2 J_P^T Q J_P matching getEnergy() (no 1/2).
+  double energy_weight{1.0};
 };
 
 /**
@@ -71,10 +76,12 @@ public:
   void clear()
   {
     waypoint_metric_.resize(0, 0);
+    scalar_waypoint_metric_.resize(0, 0);
     space_time_metric_.resize(0, 0);
     selected_metric_.resize(0, 0);
     selected_ldlt_ = Eigen::LDLT<Eigen::MatrixXd>{};
     ready_ = false;
+    has_kronecker_structure_ = false;
     last_condition_number_ = std::numeric_limits<double>::infinity();
   }
 
@@ -82,9 +89,14 @@ public:
   int spaceTimeDim() const { return space_time_dim_; }
   bool ready() const { return ready_; }
   bool isSpaceTimeMetric() const { return selected_is_space_time_; }
+  bool hasKroneckerStructure() const { return has_kronecker_structure_; }
   double conditionNumber() const { return last_condition_number_; }
 
   const Eigen::MatrixXd &waypointMetric() const { return waypoint_metric_; }
+  const Eigen::MatrixXd &scalarWaypointMetric() const
+  {
+    return scalar_waypoint_metric_;
+  }
   const Eigen::MatrixXd &spaceTimeMetric() const { return space_time_metric_; }
   const Eigen::MatrixXd &selectedMetric() const { return selected_metric_; }
 
@@ -108,9 +120,12 @@ public:
   }
 
   /**
-   * Exact fixed-time MCE metric:
+   * Exact fixed-time MCE metric matching getEnergy() (no 1/2):
    *
-   *     G_P = J_P^T Q J_P.
+   *     G_MCE = 2 J_P^T Q J_P = H_{E,reduced},
+   *     G_0   = rho_E G_MCE.
+   *
+   * For position MINCO this is the Kronecker product G_scalar ⊗ I_DIM.
    */
   bool buildWaypointMetric(const Trajectory &trajectory)
   {
@@ -333,9 +348,57 @@ public:
     return selected_ldlt_.info() == Eigen::Success && d.allFinite();
   }
 
+  /**
+   * Restore a previously factorized waypoint metric without applying
+   * regularization a second time.  Used by the cross-replan T-cache.
+   */
+  bool adoptReadyWaypointMetric(const Eigen::MatrixXd &metric,
+                                const Eigen::MatrixXd &scalar_metric,
+                                bool kronecker)
+  {
+    if (metric.rows() == 0 || metric.rows() != metric.cols() ||
+        !metric.allFinite())
+    {
+      clear();
+      return false;
+    }
+    const double saved_regularization = options_.regularization;
+    options_.regularization = 0.0;
+    waypoint_dim_ = static_cast<int>(metric.rows());
+    has_kronecker_structure_ = kronecker &&
+                               scalar_metric.rows() * DIM == metric.rows();
+    scalar_waypoint_metric_ =
+        has_kronecker_structure_ ? scalar_metric : Eigen::MatrixXd{};
+    selected_is_space_time_ = false;
+    const bool ok = finalizeSelectedMetric(metric);
+    options_.regularization = saved_regularization;
+    return ok;
+  }
+
 private:
   bool computeWaypointMetric(const Trajectory &trajectory,
                              Eigen::MatrixXd &metric)
+  {
+    Eigen::MatrixXd scalar;
+    if (!computeScalarWaypointMetric(trajectory, scalar))
+    {
+      return false;
+    }
+
+    const double energy_weight = std::max(0.0, options_.energy_weight);
+    scalar_waypoint_metric_ = (2.0 * energy_weight) * scalar;
+    has_kronecker_structure_ = waypoint_dim_ > 0;
+    if (waypoint_dim_ == 0)
+    {
+      metric.resize(0, 0);
+      return true;
+    }
+    metric = expandKronecker(scalar_waypoint_metric_);
+    return metric.allFinite();
+  }
+
+  bool computeScalarWaypointMetric(const Trajectory &trajectory,
+                                   Eigen::MatrixXd &scalar)
   {
     const int pieces = trajectory.getPieceNum();
     if (pieces <= 0 || !trajectory.getDurations().allFinite())
@@ -343,21 +406,21 @@ private:
       return false;
     }
 
-    waypoint_dim_ = DIM * std::max(0, pieces - 1);
+    const int inner = std::max(0, pieces - 1);
+    waypoint_dim_ = DIM * inner;
     space_time_dim_ = pieces + waypoint_dim_;
-    metric = Eigen::MatrixXd::Zero(waypoint_dim_, waypoint_dim_);
-    if (waypoint_dim_ == 0)
+    scalar = Eigen::MatrixXd::Zero(inner, inner);
+    if (inner == 0)
     {
       return true;
     }
 
     std::vector<CoeffMat> coefficient_tangents;
-    coefficient_tangents.reserve(static_cast<std::size_t>(waypoint_dim_));
-    for (int a = 0; a < waypoint_dim_; ++a)
+    coefficient_tangents.reserve(static_cast<std::size_t>(inner));
+    for (int i = 0; i < inner; ++i)
     {
-      InnerPointsMat delta_points =
-          InnerPointsMat::Zero(DIM, std::max(0, pieces - 1));
-      delta_points(a % DIM, a / DIM) = 1.0;
+      InnerPointsMat delta_points = InnerPointsMat::Zero(DIM, inner);
+      delta_points(0, i) = 1.0;
       CoeffMat delta_coefficients;
       if (!trajectory.propagateTangentByPoints(delta_points,
                                                 delta_coefficients))
@@ -371,28 +434,43 @@ private:
     {
       const auto Q = Trajectory::Traits::controlCostHessian(
           trajectory.getDurations()(i));
-      for (int a = 0; a < waypoint_dim_; ++a)
+      for (int a = 0; a < inner; ++a)
       {
         const auto tangent_a =
             coefficient_tangents[static_cast<std::size_t>(a)]
                 .template block<Trajectory::COEFF_NUM, DIM>(
                     i * Trajectory::COEFF_NUM, 0);
-        for (int b = a; b < waypoint_dim_; ++b)
+        for (int b = a; b < inner; ++b)
         {
           const auto tangent_b =
               coefficient_tangents[static_cast<std::size_t>(b)]
                   .template block<Trajectory::COEFF_NUM, DIM>(
                       i * Trajectory::COEFF_NUM, 0);
           const double value = (tangent_a.transpose() * Q * tangent_b).trace();
-          metric(a, b) += value;
+          scalar(a, b) += value;
           if (a != b)
           {
-            metric(b, a) += value;
+            scalar(b, a) += value;
           }
         }
       }
     }
-    return metric.allFinite();
+    return scalar.allFinite();
+  }
+
+  Eigen::MatrixXd expandKronecker(const Eigen::MatrixXd &scalar) const
+  {
+    const int inner = static_cast<int>(scalar.rows());
+    Eigen::MatrixXd metric = Eigen::MatrixXd::Zero(DIM * inner, DIM * inner);
+    for (int a = 0; a < inner; ++a)
+    {
+      for (int b = 0; b < inner; ++b)
+      {
+        metric.template block<DIM, DIM>(DIM * a, DIM * b) =
+            scalar(a, b) * Eigen::Matrix<double, DIM, DIM>::Identity();
+      }
+    }
+    return metric;
   }
 
   bool buildSpaceTimeTangents(const Trajectory &trajectory,
@@ -452,13 +530,26 @@ private:
       const double shift = options_.regularization *
                            std::max(options_.regularization_scale_floor,
                                     std::abs(mean_diagonal));
-      selected_metric_.diagonal().array() += shift;
+      if (!selected_is_space_time_ && has_kronecker_structure_ &&
+          scalar_waypoint_metric_.rows() > 0)
+      {
+        scalar_waypoint_metric_ =
+            0.5 * (scalar_waypoint_metric_ + scalar_waypoint_metric_.transpose());
+        scalar_waypoint_metric_.diagonal().array() += shift;
+        selected_metric_ = expandKronecker(scalar_waypoint_metric_);
+      }
+      else
+      {
+        selected_metric_.diagonal().array() += shift;
+        has_kronecker_structure_ = false;
+      }
     }
 
     // Keep public metric matrices equal to the factorized operator.
     if (selected_is_space_time_)
     {
       space_time_metric_ = selected_metric_;
+      has_kronecker_structure_ = false;
     }
     else
     {
@@ -499,9 +590,11 @@ private:
   int space_time_dim_{0};
   bool ready_{false};
   bool selected_is_space_time_{false};
+  bool has_kronecker_structure_{false};
   double last_condition_number_{std::numeric_limits<double>::infinity()};
 
   Eigen::MatrixXd waypoint_metric_;
+  Eigen::MatrixXd scalar_waypoint_metric_;
   Eigen::MatrixXd space_time_metric_;
   Eigen::MatrixXd selected_metric_;
   Eigen::LDLT<Eigen::MatrixXd> selected_ldlt_;

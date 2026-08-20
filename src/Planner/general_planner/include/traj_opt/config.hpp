@@ -148,15 +148,18 @@ namespace traj_opt {
         double lbfgs_fast_min_step{1.0e-8};
         double lbfgs_fast_penalty_tol{1.0e-2};
         int lbfgs_fast_small_step_limit{3};
-        // MCE / MINCO intrinsic-metric preconditioner.  Disabled by default
-        // so existing planning behavior remains bit-for-bit unchanged.
-        // 0: disabled, 1: frozen waypoint, 2: dynamic waypoint,
-        // 3: block space-time, 4: full space-time Gauss-Newton.
+        // 0: LEGACY_EUCLIDEAN
+        // 1: FROZEN_MCE whitening (production V1, G = rho_E * 2 J^T Q J)
+        // 2: dynamic waypoint H0 (experimental)
+        // 3: block space-time H0 (experimental)
+        // 4: full space-time Gauss-Newton H0 (experimental)
         int minco_metric_mode{0};
         bool minco_metric_optimize_time{true};
         double minco_metric_regularization{1.0e-10};
         double minco_metric_time_weight{1.0};
         double minco_metric_gauge_weight{1.0e-6};
+        bool minco_metric_cache_enable{true};
+        double minco_metric_cache_time_rel_tol{0.05};
         // Cross-replan warm start for the ordinary State2State ExpTrajOpt.
         // The cached physical solution is used only when it remains compatible
         // with the new corridor, and only if its real objective beats the
@@ -252,6 +255,11 @@ namespace traj_opt {
                              minco_metric_time_weight, 1.0);
             loader.LoadParam("traj_opt" + ns + "minco_metric_gauge_weight",
                              minco_metric_gauge_weight, 1.0e-6);
+            loader.LoadParam("traj_opt" + ns + "minco_metric_cache_enable",
+                             minco_metric_cache_enable, true);
+            loader.LoadParam("traj_opt" + ns +
+                                 "minco_metric_cache_time_rel_tol",
+                             minco_metric_cache_time_rel_tol, 0.05);
             loader.LoadParam("traj_opt" + ns + "lbfgs_warm_start_en",
                              lbfgs_warm_start_en, false);
             loader.LoadParam("traj_opt" + ns +

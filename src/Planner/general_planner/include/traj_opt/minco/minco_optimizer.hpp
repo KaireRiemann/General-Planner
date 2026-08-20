@@ -3,6 +3,7 @@
 
 #include "traj_opt/minco/boundary_mapping.hpp"
 #include "traj_opt/minco/minco_trajectory.hpp"
+#include "traj_opt/minco/minco_whitening.hpp"
 #include <Eigen/Dense>
 #include <algorithm>
 #include <chrono>
@@ -304,6 +305,23 @@ public:
     rho_energy_ = rho_energy;
   }
 
+  double energyWeight() const { return rho_energy_; }
+
+  void setWaypointWhitening(const FrozenMceWhitening *whitening)
+  {
+    waypoint_whitening_ = whitening;
+  }
+
+  const FrozenMceWhitening *waypointWhitening() const
+  {
+    return waypoint_whitening_;
+  }
+
+  const InnerPointsMat &getCurrentInnerPoints() const
+  {
+    return workspace_->cache_P_inner;
+  }
+
   void setSamplesPerPiece(int samples_per_piece)
   {
     samples_per_piece_ = std::max(1, samples_per_piece);
@@ -446,6 +464,14 @@ public:
       x.segment(offset, dof) =
           active_spatial_map_->toUnconstrained(waypoint, i);
       offset += dof;
+    }
+
+    if (usesWaypointWhitening())
+    {
+      if (!waypoint_whitening_->encodeInPlace(x))
+      {
+        return Eigen::VectorXd{};
+      }
     }
 
     if (extra_dim > 0)
@@ -789,14 +815,26 @@ private:
     return uniform_time_mode_ ? 1 : piece_num_;
   }
 
-  int getCoreDecisionDim() const
+  int getSpatialDecisionDim() const
   {
     int dim_P = 0;
     for (int i = 1; i < piece_num_; ++i)
     {
       dim_P += active_spatial_map_->getUnconstrainedDim(i);
     }
-    return getTimeDecisionDim() + dim_P;
+    return dim_P;
+  }
+
+  int getCoreDecisionDim() const
+  {
+    return getTimeDecisionDim() + getSpatialDecisionDim();
+  }
+
+  bool usesWaypointWhitening() const
+  {
+    return waypoint_whitening_ != nullptr && waypoint_whitening_->ready() &&
+           waypoint_whitening_->timeDim() == getTimeDecisionDim() &&
+           waypoint_whitening_->spatialDim() == getSpatialDecisionDim();
   }
 
   void decodeDecisionVariables(const Eigen::Ref<const Eigen::VectorXd> &x,
@@ -830,17 +868,35 @@ private:
       }
     }
 
-    int offset = getTimeDecisionDim();
+    const int time_dim = getTimeDecisionDim();
+    const int spatial_dim = getSpatialDecisionDim();
+    Eigen::VectorXd spatial_chart;
+    const bool whitened = usesWaypointWhitening();
+    if (whitened)
+    {
+      const Eigen::VectorXd spatial_z = x.segment(time_dim, spatial_dim);
+      if (!waypoint_whitening_->toChart(spatial_z, spatial_chart) ||
+          spatial_chart.size() != spatial_dim)
+      {
+        spatial_chart = spatial_z;
+      }
+    }
+
+    int offset = time_dim;
+    int chart_offset = 0;
     for (int i = 1; i < piece_num_; ++i)
     {
       const int dof = active_spatial_map_->getUnconstrainedDim(i);
-      const Eigen::VectorXd xi = x.segment(offset, dof);
+      const Eigen::VectorXd xi =
+          whitened ? spatial_chart.segment(chart_offset, dof)
+                   : x.segment(offset, dof);
       workspace_->cache_P_inner.col(i - 1) = active_spatial_map_->toPhysical(xi, i);
 
       Eigen::VectorXd grad_xi = Eigen::VectorXd::Zero(dof);
       active_spatial_map_->addNormPenalty(xi, total_cost, grad_xi);
       grad_out.segment(offset, dof) += grad_xi;
       offset += dof;
+      chart_offset += dof;
     }
   }
 
@@ -1167,13 +1223,38 @@ private:
       }
     }
 
-    int offset = getTimeDecisionDim();
+    const int time_dim = getTimeDecisionDim();
+    const int spatial_dim = getSpatialDecisionDim();
+    Eigen::VectorXd spatial_chart;
+    const bool whitened = usesWaypointWhitening();
+    if (whitened)
+    {
+      const Eigen::VectorXd spatial_z = x.segment(time_dim, spatial_dim);
+      if (!waypoint_whitening_->toChart(spatial_z, spatial_chart) ||
+          spatial_chart.size() != spatial_dim)
+      {
+        spatial_chart = spatial_z;
+      }
+    }
+
+    int offset = time_dim;
+    int chart_offset = 0;
     for (int i = 1; i < piece_num_; ++i)
     {
       const int dof = active_spatial_map_->getUnconstrainedDim(i);
+      const Eigen::VectorXd xi =
+          whitened ? spatial_chart.segment(chart_offset, dof)
+                   : x.segment(offset, dof);
       const VectorType grad_p = workspace_->grad_by_points.col(i - 1);
-      grad_out.segment(offset, dof) += active_spatial_map_->backwardGrad(x.segment(offset, dof), grad_p, i);
+      grad_out.segment(offset, dof) +=
+          active_spatial_map_->backwardGrad(xi, grad_p, i);
       offset += dof;
+      chart_offset += dof;
+    }
+
+    if (whitened)
+    {
+      waypoint_whitening_->transformCovectorInPlace(grad_out);
     }
   }
 
@@ -1206,6 +1287,7 @@ private:
   SpatialMap default_spatial_map_;
   const TimeMap *active_time_map_{nullptr};
   const SpatialMap *active_spatial_map_{nullptr};
+  const FrozenMceWhitening *waypoint_whitening_{nullptr};
 
   std::unique_ptr<Workspace> workspace_;
 };
