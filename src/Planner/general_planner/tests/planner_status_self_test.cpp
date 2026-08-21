@@ -10,6 +10,7 @@ using general_planner::planner_runtime::PlannerMode;
 using general_planner::planner_runtime::PlannerTaskResult;
 using general_planner::planner_runtime::isExplorationMode;
 using general_planner::planner_runtime::isTargetExplorationMode;
+using general_planner::planner_runtime::ownerForMode;
 using general_planner::planner_runtime::modeStateFromExplorationString;
 using general_planner::planner_runtime::modeStateFromNavigationString;
 using general_planner::planner_runtime::parseNavigationAdapterStatus;
@@ -38,6 +39,12 @@ int main() {
          "toString blocked result");
   expect(parsePlannerMode("state2state", mode), "parse state2state");
   expect(mode == PlannerMode::STATE2STATE, "mode state2state");
+  expect(parsePlannerMode("gate", mode), "parse gate");
+  expect(mode == PlannerMode::GATE, "mode gate");
+  expect(std::strcmp(toString(PlannerMode::GATE), "gate") == 0,
+         "toString gate mode");
+  expect(std::strcmp(toString(ownerForMode(PlannerMode::GATE)), "gate") == 0,
+         "gate has external command owner");
   expect(parsePlannerMode("hold", mode), "parse hold");
   expect(mode == PlannerMode::HOLD, "mode hold");
   expect(!parsePlannerMode("not_a_mode", mode), "reject unknown");

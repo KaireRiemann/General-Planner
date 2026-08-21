@@ -45,6 +45,11 @@ private:
       const geometry_msgs::PoseStamped &msg, const std::string &source);
   void explorationStatusCallback(const std_msgs::StringConstPtr &msg);
   void navigationStatusCallback(const std_msgs::StringConstPtr &msg);
+  // External gate planner lifecycle ingress. The protocol is std_msgs/String:
+  // START (or BEGIN/RUNNING) requests external control, END (or DONE/FINISHED)
+  // releases it. Both edges are accepted only through the hover verification
+  // performed by timerCallback().
+  void gateStatusCallback(const std_msgs::StringConstPtr &msg);
   void handoverStatusCallback(const std_msgs::StringConstPtr &msg);
   void odometryCallback(const nav_msgs::OdometryConstPtr &msg);
   void timerCallback(const ros::TimerEvent &);
@@ -64,6 +69,7 @@ private:
   void publishNavigationTaskMode(const std::string &mode);
   void publishHandoverCommand(const std::string &command);
   void requestExplorationStartLocked(const std::string &reason);
+  void completeGateExitLocked();
   bool hoverConditionMetLocked() const;
   std::string makeTaskId(PlannerMode mode) const;
   void updatePhaseFromActiveModeLocked();
@@ -81,6 +87,7 @@ private:
   std::vector<ros::Subscriber> exploration_rviz_trigger_subs_;
   ros::Subscriber exploration_status_sub_;
   ros::Subscriber navigation_status_sub_;
+  ros::Subscriber gate_status_sub_;
   ros::Subscriber handover_status_sub_;
   ros::Subscriber odom_sub_;
   ros::Publisher status_pub_;
@@ -111,6 +118,13 @@ private:
   bool serial_handover_{true};
   bool serial_state2state_ready_{false};
   bool serial_handover_pending_{false};
+  // Gate requests may arrive while the regular mode handover is still
+  // braking. Keep them latched, but do not release command output until the
+  // same verified-hover condition has completed.
+  bool gate_start_requested_{false};
+  bool gate_executing_{false};
+  bool gate_end_requested_{false};
+  ros::Time gate_edge_hover_satisfied_since_;
   ros::Time hover_satisfied_since_;
   ros::Time last_odom_time_;
   ros::Time last_exploration_start_pub_;
@@ -138,6 +152,7 @@ private:
   std::string exploration_status_topic_;
   std::string navigation_command_topic_;
   std::string navigation_status_topic_;
+  std::string gate_status_topic_;
   std::string navigation_task_mode_topic_;
   std::string navigation_goal_out_topic_;
   std::string navigation_goal_3d_in_topic_;

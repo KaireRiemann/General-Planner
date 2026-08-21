@@ -10,9 +10,9 @@
   <!-- Empty in normal operation.  Kept as a launch-level diagnostic hook so
        a crash can be reproduced under gdb without changing the node command. -->
   <arg name="planner_runtime_launch_prefix" default="" />
-  <!-- Runtime modes: hold, state2state, exploration (legacy coverage), or
-       target_exploration. The latter makes one RViz goal the remote mission
-       endpoint and starts safe frontier-bridge exploration toward it. -->
+  <!-- Runtime modes: hold, state2state, exploration (legacy coverage),
+       target_exploration, or gate. Gate keeps the world map/topology alive
+       while yielding /planning/pos_cmd to an external slit/gate planner. -->
   <arg name="initial_mode" default="target_exploration" />
   <arg name="exploration_mission_mode" default="target" />
   <!-- HighSpeedExp needs a finite internal index capacity, but destination
@@ -25,6 +25,9 @@
   <arg name="target_exploration_workspace_below_odom" default="2.0" />
   <arg name="target_exploration_workspace_above_odom" default="5.0" />
   <arg name="enable_exploration" default="true" />
+  <!-- std_msgs/String protocol from the external gate planner:
+       START (BEGIN/RUNNING accepted) and END (DONE/FINISHED accepted). -->
+  <arg name="gate_status_topic" default="/planner/gate/status" />
 
   <arg name="sim_config"
        default="$(find general_planner)/config/exploration_sim.yaml" />
@@ -119,6 +122,10 @@
     <param name="navigation_enabled" value="true" type="bool" />
     <param name="exploration_enabled" value="$(arg enable_exploration)" type="bool" />
     <param name="serial_handover" value="false" type="bool" />
+    <!-- Gate requires the composed runtime gateway. Do not set
+         serial_handover=true: a separately launched fsm_node would otherwise
+         be another uncontrolled writer on /planning/pos_cmd. -->
+    <param name="gate_status_topic" value="$(arg gate_status_topic)" type="string" />
     <param name="global_map_config" value="$(arg rog_map_config)" type="string" />
     <param name="navigation_config" value="$(arg navigation_config)" type="string" />
     <param name="odometry_topic" value="$(arg odom_topic)" type="string" />

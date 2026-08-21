@@ -362,9 +362,43 @@ uint8 mode              # HOLD / STATE2STATE / EXPLORATION / ...
 /planner/mode_request_text    std_msgs/String
 ```
 
-仅接受 `exploration`、`state2state`、`hold`、`emergency_stop` 等文本，并由 `PlannerSupervisor` 转换为带编号的内部请求。该字符串话题不能直接连接现有 `fsm/task_mode_topic`，因为后者只会立即切换 state2state 内部模式，并不知道另一个规划器、命令网关和悬停交接。
+仅接受 `exploration`、`state2state`、`gate`、`hold`、`emergency_stop` 等文本，并由 `PlannerSupervisor` 转换为带编号的内部请求。该字符串话题不能直接连接现有 `fsm/task_mode_topic`，因为后者只会立即切换 state2state 内部模式，并不知道另一个规划器、命令网关和悬停交接。
 
-### 6.2 任务请求
+### 6.2 Gate 外部控制协议
+
+`GATE` 是“持续建图、控制权让渡”的显式模式，不是 `HOLD`：后者仍会向
+`/planning/pos_cmd` 发布定点保持指令，前者会完全静默 runtime 的 command gateway。
+进入 gate 前仍沿用普通切换的受控刹停和 `hover_hold_duration` 校验；因此外部
+gate planner 只能在 `/planner/status` 显示
+`active_mode=gate, mode_state=gate_wait_start, stable_hover=true` 后开始。
+
+外部 planner 使用一个 `std_msgs/String` 话题（默认 `/planner/gate/status`）通知
+边沿；可在 launch 中通过 `gate_status_topic` 重映射：
+
+```text
+START | BEGIN | RUNNING     # 请求开始 gate 执行
+END   | DONE  | FINISHED    # 通知 gate 轨迹已结束
+```
+
+两个边沿均经过 supervisor 的 odom 稳定性验证：
+
+```text
+state2state/exploration -> gate request
+  -> 原 runtime 刹停并连续悬停稳定
+  -> 停止内部 adapter，gateway 禁止发布 /planning/pos_cmd
+  -> gate_wait_start（GlobalMapRuntime / topo 继续）
+  -> START + 连续稳定 -> gate_executing（外部 planner 唯一写命令）
+  -> END + 连续稳定 -> gateway 从最终 odom 锁定 hold 点并重新启用
+  -> gate_complete / STABLE_HOLD
+  -> 上层再请求 state2state 或 exploration
+```
+
+gate 执行期间，普通模式请求会被拒绝，避免重新开启 runtime 的命令发布和外部
+planner 竞争。只有 `END` 后得到 `gate_complete`，才接受下一次 exploration 或
+state2state 请求；后续局部任务以 gate 末端的稳定 odom 为初始状态。该模式要求
+`serial_handover=false`，因为旧的 serial fsm 也会直接写最终命令话题，无法保证单写者。
+
+### 6.3 任务请求
 
 模式与任务内容分开：
 
@@ -387,7 +421,7 @@ goal sequence、命令所有者和终点悬停交接。
 
 正式统一接口可使用 `PlannerTaskRequest.msg`，其中含 `request_id`、`task_id`、目标 mode 和 mode-specific payload。`ready_for_new_task=true` 只约束开始一个不同任务；已激活的 state2state 任务可接受新的 2D 或 3D goal，并在同一 task epoch 内滚动重规划。模式变化期间到达的请求会被拒绝。
 
-### 6.3 统一状态
+### 6.4 统一状态
 
 `PlannerStatus.msg` 建议字段：
 
@@ -435,6 +469,7 @@ EMERGENCY
 ```text
 S2S_WAIT_GOAL / S2S_GENERATE_TRAJ / S2S_FOLLOW_TRAJ
 EXP_WAIT_TRIGGER / EXP_PLAN_TRAJ / EXP_EXEC_TRAJ / EXP_REORIENT
+GATE_WAIT_START / GATE_EXECUTING / GATE_END_VERIFY / GATE_COMPLETE
 ```
 
 上层只能依据 `phase`、`task_result`、`stable_hover`、`ready_for_new_task` 做控制决定；`mode_state` 用于诊断和可视化。
@@ -443,7 +478,8 @@ EXP_WAIT_TRIGGER / EXP_PLAN_TRAJ / EXP_EXEC_TRAJ / EXP_REORIENT
 
 ### 7.1 唯一最终命令发布者
 
-`PlannerCommandGateway` 必须是唯一向飞控发布 `/planning/pos_cmd` 的节点：
+常规 runtime 模式下，`PlannerCommandGateway` 是唯一向飞控发布
+`/planning/pos_cmd` 的节点：
 
 ```text
 state2state command     -> /planner/state2state/pos_cmd
@@ -451,6 +487,10 @@ exploration command     -> /planner/exploration/pos_cmd
 gateway output           -> /planning/pos_cmd
 controller               <- /planning/pos_cmd
 ```
+
+`GATE` 是唯一的、有状态例外：supervisor 在验证悬停后同时关闭 gateway 的发布开关并
+将其命令 owner 设为 `GATE`（policy 层也会拒绝输出），从而由外部 gate planner 暂时成为
+唯一写者。收到 `END` 后，supervisor 再验证最终 odom 静止，才恢复 gateway 的定点 hold。
 
 目前的 `mission_command_mux.cpp` 可以作为起点，但不能直接作为最终实现：它按模式立即切源，缺少刹停/稳定确认；并且它每帧使用当前 odom 生成 hold 点，会导致 hold 点漂移，不是真正的位置保持。
 
@@ -660,6 +700,7 @@ BoundaryMap + topology snapshot + topology configuration + world frame metadata
 | 切换后注入旧 planner 的迟到轨迹 | epoch 检查或 gateway 拒绝，最终 `/planning/pos_cmd` 不受影响 |
 | exploration 和 state2state 连续运行 | `world_epoch` 不变；map/topo revision 连续增长 |
 | state2state 使用 exploration 后的路线 | 同一 topo revision 可用于 global A*，局部轨迹重新验证成功 |
+| state2state -> gate -> state2state/exploration | gate 期间 map/topo revision 持续增长，runtime 不发布 `/planning/pos_cmd`；END 后连续悬停才进入 `gate_complete`，下一任务从最终 odom 启动 |
 | ROG 地图发生新占据变化 | topo 脏 region 重建；旧 guide/轨迹在提交前被重新验证 |
 | world frame 重定位/地图 reset | `world_epoch` 递增，旧 topo/轨迹/任务全部失效并进入安全 hold |
 

@@ -41,6 +41,21 @@ class OutputCapture {
         });
   }
 
+  std::size_t messageCount() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return messages_.size();
+  }
+
+  bool waitForNoNewMessages(const std::size_t initial_count,
+                            const double timeout_seconds) {
+    std::unique_lock<std::mutex> lock(mutex_);
+    const bool received_new_message = condition_.wait_for(
+        lock, std::chrono::duration<double>(timeout_seconds), [&] {
+          return messages_.size() > initial_count;
+        });
+    return !received_new_message;
+  }
+
  private:
   std::mutex mutex_;
   std::condition_variable condition_;
@@ -154,6 +169,14 @@ int main(int argc, char **argv) {
                },
                2.0),
            "fresh state2state command did not resume after timeout hold");
+
+    // Gate is an external-control handover, not an explicit HOLD. Even if
+    // publishing_enabled were accidentally left true, the gateway policy must
+    // emit no PositionCommand while CommandOwner::GATE is authorized.
+    const std::size_t output_count_before_gate = output_capture.messageCount();
+    gateway.setAuthorizedOwner(CommandOwner::GATE, 2);
+    expect(output_capture.waitForNoNewMessages(output_count_before_gate, 0.15),
+           "gate owner unexpectedly published a position command");
 
     spinner.stop();
     std::cout << "planner_command_gateway_behavior_self_test passed\n";

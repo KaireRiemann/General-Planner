@@ -31,6 +31,9 @@ int main() {
   expect(selectGatewayOutputMode(CommandOwner::HOLD, true, true) ==
              GatewayOutputMode::EXPLICIT_HOLD,
          "explicit hold must remain independent of source freshness");
+  expect(selectGatewayOutputMode(CommandOwner::GATE, true, true) ==
+             GatewayOutputMode::EXTERNAL_GATE_SUPPRESSED,
+         "gate must suppress every runtime position-command source");
 
   std::cout << "planner_command_gateway_policy_self_test passed\n";
   return 0;

@@ -11,6 +11,9 @@ enum class GatewayOutputMode {
   EXPLORATION,
   EXPLICIT_HOLD,
   SOURCE_TIMEOUT_HOLD,
+  // Do not turn an external-control handover into a HOLD command.  This is a
+  // second, policy-level guard in addition to publishing_enabled=false.
+  EXTERNAL_GATE_SUPPRESSED,
 };
 
 constexpr GatewayOutputMode selectGatewayOutputMode(
@@ -23,6 +26,9 @@ constexpr GatewayOutputMode selectGatewayOutputMode(
   if (authorized_owner == CommandOwner::EXPLORATION) {
     return exploration_fresh ? GatewayOutputMode::EXPLORATION
                              : GatewayOutputMode::SOURCE_TIMEOUT_HOLD;
+  }
+  if (authorized_owner == CommandOwner::GATE) {
+    return GatewayOutputMode::EXTERNAL_GATE_SUPPRESSED;
   }
   return GatewayOutputMode::EXPLICIT_HOLD;
 }

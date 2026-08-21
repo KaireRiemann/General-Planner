@@ -15,7 +15,11 @@ enum class PlannerMode : std::uint8_t {
   // Destination-directed exploration is an explicit runtime task mode.  It
   // uses the same HighSpeedExp adapter and command owner as coverage
   // exploration, but selects safe frontier bridges toward one remote goal.
-  TARGET_EXPLORATION = 4
+  TARGET_EXPLORATION = 4,
+  // Map-only handover mode.  The runtime keeps the world model/topology
+  // alive, but never publishes a PositionCommand: an external gate planner
+  // owns the vehicle until it reports END and the vehicle is again stable.
+  GATE = 5
 };
 
 enum class PlannerPhase : std::uint8_t {
@@ -44,7 +48,10 @@ enum class PlannerTaskResult : std::uint8_t {
 enum class CommandOwner : std::uint8_t {
   HOLD = 0,
   STATE2STATE = 1,
-  EXPLORATION = 2
+  EXPLORATION = 2,
+  // This is deliberately distinct from HOLD.  A HOLD owner publishes a
+  // position hold, while GATE suppresses this runtime's command output.
+  GATE = 3
 };
 
 enum class ModeState : std::uint16_t {
@@ -64,7 +71,11 @@ enum class ModeState : std::uint16_t {
   EXP_PAUSED = 17,
   EXP_FINISH = 18,
   EXP_WAIT_TARGET = 19,
-  HOLD_IDLE = 20
+  HOLD_IDLE = 20,
+  GATE_WAIT_START = 30,
+  GATE_EXECUTING = 31,
+  GATE_END_VERIFY = 32,
+  GATE_COMPLETE = 33
 };
 
 struct PlannerStatusData {
@@ -144,6 +155,8 @@ inline const char *toString(const PlannerMode mode) {
     return "exploration";
   case PlannerMode::TARGET_EXPLORATION:
     return "target_exploration";
+  case PlannerMode::GATE:
+    return "gate";
   case PlannerMode::EMERGENCY_STOP:
     return "emergency_stop";
   case PlannerMode::HOLD:
@@ -182,6 +195,8 @@ inline const char *toString(const CommandOwner owner) {
     return "state2state";
   case CommandOwner::EXPLORATION:
     return "exploration";
+  case CommandOwner::GATE:
+    return "gate";
   case CommandOwner::HOLD:
   default:
     return "hold";
@@ -238,6 +253,14 @@ inline const char *toString(const ModeState state) {
     return "exp_wait_target";
   case ModeState::HOLD_IDLE:
     return "hold_idle";
+  case ModeState::GATE_WAIT_START:
+    return "gate_wait_start";
+  case ModeState::GATE_EXECUTING:
+    return "gate_executing";
+  case ModeState::GATE_END_VERIFY:
+    return "gate_end_verify";
+  case ModeState::GATE_COMPLETE:
+    return "gate_complete";
   case ModeState::UNKNOWN:
   default:
     return "unknown";
@@ -265,6 +288,10 @@ inline bool parsePlannerMode(std::string text, PlannerMode &mode) {
       text == "targetexploration" || text == "target_explore" ||
       text == "target-explore") {
     mode = PlannerMode::TARGET_EXPLORATION;
+    return true;
+  }
+  if (text == "gate") {
+    mode = PlannerMode::GATE;
     return true;
   }
   if (text == "emergency_stop" || text == "estop" || text == "emergency") {
@@ -350,6 +377,8 @@ inline CommandOwner ownerForMode(const PlannerMode mode) {
   case PlannerMode::EXPLORATION:
   case PlannerMode::TARGET_EXPLORATION:
     return CommandOwner::EXPLORATION;
+  case PlannerMode::GATE:
+    return CommandOwner::GATE;
   case PlannerMode::HOLD:
   case PlannerMode::EMERGENCY_STOP:
   default:

@@ -237,7 +237,12 @@ void PlannerCommandGateway::timerCallback(const ros::WallTimerEvent &) {
 
     const GatewayOutputMode output_mode = selectGatewayOutputMode(
         authorized_owner_, navigation_fresh, exploration_fresh);
-    if (output_mode == GatewayOutputMode::NAVIGATION) {
+    if (output_mode == GatewayOutputMode::EXTERNAL_GATE_SUPPRESSED) {
+      // Gate mode is a command-bus handover.  In particular, never fall
+      // through to makeHoldCommandLocked(): doing so would race the external
+      // gate planner on /planning/pos_cmd.
+      return;
+    } else if (output_mode == GatewayOutputMode::NAVIGATION) {
       resumed_source_after_timeout = source_timeout_hold_active_;
       event_owner = authorized_owner_;
       clearSourceTimeoutHoldLocked();
