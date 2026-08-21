@@ -5,5 +5,3 @@ from ._PlannerModeRequest import *
 from ._PlannerStatus import *
 from ._TopologyExpansionPoint import *
 from ._TopologyExpansionPointArray import *
-from ._TopologyFrontierPoint import *
-from ._TopologyFrontierPointArray import *

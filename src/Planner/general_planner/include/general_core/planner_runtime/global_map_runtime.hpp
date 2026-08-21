@@ -92,15 +92,15 @@ class GlobalMapRuntime {
   void odomCallback(const nav_msgs::OdometryConstPtr &msg);
   void cloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr &cloud,
                          const nav_msgs::OdometryConstPtr &odom);
-  void topologyFrontierTimerCallback(const ros::WallTimerEvent &);
-  /** Publish the latest evidence-backed topology-frontier snapshot. */
-  void publishTopologyFrontierSnapshot();
+  void topologyExpansionTimerCallback(const ros::WallTimerEvent &);
+  /** Publish the latest immutable global-topology expansion snapshot. */
+  void publishTopologyExpansionSnapshot();
 
   ros::NodeHandle nh_;
   GlobalMapContext::Ptr context_;
   std::unique_ptr<TopologyGraphROS1> topology_maintainer_;
-  ros::Publisher topology_frontier_pub_;
-  ros::WallTimer topology_frontier_timer_;
+  ros::Publisher topology_expansion_pub_;
+  ros::WallTimer topology_expansion_timer_;
 
   ros::Subscriber odom_sub_;
   std::shared_ptr<message_filters::Subscriber<sensor_msgs::PointCloud2>>
@@ -109,19 +109,16 @@ class GlobalMapRuntime {
   std::shared_ptr<message_filters::Synchronizer<SyncPolicy>> sync_;
 
   mutable std::mutex mutex_;
-  std::mutex topology_frontier_mutex_;
+  std::mutex topology_expansion_mutex_;
   std::vector<CloudConsumer> cloud_consumers_;
   std::vector<OdomConsumer> odom_consumers_;
   ros::Time last_odom_time_;
   ros::Time last_map_time_;
-  ros::WallTime last_topology_frontier_publish_time_;
+  ros::WallTime last_topology_expansion_publish_time_;
   std::string topology_frame_id_{"world"};
-  double topology_frontier_publish_period_{0.50};
-  double topology_frontier_probe_radius_{3.0};
-  double topology_frontier_probe_step_{0.0};
-  std::uint8_t topology_frontier_min_unknown_directions_{1};
-  std::uint64_t last_topology_frontier_revision_{0};
-  bool topology_frontier_published_{false};
+  double topology_expansion_publish_period_{0.50};
+  std::uint64_t last_topology_expansion_revision_{0};
+  bool topology_expansion_published_{false};
   double max_odom_age_{0.20};
   double max_cloud_age_{0.50};
   bool initialized_{false};

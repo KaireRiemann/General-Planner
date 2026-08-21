@@ -43,9 +43,7 @@ private:
     void workerLoop();
     bool missionActive() const;
     visualization_msgs::MarkerArray makeMarkers(
-        const IncrementalTopologyGraph::Snapshot &snapshot,
-        const IncrementalTopologyGraph::FrontierEvidenceList
-            &frontier_evidence) const;
+        const IncrementalTopologyGraph::Snapshot &snapshot) const;
 
     ros::NodeHandle node_;
     std::weak_ptr<MapManager> map_manager_;
@@ -61,11 +59,6 @@ private:
     bool enabled_{false};
     double node_scale_{0.22};
     double edge_scale_{0.06};
-    bool frontier_visualization_enabled_{false};
-    double frontier_node_scale_{0.34};
-    double frontier_boundary_scale_{0.16};
-    double frontier_edge_scale_{0.04};
-    IncrementalTopologyGraph::FrontierQueryConfig frontier_query_config_;
     double update_period_{0.20};
     double publish_period_{0.50};
     ros::WallTime last_publish_time_;

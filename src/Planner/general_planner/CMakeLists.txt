@@ -45,8 +45,8 @@ add_message_files(
         ExplorationTaskRequest.msg
         PlannerModeRequest.msg
         PlannerStatus.msg
-        TopologyFrontierPoint.msg
-        TopologyFrontierPointArray.msg
+        TopologyExpansionPoint.msg
+        TopologyExpansionPointArray.msg
 )
 
 generate_messages(

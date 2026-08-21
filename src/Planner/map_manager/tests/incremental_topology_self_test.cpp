@@ -100,41 +100,6 @@ int main() {
     ok &= expect(has_expandable_portal,
                  "unconnected endpoint portals must be exposed as expandable");
 
-    // A public topo node is a frontier-equivalent point only when map
-    // evidence contains a KNOWN_FREE-to-UNKNOWN transition reachable from its
-    // centre. Region-face portal metadata alone is deliberately irrelevant.
-    IncrementalTopologyGraph::Snapshot frontier_snapshot;
-    IncrementalTopologyGraph::Node frontier_node;
-    frontier_node.id = 99;
-    frontier_node.position = Vec3f(0.0F, 0.0F, 1.0F);
-    frontier_node.clearance = 0.2;
-    frontier_node.state = IncrementalTopologyGraph::NodeState::ACTIVE;
-    frontier_snapshot.nodes.push_back(frontier_node);
-    IncrementalTopologyGraph::Query frontier_query;
-    frontier_query.evidence = [](const Vec3f &point) {
-        return point.x() >= 0.75F && std::abs(point.y()) < 0.1F &&
-                       std::abs(point.z() - 1.0F) < 0.1F
-            ? general_planner::TopologyMapView::EvidenceState::UNKNOWN
-            : general_planner::TopologyMapView::EvidenceState::KNOWN_FREE;
-    };
-    IncrementalTopologyGraph::FrontierQueryConfig frontier_config;
-    frontier_config.sample_step = 0.5;
-    frontier_config.probe_radius = 1.5;
-    frontier_config.planar_mode = true;
-    const auto frontier_evidence =
-        IncrementalTopologyGraph::classifyFrontierNodes(
-            frontier_snapshot, frontier_query, frontier_config);
-    ok &= expect(frontier_evidence.size() == 1 &&
-                     frontier_evidence.front().id == frontier_node.id,
-                 "known-free-to-unknown evidence must select the topo node");
-    if (!frontier_evidence.empty()) {
-        ok &= expect(frontier_evidence.front().unknown_direction_mask ==
-                         IncrementalTopologyGraph::PORTAL_POS_X &&
-                         std::abs(frontier_evidence.front().boundary_position.x() -
-                                      0.5F) < 1.0e-6F,
-                     "frontier evidence must retain the final known-free point and direction");
-    }
-
     middle_blocked = true;
     graph.markDirty(Vec3f(3.0, 1.0, 1.0));
     ok &= expect(graph.update(query, 1) == 1,

@@ -207,33 +207,6 @@ public:
         std::size_t connected_component_count{0};
     };
 
-    /** Parameters for classifying public topology nodes against map evidence. */
-    struct FrontierQueryConfig {
-        /** Zero means that the caller supplies the map's native resolution. */
-        double sample_step{0.0};
-        /** Maximum ray length from a node centre to search for UNKNOWN. */
-        double probe_radius{3.0};
-        /** Require this many independent UNKNOWN-facing directions. */
-        std::uint8_t min_unknown_directions{1};
-        bool planar_mode{false};
-    };
-
-    /** A current KNOWN_FREE-to-UNKNOWN boundary attached to one topo node. */
-    struct FrontierEvidence {
-        EIGEN_MAKE_ALIGNED_OPERATOR_NEW
-        NodeId id{0};
-        /** Last KNOWN_FREE sample before the nearest UNKNOWN sample. */
-        rog_map::Vec3f boundary_position{rog_map::Vec3f::Zero()};
-        /** Unit vector from the topology node toward that UNKNOWN sample. */
-        rog_map::Vec3f boundary_normal{rog_map::Vec3f::Zero()};
-        double boundary_distance{0.0};
-        /** Six-axis summary of all UNKNOWN-facing probe directions. */
-        std::uint8_t unknown_direction_mask{0};
-        std::uint8_t unknown_direction_count{0};
-    };
-    using FrontierEvidenceList = std::vector<
-        FrontierEvidence, Eigen::aligned_allocator<FrontierEvidence>>;
-
     /** Immutable graph revision shared by real-time planning queries. */
     struct SearchNode {
         Node node;
@@ -299,15 +272,6 @@ public:
                        const rog_map::Vec3f *focus = nullptr);
 
     Snapshot snapshot() const;
-    /**
-     * Return only ACTIVE public nodes for which a KNOWN_FREE ray reaches
-     * UNKNOWN without crossing OCCUPIED space. The map-view contract is the
-     * authority for local/global evidence semantics.
-     */
-    static FrontierEvidenceList classifyFrontierNodes(
-        const Snapshot &snapshot,
-        const TopologyMapView &map_view,
-        const FrontierQueryConfig &config);
     Stats stats() const;
     SearchSnapshotPtr acquireSearchSnapshot() const;
     /** Publish the current mutable graph as a new immutable snapshot. */
