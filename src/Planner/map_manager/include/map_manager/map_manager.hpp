@@ -266,6 +266,25 @@ public:
                                : IncrementalTopologyGraph::Snapshot{};
     }
 
+    /**
+     * Classify public active topology nodes by the same local-ROG plus
+     * persistent-BoundaryMap evidence used for topology maintenance.
+     */
+    IncrementalTopologyGraph::FrontierEvidenceList classifyTopologyFrontiers(
+        const IncrementalTopologyGraph::Snapshot &snapshot,
+        IncrementalTopologyGraph::FrontierQueryConfig config) const
+    {
+        if (!map_ || !topologyReady()) {
+            return {};
+        }
+        syncBoundaryMap();
+        config.sample_step = config.sample_step > 0.0
+            ? config.sample_step : map_->getResolution();
+        config.planar_mode = topology_graph_->config().planar_mode;
+        return IncrementalTopologyGraph::classifyFrontierNodes(
+            snapshot, makeTopologyQuery(), config);
+    }
+
     IncrementalTopologyGraph::SearchSnapshotPtr topologySearchSnapshot() const
     {
         return topology_graph_ ? topology_graph_->acquireSearchSnapshot()

@@ -12,10 +12,20 @@ global_topology:
   navigation_altitude: 1.6
   frame_id: world
   topic: /planner/global_topology
-  # Independent semantic snapshot. A point is expandable only if one of its
-  # region-face portals has no active connection to another topology region.
-  expansion_topic: /planner/world/topology_expansion_points
-  expansion_publish_period: 0.50
+  # Independent semantic snapshot of active topo nodes that are attached to a
+  # current KNOWN_FREE-to-UNKNOWN boundary. This is map evidence, not a topo
+  # region-face / portal heuristic.
+  frontier_topic: /planner/world/topology_frontier_points
+  frontier_publish_period: 0.50
+  frontier_probe_radius: 3.0
+  # Zero uses the native ROG map resolution.
+  frontier_probe_step: 0.0
+  frontier_min_unknown_directions: 1
+  # Add boundary topo-node overlays to `topic` for RViz inspection.
+  frontier_visualization_enabled: true
+  frontier_node_scale: 0.34
+  frontier_boundary_scale: 0.16
+  frontier_edge_scale: 0.04
   # Dirty updates are coalesced and map revisions remain available immediately
   # to local safety. The immutable query snapshot is copied at 2 Hz.
   update_period: 0.10

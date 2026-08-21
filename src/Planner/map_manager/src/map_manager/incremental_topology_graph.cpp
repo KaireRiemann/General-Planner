@@ -1873,6 +1873,123 @@ IncrementalTopologyGraph::Snapshot IncrementalTopologyGraph::snapshot() const {
     return output;
 }
 
+IncrementalTopologyGraph::FrontierEvidenceList
+IncrementalTopologyGraph::classifyFrontierNodes(
+    const Snapshot &snapshot,
+    const TopologyMapView &map_view,
+    const FrontierQueryConfig &config) {
+    constexpr std::uint8_t kNegX = 1U << 0U;
+    constexpr std::uint8_t kPosX = 1U << 1U;
+    constexpr std::uint8_t kNegY = 1U << 2U;
+    constexpr std::uint8_t kPosY = 1U << 3U;
+    constexpr std::uint8_t kNegZ = 1U << 4U;
+    constexpr std::uint8_t kPosZ = 1U << 5U;
+
+    FrontierEvidenceList output;
+    output.reserve(snapshot.nodes.size());
+    const double step = std::max(1.0e-3, config.sample_step);
+    const double configured_probe_radius = std::max(step, config.probe_radius);
+    const std::uint8_t min_unknown_directions =
+        std::max<std::uint8_t>(1U, config.min_unknown_directions);
+
+    rog_map::vec_Vec3f directions;
+    directions.reserve(config.planar_mode ? 8U : 26U);
+    const int z_min = config.planar_mode ? 0 : -1;
+    const int z_max = config.planar_mode ? 0 : 1;
+    for (int dx = -1; dx <= 1; ++dx) {
+        for (int dy = -1; dy <= 1; ++dy) {
+            for (int dz = z_min; dz <= z_max; ++dz) {
+                if (dx == 0 && dy == 0 && dz == 0) {
+                    continue;
+                }
+                rog_map::Vec3f direction(
+                    static_cast<float>(dx), static_cast<float>(dy),
+                    static_cast<float>(dz));
+                direction.normalize();
+                directions.push_back(direction);
+            }
+        }
+    }
+
+    const auto faceMaskForDirection = [=](const rog_map::Vec3f &direction) {
+        std::uint8_t mask = 0U;
+        if (direction.x() < -1.0e-6F) {
+            mask |= kNegX;
+        } else if (direction.x() > 1.0e-6F) {
+            mask |= kPosX;
+        }
+        if (direction.y() < -1.0e-6F) {
+            mask |= kNegY;
+        } else if (direction.y() > 1.0e-6F) {
+            mask |= kPosY;
+        }
+        if (direction.z() < -1.0e-6F) {
+            mask |= kNegZ;
+        } else if (direction.z() > 1.0e-6F) {
+            mask |= kPosZ;
+        }
+        return mask;
+    };
+
+    for (const Node &node : snapshot.nodes) {
+        if (node.state != NodeState::ACTIVE ||
+            map_view.evidenceState(node.position) !=
+                TopologyMapView::EvidenceState::KNOWN_FREE) {
+            continue;
+        }
+
+        FrontierEvidence evidence;
+        evidence.id = node.id;
+        const double probe_radius = std::max(
+            configured_probe_radius, node.clearance + step);
+        bool has_nearest_boundary = false;
+
+        for (const rog_map::Vec3f &direction : directions) {
+            rog_map::Vec3f last_known_free = node.position;
+            bool found_unknown = false;
+            for (double distance = step;
+                 distance <= probe_radius + 1.0e-9;
+                 distance += step) {
+                const rog_map::Vec3f sample = node.position +
+                    static_cast<float>(distance) * direction;
+                const TopologyMapView::EvidenceState state =
+                    map_view.evidenceState(sample);
+                if (state == TopologyMapView::EvidenceState::KNOWN_FREE) {
+                    last_known_free = sample;
+                    continue;
+                }
+                if (state == TopologyMapView::EvidenceState::UNKNOWN) {
+                    found_unknown = true;
+                }
+                // OCCUPIED blocks the ray; UNKNOWN terminates it after the
+                // final known-free sample has been recorded.
+                break;
+            }
+            if (!found_unknown) {
+                continue;
+            }
+
+            evidence.unknown_direction_mask |= faceMaskForDirection(direction);
+            ++evidence.unknown_direction_count;
+            const double boundary_distance =
+                (last_known_free - node.position).norm();
+            if (!has_nearest_boundary ||
+                boundary_distance < evidence.boundary_distance - 1.0e-9) {
+                evidence.boundary_position = last_known_free;
+                evidence.boundary_normal = direction;
+                evidence.boundary_distance = boundary_distance;
+                has_nearest_boundary = true;
+            }
+        }
+
+        if (has_nearest_boundary &&
+            evidence.unknown_direction_count >= min_unknown_directions) {
+            output.push_back(std::move(evidence));
+        }
+    }
+    return output;
+}
+
 IncrementalTopologyGraph::SearchSnapshotPtr
 IncrementalTopologyGraph::acquireSearchSnapshot() const {
     return std::atomic_load_explicit(&search_snapshot_,

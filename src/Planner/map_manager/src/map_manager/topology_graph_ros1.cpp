@@ -89,6 +89,36 @@ TopologyGraphROS1::TopologyGraphROS1(
     config.publish_period = publish_period_;
     node_.param(prefix + "node_scale", node_scale_, node_scale_);
     node_.param(prefix + "edge_scale", edge_scale_, edge_scale_);
+    node_.param(prefix + "frontier_visualization_enabled",
+                frontier_visualization_enabled_,
+                frontier_visualization_enabled_);
+    node_.param(prefix + "frontier_node_scale", frontier_node_scale_,
+                frontier_node_scale_);
+    node_.param(prefix + "frontier_boundary_scale", frontier_boundary_scale_,
+                frontier_boundary_scale_);
+    node_.param(prefix + "frontier_edge_scale", frontier_edge_scale_,
+                frontier_edge_scale_);
+    node_.param(prefix + "frontier_probe_radius",
+                frontier_query_config_.probe_radius,
+                frontier_query_config_.probe_radius);
+    node_.param(prefix + "frontier_probe_step",
+                frontier_query_config_.sample_step,
+                frontier_query_config_.sample_step);
+    int frontier_min_unknown_directions =
+        static_cast<int>(frontier_query_config_.min_unknown_directions);
+    node_.param(prefix + "frontier_min_unknown_directions",
+                frontier_min_unknown_directions,
+                frontier_min_unknown_directions);
+    frontier_node_scale_ = std::max(0.01, frontier_node_scale_);
+    frontier_boundary_scale_ = std::max(0.01, frontier_boundary_scale_);
+    frontier_edge_scale_ = std::max(0.005, frontier_edge_scale_);
+    frontier_query_config_.probe_radius =
+        std::max(0.05, frontier_query_config_.probe_radius);
+    frontier_query_config_.sample_step =
+        std::max(0.0, frontier_query_config_.sample_step);
+    frontier_query_config_.min_unknown_directions =
+        static_cast<std::uint8_t>(
+            std::clamp(frontier_min_unknown_directions, 1, 26));
 
     enabled_ = config.enabled && static_cast<bool>(map_manager);
     if (!enabled_) {
@@ -216,7 +246,13 @@ void TopologyGraphROS1::workerLoop() {
                 if (last_publish_time_.isZero() ||
                     (now - last_publish_time_).toSec() >= publish_period_) {
                     manager->topologyGraph()->refreshSnapshot();
-                    publisher_.publish(makeMarkers(manager->topologySnapshot()));
+                    const auto snapshot = manager->topologySnapshot();
+                    const auto frontier_evidence =
+                        frontier_visualization_enabled_
+                            ? manager->classifyTopologyFrontiers(
+                                  snapshot, frontier_query_config_)
+                            : IncrementalTopologyGraph::FrontierEvidenceList{};
+                    publisher_.publish(makeMarkers(snapshot, frontier_evidence));
                     last_publish_time_ = now;
                 }
             }
@@ -228,7 +264,9 @@ void TopologyGraphROS1::workerLoop() {
 }
 
 visualization_msgs::MarkerArray TopologyGraphROS1::makeMarkers(
-    const IncrementalTopologyGraph::Snapshot &snapshot) const {
+    const IncrementalTopologyGraph::Snapshot &snapshot,
+    const IncrementalTopologyGraph::FrontierEvidenceList
+        &frontier_evidence) const {
     visualization_msgs::MarkerArray output;
     const ros::Time stamp = ros::Time::now();
 
@@ -319,49 +357,83 @@ visualization_msgs::MarkerArray TopologyGraphROS1::makeMarkers(
     }
     output.markers.push_back(edges);
 
-    visualization_msgs::Marker status;
-    status.header.frame_id = frame_id_;
-    status.header.stamp = stamp;
-    status.ns = "incremental_topology_status";
-    status.id = 0;
-    status.type = visualization_msgs::Marker::TEXT_VIEW_FACING;
-    status.action = visualization_msgs::Marker::ADD;
-    status.pose.orientation.w = 1.0;
-    if (!snapshot.nodes.empty()) {
-        status.pose.position.x = snapshot.nodes.front().position.x();
-        status.pose.position.y = snapshot.nodes.front().position.y();
-        status.pose.position.z = snapshot.nodes.front().position.z() + 0.5;
+    visualization_msgs::Marker frontier_nodes;
+    frontier_nodes.header.frame_id = frame_id_;
+    frontier_nodes.header.stamp = stamp;
+    frontier_nodes.ns = "incremental_topology_frontier_nodes";
+    frontier_nodes.id = 0;
+    frontier_nodes.type = visualization_msgs::Marker::SPHERE_LIST;
+    frontier_nodes.action = visualization_msgs::Marker::ADD;
+    frontier_nodes.pose.orientation.w = 1.0;
+    frontier_nodes.scale.x = frontier_node_scale_;
+    frontier_nodes.scale.y = frontier_node_scale_;
+    frontier_nodes.scale.z = frontier_node_scale_;
+    frontier_nodes.color.r = 1.0F;
+    frontier_nodes.color.g = 0.05F;
+    frontier_nodes.color.b = 0.75F;
+    frontier_nodes.color.a = 1.0F;
+
+    visualization_msgs::Marker frontier_boundary;
+    frontier_boundary.header.frame_id = frame_id_;
+    frontier_boundary.header.stamp = stamp;
+    frontier_boundary.ns = "incremental_topology_frontier_boundaries";
+    frontier_boundary.id = 0;
+    frontier_boundary.type = visualization_msgs::Marker::SPHERE_LIST;
+    frontier_boundary.action = visualization_msgs::Marker::ADD;
+    frontier_boundary.pose.orientation.w = 1.0;
+    frontier_boundary.scale.x = frontier_boundary_scale_;
+    frontier_boundary.scale.y = frontier_boundary_scale_;
+    frontier_boundary.scale.z = frontier_boundary_scale_;
+    frontier_boundary.color.r = 1.0F;
+    frontier_boundary.color.g = 0.85F;
+    frontier_boundary.color.b = 0.05F;
+    frontier_boundary.color.a = 1.0F;
+
+    visualization_msgs::Marker frontier_directions;
+    frontier_directions.header.frame_id = frame_id_;
+    frontier_directions.header.stamp = stamp;
+    frontier_directions.ns = "incremental_topology_frontier_directions";
+    frontier_directions.id = 0;
+    frontier_directions.type = visualization_msgs::Marker::LINE_LIST;
+    frontier_directions.action = visualization_msgs::Marker::ADD;
+    frontier_directions.pose.orientation.w = 1.0;
+    frontier_directions.scale.x = frontier_edge_scale_;
+    frontier_directions.color.r = 1.0F;
+    frontier_directions.color.g = 0.30F;
+    frontier_directions.color.b = 0.10F;
+    frontier_directions.color.a = 0.95F;
+
+    for (const auto &frontier : frontier_evidence) {
+        const auto node_it = positions.find(frontier.id);
+        if (node_it == positions.end()) {
+            continue;
+        }
+        geometry_msgs::Point node_point;
+        node_point.x = node_it->second.x();
+        node_point.y = node_it->second.y();
+        node_point.z = node_it->second.z();
+        geometry_msgs::Point boundary_point;
+        boundary_point.x = frontier.boundary_position.x();
+        boundary_point.y = frontier.boundary_position.y();
+        boundary_point.z = frontier.boundary_position.z();
+        frontier_nodes.points.push_back(node_point);
+        frontier_boundary.points.push_back(boundary_point);
+        frontier_directions.points.push_back(node_point);
+        frontier_directions.points.push_back(boundary_point);
     }
-    status.scale.z = std::max(0.20, 1.5 * node_scale_);
-    status.color.r = 1.0F;
-    status.color.g = 1.0F;
-    status.color.b = 1.0F;
-    status.color.a = 0.9F;
-    status.text = std::string{"topology mode="} +
-                  IncrementalTopologyGraph::constructionModeName(
-                      snapshot.construction_mode) +
-                  " nodes=" + std::to_string(snapshot.nodes.size()) +
-                  " raw=" + std::to_string(snapshot.raw_node_count) +
-                  " pending=" + std::to_string(snapshot.pending_node_count) +
-                  " isolated=" + std::to_string(snapshot.isolated_node_count) +
-                  " components=" +
-                  std::to_string(snapshot.connected_component_count) +
-                  " active=" +
-                  std::to_string(snapshot.nodes.size() - historical_nodes) +
-                  " historical=" + std::to_string(historical_nodes) +
-                  " edges=" + std::to_string(snapshot.edges.size()) +
-                  " known_free=" +
-                  std::to_string(snapshot.known_free_cell_count) +
-                  " dirty=" + std::to_string(snapshot.dirty_region_count) +
-                  " rev=" + std::to_string(snapshot.revision) +
-                  " empty=" + std::to_string(snapshot.empty_region_count) +
-                  " last[sampled=" +
-                  std::to_string(snapshot.last_sampled_center_count) +
-                  " free=" +
-                  std::to_string(snapshot.last_traversable_center_count) +
-                  " clearance_reject=" +
-                  std::to_string(snapshot.last_clearance_rejected_count) + "]";
-    output.markers.push_back(status);
+    output.markers.push_back(frontier_nodes);
+    output.markers.push_back(frontier_boundary);
+    output.markers.push_back(frontier_directions);
+
+    // Clear the previously published text in existing RViz sessions.  Future
+    // arrays deliberately contain no textual topology visualization.
+    visualization_msgs::Marker remove_legacy_status;
+    remove_legacy_status.header.frame_id = frame_id_;
+    remove_legacy_status.header.stamp = stamp;
+    remove_legacy_status.ns = "incremental_topology_status";
+    remove_legacy_status.id = 0;
+    remove_legacy_status.action = visualization_msgs::Marker::DELETE;
+    output.markers.push_back(remove_legacy_status);
     return output;
 }
 

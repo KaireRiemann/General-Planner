@@ -31,7 +31,7 @@ What is synced:
   - devel/lib/general_planner/highspeed_traj_server
   - M2 planner_runtime launch + mode RViz configs
   - M2 state2state and global-topology configuration
-  - general_planner PlannerStatus/PlannerModeRequest/TopologyExpansionPoint msgs
+  - general_planner PlannerStatus/PlannerModeRequest/TopologyFrontierPoint msgs
   - devel/lib/liblkh_tsp_solver.so
   - General Planner 3D Nav Goal RViz plugin
   - General Planner garage exploration YAML/RViz configs
@@ -211,8 +211,8 @@ for required in \
   "${RVIZ_SWITCHER_SCRIPT_SRC}" \
   "${PLANNER_MSG_DIR}/PlannerStatus.msg" \
   "${PLANNER_MSG_DIR}/PlannerModeRequest.msg" \
-  "${PLANNER_MSG_DIR}/TopologyExpansionPoint.msg" \
-  "${PLANNER_MSG_DIR}/TopologyExpansionPointArray.msg" \
+  "${PLANNER_MSG_DIR}/TopologyFrontierPoint.msg" \
+  "${PLANNER_MSG_DIR}/TopologyFrontierPointArray.msg" \
   "${GP_CPP_MSG_SRC}" \
   "${GP_PY_MSG_SRC}" \
   "${RELEASE_PKG_DIR}/launch/planner_runtime.launch" \
@@ -300,10 +300,10 @@ rm -rf "${GP_MSG_PKG_DST}/msg"
 mkdir -p "${GP_MSG_PKG_DST}/msg"
 cp "${PLANNER_MSG_DIR}/PlannerStatus.msg" "${GP_MSG_PKG_DST}/msg/PlannerStatus.msg"
 cp "${PLANNER_MSG_DIR}/PlannerModeRequest.msg" "${GP_MSG_PKG_DST}/msg/PlannerModeRequest.msg"
-cp "${PLANNER_MSG_DIR}/TopologyExpansionPoint.msg" \
-  "${GP_MSG_PKG_DST}/msg/TopologyExpansionPoint.msg"
-cp "${PLANNER_MSG_DIR}/TopologyExpansionPointArray.msg" \
-  "${GP_MSG_PKG_DST}/msg/TopologyExpansionPointArray.msg"
+cp "${PLANNER_MSG_DIR}/TopologyFrontierPoint.msg" \
+  "${GP_MSG_PKG_DST}/msg/TopologyFrontierPoint.msg"
+cp "${PLANNER_MSG_DIR}/TopologyFrontierPointArray.msg" \
+  "${GP_MSG_PKG_DST}/msg/TopologyFrontierPointArray.msg"
 cat >"${GP_MSG_PKG_DST}/package.xml" <<'EOF'
 <?xml version="1.0"?>
 <package format="2">
@@ -403,8 +403,8 @@ PY
 from general_planner.msg import (
     PlannerStatus,
     PlannerModeRequest,
-    TopologyExpansionPoint,
-    TopologyExpansionPointArray,
+    TopologyFrontierPoint,
+    TopologyFrontierPointArray,
 )
 print("general_planner runtime msgs import ok")
 PY
