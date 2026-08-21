@@ -121,7 +121,7 @@ cd "${WORKSPACE_ROOT}"
 catkin_cmd=(
   catkin_make
   --force-cmake
-  "-DCATKIN_WHITELIST_PACKAGES=general_planner;general_planner_rviz_plugins"
+  "-DCATKIN_WHITELIST_PACKAGES=map_manager;general_planner;general_planner_rviz_plugins"
   -DCMAKE_BUILD_TYPE="${BUILD_TYPE}"
 )
 if [[ -n "${GP_CATKIN_ARGS:-}" ]]; then

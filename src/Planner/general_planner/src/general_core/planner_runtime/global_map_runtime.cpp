@@ -245,14 +245,20 @@ void GlobalMapRuntime::publishTopologyExpansionSnapshot() {
   }
 
   for (const auto &node : snapshot.nodes) {
+    const auto degree_it = degree.find(node.id);
+    // The topology core never exposes a zero-degree node.  Keep the semantic
+    // ROS message equally strict in case an older or external producer hands
+    // us a malformed snapshot.
+    if (degree_it == degree.end() || degree_it->second == 0U) {
+      continue;
+    }
     general_planner::TopologyExpansionPoint point;
     point.id = node.id;
     point.position.x = node.position.x();
     point.position.y = node.position.y();
     point.position.z = node.position.z();
     point.clearance = static_cast<float>(node.clearance);
-    const auto degree_it = degree.find(node.id);
-    point.degree = degree_it == degree.end() ? 0U : degree_it->second;
+    point.degree = degree_it->second;
     point.state = node.state == IncrementalTopologyGraph::NodeState::ACTIVE
         ? general_planner::TopologyExpansionPoint::STATE_ACTIVE
         : general_planner::TopologyExpansionPoint::STATE_HISTORICAL;

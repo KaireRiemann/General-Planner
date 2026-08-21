@@ -109,6 +109,21 @@ public:
         double dirty_padding{2.5};
         double bubble_overlap_margin{0.10};
         bool unknown_as_free{false};
+        /**
+         * Public topology is a navigation contract, not a dump of every
+         * internal candidate.  A public node must have at least one validated
+         * neighbour.  When this is true, expose only the connected component
+         * safely attachable to the latest robot/update focus.  This prevents
+         * remote components and pending candidates from becoming selectable
+         * global-planning waypoints.
+         */
+        bool publish_connected_component_only{true};
+        /**
+         * Maximum robot-to-component attachment distance used to select the
+         * public component.  Zero uses connection_radius.  The attachment
+         * segment itself must be KNOWN_FREE; UNKNOWN never selects a root.
+         */
+        double public_component_attach_radius{0.0};
         std::size_t max_nodes_per_region{4};
         std::size_t max_bubbles_per_region{256};
         std::size_t max_neighbors{8};
@@ -182,6 +197,14 @@ public:
         std::size_t last_sampled_center_count{0};
         std::size_t last_traversable_center_count{0};
         std::size_t last_clearance_rejected_count{0};
+        /** Raw internal candidates retained for future reconnection. */
+        std::size_t raw_node_count{0};
+        /** Raw nodes deliberately omitted from the public/search graph. */
+        std::size_t pending_node_count{0};
+        /** Raw candidates with no collision-validated graph edge. */
+        std::size_t isolated_node_count{0};
+        /** Number of raw connected components with at least one edge. */
+        std::size_t connected_component_count{0};
     };
 
     /** Immutable graph revision shared by real-time planning queries. */
@@ -208,6 +231,12 @@ public:
         std::size_t last_sampled_center_count{0};
         std::size_t last_traversable_center_count{0};
         std::size_t last_clearance_rejected_count{0};
+        /** node_count/edge_count describe raw retained candidates. */
+        std::size_t public_node_count{0};
+        std::size_t public_edge_count{0};
+        std::size_t pending_node_count{0};
+        std::size_t isolated_node_count{0};
+        std::size_t connected_component_count{0};
         std::uint64_t revision{0};
     };
 
@@ -281,6 +310,12 @@ private:
         Node node;
         RegionKey region;
         std::unordered_map<NodeId, double> neighbors;
+        /**
+         * Updated once per maintenance pass.  False means this node is a
+         * retained candidate only: it must never reach RViz, the topology
+         * expansion message or a planning SearchSnapshot.
+         */
+        bool public_node{false};
     };
 
     using NodeMap = std::unordered_map<NodeId, NodeRecord>;
@@ -327,6 +362,12 @@ private:
                        const TopologyMapView &map_view);
     void rebuildIncidentEdges(const std::vector<NodeId> &source_ids,
                               const TopologyMapView &map_view);
+    /**
+     * Classify raw nodes into pending/private and public navigation nodes.
+     * Returns true only when the public classification changed/recomputed.
+     */
+    bool refreshPublicTopology(const TopologyMapView &map_view,
+                               const rog_map::Vec3f *focus);
     void publishSearchSnapshot();
 
     mutable std::shared_mutex graph_mutex_;
@@ -358,6 +399,14 @@ private:
     std::uint64_t revision_{0};
     std::size_t rebuilt_region_count_{0};
     std::size_t empty_region_count_{0};
+    std::size_t pending_node_count_{0};
+    std::size_t isolated_node_count_{0};
+    std::size_t connected_component_count_{0};
+    /** Cache key for avoiding an O(V + E) component scan on an idle tick. */
+    std::uint64_t public_topology_revision_{0};
+    bool public_topology_initialized_{false};
+    rog_map::Vec3f public_topology_focus_{rog_map::Vec3f::Zero()};
+    bool has_public_topology_focus_{false};
     CandidateDiagnostics last_candidate_diagnostics_;
 };
 

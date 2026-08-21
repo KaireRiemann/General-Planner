@@ -21,6 +21,23 @@ bool expect(const bool condition, const std::string &message) {
     return true;
 }
 
+bool hasNoZeroDegreeNodes(
+    const general_planner::IncrementalTopologyGraph::Snapshot &snapshot) {
+    std::unordered_map<std::uint64_t, std::size_t> degree;
+    degree.reserve(snapshot.nodes.size());
+    for (const auto &edge : snapshot.edges) {
+        ++degree[edge.from];
+        ++degree[edge.to];
+    }
+    for (const auto &node : snapshot.nodes) {
+        const auto found = degree.find(node.id);
+        if (found == degree.end() || found->second == 0U) {
+            return false;
+        }
+    }
+    return true;
+}
+
 } // namespace
 
 int main() {
@@ -83,13 +100,6 @@ int main() {
     ok &= expect(has_expandable_portal,
                  "unconnected endpoint portals must be exposed as expandable");
 
-    std::unordered_map<std::uint64_t, Vec3f> stable_nodes;
-    for (const auto &node : initial.nodes) {
-        if (node.position.x() < 2.0 || node.position.x() >= 4.0) {
-            stable_nodes.emplace(node.id, node.position);
-        }
-    }
-
     middle_blocked = true;
     graph.markDirty(Vec3f(3.0, 1.0, 1.0));
     ok &= expect(graph.update(query, 1) == 1,
@@ -99,14 +109,8 @@ int main() {
         ok &= expect(node.position.x() < 2.0 || node.position.x() >= 4.0,
                      "blocked-region nodes must be removed");
     }
-    for (const auto &stable : stable_nodes) {
-        bool found = false;
-        for (const auto &node : blocked.nodes) {
-            found = found || (node.id == stable.first &&
-                              (node.position - stable.second).norm() < 1.0e-9);
-        }
-        ok &= expect(found, "unaffected regions must preserve stable node IDs");
-    }
+    ok &= expect(hasNoZeroDegreeNodes(blocked),
+                 "public topology must never contain a zero-degree node");
 
     rog_map::vec_Vec3f path;
     ok &= expect(!graph.findPath(Vec3f(0.5, 0.5, 0.5),
@@ -291,8 +295,10 @@ int main() {
         dense_graph.update(dense_query, 4);
     }
     const auto dense_moved = dense_graph.snapshot();
-    ok &= expect(dense_moved.nodes.size() == 8,
-                 "new ROG KNOWN_FREE regions must append without odom gating");
+    ok &= expect(dense_graph.stats().node_count == 8 &&
+                     dense_moved.nodes.size() == 4 &&
+                     dense_moved.pending_node_count == 4,
+                 "remote components must remain internal until the robot reaches them");
     for (const auto &historic : dense_history) {
         bool found = false;
         for (const auto &node : dense_moved.nodes) {
@@ -375,10 +381,11 @@ int main() {
     seed_graph.markDirtyVoxels({seed_id}, 0.2);
     seed_graph.update(seed_query, 1);
     const auto seed_snapshot = seed_graph.snapshot();
-    ok &= expect(seed_snapshot.nodes.size() == 1 &&
-                     (seed_snapshot.nodes.front().position - seed_position).norm() <
-                         1.0e-9,
-                 "ROG state-transition voxel must seed an evidence-aligned bubble");
+    const auto seed_stats = seed_graph.stats();
+    ok &= expect(seed_snapshot.nodes.empty() && seed_stats.node_count == 1 &&
+                     seed_stats.isolated_node_count == 1 &&
+                     seed_stats.pending_node_count == 1,
+                 "a one-point evidence seed must remain pending, never public");
 
     // Persistent bubble regions are append-only: a later observation in the
     // same region may fill an uncovered gap, but it must not move/replace a
@@ -402,7 +409,14 @@ int main() {
                             (point - append_position).norm() < 1.0e-9;
         const bool close = append_phase >= 2 &&
                            (point - close_position).norm() < 1.0e-9;
-        return first || second || close
+        // The two evidence seeds become a valid edge only after the whole
+        // intervening segment has actually been observed KNOWN_FREE.
+        const bool observed_bridge = append_phase >= 1 &&
+            std::abs(point.y() - seed_position.y()) < 1.0e-9 &&
+            std::abs(point.z() - seed_position.z()) < 1.0e-9 &&
+            point.x() >= seed_position.x() - 1.0e-9 &&
+            point.x() <= append_position.x() + 1.0e-9;
+        return first || second || close || observed_bridge
             ? general_planner::TopologyMapView::EvidenceState::KNOWN_FREE
             : general_planner::TopologyMapView::EvidenceState::UNKNOWN;
     };
@@ -417,20 +431,24 @@ int main() {
     append_graph.markDirtyVoxels({seed_id}, 0.2);
     append_graph.update(append_query, 1);
     const auto append_initial = append_graph.snapshot();
-    ok &= expect(append_initial.nodes.size() == 1,
-                 "the append-only fixture must commit its first node");
-    const auto committed_id = append_initial.nodes.front().id;
+    ok &= expect(append_initial.nodes.empty() &&
+                     append_graph.stats().node_count == 1,
+                 "the first append-only evidence seed must remain pending");
     append_phase = 1;
     append_graph.markDirtyVoxels({append_id}, 0.2);
     append_graph.update(append_query, 1);
     const auto append_filled = append_graph.snapshot();
     bool original_unchanged = false;
+    bool append_node_present = false;
     for (const auto &node : append_filled.nodes) {
         original_unchanged = original_unchanged ||
-            (node.id == committed_id &&
-             (node.position - seed_position).norm() < 1.0e-9);
+            (node.position - seed_position).norm() < 1.0e-9;
+        append_node_present = append_node_present ||
+            (node.position - append_position).norm() < 1.0e-9;
     }
-    ok &= expect(append_filled.nodes.size() == 2 && original_unchanged,
+    ok &= expect(append_filled.nodes.size() == 2 &&
+                     append_filled.edges.size() == 1 && original_unchanged &&
+                     append_node_present && hasNoZeroDegreeNodes(append_filled),
                  "new free evidence must append without replacing committed topology");
     append_phase = 2;
     append_graph.markDirtyVoxels({close_id}, 0.2);
@@ -447,7 +465,7 @@ int main() {
     first_cell_occupied = true;
     dense_graph.markDirty(Vec3f(0.5, 0.5, 1.0));
     dense_graph.update(dense_query, 1);
-    ok &= expect(dense_graph.snapshot().nodes.size() == 7,
+    ok &= expect(dense_graph.stats().node_count == 7,
                  "ROG occupied updates must remove a formerly free node");
 
     // Unknown gaps are not fabricated merely to force connectivity.
@@ -467,10 +485,58 @@ int main() {
         gap_graph.update(gap_query, 4);
     }
     const auto gap_snap = gap_graph.snapshot();
-    ok &= expect(gap_snap.nodes.size() == 2,
-                 "both ROG KNOWN_FREE endpoints must remain");
-    ok &= expect(gap_snap.edges.empty(),
-                 "an unknown middle cell must prevent a fabricated bridge");
+    const auto gap_stats = gap_graph.stats();
+    ok &= expect(gap_snap.nodes.empty() && gap_snap.edges.empty() &&
+                     gap_stats.node_count == 2 &&
+                     gap_stats.isolated_node_count == 2,
+                 "unknown-gap endpoints must remain pending without a fake bridge");
+
+    // Public topology is a single robot-attached component.  Two valid
+    // components and an isolated evidence point are retained internally, but
+    // neither the remote component nor the point may reach planning/RViz.
+    IncrementalTopologyGraph::Config visibility_config = dense_config;
+    visibility_config.connection_radius = 1.1;
+    visibility_config.publish_connected_component_only = true;
+    IncrementalTopologyGraph visibility_graph(visibility_config);
+    IncrementalTopologyGraph::Query visibility_query;
+    visibility_query.traversable = [](const Vec3f &point) {
+        const int x = static_cast<int>(std::floor(point.x()));
+        const int y = static_cast<int>(std::floor(point.y()));
+        return y == 0 && (x == 0 || x == 1 || x == 4 || x == 5 || x == 8);
+    };
+    visibility_query.clearance = dense_query.clearance;
+    visibility_graph.markDirty(Vec3f(0.5, 0.5, 1.0));
+    visibility_graph.markDirty(Vec3f(4.5, 0.5, 1.0));
+    visibility_graph.markDirty(Vec3f(8.5, 0.5, 1.0));
+    const Vec3f left_focus(0.5, 0.5, 1.0);
+    while (visibility_graph.stats().dirty_region_count > 0) {
+        visibility_graph.update(visibility_query, 4, &left_focus);
+    }
+    const auto left_public = visibility_graph.snapshot();
+    const auto left_stats = visibility_graph.stats();
+    ok &= expect(left_public.nodes.size() == 2 && left_public.edges.size() == 1 &&
+                     hasNoZeroDegreeNodes(left_public) &&
+                     left_stats.node_count == 5 &&
+                     left_stats.public_node_count == 2 &&
+                     left_stats.pending_node_count == 3 &&
+                     left_stats.isolated_node_count == 1 &&
+                     left_stats.connected_component_count == 2,
+                 "only the robot-attached component may be public");
+    path.clear();
+    ok &= expect(!visibility_graph.findPath(
+                     Vec3f(0.5, 0.5, 1.0), Vec3f(4.5, 0.5, 1.0),
+                     visibility_query, path),
+                 "a remote topology component must not be selectable as a route");
+    const Vec3f right_focus(4.5, 0.5, 1.0);
+    visibility_graph.update(visibility_query, 4, &right_focus);
+    const auto right_public = visibility_graph.snapshot();
+    bool all_on_right = !right_public.nodes.empty();
+    for (const auto &node : right_public.nodes) {
+        all_on_right = all_on_right && node.position.x() >= 4.0;
+    }
+    ok &= expect(right_public.nodes.size() == 2 && right_public.edges.size() == 1 &&
+                     hasNoZeroDegreeNodes(right_public) && all_on_right,
+                 "moving the robot focus must atomically switch the public root");
 
     // Valid adjacent lattice edges are mandatory and cannot be removed by a
     // small max_neighbors budget, including in the vertical direction.

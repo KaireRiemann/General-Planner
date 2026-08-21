@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <chrono>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 
 namespace general_planner {
@@ -51,6 +52,12 @@ TopologyGraphROS1::TopologyGraphROS1(
                 config.bubble_overlap_margin);
     node_.param(prefix + "unknown_as_free", config.unknown_as_free,
                 config.unknown_as_free);
+    node_.param(prefix + "publish_connected_component_only",
+                config.publish_connected_component_only,
+                config.publish_connected_component_only);
+    node_.param(prefix + "public_component_attach_radius",
+                config.public_component_attach_radius,
+                config.public_component_attach_radius);
     node_.param(prefix + "snapshot_every_update",
                 config.snapshot_every_update,
                 config.snapshot_every_update);
@@ -191,8 +198,12 @@ void TopologyGraphROS1::workerLoop() {
                 ROS_INFO_STREAM_THROTTLE(
                     1.0, "[topology update] processed=" << processed
                          << " dirty=" << stats.dirty_region_count
-                         << " nodes=" << stats.node_count
-                         << " edges=" << stats.edge_count
+                         << " raw_nodes=" << stats.node_count
+                         << " public_nodes=" << stats.public_node_count
+                         << " pending=" << stats.pending_node_count
+                         << " isolated=" << stats.isolated_node_count
+                         << " raw_edges=" << stats.edge_count
+                         << " public_edges=" << stats.public_edge_count
                          << " cost=" << update_ms << "ms");
                 if (update_ms > update_period_ * 1000.0) {
                     ROS_WARN_STREAM_THROTTLE(
@@ -239,8 +250,20 @@ visualization_msgs::MarkerArray TopologyGraphROS1::makeMarkers(
 
     std::unordered_map<IncrementalTopologyGraph::NodeId, rog_map::Vec3f> positions;
     positions.reserve(snapshot.nodes.size());
+    std::unordered_set<IncrementalTopologyGraph::NodeId> edge_endpoints;
+    edge_endpoints.reserve(snapshot.edges.size() * 2U);
+    for (const auto &edge : snapshot.edges) {
+        edge_endpoints.insert(edge.from);
+        edge_endpoints.insert(edge.to);
+    }
     std::size_t historical_nodes = 0;
     for (const auto &node : snapshot.nodes) {
+        // Snapshot publication already enforces this invariant.  Keep the
+        // visualization boundary defensive so a malformed external snapshot
+        // can never recreate a dot without an incident edge in RViz.
+        if (edge_endpoints.count(node.id) == 0U) {
+            continue;
+        }
         geometry_msgs::Point point;
         point.x = node.position.x();
         point.y = node.position.y();
@@ -318,6 +341,11 @@ visualization_msgs::MarkerArray TopologyGraphROS1::makeMarkers(
                   IncrementalTopologyGraph::constructionModeName(
                       snapshot.construction_mode) +
                   " nodes=" + std::to_string(snapshot.nodes.size()) +
+                  " raw=" + std::to_string(snapshot.raw_node_count) +
+                  " pending=" + std::to_string(snapshot.pending_node_count) +
+                  " isolated=" + std::to_string(snapshot.isolated_node_count) +
+                  " components=" +
+                  std::to_string(snapshot.connected_component_count) +
                   " active=" +
                   std::to_string(snapshot.nodes.size() - historical_nodes) +
                   " historical=" + std::to_string(historical_nodes) +
