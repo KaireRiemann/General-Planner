@@ -30,6 +30,7 @@ class PlannerRvizSwitcher(object):
     MODE_STATE2STATE = 1
     MODE_EXPLORATION = 2
     MODE_TARGET_EXPLORATION = 4
+    MODE_GATE = 5
 
     def __init__(self):
         self.rviz_node_name = rospy.get_param(
@@ -102,7 +103,11 @@ class PlannerRvizSwitcher(object):
         mode = int(msg.active_mode)
         if mode == self.MODE_STATE2STATE:
             self._set_desired("state2state", "planner_status")
-        elif mode in (self.MODE_EXPLORATION, self.MODE_TARGET_EXPLORATION):
+        elif mode in (self.MODE_EXPLORATION, self.MODE_TARGET_EXPLORATION,
+                      self.MODE_GATE):
+            # Gate is map-only from this runtime's perspective; use the
+            # exploration layout so the persistent LIO/global-topology views
+            # remain visible while the external planner flies the slit.
             self._set_desired("exploration", "planner_status")
         # HOLD / EMERGENCY: keep current viz.
 

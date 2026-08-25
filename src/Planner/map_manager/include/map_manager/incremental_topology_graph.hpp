@@ -109,21 +109,6 @@ public:
         double dirty_padding{2.5};
         double bubble_overlap_margin{0.10};
         bool unknown_as_free{false};
-        /**
-         * Public topology is a navigation contract, not a dump of every
-         * internal candidate.  A public node must have at least one validated
-         * neighbour.  When this is true, expose only the connected component
-         * safely attachable to the latest robot/update focus.  This prevents
-         * remote components and pending candidates from becoming selectable
-         * global-planning waypoints.
-         */
-        bool publish_connected_component_only{true};
-        /**
-         * Maximum robot-to-component attachment distance used to select the
-         * public component.  Zero uses connection_radius.  The attachment
-         * segment itself must be KNOWN_FREE; UNKNOWN never selects a root.
-         */
-        double public_component_attach_radius{0.0};
         std::size_t max_nodes_per_region{4};
         std::size_t max_bubbles_per_region{256};
         std::size_t max_neighbors{8};
@@ -363,11 +348,11 @@ private:
     void rebuildIncidentEdges(const std::vector<NodeId> &source_ids,
                               const TopologyMapView &map_view);
     /**
-     * Classify raw nodes into pending/private and public navigation nodes.
-     * Returns true only when the public classification changed/recomputed.
+     * Keep every connected component public while filtering zero-degree
+     * candidates at the publication boundary. Robot attachment belongs to a
+     * path query, not to lifetime topology visibility.
      */
-    bool refreshPublicTopology(const TopologyMapView &map_view,
-                               const rog_map::Vec3f *focus);
+    bool refreshPublicTopology();
     void publishSearchSnapshot();
 
     mutable std::shared_mutex graph_mutex_;
@@ -405,8 +390,6 @@ private:
     /** Cache key for avoiding an O(V + E) component scan on an idle tick. */
     std::uint64_t public_topology_revision_{0};
     bool public_topology_initialized_{false};
-    rog_map::Vec3f public_topology_focus_{rog_map::Vec3f::Zero()};
-    bool has_public_topology_focus_{false};
     CandidateDiagnostics last_candidate_diagnostics_;
 };
 

@@ -34,13 +34,9 @@ global_topology:
   dirty_padding: 2.50
   bubble_overlap_margin: 0.10
   unknown_as_free: false
-  # Internal candidates may wait for later observations, but they are never
-  # published or used for planning until they have a validated edge.  Publish
-  # only the component attached to the current robot focus; a missing
-  # KNOWN_FREE attachment publishes no graph instead of a remote island.
-  publish_connected_component_only: true
-  # 0.0 uses connection_radius.  This is a safety bound, not a sparsity knob.
-  public_component_attach_radius: 0.0
+  # A zero-degree candidate is excluded from topology publication and route
+  # search. Every component that has a validated edge remains visible; the
+  # current robot attachment is checked only when a route is queried.
   # A component contributes its core plus only the portals needed to preserve
   # room, corridor and vertical connectivity. This hard cap is the primary
   # memory bound for the persistent graph.

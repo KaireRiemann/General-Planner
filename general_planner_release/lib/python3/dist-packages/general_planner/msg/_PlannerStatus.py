@@ -9,7 +9,7 @@ import struct
 import std_msgs.msg
 
 class PlannerStatus(genpy.Message):
-  _md5sum = "e9fd8af440394371ec67478bc266019d"
+  _md5sum = "ea88b140bff057d80a7df2da783ac7f1"
   _type = "general_planner/PlannerStatus"
   _has_header = True  # flag to mark the presence of a Header object
   _full_text = """std_msgs/Header header
@@ -50,6 +50,7 @@ uint8 MODE_STATE2STATE=1
 uint8 MODE_EXPLORATION=2
 uint8 MODE_EMERGENCY_STOP=3
 uint8 MODE_TARGET_EXPLORATION=4
+uint8 MODE_GATE=5
 
 uint8 PHASE_BOOT=0
 uint8 PHASE_WAITING_INPUT=1
@@ -70,6 +71,7 @@ uint8 RESULT_BLOCKED=4
 uint8 OWNER_HOLD=0
 uint8 OWNER_STATE2STATE=1
 uint8 OWNER_EXPLORATION=2
+uint8 OWNER_GATE=3
 
 uint16 MODE_STATE_UNKNOWN=0
 uint16 MODE_STATE_S2S_WAIT_GOAL=1
@@ -88,6 +90,10 @@ uint16 MODE_STATE_EXP_PAUSED=17
 uint16 MODE_STATE_EXP_FINISH=18
 uint16 MODE_STATE_EXP_WAIT_TARGET=19
 uint16 MODE_STATE_HOLD_IDLE=20
+uint16 MODE_STATE_GATE_WAIT_START=30
+uint16 MODE_STATE_GATE_EXECUTING=31
+uint16 MODE_STATE_GATE_END_VERIFY=32
+uint16 MODE_STATE_GATE_COMPLETE=33
 
 ================================================================================
 MSG: std_msgs/Header
@@ -111,6 +117,7 @@ string frame_id
   MODE_EXPLORATION = 2
   MODE_EMERGENCY_STOP = 3
   MODE_TARGET_EXPLORATION = 4
+  MODE_GATE = 5
   PHASE_BOOT = 0
   PHASE_WAITING_INPUT = 1
   PHASE_PLANNING = 2
@@ -128,6 +135,7 @@ string frame_id
   OWNER_HOLD = 0
   OWNER_STATE2STATE = 1
   OWNER_EXPLORATION = 2
+  OWNER_GATE = 3
   MODE_STATE_UNKNOWN = 0
   MODE_STATE_S2S_WAIT_GOAL = 1
   MODE_STATE_S2S_GENERATE_TRAJ = 2
@@ -145,6 +153,10 @@ string frame_id
   MODE_STATE_EXP_FINISH = 18
   MODE_STATE_EXP_WAIT_TARGET = 19
   MODE_STATE_HOLD_IDLE = 20
+  MODE_STATE_GATE_WAIT_START = 30
+  MODE_STATE_GATE_EXECUTING = 31
+  MODE_STATE_GATE_END_VERIFY = 32
+  MODE_STATE_GATE_COMPLETE = 33
 
   __slots__ = ['header','transition_id','task_epoch','world_epoch','map_revision','topo_revision','accepted_request_id','task_id','active_mode','requested_mode','phase','mode_state','task_result','active_mode_str','requested_mode_str','phase_str','mode_state_str','command_owner_str','task_result_str','stable_hover','ready_for_new_task','odom_valid','map_ready','topology_ready','command_owner','speed_mps','yaw_rate_rps','reason']
   _slot_types = ['std_msgs/Header','uint64','uint64','uint64','uint64','uint64','uint64','string','uint8','uint8','uint8','uint16','uint8','string','string','string','string','string','string','bool','bool','bool','bool','bool','uint8','float32','float32','string']

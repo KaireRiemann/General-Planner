@@ -190,6 +190,9 @@ struct PlannerStatus_
 #if defined(_WIN32) && defined(MODE_TARGET_EXPLORATION)
   #undef MODE_TARGET_EXPLORATION
 #endif
+#if defined(_WIN32) && defined(MODE_GATE)
+  #undef MODE_GATE
+#endif
 #if defined(_WIN32) && defined(PHASE_BOOT)
   #undef PHASE_BOOT
 #endif
@@ -240,6 +243,9 @@ struct PlannerStatus_
 #endif
 #if defined(_WIN32) && defined(OWNER_EXPLORATION)
   #undef OWNER_EXPLORATION
+#endif
+#if defined(_WIN32) && defined(OWNER_GATE)
+  #undef OWNER_GATE
 #endif
 #if defined(_WIN32) && defined(MODE_STATE_UNKNOWN)
   #undef MODE_STATE_UNKNOWN
@@ -292,6 +298,18 @@ struct PlannerStatus_
 #if defined(_WIN32) && defined(MODE_STATE_HOLD_IDLE)
   #undef MODE_STATE_HOLD_IDLE
 #endif
+#if defined(_WIN32) && defined(MODE_STATE_GATE_WAIT_START)
+  #undef MODE_STATE_GATE_WAIT_START
+#endif
+#if defined(_WIN32) && defined(MODE_STATE_GATE_EXECUTING)
+  #undef MODE_STATE_GATE_EXECUTING
+#endif
+#if defined(_WIN32) && defined(MODE_STATE_GATE_END_VERIFY)
+  #undef MODE_STATE_GATE_END_VERIFY
+#endif
+#if defined(_WIN32) && defined(MODE_STATE_GATE_COMPLETE)
+  #undef MODE_STATE_GATE_COMPLETE
+#endif
 
   enum {
     MODE_HOLD = 0u,
@@ -299,6 +317,7 @@ struct PlannerStatus_
     MODE_EXPLORATION = 2u,
     MODE_EMERGENCY_STOP = 3u,
     MODE_TARGET_EXPLORATION = 4u,
+    MODE_GATE = 5u,
     PHASE_BOOT = 0u,
     PHASE_WAITING_INPUT = 1u,
     PHASE_PLANNING = 2u,
@@ -316,6 +335,7 @@ struct PlannerStatus_
     OWNER_HOLD = 0u,
     OWNER_STATE2STATE = 1u,
     OWNER_EXPLORATION = 2u,
+    OWNER_GATE = 3u,
     MODE_STATE_UNKNOWN = 0u,
     MODE_STATE_S2S_WAIT_GOAL = 1u,
     MODE_STATE_S2S_GENERATE_TRAJ = 2u,
@@ -333,6 +353,10 @@ struct PlannerStatus_
     MODE_STATE_EXP_FINISH = 18u,
     MODE_STATE_EXP_WAIT_TARGET = 19u,
     MODE_STATE_HOLD_IDLE = 20u,
+    MODE_STATE_GATE_WAIT_START = 30u,
+    MODE_STATE_GATE_EXECUTING = 31u,
+    MODE_STATE_GATE_END_VERIFY = 32u,
+    MODE_STATE_GATE_COMPLETE = 33u,
   };
 
 
@@ -347,6 +371,18 @@ typedef boost::shared_ptr< ::general_planner::PlannerStatus > PlannerStatusPtr;
 typedef boost::shared_ptr< ::general_planner::PlannerStatus const> PlannerStatusConstPtr;
 
 // constants requiring out of line definition
+
+   
+
+   
+
+   
+
+   
+
+   
+
+   
 
    
 
@@ -523,12 +559,12 @@ struct MD5Sum< ::general_planner::PlannerStatus_<ContainerAllocator> >
 {
   static const char* value()
   {
-    return "e9fd8af440394371ec67478bc266019d";
+    return "ea88b140bff057d80a7df2da783ac7f1";
   }
 
   static const char* value(const ::general_planner::PlannerStatus_<ContainerAllocator>&) { return value(); }
-  static const uint64_t static_value1 = 0xe9fd8af440394371ULL;
-  static const uint64_t static_value2 = 0xec67478bc266019dULL;
+  static const uint64_t static_value1 = 0xea88b140bff057d8ULL;
+  static const uint64_t static_value2 = 0x0a7df2da783ac7f1ULL;
 };
 
 template<class ContainerAllocator>
@@ -585,6 +621,7 @@ struct Definition< ::general_planner::PlannerStatus_<ContainerAllocator> >
 "uint8 MODE_EXPLORATION=2\n"
 "uint8 MODE_EMERGENCY_STOP=3\n"
 "uint8 MODE_TARGET_EXPLORATION=4\n"
+"uint8 MODE_GATE=5\n"
 "\n"
 "uint8 PHASE_BOOT=0\n"
 "uint8 PHASE_WAITING_INPUT=1\n"
@@ -605,6 +642,7 @@ struct Definition< ::general_planner::PlannerStatus_<ContainerAllocator> >
 "uint8 OWNER_HOLD=0\n"
 "uint8 OWNER_STATE2STATE=1\n"
 "uint8 OWNER_EXPLORATION=2\n"
+"uint8 OWNER_GATE=3\n"
 "\n"
 "uint16 MODE_STATE_UNKNOWN=0\n"
 "uint16 MODE_STATE_S2S_WAIT_GOAL=1\n"
@@ -623,6 +661,10 @@ struct Definition< ::general_planner::PlannerStatus_<ContainerAllocator> >
 "uint16 MODE_STATE_EXP_FINISH=18\n"
 "uint16 MODE_STATE_EXP_WAIT_TARGET=19\n"
 "uint16 MODE_STATE_HOLD_IDLE=20\n"
+"uint16 MODE_STATE_GATE_WAIT_START=30\n"
+"uint16 MODE_STATE_GATE_EXECUTING=31\n"
+"uint16 MODE_STATE_GATE_END_VERIFY=32\n"
+"uint16 MODE_STATE_GATE_COMPLETE=33\n"
 "\n"
 "================================================================================\n"
 "MSG: std_msgs/Header\n"

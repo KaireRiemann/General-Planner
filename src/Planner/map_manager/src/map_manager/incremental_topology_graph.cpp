@@ -68,8 +68,6 @@ IncrementalTopologyGraph::Config IncrementalTopologyGraph::sanitized(
     cfg.edge_sample_spacing = std::max(0.02, cfg.edge_sample_spacing);
     cfg.dirty_padding = std::max(0.0, cfg.dirty_padding);
     cfg.bubble_overlap_margin = std::max(0.0, cfg.bubble_overlap_margin);
-    cfg.public_component_attach_radius = std::max(
-        0.0, cfg.public_component_attach_radius);
     cfg.max_nodes_per_region = std::max<std::size_t>(1, cfg.max_nodes_per_region);
     cfg.max_bubbles_per_region = std::max<std::size_t>(1, cfg.max_bubbles_per_region);
     cfg.max_neighbors = std::max<std::size_t>(1, cfg.max_neighbors);
@@ -113,8 +111,6 @@ void IncrementalTopologyGraph::configure(const Config &config) {
         connected_component_count_ = 0;
         public_topology_revision_ = 0;
         public_topology_initialized_ = false;
-        public_topology_focus_.setZero();
-        has_public_topology_focus_ = false;
         last_candidate_diagnostics_ = CandidateDiagnostics{};
     }
     publishSearchSnapshot();
@@ -1522,43 +1518,15 @@ void IncrementalTopologyGraph::rebuildIncidentEdges(
     }
 }
 
-bool IncrementalTopologyGraph::refreshPublicTopology(
-    const TopologyMapView &map_view, const rog_map::Vec3f *focus) {
-    struct Component {
-        std::vector<NodeId> nodes;
-        NodeId smallest_id{std::numeric_limits<NodeId>::max()};
-    };
-    struct AttachmentCandidate {
-        double distance{0.0};
-        std::size_t component_index{0};
-        NodeId node_id{0};
-    };
-
+bool IncrementalTopologyGraph::refreshPublicTopology() {
     std::unique_lock<std::shared_mutex> lock(graph_mutex_);
-    const bool has_focus = focus != nullptr && focus->allFinite();
-    // A smaller movement cannot alter a collision-validated attachment at the
-    // graph sampling resolution.  This keeps an idle world-lifetime graph
-    // from paying O(V + E) every 0.1 s merely because odometry is high-rate.
-    const double focus_reclass_distance =
-        std::max(0.05, config_.edge_sample_spacing);
-    const bool focus_changed =
-        has_focus != has_public_topology_focus_ ||
-        (has_focus && (!public_topology_initialized_ ||
-                       (public_topology_focus_ - *focus).norm() >=
-                           focus_reclass_distance));
     if (public_topology_initialized_ &&
-        public_topology_revision_ == revision_ && !focus_changed) {
+        public_topology_revision_ == revision_) {
         return false;
     }
-    const auto finish = [this, has_focus, focus]() {
+    const auto finish = [this]() {
         public_topology_revision_ = revision_;
         public_topology_initialized_ = true;
-        has_public_topology_focus_ = has_focus;
-        if (has_focus) {
-            public_topology_focus_ = *focus;
-        } else {
-            public_topology_focus_.setZero();
-        }
     };
     for (auto &entry : nodes_) {
         entry.second.public_node = false;
@@ -1571,26 +1539,24 @@ bool IncrementalTopologyGraph::refreshPublicTopology(
         return true;
     }
 
-    // The edge maintenance code writes an undirected graph.  Treat a missing
+    // The edge maintenance code writes an undirected graph. Treat a missing
     // reverse edge as invalid nevertheless: a partially updated edge must not
     // make an otherwise isolated candidate publicly visible.
     const auto hasValidNeighbor = [this](const NodeId from,
                                          const NodeId to) {
         const auto target = nodes_.find(to);
-        return target != nodes_.end() &&
+        return from != to && target != nodes_.end() &&
                target->second.neighbors.count(from) != 0U;
     };
 
     std::unordered_set<NodeId> visited;
     visited.reserve(nodes_.size());
-    std::vector<Component> components;
-    components.reserve(nodes_.size());
-    for (const auto &entry : nodes_) {
+    for (auto &entry : nodes_) {
         const NodeId start = entry.first;
         if (visited.count(start) != 0U) {
             continue;
         }
-        Component component;
+        std::vector<NodeId> component;
         std::vector<NodeId> frontier{start};
         visited.insert(start);
         while (!frontier.empty()) {
@@ -1600,8 +1566,7 @@ bool IncrementalTopologyGraph::refreshPublicTopology(
             if (current_it == nodes_.end()) {
                 continue;
             }
-            component.nodes.push_back(current);
-            component.smallest_id = std::min(component.smallest_id, current);
+            component.push_back(current);
             for (const auto &neighbor : current_it->second.neighbors) {
                 if (!hasValidNeighbor(current, neighbor.first) ||
                     visited.count(neighbor.first) != 0U) {
@@ -1611,100 +1576,19 @@ bool IncrementalTopologyGraph::refreshPublicTopology(
                 frontier.push_back(neighbor.first);
             }
         }
-        if (component.nodes.size() < 2U) {
+        if (component.size() < 2U) {
             ++isolated_node_count_;
             continue;
         }
-        components.push_back(std::move(component));
-    }
-    connected_component_count_ = components.size();
-    if (components.empty()) {
-        finish();
-        return true;
-    }
-
-    std::vector<std::size_t> public_components;
-    if (!config_.publish_connected_component_only) {
-        public_components.reserve(components.size());
-        for (std::size_t index = 0; index < components.size(); ++index) {
-            public_components.push_back(index);
-        }
-    } else if (has_focus) {
-        const double attach_radius = config_.public_component_attach_radius > 0.0
-            ? config_.public_component_attach_radius
-            : config_.connection_radius;
-        std::vector<AttachmentCandidate> candidates;
-        candidates.reserve(components.size());
-        for (std::size_t index = 0; index < components.size(); ++index) {
-            AttachmentCandidate best;
-            best.distance = std::numeric_limits<double>::infinity();
-            best.component_index = index;
-            for (const NodeId id : components[index].nodes) {
-                const auto node_it = nodes_.find(id);
-                if (node_it == nodes_.end()) {
-                    continue;
-                }
-                const double distance =
-                    (node_it->second.node.position - *focus).norm();
-                if (distance <= attach_radius &&
-                    (distance < best.distance - 1.0e-9 ||
-                     (std::abs(distance - best.distance) <= 1.0e-9 &&
-                      id < best.node_id))) {
-                    best.distance = distance;
-                    best.node_id = id;
-                }
-            }
-            if (best.node_id != 0) {
-                candidates.push_back(best);
-            }
-        }
-        std::sort(candidates.begin(), candidates.end(),
-                  [](const AttachmentCandidate &lhs,
-                     const AttachmentCandidate &rhs) {
-                      if (std::abs(lhs.distance - rhs.distance) > 1.0e-9) {
-                          return lhs.distance < rhs.distance;
-                      }
-                      return lhs.node_id < rhs.node_id;
-                  });
-        for (const AttachmentCandidate &candidate : candidates) {
-            const auto node_it = nodes_.find(candidate.node_id);
-            if (node_it != nodes_.end() && lineTraversable(
-                    *focus, node_it->second.node.position, map_view,
-                    config_.edge_sample_spacing)) {
-                public_components.push_back(candidate.component_index);
-                break;
-            }
-        }
-        // A focus with no KNOWN_FREE attachment is intentionally published as
-        // an empty graph.  Selecting a remote component would let a planner
-        // believe it had a route through unknown/blocked space.
-    } else {
-        // Standalone users/tests may not provide odometry.  Keep one stable
-        // component in that case, never an arbitrary disconnected union.
-        std::size_t selected = 0;
-        for (std::size_t index = 1; index < components.size(); ++index) {
-            if (components[index].nodes.size() > components[selected].nodes.size() ||
-                (components[index].nodes.size() ==
-                     components[selected].nodes.size() &&
-                 components[index].smallest_id <
-                     components[selected].smallest_id)) {
-                selected = index;
-            }
-        }
-        public_components.push_back(selected);
-    }
-
-    std::size_t public_count = 0;
-    for (const std::size_t index : public_components) {
-        for (const NodeId id : components[index].nodes) {
+        ++connected_component_count_;
+        for (const NodeId id : component) {
             const auto node_it = nodes_.find(id);
             if (node_it != nodes_.end()) {
                 node_it->second.public_node = true;
-                ++public_count;
+                --pending_node_count_;
             }
         }
     }
-    pending_node_count_ = nodes_.size() - public_count;
     finish();
     return true;
 }
@@ -1809,12 +1693,10 @@ std::size_t IncrementalTopologyGraph::update(const TopologyMapView &map_view,
         rebuildRegion(region, changed_dense_cells, evidence_seeds, map_view);
         ++rebuilt;
     }
-    // Raw candidates may be retained across map-window movement, but only a
-    // connected, collision-attached component may be used by readers.
-    // Re-evaluate even with no dirty region so a moved robot focus changes
-    // the public root immediately at the worker cadence.
-    const bool public_topology_changed =
-        refreshPublicTopology(map_view, focus);
+    // Topology lifetime does not depend on the robot's momentary map
+    // attachment. Only zero-degree candidates are withheld from readers;
+    // findPath() validates start/goal attachments at query time.
+    const bool public_topology_changed = refreshPublicTopology();
     if (config_.snapshot_every_update &&
         (rebuilt > 0 || public_topology_changed)) {
         publishSearchSnapshot();

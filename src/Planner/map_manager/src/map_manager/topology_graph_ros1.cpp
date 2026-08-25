@@ -52,12 +52,6 @@ TopologyGraphROS1::TopologyGraphROS1(
                 config.bubble_overlap_margin);
     node_.param(prefix + "unknown_as_free", config.unknown_as_free,
                 config.unknown_as_free);
-    node_.param(prefix + "publish_connected_component_only",
-                config.publish_connected_component_only,
-                config.publish_connected_component_only);
-    node_.param(prefix + "public_component_attach_radius",
-                config.public_component_attach_radius,
-                config.public_component_attach_radius);
     node_.param(prefix + "snapshot_every_update",
                 config.snapshot_every_update,
                 config.snapshot_every_update);

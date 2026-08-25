@@ -296,9 +296,10 @@ int main() {
     }
     const auto dense_moved = dense_graph.snapshot();
     ok &= expect(dense_graph.stats().node_count == 8 &&
-                     dense_moved.nodes.size() == 4 &&
-                     dense_moved.pending_node_count == 4,
-                 "remote components must remain internal until the robot reaches them");
+                     dense_moved.nodes.size() == 8 &&
+                     dense_moved.pending_node_count == 0 &&
+                     dense_moved.connected_component_count == 2,
+                 "every non-isolated component must remain visible to long-range routing");
     for (const auto &historic : dense_history) {
         bool found = false;
         for (const auto &node : dense_moved.nodes) {
@@ -491,12 +492,11 @@ int main() {
                      gap_stats.isolated_node_count == 2,
                  "unknown-gap endpoints must remain pending without a fake bridge");
 
-    // Public topology is a single robot-attached component.  Two valid
-    // components and an isolated evidence point are retained internally, but
-    // neither the remote component nor the point may reach planning/RViz.
+    // All valid components must remain visible to long-range routing. The
+    // isolated evidence point is retained internally but must never reach a
+    // SearchSnapshot or RViz marker.
     IncrementalTopologyGraph::Config visibility_config = dense_config;
     visibility_config.connection_radius = 1.1;
-    visibility_config.publish_connected_component_only = true;
     IncrementalTopologyGraph visibility_graph(visibility_config);
     IncrementalTopologyGraph::Query visibility_query;
     visibility_query.traversable = [](const Vec3f &point) {
@@ -512,31 +512,29 @@ int main() {
     while (visibility_graph.stats().dirty_region_count > 0) {
         visibility_graph.update(visibility_query, 4, &left_focus);
     }
-    const auto left_public = visibility_graph.snapshot();
-    const auto left_stats = visibility_graph.stats();
-    ok &= expect(left_public.nodes.size() == 2 && left_public.edges.size() == 1 &&
-                     hasNoZeroDegreeNodes(left_public) &&
-                     left_stats.node_count == 5 &&
-                     left_stats.public_node_count == 2 &&
-                     left_stats.pending_node_count == 3 &&
-                     left_stats.isolated_node_count == 1 &&
-                     left_stats.connected_component_count == 2,
-                 "only the robot-attached component may be public");
+    const auto visible_snapshot = visibility_graph.snapshot();
+    const auto visible_stats = visibility_graph.stats();
+    ok &= expect(visible_snapshot.nodes.size() == 4 &&
+                     visible_snapshot.edges.size() == 2 &&
+                     hasNoZeroDegreeNodes(visible_snapshot) &&
+                     visible_stats.node_count == 5 &&
+                     visible_stats.public_node_count == 4 &&
+                     visible_stats.pending_node_count == 1 &&
+                     visible_stats.isolated_node_count == 1 &&
+                     visible_stats.connected_component_count == 2,
+                 "only the isolated point must be withheld from public topology");
     path.clear();
     ok &= expect(!visibility_graph.findPath(
                      Vec3f(0.5, 0.5, 1.0), Vec3f(4.5, 0.5, 1.0),
                      visibility_query, path),
-                 "a remote topology component must not be selectable as a route");
+                 "disconnected topology components must not fabricate a route");
     const Vec3f right_focus(4.5, 0.5, 1.0);
     visibility_graph.update(visibility_query, 4, &right_focus);
-    const auto right_public = visibility_graph.snapshot();
-    bool all_on_right = !right_public.nodes.empty();
-    for (const auto &node : right_public.nodes) {
-        all_on_right = all_on_right && node.position.x() >= 4.0;
-    }
-    ok &= expect(right_public.nodes.size() == 2 && right_public.edges.size() == 1 &&
-                     hasNoZeroDegreeNodes(right_public) && all_on_right,
-                 "moving the robot focus must atomically switch the public root");
+    const auto focus_independent_snapshot = visibility_graph.snapshot();
+    ok &= expect(focus_independent_snapshot.nodes.size() == 4 &&
+                     focus_independent_snapshot.edges.size() == 2 &&
+                     hasNoZeroDegreeNodes(focus_independent_snapshot),
+                 "moving robot focus must not hide an otherwise valid component");
 
     // Valid adjacent lattice edges are mandatory and cannot be removed by a
     // small max_neighbors budget, including in the vertical direction.
