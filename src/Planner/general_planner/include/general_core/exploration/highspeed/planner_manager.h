@@ -410,6 +410,13 @@ public:
                        const std::shared_ptr<general_planner::MapManager>
                            &shared_map_manager = nullptr);
 
+  // The runtime owns the world-lifetime MapManager.  HighSpeedExp remains a
+  // read-only consumer; exposing this handle lets target exploration query an
+  // immutable global-topology snapshot without constructing a second map.
+  std::shared_ptr<general_planner::MapManager> sharedMapManager() const {
+    return map_manager_;
+  }
+
   bool checkTrajCollision(double &collision_time);
   bool checkTrajVelocity();
   bool hasCommittedTrajectory() const;

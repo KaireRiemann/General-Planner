@@ -189,6 +189,51 @@ void FastExplorationManager::initialize(
   nh.param("exploration/target_goal_lock_remaining_margin",
            ep_->target_goal_lock_remaining_margin_,
            ep_->target_goal_lock_remaining_margin_);
+  nh.param("exploration/target_topology_guidance_enable",
+           ep_->target_topology_guidance_enable_,
+           ep_->target_topology_guidance_enable_);
+  nh.param("exploration/target_topology_query_interval",
+           ep_->target_topology_query_interval_,
+           ep_->target_topology_query_interval_);
+  nh.param("exploration/target_topology_local_prefix_length",
+           ep_->target_topology_local_prefix_length_,
+           ep_->target_topology_local_prefix_length_);
+  nh.param("exploration/target_topology_goal_change_tolerance",
+           ep_->target_topology_goal_change_tolerance_,
+           ep_->target_topology_goal_change_tolerance_);
+  nh.param("exploration/target_topology_anchor_min_progress",
+           ep_->target_topology_anchor_min_progress_,
+           ep_->target_topology_anchor_min_progress_);
+  nh.param("exploration/target_topology_anchor_progress_weight",
+           ep_->target_topology_anchor_progress_weight_,
+           ep_->target_topology_anchor_progress_weight_);
+  nh.param("exploration/target_topology_anchor_lateral_penalty",
+           ep_->target_topology_anchor_lateral_penalty_,
+           ep_->target_topology_anchor_lateral_penalty_);
+  nh.param("exploration/target_topology_anchor_radial_penalty",
+           ep_->target_topology_anchor_radial_penalty_,
+           ep_->target_topology_anchor_radial_penalty_);
+  nh.param("exploration/target_topology_anchor_remaining_penalty",
+           ep_->target_topology_anchor_remaining_penalty_,
+           ep_->target_topology_anchor_remaining_penalty_);
+  nh.param("exploration/target_topology_anchor_expansion_bonus",
+           ep_->target_topology_anchor_expansion_bonus_,
+           ep_->target_topology_anchor_expansion_bonus_);
+  nh.param("exploration/target_topology_anchor_candidate_count",
+           ep_->target_topology_anchor_candidate_count_,
+           ep_->target_topology_anchor_candidate_count_);
+  nh.param("exploration/target_topology_anchor_query_attempts",
+           ep_->target_topology_anchor_query_attempts_,
+           ep_->target_topology_anchor_query_attempts_);
+  nh.param("exploration/target_topology_anchor_min_route_length",
+           ep_->target_topology_anchor_min_route_length_,
+           ep_->target_topology_anchor_min_route_length_);
+  nh.param("exploration/target_topology_frontier_bias",
+           ep_->target_topology_frontier_bias_,
+           ep_->target_topology_frontier_bias_);
+  nh.param("exploration/target_topology_direct_prefix_enable",
+           ep_->target_topology_direct_prefix_enable_,
+           ep_->target_topology_direct_prefix_enable_);
   nh.param("exploration/target_local_preflight_fail_limit",
            ep_->target_local_preflight_fail_limit_,
            ep_->target_local_preflight_fail_limit_);
@@ -222,6 +267,32 @@ void FastExplorationManager::initialize(
       std::clamp(ep_->target_cluster_shortlist_, 2, 16);
   ep_->target_goal_lock_remaining_margin_ =
       std::clamp(ep_->target_goal_lock_remaining_margin_, 0.1, 10.0);
+  ep_->target_topology_query_interval_ =
+      std::clamp(ep_->target_topology_query_interval_, 0.0, 30.0);
+  ep_->target_topology_local_prefix_length_ =
+      std::clamp(ep_->target_topology_local_prefix_length_, 1.0, 50.0);
+  ep_->target_topology_goal_change_tolerance_ =
+      std::clamp(ep_->target_topology_goal_change_tolerance_, 0.05, 10.0);
+  ep_->target_topology_anchor_min_progress_ =
+      std::clamp(ep_->target_topology_anchor_min_progress_, 0.0, 20.0);
+  ep_->target_topology_anchor_progress_weight_ =
+      std::clamp(ep_->target_topology_anchor_progress_weight_, 0.0, 20.0);
+  ep_->target_topology_anchor_lateral_penalty_ =
+      std::clamp(ep_->target_topology_anchor_lateral_penalty_, 0.0, 10.0);
+  ep_->target_topology_anchor_radial_penalty_ =
+      std::clamp(ep_->target_topology_anchor_radial_penalty_, 0.0, 10.0);
+  ep_->target_topology_anchor_remaining_penalty_ =
+      std::clamp(ep_->target_topology_anchor_remaining_penalty_, 0.0, 10.0);
+  ep_->target_topology_anchor_expansion_bonus_ =
+      std::clamp(ep_->target_topology_anchor_expansion_bonus_, 0.0, 50.0);
+  ep_->target_topology_anchor_candidate_count_ =
+      std::clamp(ep_->target_topology_anchor_candidate_count_, 1, 32);
+  ep_->target_topology_anchor_query_attempts_ =
+      std::clamp(ep_->target_topology_anchor_query_attempts_, 1, 16);
+  ep_->target_topology_anchor_min_route_length_ =
+      std::clamp(ep_->target_topology_anchor_min_route_length_, 0.0, 20.0);
+  ep_->target_topology_frontier_bias_ =
+      std::clamp(ep_->target_topology_frontier_bias_, 0.0, 20.0);
   ep_->target_local_preflight_fail_limit_ =
       std::clamp(ep_->target_local_preflight_fail_limit_, 1, 10);
   ep_->target_progress_detour_budget_ =
@@ -242,6 +313,7 @@ void FastExplorationManager::initialize(
       std::clamp(ep_->target_spatial_blacklist_radius_, 0.5, 20.0);
   ep_->target_spatial_blacklist_duration_ =
       std::clamp(ep_->target_spatial_blacklist_duration_, 1.0, 60.0);
+  target_topology_guidance_.configure(targetTopologyGuidanceConfig());
   frontier_progress_timeout_ =
       std::clamp(frontier_progress_timeout_, 4.0, 60.0);
   frontier_progress_min_cost_drop_ =
@@ -672,6 +744,7 @@ void FastExplorationManager::setMissionGoal(
   ed_->locked_goal_cluster_id_ = -1;
   ed_->locked_goal_coverage_id_ = 0;
   resetNormalGoalProgress();
+  target_topology_guidance_.reset();
   ROS_INFO_STREAM("[target exploration] set mission goal=("
                   << ed_->mission_goal_.transpose() << ") start=("
                   << ed_->mission_start_.transpose() << ")");
@@ -706,6 +779,7 @@ bool FastExplorationManager::setMissionMode(const std::string &mode) {
   ed_->locked_goal_cluster_id_ = -1;
   ed_->locked_goal_coverage_id_ = 0;
   resetNormalGoalProgress();
+  target_topology_guidance_.reset();
   if (!target) {
     ed_->has_mission_goal_ = false;
     ed_->mission_goal_needs_initialization_ = false;
@@ -764,8 +838,131 @@ FastExplorationManager::targetGuidanceConfig() const {
   return config;
 }
 
+TargetTopologyGuidanceConfig
+FastExplorationManager::targetTopologyGuidanceConfig() const {
+  TargetTopologyGuidanceConfig config;
+  if (!ep_) {
+    return config;
+  }
+  config.enabled = ep_->target_topology_guidance_enable_;
+  config.query_interval = ep_->target_topology_query_interval_;
+  config.local_prefix_length = ep_->target_topology_local_prefix_length_;
+  config.goal_change_tolerance =
+      ep_->target_topology_goal_change_tolerance_;
+  config.minimum_progress = ep_->target_topology_anchor_min_progress_;
+  config.progress_weight = ep_->target_topology_anchor_progress_weight_;
+  config.lateral_penalty = ep_->target_topology_anchor_lateral_penalty_;
+  config.radial_penalty = ep_->target_topology_anchor_radial_penalty_;
+  config.remaining_penalty = ep_->target_topology_anchor_remaining_penalty_;
+  config.expansion_bonus = ep_->target_topology_anchor_expansion_bonus_;
+  config.anchor_candidate_count =
+      ep_->target_topology_anchor_candidate_count_;
+  config.anchor_query_attempts = ep_->target_topology_anchor_query_attempts_;
+  config.minimum_anchor_route_length =
+      ep_->target_topology_anchor_min_route_length_;
+  config.vertical_weight = ep_->target_vertical_weight_;
+  return config;
+}
+
+const TargetTopologyGuide &FastExplorationManager::updateTargetTopologyGuide(
+    const Eigen::Vector3d &pos) {
+  target_topology_guidance_.configure(targetTopologyGuidanceConfig());
+  const std::shared_ptr<general_planner::MapManager> map_manager =
+      planner_manager_ ? planner_manager_->sharedMapManager() : nullptr;
+  Eigen::Vector3d mission_goal = Eigen::Vector3d::Zero();
+  if (ed_ && ed_->has_mission_goal_) {
+    mission_goal = ed_->mission_goal_.cast<double>();
+  }
+  const TargetTopologyGuide &guide = target_topology_guidance_.update(
+      map_manager, pos, mission_goal, ros::Time::now().toSec());
+  if (guide.valid) {
+    ROS_INFO_STREAM_THROTTLE(
+        1.0, "[target topology] "
+                 << targetTopologyGuideStatusName(guide.status)
+                 << " route=" << guide.route_id
+                 << " topo_rev=" << guide.topology_revision
+                 << " points=" << guide.route.size() << " anchor=("
+                 << guide.anchor.transpose() << ") prefix=("
+                 << guide.local_prefix_point.transpose() << ")");
+  }
+  return guide;
+}
+
+double FastExplorationManager::topologyGuidePenalty(
+    const Eigen::Vector3d &candidate) const {
+  if (!ep_ || !candidate.allFinite()) {
+    return 0.0;
+  }
+  const TargetTopologyGuide &guide = target_topology_guidance_.guide();
+  if (!guide.valid || !guide.local_prefix_point.allFinite()) {
+    return 0.0;
+  }
+  Eigen::Vector3d delta =
+      candidate - guide.local_prefix_point.cast<double>();
+  delta.z() *= ep_->target_vertical_weight_;
+  const double distance = delta.norm();
+  if (!std::isfinite(distance)) {
+    return 0.0;
+  }
+  return ep_->target_topology_frontier_bias_ * distance /
+         std::max(0.5, ep_->v_max_ / 2.0);
+}
+
+bool FastExplorationManager::appendTopologyGuideCandidate(
+    const Eigen::Vector3d &pos, const float curr_yaw,
+    vector<TopoNode::Ptr> &viewpoints) const {
+  if (!ep_ || !ep_->target_topology_direct_prefix_enable_ ||
+      !planner_manager_ || !planner_manager_->topo_graph_ ||
+      !planner_manager_->gcopter_config_) {
+    return false;
+  }
+  const TargetTopologyGuide &guide = target_topology_guidance_.guide();
+  if (!guide.valid || !guide.local_prefix_point.allFinite()) {
+    return false;
+  }
+  const Eigen::Vector3f prefix = guide.local_prefix_point;
+  if ((prefix.cast<double>() - pos).norm() <=
+      std::max(0.5, ep_->target_reached_radius_)) {
+    return false;
+  }
+  if (!planner_manager_->topo_graph_->hasRegionForPoint(prefix)) {
+    return false;
+  }
+  const double required_clearance = std::max(
+      planner_manager_->topo_graph_->bubble_min_radius_,
+      planner_manager_->gcopter_config_->commitKnownFreeSafeDistance);
+  const Eigen::Vector3d prefix_d = prefix.cast<double>();
+  if (planner_manager_->querySafetyState(prefix_d) !=
+          MapVoxelState::KNOWN_FREE ||
+      planner_manager_->safetyDistanceToOcc(prefix_d) < required_clearance) {
+    return false;
+  }
+  // A global edge is not permission to cross an unseen portion of the local
+  // rolling map. Directly inject only a fully known-free local prefix; all
+  // other guide information remains a frontier-ranking bias.
+  const RaycastSafetyInfo local_line = planner_manager_->raycastSafety(
+      pos, prefix_d, true, required_clearance,
+      planner_manager_->gcopter_config_->safetyMapQueryStep);
+  if (!local_line.all_known_free) {
+    return false;
+  }
+  TopoNode::Ptr guide_node = std::make_shared<TopoNode>();
+  guide_node->is_viewpoint_ = true;
+  guide_node->frontier_cluster_id_ = -1;
+  guide_node->center_ = prefix;
+  const Eigen::Vector3d direction = prefix_d - pos;
+  guide_node->yaw_ = std::hypot(direction.x(), direction.y()) > 1.0e-3
+                         ? std::atan2(direction.y(), direction.x())
+                         : curr_yaw;
+  viewpoints.emplace_back(guide_node);
+  ROS_INFO_STREAM_THROTTLE(
+      1.0, "[target topology] add locally verified route prefix ("
+               << prefix.transpose() << ") route=" << guide.route_id);
+  return true;
+}
+
 std::unordered_set<int> FastExplorationManager::preferredTargetClusterIds(
-    const Eigen::Vector3d &pos) const {
+    const Eigen::Vector3d &pos) {
   std::unordered_set<int> preferred;
   if (!targetDirectedModeActive() || !frontier_manager_ptr_ || !ed_ || !ep_) {
     return preferred;
@@ -803,9 +1000,61 @@ std::unordered_set<int> FastExplorationManager::preferredTargetClusterIds(
     shortlist = std::min(
         16, shortlist + std::min(8, deferred_skipped + 2));
   }
-  const std::vector<int> ranked = selectPreferredTargetClusterIds(
-      pos, ed_->mission_goal_.cast<double>(), clusters, targetGuidanceConfig(),
-      ep_->target_frontier_min_progress_, shortlist);
+  const TargetTopologyGuide &topology_guide = updateTargetTopologyGuide(pos);
+  std::vector<int> ranked;
+  if (!topology_guide.valid) {
+    ranked = selectPreferredTargetClusterIds(
+        pos, ed_->mission_goal_.cast<double>(), clusters,
+        targetGuidanceConfig(), ep_->target_frontier_min_progress_, shortlist);
+  } else {
+    struct RankedCluster {
+      int id{-1};
+      TargetDirectedExplorationScore score;
+      double cost{std::numeric_limits<double>::infinity()};
+    };
+    std::vector<RankedCluster> progressing;
+    std::vector<RankedCluster> detours;
+    progressing.reserve(clusters.size());
+    detours.reserve(clusters.size());
+    for (const auto &cluster : clusters) {
+      const auto score = scoreTargetDirectedViewpoint(
+          pos, ed_->mission_goal_.cast<double>(), cluster.position,
+          targetGuidanceConfig());
+      if (!score.valid) {
+        continue;
+      }
+      RankedCluster candidate;
+      candidate.id = cluster.id;
+      candidate.score = score;
+      candidate.cost = score.cost + topologyGuidePenalty(cluster.position);
+      if (hasSufficientTargetProgress(score,
+                                      ep_->target_frontier_min_progress_)) {
+        progressing.emplace_back(candidate);
+      } else {
+        detours.emplace_back(candidate);
+      }
+    }
+    const auto compare = [](const RankedCluster &lhs,
+                            const RankedCluster &rhs) {
+      if (lhs.cost != rhs.cost) {
+        return lhs.cost < rhs.cost;
+      }
+      if (lhs.score.remaining_distance != rhs.score.remaining_distance) {
+        return lhs.score.remaining_distance < rhs.score.remaining_distance;
+      }
+      return lhs.id < rhs.id;
+    };
+    std::stable_sort(progressing.begin(), progressing.end(), compare);
+    std::stable_sort(detours.begin(), detours.end(), compare);
+    const auto &primary = progressing.empty() ? detours : progressing;
+    ranked.reserve(std::min<int>(shortlist, static_cast<int>(primary.size())));
+    for (const auto &candidate : primary) {
+      if (static_cast<int>(ranked.size()) >= shortlist) {
+        break;
+      }
+      ranked.emplace_back(candidate.id);
+    }
+  }
   preferred.insert(ranked.begin(), ranked.end());
   if (!ranked.empty()) {
     ROS_INFO_STREAM_THROTTLE(
@@ -1160,7 +1409,9 @@ int FastExplorationManager::commitTargetDirectedTour(
     const double travel = i < static_cast<int>(viewpoint_reachable_edges.size())
                               ? viewpoint_reachable_edges[i].time_cost
                               : viewpoint_reachable_distance[i];
-    selection_costs[i] = targetDirectedSelectionCost(scores[i], travel);
+    selection_costs[i] = targetDirectedSelectionCost(scores[i], travel) +
+                         topologyGuidePenalty(
+                             viewpoint->center_.cast<double>());
     if (selection_costs[i] < selection_costs[best_idx] - 1.0e-6) {
       best_idx = i;
     } else if (std::fabs(selection_costs[i] - selection_costs[best_idx]) <=
@@ -2348,6 +2599,13 @@ int FastExplorationManager::planGlobalPath(const Eigen::Vector3d &pos,
   frontier_manager_ptr_->generateTSPViewpoints(
       planner_manager_->topo_graph_->odom_node_->center_, viewpoints,
       preferred_clusters);
+  if (target_directed) {
+    // The guide point is injected only when its immediate straight segment is
+    // known-free in the current rolling map. Otherwise the guide remains a
+    // scoring preference and ordinary frontier bridges continue expanding the
+    // map safely toward it.
+    appendTopologyGuideCandidate(pos, curr_yaw, viewpoints);
+  }
   if (!target_directed && coverage_guidance_) {
     coverage_guidance_->publishVisualization();
   }

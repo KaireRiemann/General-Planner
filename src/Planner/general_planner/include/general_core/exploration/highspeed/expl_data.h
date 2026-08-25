@@ -168,6 +168,23 @@ struct ExplorationParam {
   double target_direct_retry_delay_{8.0};
   int target_cluster_shortlist_{8};
   double target_goal_lock_remaining_margin_{1.0};
+  // Persistent MapManager topology is an advisory long-range layer.  The
+  // local Bubble-Topo / safety map remains the only execution authority.
+  bool target_topology_guidance_enable_{true};
+  double target_topology_query_interval_{1.0};
+  double target_topology_local_prefix_length_{12.0};
+  double target_topology_goal_change_tolerance_{0.5};
+  double target_topology_anchor_min_progress_{0.5};
+  double target_topology_anchor_progress_weight_{1.0};
+  double target_topology_anchor_lateral_penalty_{0.15};
+  double target_topology_anchor_radial_penalty_{0.10};
+  double target_topology_anchor_remaining_penalty_{0.05};
+  double target_topology_anchor_expansion_bonus_{2.0};
+  int target_topology_anchor_candidate_count_{8};
+  int target_topology_anchor_query_attempts_{4};
+  double target_topology_anchor_min_route_length_{1.0};
+  double target_topology_frontier_bias_{0.80};
+  bool target_topology_direct_prefix_enable_{true};
   // Local preflight may reject a bridge that topology still scores as
   // reachable.  Defer only after repeated failures on the same cluster so a
   // single narrow-map cycle cannot empty the shortlist.

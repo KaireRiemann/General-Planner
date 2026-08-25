@@ -148,6 +148,7 @@ target_link_libraries(general_planner_exploration_utils PUBLIC
 
 add_library(general_planner_exploration STATIC
         ${GENERAL_PLANNER_EXPLORATION_DIR}/fast_exploration_manager.cpp
+        ${GENERAL_PLANNER_EXPLORATION_DIR}/target_topology_guidance.cpp
         ${GENERAL_PLANNER_EXPLORATION_DIR}/general_planner_adapter.cpp
         ${GENERAL_PLANNER_EXPLORATION_DIR}/swarm_exploration_coordinator.cpp
 )

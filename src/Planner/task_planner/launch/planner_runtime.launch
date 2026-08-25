@@ -35,6 +35,11 @@
        default="$(find general_planner)/config/task_planner_runtime_state2state.yaml" />
   <arg name="exploration_config"
        default="$(find general_planner)/config/exploration_house.yaml" />
+  <!-- Target-task policy is separate from map/sensor/base exploration
+       settings. It is loaded after the base profile and before an optional
+       scene overlay, so an arena may tune only its height/progress deltas. -->
+  <arg name="target_exploration_config"
+       default="$(find general_planner)/config/target_exploration.yaml" />
   <!-- Optional arena-specific overrides, applied after the base exploration
        profile.  This keeps the runtime wiring identical while allowing a
        simulator PCD to supply its own bounds and sensor model. -->
@@ -102,6 +107,7 @@
         output="screen" clear_params="true"
         launch-prefix="$(arg planner_runtime_launch_prefix)">
     <rosparam file="$(arg exploration_config)" command="load" />
+    <rosparam file="$(arg target_exploration_config)" command="load" />
     <rosparam if="$(eval arg('exploration_overlay_config') != '')"
               file="$(arg exploration_overlay_config)" command="load" />
     <rosparam file="$(arg global_topology_config)" command="load" />

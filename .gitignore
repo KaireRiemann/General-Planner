@@ -20,3 +20,4 @@ __pycache__/
 # Local planner self-tests, plots, CSVs, and experimental reports.
 # Keep out of version control; run only on the machine that owns the files.
 /src/Planner/general_planner/Tests/
+/src/Planner/general_planner/tests/target_topology_guidance_self_test.cpp

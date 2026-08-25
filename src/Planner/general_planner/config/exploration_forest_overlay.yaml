@@ -18,6 +18,21 @@ exploration/target_reached_radius: 0.50
 exploration/target_direct_retry_delay: 2.0
 exploration/target_cluster_shortlist: 8
 exploration/target_goal_lock_remaining_margin: 1.0
+exploration/target_topology_guidance_enable: true
+exploration/target_topology_query_interval: 1.0
+exploration/target_topology_local_prefix_length: 12.0
+exploration/target_topology_goal_change_tolerance: 0.5
+exploration/target_topology_anchor_min_progress: 0.5
+exploration/target_topology_anchor_progress_weight: 1.0
+exploration/target_topology_anchor_lateral_penalty: 0.15
+exploration/target_topology_anchor_radial_penalty: 0.10
+exploration/target_topology_anchor_remaining_penalty: 0.05
+exploration/target_topology_anchor_expansion_bonus: 2.0
+exploration/target_topology_anchor_candidate_count: 8
+exploration/target_topology_anchor_query_attempts: 4
+exploration/target_topology_anchor_min_route_length: 1.0
+exploration/target_topology_frontier_bias: 0.80
+exploration/target_topology_direct_prefix_enable: true
 exploration/target_local_preflight_fail_limit: 3
 exploration/target_progress_detour_budget: 3
 exploration/target_preflight_horizon: 8.0
@@ -32,7 +47,7 @@ global_planning/failed_goal_cooldown: 5.0
 fsm/trigger_goal_sets_target: true
 fsm/target_goal_topic: /planning/exploration/target_goal
 fsm/target_goal_start_on_receive: false
-coverage_guidance/mode: off
+coverage_guidance/mode: "off"
 
 # click.yaml: level GENERAL_360 lidar, vertical_fov=178 degrees and horizon=70m.
 lidar_perception/fov_up: 89.0

@@ -15,6 +15,7 @@
 #include <general_core/exploration/exploration_utils/coverage_guidance/coverage_guidance_manager.h>
 #include <general_core/exploration/exploration_utils/coverage_guidance/coverage_recovery_identity.h>
 #include <general_core/exploration/highspeed/target_directed_exploration.h>
+#include <general_core/exploration/highspeed/target_topology_guidance.h>
 #include <geometry_msgs/PoseStamped.h>
 #include <limits>
 #include <memory>
@@ -215,6 +216,9 @@ private:
   int coverage_floor_transition_rank_window_{4};
   double coverage_executable_candidate_bonus_{3.0};
   NormalGoalProgress normal_goal_progress_;
+  // Long-range target tasks query MapManager's immutable world topology here.
+  // This state is task-local and never mutates the global graph.
+  TargetTopologyGuidance target_topology_guidance_;
   bool frontier_progress_watchdog_enable_{true};
   double frontier_progress_timeout_{12.0};
   double frontier_progress_min_cost_drop_{0.75};
@@ -222,8 +226,15 @@ private:
 
   double failedGoalPenalty(const TopoNode::Ptr &viewpoint) const;
   TargetDirectedExplorationConfig targetGuidanceConfig() const;
+  TargetTopologyGuidanceConfig targetTopologyGuidanceConfig() const;
+  const TargetTopologyGuide &updateTargetTopologyGuide(
+      const Eigen::Vector3d &pos);
+  double topologyGuidePenalty(const Eigen::Vector3d &candidate) const;
+  bool appendTopologyGuideCandidate(const Eigen::Vector3d &pos,
+                                    float curr_yaw,
+                                    vector<TopoNode::Ptr> &viewpoints) const;
   std::unordered_set<int> preferredTargetClusterIds(
-      const Eigen::Vector3d &pos) const;
+      const Eigen::Vector3d &pos);
   bool targetBridgeLocallyExecutable(const TopoNode::Ptr &candidate,
                                      const Eigen::Vector3d &pos,
                                      const Eigen::Vector3d &vel,
