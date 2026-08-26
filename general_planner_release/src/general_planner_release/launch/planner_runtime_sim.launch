@@ -4,11 +4,19 @@
   <arg name="rviz" default="true" />
   <arg name="auto_rviz_switch" default="true" />
   <arg name="traj_server" default="true" />
-  <arg name="initial_mode" default="exploration" />
+  <!-- Match task_planner/planner_runtime.launch by default. -->
+  <arg name="initial_mode" default="target_exploration" />
+  <arg name="exploration_mission_mode" default="target" />
+  <arg name="target_exploration_auto_workspace" default="true" />
+  <arg name="target_exploration_workspace_half_extent_xy" default="120.0" />
+  <arg name="target_exploration_workspace_below_odom" default="2.0" />
+  <arg name="target_exploration_workspace_above_odom" default="5.0" />
   <arg name="enable_exploration" default="true" />
   <arg name="sim_config" default="$(find general_planner_release)/config/exploration_sim.yaml" />
   <arg name="navigation_config" default="$(find general_planner_release)/config/task_planner_runtime_state2state.yaml" />
   <arg name="exploration_config" default="$(find general_planner_release)/config/exploration_house.yaml" />
+  <arg name="target_exploration_config" default="$(find general_planner_release)/config/target_exploration.yaml" />
+  <arg name="exploration_overlay_config" default="" />
   <arg name="rog_map_config" default="$(find general_planner_release)/config/exploration_rog_map.yaml" />
   <arg name="global_topology_config" default="$(find general_planner_release)/config/global_topology.yaml" />
   <arg name="rviz_config" default="$(find general_planner_release)/config/planner_runtime_exploration.rviz" />
@@ -16,6 +24,7 @@
   <arg name="state2state_rviz_config" default="$(find general_planner_release)/config/planner_runtime_state2state.rviz" />
   <arg name="odom_topic" default="/lidar_slam/odom" />
   <arg name="cloud_topic" default="/cloud_registered" />
+  <arg name="coverage_guidance_mode" default="off" />
 
   <include file="$(find general_planner_release)/launch/planner_runtime.launch">
     <arg name="marsim" value="true" />
@@ -23,10 +32,17 @@
     <arg name="auto_rviz_switch" value="$(arg auto_rviz_switch)" />
     <arg name="traj_server" value="$(arg traj_server)" />
     <arg name="initial_mode" value="$(arg initial_mode)" />
+    <arg name="exploration_mission_mode" value="$(arg exploration_mission_mode)" />
+    <arg name="target_exploration_auto_workspace" value="$(arg target_exploration_auto_workspace)" />
+    <arg name="target_exploration_workspace_half_extent_xy" value="$(arg target_exploration_workspace_half_extent_xy)" />
+    <arg name="target_exploration_workspace_below_odom" value="$(arg target_exploration_workspace_below_odom)" />
+    <arg name="target_exploration_workspace_above_odom" value="$(arg target_exploration_workspace_above_odom)" />
     <arg name="enable_exploration" value="$(arg enable_exploration)" />
     <arg name="sim_config" value="$(arg sim_config)" />
     <arg name="navigation_config" value="$(arg navigation_config)" />
     <arg name="exploration_config" value="$(arg exploration_config)" />
+    <arg name="target_exploration_config" value="$(arg target_exploration_config)" />
+    <arg name="exploration_overlay_config" value="$(arg exploration_overlay_config)" />
     <arg name="rog_map_config" value="$(arg rog_map_config)" />
     <arg name="global_topology_config" value="$(arg global_topology_config)" />
     <arg name="rviz_config" value="$(arg rviz_config)" />
@@ -34,5 +50,6 @@
     <arg name="state2state_rviz_config" value="$(arg state2state_rviz_config)" />
     <arg name="odom_topic" value="$(arg odom_topic)" />
     <arg name="cloud_topic" value="$(arg cloud_topic)" />
+    <arg name="coverage_guidance_mode" value="$(arg coverage_guidance_mode)" />
   </include>
 </launch>

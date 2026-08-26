@@ -37,6 +37,10 @@ bool receive_traj = false;
 bool position_hold_active = false;
 bool yaw_hold_active = false;
 bool execution_enabled = true;
+// A ROS subscriber can still have an old PolyTraj in its queue when a task is
+// paused.  After a disable edge, accept only the next trajectory generation.
+bool waiting_for_fresh_traj = false;
+int min_traj_id_after_disable = 0;
 Eigen::Vector3d hold_pos = Eigen::Vector3d::Zero();
 double hold_yaw = 0.0;
 
@@ -78,6 +82,21 @@ void executionEnabledCallback(const std_msgs::BoolConstPtr &msg)
   execution_enabled = msg->data;
   if (was_enabled && !execution_enabled)
   {
+    // A task boundary must invalidate the old endpoint hold.  Otherwise a
+    // later enable edge causes this timer to replay the completed trajectory
+    // until the next PolyTraj arrives, which can command the previous target
+    // for one or more cycles.
+    receive_traj = false;
+    traj.reset();
+    yaw_traj.reset();
+    traj_duration = 0.0;
+    yaw_traj_duration = 0.0;
+    start_time = ros::Time();
+    heartbeat_time = ros::Time(0);
+    position_hold_active = false;
+    yaw_hold_active = false;
+    waiting_for_fresh_traj = true;
+    min_traj_id_after_disable = traj_id + 1;
     ROS_INFO("[highspeed_traj_server] exploration command output disabled");
   }
   else if (!was_enabled && execution_enabled)
@@ -121,6 +140,13 @@ void drawCmd(const Eigen::Vector3d &pos,
 
 void polyTrajCallback(const traj_utils::PolyTrajConstPtr &msg)
 {
+  if (waiting_for_fresh_traj && msg->traj_id < min_traj_id_after_disable)
+  {
+    ROS_WARN("[highspeed_traj_server] discard queued trajectory %d after "
+             "task pause; require id >= %d",
+             msg->traj_id, min_traj_id_after_disable);
+    return;
+  }
   if (msg->order != 7)
   {
     ROS_ERROR("[highspeed_traj_server] Only support trajectory order 7.");
@@ -157,10 +183,19 @@ void polyTrajCallback(const traj_utils::PolyTrajConstPtr &msg)
   hold_pos = last_pos;
   position_hold_active = false;
   receive_traj = true;
+  waiting_for_fresh_traj = false;
 }
 
 void polyYawTrajCallback(const traj_utils::PolyTrajConstPtr &msg)
 {
+  if ((waiting_for_fresh_traj && msg->traj_id < min_traj_id_after_disable) ||
+      (!waiting_for_fresh_traj && msg->traj_id < traj_id))
+  {
+    ROS_WARN("[highspeed_traj_server] discard stale yaw trajectory %d "
+             "(active position id=%d)",
+             msg->traj_id, traj_id);
+    return;
+  }
   if (msg->order != 5)
   {
     ROS_ERROR("[highspeed_traj_server] Only support yaw trajectory order 5.");

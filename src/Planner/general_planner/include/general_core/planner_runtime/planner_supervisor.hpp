@@ -70,6 +70,10 @@ private:
   void publishHandoverCommand(const std::string &command);
   void requestExplorationStartLocked(const std::string &reason);
   void completeGateExitLocked();
+  // `gateway_` has its own callback queue, so its cached odometry must never
+  // be used as the source of a lifecycle HOLD.  This method runs under
+  // `mutex_` and atomically installs the supervisor's validated pose.
+  bool authorizeHoldAtCurrentOdomLocked(const std::string &reason);
   bool hoverConditionMetLocked() const;
   std::string makeTaskId(PlannerMode mode) const;
   void updatePhaseFromActiveModeLocked();

@@ -8,6 +8,16 @@
 
 namespace general_planner::planner_runtime {
 
+namespace {
+
+double yawFromQuaternion(const geometry_msgs::Quaternion &q) {
+  const double sin_yaw = 2.0 * (q.w * q.z + q.x * q.y);
+  const double cos_yaw = 1.0 - 2.0 * (q.y * q.y + q.z * q.z);
+  return std::atan2(sin_yaw, cos_yaw);
+}
+
+}  // namespace
+
 PlannerSupervisor::PlannerSupervisor(ros::NodeHandle &nh,
                                      PlannerCommandGateway &gateway,
                                      MapStatusProvider map_status_provider)
@@ -279,9 +289,8 @@ void PlannerSupervisor::handleModeRequest(const std::uint64_t request_id,
     hold_anchor_locked_for_transition_ = false;
     hover_satisfied_since_ = ros::Time();
     requestAdapterStop(status_.active_mode, "emergency_stop");
-    gateway_.setAuthorizedOwner(CommandOwner::HOLD, status_.task_epoch);
-    gateway_.lockHoldAnchorFromOdom();
-    hold_anchor_locked_for_transition_ = true;
+    hold_anchor_locked_for_transition_ =
+        authorizeHoldAtCurrentOdomLocked("emergency stop");
     status_.command_owner = CommandOwner::HOLD;
     return;
   }
@@ -395,9 +404,8 @@ void PlannerSupervisor::beginTransition(const PlannerMode target,
   // return flight.  Always capture the *current* odometry first, then hold it
   // while the existing hover-duration verification runs.  The next adapter is
   // still not armed until that verification completes.
-  gateway_.setAuthorizedOwner(CommandOwner::HOLD, status_.task_epoch);
-  gateway_.lockHoldAnchorFromOdom();
-  hold_anchor_locked_for_transition_ = true;
+  hold_anchor_locked_for_transition_ =
+      authorizeHoldAtCurrentOdomLocked("mode transition");
   status_.command_owner = CommandOwner::HOLD;
   status_.phase = PlannerPhase::HOLD_VERIFY;
   status_.reason = "hold verify for " + std::string(toString(target));
@@ -433,10 +441,11 @@ void PlannerSupervisor::enterStableHold(const std::string &reason,
   status_.command_owner = CommandOwner::HOLD;
   status_.mode_state = ModeState::HOLD_IDLE;
   status_.reason = reason;
-  gateway_.setAuthorizedOwner(CommandOwner::HOLD, status_.task_epoch);
   if (!hold_anchor_locked_for_transition_) {
-    gateway_.lockHoldAnchorFromOdom();
-    hold_anchor_locked_for_transition_ = true;
+    hold_anchor_locked_for_transition_ =
+        authorizeHoldAtCurrentOdomLocked("stable hold");
+  } else {
+    gateway_.setAuthorizedOwner(CommandOwner::HOLD, status_.task_epoch);
   }
 }
 
@@ -882,7 +891,11 @@ void PlannerSupervisor::explorationStatusCallback(
         status_.reason = "exploration finished, verifying hover";
         hold_anchor_locked_for_transition_ = false;
         hover_satisfied_since_ = ros::Time();
-        gateway_.setAuthorizedOwner(CommandOwner::HOLD, status_.task_epoch);
+        // Install the terminal pose in the same callback that revokes the
+        // exploration source.  Waiting for the next supervisor timer leaves
+        // a window in which the gateway can emit the previous task anchor.
+        hold_anchor_locked_for_transition_ =
+            authorizeHoldAtCurrentOdomLocked("exploration succeeded");
       }
     } else if (state == "BLOCKED") {
       exploration_start_pending_ = false;
@@ -899,10 +912,11 @@ void PlannerSupervisor::explorationStatusCallback(
       status_.command_owner = CommandOwner::HOLD;
       status_.mode_state = ModeState::EXP_PAUSED;
       status_.reason = "target exploration blocked; topo graph retained";
-      gateway_.setAuthorizedOwner(CommandOwner::HOLD, status_.task_epoch);
       if (!exploration_terminal_hold_locked_) {
-        gateway_.lockHoldAnchorFromOdom();
-        exploration_terminal_hold_locked_ = true;
+        exploration_terminal_hold_locked_ =
+            authorizeHoldAtCurrentOdomLocked("exploration blocked");
+      } else {
+        gateway_.setAuthorizedOwner(CommandOwner::HOLD, status_.task_epoch);
       }
     } else if (state == "FAILED") {
       exploration_start_pending_ = false;
@@ -918,10 +932,11 @@ void PlannerSupervisor::explorationStatusCallback(
       status_.stable_hover = false;
       status_.command_owner = CommandOwner::HOLD;
       status_.reason = "exploration failed";
-      gateway_.setAuthorizedOwner(CommandOwner::HOLD, status_.task_epoch);
       if (!exploration_terminal_hold_locked_) {
-        gateway_.lockHoldAnchorFromOdom();
-        exploration_terminal_hold_locked_ = true;
+        exploration_terminal_hold_locked_ =
+            authorizeHoldAtCurrentOdomLocked("exploration failed");
+      } else {
+        gateway_.setAuthorizedOwner(CommandOwner::HOLD, status_.task_epoch);
       }
     }
   }
@@ -995,9 +1010,10 @@ void PlannerSupervisor::navigationStatusCallback(
       status_.ready_for_new_task = true;
       status_.stable_hover = hoverConditionMetLocked();
       status_.command_owner = CommandOwner::HOLD;
-      gateway_.setAuthorizedOwner(CommandOwner::HOLD, status_.task_epoch);
       if (!gateway_.hasHoldAnchor()) {
-        gateway_.lockHoldAnchorFromOdom();
+        authorizeHoldAtCurrentOdomLocked("navigation wait goal");
+      } else {
+        gateway_.setAuthorizedOwner(CommandOwner::HOLD, status_.task_epoch);
       }
       status_.reason = "navigation wait goal";
       status_.task_result = PlannerTaskResult::SUCCEEDED;
@@ -1101,8 +1117,7 @@ void PlannerSupervisor::completeGateExitLocked() {
 
   // Keep the first command after the gate at the actual final odometry pose,
   // rather than a transition anchor from before traversing the slit.
-  gateway_.lockHoldAnchorFromOdom();
-  gateway_.setAuthorizedOwner(CommandOwner::HOLD, status_.task_epoch);
+  authorizeHoldAtCurrentOdomLocked("gate complete");
   gateway_.setPublishingEnabled(true);
   status_.phase = PlannerPhase::STABLE_HOLD;
   status_.mode_state = ModeState::GATE_COMPLETE;
@@ -1131,6 +1146,29 @@ void PlannerSupervisor::odometryCallback(const nav_msgs::OdometryConstPtr &msg) 
   status_.yaw_rate_rps = static_cast<float>(msg->twist.twist.angular.z);
   status_.odom_valid =
       (ros::Time::now() - last_odom_time_).toSec() <= max_odom_age_;
+}
+
+bool PlannerSupervisor::authorizeHoldAtCurrentOdomLocked(
+    const std::string &reason) {
+  const bool fresh_odom =
+      have_odom_ && !last_odom_time_.isZero() &&
+      (ros::Time::now() - last_odom_time_).toSec() <= max_odom_age_;
+  if (!fresh_odom) {
+    // Do not preserve a hold point from a previous task when the current
+    // vehicle pose is unknown.  No position command is safer than a command
+    // that can pull the vehicle tens of metres backwards.
+    gateway_.clearHoldAnchor();
+    gateway_.setAuthorizedOwner(CommandOwner::HOLD, status_.task_epoch);
+    ROS_ERROR_STREAM("[planner_supervisor] cannot authorize HOLD for "
+                     << reason << ": current odometry is unavailable");
+    return false;
+  }
+
+  const auto &pose = odom_.pose.pose;
+  gateway_.setHoldAnchorAndAuthorize(
+      pose.position.x, pose.position.y, pose.position.z,
+      yawFromQuaternion(pose.orientation), status_.task_epoch);
+  return true;
 }
 
 bool PlannerSupervisor::hoverConditionMetLocked() const {
@@ -1309,10 +1347,11 @@ void PlannerSupervisor::timerCallback(const ros::TimerEvent &) {
       } else if (!hoverConditionMetLocked()) {
         status_.phase = PlannerPhase::HOLD_VERIFY;
         status_.reason = "boot hover verify";
-        gateway_.setAuthorizedOwner(CommandOwner::HOLD, status_.task_epoch);
         if (!hold_anchor_locked_for_transition_) {
-          gateway_.lockHoldAnchorFromOdom();
-          hold_anchor_locked_for_transition_ = true;
+          hold_anchor_locked_for_transition_ =
+              authorizeHoldAtCurrentOdomLocked("boot hover verify");
+        } else {
+          gateway_.setAuthorizedOwner(CommandOwner::HOLD, status_.task_epoch);
         }
         hover_satisfied_since_ = ros::Time();
       } else {
@@ -1328,9 +1367,8 @@ void PlannerSupervisor::timerCallback(const ros::TimerEvent &) {
       }
     } else if (transition_active_) {
       if (!hold_anchor_locked_for_transition_ && hoverConditionMetLocked()) {
-        gateway_.setAuthorizedOwner(CommandOwner::HOLD, status_.task_epoch);
-        gateway_.lockHoldAnchorFromOdom();
-        hold_anchor_locked_for_transition_ = true;
+        hold_anchor_locked_for_transition_ =
+            authorizeHoldAtCurrentOdomLocked("transition hover verify");
         status_.command_owner = CommandOwner::HOLD;
         status_.phase = PlannerPhase::HOLD_VERIFY;
         status_.reason = "hold verify";

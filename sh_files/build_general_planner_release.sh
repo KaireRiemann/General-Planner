@@ -157,6 +157,8 @@ RELEASE_PKG_DIR="${RELEASE_ROOT}/src/general_planner_release"
 RELEASE_CONFIG_DIR="${RELEASE_PKG_DIR}/config"
 EXPLORATION_CONFIG_SRC="${PLANNER_CONFIG_DIR}/exploration.yaml"
 EXPLORATION_HOUSE_CONFIG_SRC="${PLANNER_CONFIG_DIR}/exploration_house.yaml"
+TARGET_EXPLORATION_CONFIG_SRC="${PLANNER_CONFIG_DIR}/target_exploration.yaml"
+EXPLORATION_FOREST_OVERLAY_CONFIG_SRC="${PLANNER_CONFIG_DIR}/exploration_forest_overlay.yaml"
 EXPLORATION_SIM_CONFIG_SRC="${PLANNER_CONFIG_DIR}/exploration_sim.yaml"
 EXPLORATION_ROG_MAP_CONFIG_SRC="${PLANNER_CONFIG_DIR}/exploration_rog_map.yaml"
 M2_STATE2STATE_CONFIG_SRC="${PLANNER_CONFIG_DIR}/task_planner_runtime_state2state.yaml"
@@ -199,6 +201,8 @@ for required in \
   "${RVIZ_PLUGIN_SRC}/LICENSE" \
   "${EXPLORATION_CONFIG_SRC}" \
   "${EXPLORATION_HOUSE_CONFIG_SRC}" \
+  "${TARGET_EXPLORATION_CONFIG_SRC}" \
+  "${EXPLORATION_FOREST_OVERLAY_CONFIG_SRC}" \
   "${EXPLORATION_SIM_CONFIG_SRC}" \
   "${EXPLORATION_ROG_MAP_CONFIG_SRC}" \
   "${M2_STATE2STATE_CONFIG_SRC}" \
@@ -276,10 +280,14 @@ cp "${RVIZ_PLUGIN_SRC}/plugin_description.xml" \
   "${RVIZ_PLUGIN_DST}/plugin_description.xml"
 cp "${RVIZ_PLUGIN_SRC}/LICENSE" "${RVIZ_PLUGIN_DST}/LICENSE"
 
-echo "[build_release] Sync garage exploration configs"
+echo "[build_release] Sync exploration and target-navigation configs"
 mkdir -p "${RELEASE_CONFIG_DIR}"
 cp "${EXPLORATION_CONFIG_SRC}" "${RELEASE_CONFIG_DIR}/exploration.yaml"
 cp "${EXPLORATION_HOUSE_CONFIG_SRC}" "${RELEASE_CONFIG_DIR}/exploration_house.yaml"
+cp "${TARGET_EXPLORATION_CONFIG_SRC}" \
+  "${RELEASE_CONFIG_DIR}/target_exploration.yaml"
+cp "${EXPLORATION_FOREST_OVERLAY_CONFIG_SRC}" \
+  "${RELEASE_CONFIG_DIR}/exploration_forest_overlay.yaml"
 cp "${EXPLORATION_SIM_CONFIG_SRC}" "${RELEASE_CONFIG_DIR}/exploration_sim.yaml"
 cp "${EXPLORATION_ROG_MAP_CONFIG_SRC}" "${RELEASE_CONFIG_DIR}/exploration_rog_map.yaml"
 cp "${M2_STATE2STATE_CONFIG_SRC}" \

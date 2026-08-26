@@ -54,6 +54,41 @@ void PlannerCommandGateway::setAuthorizedOwner(const CommandOwner owner,
                   << toString(owner) << " epoch=" << task_epoch);
 }
 
+void PlannerCommandGateway::setHoldAnchorAndAuthorize(
+    const double x, const double y, const double z, const double yaw,
+    const std::uint64_t task_epoch) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  authorized_owner_ = CommandOwner::HOLD;
+  authorized_epoch_ = task_epoch;
+  authorization_time_ = ros::WallTime::now();
+  clearSourceTimeoutHoldLocked();
+
+  hold_x_ = x;
+  hold_y_ = y;
+  hold_z_ = z;
+  hold_yaw_ = yaw;
+  hold_anchor_valid_ = true;
+  hold_anchor_required_ = false;
+  ++hold_sequence_;
+
+  ROS_INFO_STREAM("[planner_command_gateway] authorize owner=hold epoch="
+                  << task_epoch << " and lock hold anchor x=" << hold_x_
+                  << " y=" << hold_y_ << " z=" << hold_z_
+                  << " yaw=" << hold_yaw_);
+}
+
+void PlannerCommandGateway::clearHoldAnchor() {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (!hold_anchor_valid_ && hold_anchor_required_) {
+    return;
+  }
+  hold_anchor_valid_ = false;
+  hold_anchor_required_ = true;
+  ++hold_sequence_;
+  clearSourceTimeoutHoldLocked();
+  ROS_WARN("[planner_command_gateway] cleared stale hold anchor");
+}
+
 void PlannerCommandGateway::lockHoldAnchorFromOdom() {
   std::lock_guard<std::mutex> lock(mutex_);
   if (!have_odom_) {
@@ -65,6 +100,7 @@ void PlannerCommandGateway::lockHoldAnchorFromOdom() {
   hold_z_ = odom_.pose.pose.position.z;
   hold_yaw_ = yawFromQuat(odom_.pose.pose.orientation);
   hold_anchor_valid_ = true;
+  hold_anchor_required_ = false;
   ++hold_sequence_;
   clearSourceTimeoutHoldLocked();
   ROS_INFO_STREAM("[planner_command_gateway] lock hold anchor x="
@@ -80,6 +116,7 @@ void PlannerCommandGateway::lockHoldAnchor(const double x, const double y,
   hold_z_ = z;
   hold_yaw_ = yaw;
   hold_anchor_valid_ = true;
+  hold_anchor_required_ = false;
   ++hold_sequence_;
   clearSourceTimeoutHoldLocked();
 }
@@ -267,7 +304,9 @@ void PlannerCommandGateway::timerCallback(const ros::WallTimerEvent &) {
       }
       output = makeSourceTimeoutHoldCommandLocked(authorized_owner_);
       publish = true;
-    } else if (have_odom_ || hold_anchor_valid_) {
+    } else if ((have_odom_ || hold_anchor_valid_) &&
+               !(authorized_owner_ == CommandOwner::HOLD &&
+                 hold_anchor_required_)) {
       clearSourceTimeoutHoldLocked();
       // This is an explicit lifecycle HOLD, not a source timeout.
       output = makeHoldCommandLocked();

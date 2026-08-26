@@ -3,15 +3,31 @@
        planner_runtime_node alive for the entire mission: it owns the shared
        ROG/MapManager/global-topology resources and composes exploration plus
        state2state adapters in-process. -->
-  <arg name="marsim" default="false" />
+  <arg name="marsim" default="true" />
   <arg name="rviz" default="true" />
   <arg name="auto_rviz_switch" default="true" />
   <arg name="traj_server" default="true" />
-  <arg name="initial_mode" default="exploration" />
+  <arg name="initial_mode" default="target_exploration" />
+  <!-- Keep the target profile separate from the base sensor/map profile.  It
+       is always loaded, just like task_planner; exploration_mission_mode
+       selects the active policy, so switching to target later is safe too. -->
+  <arg name="exploration_mission_mode" default="target" />
+  <arg name="target_exploration_auto_workspace"
+       default="$(eval 'true' if arg('initial_mode') == 'target_exploration' else 'false')" />
+  <arg name="target_exploration_workspace_half_extent_xy" default="120.0" />
+  <arg name="target_exploration_workspace_below_odom" default="2.0" />
+  <arg name="target_exploration_workspace_above_odom" default="5.0" />
   <arg name="enable_exploration" default="true" />
+  <arg name="gate_status_topic" default="/planner/gate/status" />
   <arg name="sim_config" default="$(find general_planner_release)/config/exploration_sim.yaml" />
   <arg name="navigation_config" default="$(find general_planner_release)/config/task_planner_runtime_state2state.yaml" />
   <arg name="exploration_config" default="$(find general_planner_release)/config/exploration_house.yaml" />
+  <arg name="target_exploration_config"
+       default="$(find general_planner_release)/config/target_exploration.yaml" />
+  <!-- A scene overlay is intentionally optional.  planner_runtime_sim.launch
+       selects the same level-360 profile as task_planner's
+       exploration_navigation.launch; real deployments choose their own. -->
+  <arg name="exploration_overlay_config" default="" />
   <arg name="rog_map_config" default="$(find general_planner_release)/config/exploration_rog_map.yaml" />
   <arg name="global_topology_config" default="$(find general_planner_release)/config/global_topology.yaml" />
   <arg name="rviz_config" default="$(find general_planner_release)/config/planner_runtime_exploration.rviz" />
@@ -31,7 +47,8 @@
   <arg name="max_cloud_age" default="0.5" />
   <arg name="heartbeat_timeout" default="1.5" />
   <arg name="task_control_enable" default="true" />
-  <arg name="coverage_guidance_mode" default="full" />
+  <arg name="coverage_guidance_mode"
+       default="$(eval 'off' if arg('initial_mode') == 'target_exploration' else 'full')" />
   <arg name="original_frontend_compatibility" default="true" />
   <arg name="use_lkh" default="true" />
   <arg name="tsp_dir" default="/tmp" />
@@ -62,12 +79,26 @@
   <node pkg="general_planner_release" type="planner_runtime_node"
         name="planner_runtime_node" output="screen" clear_params="true">
     <rosparam file="$(arg exploration_config)" command="load" />
+    <rosparam file="$(arg target_exploration_config)" command="load" />
+    <rosparam if="$(eval arg('exploration_overlay_config') != '')"
+              file="$(arg exploration_overlay_config)" command="load" />
     <rosparam file="$(arg global_topology_config)" command="load" />
 
     <param name="initial_mode" value="$(arg initial_mode)" type="string" />
+    <param name="exploration/mission_mode"
+           value="$(arg exploration_mission_mode)" type="string" />
+    <param name="target_exploration/auto_workspace/enabled"
+           value="$(arg target_exploration_auto_workspace)" type="bool" />
+    <param name="target_exploration/auto_workspace/half_extent_xy"
+           value="$(arg target_exploration_workspace_half_extent_xy)" type="double" />
+    <param name="target_exploration/auto_workspace/below_odom"
+           value="$(arg target_exploration_workspace_below_odom)" type="double" />
+    <param name="target_exploration/auto_workspace/above_odom"
+           value="$(arg target_exploration_workspace_above_odom)" type="double" />
     <param name="navigation_enabled" value="true" type="bool" />
     <param name="exploration_enabled" value="$(arg enable_exploration)" type="bool" />
     <param name="serial_handover" value="false" type="bool" />
+    <param name="gate_status_topic" value="$(arg gate_status_topic)" type="string" />
     <param name="global_map_config" value="$(arg rog_map_config)" type="string" />
     <param name="navigation_config" value="$(arg navigation_config)" type="string" />
     <param name="odometry_topic" value="$(arg odom_topic)" type="string" />
@@ -78,11 +109,14 @@
     <param name="exploration_cmd_topic" value="/planning/exploration/pos_cmd" type="string" />
     <param name="output_cmd_topic" value="/planning/pos_cmd" type="string" />
     <param name="exploration_command_topic" value="/planning/exploration/command" type="string" />
+    <param name="exploration_task_request_topic" value="/planning/exploration/task_request" type="string" />
     <param name="exploration_status_topic" value="/planning/exploration/status" type="string" />
     <param name="navigation_command_topic" value="/planning/navigation/command" type="string" />
     <param name="navigation_status_topic" value="/planning/navigation/status" type="string" />
     <param name="navigation_task_mode_topic" value="/planning/navigation_task_mode" type="string" />
     <param name="navigation_goal_out_topic" value="/planning/click_goal" type="string" />
+    <param name="navigation_goal_3d_in_topic" value="/goal_3d" type="string" />
+    <param name="navigation_goal_3d_out_topic" value="/planning/click_goal_3d" type="string" />
     <param name="click_demo_goal_topic" value="/goal" type="string" />
     <param name="hover_speed_threshold" value="0.10" type="double" />
     <param name="hover_yaw_rate_threshold" value="0.10" type="double" />
@@ -110,9 +144,11 @@
     <param name="fsm/max_cloud_age" value="$(arg max_cloud_age)" type="double" />
     <param name="fsm/task_control_enable" value="$(arg task_control_enable)" type="bool" />
     <param name="fsm/task_command_topic" value="/planning/exploration/command" type="string" />
+    <param name="fsm/task_request_topic" value="/planning/exploration/task_request" type="string" />
     <param name="fsm/task_status_topic" value="/planning/exploration/status" type="string" />
     <param name="fsm/execution_enabled_topic" value="/planning/exploration/command_enabled" type="string" />
     <param name="fsm/trigger_topic" value="" type="string" />
+    <param name="fsm/target_goal_topic" value="/planning/exploration/target_goal" type="string" />
     <param name="fsm/legacy_trigger_topic" value="" type="string" />
     <param name="fsm/handover_slow_speed" value="0.10" type="double" />
     <param name="coverage_guidance/mode" value="$(arg coverage_guidance_mode)" type="string" />

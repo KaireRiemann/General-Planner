@@ -18,6 +18,15 @@ public:
   explicit PlannerCommandGateway(ros::NodeHandle &nh);
 
   void setAuthorizedOwner(CommandOwner owner, std::uint64_t task_epoch);
+  // Atomically transfer command ownership to HOLD and replace its anchor.
+  // Lifecycle edges must use this rather than separately authorizing HOLD and
+  // reading a callback-queue-local odometry sample: a timer tick between those
+  // two operations can otherwise publish the previous task's hold point.
+  void setHoldAnchorAndAuthorize(double x, double y, double z, double yaw,
+                                 std::uint64_t task_epoch);
+  // Used only when the supervisor has no valid current odometry.  Dropping an
+  // old anchor is safer than continuing to command a known stale position.
+  void clearHoldAnchor();
   void lockHoldAnchorFromOdom();
   void lockHoldAnchor(double x, double y, double z, double yaw);
   bool hasHoldAnchor() const;
@@ -69,6 +78,10 @@ private:
   bool have_odom_{false};
 
   bool hold_anchor_valid_{false};
+  // When the supervisor cannot verify current odometry it explicitly clears
+  // the lifecycle anchor.  In that state HOLD must not fall back to this
+  // gateway's asynchronous odom cache, which may belong to an older task.
+  bool hold_anchor_required_{false};
   double hold_x_{0.0};
   double hold_y_{0.0};
   double hold_z_{0.0};

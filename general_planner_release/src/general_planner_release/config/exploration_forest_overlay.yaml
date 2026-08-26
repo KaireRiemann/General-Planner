@@ -1,0 +1,98 @@
+# Forest arena overrides for planner_runtime.
+#
+# This file is intentionally an overlay on exploration_house.yaml: it keeps
+# the tested HighSpeedExp/target-exploration settings while replacing only
+# house-specific geometry and the tilted Mid360 perception model.  It matches
+# perfect_drone_sim/config/click.yaml, which renders forest.pcd from
+# (-30.0, -0.5, 1.5) with a level 360-degree lidar.
+
+# Target-directed exploration is the default test mode.  RViz 2D Nav Goal
+# sends z=0, so retain the vehicle height and use horizontal arrival error.
+exploration/mission_mode: target
+exploration/target_goal_use_message_z: false
+exploration/target_heuristic_weight: 3.0
+exploration/target_lateral_weight: 0.15
+exploration/target_vertical_weight: 1.0
+exploration/target_frontier_min_progress: 0.50
+exploration/target_reached_radius: 0.50
+exploration/target_direct_retry_delay: 2.0
+exploration/target_cluster_shortlist: 8
+exploration/target_goal_lock_remaining_margin: 1.0
+exploration/target_topology_guidance_enable: true
+exploration/target_topology_query_interval: 1.0
+exploration/target_topology_local_prefix_length: 12.0
+exploration/target_topology_goal_change_tolerance: 0.5
+exploration/target_topology_anchor_min_progress: 0.5
+exploration/target_topology_anchor_progress_weight: 1.0
+exploration/target_topology_anchor_lateral_penalty: 0.15
+exploration/target_topology_anchor_radial_penalty: 0.10
+exploration/target_topology_anchor_remaining_penalty: 0.05
+exploration/target_topology_anchor_expansion_bonus: 2.0
+exploration/target_topology_anchor_candidate_count: 8
+exploration/target_topology_anchor_query_attempts: 4
+exploration/target_topology_anchor_min_route_length: 1.0
+exploration/target_topology_frontier_bias: 0.80
+exploration/target_topology_direct_prefix_enable: true
+exploration/target_local_preflight_fail_limit: 3
+exploration/target_progress_detour_budget: 3
+exploration/target_preflight_horizon: 8.0
+exploration/target_preflight_soft_defer: 1.5
+exploration/target_empty_pool_escape_wait: 2.5
+exploration/target_empty_pool_unlock_count: 1
+exploration/target_escape_min_progress: -1.0
+exploration/target_near_goal_remaining: 15.0
+exploration/target_spatial_blacklist_radius: 2.5
+exploration/target_spatial_blacklist_duration: 8.0
+global_planning/failed_goal_cooldown: 5.0
+fsm/trigger_goal_sets_target: true
+fsm/target_goal_topic: /planning/exploration/target_goal
+fsm/target_goal_start_on_receive: false
+coverage_guidance/mode: "off"
+
+# click.yaml: level GENERAL_360 lidar, vertical_fov=178 degrees and horizon=70m.
+lidar_perception/fov_up: 89.0
+lidar_perception/fov_down: -89.0
+lidar_perception/lidar_pitch: 0.0
+lidar_perception/fov_viewpoint_up: 85.0
+lidar_perception/fov_viewpoint_down: -85.0
+lidar_perception/max_ray_length: 70.0
+
+# Do not encode forest.pcd's bounds here.  This is a destination task, not a
+# coverage task: planner_runtime creates its internal sparse capacity around
+# the initial odometry pose, so RViz needs only one target click.  The 120 m
+# half extent covers the click forest and leaves enough room for detours;
+# increase only this capacity for a genuinely longer mission, never by copying
+# PCD/world bounds into box_0.
+target_exploration/auto_workspace/half_extent_xy: 120.0
+target_exploration/auto_workspace/below_odom: 2.0
+# The initial forest odometry is z=1.5 m, therefore this yields a z capacity
+# of [-0.5, 2.7] m and matches the single-level virtual ceiling below.
+target_exploration/auto_workspace/above_odom: 1.2
+
+# HighSpeedExp validates both the shared ROG inflated map (0.45 m) and the
+# Bubble-Topo minimum radius (0.46 m).  Keep every corridor and commit gate
+# on that same envelope.  A former 0.30 m overlay was internally inconsistent:
+# it admitted paths that querySafetyState() immediately rejected as inflated
+# occupied at 0.34--0.44 m clearance.
+DilateRadiusSoft: 0.60
+DilateRadiusHard: 0.45
+CorridorRobotRadius: 0.45
+CommitKnownFreeSafeDistance: 0.45
+ViewScoreHardGateMinClearance: 0.45
+bubble_astar/safe_distance: 0.45
+CorridorLineMaxLength: 2.0
+CorridorIrisIterNum: 2
+CorridorBoxSearchSkipNum: 2
+SafetyMapQueryStep: 0.20
+
+# Forest is a single-level scene.  Do not inherit the villa's upper floor or
+# sample high observation pillars: they caused unnecessary climbs and tight
+# turns before the vehicle could make horizontal goal progress.
+CorridorVirtualCeilHeight: 2.5
+ViewpointManager/sample_pillar_min_height: -0.4
+ViewpointManager/sample_pillar_max_height: 0.8
+ViewpointManager/sample_pillar_height_layer_num: 3
+
+# In an open forest the useful frontier ring is larger than the house profile.
+FrontierManager/update_length: 55.0
+ViewpointManager/consider_range: 36.0
