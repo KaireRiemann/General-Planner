@@ -44,6 +44,16 @@ global_topology:
   max_bubbles_per_region: 192
   max_neighbors: 8
   max_regions_per_update: 4
+  # A map-derived skeleton can miss a thin or curved passage even after the
+  # aircraft has traversed it.  Preserve an independently validated chain of
+  # odometry anchors; UNKNOWN delays new links, while later OCCUPIED evidence
+  # invalidates them instead of claiming a stale route is safe.
+  retain_traversal_backbone: true
+  traversal_sample_spacing: 0.50
+  traversal_attach_radius: 3.00
+  max_traversal_edges_per_update: 128
+  max_pending_traversal_samples: 4096
+  max_traversal_attachments_per_node: 4
   # SearchSnapshot is immutable for readers and refreshed at publish_period,
   # avoiding per-sensor copying of a world-lifetime graph.
   snapshot_every_update: false

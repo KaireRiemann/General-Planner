@@ -558,6 +558,84 @@ int main() {
                      hasNoZeroDegreeNodes(focus_independent_snapshot),
                  "moving robot focus must not hide an otherwise valid component");
 
+    // The persistent skeleton can legitimately have no candidate in a thin,
+    // curved corridor.  Actual vehicle motion must still leave a routable
+    // global topology chain; this fixture deliberately never marks a region
+    // dirty, so only the traversal backbone can connect the L-shaped route.
+    IncrementalTopologyGraph::Config traversal_config = config;
+    traversal_config.traversal_sample_spacing = 1.0;
+    traversal_config.traversal_attach_radius = 0.0;
+    traversal_config.max_traversal_edges_per_update = 64;
+    IncrementalTopologyGraph traversal_graph(traversal_config);
+    int traversal_phase = 0;  // 0=free corridor, 1=confirmed blockage
+    IncrementalTopologyGraph::Query traversal_query;
+    traversal_query.evidence = [&](const Vec3f &point) {
+        const bool vertical = std::abs(point.x() - 0.5) <= 0.11 &&
+            point.y() >= 0.5 - 1.0e-9 && point.y() <= 3.5 + 1.0e-9;
+        const bool horizontal = std::abs(point.y() - 3.5) <= 0.11 &&
+            point.x() >= 0.5 - 1.0e-9 && point.x() <= 4.5 + 1.0e-9;
+        const bool blocked = traversal_phase == 1 && horizontal &&
+            point.x() >= 2.25 && point.x() <= 2.75;
+        return (point.z() == 1.0 && (vertical || horizontal) && !blocked)
+            ? general_planner::TopologyMapView::EvidenceState::KNOWN_FREE
+            : general_planner::TopologyMapView::EvidenceState::OCCUPIED;
+    };
+    traversal_graph.recordTraversalPose(Vec3f(0.5, 0.5, 1.0));
+    traversal_graph.recordTraversalPose(Vec3f(0.5, 3.5, 1.0));
+    traversal_graph.recordTraversalPose(Vec3f(4.5, 3.5, 1.0));
+    traversal_graph.update(traversal_query, 1);
+    const auto traversal_snapshot = traversal_graph.snapshot();
+    const auto traversal_stats = traversal_graph.stats();
+    bool backbone_only = !traversal_snapshot.edges.empty();
+    for (const auto &edge : traversal_snapshot.edges) {
+        backbone_only = backbone_only &&
+            edge.role == IncrementalTopologyGraph::EdgeRole::TRAVERSAL_BACKBONE;
+    }
+    ok &= expect(traversal_stats.traversal_node_count >= 8 &&
+                     traversal_stats.traversal_edge_count >= 7 &&
+                     traversal_stats.pending_traversal_edge_count == 0 &&
+                     backbone_only,
+                 "flown corridor must produce a protected traversal backbone");
+    path.clear();
+    ok &= expect(traversal_graph.findPath(
+                     Vec3f(0.5, 0.5, 1.0), Vec3f(4.5, 3.5, 1.0),
+                     traversal_query, path, 0.75) && path.size() >= 3,
+                 "traversal backbone must connect an otherwise unsampled corridor");
+
+    // An actual past traversal is not a license to route through a newly
+    // observed obstacle. Revalidation removes the affected protected span and
+    // preserves the anchors only as diagnostic/provenance state.
+    traversal_phase = 1;
+    traversal_graph.update(traversal_query, 1);
+    path.clear();
+    ok &= expect(!traversal_graph.findPath(
+                     Vec3f(0.5, 0.5, 1.0), Vec3f(4.5, 3.5, 1.0),
+                     traversal_query, path, 0.75) && path.empty() &&
+                     traversal_graph.stats().invalid_traversal_edge_count > 0,
+                 "confirmed occupancy must invalidate rather than preserve a traversal edge");
+
+    // UNKNOWN is intentionally weaker than an obstacle: it queues a new
+    // flown span and retries later, rather than fabricating free-space.
+    IncrementalTopologyGraph unknown_traversal_graph(traversal_config);
+    bool traversal_known = false;
+    IncrementalTopologyGraph::Query unknown_traversal_query;
+    unknown_traversal_query.evidence = [&](const Vec3f &) {
+        return traversal_known
+            ? general_planner::TopologyMapView::EvidenceState::KNOWN_FREE
+            : general_planner::TopologyMapView::EvidenceState::UNKNOWN;
+    };
+    unknown_traversal_graph.recordTraversalPose(Vec3f(0.5, 0.5, 1.0));
+    unknown_traversal_graph.recordTraversalPose(Vec3f(1.5, 0.5, 1.0));
+    unknown_traversal_graph.update(unknown_traversal_query, 1);
+    ok &= expect(unknown_traversal_graph.stats().traversal_edge_count == 0 &&
+                     unknown_traversal_graph.stats().pending_traversal_edge_count == 1,
+                 "unknown evidence must leave a flown span pending");
+    traversal_known = true;
+    unknown_traversal_graph.update(unknown_traversal_query, 1);
+    ok &= expect(unknown_traversal_graph.stats().traversal_edge_count == 1 &&
+                     unknown_traversal_graph.stats().pending_traversal_edge_count == 0,
+                 "pending flown span must commit after known-free evidence arrives");
+
     // Valid adjacent lattice edges are mandatory and cannot be removed by a
     // small max_neighbors budget, including in the vertical direction.
     IncrementalTopologyGraph::Config layer_config = dense_config;

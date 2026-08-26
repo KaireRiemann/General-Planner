@@ -55,15 +55,36 @@ TopologyGraphROS1::TopologyGraphROS1(
     node_.param(prefix + "snapshot_every_update",
                 config.snapshot_every_update,
                 config.snapshot_every_update);
+    node_.param(prefix + "retain_traversal_backbone",
+                config.retain_traversal_backbone,
+                config.retain_traversal_backbone);
+    node_.param(prefix + "traversal_sample_spacing",
+                config.traversal_sample_spacing,
+                config.traversal_sample_spacing);
+    node_.param(prefix + "traversal_attach_radius",
+                config.traversal_attach_radius,
+                config.traversal_attach_radius);
 
     int max_nodes = static_cast<int>(config.max_nodes_per_region);
     int max_bubbles = static_cast<int>(config.max_bubbles_per_region);
     int max_neighbors = static_cast<int>(config.max_neighbors);
     int max_regions = static_cast<int>(config.max_regions_per_update);
+    int max_traversal_edges =
+        static_cast<int>(config.max_traversal_edges_per_update);
+    int max_pending_traversal_samples =
+        static_cast<int>(config.max_pending_traversal_samples);
+    int max_traversal_attachments =
+        static_cast<int>(config.max_traversal_attachments_per_node);
     node_.param(prefix + "max_nodes_per_region", max_nodes, max_nodes);
     node_.param(prefix + "max_bubbles_per_region", max_bubbles, max_bubbles);
     node_.param(prefix + "max_neighbors", max_neighbors, max_neighbors);
     node_.param(prefix + "max_regions_per_update", max_regions, max_regions);
+    node_.param(prefix + "max_traversal_edges_per_update",
+                max_traversal_edges, max_traversal_edges);
+    node_.param(prefix + "max_pending_traversal_samples",
+                max_pending_traversal_samples, max_pending_traversal_samples);
+    node_.param(prefix + "max_traversal_attachments_per_node",
+                max_traversal_attachments, max_traversal_attachments);
     node_.param(prefix + "require_fresh_focus", config.require_fresh_focus,
                 config.require_fresh_focus);
     node_.param(prefix + "focus_timeout", config.focus_timeout,
@@ -74,6 +95,12 @@ TopologyGraphROS1::TopologyGraphROS1(
     config.max_bubbles_per_region = static_cast<std::size_t>(std::max(1, max_bubbles));
     config.max_neighbors = static_cast<std::size_t>(std::max(1, max_neighbors));
     config.max_regions_per_update = static_cast<std::size_t>(std::max(1, max_regions));
+    config.max_traversal_edges_per_update = static_cast<std::size_t>(
+        std::max(1, max_traversal_edges));
+    config.max_pending_traversal_samples = static_cast<std::size_t>(
+        std::max(1, max_pending_traversal_samples));
+    config.max_traversal_attachments_per_node = static_cast<std::size_t>(
+        std::max(1, max_traversal_attachments));
     max_regions_per_tick_ = config.max_regions_per_update;
 
     double update_period = config.update_period;
@@ -202,6 +229,11 @@ void TopologyGraphROS1::workerLoop() {
                          << " public_nodes=" << stats.public_node_count
                          << " pending=" << stats.pending_node_count
                          << " isolated=" << stats.isolated_node_count
+                         << " traversal=" << stats.traversal_edge_count
+                         << " traversal_pending="
+                         << stats.pending_traversal_edge_count
+                         << " traversal_invalid="
+                         << stats.invalid_traversal_edge_count
                          << " raw_edges=" << stats.edge_count
                          << " public_edges=" << stats.public_edge_count
                          << " cost=" << update_ms << "ms");
@@ -270,7 +302,12 @@ visualization_msgs::MarkerArray TopologyGraphROS1::makeMarkers(
         point.z = node.position.z();
         nodes.points.push_back(point);
         std_msgs::ColorRGBA color;
-        if (node.state == IncrementalTopologyGraph::NodeState::HISTORICAL) {
+        if (node.traversal_anchor) {
+            color.r = 0.35F;
+            color.g = 1.00F;
+            color.b = 0.20F;
+            color.a = 0.95F;
+        } else if (node.state == IncrementalTopologyGraph::NodeState::HISTORICAL) {
             color.r = 0.95F;
             color.g = 0.65F;
             color.b = 0.15F;
@@ -301,6 +338,9 @@ visualization_msgs::MarkerArray TopologyGraphROS1::makeMarkers(
     edges.color.b = 1.00F;
     edges.color.a = 0.75F;
     for (const auto &edge : snapshot.edges) {
+        if (edge.role != IncrementalTopologyGraph::EdgeRole::SKELETON) {
+            continue;
+        }
         const auto from = positions.find(edge.from);
         const auto to = positions.find(edge.to);
         if (from == positions.end() || to == positions.end()) {
@@ -318,6 +358,41 @@ visualization_msgs::MarkerArray TopologyGraphROS1::makeMarkers(
         edges.points.push_back(to_point);
     }
     output.markers.push_back(edges);
+
+    visualization_msgs::Marker traversal_edges;
+    traversal_edges.header.frame_id = frame_id_;
+    traversal_edges.header.stamp = stamp;
+    traversal_edges.ns = "incremental_topology_traversal_backbone";
+    traversal_edges.id = 0;
+    traversal_edges.type = visualization_msgs::Marker::LINE_LIST;
+    traversal_edges.action = visualization_msgs::Marker::ADD;
+    traversal_edges.pose.orientation.w = 1.0;
+    traversal_edges.scale.x = std::max(edge_scale_, 1.35 * edge_scale_);
+    traversal_edges.color.r = 0.25F;
+    traversal_edges.color.g = 1.00F;
+    traversal_edges.color.b = 0.15F;
+    traversal_edges.color.a = 0.95F;
+    for (const auto &edge : snapshot.edges) {
+        if (edge.role == IncrementalTopologyGraph::EdgeRole::SKELETON) {
+            continue;
+        }
+        const auto from = positions.find(edge.from);
+        const auto to = positions.find(edge.to);
+        if (from == positions.end() || to == positions.end()) {
+            continue;
+        }
+        geometry_msgs::Point from_point;
+        from_point.x = from->second.x();
+        from_point.y = from->second.y();
+        from_point.z = from->second.z();
+        geometry_msgs::Point to_point;
+        to_point.x = to->second.x();
+        to_point.y = to->second.y();
+        to_point.z = to->second.z();
+        traversal_edges.points.push_back(from_point);
+        traversal_edges.points.push_back(to_point);
+    }
+    output.markers.push_back(traversal_edges);
 
     visualization_msgs::Marker status;
     status.header.frame_id = frame_id_;
@@ -356,6 +431,16 @@ visualization_msgs::MarkerArray TopologyGraphROS1::makeMarkers(
                   " isolated=" + std::to_string(snapshot.isolated_node_count) +
                   " components=" +
                   std::to_string(snapshot.connected_component_count) +
+                  " traversal[nodes=" +
+                  std::to_string(snapshot.traversal_node_count) +
+                  " edges=" +
+                  std::to_string(snapshot.traversal_edge_count) +
+                  " pending=" +
+                  std::to_string(snapshot.pending_traversal_edge_count) +
+                  " invalid=" +
+                  std::to_string(snapshot.invalid_traversal_edge_count) +
+                  " dropped=" +
+                  std::to_string(snapshot.dropped_traversal_sample_count) + "]" +
                   " active=" +
                   std::to_string(snapshot.nodes.size() - historical_nodes) +
                   " historical=" + std::to_string(historical_nodes) +

@@ -91,8 +91,10 @@ public:
                 }
             });
 
-            // Odom only prioritizes maintenance near the robot. Free-space
-            // topology is sourced exclusively from ROG/BoundaryMap queries.
+            // Odom stays lightweight: it supplies a maintenance focus and a
+            // trajectory sample.  The topology worker, never this callback,
+            // validates that sample against ROG/BoundaryMap before it can
+            // become a routable persistent backbone edge.
             map_->setRobotStateCallback(
                 [weak_topology](const rog_map::RobotState &robot) {
                     const auto topology = weak_topology.lock();
@@ -101,6 +103,7 @@ public:
                         return;
                     }
                     topology->requestUpdateFocus(robot.p);
+                    topology->recordTraversalPose(robot.p);
                 });
         }
     }

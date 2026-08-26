@@ -76,6 +76,16 @@ IncrementalTopologyGraph::Config IncrementalTopologyGraph::sanitized(
     cfg.max_focus_distance = std::clamp(cfg.max_focus_distance, 0.0, 1000.0);
     cfg.update_period = std::max(0.02, cfg.update_period);
     cfg.publish_period = std::max(0.05, cfg.publish_period);
+    cfg.traversal_sample_spacing =
+        clampValue(cfg.traversal_sample_spacing, 0.05, 10.0);
+    cfg.traversal_attach_radius =
+        std::max(0.0, cfg.traversal_attach_radius);
+    cfg.max_traversal_edges_per_update = std::max<std::size_t>(
+        1, cfg.max_traversal_edges_per_update);
+    cfg.max_pending_traversal_samples = std::max<std::size_t>(
+        1, cfg.max_pending_traversal_samples);
+    cfg.max_traversal_attachments_per_node = std::max<std::size_t>(
+        1, cfg.max_traversal_attachments_per_node);
     return cfg;
 }
 
@@ -104,6 +114,13 @@ void IncrementalTopologyGraph::configure(const Config &config) {
         regions_.clear();
         initialized_regions_.clear();
         dense_node_index_.clear();
+        traversal_anchor_ids_.clear();
+        traversal_segments_.clear();
+        traversal_segments_by_region_.clear();
+        traversal_edges_.clear();
+        traversal_validation_cursor_ = 0;
+        traversal_attachment_cursor_ = 0;
+        last_traversal_node_ = 0;
         next_node_id_ = 1;
         revision_ = 0;
         rebuilt_region_count_ = 0;
@@ -122,6 +139,13 @@ void IncrementalTopologyGraph::configure(const Config &config) {
         dirty_dense_cells_.clear();
         dirty_evidence_seeds_.clear();
         observed_route_regions_.clear();
+    }
+    {
+        std::lock_guard<std::mutex> traversal_lock(traversal_ingress_mutex_);
+        pending_traversal_poses_.clear();
+        has_last_traversal_pose_ = false;
+        last_traversal_pose_.setZero();
+        dropped_traversal_sample_count_ = 0;
     }
     active_.store(sanitized_config.enabled, std::memory_order_release);
     {
@@ -153,6 +177,59 @@ void IncrementalTopologyGraph::requestUpdateFocus(const rog_map::Vec3f &focus) {
     update_focus_ = focus;
     has_update_focus_ = true;
     update_focus_time_ = std::chrono::steady_clock::now();
+}
+
+void IncrementalTopologyGraph::recordTraversalPose(
+    const rog_map::Vec3f &position) {
+    if (!position.allFinite() || !active()) {
+        return;
+    }
+    Config cfg;
+    {
+        std::shared_lock<std::shared_mutex> lock(graph_mutex_);
+        cfg = config_;
+    }
+    if (!cfg.enabled || !cfg.retain_traversal_backbone) {
+        return;
+    }
+
+    std::lock_guard<std::mutex> lock(traversal_ingress_mutex_);
+    const auto enqueue = [&](const rog_map::Vec3f &sample) {
+        if (pending_traversal_poses_.size() >=
+            cfg.max_pending_traversal_samples) {
+            // Never discard an old sample and then join the surrounding
+            // anchors with a fabricated chord.  The counter is surfaced in
+            // Stats/RViz so a sizing issue cannot masquerade as connectivity.
+            ++dropped_traversal_sample_count_;
+            return false;
+        }
+        pending_traversal_poses_.push_back(sample);
+        return true;
+    };
+
+    if (!has_last_traversal_pose_) {
+        if (enqueue(position)) {
+            last_traversal_pose_ = position;
+            has_last_traversal_pose_ = true;
+        }
+        return;
+    }
+
+    const rog_map::Vec3f delta = position - last_traversal_pose_;
+    const double distance = delta.norm();
+    if (!std::isfinite(distance) || distance < cfg.traversal_sample_spacing) {
+        return;
+    }
+    const int pieces = std::max(1, static_cast<int>(std::ceil(
+        distance / cfg.traversal_sample_spacing)));
+    for (int piece = 1; piece <= pieces; ++piece) {
+        const double ratio = static_cast<double>(piece) /
+                             static_cast<double>(pieces);
+        if (!enqueue(last_traversal_pose_ + ratio * delta)) {
+            return;
+        }
+    }
+    last_traversal_pose_ = position;
 }
 
 IncrementalTopologyGraph::RegionKey IncrementalTopologyGraph::regionOf(
@@ -1076,6 +1153,7 @@ void IncrementalTopologyGraph::rebuildRegion(
                         neighbor_it->second.neighbors.erase(old_id);
                     }
                 }
+                eraseTraversalEdgesForNodeLocked(old_id);
                 nodes_.erase(old_node_it);
             }
         }
@@ -1213,6 +1291,10 @@ void IncrementalTopologyGraph::rebuildRegion(
                                 continue;
                             }
                             for (const auto &neighbor : entry->second.neighbors) {
+                                if (isTraversalEdgeLocked(entry->first,
+                                                            neighbor.first)) {
+                                    continue;
+                                }
                                 if (entry->first >= neighbor.first) {
                                     continue;
                                 }
@@ -1240,6 +1322,442 @@ void IncrementalTopologyGraph::rebuildRegion(
     }
     affected_ids.assign(affected_set.begin(), affected_set.end());
     rebuildIncidentEdges(affected_ids, map_view);
+}
+
+bool IncrementalTopologyGraph::isTraversalEdgeLocked(const NodeId from,
+                                                      const NodeId to) const {
+    return traversal_edges_.count(EdgeKey(from, to)) != 0U;
+}
+
+IncrementalTopologyGraph::EdgeRole
+IncrementalTopologyGraph::edgeRoleLocked(const NodeId from,
+                                         const NodeId to) const {
+    const auto found = traversal_edges_.find(EdgeKey(from, to));
+    return found == traversal_edges_.end()
+        ? EdgeRole::SKELETON : found->second;
+}
+
+std::size_t IncrementalTopologyGraph::regularNeighborCountLocked(
+    const NodeRecord &node) const {
+    std::size_t count = 0;
+    for (const auto &neighbor : node.neighbors) {
+        if (!isTraversalEdgeLocked(node.node.id, neighbor.first)) {
+            ++count;
+        }
+    }
+    return count;
+}
+
+std::size_t IncrementalTopologyGraph::traversalAttachmentCountLocked(
+    const NodeId node_id) const {
+    std::size_t count = 0;
+    for (const auto &edge : traversal_edges_) {
+        if (edge.second == EdgeRole::TRAVERSAL_ATTACHMENT &&
+            (edge.first.low == node_id || edge.first.high == node_id)) {
+            ++count;
+        }
+    }
+    return count;
+}
+
+void IncrementalTopologyGraph::eraseTraversalEdgesForNodeLocked(
+    const NodeId node_id) {
+    for (auto edge = traversal_edges_.begin(); edge != traversal_edges_.end();) {
+        if (edge->first.low != node_id && edge->first.high != node_id) {
+            ++edge;
+            continue;
+        }
+        const NodeId other = edge->first.low == node_id
+            ? edge->first.high : edge->first.low;
+        const auto node = nodes_.find(node_id);
+        if (node != nodes_.end()) {
+            node->second.neighbors.erase(other);
+        }
+        const auto other_node = nodes_.find(other);
+        if (other_node != nodes_.end()) {
+            other_node->second.neighbors.erase(node_id);
+        }
+        if (edge->second == EdgeRole::TRAVERSAL_BACKBONE) {
+            for (TraversalSegment &segment : traversal_segments_) {
+                if ((segment.from == edge->first.low &&
+                     segment.to == edge->first.high) ||
+                    (segment.from == edge->first.high &&
+                     segment.to == edge->first.low)) {
+                    segment.state = TraversalSegmentState::PENDING;
+                    segment.validation_queued = true;
+                    break;
+                }
+            }
+        }
+        edge = traversal_edges_.erase(edge);
+    }
+}
+
+bool IncrementalTopologyGraph::updateTraversalBackbone(
+    const TopologyMapView &map_view) {
+    Config cfg;
+    {
+        std::shared_lock<std::shared_mutex> lock(graph_mutex_);
+        cfg = config_;
+    }
+    if (!cfg.retain_traversal_backbone) {
+        return false;
+    }
+
+    std::deque<rog_map::Vec3f, Eigen::aligned_allocator<rog_map::Vec3f>>
+        ingress;
+    {
+        std::lock_guard<std::mutex> lock(traversal_ingress_mutex_);
+        ingress.swap(pending_traversal_poses_);
+    }
+
+    bool changed = false;
+    if (!ingress.empty()) {
+        std::unique_lock<std::shared_mutex> lock(graph_mutex_);
+        const std::uint64_t next_revision = revision_ + 1U;
+        for (const rog_map::Vec3f &position : ingress) {
+            if (!position.allFinite()) {
+                continue;
+            }
+            if (last_traversal_node_ != 0U) {
+                const auto previous = nodes_.find(last_traversal_node_);
+                if (previous != nodes_.end() &&
+                    samePosition(previous->second.node.position, position)) {
+                    continue;
+                }
+            }
+            Node node;
+            node.id = next_node_id_++;
+            node.position = position;
+            node.state = NodeState::HISTORICAL;
+            node.revision = next_revision;
+            node.traversal_anchor = true;
+            NodeRecord record;
+            record.node = node;
+            record.region = regionOf(position);
+            record.traversal_anchor = true;
+            nodes_.emplace(node.id, std::move(record));
+            traversal_anchor_ids_.push_back(node.id);
+            if (last_traversal_node_ != 0U &&
+                nodes_.count(last_traversal_node_) != 0U) {
+                traversal_segments_.push_back(
+                    {last_traversal_node_, node.id,
+                     TraversalSegmentState::PENDING, true});
+                const std::size_t segment_index =
+                    traversal_segments_.size() - 1U;
+                const rog_map::Vec3f &previous_position =
+                    nodes_.at(last_traversal_node_).node.position;
+                const RegionKey first = regionOf(
+                    previous_position.cwiseMin(position));
+                const RegionKey last = regionOf(
+                    previous_position.cwiseMax(position));
+                for (int x = first.x; x <= last.x; ++x) {
+                    for (int y = first.y; y <= last.y; ++y) {
+                        for (int z = first.z; z <= last.z; ++z) {
+                            traversal_segments_by_region_[{x, y, z}].push_back(
+                                segment_index);
+                        }
+                    }
+                }
+            }
+            last_traversal_node_ = node.id;
+            changed = true;
+        }
+        if (changed) {
+            ++revision_;
+        }
+    }
+
+    struct Validation {
+        std::size_t index{0};
+        NodeId from{0};
+        NodeId to{0};
+        rog_map::Vec3f from_position{rog_map::Vec3f::Zero()};
+        rog_map::Vec3f to_position{rog_map::Vec3f::Zero()};
+    };
+    std::vector<Validation> validation;
+    validation.reserve(cfg.max_traversal_edges_per_update);
+    {
+        std::unique_lock<std::shared_mutex> lock(graph_mutex_);
+        const auto append = [&](const std::size_t index) {
+            if (validation.size() >= cfg.max_traversal_edges_per_update ||
+                index >= traversal_segments_.size()) {
+                return;
+            }
+            TraversalSegment &segment = traversal_segments_[index];
+            const auto from = nodes_.find(segment.from);
+            const auto to = nodes_.find(segment.to);
+            if (from == nodes_.end() || to == nodes_.end()) {
+                return;
+            }
+            segment.validation_queued = false;
+            validation.push_back({index, segment.from, segment.to,
+                                  from->second.node.position,
+                                  to->second.node.position});
+        };
+        // Newly created/pending spans are always handled before the periodic
+        // health sweep, so a fused odometry sample becomes usable promptly.
+        for (std::size_t index = 0;
+             index < traversal_segments_.size() &&
+             validation.size() < cfg.max_traversal_edges_per_update;
+             ++index) {
+            if (traversal_segments_[index].validation_queued) {
+                append(index);
+            }
+        }
+        if (validation.empty() && !traversal_segments_.empty()) {
+            const std::size_t count = traversal_segments_.size();
+            const std::size_t sweep = std::min(
+                cfg.max_traversal_edges_per_update - validation.size(), count);
+            for (std::size_t offset = 0; offset < sweep; ++offset) {
+                append((traversal_validation_cursor_ + offset) % count);
+            }
+            traversal_validation_cursor_ =
+                (traversal_validation_cursor_ + sweep) % count;
+        }
+    }
+
+    struct ValidatedSegment {
+        Validation segment;
+        TopologyMapView::EvidenceState evidence{
+            TopologyMapView::EvidenceState::UNKNOWN};
+    };
+    std::vector<ValidatedSegment> results;
+    results.reserve(validation.size());
+    for (const Validation &segment : validation) {
+        results.push_back(
+            {segment, lineEvidence(segment.from_position, segment.to_position,
+                                   map_view)});
+    }
+
+    if (!results.empty()) {
+        std::unique_lock<std::shared_mutex> lock(graph_mutex_);
+        bool graph_changed = false;
+        const std::uint64_t next_revision = revision_ + 1U;
+        for (const ValidatedSegment &result : results) {
+            if (result.segment.index >= traversal_segments_.size()) {
+                continue;
+            }
+            TraversalSegment &segment =
+                traversal_segments_[result.segment.index];
+            if (segment.from != result.segment.from ||
+                segment.to != result.segment.to) {
+                continue;
+            }
+            const auto from = nodes_.find(segment.from);
+            const auto to = nodes_.find(segment.to);
+            if (from == nodes_.end() || to == nodes_.end()) {
+                continue;
+            }
+            const EdgeKey key(segment.from, segment.to);
+            const auto edge = traversal_edges_.find(key);
+            const bool has_backbone = edge != traversal_edges_.end() &&
+                edge->second == EdgeRole::TRAVERSAL_BACKBONE;
+            if (result.evidence == TopologyMapView::EvidenceState::KNOWN_FREE) {
+                if (!has_backbone) {
+                    traversal_edges_[key] = EdgeRole::TRAVERSAL_BACKBONE;
+                    const double cost = (from->second.node.position -
+                                         to->second.node.position).norm();
+                    from->second.neighbors[segment.to] = cost;
+                    to->second.neighbors[segment.from] = cost;
+                    graph_changed = true;
+                }
+                if (segment.state != TraversalSegmentState::ACTIVE ||
+                    from->second.node.state != NodeState::ACTIVE ||
+                    to->second.node.state != NodeState::ACTIVE) {
+                    segment.state = TraversalSegmentState::ACTIVE;
+                    from->second.node.state = NodeState::ACTIVE;
+                    to->second.node.state = NodeState::ACTIVE;
+                    from->second.node.last_observed_revision = next_revision;
+                    to->second.node.last_observed_revision = next_revision;
+                    graph_changed = true;
+                }
+                continue;
+            }
+            if (result.evidence == TopologyMapView::EvidenceState::OCCUPIED) {
+                if (has_backbone) {
+                    from->second.neighbors.erase(segment.to);
+                    to->second.neighbors.erase(segment.from);
+                    traversal_edges_.erase(key);
+                    graph_changed = true;
+                }
+                if (segment.state != TraversalSegmentState::INVALID) {
+                    segment.state = TraversalSegmentState::INVALID;
+                    graph_changed = true;
+                }
+                // Retain the anchors as provenance. They become private when
+                // the invalid span is their only connection and can reactivate
+                // only after a later KNOWN_FREE observation.
+                from->second.node.state = NodeState::HISTORICAL;
+                to->second.node.state = NodeState::HISTORICAL;
+                continue;
+            }
+            // UNKNOWN preserves a previously confirmed route through rolling
+            // map slides, but never creates a new edge from absent evidence.
+            if (!has_backbone &&
+                segment.state != TraversalSegmentState::INVALID) {
+                if (segment.state != TraversalSegmentState::PENDING) {
+                    segment.state = TraversalSegmentState::PENDING;
+                    graph_changed = true;
+                }
+                from->second.node.state = NodeState::HISTORICAL;
+                to->second.node.state = NodeState::HISTORICAL;
+            }
+        }
+        if (graph_changed) {
+            ++revision_;
+            changed = true;
+        }
+    }
+    return changed;
+}
+
+void IncrementalTopologyGraph::queueTraversalSegmentsForRegion(
+    const RegionKey &region) {
+    std::unique_lock<std::shared_mutex> lock(graph_mutex_);
+    const auto segments = traversal_segments_by_region_.find(region);
+    if (segments == traversal_segments_by_region_.end()) {
+        return;
+    }
+    for (const std::size_t index : segments->second) {
+        if (index < traversal_segments_.size()) {
+            traversal_segments_[index].validation_queued = true;
+        }
+    }
+}
+
+bool IncrementalTopologyGraph::attachTraversalAnchors(
+    const TopologyMapView &map_view) {
+    Config cfg;
+    {
+        std::shared_lock<std::shared_mutex> lock(graph_mutex_);
+        cfg = config_;
+    }
+    if (!cfg.retain_traversal_backbone || cfg.traversal_attach_radius <= 0.0) {
+        return false;
+    }
+
+    struct Attachment {
+        NodeId anchor{0};
+        NodeId target{0};
+        rog_map::Vec3f anchor_position{rog_map::Vec3f::Zero()};
+        rog_map::Vec3f target_position{rog_map::Vec3f::Zero()};
+    };
+    std::vector<Attachment> attachments;
+    attachments.reserve(cfg.max_traversal_edges_per_update);
+    {
+        std::unique_lock<std::shared_mutex> lock(graph_mutex_);
+        if (traversal_anchor_ids_.empty()) {
+            return false;
+        }
+        const std::size_t count = traversal_anchor_ids_.size();
+        const std::size_t budget = std::min(
+            cfg.max_traversal_edges_per_update, count);
+        std::unordered_map<NodeId, std::size_t> attachment_counts;
+        attachment_counts.reserve(traversal_edges_.size() * 2U);
+        for (const auto &edge : traversal_edges_) {
+            if (edge.second != EdgeRole::TRAVERSAL_ATTACHMENT) {
+                continue;
+            }
+            ++attachment_counts[edge.first.low];
+            ++attachment_counts[edge.first.high];
+        }
+        for (std::size_t offset = 0; offset < budget; ++offset) {
+            const NodeId anchor_id = traversal_anchor_ids_[
+                (traversal_attachment_cursor_ + offset) % count];
+            const auto anchor = nodes_.find(anchor_id);
+            if (anchor == nodes_.end() ||
+                anchor->second.node.state != NodeState::ACTIVE) {
+                continue;
+            }
+            bool already_attached = false;
+            for (const auto &edge : traversal_edges_) {
+                if (edge.second == EdgeRole::TRAVERSAL_ATTACHMENT &&
+                    (edge.first.low == anchor_id || edge.first.high == anchor_id)) {
+                    already_attached = true;
+                    break;
+                }
+            }
+            if (already_attached) {
+                continue;
+            }
+            double best_distance = cfg.traversal_attach_radius;
+            NodeId best_target = 0;
+            // Only map-derived region members may be attachment targets. A
+            // region-local search keeps a long mission's thousands of old
+            // anchors from turning this maintenance path into O(V^2).
+            const int region_radius = static_cast<int>(std::ceil(
+                cfg.traversal_attach_radius / config_.region_size)) + 1;
+            const int z_radius = config_.planar_mode ? 0 : region_radius;
+            const RegionKey anchor_region = anchor->second.region;
+            for (int dx = -region_radius; dx <= region_radius; ++dx) {
+                for (int dy = -region_radius; dy <= region_radius; ++dy) {
+                    for (int dz = -z_radius; dz <= z_radius; ++dz) {
+                        const auto region = regions_.find(
+                            {anchor_region.x + dx, anchor_region.y + dy,
+                             anchor_region.z + dz});
+                        if (region == regions_.end()) {
+                            continue;
+                        }
+                        for (const NodeId candidate_id : region->second) {
+                            const auto candidate = nodes_.find(candidate_id);
+                            if (candidate == nodes_.end() ||
+                                candidate->second.traversal_anchor ||
+                                candidate->second.node.state != NodeState::ACTIVE ||
+                                attachment_counts[candidate_id] >=
+                                    cfg.max_traversal_attachments_per_node) {
+                                continue;
+                            }
+                            const double distance =
+                                (candidate->second.node.position -
+                                 anchor->second.node.position).norm();
+                            if (distance < best_distance) {
+                                best_distance = distance;
+                                best_target = candidate_id;
+                            }
+                        }
+                    }
+                }
+            }
+            if (best_target != 0U) {
+                attachments.push_back(
+                    {anchor_id, best_target, anchor->second.node.position,
+                     nodes_.at(best_target).node.position});
+            }
+        }
+        traversal_attachment_cursor_ =
+            (traversal_attachment_cursor_ + budget) % count;
+    }
+
+    bool changed = false;
+    for (const Attachment &attachment : attachments) {
+        if (lineEvidence(attachment.anchor_position, attachment.target_position,
+                         map_view) != TopologyMapView::EvidenceState::KNOWN_FREE) {
+            continue;
+        }
+        std::unique_lock<std::shared_mutex> lock(graph_mutex_);
+        const auto anchor = nodes_.find(attachment.anchor);
+        const auto target = nodes_.find(attachment.target);
+        if (anchor == nodes_.end() || target == nodes_.end() ||
+            !anchor->second.traversal_anchor ||
+            target->second.traversal_anchor ||
+            traversalAttachmentCountLocked(attachment.target) >=
+                config_.max_traversal_attachments_per_node) {
+            continue;
+        }
+        const EdgeKey key(attachment.anchor, attachment.target);
+        if (traversal_edges_.count(key) != 0U) {
+            continue;
+        }
+        traversal_edges_[key] = EdgeRole::TRAVERSAL_ATTACHMENT;
+        const double cost = (anchor->second.node.position -
+                             target->second.node.position).norm();
+        anchor->second.neighbors[attachment.target] = cost;
+        target->second.neighbors[attachment.anchor] = cost;
+        ++revision_;
+        changed = true;
+    }
+    return changed;
 }
 
 void IncrementalTopologyGraph::rebuildIncidentEdges(
@@ -1301,7 +1819,9 @@ void IncrementalTopologyGraph::rebuildIncidentEdges(
                                      candidate_it->second.node.position,
                                      distance,
                                      source_it->second.neighbors.count(
-                                         candidate_id) != 0U,
+                                         candidate_id) != 0U &&
+                                         !isTraversalEdgeLocked(
+                                             source_id, candidate_id),
                                      false});
                             }
                         }
@@ -1339,7 +1859,9 @@ void IncrementalTopologyGraph::rebuildIncidentEdges(
                                          candidate_it->second.node.position,
                                          distance,
                                          source_it->second.neighbors.count(
-                                             candidate_id) != 0U,
+                                             candidate_id) != 0U &&
+                                             !isTraversalEdgeLocked(
+                                                 source_id, candidate_id),
                                          !(candidate_it->second.region ==
                                            source_region)});
                                 }
@@ -1519,12 +2041,22 @@ void IncrementalTopologyGraph::rebuildIncidentEdges(
             continue;
         }
         for (const auto &neighbor : source_it->second.neighbors) {
+            if (isTraversalEdgeLocked(source_id, neighbor.first)) {
+                continue;
+            }
             const auto neighbor_it = nodes_.find(neighbor.first);
             if (neighbor_it != nodes_.end()) {
                 neighbor_it->second.neighbors.erase(source_id);
             }
         }
-        source_it->second.neighbors.clear();
+        for (auto neighbor = source_it->second.neighbors.begin();
+             neighbor != source_it->second.neighbors.end();) {
+            if (isTraversalEdgeLocked(source_id, neighbor->first)) {
+                ++neighbor;
+            } else {
+                neighbor = source_it->second.neighbors.erase(neighbor);
+            }
+        }
     }
     for (const CandidateEdge &edge : valid_edges) {
         const auto from_it = nodes_.find(edge.from);
@@ -1537,8 +2069,10 @@ void IncrementalTopologyGraph::rebuildIncidentEdges(
         if (config_.construction_mode ==
                 ConstructionMode::PERSISTENT_BUBBLE_SKELETON &&
             !edge.existed &&
-            (from_it->second.neighbors.size() >= config_.max_neighbors ||
-             to_it->second.neighbors.size() >= config_.max_neighbors)) {
+            (regularNeighborCountLocked(from_it->second) >=
+                 config_.max_neighbors ||
+             regularNeighborCountLocked(to_it->second) >=
+                 config_.max_neighbors)) {
             continue;
         }
         from_it->second.neighbors[edge.to] = edge.distance;
@@ -1635,7 +2169,9 @@ void IncrementalTopologyGraph::publishSearchSnapshot() {
             Node node = entry.second.node;
             node.expansion_mask = 0U;
             std::unordered_map<NodeId, double> public_neighbors;
+            std::unordered_map<NodeId, EdgeRole> public_edge_roles;
             public_neighbors.reserve(entry.second.neighbors.size());
+            public_edge_roles.reserve(entry.second.neighbors.size());
             for (const auto &neighbor : entry.second.neighbors) {
                 const auto neighbor_it = nodes_.find(neighbor.first);
                 if (neighbor_it == nodes_.end() ||
@@ -1644,6 +2180,9 @@ void IncrementalTopologyGraph::publishSearchSnapshot() {
                     continue;
                 }
                 public_neighbors.emplace(neighbor.first, neighbor.second);
+                public_edge_roles.emplace(neighbor.first,
+                                          edgeRoleLocked(entry.first,
+                                                         neighbor.first));
             }
             // refreshPublicTopology() already filters zero-degree candidates.
             // Retain this guard as a publication boundary invariant.
@@ -1680,7 +2219,8 @@ void IncrementalTopologyGraph::publishSearchSnapshot() {
                     node.portal_mask & static_cast<std::uint8_t>(~connected_faces));
             }
             next->graph.emplace(entry.first,
-                                SearchNode{node, std::move(public_neighbors)});
+                                SearchNode{node, std::move(public_neighbors),
+                                           std::move(public_edge_roles)});
         }
     }
     std::atomic_store_explicit(
@@ -1730,14 +2270,24 @@ std::size_t IncrementalTopologyGraph::update(const TopologyMapView &map_view,
     while (rebuilt < max_regions &&
            popDirtyRegion(region, changed_dense_cells, evidence_seeds, focus)) {
         rebuildRegion(region, changed_dense_cells, evidence_seeds, map_view);
+        // A confirmed state change in this region takes precedence over the
+        // round-robin health sweep of old trajectory spans.
+        queueTraversalSegmentsForRegion(region);
         ++rebuilt;
     }
+    // The map-derived skeleton is deliberately sparse.  Reconcile actual
+    // vehicle motion after region work so every confirmed flown segment has a
+    // protected chain even when no bubble candidate happened to bridge it.
+    const bool traversal_changed = updateTraversalBackbone(map_view);
+    const bool traversal_attachment_changed =
+        attachTraversalAnchors(map_view);
     // Topology lifetime does not depend on the robot's momentary map
     // attachment. Only zero-degree candidates are withheld from readers;
     // findPath() validates start/goal attachments at query time.
     const bool public_topology_changed = refreshPublicTopology();
     if (config_.snapshot_every_update &&
-        (rebuilt > 0 || public_topology_changed)) {
+        (rebuilt > 0 || traversal_changed || traversal_attachment_changed ||
+         public_topology_changed)) {
         publishSearchSnapshot();
     }
     return rebuilt;
@@ -1763,6 +2313,9 @@ IncrementalTopologyGraph::Snapshot IncrementalTopologyGraph::snapshot() const {
                     edge.to = neighbor.first;
                     edge.cost = neighbor.second;
                     edge.validated_revision = search->revision;
+                    const auto role = entry.second.edge_roles.find(neighbor.first);
+                    edge.role = role == entry.second.edge_roles.end()
+                        ? EdgeRole::SKELETON : role->second;
                     const auto target = search->graph.find(neighbor.first);
                     if (target != search->graph.end()) {
                         edge.polyline = {entry.second.node.position,
@@ -1787,6 +2340,24 @@ IncrementalTopologyGraph::Snapshot IncrementalTopologyGraph::snapshot() const {
         output.pending_node_count = pending_node_count_;
         output.isolated_node_count = isolated_node_count_;
         output.connected_component_count = connected_component_count_;
+        output.traversal_node_count = traversal_anchor_ids_.size();
+        output.traversal_edge_count = 0;
+        for (const auto &edge : traversal_edges_) {
+            if (edge.second == EdgeRole::TRAVERSAL_BACKBONE) {
+                ++output.traversal_edge_count;
+            }
+        }
+        for (const TraversalSegment &segment : traversal_segments_) {
+            if (segment.state == TraversalSegmentState::PENDING) {
+                ++output.pending_traversal_edge_count;
+            } else if (segment.state == TraversalSegmentState::INVALID) {
+                ++output.invalid_traversal_edge_count;
+            }
+        }
+    }
+    {
+        std::lock_guard<std::mutex> traversal_lock(traversal_ingress_mutex_);
+        output.dropped_traversal_sample_count = dropped_traversal_sample_count_;
     }
     output.known_free_cell_count = output.nodes.size();
     std::lock_guard<std::mutex> dirty_lock(dirty_mutex_);
@@ -1824,6 +2395,19 @@ IncrementalTopologyGraph::Stats IncrementalTopologyGraph::stats() const {
         output.pending_node_count = pending_node_count_;
         output.isolated_node_count = isolated_node_count_;
         output.connected_component_count = connected_component_count_;
+        output.traversal_node_count = traversal_anchor_ids_.size();
+        for (const auto &edge : traversal_edges_) {
+            if (edge.second == EdgeRole::TRAVERSAL_BACKBONE) {
+                ++output.traversal_edge_count;
+            }
+        }
+        for (const TraversalSegment &segment : traversal_segments_) {
+            if (segment.state == TraversalSegmentState::PENDING) {
+                ++output.pending_traversal_edge_count;
+            } else if (segment.state == TraversalSegmentState::INVALID) {
+                ++output.invalid_traversal_edge_count;
+            }
+        }
         for (const auto &entry : nodes_) {
             if (!entry.second.public_node) {
                 continue;
@@ -1841,6 +2425,10 @@ IncrementalTopologyGraph::Stats IncrementalTopologyGraph::stats() const {
         output.public_edge_count /= 2U;
     }
     output.known_free_cell_count = output.node_count;
+    {
+        std::lock_guard<std::mutex> traversal_lock(traversal_ingress_mutex_);
+        output.dropped_traversal_sample_count = dropped_traversal_sample_count_;
+    }
     std::lock_guard<std::mutex> dirty_lock(dirty_mutex_);
     output.dirty_region_count = dirty_regions_.size();
     return output;
