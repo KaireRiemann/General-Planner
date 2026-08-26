@@ -79,6 +79,8 @@ PlannerSupervisor::PlannerSupervisor(ros::NodeHandle &nh,
   nh_.param("serial_handover", serial_handover_, true);
   nh_.param("exploration_start_retry_period", exploration_start_retry_period_,
             0.5);
+  nh_.param("source_timeout_abort_duration", source_timeout_abort_duration_,
+            1.0);
   hover_speed_threshold_ = std::clamp(hover_speed_threshold_, 0.01, 1.0);
   hover_yaw_rate_threshold_ = std::clamp(hover_yaw_rate_threshold_, 0.01, 1.0);
   hover_hold_duration_ = std::clamp(hover_hold_duration_, 0.1, 5.0);
@@ -86,6 +88,8 @@ PlannerSupervisor::PlannerSupervisor(ros::NodeHandle &nh,
   status_rate_ = std::clamp(status_rate_, 1.0, 50.0);
   exploration_start_retry_period_ =
       std::clamp(exploration_start_retry_period_, 0.1, 2.0);
+  source_timeout_abort_duration_ =
+      std::clamp(source_timeout_abort_duration_, 0.50, 10.0);
 
   status_.active_mode = PlannerMode::HOLD;
   status_.requested_mode = initial_mode_;
@@ -189,6 +193,8 @@ PlannerSupervisor::PlannerSupervisor(ros::NodeHandle &nh,
                   << " -> " << exploration_target_goal_out_topic_
                   << " gate_status=" << gate_status_topic_
                   << " task_request=" << exploration_task_request_topic_
+                  << " source_timeout_abort="
+                  << source_timeout_abort_duration_ << "s"
                   << " status=/planner/status");
   runtime_session_id_ = std::to_string(ros::WallTime::now().toNSec());
 }
@@ -461,7 +467,7 @@ void PlannerSupervisor::activateMode(const PlannerMode mode,
     // A gate run may be canceled before START. Once the normal verified
     // transition has completed, HOLD is again this runtime's command owner.
     gateway_.setPublishingEnabled(true);
-    enterStableHold(reason, PlannerTaskResult::NONE);
+    enterStableHold(reason, status_.task_result);
     publishNavigationTaskMode("hold");
     return;
   }
@@ -1130,6 +1136,24 @@ void PlannerSupervisor::completeGateExitLocked() {
   ROS_INFO("[planner_supervisor] gate complete; command gateway reclaimed at final odometry");
 }
 
+void PlannerSupervisor::failStaleCommandSourceLocked(
+    const CommandSourceHealth &health) {
+  const PlannerMode failed_mode = status_.active_mode;
+  const std::string detail = health.source_received_since_authorization
+      ? "age=" + std::to_string(health.source_age_seconds) + "s"
+      : "no command received after authorization";
+  ROS_ERROR_STREAM("[planner_supervisor] command source stalled: owner="
+                   << toString(health.authorized_owner) << " " << detail
+                   << "; transition to verified hold");
+
+  beginTransition(PlannerMode::HOLD, status_.accepted_request_id,
+                  status_.task_id, "command source timeout");
+  status_.task_result = PlannerTaskResult::FAILED;
+  status_.reason = "command source timeout in " +
+                   std::string(toString(failed_mode)) + " (" + detail +
+                   "); verified hold pending";
+}
+
 void PlannerSupervisor::odometryCallback(const nav_msgs::OdometryConstPtr &msg) {
   if (!msg) {
     return;
@@ -1318,6 +1342,7 @@ void PlannerSupervisor::publishStatus() {
 void PlannerSupervisor::timerCallback(const ros::TimerEvent &) {
   const GlobalMapStatus map_status = map_status_provider_
       ? map_status_provider_() : GlobalMapStatus{};
+  const CommandSourceHealth command_health = gateway_.commandSourceHealth();
   PlannerMode boot_activate_mode = PlannerMode::HOLD;
   bool do_boot_activate = false;
   {
@@ -1405,6 +1430,23 @@ void PlannerSupervisor::timerCallback(const ros::TimerEvent &) {
         status_.stable_hover = false;
       }
     } else {
+      const CommandOwner active_owner = ownerForMode(status_.active_mode);
+      const bool source_timeout_abort =
+          status_.phase == PlannerPhase::EXECUTING &&
+          (active_owner == CommandOwner::STATE2STATE ||
+           active_owner == CommandOwner::EXPLORATION) &&
+          command_health.authorized_owner == active_owner &&
+          !command_health.source_fresh &&
+          command_health.source_age_seconds >= source_timeout_abort_duration_;
+      if (source_timeout_abort) {
+        failStaleCommandSourceLocked(command_health);
+      }
+
+      if (transition_active_) {
+        // failStaleCommandSourceLocked() above has already requested a
+        // verified HOLD.  Let the next timer tick evaluate hover, exactly as
+        // for an operator-requested transition.
+      } else {
       if (status_.active_mode == PlannerMode::GATE) {
         // No branch in this block is allowed to authorize HOLD, navigation or
         // exploration output while gate is active. The external planner owns
@@ -1479,6 +1521,7 @@ void PlannerSupervisor::timerCallback(const ros::TimerEvent &) {
         if (since_pub >= exploration_start_retry_period_) {
           requestExplorationStartLocked("start retry");
         }
+      }
       }
     }
 

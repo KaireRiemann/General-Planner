@@ -112,6 +112,28 @@ int main() {
     ok &= expect(hasNoZeroDegreeNodes(blocked),
                  "public topology must never contain a zero-degree node");
 
+    // A world-lifetime graph can retain dirty regions after the robot has
+    // moved away. Do not consume that backlog in unordered-set order without
+    // a current odometry focus, and retain far-away regions until the robot
+    // approaches them.
+    IncrementalTopologyGraph::Config focused_config = config;
+    focused_config.require_fresh_focus = true;
+    focused_config.max_focus_distance = 3.0;
+    IncrementalTopologyGraph focused_graph(focused_config);
+    focused_graph.markDirty(Vec3f(1.0, 1.0, 1.0));
+    focused_graph.markDirty(Vec3f(21.0, 1.0, 1.0));
+    const std::size_t focused_dirty = focused_graph.stats().dirty_region_count;
+    ok &= expect(focused_graph.update(query, 1) == 0 &&
+                     focused_graph.stats().dirty_region_count == focused_dirty,
+                 "fresh-focus policy must defer dirty regions without odometry focus");
+    const Vec3f local_focus(1.0, 1.0, 1.0);
+    ok &= expect(focused_graph.update(query, 1, &local_focus) == 1 &&
+                     focused_graph.stats().dirty_region_count + 1 == focused_dirty,
+                 "fresh-focus policy must process the nearby dirty region first");
+    ok &= expect(focused_graph.update(query, 1, &local_focus) == 0 &&
+                     focused_graph.stats().dirty_region_count == 1,
+                 "focus distance must retain remote historical work until the robot approaches");
+
     rog_map::vec_Vec3f path;
     ok &= expect(!graph.findPath(Vec3f(0.5, 0.5, 0.5),
                                  Vec3f(5.5, 0.5, 0.5), query, path),

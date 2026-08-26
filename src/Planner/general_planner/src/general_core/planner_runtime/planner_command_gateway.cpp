@@ -151,6 +151,35 @@ bool PlannerCommandGateway::publishingEnabled() const {
   return publishing_enabled_;
 }
 
+CommandSourceHealth PlannerCommandGateway::commandSourceHealth() const {
+  std::lock_guard<std::mutex> lock(mutex_);
+  CommandSourceHealth health;
+  health.authorized_owner = authorized_owner_;
+  health.timeout_hold_active = source_timeout_hold_active_;
+
+  const bool navigation = authorized_owner_ == CommandOwner::STATE2STATE;
+  const bool exploration = authorized_owner_ == CommandOwner::EXPLORATION;
+  health.source_expected = navigation || exploration;
+  if (!health.source_expected) {
+    return health;
+  }
+
+  const bool have_source = navigation ? have_navigation_cmd_
+                                      : have_exploration_cmd_;
+  const ros::WallTime received = navigation ? navigation_rx_time_
+                                             : exploration_rx_time_;
+  health.source_received_since_authorization =
+      have_source && received >= authorization_time_;
+  if (!health.source_received_since_authorization) {
+    return health;
+  }
+
+  health.source_age_seconds =
+      std::max(0.0, (ros::WallTime::now() - received).toSec());
+  health.source_fresh = health.source_age_seconds <= command_timeout_;
+  return health;
+}
+
 void PlannerCommandGateway::navigationCallback(
     const quadrotor_msgs::PositionCommandConstPtr &msg) {
   if (!msg) {

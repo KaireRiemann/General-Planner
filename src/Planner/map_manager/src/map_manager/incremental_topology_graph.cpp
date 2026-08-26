@@ -72,6 +72,8 @@ IncrementalTopologyGraph::Config IncrementalTopologyGraph::sanitized(
     cfg.max_bubbles_per_region = std::max<std::size_t>(1, cfg.max_bubbles_per_region);
     cfg.max_neighbors = std::max<std::size_t>(1, cfg.max_neighbors);
     cfg.max_regions_per_update = std::max<std::size_t>(1, cfg.max_regions_per_update);
+    cfg.focus_timeout = std::clamp(cfg.focus_timeout, 0.0, 60.0);
+    cfg.max_focus_distance = std::clamp(cfg.max_focus_distance, 0.0, 1000.0);
     cfg.update_period = std::max(0.02, cfg.update_period);
     cfg.publish_period = std::max(0.05, cfg.publish_period);
     return cfg;
@@ -125,6 +127,7 @@ void IncrementalTopologyGraph::configure(const Config &config) {
     {
         std::lock_guard<std::mutex> focus_lock(focus_mutex_);
         has_update_focus_ = false;
+        update_focus_time_ = std::chrono::steady_clock::time_point{};
     }
 }
 
@@ -149,6 +152,7 @@ void IncrementalTopologyGraph::requestUpdateFocus(const rog_map::Vec3f &focus) {
     std::lock_guard<std::mutex> lock(focus_mutex_);
     update_focus_ = focus;
     has_update_focus_ = true;
+    update_focus_time_ = std::chrono::steady_clock::now();
 }
 
 IncrementalTopologyGraph::RegionKey IncrementalTopologyGraph::regionOf(
@@ -840,7 +844,12 @@ bool IncrementalTopologyGraph::popDirtyRegion(
     if (dirty_regions_.empty()) {
         return false;
     }
-    auto iterator = dirty_regions_.begin();
+    auto iterator = dirty_regions_.end();
+    const auto region_less = [](const RegionKey &lhs, const RegionKey &rhs) {
+        if (lhs.x != rhs.x) return lhs.x < rhs.x;
+        if (lhs.y != rhs.y) return lhs.y < rhs.y;
+        return lhs.z < rhs.z;
+    };
     if (focus != nullptr && focus->allFinite()) {
         double best_distance = std::numeric_limits<double>::infinity();
         for (auto candidate = dirty_regions_.begin();
@@ -853,11 +862,30 @@ bool IncrementalTopologyGraph::popDirtyRegion(
                 center.z() = config_.navigation_altitude;
             }
             const double distance = (center - *focus).squaredNorm();
-            if (distance < best_distance) {
+            const double max_distance = config_.max_focus_distance;
+            if (max_distance > 0.0 &&
+                distance > max_distance * max_distance) {
+                continue;
+            }
+            if (iterator == dirty_regions_.end() ||
+                distance < best_distance - 1.0e-9 ||
+                (std::abs(distance - best_distance) <= 1.0e-9 &&
+                 region_less(*candidate, *iterator))) {
                 best_distance = distance;
                 iterator = candidate;
             }
         }
+    } else if (!config_.require_fresh_focus) {
+        iterator = std::min_element(dirty_regions_.begin(), dirty_regions_.end(),
+                                    [&region_less](const RegionKey &lhs,
+                                                   const RegionKey &rhs) {
+                                        return region_less(lhs, rhs);
+                                    });
+    }
+    if (iterator == dirty_regions_.end()) {
+        // Keep deferred regions queued. They become eligible when a fresh
+        // odometry focus arrives or the robot approaches them.
+        return false;
     }
     region = *iterator;
     dirty_regions_.erase(iterator);
@@ -1667,22 +1695,33 @@ std::size_t IncrementalTopologyGraph::update(const TopologyMapView &map_view,
         return 0;
     }
     rog_map::Vec3f requested_focus = rog_map::Vec3f::Zero();
-    if (focus == nullptr) {
-        std::lock_guard<std::mutex> focus_lock(focus_mutex_);
-        if (has_update_focus_) {
-            requested_focus = update_focus_;
-            focus = &requested_focus;
-        }
-    }
-    std::lock_guard<std::mutex> update_lock(update_mutex_);
+    Config config;
     {
         std::shared_lock<std::shared_mutex> lock(graph_mutex_);
         if (!config_.enabled || !active()) {
             return 0;
         }
+        config = config_;
         if (max_regions == 0) {
-            max_regions = config_.max_regions_per_update;
+            max_regions = config.max_regions_per_update;
         }
+    }
+    if (focus == nullptr) {
+        std::lock_guard<std::mutex> focus_lock(focus_mutex_);
+        const bool focus_fresh = has_update_focus_ &&
+            (config.focus_timeout <= 0.0 ||
+             (std::chrono::steady_clock::now() - update_focus_time_) <=
+                 std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+                     std::chrono::duration<double>(config.focus_timeout)));
+        if (focus_fresh) {
+            requested_focus = update_focus_;
+            focus = &requested_focus;
+        }
+    }
+    std::lock_guard<std::mutex> update_lock(update_mutex_);
+    if (config.require_fresh_focus &&
+        (focus == nullptr || !focus->allFinite())) {
+        return 0;
     }
     std::size_t rebuilt = 0;
     RegionKey region;

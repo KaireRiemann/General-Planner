@@ -1,6 +1,7 @@
 #pragma once
 
 #include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -113,6 +114,13 @@ public:
         std::size_t max_bubbles_per_region{256};
         std::size_t max_neighbors{8};
         std::size_t max_regions_per_update{4};
+        /** Do not consume an unordered historical dirty backlog without a
+         * current robot focus. */
+        bool require_fresh_focus{false};
+        /** A non-positive value disables the focus-age gate. */
+        double focus_timeout{0.0};
+        /** A non-positive value allows all dirty regions around a focus. */
+        double max_focus_distance{0.0};
         double update_period{0.20};
         double publish_period{0.50};
         /**
@@ -363,6 +371,7 @@ private:
     std::atomic<bool> active_{false};
     rog_map::Vec3f update_focus_{rog_map::Vec3f::Zero()};
     bool has_update_focus_{false};
+    std::chrono::steady_clock::time_point update_focus_time_{};
     SearchSnapshotPtr search_snapshot_;
     NodeMap nodes_;
     RegionMap regions_;

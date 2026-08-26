@@ -25,6 +25,7 @@
   <arg name="odom_topic" default="/lidar_slam/odom" />
   <arg name="cloud_topic" default="/cloud_registered" />
   <arg name="coverage_guidance_mode" default="off" />
+  <arg name="source_timeout_abort_duration" default="1.0" />
 
   <include file="$(find general_planner_release)/launch/planner_runtime.launch">
     <arg name="marsim" value="true" />
@@ -51,5 +52,7 @@
     <arg name="odom_topic" value="$(arg odom_topic)" />
     <arg name="cloud_topic" value="$(arg cloud_topic)" />
     <arg name="coverage_guidance_mode" value="$(arg coverage_guidance_mode)" />
+    <arg name="source_timeout_abort_duration"
+         value="$(arg source_timeout_abort_duration)" />
   </include>
 </launch>

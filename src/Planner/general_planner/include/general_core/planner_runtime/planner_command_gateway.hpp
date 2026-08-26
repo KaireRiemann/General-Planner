@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <limits>
 #include <mutex>
 #include <string>
 
@@ -12,6 +13,20 @@
 #include <ros/ros.h>
 
 namespace general_planner::planner_runtime {
+
+/**
+ * Wall-clock freshness of the command source currently selected by the
+ * gateway.  This is intentionally independent of ROS time: a paused /clock
+ * must not hide a stalled planner callback.
+ */
+struct CommandSourceHealth {
+  CommandOwner authorized_owner{CommandOwner::HOLD};
+  bool source_expected{false};
+  bool source_received_since_authorization{false};
+  bool source_fresh{false};
+  bool timeout_hold_active{false};
+  double source_age_seconds{std::numeric_limits<double>::infinity()};
+};
 
 class PlannerCommandGateway {
 public:
@@ -36,6 +51,8 @@ public:
   // click-demo fsm_node can own the command bus after serial handover.
   void setPublishingEnabled(bool enabled);
   bool publishingEnabled() const;
+  /** Thread-safe source freshness snapshot for the supervisor watchdog. */
+  CommandSourceHealth commandSourceHealth() const;
 
 private:
   void navigationCallback(const quadrotor_msgs::PositionCommandConstPtr &msg);

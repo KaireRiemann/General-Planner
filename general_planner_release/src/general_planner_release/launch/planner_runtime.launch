@@ -46,6 +46,7 @@
   <arg name="latest_odom_timeout" default="0.5" />
   <arg name="max_cloud_age" default="0.5" />
   <arg name="heartbeat_timeout" default="1.5" />
+  <arg name="source_timeout_abort_duration" default="1.0" />
   <arg name="task_control_enable" default="true" />
   <arg name="coverage_guidance_mode"
        default="$(eval 'off' if arg('initial_mode') == 'target_exploration' else 'full')" />
@@ -122,6 +123,10 @@
     <param name="hover_yaw_rate_threshold" value="0.10" type="double" />
     <param name="hover_hold_duration" value="0.50" type="double" />
     <param name="max_odom_age" value="0.20" type="double" />
+    <!-- Gateway holds at the current pose after 0.30 s.  If an adapter still
+         cannot resume, retire that task after this bounded wall-clock delay. -->
+    <param name="source_timeout_abort_duration"
+           value="$(arg source_timeout_abort_duration)" type="double" />
 
     <!-- The composed exploration adapter owns only task-local LIO, Bubble and
          frontier state.  GlobalMapRuntime remains the sole cloud/odom owner. -->

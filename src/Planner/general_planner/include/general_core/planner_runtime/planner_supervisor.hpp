@@ -70,6 +70,10 @@ private:
   void publishHandoverCommand(const std::string &command);
   void requestExplorationStartLocked(const std::string &reason);
   void completeGateExitLocked();
+  // A gateway timeout is already a safe current-pose hold.  This completes
+  // the recovery protocol by retiring the stalled task instead of letting the
+  // supervisor report EXECUTING forever.
+  void failStaleCommandSourceLocked(const CommandSourceHealth &health);
   // `gateway_` has its own callback queue, so its cached odometry must never
   // be used as the source of a lifecycle HOLD.  This method runs under
   // `mutex_` and atomically installs the supervisor's validated pose.
@@ -174,6 +178,7 @@ private:
   double max_odom_age_{0.20};
   double status_rate_{10.0};
   double exploration_start_retry_period_{0.5};
+  double source_timeout_abort_duration_{1.0};
   std::uint64_t next_text_request_id_{1};
   std::string runtime_session_id_;
 };

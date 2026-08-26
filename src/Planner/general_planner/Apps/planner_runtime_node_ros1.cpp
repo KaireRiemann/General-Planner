@@ -145,8 +145,26 @@ int main(int argc, char **argv) {
   }
 
   try {
+    // Keep the four execution domains independent.  In particular, a large
+    // PCL fusion or an exploration-frontier rebuild must never delay the
+    // supervisor's mode/goal callbacks or the state2state command timers.
+    // Each planner FSM still has exactly one spinner thread: the legacy FSMs
+    // mutate non-thread-safe task state from their timers and subscriptions.
+    ros::CallbackQueue world_callback_queue;
+    ros::CallbackQueue navigation_callback_queue;
+    ros::CallbackQueue supervisor_callback_queue;
+    ros::CallbackQueue gateway_callback_queue;
+    ros::NodeHandle world_nh(nh);
+    ros::NodeHandle navigation_nh(nh);
+    ros::NodeHandle supervisor_nh(nh);
+    ros::NodeHandle gateway_nh(nh);
+    world_nh.setCallbackQueue(&world_callback_queue);
+    navigation_nh.setCallbackQueue(&navigation_callback_queue);
+    supervisor_nh.setCallbackQueue(&supervisor_callback_queue);
+    gateway_nh.setCallbackQueue(&gateway_callback_queue);
+
     auto global_map_runtime = std::make_shared<GlobalMapRuntime>();
-    global_map_runtime->init(nh, global_map_config);
+    global_map_runtime->init(world_nh, global_map_config);
 
     // Keep LIO/Bubble/frontier task structures local to exploration, but make
     // the LIO evidence and ROG safety map world-lifetime resources.
@@ -191,20 +209,21 @@ int main(int argc, char **argv) {
           selected_max.x(), selected_max.y(), selected_max.z()});
     }
 
-    lio_interface->init(nh);
+    lio_interface->init(world_nh);
     if (dynamic_box_selected &&
         !lio_interface->setSingleExplorationBox(selected_min, selected_max)) {
       ROS_FATAL("[M2 runtime] selected exploration bounding box is invalid");
       return 3;
     }
-    bubble_graph->init(nh, lio_interface, parallel_path_finder);
-    parallel_path_finder->init(nh, lio_interface);
+    bubble_graph->init(world_nh, lio_interface, parallel_path_finder);
+    parallel_path_finder->init(world_nh, lio_interface);
     exploration_planner->initPlanModules(
-        nh, parallel_path_finder, bubble_graph,
+        world_nh, parallel_path_finder, bubble_graph,
         global_map_runtime->mapManager());
-    frontier_manager->init(nh, lio_interface, bubble_graph);
-    exploration_manager->initialize(nh, frontier_manager, exploration_planner);
-    exploration_fsm->init(nh, exploration_manager, true);
+    frontier_manager->init(world_nh, lio_interface, bubble_graph);
+    exploration_manager->initialize(world_nh, frontier_manager,
+                                    exploration_planner);
+    exploration_fsm->init(world_nh, exploration_manager, true);
 
     global_map_runtime->attachLioMap(lio_interface);
     global_map_runtime->addOdomConsumer(
@@ -222,31 +241,32 @@ int main(int argc, char **argv) {
         });
 
     auto navigation_fsm = std::make_shared<fsm::FsmRos1>();
-    navigation_fsm->init(nh, navigation_config,
+    navigation_fsm->init(navigation_nh, navigation_config,
                          global_map_runtime->mapManager(),
                          navigation_command_topic);
 
-    // The gateway never touches the map: give its subscriptions and 100 Hz
-    // publisher their own callback queue.  Slow PCL/LIO/topology callbacks on
-    // the world-model queue can therefore only make the gateway enter its
-    // current-odometry timeout hold; they cannot create a gap in
-    // /planning/pos_cmd or replay an old task hold anchor.
-    ros::CallbackQueue gateway_callback_queue;
-    ros::NodeHandle gateway_nh(nh);
-    gateway_nh.setCallbackQueue(&gateway_callback_queue);
+    // The gateway is the last safety boundary and the supervisor owns task
+    // handover.  Neither is allowed to share the map/exploration queue.
     general_planner::planner_runtime::PlannerCommandGateway gateway(gateway_nh);
     general_planner::planner_runtime::PlannerSupervisor supervisor(
-        nh, gateway,
+        supervisor_nh, gateway,
         [global_map_runtime]() { return global_map_runtime->status(); });
 
     ROS_INFO("[M2 runtime] composed exploration + state2state adapters share "
-             "one GlobalMapRuntime; serial handover must remain disabled");
-    ros::AsyncSpinner world_spinner(1);
+             "one GlobalMapRuntime; queues=world,navigation,supervisor,gateway "
+             "(one serial thread each); serial handover must remain disabled");
+    ros::AsyncSpinner world_spinner(1, &world_callback_queue);
+    ros::AsyncSpinner navigation_spinner(1, &navigation_callback_queue);
+    ros::AsyncSpinner supervisor_spinner(1, &supervisor_callback_queue);
     ros::AsyncSpinner gateway_spinner(1, &gateway_callback_queue);
     world_spinner.start();
+    navigation_spinner.start();
+    supervisor_spinner.start();
     gateway_spinner.start();
     ros::waitForShutdown();
     gateway_spinner.stop();
+    supervisor_spinner.stop();
+    navigation_spinner.stop();
     world_spinner.stop();
   } catch (const std::exception &error) {
     ROS_FATAL_STREAM("[M2 runtime] initialization failed: " << error.what());

@@ -64,6 +64,12 @@ TopologyGraphROS1::TopologyGraphROS1(
     node_.param(prefix + "max_bubbles_per_region", max_bubbles, max_bubbles);
     node_.param(prefix + "max_neighbors", max_neighbors, max_neighbors);
     node_.param(prefix + "max_regions_per_update", max_regions, max_regions);
+    node_.param(prefix + "require_fresh_focus", config.require_fresh_focus,
+                config.require_fresh_focus);
+    node_.param(prefix + "focus_timeout", config.focus_timeout,
+                config.focus_timeout);
+    node_.param(prefix + "max_focus_distance", config.max_focus_distance,
+                config.max_focus_distance);
     config.max_nodes_per_region = static_cast<std::size_t>(std::max(1, max_nodes));
     config.max_bubbles_per_region = static_cast<std::size_t>(std::max(1, max_bubbles));
     config.max_neighbors = static_cast<std::size_t>(std::max(1, max_neighbors));
@@ -322,9 +328,19 @@ visualization_msgs::MarkerArray TopologyGraphROS1::makeMarkers(
     status.action = visualization_msgs::Marker::ADD;
     status.pose.orientation.w = 1.0;
     if (!snapshot.nodes.empty()) {
-        status.pose.position.x = snapshot.nodes.front().position.x();
-        status.pose.position.y = snapshot.nodes.front().position.y();
-        status.pose.position.z = snapshot.nodes.front().position.z() + 0.5;
+        // Snapshot nodes come from an unordered graph. Anchoring the text at
+        // front() made a passive RViz label jump around the map and look like
+        // a random topology expansion. The oldest surviving node is stable
+        // across snapshot iteration order and newly appended regions.
+        const auto anchor = std::min_element(
+            snapshot.nodes.begin(), snapshot.nodes.end(),
+            [](const IncrementalTopologyGraph::Node &lhs,
+               const IncrementalTopologyGraph::Node &rhs) {
+                return lhs.id < rhs.id;
+            });
+        status.pose.position.x = anchor->position.x();
+        status.pose.position.y = anchor->position.y();
+        status.pose.position.z = anchor->position.z() + 0.5;
     }
     status.scale.z = std::max(0.20, 1.5 * node_scale_);
     status.color.r = 1.0F;
