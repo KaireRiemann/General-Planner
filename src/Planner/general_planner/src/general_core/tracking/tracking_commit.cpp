@@ -773,7 +773,7 @@ namespace general_planner {
 
         cmd_traj_info_.setTrajectory(task_exp_traj);
         last_exp_traj_info_ = task_exp_traj;
-        robot_on_backup_traj_ = false;
+        robot_on_backup_traj_.store(false);
         gi_.new_goal = false;
 
         {

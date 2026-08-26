@@ -44,6 +44,9 @@ PlannerSupervisor::PlannerSupervisor(ros::NodeHandle &nh,
                          "/planning/navigation/command");
   nh_.param<std::string>("navigation_status_topic", navigation_status_topic_,
                          "/planning/navigation/status");
+  nh_.param<std::string>("fsm/state2state_replan_watchdog_topic",
+                         navigation_replan_watchdog_topic_,
+                         "/planning/navigation/replan_watchdog");
   nh_.param<std::string>("gate_status_topic", gate_status_topic_,
                          "/planner/gate/status");
   nh_.param<std::string>("navigation_task_mode_topic",
@@ -166,6 +169,10 @@ PlannerSupervisor::PlannerSupervisor(ros::NodeHandle &nh,
   navigation_status_sub_ =
       nh_.subscribe(navigation_status_topic_, 10,
                     &PlannerSupervisor::navigationStatusCallback, this);
+  navigation_replan_watchdog_sub_ =
+      nh_.subscribe(navigation_replan_watchdog_topic_, 10,
+                    &PlannerSupervisor::navigationReplanWatchdogCallback,
+                    this);
   gate_status_sub_ = nh_.subscribe(gate_status_topic_, 10,
                                    &PlannerSupervisor::gateStatusCallback,
                                    this);
@@ -191,6 +198,7 @@ PlannerSupervisor::PlannerSupervisor(ros::NodeHandle &nh,
                   << " -> " << navigation_goal_3d_out_topic_
                   << " target_goal=" << exploration_target_goal_in_topic_
                   << " -> " << exploration_target_goal_out_topic_
+                  << " replan_watchdog=" << navigation_replan_watchdog_topic_
                   << " gate_status=" << gate_status_topic_
                   << " task_request=" << exploration_task_request_topic_
                   << " source_timeout_abort="
@@ -1152,6 +1160,31 @@ void PlannerSupervisor::failStaleCommandSourceLocked(
   status_.reason = "command source timeout in " +
                    std::string(toString(failed_mode)) + " (" + detail +
                    "); verified hold pending";
+}
+
+void PlannerSupervisor::navigationReplanWatchdogCallback(
+    const std_msgs::UInt64ConstPtr &msg) {
+  if (!msg) {
+    return;
+  }
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (transition_active_ || status_.active_mode != PlannerMode::STATE2STATE ||
+      status_.command_owner != CommandOwner::STATE2STATE ||
+      msg->data != status_.task_epoch) {
+    ROS_WARN_STREAM("[planner_supervisor] ignore stale state2state replan "
+                    << "watchdog epoch=" << msg->data
+                    << " active_epoch=" << status_.task_epoch
+                    << " active_mode=" << toString(status_.active_mode));
+    return;
+  }
+
+  ROS_ERROR_STREAM("[planner_supervisor] state2state replan blocked after "
+                   << "the committed backup reached its stationary endpoint; "
+                   << "transitioning to verified HOLD, epoch=" << msg->data);
+  beginTransition(PlannerMode::HOLD, status_.accepted_request_id,
+                  status_.task_id, "state2state replan watchdog timeout");
+  status_.task_result = PlannerTaskResult::FAILED;
+  status_.reason = "state2state replan watchdog timeout; verified hold pending";
 }
 
 void PlannerSupervisor::odometryCallback(const nav_msgs::OdometryConstPtr &msg) {

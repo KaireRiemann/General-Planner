@@ -23,6 +23,7 @@
 
 #pragma once
 
+#include <atomic>
 #include <iostream>
 #include <fstream>
 #include <limits>
@@ -103,7 +104,10 @@ namespace general_planner {
 
         Vec3f local_start_p_;
 
-        bool robot_on_backup_traj_{false};
+        // Command sampling and state2state replanning run on separate runtime
+        // queues. This flag is sampled by the replan frontend while the
+        // command queue updates it from the committed trajectory.
+        std::atomic<bool> robot_on_backup_traj_{false};
         // use negative value to indicate the traj is not available
         double on_backup_start_WT{-1}, on_backup_end_WT{-1};
 
@@ -646,6 +650,10 @@ namespace general_planner {
 
     public:
         void getRobotState(rog_map::RobotState &out);
+        // Read map-owned odometry without modifying the planner's working
+        // state.  Runtime diagnostics and input callbacks use this while a
+        // state2state replan owns robot_state_.
+        void getRobotStateSnapshot(rog_map::RobotState &out) const;
 
         bool isEasyGoal(const Vec3f &goal_position);
 

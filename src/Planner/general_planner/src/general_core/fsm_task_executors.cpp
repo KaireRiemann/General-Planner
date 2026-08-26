@@ -47,14 +47,36 @@ public:
     }
 
     PlanResult replan(Fsm &fsm, const PlanRequest &request) override {
+        // Rolling replans execute outside fsm_tick_mutex_ so command sampling
+        // and PAUSE/CLEAR remain responsive.  Snapshot the goal under that
+        // mutex before invoking the backend; otherwise a concurrent new goal
+        // can race the backend request and later overwrite the newer goal.
+        general_utils::Vec3f goal;
+        double goal_yaw = 0.0;
+        bool new_goal = false;
+        std::uint64_t task_epoch = 0;
+        std::uint64_t goal_sequence = 0;
+        {
+            std::lock_guard<std::mutex> lock(fsm.fsm_tick_mutex_);
+            goal = fsm.gi_.goal_p;
+            goal_yaw = fsm.gi_.goal_yaw;
+            new_goal = fsm.gi_.new_goal;
+            task_epoch = fsm.navigation_task_epoch_.load();
+            goal_sequence = fsm.navigation_goal_sequence_.load();
+        }
         const auto result = planner(fsm).replan(
                 general_planner::architecture::StateToStateRequest{
                         request,
-                        fsm.gi_.goal_p,
-                        fsm.gi_.goal_yaw,
-                        fsm.gi_.new_goal});
+                        goal,
+                        goal_yaw,
+                        new_goal});
         if (result.goal_projected) {
-            fsm.gi_.goal_p = result.resolved_goal;
+            std::lock_guard<std::mutex> lock(fsm.fsm_tick_mutex_);
+            if (fsm.navigation_execution_enabled_.load() &&
+                fsm.navigation_task_epoch_.load() == task_epoch &&
+                fsm.navigation_goal_sequence_.load() == goal_sequence) {
+                fsm.gi_.goal_p = result.resolved_goal;
+            }
         }
         return result.plan_result;
     }

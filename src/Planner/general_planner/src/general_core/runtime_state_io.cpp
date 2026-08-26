@@ -28,7 +28,23 @@ namespace general_planner {
         out = robot_state_;
     }
 
+    void GeneralPlanner::getRobotStateSnapshot(rog_map::RobotState &out) const {
+        out = map_manager_->getRobotState();
+    }
+
     void GeneralPlanner::getOneHeartbeatTime(double &start_WT_pos, bool &traj_finish) {
+        // Command sampling runs on a dedicated callback queue in the runtime.
+        // Keep the heartbeat view coherent with a concurrent replan commit;
+        // otherwise this read can race cmd_traj_info_ while the PositionCommand
+        // sampler correctly holds the same lock.
+        cmd_traj_info_.lock();
+        if (cmd_traj_info_.empty()) {
+            cmd_traj_info_.unlock();
+            traj_finish = true;
+            start_WT_pos = ros_ptr_->getSimTime();
+            robot_on_backup_traj_.store(false);
+            return;
+        }
         double eval_t = (ros_ptr_->getSimTime() - cmd_traj_info_.getStartWallTime());
         traj_finish = false;
         double total_dur = cmd_traj_info_.getTotalDuration();
@@ -38,10 +54,11 @@ namespace general_planner {
         }
         start_WT_pos = cmd_traj_info_.getStartWallTime();
         if (cmd_traj_info_.backupTrajAvilibale() && eval_t > cmd_traj_info_.getBackupTrajStartTT()) {
-            robot_on_backup_traj_ = true;
+            robot_on_backup_traj_.store(true);
         } else {
-            robot_on_backup_traj_ = false;
+            robot_on_backup_traj_.store(false);
         }
+        cmd_traj_info_.unlock();
     }
 
     Trajectory GeneralPlanner::getCommittedPositionTrajectory() {

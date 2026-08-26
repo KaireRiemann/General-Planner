@@ -16,6 +16,7 @@
 #include <nav_msgs/Odometry.h>
 #include <ros/ros.h>
 #include <std_msgs/String.h>
+#include <std_msgs/UInt64.h>
 
 namespace general_planner::planner_runtime {
 
@@ -45,6 +46,10 @@ private:
       const geometry_msgs::PoseStamped &msg, const std::string &source);
   void explorationStatusCallback(const std_msgs::StringConstPtr &msg);
   void navigationStatusCallback(const std_msgs::StringConstPtr &msg);
+  // Emitted only after state2state has reached the stationary endpoint of an
+  // already committed backup trajectory while its rolling replan is still
+  // blocked.  It is epoch-bound so an old worker cannot retire a new task.
+  void navigationReplanWatchdogCallback(const std_msgs::UInt64ConstPtr &msg);
   // External gate planner lifecycle ingress. The protocol is std_msgs/String:
   // START (or BEGIN/RUNNING) requests external control, END (or DONE/FINISHED)
   // releases it. Both edges are accepted only through the hover verification
@@ -95,6 +100,7 @@ private:
   std::vector<ros::Subscriber> exploration_rviz_trigger_subs_;
   ros::Subscriber exploration_status_sub_;
   ros::Subscriber navigation_status_sub_;
+  ros::Subscriber navigation_replan_watchdog_sub_;
   ros::Subscriber gate_status_sub_;
   ros::Subscriber handover_status_sub_;
   ros::Subscriber odom_sub_;
@@ -160,6 +166,7 @@ private:
   std::string exploration_status_topic_;
   std::string navigation_command_topic_;
   std::string navigation_status_topic_;
+  std::string navigation_replan_watchdog_topic_;
   std::string gate_status_topic_;
   std::string navigation_task_mode_topic_;
   std::string navigation_goal_out_topic_;

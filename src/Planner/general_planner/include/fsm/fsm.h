@@ -275,6 +275,12 @@ namespace fsm {
         // the FSM lock free while it runs, but do not allow a plan-from-rest
         // request to enter the same planner concurrently.
         std::atomic<bool> state2state_replan_in_progress_{false};
+        // These wall-clock fields are consumed by the isolated command timer.
+        // They deliberately do not depend on /clock: a simulator clock pause
+        // must not hide an optimizer or frontend that no longer returns.
+        std::atomic<std::uint64_t> state2state_replan_start_wall_ns_{0};
+        std::atomic<bool> state2state_replan_watchdog_reported_{false};
+        std::atomic<bool> state2state_terminal_backup_hold_{false};
         std::atomic<bool> navigation_execution_enabled_{true};
         std::atomic<bool> accept_external_goals_{true};
         std::atomic<std::uint64_t> navigation_task_epoch_{0};

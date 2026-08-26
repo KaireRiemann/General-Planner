@@ -387,7 +387,7 @@ namespace fsm {
         diagnostic_event.on_backup = on_backup;
         if (planner_ptr_) {
             rog_map::RobotState current_robot_state{};
-            planner_ptr_->getRobotState(current_robot_state);
+            planner_ptr_->getRobotStateSnapshot(current_robot_state);
             diagnostic_event.robot_state_received = current_robot_state.rcv;
             if (current_robot_state.rcv) {
                 diagnostic_event.robot_p = current_robot_state.p;
@@ -638,15 +638,27 @@ namespace fsm {
             state2state_replan_in_progress_.exchange(true)) {
             return;
         }
+        const std::uint64_t replan_task_epoch = navigation_task_epoch_.load();
+        if (release_fsm_lock_during_replan) {
+            state2state_replan_start_wall_ns_.store(
+                    ros::WallTime::now().toNSec(), std::memory_order_release);
+            state2state_replan_watchdog_reported_.store(
+                    false, std::memory_order_release);
+            state2state_terminal_backup_hold_.store(
+                    false, std::memory_order_release);
+        }
         struct State2StateReplanGuard {
             std::atomic<bool> &in_progress;
+            std::atomic<std::uint64_t> &start_wall_ns;
             bool active;
             ~State2StateReplanGuard() {
                 if (active) {
                     in_progress.store(false);
+                    start_wall_ns.store(0, std::memory_order_release);
                 }
             }
         } replan_guard{state2state_replan_in_progress_,
+                       state2state_replan_start_wall_ns_,
                        release_fsm_lock_during_replan};
 
         TimeConsuming replan_once_time("replan_once_time", false);
@@ -688,6 +700,21 @@ namespace fsm {
         PlanResult plan_result = executor.replan(*this, replan_request);
         if (release_fsm_lock_during_replan) {
             tick_lock.lock();
+        }
+        // PAUSE/CLEAR/ARM run on the navigation-control queue while an
+        // expensive replan is executing on its own queue.  A result produced
+        // for an invalidated task must never be applied to the new task.
+        if (release_fsm_lock_during_replan &&
+            (!navigation_execution_enabled_.load() ||
+             navigation_task_epoch_.load() != replan_task_epoch)) {
+            recordDiagnosticEvent("WARN",
+                                  "replan_result_discarded",
+                                  fmt::format("reason=task_invalidated;started_epoch={};current_epoch={};execution_enabled={}",
+                                              replan_task_epoch,
+                                              navigation_task_epoch_.load(),
+                                              static_cast<int>(navigation_execution_enabled_.load())),
+                                  plan_result.ret_code);
+            return;
         }
         const TaskPlanContext &replan_context = plan_result.context;
         const RET_CODE ret_code = static_cast<RET_CODE>(plan_result.ret_code);
@@ -968,6 +995,14 @@ namespace fsm {
             finish_plan = true;
             return;
         }
+        // The planner backend keeps references to GeneralPlanner::robot_state_
+        // while a state2state replan is running.  Do not refresh that shared
+        // snapshot from the main FSM queue until the replan returns; command
+        // sampling remains independent and continues to publish the committed
+        // trajectory in the meantime.
+        if (state2stateMode() && state2state_replan_in_progress_.load()) {
+            return;
+        }
         static double fsm_start_time = ros_ptr_->getSimTime();
         double cur_t = (ros_ptr_->getSimTime() - fsm_start_time);
         static double last_print_t = 0.0;
@@ -1016,6 +1051,14 @@ namespace fsm {
                 if (state2stateMode() &&
                     state2state_replan_in_progress_.load()) {
                     return;
+                }
+                // requestControlledStop()/ARM deliberately avoid touching
+                // the topology runtime while an old replan owns it.  Once no
+                // replan is active, synchronize the epoch just before a new
+                // state2state plan can access that runtime.
+                if (state2stateMode() && planner_ptr_) {
+                    planner_ptr_->setState2StateTopologyTaskEpoch(
+                            navigation_task_epoch_.load());
                 }
                 active_replan_id_ = next_replan_id_++;
                 TaskExecutor &executor = taskExecutor();
@@ -1332,7 +1375,7 @@ namespace fsm {
         plan_from_rest_ = false;
         task_new_ = false;
         ++navigation_task_epoch_;
-        if (planner_ptr_) {
+        if (planner_ptr_ && !state2state_replan_in_progress_.load()) {
             planner_ptr_->setState2StateTopologyTaskEpoch(
                     navigation_task_epoch_.load());
         }
@@ -1356,7 +1399,7 @@ namespace fsm {
 
     void Fsm::armNavigationTask(const std::uint64_t task_epoch) {
         navigation_task_epoch_ = task_epoch;
-        if (planner_ptr_) {
+        if (planner_ptr_ && !state2state_replan_in_progress_.load()) {
             planner_ptr_->setState2StateTopologyTaskEpoch(task_epoch);
         }
         // Do not reset the sequence here.  ARM/CLEAR status messages can

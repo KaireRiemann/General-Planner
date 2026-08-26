@@ -145,21 +145,26 @@ int main(int argc, char **argv) {
   }
 
   try {
-    // Keep the four execution domains independent.  In particular, a large
-    // PCL fusion or an exploration-frontier rebuild must never delay the
-    // supervisor's mode/goal callbacks or the state2state command timers.
-    // Each planner FSM still has exactly one spinner thread: the legacy FSMs
-    // mutate non-thread-safe task state from their timers and subscriptions.
+    // Keep the execution domains independent.  In particular, a large PCL
+    // fusion, an exploration-frontier rebuild, or a stuck state2state
+    // frontend/optimizer must never delay supervisor handover, navigation
+    // control, or the state2state command source.
     ros::CallbackQueue world_callback_queue;
     ros::CallbackQueue navigation_callback_queue;
+    ros::CallbackQueue navigation_command_callback_queue;
+    ros::CallbackQueue navigation_replan_callback_queue;
     ros::CallbackQueue supervisor_callback_queue;
     ros::CallbackQueue gateway_callback_queue;
     ros::NodeHandle world_nh(nh);
     ros::NodeHandle navigation_nh(nh);
+    ros::NodeHandle navigation_command_nh(nh);
+    ros::NodeHandle navigation_replan_nh(nh);
     ros::NodeHandle supervisor_nh(nh);
     ros::NodeHandle gateway_nh(nh);
     world_nh.setCallbackQueue(&world_callback_queue);
     navigation_nh.setCallbackQueue(&navigation_callback_queue);
+    navigation_command_nh.setCallbackQueue(&navigation_command_callback_queue);
+    navigation_replan_nh.setCallbackQueue(&navigation_replan_callback_queue);
     supervisor_nh.setCallbackQueue(&supervisor_callback_queue);
     gateway_nh.setCallbackQueue(&gateway_callback_queue);
 
@@ -243,7 +248,9 @@ int main(int argc, char **argv) {
     auto navigation_fsm = std::make_shared<fsm::FsmRos1>();
     navigation_fsm->init(navigation_nh, navigation_config,
                          global_map_runtime->mapManager(),
-                         navigation_command_topic);
+                         navigation_command_topic,
+                         navigation_command_nh,
+                         navigation_replan_nh);
 
     // The gateway is the last safety boundary and the supervisor owns task
     // handover.  Neither is allowed to share the map/exploration queue.
@@ -253,19 +260,27 @@ int main(int argc, char **argv) {
         [global_map_runtime]() { return global_map_runtime->status(); });
 
     ROS_INFO("[M2 runtime] composed exploration + state2state adapters share "
-             "one GlobalMapRuntime; queues=world,navigation,supervisor,gateway "
-             "(one serial thread each); serial handover must remain disabled");
+             "one GlobalMapRuntime; queues=world,navigation,nav_command,"
+             "nav_replan,supervisor,gateway (one serial thread each)");
     ros::AsyncSpinner world_spinner(1, &world_callback_queue);
     ros::AsyncSpinner navigation_spinner(1, &navigation_callback_queue);
+    ros::AsyncSpinner navigation_command_spinner(
+        1, &navigation_command_callback_queue);
+    ros::AsyncSpinner navigation_replan_spinner(
+        1, &navigation_replan_callback_queue);
     ros::AsyncSpinner supervisor_spinner(1, &supervisor_callback_queue);
     ros::AsyncSpinner gateway_spinner(1, &gateway_callback_queue);
     world_spinner.start();
     navigation_spinner.start();
+    navigation_command_spinner.start();
+    navigation_replan_spinner.start();
     supervisor_spinner.start();
     gateway_spinner.start();
     ros::waitForShutdown();
     gateway_spinner.stop();
     supervisor_spinner.stop();
+    navigation_replan_spinner.stop();
+    navigation_command_spinner.stop();
     navigation_spinner.stop();
     world_spinner.stop();
   } catch (const std::exception &error) {

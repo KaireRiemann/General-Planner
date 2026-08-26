@@ -60,8 +60,8 @@ namespace general_planner {
         const double eval_t = traj_finish ? total_dur : std::clamp(cur_t - cmd_start_WT, 0.0, total_dur);
 
 //        bool last_round_robot_on_backup_traj = robot_on_backup_traj_;
-        robot_on_backup_traj_ = cmd_traj_info_.isTTOnBackupTraj(eval_t);
-        on_backup_traj = robot_on_backup_traj_;
+        robot_on_backup_traj_.store(cmd_traj_info_.isTTOnBackupTraj(eval_t));
+        on_backup_traj = robot_on_backup_traj_.load();
 
         pvaj = cmd_traj_info_.posTraj().getState(eval_t);
 

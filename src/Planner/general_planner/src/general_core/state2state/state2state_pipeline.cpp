@@ -254,7 +254,7 @@ namespace general_planner {
                                                                  "plan_from_rest_exp"))) {
                 return FAILED;
             }
-            services.robot_on_backup_traj = false;
+            services.robot_on_backup_traj.store(false);
             services.cmd_traj_info.setTrajectory(exp_traj_info);
             services.last_exp_traj_info = exp_traj_info;
             services.backend_context.markGoalConsumed();
@@ -278,7 +278,7 @@ namespace general_planner {
             }
             services.cmd_traj_info.setTrajectory(exp_traj_info);
             services.last_exp_traj_info = exp_traj_info;
-            services.robot_on_backup_traj = false;
+            services.robot_on_backup_traj.store(false);
             services.backend_context.markGoalConsumed();
             {
                 TimeConsuming t_viz("viz goal VisualizeCommitTrajectory", false);
@@ -315,7 +315,7 @@ namespace general_planner {
                 return FAILED;
             }
             services.last_exp_traj_info = exp_traj_info;
-            services.robot_on_backup_traj = false;
+            services.robot_on_backup_traj.store(false);
             services.backend_context.markGoalConsumed();
 
             {
@@ -331,7 +331,7 @@ namespace general_planner {
             if (services.cfg.print_log) {
                 services.ros_ptr->info(" -- [GeneralPlanner] in [PlanFromRest] generateBackupTrajectory Finish or NO_NEED.");
             }
-            services.robot_on_backup_traj = false;
+            services.robot_on_backup_traj.store(false);
             if (rejectOnCheckFailure(services.ros_ptr,
                                      "PlanFromRest exp commit",
                                      checker::checkExpTrajectory(exp_traj_info,
@@ -440,7 +440,7 @@ namespace general_planner {
                                                                  "replan_exp"))) {
                 return FAILED;
             }
-            services.robot_on_backup_traj = false;
+            services.robot_on_backup_traj.store(false);
             services.cmd_traj_info.setTrajectory(exp_traj_info);
             services.last_exp_traj_info = exp_traj_info;
             services.backend_context.markGoalConsumed();
@@ -464,7 +464,7 @@ namespace general_planner {
             }
             services.cmd_traj_info.setTrajectory(exp_traj_info);
             services.last_exp_traj_info = exp_traj_info;
-            services.robot_on_backup_traj = false;
+            services.robot_on_backup_traj.store(false);
             services.backend_context.markGoalConsumed();
             {
                 TimeConsuming t_viz("tviz", false);
@@ -584,7 +584,7 @@ namespace general_planner {
 
             services.cmd_traj_info.setTrajectory(exp_traj_info);
             services.last_exp_traj_info = exp_traj_info;
-            services.robot_on_backup_traj = false;
+            services.robot_on_backup_traj.store(false);
             services.backend_context.markGoalConsumed();
 
             {
@@ -612,7 +612,7 @@ namespace general_planner {
                 return FAILED;
             }
             services.last_exp_traj_info = exp_traj_info;
-            services.robot_on_backup_traj = false;
+            services.robot_on_backup_traj.store(false);
             services.backend_context.markGoalConsumed();
 
             {
@@ -628,7 +628,7 @@ namespace general_planner {
             }
             return SUCCESS;
         } else if (back_ret_code == NO_NEED) {
-            services.robot_on_backup_traj = false;
+            services.robot_on_backup_traj.store(false);
             services.last_exp_traj_info = exp_traj_info;
             services.backend_context.markGoalConsumed();
 
@@ -653,7 +653,7 @@ namespace general_planner {
             }
             services.cmd_traj_info.setTrajectory(exp_traj_info);
             services.last_exp_traj_info = exp_traj_info;
-            services.robot_on_backup_traj = false;
+            services.robot_on_backup_traj.store(false);
             services.backend_context.markGoalConsumed();
 
             {

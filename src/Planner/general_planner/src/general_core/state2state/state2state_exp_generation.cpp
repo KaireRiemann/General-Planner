@@ -229,7 +229,7 @@ namespace general_planner {
             if (replan_state_TT >= cmd_total_duration) {
                 out_exp_traj_info = last_exp_traj_info;
 
-                if (services.robot_on_backup_traj) {
+                if (services.robot_on_backup_traj.load()) {
                     if (services.cfg.print_log) {
                         services.ros_ptr->warn(
                                 " -- [GeneralPlanner] Replan, emergency stop, return FAILED and wait for plan form rest.");
@@ -249,7 +249,7 @@ namespace general_planner {
                 const double last_exp_total_duration = last_exp_traj.getTotalDuration();
                 if (replan_state_TT >= last_exp_total_duration) {
                     out_exp_traj_info = last_exp_traj_info;
-                    if (services.robot_on_backup_traj) {
+                    if (services.robot_on_backup_traj.load()) {
                         if (services.cfg.print_log) {
                             services.ros_ptr->warn(
                                     " -- [GeneralPlanner] Replan, emergency stop, return FAILED and wait for plan form rest.");
@@ -274,7 +274,7 @@ namespace general_planner {
                     }
 
                     out_exp_traj_info = last_exp_traj_info;
-                    if (services.robot_on_backup_traj) {
+                    if (services.robot_on_backup_traj.load()) {
                         if (services.cfg.print_log) {
                             services.ros_ptr->warn(
                                     " -- [GeneralPlanner] Replan, emergency stop, return FAILED and wait for plan form rest.");
@@ -292,7 +292,7 @@ namespace general_planner {
                     out_exp_traj_info.setGoalConnectedFlag(true);
 
                     services.ros_ptr->warn(" -- [GeneralPlanner] Replan, close to goal and return NONEED.");
-                    if (services.robot_on_backup_traj) {
+                    if (services.robot_on_backup_traj.load()) {
                         services.ros_ptr->warn(
                                 " -- [GeneralPlanner] Replan, emergency stop, return FAILED and wait for plan form rest.");
                         return FAILED;
@@ -338,7 +338,7 @@ namespace general_planner {
                 last_exp_traj_info.wholeTrajKnownFree() &&
                 currentTrajectorySafeForNoNeed(services, guide_pos_traj, replan_state_TT)) {
                 out_exp_traj_info = last_exp_traj_info;
-                if (services.robot_on_backup_traj) {
+                if (services.robot_on_backup_traj.load()) {
                     if (services.cfg.print_log) {
                         services.ros_ptr->warn(
                                 " -- [GeneralPlanner] Distance-field replan, emergency stop, return FAILED and wait for plan form rest.");

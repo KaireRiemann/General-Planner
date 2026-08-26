@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -78,7 +79,7 @@ struct StateToStateExpBackendServices {
     CmdTraj &cmd_traj_info;
     ExpTraj &last_exp_traj_info;
     general_utils::Vec3f &local_start_p;
-    bool &robot_on_backup_traj;
+    std::atomic<bool> &robot_on_backup_traj;
     std::vector<double> &time_consuming;
     general_utils::Vec3f &shifted_sfc_start_pt;
     LogOneReplan &latest_replan;

@@ -199,6 +199,11 @@ namespace fsm {
         double task_timeout{0.6};
         int state2state_plan_from_rest_max_failures{0};
         bool state2state_clear_goal_on_plan_failure{false};
+        // Wall-clock bound for a rolling state2state replan.  The planner is
+        // allowed to finish its already committed backup trajectory first;
+        // after that, a still-running replan is reported to the runtime
+        // supervisor and the task is retired to HOLD.
+        double state2state_replan_watchdog_timeout{2.0};
         bool state2state_topology_query_capability_enable{false};
         string state2state_topology_selection_topic{
                 "/planner/navigation/use_global_topology"};
@@ -351,6 +356,11 @@ namespace fsm {
             loader.LoadParam("fsm/state2state_clear_goal_on_plan_failure",
                              state2state_clear_goal_on_plan_failure,
                              false);
+            loader.LoadParam("fsm/state2state_replan_watchdog_timeout",
+                             state2state_replan_watchdog_timeout,
+                             2.0);
+            state2state_replan_watchdog_timeout =
+                    std::clamp(state2state_replan_watchdog_timeout, 0.5, 30.0);
             if (!loader.LoadParam(
                     "general_planner/state2state/topology/query_capability_enable",
                     state2state_topology_query_capability_enable,

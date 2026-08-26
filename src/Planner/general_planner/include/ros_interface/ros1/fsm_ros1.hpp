@@ -41,6 +41,7 @@
 #include "quadrotor_msgs/SO3Command.h"
 #include "std_msgs/String.h"
 #include "std_msgs/Bool.h"
+#include "std_msgs/UInt64.h"
 #include "utils/geometry/quadrotor_flatness.hpp"
 
 #include <pcl_conversions/pcl_conversions.h>
@@ -62,6 +63,11 @@
 namespace fsm {
     class FsmRos1 : public Fsm {
         ros::NodeHandle nh_;
+        // state/goal callbacks, rolling replans and command sampling must not
+        // share a callback queue.  A pathological frontend/optimizer is then
+        // unable to starve PAUSE/CLEAR or the 100 Hz command source.
+        ros::NodeHandle command_nh_;
+        ros::NodeHandle replan_nh_;
         ros::Subscriber goal_sub_;
         ros::Subscriber goal_3d_sub_;
         ros::Subscriber task_mode_sub_;
@@ -78,6 +84,7 @@ namespace fsm {
         ros::Publisher swarm_traj_pub_, swarm_state_pub_;
         ros::Publisher diagnostic_event_pub_;
         ros::Publisher navigation_status_pub_;
+        ros::Publisher replan_watchdog_pub_;
         ros::Timer execution_timer_, replan_timer_, cmd_timer_, perception_safety_timer_;
         ros::Timer navigation_status_timer_;
         quadrotor_msgs::PositionCommand pid_cmd_;
@@ -92,6 +99,8 @@ namespace fsm {
         unsigned int traj_seq_{0};
         int last_cmd_backup_flag_{-1};
         ros::Time last_tracking_prediction_path_time_;
+        std::string replan_watchdog_topic_{
+            "/planning/navigation/replan_watchdog"};
 
         struct CommandLogEntry {
             quadrotor_msgs::PositionCommand cmd;
@@ -846,6 +855,10 @@ namespace fsm {
         }
 
         void goalCallback(const geometry_msgs::PoseStampedConstPtr &msg) {
+            if (!msg) {
+                return;
+            }
+            std::lock_guard<std::mutex> lock(fsm_tick_mutex_);
             general_utils::Vec3f goal_p = Vec3f{msg->pose.position.x, msg->pose.position.y, msg->pose.position.z};
             general_utils::Quatf goal_q = general_utils::Quatf{msg->pose.orientation.w, msg->pose.orientation.x,
                                                            msg->pose.orientation.y, msg->pose.orientation.z};
@@ -853,6 +866,10 @@ namespace fsm {
         }
 
         void goal3DCallback(const geometry_msgs::PoseStampedConstPtr &msg) {
+            if (!msg) {
+                return;
+            }
+            std::lock_guard<std::mutex> lock(fsm_tick_mutex_);
             general_utils::Vec3f goal_p = Vec3f{msg->pose.position.x, msg->pose.position.y,
                                                 msg->pose.position.z};
             general_utils::Quatf goal_q = general_utils::Quatf{msg->pose.orientation.w,
@@ -893,7 +910,9 @@ namespace fsm {
             }
 
             rog_map::RobotState robot_state;
-            planner_ptr_->getRobotState(robot_state);
+            // Dynamic-cloud ingestion can arrive on the navigation-control
+            // queue while state2state owns the planner working state.
+            planner_ptr_->getRobotStateSnapshot(robot_state);
             const double now = ros_ptr_ != nullptr ? ros_ptr_->getSimTime() : ros::Time::now().toSec();
             if (!robot_state.rcv ||
                 now - robot_state.rcv_time > std::max(0.0, cfg_.dynamic_obstacle_layer_odom_timeout)) {
@@ -1217,6 +1236,15 @@ namespace fsm {
             if (!msg) {
                 return;
             }
+            std::lock_guard<std::mutex> lock(fsm_tick_mutex_);
+            // Replacing the executor while a replan owns a raw reference to
+            // it would be unsafe.  The supervisor's PAUSE path remains
+            // available and retires the current task first.
+            if (state2state_replan_in_progress_.load()) {
+                requestControlledStop("task-mode request while state2state replan is active");
+                ROS_WARN_STREAM("[Fsm] defer task-mode switch until active state2state replan returns");
+                return;
+            }
             // `hold` is a Supervisor control state, not one of the legacy
             // Fsm TaskMode values.  Treating it as an unknown string would
             // normalize it to state2state and could accidentally alter a
@@ -1237,6 +1265,7 @@ namespace fsm {
             if (!msg) {
                 return;
             }
+            std::lock_guard<std::mutex> lock(fsm_tick_mutex_);
             std::istringstream stream(msg->data);
             std::string command;
             stream >> command;
@@ -1272,6 +1301,16 @@ namespace fsm {
             if (!msg || planner_ptr_ == nullptr) {
                 return;
             }
+            std::lock_guard<std::mutex> lock(fsm_tick_mutex_);
+            if (state2state_replan_in_progress_.load()) {
+                // The route runtime is owned by the active backend.  A
+                // selection arriving during a blocked replan must not mutate
+                // it from the control queue. The caller can resend it after
+                // the watchdog has retired this task.
+                ROS_WARN_STREAM("[Fsm] ignore topology-policy update while "
+                                << "state2state replan is active");
+                return;
+            }
             // This callback only records policy. The next state2state
             // plan/replan owns route invalidation and topology work.
             planner_ptr_->setState2StateTopologyPolicy(msg->data);
@@ -1283,6 +1322,7 @@ namespace fsm {
             if (!navigation_status_pub_) {
                 return;
             }
+            std::lock_guard<std::mutex> lock(fsm_tick_mutex_);
             std_msgs::String status;
             status.data = std::string(machineStateName()) + " " +
                           std::to_string(navigationTaskEpoch()) + " " +
@@ -1309,8 +1349,22 @@ namespace fsm {
                   const general_planner::MapManager::Ptr &shared_map_manager =
                       general_planner::MapManager::Ptr{},
                   const std::string &command_topic_override = "") {
+            // Preserve the standalone FSM API: without explicit queues, all
+            // timers retain the caller's original NodeHandle semantics.
+            init(nh, cfg_path, shared_map_manager, command_topic_override,
+                 nh, nh);
+        }
+
+        void init(const ros::NodeHandle &nh,
+                  const std::string &cfg_path,
+                  const general_planner::MapManager::Ptr &shared_map_manager,
+                  const std::string &command_topic_override,
+                  const ros::NodeHandle &command_nh,
+                  const ros::NodeHandle &replan_nh) {
             // 初始化参数读取
             nh_ = nh;
+            command_nh_ = command_nh;
+            replan_nh_ = replan_nh;
             cfg_ = Config(cfg_path);
             applyLaunchOverrides();
             if (!command_topic_override.empty()) {
@@ -1369,6 +1423,11 @@ namespace fsm {
             path_pub_ = nh_.advertise<nav_msgs::Path>("fsm/path", 100);
             navigation_status_pub_ =
                 nh_.advertise<std_msgs::String>("/planning/navigation/status", 10, true);
+            nh_.param<std::string>("fsm/state2state_replan_watchdog_topic",
+                                   replan_watchdog_topic_,
+                                   replan_watchdog_topic_);
+            replan_watchdog_pub_ =
+                command_nh_.advertise<std_msgs::UInt64>(replan_watchdog_topic_, 1, false);
             navigation_command_sub_ =
                 nh_.subscribe("/planning/navigation/command", 10,
                               &FsmRos1::navigationCommandCallback, this);
@@ -1530,12 +1589,12 @@ namespace fsm {
 
             if (cfg_.timer_en) {
                 execution_timer_ = nh_.createTimer(ros::Duration(0.01), &FsmRos1::mainFsmTimerCallback, this); // 100Hz
-                cmd_timer_ = nh_.createTimer(ros::Duration(0.01), &FsmRos1::pubCmdTimerCallback, this); // 100Hz
-                replan_timer_ = nh_.createTimer(ros::Duration(1.0 / cfg_.replan_rate), &FsmRos1::replanTimerCallback,
-                                                this); // 10Hz
+                cmd_timer_ = command_nh_.createTimer(ros::Duration(0.01), &FsmRos1::pubCmdTimerCallback, this); // 100Hz
+                replan_timer_ = replan_nh_.createTimer(ros::Duration(1.0 / cfg_.replan_rate), &FsmRos1::replanTimerCallback,
+                                                        this);
                 if ((cfg_.perception_replan_check_en || cfg_.dynamic_obstacle_layer_enable) &&
                     cfg_.perception_replan_check_rate > 1.0e-3) {
-                    perception_safety_timer_ = nh_.createTimer(
+                    perception_safety_timer_ = replan_nh_.createTimer(
                             ros::Duration(1.0 / cfg_.perception_replan_check_rate),
                             &FsmRos1::perceptionSafetyTimerCallback,
                             this);
@@ -1673,6 +1732,13 @@ namespace fsm {
         }
 
         void pubCmdTimerCallback(const ros::TimerEvent &event) {
+            // This callback runs independently from replan, but the small
+            // FSM-state critical section remains serialized with goal/control
+            // callbacks and trajectory commits.
+            std::unique_lock<std::mutex> tick_lock(fsm_tick_mutex_, std::try_to_lock);
+            if (!tick_lock.owns_lock()) {
+                return;
+            }
             if (stop) {
                 return;
             }
@@ -1698,6 +1764,51 @@ namespace fsm {
                 }
             }
             if (traj_finish_) {
+                const bool stationary_backup_terminal =
+                    pid_cmd_.trajectory_flag == 2 &&
+                    std::isfinite(pid_cmd_.vel_norm) &&
+                    std::isfinite(pid_cmd_.acc_norm) &&
+                    pid_cmd_.vel_norm <= 1.0e-2 &&
+                    pid_cmd_.acc_norm <= 1.0e-1;
+                if (state2stateMode() &&
+                    state2state_replan_in_progress_.load() &&
+                    stationary_backup_terminal) {
+                    const bool entered_terminal_hold =
+                        !state2state_terminal_backup_hold_.exchange(true);
+                    if (entered_terminal_hold) {
+                        // Do not call recordDiagnosticEvent() from this
+                        // isolated command queue: diagnostic collection reads
+                        // planner state that may be owned by the blocked
+                        // replan.  ROS logging and the watchdog topic below
+                        // remain non-blocking observability paths.
+                        ROS_WARN_STREAM("[Fsm] replan still active after the "
+                                        << "committed backup reached a "
+                                        << "stationary endpoint; holding it");
+                    }
+
+                    const std::uint64_t start_ns =
+                        state2state_replan_start_wall_ns_.load(std::memory_order_acquire);
+                    const std::uint64_t now_ns = ros::WallTime::now().toNSec();
+                    const std::uint64_t timeout_ns = static_cast<std::uint64_t>(
+                        cfg_.state2state_replan_watchdog_timeout * 1.0e9);
+                    if (start_ns > 0 && now_ns >= start_ns &&
+                        now_ns - start_ns >= timeout_ns &&
+                        !state2state_replan_watchdog_reported_.exchange(true)) {
+                        const double elapsed =
+                            static_cast<double>(now_ns - start_ns) * 1.0e-9;
+                        std_msgs::UInt64 watchdog;
+                        watchdog.data = navigationTaskEpoch();
+                        replan_watchdog_pub_.publish(watchdog);
+                        ROS_ERROR_STREAM("[Fsm] state2state replan watchdog fired after "
+                                         << elapsed << "s at a stationary backup endpoint; "
+                                         << "requesting supervisor HOLD for epoch="
+                                         << watchdog.data);
+                    }
+                    // Continue publishing the committed, stationary backup
+                    // endpoint.  Do not let a stuck optimizer turn into a
+                    // command-source timeout or a discontinuous gateway hold.
+                    return;
+                }
                 const auto finish_result = handleExecutedTrajectoryFinished(
                         "PubCmdCallback",
                         pid_cmd_.trajectory_id,
