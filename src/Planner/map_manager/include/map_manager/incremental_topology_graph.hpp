@@ -1,11 +1,9 @@
 #pragma once
 
-#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
-#include <deque>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -63,17 +61,6 @@ public:
     enum class NodeState : std::uint8_t {
         ACTIVE = 0,
         HISTORICAL = 1
-    };
-
-    /**
-     * Skeleton edges are inferred from sampled free space. Traversal edges
-     * are different: they encode a route that the vehicle has actually flown
-     * and therefore must not be evicted by ordinary region/degree rebuilding.
-     */
-    enum class EdgeRole : std::uint8_t {
-        SKELETON = 0,
-        TRAVERSAL_BACKBONE = 1,
-        TRAVERSAL_ATTACHMENT = 2
     };
 
     /** Faces of a topology region reached by a selected bubble portal. */
@@ -142,18 +129,6 @@ public:
          * ROS adapter refresh at a lower publication rate.
          */
         bool snapshot_every_update{true};
-        /** Keep an evidence-validated topology chain along received odometry. */
-        bool retain_traversal_backbone{true};
-        /** Maximum chord length between consecutive recorded trajectory anchors. */
-        double traversal_sample_spacing{0.50};
-        /** Radius used to merge a confirmed anchor into the sampled skeleton. */
-        double traversal_attach_radius{3.0};
-        /** Bound per-worker validation work; pending segments are prioritized. */
-        std::size_t max_traversal_edges_per_update{128};
-        /** Bound asynchronous odometry buffering without silently joining a gap. */
-        std::size_t max_pending_traversal_samples{4096};
-        /** Avoid attaching an unbounded number of trajectory anchors to one core node. */
-        std::size_t max_traversal_attachments_per_node{4};
     };
 
     struct Query final : TopologyMapView {
@@ -193,8 +168,6 @@ public:
         std::uint8_t portal_mask{0};
         /** Portal faces not currently connected to another active region. */
         std::uint8_t expansion_mask{0};
-        /** This node is an anchor sampled from the vehicle's actual motion. */
-        bool traversal_anchor{false};
     };
 
     struct Edge {
@@ -203,7 +176,6 @@ public:
         double cost{0.0};
         rog_map::vec_Vec3f polyline;
         std::uint64_t validated_revision{0};
-        EdgeRole role{EdgeRole::SKELETON};
     };
 
     struct Snapshot {
@@ -226,18 +198,12 @@ public:
         std::size_t isolated_node_count{0};
         /** Number of raw connected components with at least one edge. */
         std::size_t connected_component_count{0};
-        std::size_t traversal_node_count{0};
-        std::size_t traversal_edge_count{0};
-        std::size_t pending_traversal_edge_count{0};
-        std::size_t invalid_traversal_edge_count{0};
-        std::size_t dropped_traversal_sample_count{0};
     };
 
     /** Immutable graph revision shared by real-time planning queries. */
     struct SearchNode {
         Node node;
         std::unordered_map<NodeId, double> neighbors;
-        std::unordered_map<NodeId, EdgeRole> edge_roles;
     };
 
     struct SearchSnapshot {
@@ -264,11 +230,6 @@ public:
         std::size_t pending_node_count{0};
         std::size_t isolated_node_count{0};
         std::size_t connected_component_count{0};
-        std::size_t traversal_node_count{0};
-        std::size_t traversal_edge_count{0};
-        std::size_t pending_traversal_edge_count{0};
-        std::size_t invalid_traversal_edge_count{0};
-        std::size_t dropped_traversal_sample_count{0};
         std::uint64_t revision{0};
     };
 
@@ -297,12 +258,6 @@ public:
                          double resolution);
     /** Seed not-yet-observed regions along a successful navigation route. */
     void observePlannedPath(const rog_map::vec_Vec3f &path);
-    /**
-     * Non-blocking odometry ingress.  This records vehicle motion only; the
-     * topology worker later validates it against the global map before it can
-     * become a routable edge.
-     */
-    void recordTraversalPose(const rog_map::Vec3f &position);
 
     /** Rebuild at most max_regions (or the configured budget when zero). */
     std::size_t update(const TopologyMapView &map_view,
@@ -354,42 +309,6 @@ private:
          * expansion message or a planning SearchSnapshot.
          */
         bool public_node{false};
-        bool traversal_anchor{false};
-    };
-
-    struct EdgeKey {
-        NodeId low{0};
-        NodeId high{0};
-
-        EdgeKey() = default;
-        EdgeKey(const NodeId first, const NodeId second)
-            : low(std::min(first, second)), high(std::max(first, second)) {}
-
-        bool operator==(const EdgeKey &other) const {
-            return low == other.low && high == other.high;
-        }
-    };
-
-    struct EdgeKeyHash {
-        std::size_t operator()(const EdgeKey &key) const {
-            std::size_t seed = std::hash<NodeId>{}(key.low);
-            seed ^= std::hash<NodeId>{}(key.high) + 0x9e3779b9U +
-                    (seed << 6U) + (seed >> 2U);
-            return seed;
-        }
-    };
-
-    enum class TraversalSegmentState : std::uint8_t {
-        PENDING = 0,
-        ACTIVE = 1,
-        INVALID = 2
-    };
-
-    struct TraversalSegment {
-        NodeId from{0};
-        NodeId to{0};
-        TraversalSegmentState state{TraversalSegmentState::PENDING};
-        bool validation_queued{true};
     };
 
     using NodeMap = std::unordered_map<NodeId, NodeRecord>;
@@ -436,17 +355,6 @@ private:
                        const TopologyMapView &map_view);
     void rebuildIncidentEdges(const std::vector<NodeId> &source_ids,
                               const TopologyMapView &map_view);
-    /** Consume odometry samples and reconcile their persistent map evidence. */
-    bool updateTraversalBackbone(const TopologyMapView &map_view);
-    /** Prioritize backbone spans geometrically affected by a rebuilt region. */
-    void queueTraversalSegmentsForRegion(const RegionKey &region);
-    /** Attach confirmed trajectory anchors to nearby sampled skeleton cores. */
-    bool attachTraversalAnchors(const TopologyMapView &map_view);
-    bool isTraversalEdgeLocked(NodeId from, NodeId to) const;
-    EdgeRole edgeRoleLocked(NodeId from, NodeId to) const;
-    std::size_t regularNeighborCountLocked(const NodeRecord &node) const;
-    std::size_t traversalAttachmentCountLocked(NodeId node_id) const;
-    void eraseTraversalEdgesForNodeLocked(NodeId node_id);
     /**
      * Keep every connected component public while filtering zero-degree
      * candidates at the publication boundary. Robot attachment belongs to a
@@ -459,7 +367,6 @@ private:
     mutable std::mutex dirty_mutex_;
     mutable std::mutex update_mutex_;
     mutable std::mutex focus_mutex_;
-    mutable std::mutex traversal_ingress_mutex_;
     Config config_;
     std::atomic<bool> active_{false};
     rog_map::Vec3f update_focus_{rog_map::Vec3f::Zero()};
@@ -482,20 +389,6 @@ private:
     std::unordered_map<RegionKey, rog_map::vec_Vec3f, RegionKeyHash>
         dirty_evidence_seeds_;
     std::unordered_set<RegionKey, RegionKeyHash> observed_route_regions_;
-    /** Pose samples await map evidence; only the topology worker consumes them. */
-    std::deque<rog_map::Vec3f, Eigen::aligned_allocator<rog_map::Vec3f>>
-        pending_traversal_poses_;
-    rog_map::Vec3f last_traversal_pose_{rog_map::Vec3f::Zero()};
-    bool has_last_traversal_pose_{false};
-    std::size_t dropped_traversal_sample_count_{0};
-    std::vector<NodeId> traversal_anchor_ids_;
-    std::vector<TraversalSegment> traversal_segments_;
-    std::unordered_map<RegionKey, std::vector<std::size_t>, RegionKeyHash>
-        traversal_segments_by_region_;
-    std::unordered_map<EdgeKey, EdgeRole, EdgeKeyHash> traversal_edges_;
-    std::size_t traversal_validation_cursor_{0};
-    std::size_t traversal_attachment_cursor_{0};
-    NodeId last_traversal_node_{0};
     NodeId next_node_id_{1};
     std::uint64_t revision_{0};
     std::size_t rebuilt_region_count_{0};
