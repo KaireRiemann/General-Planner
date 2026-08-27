@@ -238,6 +238,7 @@ exploration/target_preflight_horizon: 8.0
 exploration/target_preflight_soft_defer: 1.5
 exploration/target_empty_pool_escape_wait: 2.5
 exploration/target_empty_pool_unlock_count: 1
+exploration/target_no_progress_timeout: 12.0
 exploration/target_escape_min_progress: -1.0
 exploration/target_near_goal_remaining: 15.0
 exploration/target_spatial_blacklist_radius: 2.5

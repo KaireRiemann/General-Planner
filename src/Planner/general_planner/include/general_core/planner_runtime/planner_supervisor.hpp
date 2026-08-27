@@ -45,6 +45,12 @@ private:
   bool acceptNavigationGoalLocked(const geometry_msgs::PoseStamped &msg,
                                   bool preserve_message_height = false);
   bool acceptExplorationTriggerLocked(const geometry_msgs::PoseStamped &msg);
+  // A new destination is a controlled replacement, not an unsafe restart of
+  // the active target planner.  The old task is paused first; only its
+  // PAUSED acknowledgement may arm the new task id.
+  bool requestTargetExplorationReplacementLocked(
+      const geometry_msgs::PoseStamped &msg, const std::string &source);
+  void startPendingTargetExplorationReplacementLocked();
   bool forwardExplorationTargetGoalLocked(
       const geometry_msgs::PoseStamped &msg, const std::string &source);
   void explorationStatusCallback(const std_msgs::StringConstPtr &msg);
@@ -160,6 +166,9 @@ private:
   bool exploration_terminal_hold_locked_{false};
   geometry_msgs::PoseStamped exploration_target_goal_;
   bool have_exploration_target_goal_{false};
+  bool target_replacement_pending_{false};
+  geometry_msgs::PoseStamped pending_target_replacement_goal_;
+  std::string target_replacement_task_id_;
   std::string navigation_status_{"INIT"};
   std::uint64_t navigation_status_epoch_{0};
   std::uint64_t navigation_goal_sequence_{0};

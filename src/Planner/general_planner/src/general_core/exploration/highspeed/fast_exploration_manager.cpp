@@ -257,6 +257,9 @@ void FastExplorationManager::initialize(
   nh.param("exploration/target_near_goal_remaining",
            ep_->target_near_goal_remaining_,
            ep_->target_near_goal_remaining_);
+  nh.param("exploration/target_no_progress_timeout",
+           ep_->target_no_progress_timeout_,
+           ep_->target_no_progress_timeout_);
   nh.param("exploration/target_spatial_blacklist_radius",
            ep_->target_spatial_blacklist_radius_,
            ep_->target_spatial_blacklist_radius_);
@@ -309,6 +312,8 @@ void FastExplorationManager::initialize(
       std::clamp(ep_->target_escape_min_progress_, -20.0, 5.0);
   ep_->target_near_goal_remaining_ =
       std::clamp(ep_->target_near_goal_remaining_, 2.0, 80.0);
+  ep_->target_no_progress_timeout_ =
+      std::clamp(ep_->target_no_progress_timeout_, 2.0, 120.0);
   ep_->target_spatial_blacklist_radius_ =
       std::clamp(ep_->target_spatial_blacklist_radius_, 0.5, 20.0);
   ep_->target_spatial_blacklist_duration_ =
@@ -744,10 +749,39 @@ void FastExplorationManager::setMissionGoal(
   ed_->locked_goal_cluster_id_ = -1;
   ed_->locked_goal_coverage_id_ = 0;
   resetNormalGoalProgress();
+  resetTargetNoProgressWatchdog();
   target_topology_guidance_.reset();
   ROS_INFO_STREAM("[target exploration] set mission goal=("
                   << ed_->mission_goal_.transpose() << ") start=("
                   << ed_->mission_start_.transpose() << ")");
+}
+
+void FastExplorationManager::resetTargetNoProgressWatchdog() {
+  target_no_progress_since_ = ros::Time(0);
+  target_no_progress_reason_.clear();
+}
+
+int FastExplorationManager::targetNoProgressResult(
+    const std::string &reason) {
+  const ros::Time now = ros::Time::now();
+  if (target_no_progress_since_.isZero()) {
+    target_no_progress_since_ = now;
+    target_no_progress_reason_ = reason;
+  }
+  const double elapsed = (now - target_no_progress_since_).toSec();
+  const double timeout = ep_ ? ep_->target_no_progress_timeout_ : 12.0;
+  if (elapsed >= timeout) {
+    ROS_ERROR_STREAM("[target exploration] no executable progress for "
+                     << elapsed << "s (limit=" << timeout << "s): "
+                     << target_no_progress_reason_
+                     << "; mark target BLOCKED and retain topology");
+    return TARGET_UNREACHABLE;
+  }
+  ROS_WARN_STREAM_THROTTLE(
+      1.0, "[target exploration] no executable progress for " << elapsed
+           << "/" << timeout << "s: " << reason
+           << "; wait briefly for a local-map update");
+  return FAIL;
 }
 
 bool FastExplorationManager::setMissionMode(const std::string &mode) {
@@ -779,6 +813,7 @@ bool FastExplorationManager::setMissionMode(const std::string &mode) {
   ed_->locked_goal_cluster_id_ = -1;
   ed_->locked_goal_coverage_id_ = 0;
   resetNormalGoalProgress();
+  resetTargetNoProgressWatchdog();
   target_topology_guidance_.reset();
   if (!target) {
     ed_->has_mission_goal_ = false;
@@ -1526,7 +1561,7 @@ int FastExplorationManager::commitTargetDirectedTour(
                  << "); wait for map/forward frontier");
     planner_manager_->topo_graph_->removeNodes(viewpoints);
     planner_manager_->graph_visualizer_->vizTour({}, VizColor::RED, "global");
-    return FAIL;
+    return targetNoProgressResult("no non-regressing frontier bridge");
   }
 
   int executable_idx = -1;
@@ -1594,7 +1629,7 @@ int FastExplorationManager::commitTargetDirectedTour(
                  << " max_consecutive_fails=" << max_fails << "/" << fail_limit);
     planner_manager_->topo_graph_->removeNodes(viewpoints);
     planner_manager_->graph_visualizer_->vizTour({}, VizColor::RED, "global");
-    return FAIL;
+    return targetNoProgressResult("all candidate bridges failed local preflight");
   }
   if (executable_idx != chosen_idx) {
     ROS_INFO_STREAM_THROTTLE(
@@ -1682,6 +1717,7 @@ int FastExplorationManager::commitTargetDirectedTour(
                                                "global");
   updateGoalNode();
   target_empty_pool_since_ = ros::Time(0);
+  resetTargetNoProgressWatchdog();
   return SUCCEED;
 }
 
@@ -2460,6 +2496,7 @@ int FastExplorationManager::planGlobalPath(const Eigen::Vector3d &pos,
     return TARGET_UNREACHABLE;
   }
   if (target_directed && missionGoalReached(pos)) {
+    resetTargetNoProgressWatchdog();
     return TARGET_REACHED;
   }
   const double current_speed = vel.norm();
@@ -3150,7 +3187,7 @@ int FastExplorationManager::planGlobalPath(const Eigen::Vector3d &pos,
                       "retained topology");
       last_plan_empty_frontier_ = false;
       last_plan_no_reachable_ = false;
-      return FAIL;
+      return targetNoProgressResult("no executable frontier before mission goal");
     }
     last_plan_empty_frontier_ = active_clusters == 0 && reachable_clusters == 0;
     last_plan_no_reachable_ = active_clusters > 0 && reachable_clusters == 0;
@@ -3267,7 +3304,8 @@ int FastExplorationManager::planGlobalPath(const Eigen::Vector3d &pos,
                      "goal is currently disconnected; wait for topology/map "
                      "update before retrying");
         last_plan_empty_frontier_ = false;
-        return FAIL;
+        return targetNoProgressResult(
+            "every mission frontier bridge is disconnected");
       }
       const bool evaluated_frontend_only =
           !viewpoints.empty() &&
@@ -3424,6 +3462,7 @@ int FastExplorationManager::planGlobalPath(const Eigen::Vector3d &pos,
                      << " local_min_clearance="
                      << local_handoff_edge.min_clearance
                      << " goal=(" << mission->center_.transpose() << ")");
+        resetTargetNoProgressWatchdog();
         return SUCCEED;
       }
 
@@ -3458,7 +3497,8 @@ int FastExplorationManager::planGlobalPath(const Eigen::Vector3d &pos,
                                                      "global");
         last_plan_empty_frontier_ = false;
         last_plan_no_reachable_ = false;
-        return FAIL;
+        return targetNoProgressResult(
+            "mission handoff has no alternative frontier bridge");
       }
     }
   }

@@ -771,12 +771,35 @@ void PlannerSupervisor::clickGoalCallback(
 bool PlannerSupervisor::acceptExplorationTriggerLocked(
     const geometry_msgs::PoseStamped &msg) {
   if (!boot_complete_ || !isExplorationMode(status_.active_mode) ||
-      transition_active_ || !status_.ready_for_new_task) {
+      transition_active_) {
     ROS_WARN_THROTTLE(1.0,
                       "[planner_supervisor] drop exploration trigger: mode=%s "
-                      "boot=%d transition=%d ready=%d",
+                      "boot=%d transition=%d",
                       toString(status_.active_mode), boot_complete_,
-                      transition_active_, status_.ready_for_new_task);
+                      transition_active_);
+    return false;
+  }
+  const bool target_mode = isTargetExplorationMode(status_.active_mode);
+  if (target_mode && target_replacement_pending_) {
+    // Coalesce repeated RViz clicks during the controlled brake: the last
+    // target is the one armed after the old task reports PAUSED.
+    pending_target_replacement_goal_ = msg;
+    ROS_INFO_STREAM("[planner_supervisor] update pending target replacement "
+                    << "p=(" << msg.pose.position.x << ","
+                    << msg.pose.position.y << "," << msg.pose.position.z
+                    << ")");
+    return true;
+  }
+  if (target_mode && !status_.ready_for_new_task &&
+      (status_.phase == PlannerPhase::PLANNING ||
+       status_.phase == PlannerPhase::EXECUTING)) {
+    return requestTargetExplorationReplacementLocked(msg, "RViz/click trigger");
+  }
+  if (!status_.ready_for_new_task) {
+    ROS_WARN_THROTTLE(1.0,
+                      "[planner_supervisor] drop exploration trigger: mode=%s "
+                      "ready=0 phase=%s",
+                      toString(status_.active_mode), toString(status_.phase));
     return false;
   }
   // Only accept a new trigger while idle / waiting / finished. Ignore clicks
@@ -820,6 +843,89 @@ bool PlannerSupervisor::acceptExplorationTriggerLocked(
   return true;
 }
 
+bool PlannerSupervisor::requestTargetExplorationReplacementLocked(
+    const geometry_msgs::PoseStamped &msg, const std::string &source) {
+  if (!isTargetExplorationMode(status_.active_mode) || transition_active_ ||
+      status_.task_id.empty()) {
+    ROS_WARN_THROTTLE(
+        1.0,
+        "[planner_supervisor] cannot replace target task: mode=%s "
+        "transition=%d task_id_empty=%d",
+        toString(status_.active_mode), transition_active_, status_.task_id.empty());
+    return false;
+  }
+
+  pending_target_replacement_goal_ = msg;
+  if (target_replacement_pending_) {
+    return true;
+  }
+  target_replacement_pending_ = true;
+  target_replacement_task_id_ = status_.task_id;
+  // Do not let the periodic START retry resurrect the task being retired.
+  exploration_start_pending_ = false;
+  status_.phase = PlannerPhase::BRAKING;
+  status_.mode_state = ModeState::EXP_PAUSING;
+  status_.task_result = PlannerTaskResult::CANCELED;
+  status_.ready_for_new_task = false;
+  status_.stable_hover = false;
+  // Keep exploration authorized until its own controlled stop reaches PAUSED.
+  // Switching to a fixed hold command at this instant would cut the planned
+  // deceleration short while the vehicle may still be moving.
+  status_.command_owner = CommandOwner::EXPLORATION;
+  status_.reason = "target replacement requested; pausing active task";
+  publishExplorationCommand("PAUSE " + target_replacement_task_id_);
+  ROS_INFO_STREAM("[planner_supervisor] target replacement requested source="
+                  << source << " old_task=" << target_replacement_task_id_
+                  << " new_goal=(" << msg.pose.position.x << ","
+                  << msg.pose.position.y << "," << msg.pose.position.z
+                  << "); waiting for controlled PAUSED acknowledgement");
+  return true;
+}
+
+void PlannerSupervisor::startPendingTargetExplorationReplacementLocked() {
+  if (!target_replacement_pending_) {
+    return;
+  }
+  const geometry_msgs::PoseStamped replacement_goal =
+      pending_target_replacement_goal_;
+  target_replacement_pending_ = false;
+  target_replacement_task_id_.clear();
+
+  // Publish the target only once the old task is PAUSED, so the active
+  // trajectory cannot be re-scored against a new destination while braking.
+  if (!forwardExplorationTargetGoalLocked(replacement_goal,
+                                          "replacement after PAUSED")) {
+    status_.phase = PlannerPhase::FAILED;
+    status_.task_result = PlannerTaskResult::FAILED;
+    status_.ready_for_new_task = false;
+    status_.command_owner = CommandOwner::HOLD;
+    status_.reason = "target replacement rejected after PAUSED";
+    authorizeHoldAtCurrentOdomLocked("target replacement rejected");
+    return;
+  }
+
+  ++status_.task_epoch;
+  status_.task_id = makeTaskId(status_.active_mode);
+  status_.task_result = PlannerTaskResult::NONE;
+  terminal_exploration_task_id_.clear();
+  terminal_exploration_result_ = PlannerTaskResult::NONE;
+  exploration_terminal_hold_locked_ = false;
+  status_.phase = PlannerPhase::PLANNING;
+  status_.mode_state = ModeState::EXP_PLAN_TRAJ;
+  status_.ready_for_new_task = false;
+  status_.stable_hover = false;
+  status_.command_owner = CommandOwner::HOLD;
+  status_.reason = "target replacement accepted; starting new task";
+  gateway_.setAuthorizedOwner(CommandOwner::HOLD, status_.task_epoch);
+  authorizeHoldAtCurrentOdomLocked("target replacement handover");
+  requestExplorationStartLocked("target replacement after controlled pause");
+  ROS_INFO_STREAM("[planner_supervisor] target replacement START task_id="
+                  << status_.task_id << " p=("
+                  << replacement_goal.pose.position.x << ","
+                  << replacement_goal.pose.position.y << ","
+                  << replacement_goal.pose.position.z << ")");
+}
+
 bool PlannerSupervisor::forwardExplorationTargetGoalLocked(
     const geometry_msgs::PoseStamped &msg, const std::string &source) {
   if (!isTargetExplorationMode(status_.active_mode) || transition_active_) {
@@ -855,6 +961,14 @@ void PlannerSupervisor::explorationTargetGoalCallback(
     return;
   }
   std::lock_guard<std::mutex> lock(mutex_);
+  if (isTargetExplorationMode(status_.active_mode) && !transition_active_ &&
+      (target_replacement_pending_ ||
+       (!status_.ready_for_new_task &&
+        (status_.phase == PlannerPhase::PLANNING ||
+         status_.phase == PlannerPhase::EXECUTING)))) {
+    requestTargetExplorationReplacementLocked(*msg, "dedicated target topic");
+    return;
+  }
   forwardExplorationTargetGoalLocked(*msg, "dedicated target topic");
 }
 
@@ -884,6 +998,15 @@ void PlannerSupervisor::explorationStatusCallback(
   exploration_status_ = state;
   exploration_status_task_id_ = task_id;
   if (isExplorationMode(status_.active_mode) && !transition_active_) {
+    if (target_replacement_pending_) {
+      // All RUNNING/PAUSING reports still refer to the task that is braking.
+      // Its PAUSED acknowledgement is the sole safe edge that may create the
+      // new task id and publish the replacement target.
+      if (state == "PAUSED" && task_id == target_replacement_task_id_) {
+        startPendingTargetExplorationReplacementLocked();
+      }
+      return;
+    }
     status_.mode_state = modeStateFromExplorationString(state);
     if (state == "RUNNING" || state == "PLAN_TRAJ" || state == "EXEC_TRAJ" ||
         state == "REORIENT" || state == "CAUTION") {

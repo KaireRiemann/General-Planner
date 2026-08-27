@@ -208,6 +208,8 @@ private:
   ros::Time mission_goal_direct_retry_after_;
   ros::Time target_empty_pool_since_;
   ros::Time last_target_pool_unlock_time_;
+  ros::Time target_no_progress_since_;
+  std::string target_no_progress_reason_;
   double coverage_executable_candidate_max_speed_{0.50};
   bool coverage_moving_handoff_enable_{false};
   double coverage_route_rank_weight_{0.15};
@@ -257,6 +259,12 @@ private:
       vector<TopoNode::Ptr> &viewpoint_reachable,
       vector<double> &viewpoint_reachable_distance,
       vector<EdgeSafetyCost> &viewpoint_reachable_edges);
+  // A target may wait briefly for a new local-map observation, but a
+  // stationary dead-end must eventually become BLOCKED instead of retaining
+  // the task forever.  The FSM preserves the accumulated topology on that
+  // terminal outcome.
+  int targetNoProgressResult(const std::string &reason);
+  void resetTargetNoProgressWatchdog();
   bool updateNormalGoalProgress(
       const TopoNode::Ptr &viewpoint, double route_cost,
       const Eigen::Vector3d &robot_position,

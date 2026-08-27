@@ -205,6 +205,11 @@ struct ExplorationParam {
   double target_escape_min_progress_{-1.0};
   // Inside this remaining distance, only non-regressing bridges may be used.
   double target_near_goal_remaining_{15.0};
+  // A target task may wait briefly for the local map to expose a bridge, but
+  // it must not retain command ownership and rebuild topology indefinitely
+  // when the vehicle is already stationary.  Expiry reports BLOCKED while
+  // preserving the accumulated map for the next target.
+  double target_no_progress_timeout_{12.0};
   // Cluster IDs churn; blacklist failed bridge centers by geometry.
   double target_spatial_blacklist_radius_{2.5};
   double target_spatial_blacklist_duration_{8.0};
