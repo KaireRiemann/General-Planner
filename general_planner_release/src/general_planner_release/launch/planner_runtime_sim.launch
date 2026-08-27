@@ -24,7 +24,11 @@
   <arg name="state2state_rviz_config" default="$(find general_planner_release)/config/planner_runtime_state2state.rviz" />
   <arg name="odom_topic" default="/lidar_slam/odom" />
   <arg name="cloud_topic" default="/cloud_registered" />
+  <!-- Marsim stamps its cloud and odometry on one ROS clock, so retain the
+       original synchronised ingestion path despite the Unity base defaults. -->
+  <arg name="cloud_odom_mode" default="approximate_sync" />
   <arg name="coverage_guidance_mode" default="off" />
+  <arg name="source_startup_grace_duration" default="2.0" />
   <arg name="source_timeout_abort_duration" default="1.0" />
 
   <include file="$(find general_planner_release)/launch/planner_runtime.launch">
@@ -51,7 +55,10 @@
     <arg name="state2state_rviz_config" value="$(arg state2state_rviz_config)" />
     <arg name="odom_topic" value="$(arg odom_topic)" />
     <arg name="cloud_topic" value="$(arg cloud_topic)" />
+    <arg name="cloud_odom_mode" value="$(arg cloud_odom_mode)" />
     <arg name="coverage_guidance_mode" value="$(arg coverage_guidance_mode)" />
+    <arg name="source_startup_grace_duration"
+         value="$(arg source_startup_grace_duration)" />
     <arg name="source_timeout_abort_duration"
          value="$(arg source_timeout_abort_duration)" />
   </include>

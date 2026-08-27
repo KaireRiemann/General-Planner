@@ -9,6 +9,7 @@
 #include <general_core/planner_runtime/planner_command_gateway.hpp>
 #include <general_core/planner_runtime/global_map_runtime.hpp>
 #include <general_core/planner_runtime/planner_status.hpp>
+#include <general_core/planner_runtime/topology_maintenance_policy.hpp>
 #include <general_planner/ExplorationTaskRequest.h>
 #include <general_planner/PlannerModeRequest.h>
 #include <general_planner/PlannerStatus.h>
@@ -23,9 +24,11 @@ namespace general_planner::planner_runtime {
 class PlannerSupervisor {
 public:
   using MapStatusProvider = std::function<GlobalMapStatus()>;
+  using TopologyMaintenanceSetter = std::function<void(bool)>;
 
   PlannerSupervisor(ros::NodeHandle &nh, PlannerCommandGateway &gateway,
-                    MapStatusProvider map_status_provider = {});
+                    MapStatusProvider map_status_provider = {},
+                    TopologyMaintenanceSetter topology_maintenance_setter = {});
 
 private:
   void modeRequestCallback(const general_planner::PlannerModeRequestConstPtr &msg);
@@ -86,10 +89,12 @@ private:
   bool hoverConditionMetLocked() const;
   std::string makeTaskId(PlannerMode mode) const;
   void updatePhaseFromActiveModeLocked();
+  void syncTopologyMaintenanceLocked();
 
   ros::NodeHandle nh_;
   PlannerCommandGateway &gateway_;
   MapStatusProvider map_status_provider_;
+  TopologyMaintenanceSetter topology_maintenance_setter_;
 
   ros::Subscriber mode_request_sub_;
   ros::Subscriber mode_request_text_sub_;
@@ -185,7 +190,9 @@ private:
   double max_odom_age_{0.20};
   double status_rate_{10.0};
   double exploration_start_retry_period_{0.5};
+  double source_startup_grace_duration_{2.0};
   double source_timeout_abort_duration_{1.0};
+  bool maintain_topology_during_stable_hold_{false};
   std::uint64_t next_text_request_id_{1};
   std::string runtime_session_id_;
 };

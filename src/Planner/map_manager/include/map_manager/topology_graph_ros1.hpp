@@ -2,6 +2,7 @@
 
 #ifdef USE_ROS1
 
+#include <atomic>
 #include <condition_variable>
 #include <functional>
 #include <memory>
@@ -35,6 +36,16 @@ public:
     ~TopologyGraphROS1();
 
     bool enabled() const { return enabled_; }
+    /**
+     * Suspend/resume graph mutation without suspending map fusion. Requests
+     * received while suspended are intentionally discarded: the next active
+     * map fusion creates a fresh, coalesced maintenance request.
+     */
+    void setMaintenanceEnabled(bool enabled);
+    bool maintenanceEnabled() const
+    {
+        return maintenance_enabled_.load(std::memory_order_acquire);
+    }
     /** Thread-safe, coalesced request after a successful map fusion. */
     void updateAndPublish();
 
@@ -55,6 +66,7 @@ private:
     std::thread worker_;
     bool update_requested_{false};
     bool stopping_{false};
+    std::atomic<bool> maintenance_enabled_{true};
     std::string frame_id_{"world"};
     bool enabled_{false};
     double node_scale_{0.22};

@@ -25,6 +25,9 @@ struct CommandSourceHealth {
   bool source_received_since_authorization{false};
   bool source_fresh{false};
   bool timeout_hold_active{false};
+  // This remains finite even before a source emits its first command. It is
+  // the only safe clock for the authorization-to-first-command grace window.
+  double authorization_age_seconds{0.0};
   double source_age_seconds{std::numeric_limits<double>::infinity()};
 };
 

@@ -156,6 +156,9 @@ CommandSourceHealth PlannerCommandGateway::commandSourceHealth() const {
   CommandSourceHealth health;
   health.authorized_owner = authorized_owner_;
   health.timeout_hold_active = source_timeout_hold_active_;
+  const ros::WallTime now = ros::WallTime::now();
+  health.authorization_age_seconds =
+      std::max(0.0, (now - authorization_time_).toSec());
 
   const bool navigation = authorized_owner_ == CommandOwner::STATE2STATE;
   const bool exploration = authorized_owner_ == CommandOwner::EXPLORATION;
@@ -174,8 +177,7 @@ CommandSourceHealth PlannerCommandGateway::commandSourceHealth() const {
     return health;
   }
 
-  health.source_age_seconds =
-      std::max(0.0, (ros::WallTime::now() - received).toSec());
+  health.source_age_seconds = std::max(0.0, (now - received).toSec());
   health.source_fresh = health.source_age_seconds <= command_timeout_;
   return health;
 }
@@ -286,6 +288,7 @@ void PlannerCommandGateway::timerCallback(const ros::WallTimerEvent &) {
   bool publish = false;
   bool entered_source_timeout_hold = false;
   bool resumed_source_after_timeout = false;
+  bool awaiting_first_source_command = false;
   CommandOwner event_owner = CommandOwner::HOLD;
   double source_age = 0.0;
   {
@@ -300,6 +303,10 @@ void PlannerCommandGateway::timerCallback(const ros::WallTimerEvent &) {
     const bool exploration_fresh =
         have_exploration_cmd_ && exploration_rx_time_ >= authorization_time_ &&
         (now - exploration_rx_time_).toSec() <= command_timeout_;
+    const bool navigation_received_since_authorization =
+        have_navigation_cmd_ && navigation_rx_time_ >= authorization_time_;
+    const bool exploration_received_since_authorization =
+        have_exploration_cmd_ && exploration_rx_time_ >= authorization_time_;
 
     const GatewayOutputMode output_mode = selectGatewayOutputMode(
         authorized_owner_, navigation_fresh, exploration_fresh);
@@ -325,11 +332,14 @@ void PlannerCommandGateway::timerCallback(const ros::WallTimerEvent &) {
       entered_source_timeout_hold = !source_timeout_hold_active_;
       event_owner = authorized_owner_;
       if (authorized_owner_ == CommandOwner::STATE2STATE &&
-          have_navigation_cmd_) {
+          navigation_received_since_authorization) {
         source_age = (now - navigation_rx_time_).toSec();
       } else if (authorized_owner_ == CommandOwner::EXPLORATION &&
-                 have_exploration_cmd_) {
+                 exploration_received_since_authorization) {
         source_age = (now - exploration_rx_time_).toSec();
+      } else {
+        awaiting_first_source_command = true;
+        source_age = std::max(0.0, (now - authorization_time_).toSec());
       }
       output = makeSourceTimeoutHoldCommandLocked(authorized_owner_);
       publish = true;
@@ -344,7 +354,11 @@ void PlannerCommandGateway::timerCallback(const ros::WallTimerEvent &) {
   }
   if (entered_source_timeout_hold) {
     ROS_WARN_STREAM("[planner_command_gateway] source timeout: owner="
-                    << toString(event_owner) << " age=" << source_age
+                    << toString(event_owner)
+                    << (awaiting_first_source_command
+                            ? " awaiting first command for="
+                            : " stale command age=")
+                    << source_age
                     << "s; holding current odometry until source resumes");
   } else if (resumed_source_after_timeout) {
     ROS_INFO_STREAM("[planner_command_gateway] source resumed safely: owner="

@@ -4,6 +4,10 @@
 # skeleton, not a second dense free-space map.
 global_topology:
   enabled: true
+  # Terminal verified HOLD keeps fusing odometry/cloud into the world map but
+  # freezes graph mutation. This prevents a stale dirty-region backlog from
+  # looking like random new topology while the vehicle is safely stopped.
+  maintain_during_stable_hold: false
   # Keep a maximum-clearance core and boundary portals for each observed-free
   # component. Nodes and edges remain collision-validated, while open rooms
   # need only a few representatives instead of one node per 0.45 m cell.

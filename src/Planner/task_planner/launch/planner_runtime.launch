@@ -3,7 +3,9 @@
        MapManager, BoundaryMap and global topology worker.  Exploration and
        state2state are in-process adapters; switching modes never kills a
        planner or recreates a map. -->
-  <arg name="marsim" default="true" />
+  <!-- The base runtime consumes external odometry/cloud by default.  A
+       perfect_drone_sim run must explicitly select marsim:=true. -->
+  <arg name="marsim" default="false" />
   <arg name="rviz" default="true" />
   <arg name="auto_rviz_switch" default="true" />
   <arg name="traj_server" default="true" />
@@ -43,7 +45,11 @@
   <!-- Optional arena-specific overrides, applied after the base exploration
        profile.  This keeps the runtime wiring identical while allowing a
        simulator PCD to supply its own bounds and sensor model. -->
-  <arg name="exploration_overlay_config" default="" />
+  <!-- Unity's ROS-TCP LiDAR is a level 360-degree, 60 m sensor in `world`.
+       The overlay replaces the tilted Mid360 viewpoint assumptions in the
+       house profile.  A manual Marsim run overrides this with an empty path. -->
+  <arg name="exploration_overlay_config"
+       default="$(find general_planner)/config/exploration_unity_overlay.yaml" />
   <!-- Must keep rog_map/ros_callback/enable=false: GlobalMapRuntime is the
        only cloud/odom fusion owner. -->
   <arg name="rog_map_config"
@@ -67,7 +73,10 @@
   <arg name="cloud_subscriber_queue" default="1" />
   <arg name="odom_subscriber_queue" default="50" />
   <arg name="sync_queue" default="20" />
-  <arg name="cloud_odom_mode" default="approximate_sync" />
+  <!-- Unity publishes point clouds at 10 Hz through ROS-TCP; pair each cloud
+       with the bridge's latest 100 Hz ROS-time odometry instead of enforcing
+       hardware-style header synchronisation. -->
+  <arg name="cloud_odom_mode" default="latest_odom" />
   <arg name="latest_odom_timeout" default="0.5" />
   <arg name="max_cloud_age" default="0.5" />
   <arg name="heartbeat_timeout" default="1.5" />

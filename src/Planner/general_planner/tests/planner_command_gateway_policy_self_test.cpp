@@ -1,11 +1,17 @@
 #include <general_core/planner_runtime/planner_command_gateway_policy.hpp>
+#include <general_core/planner_runtime/topology_maintenance_policy.hpp>
 
 #include <iostream>
+#include <limits>
 #include <stdexcept>
 
 using general_planner::planner_runtime::CommandOwner;
 using general_planner::planner_runtime::GatewayOutputMode;
+using general_planner::planner_runtime::PlannerMode;
+using general_planner::planner_runtime::PlannerPhase;
 using general_planner::planner_runtime::selectGatewayOutputMode;
+using general_planner::planner_runtime::shouldAbortCommandSource;
+using general_planner::planner_runtime::shouldMaintainTopology;
 
 namespace {
 void expect(const bool ok, const char *message) {
@@ -34,6 +40,44 @@ int main() {
   expect(selectGatewayOutputMode(CommandOwner::GATE, true, true) ==
              GatewayOutputMode::EXTERNAL_GATE_SUPPRESSED,
          "gate must suppress every runtime position-command source");
+
+  // The authorization-to-first-command interval must not be interpreted as
+  // an infinite-age stale source. The gateway still publishes a safe fallback
+  // during this interval; only the supervisor task retirement is delayed.
+  expect(!shouldAbortCommandSource(
+             true, false, false, std::numeric_limits<double>::infinity(),
+             0.01, 2.0, 1.0),
+         "first-command grace must prevent immediate task abort");
+  expect(shouldAbortCommandSource(
+             true, false, false, std::numeric_limits<double>::infinity(),
+             2.01, 2.0, 1.0),
+         "missing first command must abort after its bounded grace");
+  expect(!shouldAbortCommandSource(true, true, true, 0.01, 3.0, 2.0, 1.0),
+         "fresh command must not abort");
+  expect(shouldAbortCommandSource(true, true, false, 1.01, 3.0, 2.0, 1.0),
+         "received command source must abort after stale timeout");
+
+  expect(shouldMaintainTopology(PlannerMode::STATE2STATE,
+                                PlannerPhase::EXECUTING, false, false),
+         "state2state execution must maintain the persistent graph");
+  expect(shouldMaintainTopology(PlannerMode::GATE,
+                                PlannerPhase::EXECUTING, false, false),
+         "external gate execution must retain topology maintenance");
+  expect(!shouldMaintainTopology(PlannerMode::STATE2STATE,
+                                 PlannerPhase::HOLD_VERIFY, true, false),
+         "handover must freeze topology before verified hold");
+  expect(!shouldMaintainTopology(PlannerMode::HOLD,
+                                 PlannerPhase::STABLE_HOLD, false, false),
+         "terminal hold must freeze topology by default");
+  expect(!shouldMaintainTopology(PlannerMode::GATE,
+                                 PlannerPhase::STABLE_HOLD, false, false),
+         "gate completion stable hold must freeze topology by default");
+  expect(shouldMaintainTopology(PlannerMode::HOLD,
+                                PlannerPhase::STABLE_HOLD, false, true),
+         "explicit stable-hold opt-in must be honored");
+  expect(!shouldMaintainTopology(PlannerMode::EMERGENCY_STOP,
+                                 PlannerPhase::EXECUTING, false, true),
+         "emergency stop must never mutate topology");
 
   std::cout << "planner_command_gateway_policy_self_test passed\n";
   return 0;

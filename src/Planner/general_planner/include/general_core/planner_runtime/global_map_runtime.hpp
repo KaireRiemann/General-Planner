@@ -83,6 +83,13 @@ class GlobalMapRuntime {
   void addCloudConsumer(CloudConsumer consumer);
   void addOdomConsumer(OdomConsumer consumer);
 
+  /**
+   * Freeze/resume only persistent-topology mutation. Raw odometry/cloud
+   * fusion and map revision publication remain active in both states.
+   */
+  void setTopologyMaintenanceEnabled(bool enabled);
+  bool topologyMaintenanceEnabled() const;
+
   GlobalMapStatus status() const;
 
  private:

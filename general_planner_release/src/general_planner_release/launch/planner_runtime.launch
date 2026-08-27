@@ -3,7 +3,10 @@
        planner_runtime_node alive for the entire mission: it owns the shared
        ROG/MapManager/global-topology resources and composes exploration plus
        state2state adapters in-process. -->
-  <arg name="marsim" default="true" />
+  <!-- The base runtime consumes external odometry/cloud by default.  Keep
+       perfect_drone_sim exclusively behind the simulator convenience entry
+       (planner_runtime_sim.launch) or an explicit marsim:=true override. -->
+  <arg name="marsim" default="false" />
   <arg name="rviz" default="true" />
   <arg name="auto_rviz_switch" default="true" />
   <arg name="traj_server" default="true" />
@@ -27,12 +30,18 @@
   <!-- A scene overlay is intentionally optional.  planner_runtime_sim.launch
        selects the same level-360 profile as task_planner's
        exploration_navigation.launch; real deployments choose their own. -->
-  <arg name="exploration_overlay_config" default="" />
+  <!-- Unity's ROS-TCP LiDAR is a level 360-degree, 60 m sensor in `world`.
+       The overlay replaces the tilted Mid360 viewpoint assumptions in the
+       house profile; Marsim's dedicated wrapper passes an empty override. -->
+  <arg name="exploration_overlay_config"
+       default="$(find general_planner_release)/config/exploration_unity_overlay.yaml" />
   <arg name="rog_map_config" default="$(find general_planner_release)/config/exploration_rog_map.yaml" />
   <arg name="global_topology_config" default="$(find general_planner_release)/config/global_topology.yaml" />
   <arg name="rviz_config" default="$(find general_planner_release)/config/planner_runtime_exploration.rviz" />
   <arg name="exploration_rviz_config" default="$(find general_planner_release)/config/planner_runtime_exploration.rviz" />
   <arg name="state2state_rviz_config" default="$(find general_planner_release)/config/planner_runtime_state2state.rviz" />
+  <!-- Use the bridge output, not Unity's raw /unity_odom.  The bridge supplies
+       ROS-time stamps and the commanded velocity needed by the planner. -->
   <arg name="odom_topic" default="/lidar_slam/odom" />
   <arg name="cloud_topic" default="/cloud_registered" />
   <arg name="fsm_replan_time" default="0.25" />
@@ -42,10 +51,17 @@
   <arg name="cloud_subscriber_queue" default="1" />
   <arg name="odom_subscriber_queue" default="50" />
   <arg name="sync_queue" default="20" />
-  <arg name="cloud_odom_mode" default="approximate_sync" />
+  <!-- Unity publishes point clouds at 10 Hz through ROS-TCP; pair each cloud
+       with the bridge's latest 100 Hz ROS-time odometry instead of enforcing
+       hardware-style header synchronisation. -->
+  <arg name="cloud_odom_mode" default="latest_odom" />
   <arg name="latest_odom_timeout" default="0.5" />
   <arg name="max_cloud_age" default="0.5" />
   <arg name="heartbeat_timeout" default="1.5" />
+  <!-- Lets a newly authorized planner publish its first command before task
+       supervision considers it stalled. Gateway fallback HOLD remains active
+       throughout this window. -->
+  <arg name="source_startup_grace_duration" default="2.0" />
   <arg name="source_timeout_abort_duration" default="1.0" />
   <arg name="task_control_enable" default="true" />
   <arg name="coverage_guidance_mode"
@@ -123,8 +139,11 @@
     <param name="hover_yaw_rate_threshold" value="0.10" type="double" />
     <param name="hover_hold_duration" value="0.50" type="double" />
     <param name="max_odom_age" value="0.20" type="double" />
-    <!-- Gateway holds at the current pose after 0.30 s.  If an adapter still
-         cannot resume, retire that task after this bounded wall-clock delay. -->
+    <!-- Gateway holds at the current pose after 0.30 s. A new source gets a
+         bounded first-command grace; a source that had emitted commands is
+         still retired after source_timeout_abort_duration. -->
+    <param name="source_startup_grace_duration"
+           value="$(arg source_startup_grace_duration)" type="double" />
     <param name="source_timeout_abort_duration"
            value="$(arg source_timeout_abort_duration)" type="double" />
 

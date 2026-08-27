@@ -131,6 +131,17 @@ void GlobalMapRuntime::addOdomConsumer(OdomConsumer consumer) {
   odom_consumers_.push_back(std::move(consumer));
 }
 
+void GlobalMapRuntime::setTopologyMaintenanceEnabled(const bool enabled) {
+  if (!topology_maintainer_) {
+    return;
+  }
+  topology_maintainer_->setMaintenanceEnabled(enabled);
+}
+
+bool GlobalMapRuntime::topologyMaintenanceEnabled() const {
+  return topology_maintainer_ && topology_maintainer_->maintenanceEnabled();
+}
+
 void GlobalMapRuntime::odomCallback(const nav_msgs::OdometryConstPtr &msg) {
   if (!msg || !context_ || !context_->rog_map) {
     return;
@@ -191,15 +202,14 @@ void GlobalMapRuntime::cloudOdomCallback(
   }
   const MapManager::UpdateSnapshot update =
       context_->map_manager->updateMap(rog_cloud, pose);
-  // Topology is a world-lifetime map product, not a navigation-mode timer
-  // side effect.  Request maintenance only after MapManager has stored this
-  // accepted fusion's revision and dirty bounds, so the worker can seed from
-  // valid odometry and consume the new free-space evidence immediately.
-  // The request is coalesced and the worker remains rate-limited.
-  if (topology_maintainer_) {
+  // Topology graph mutation is independently gated by the supervisor. The
+  // accepted fusion above always updates the safety/world map; during a
+  // verified HOLD it only accumulates fresh map evidence and cannot grow the
+  // visible topological graph from a dirty-region backlog.
+  if (topology_maintainer_ && topologyMaintenanceEnabled()) {
     topology_maintainer_->updateAndPublish();
+    publishTopologyExpansionSnapshot();
   }
-  publishTopologyExpansionSnapshot();
   context_->sensor_revision.fetch_add(1, std::memory_order_acq_rel);
 
   {
@@ -286,7 +296,9 @@ void GlobalMapRuntime::publishTopologyExpansionSnapshot() {
 
 void GlobalMapRuntime::topologyExpansionTimerCallback(
     const ros::WallTimerEvent &) {
-  publishTopologyExpansionSnapshot();
+  if (topologyMaintenanceEnabled()) {
+    publishTopologyExpansionSnapshot();
+  }
 }
 
 GlobalMapStatus GlobalMapRuntime::status() const {

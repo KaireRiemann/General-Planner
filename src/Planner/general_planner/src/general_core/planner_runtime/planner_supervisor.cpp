@@ -20,9 +20,12 @@ double yawFromQuaternion(const geometry_msgs::Quaternion &q) {
 
 PlannerSupervisor::PlannerSupervisor(ros::NodeHandle &nh,
                                      PlannerCommandGateway &gateway,
-                                     MapStatusProvider map_status_provider)
+                                     MapStatusProvider map_status_provider,
+                                     TopologyMaintenanceSetter
+                                         topology_maintenance_setter)
     : nh_(nh), gateway_(gateway),
-      map_status_provider_(std::move(map_status_provider)) {
+      map_status_provider_(std::move(map_status_provider)),
+      topology_maintenance_setter_(std::move(topology_maintenance_setter)) {
   std::string initial_mode_text = "hold";
   nh_.param<std::string>("initial_mode", initial_mode_text, initial_mode_text);
   PlannerMode parsed_initial = PlannerMode::HOLD;
@@ -84,6 +87,10 @@ PlannerSupervisor::PlannerSupervisor(ros::NodeHandle &nh,
             0.5);
   nh_.param("source_timeout_abort_duration", source_timeout_abort_duration_,
             1.0);
+  nh_.param("source_startup_grace_duration", source_startup_grace_duration_,
+            2.0);
+  nh_.param("global_topology/maintain_during_stable_hold",
+            maintain_topology_during_stable_hold_, false);
   hover_speed_threshold_ = std::clamp(hover_speed_threshold_, 0.01, 1.0);
   hover_yaw_rate_threshold_ = std::clamp(hover_yaw_rate_threshold_, 0.01, 1.0);
   hover_hold_duration_ = std::clamp(hover_hold_duration_, 0.1, 5.0);
@@ -93,6 +100,8 @@ PlannerSupervisor::PlannerSupervisor(ros::NodeHandle &nh,
       std::clamp(exploration_start_retry_period_, 0.1, 2.0);
   source_timeout_abort_duration_ =
       std::clamp(source_timeout_abort_duration_, 0.50, 10.0);
+  source_startup_grace_duration_ =
+      std::clamp(source_startup_grace_duration_, 0.50, 10.0);
 
   status_.active_mode = PlannerMode::HOLD;
   status_.requested_mode = initial_mode_;
@@ -185,6 +194,7 @@ PlannerSupervisor::PlannerSupervisor(ros::NodeHandle &nh,
                            &PlannerSupervisor::timerCallback, this);
 
   gateway_.setAuthorizedOwner(CommandOwner::HOLD, status_.task_epoch);
+  syncTopologyMaintenanceLocked();
   // Keep navigation disarmed until an explicit state2state activation.
   if (navigation_enabled_ && !serial_handover_) {
     publishNavigationCommand("CLEAR 0");
@@ -203,6 +213,10 @@ PlannerSupervisor::PlannerSupervisor(ros::NodeHandle &nh,
                   << " task_request=" << exploration_task_request_topic_
                   << " source_timeout_abort="
                   << source_timeout_abort_duration_ << "s"
+                  << " source_startup_grace="
+                  << source_startup_grace_duration_ << "s"
+                  << " topology_during_stable_hold="
+                  << (maintain_topology_during_stable_hold_ ? "true" : "false")
                   << " status=/planner/status");
   runtime_session_id_ = std::to_string(ros::WallTime::now().toNSec());
 }
@@ -423,6 +437,7 @@ void PlannerSupervisor::beginTransition(const PlannerMode target,
   status_.command_owner = CommandOwner::HOLD;
   status_.phase = PlannerPhase::HOLD_VERIFY;
   status_.reason = "hold verify for " + std::string(toString(target));
+  syncTopologyMaintenanceLocked();
 }
 
 void PlannerSupervisor::requestAdapterStop(const PlannerMode mode,
@@ -461,6 +476,7 @@ void PlannerSupervisor::enterStableHold(const std::string &reason,
   } else {
     gateway_.setAuthorizedOwner(CommandOwner::HOLD, status_.task_epoch);
   }
+  syncTopologyMaintenanceLocked();
 }
 
 void PlannerSupervisor::activateMode(const PlannerMode mode,
@@ -1149,7 +1165,8 @@ void PlannerSupervisor::failStaleCommandSourceLocked(
   const PlannerMode failed_mode = status_.active_mode;
   const std::string detail = health.source_received_since_authorization
       ? "age=" + std::to_string(health.source_age_seconds) + "s"
-      : "no command received after authorization";
+      : "no command received within startup grace=" +
+            std::to_string(source_startup_grace_duration_) + "s";
   ROS_ERROR_STREAM("[planner_supervisor] command source stalled: owner="
                    << toString(health.authorized_owner) << " " << detail
                    << "; transition to verified hold");
@@ -1469,8 +1486,13 @@ void PlannerSupervisor::timerCallback(const ros::TimerEvent &) {
           (active_owner == CommandOwner::STATE2STATE ||
            active_owner == CommandOwner::EXPLORATION) &&
           command_health.authorized_owner == active_owner &&
-          !command_health.source_fresh &&
-          command_health.source_age_seconds >= source_timeout_abort_duration_;
+          shouldAbortCommandSource(
+              command_health.source_expected,
+              command_health.source_received_since_authorization,
+              command_health.source_fresh,
+              command_health.source_age_seconds,
+              command_health.authorization_age_seconds,
+              source_startup_grace_duration_, source_timeout_abort_duration_);
       if (source_timeout_abort) {
         failStaleCommandSourceLocked(command_health);
       }
@@ -1565,9 +1587,19 @@ void PlannerSupervisor::timerCallback(const ros::TimerEvent &) {
       }
       activateMode(boot_activate_mode, "boot complete");
     }
+    syncTopologyMaintenanceLocked();
   }
 
   publishStatus();
+}
+
+void PlannerSupervisor::syncTopologyMaintenanceLocked() {
+  if (!topology_maintenance_setter_) {
+    return;
+  }
+  topology_maintenance_setter_(shouldMaintainTopology(
+      status_.active_mode, status_.phase, transition_active_,
+      maintain_topology_during_stable_hold_));
 }
 
 void PlannerSupervisor::updatePhaseFromActiveModeLocked() {

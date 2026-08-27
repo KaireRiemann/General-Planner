@@ -1,0 +1,21 @@
+# Unity UAV-Diff / ROS-TCP sensor contract.
+#
+# The Unity bridge republishes command-derived, ROS-time odometry on
+# /lidar_slam/odom and rewrites Unity cloud stamps before publishing
+# /cloud_registered.  Do not use Unity's raw /unity_odom here: its timestamp
+# is relative to Unity Play time and it does not contain a velocity estimate.
+odometry_topic: /lidar_slam/odom
+cloud_topic: /cloud_registered
+fsm/cloud_odom_mode: latest_odom
+fsm/latest_odom_timeout: 0.5
+
+# Assets/RobotSensors/Lidar3D.cs emits a level 360-degree scan in the drone
+# body orientation: 60 m range and vertical rays from -30 to +30 degrees.
+# Point coordinates are already in ROS `world` through the Unity X,Z,Y
+# conversion, so there is no Mid360 mounting pitch to compensate here.
+lidar_perception/fov_up: 30.0
+lidar_perception/fov_down: -30.0
+lidar_perception/lidar_pitch: 0.0
+lidar_perception/fov_viewpoint_up: 28.0
+lidar_perception/fov_viewpoint_down: -28.0
+lidar_perception/max_ray_length: 60.0

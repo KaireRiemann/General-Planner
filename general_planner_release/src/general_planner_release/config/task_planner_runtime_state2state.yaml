@@ -26,10 +26,6 @@ fsm:
   tracking_prediction_max_time: 0.03
   task_timeout: 1.0
   replan_rate: 15.0
-  # A replan runs on its own worker queue.  If it is still blocked after the
-  # already committed backup has reached its stationary endpoint, retire the
-  # task through the supervisor instead of starving the command source.
-  state2state_replan_watchdog_timeout: 2.0
   cmd_topic: "/planning/pos_cmd"
   mpc_cmd_topic: "/planning_cmd/poly_traj"
   timer_en: true

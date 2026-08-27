@@ -257,7 +257,10 @@ int main(int argc, char **argv) {
     general_planner::planner_runtime::PlannerCommandGateway gateway(gateway_nh);
     general_planner::planner_runtime::PlannerSupervisor supervisor(
         supervisor_nh, gateway,
-        [global_map_runtime]() { return global_map_runtime->status(); });
+        [global_map_runtime]() { return global_map_runtime->status(); },
+        [global_map_runtime](const bool enabled) {
+          global_map_runtime->setTopologyMaintenanceEnabled(enabled);
+        });
 
     ROS_INFO("[M2 runtime] composed exploration + state2state adapters share "
              "one GlobalMapRuntime; queues=world,navigation,nav_command,"

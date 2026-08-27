@@ -137,8 +137,31 @@ void TopologyGraphROS1::timerCallback(const ros::TimerEvent &) {
     updateAndPublish();
 }
 
-void TopologyGraphROS1::updateAndPublish() {
+void TopologyGraphROS1::setMaintenanceEnabled(const bool enabled) {
     if (!enabled_) {
+        return;
+    }
+    const bool previous = maintenance_enabled_.exchange(
+        enabled, std::memory_order_acq_rel);
+    if (previous == enabled) {
+        return;
+    }
+    {
+        std::lock_guard<std::mutex> lock(worker_mutex_);
+        if (!enabled) {
+            // Do not process a dirty-region backlog after a terminal HOLD.
+            // Map evidence remains in MapManager and is considered only once
+            // a subsequent active task explicitly resumes maintenance.
+            update_requested_ = false;
+        }
+    }
+    worker_cv_.notify_one();
+    ROS_INFO_STREAM("[topology update] maintenance "
+                    << (enabled ? "resumed" : "frozen"));
+}
+
+void TopologyGraphROS1::updateAndPublish() {
+    if (!enabled_ || !maintenanceEnabled()) {
         return;
     }
     {
@@ -158,11 +181,28 @@ void TopologyGraphROS1::workerLoop() {
     for (;;) {
         {
             std::unique_lock<std::mutex> lock(worker_mutex_);
+            if (!maintenance_enabled_.load(std::memory_order_acquire)) {
+                update_requested_ = false;
+                worker_cv_.wait(lock, [this]() {
+                    return stopping_ ||
+                           maintenance_enabled_.load(std::memory_order_acquire);
+                });
+                if (stopping_) {
+                    return;
+                }
+                // Resume from the current map state instead of trying to
+                // catch up with timer periods that elapsed while frozen.
+                next_update = Clock::now();
+            }
             worker_cv_.wait_until(lock, next_update, [this]() {
-                return stopping_ || update_requested_;
+                return stopping_ || update_requested_ ||
+                       !maintenance_enabled_.load(std::memory_order_acquire);
             });
             if (stopping_) {
                 return;
+            }
+            if (!maintenance_enabled_.load(std::memory_order_acquire)) {
+                continue;
             }
             // A map-fusion request may arrive before the configured budget is
             // available.  Preserve the rate limit while retaining the request
@@ -171,21 +211,25 @@ void TopologyGraphROS1::workerLoop() {
             // worker at sensor rate.
             if (Clock::now() < next_update) {
                 worker_cv_.wait_until(lock, next_update, [this]() {
-                    return stopping_;
+                    return stopping_ ||
+                           !maintenance_enabled_.load(std::memory_order_acquire);
                 });
                 if (stopping_) {
                     return;
+                }
+                if (!maintenance_enabled_.load(std::memory_order_acquire)) {
+                    continue;
                 }
             }
             update_requested_ = false;
         }
 
         const auto manager = map_manager_.lock();
-        if (enabled_ && manager) {
+        if (enabled_ && maintenanceEnabled() && manager) {
             // This must live in the worker rather than the ROS timer.  The
-            // runtime-wide graph has no mode callback and remains active;
-            // standalone state2state users still receive the same mission
-            // gate at the configured maintenance cadence.
+            // runtime-wide graph keeps its data, but may suspend mutations
+            // during a verified HOLD; standalone users still receive the
+            // mission gate at the configured maintenance cadence.
             const bool active = missionActive();
             manager->setTopologyActive(active);
             if (active && manager->topologyReady()) {
