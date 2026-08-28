@@ -1,0 +1,22 @@
+<launch>
+  <!-- Bag-replay visualizer for the composed planner runtime.  This launch
+       intentionally starts no planner, simulator, Unity bridge, or command
+       publisher: rosbag is the sole source of runtime data. -->
+  <arg name="use_sim_time" default="true" />
+  <arg name="rviz_config"
+       default="$(find general_planner_release)/config/planner_runtime_state2state.rviz" />
+  <arg name="rviz_name" default="runtime_bag_rviz" />
+  <arg name="world_frame" default="world" />
+  <arg name="navigation_frame" default="navigation" />
+
+  <param name="/use_sim_time" value="$(arg use_sim_time)" type="bool" />
+
+  <!-- The runtime configs may refer to both frames.  The bag's own TF takes
+       precedence whenever it provides one; this only supplies the identity
+       relation needed by bags that contain world-frame planner topics alone. -->
+  <node pkg="tf" type="static_transform_publisher" name="runtime_bag_world_tf"
+        args="0 0 0 0 0 0 $(arg world_frame) $(arg navigation_frame) 100" />
+
+  <node pkg="rviz" type="rviz" name="$(arg rviz_name)" output="screen"
+        args="-d $(arg rviz_config)" />
+</launch>

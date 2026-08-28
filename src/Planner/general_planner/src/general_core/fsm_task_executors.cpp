@@ -37,12 +37,25 @@ public:
     }
 
     PlanResult plan(Fsm &fsm, const PlanRequest &request) override {
+        // Plan-from-rest now runs on the planner worker queue so a slow
+        // frontend cannot starve the navigation goal/status queue. Snapshot
+        // mutable FSM input before calling the backend, just as rolling
+        // replans do, because a newer click may arrive while it runs.
+        general_utils::Vec3f goal;
+        double goal_yaw = 0.0;
+        bool new_goal = false;
+        {
+            std::lock_guard<std::mutex> lock(fsm.fsm_tick_mutex_);
+            goal = fsm.gi_.goal_p;
+            goal_yaw = fsm.gi_.goal_yaw;
+            new_goal = fsm.gi_.new_goal;
+        }
         const auto result = planner(fsm).plan(
                 general_planner::architecture::StateToStateRequest{
                         request,
-                        fsm.gi_.goal_p,
-                        fsm.gi_.goal_yaw,
-                        fsm.gi_.new_goal});
+                        goal,
+                        goal_yaw,
+                        new_goal});
         return result.plan_result;
     }
 

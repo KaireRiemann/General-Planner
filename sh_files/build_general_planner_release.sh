@@ -19,10 +19,11 @@ Environment overrides:
   GP_BUILD_TYPE         CMake build type. Default: Release
   GP_RELEASE_ARCHIVE    Output archive path.
                         Default: <repo>/general_planner_release.tar.gz
-  GP_SKIP_TESTS=1       Skip release smoke tests.
   GP_SKIP_ARCHIVE=1     Skip tar.gz archive generation.
   GP_NO_STRIP=1         Do not strip the release binary.
   GP_CATKIN_ARGS        Extra args appended to catkin_make.
+
+Runtime smoke tests are intentionally not run by this packaging script.
 
 What is synced:
   - devel/lib/general_planner/general_planner_runtime_node
@@ -82,7 +83,6 @@ if [[ "${GP_USE_DOCKER:-1}" != "0" && "${inside_docker}" == "0" ]]; then
     -e GP_USE_DOCKER=0 \
     -e GP_INSIDE_DOCKER=1 \
     -e GP_BUILD_TYPE="${GP_BUILD_TYPE:-Release}" \
-    -e GP_SKIP_TESTS="${GP_SKIP_TESTS:-0}" \
     -e GP_SKIP_ARCHIVE="${GP_SKIP_ARCHIVE:-0}" \
     -e GP_NO_STRIP="${GP_NO_STRIP:-0}" \
     -e GP_CATKIN_ARGS="${GP_CATKIN_ARGS:-}" \
@@ -572,11 +572,9 @@ PY
   trap - RETURN
 }
 
-if [[ "${GP_SKIP_TESTS:-0}" != "1" ]]; then
-  run_smoke_tests
-else
-  echo "[build_release] Skip smoke tests"
-fi
+# Runtime smoke tests are deliberately excluded from this script. Packaging
+# must only compile, synchronize the release tree, and optionally create the
+# archive; runtime validation belongs to an explicitly managed test workflow.
 
 if [[ "${GP_SKIP_ARCHIVE:-0}" != "1" ]]; then
   echo "[build_release] Create archive: ${ARCHIVE_PATH}"

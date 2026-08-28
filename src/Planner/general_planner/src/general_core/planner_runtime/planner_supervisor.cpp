@@ -89,8 +89,6 @@ PlannerSupervisor::PlannerSupervisor(ros::NodeHandle &nh,
             1.0);
   nh_.param("source_startup_grace_duration", source_startup_grace_duration_,
             2.0);
-  nh_.param("global_topology/maintain_during_stable_hold",
-            maintain_topology_during_stable_hold_, false);
   hover_speed_threshold_ = std::clamp(hover_speed_threshold_, 0.01, 1.0);
   hover_yaw_rate_threshold_ = std::clamp(hover_yaw_rate_threshold_, 0.01, 1.0);
   hover_hold_duration_ = std::clamp(hover_hold_duration_, 0.1, 5.0);
@@ -215,8 +213,7 @@ PlannerSupervisor::PlannerSupervisor(ros::NodeHandle &nh,
                   << source_timeout_abort_duration_ << "s"
                   << " source_startup_grace="
                   << source_startup_grace_duration_ << "s"
-                  << " topology_during_stable_hold="
-                  << (maintain_topology_during_stable_hold_ ? "true" : "false")
+                  << " topology=world_lifetime_local_window"
                   << " status=/planner/status");
   runtime_session_id_ = std::to_string(ros::WallTime::now().toNSec());
 }
@@ -1605,7 +1602,7 @@ void PlannerSupervisor::timerCallback(const ros::TimerEvent &) {
     } else {
       const CommandOwner active_owner = ownerForMode(status_.active_mode);
       const bool source_timeout_abort =
-          status_.phase == PlannerPhase::EXECUTING &&
+          shouldMonitorCommandSource(status_.phase) &&
           (active_owner == CommandOwner::STATE2STATE ||
            active_owner == CommandOwner::EXPLORATION) &&
           command_health.authorized_owner == active_owner &&
@@ -1720,9 +1717,7 @@ void PlannerSupervisor::syncTopologyMaintenanceLocked() {
   if (!topology_maintenance_setter_) {
     return;
   }
-  topology_maintenance_setter_(shouldMaintainTopology(
-      status_.active_mode, status_.phase, transition_active_,
-      maintain_topology_during_stable_hold_));
+  topology_maintenance_setter_(shouldMaintainTopology());
 }
 
 void PlannerSupervisor::updatePhaseFromActiveModeLocked() {

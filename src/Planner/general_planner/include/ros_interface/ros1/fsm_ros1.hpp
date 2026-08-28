@@ -63,9 +63,9 @@
 namespace fsm {
     class FsmRos1 : public Fsm {
         ros::NodeHandle nh_;
-        // state/goal callbacks, rolling replans and command sampling must not
-        // share a callback queue.  A pathological frontend/optimizer is then
-        // unable to starve PAUSE/CLEAR or the 100 Hz command source.
+        // Goal/status callbacks, planning, and command sampling must not share
+        // a callback queue. A pathological frontend/optimizer is then unable
+        // to starve PAUSE/CLEAR or navigation lifecycle heartbeats.
         ros::NodeHandle command_nh_;
         ros::NodeHandle replan_nh_;
         ros::Subscriber goal_sub_;
@@ -1428,9 +1428,12 @@ namespace fsm {
                                    replan_watchdog_topic_);
             replan_watchdog_pub_ =
                 command_nh_.advertise<std_msgs::UInt64>(replan_watchdog_topic_, 1, false);
+            // PAUSE/CLEAR/ARM are lifecycle controls.  Keep them on the
+            // command queue rather than the navigation queue, whose main FSM
+            // timer may be waiting on status/goal callbacks.
             navigation_command_sub_ =
-                nh_.subscribe("/planning/navigation/command", 10,
-                              &FsmRos1::navigationCommandCallback, this);
+                command_nh_.subscribe("/planning/navigation/command", 10,
+                                      &FsmRos1::navigationCommandCallback, this);
             navigation_status_timer_ =
                 nh_.createTimer(ros::Duration(0.1),
                                 &FsmRos1::navigationStatusTimerCallback, this);
@@ -1588,7 +1591,10 @@ namespace fsm {
             }
 
             if (cfg_.timer_en) {
-                execution_timer_ = nh_.createTimer(ros::Duration(0.01), &FsmRos1::mainFsmTimerCallback, this); // 100Hz
+                // Initial state2state planning is synchronous inside the main
+                // FSM callback. Run that callback on the worker queue with
+                // rolling replans, not on the navigation goal/status queue.
+                execution_timer_ = replan_nh_.createTimer(ros::Duration(0.01), &FsmRos1::mainFsmTimerCallback, this); // 100Hz
                 cmd_timer_ = command_nh_.createTimer(ros::Duration(0.01), &FsmRos1::pubCmdTimerCallback, this); // 100Hz
                 replan_timer_ = replan_nh_.createTimer(ros::Duration(1.0 / cfg_.replan_rate), &FsmRos1::replanTimerCallback,
                                                         this);

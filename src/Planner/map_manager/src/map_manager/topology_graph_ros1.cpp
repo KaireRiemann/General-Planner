@@ -70,6 +70,12 @@ TopologyGraphROS1::TopologyGraphROS1(
                 config.focus_timeout);
     node_.param(prefix + "max_focus_distance", config.max_focus_distance,
                 config.max_focus_distance);
+    node_.param(prefix + "local_update_window_x",
+                config.local_update_window_x, config.local_update_window_x);
+    node_.param(prefix + "local_update_window_y",
+                config.local_update_window_y, config.local_update_window_y);
+    node_.param(prefix + "local_update_window_z",
+                config.local_update_window_z, config.local_update_window_z);
     config.max_nodes_per_region = static_cast<std::size_t>(std::max(1, max_nodes));
     config.max_bubbles_per_region = static_cast<std::size_t>(std::max(1, max_bubbles));
     config.max_neighbors = static_cast<std::size_t>(std::max(1, max_neighbors));
@@ -110,7 +116,11 @@ TopologyGraphROS1::TopologyGraphROS1(
                     << node_.resolveName(topic)
                     << ", update=" << config.update_period
                     << "s, publish=" << publish_period_
-                    << "s, asynchronous worker active");
+                    << "s, focus_timeout=" << config.focus_timeout
+                    << "s, local_window=[" << config.local_update_window_x
+                    << ", " << config.local_update_window_y << ", "
+                    << config.local_update_window_z << "]m"
+                    << ", asynchronous worker active");
 }
 
 TopologyGraphROS1::~TopologyGraphROS1() {

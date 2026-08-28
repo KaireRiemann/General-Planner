@@ -84,8 +84,9 @@ class GlobalMapRuntime {
   void addOdomConsumer(OdomConsumer consumer);
 
   /**
-   * Freeze/resume only persistent-topology mutation. Raw odometry/cloud
-   * fusion and map revision publication remain active in both states.
+   * Compatibility control for standalone users. The composed runtime keeps
+   * this enabled across planner task transitions; raw fusion remains active
+   * in either state.
    */
   void setTopologyMaintenanceEnabled(bool enabled);
   bool topologyMaintenanceEnabled() const;

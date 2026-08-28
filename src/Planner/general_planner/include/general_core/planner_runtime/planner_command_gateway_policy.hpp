@@ -61,4 +61,14 @@ constexpr bool shouldAbortCommandSource(
   return !source_fresh && source_age_seconds >= stale_source_abort_seconds;
 }
 
+// A task has handed command ownership to its planner as soon as it enters
+// PLANNING.  Waiting for EXECUTING before supervising the first command leaves
+// a planner that is stuck before its first trajectory commit permanently in a
+// zombie PLANNING state.  The gateway already holds the current pose safely;
+// the supervisor must retire that task after the normal first-command grace.
+constexpr bool shouldMonitorCommandSource(const PlannerPhase phase) {
+  return phase == PlannerPhase::PLANNING ||
+         phase == PlannerPhase::EXECUTING;
+}
+
 } // namespace general_planner::planner_runtime

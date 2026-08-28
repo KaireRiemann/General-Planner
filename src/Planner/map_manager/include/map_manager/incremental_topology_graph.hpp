@@ -121,6 +121,18 @@ public:
         double focus_timeout{0.0};
         /** A non-positive value allows all dirty regions around a focus. */
         double max_focus_distance{0.0};
+        /**
+         * Full metric dimensions of the odometry-centred dirty-region work
+         * window.  A non-positive component disables the box policy.  This
+         * is intentionally a box rather than a radius: a world-lifetime
+         * graph must retain remote evidence, but its background worker must
+         * only consume topology regions intersecting the local neighbourhood
+         * of the current vehicle pose. Region resolution quantizes the exact
+         * boundary; it never permits an arbitrary global-backlog scan.
+         */
+        double local_update_window_x{0.0};
+        double local_update_window_y{0.0};
+        double local_update_window_z{0.0};
         double update_period{0.20};
         double publish_period{0.50};
         /**

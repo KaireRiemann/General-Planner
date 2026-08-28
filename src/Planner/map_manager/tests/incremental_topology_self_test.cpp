@@ -134,6 +134,56 @@ int main() {
                      focused_graph.stats().dirty_region_count == 1,
                  "focus distance must retain remote historical work until the robot approaches");
 
+    // Runtime topology is continuous even while a vehicle is holding
+    // position, but maintenance must be bounded to a fresh odometry-centred
+    // AABB.  Remote dirty regions stay queued and become eligible only after
+    // the odometry focus moves into their local window.
+    IncrementalTopologyGraph::Config window_config = config;
+    window_config.region_size = 1.0;
+    window_config.sample_spacing = 0.5;
+    window_config.require_fresh_focus = true;
+    window_config.focus_timeout = 0.5;
+    window_config.max_focus_distance = 0.0;
+    window_config.local_update_window_x = 5.0;
+    window_config.local_update_window_y = 5.0;
+    window_config.local_update_window_z = 3.0;
+    IncrementalTopologyGraph window_graph(window_config);
+    IncrementalTopologyGraph::Query window_query;
+    window_query.traversable = [](const Vec3f &point) {
+        return point.x() >= 0.0 && point.x() < 16.0 &&
+               point.y() >= 0.0 && point.y() < 4.0 &&
+               point.z() >= 0.0 && point.z() < 6.0;
+    };
+    window_query.clearance = [](const Vec3f &, double &distance) {
+        distance = 0.8;
+        return true;
+    };
+    const Vec3f first_odom(0.5, 0.5, 0.5);
+    const Vec3f far_x(10.5, 0.5, 0.5);
+    const Vec3f far_z(0.5, 0.5, 4.5);
+    window_graph.markDirty(first_odom);
+    window_graph.markDirty(far_x);
+    window_graph.markDirty(far_z);
+    const std::size_t window_dirty = window_graph.stats().dirty_region_count;
+    ok &= expect(window_graph.update(window_query, 4) == 0 &&
+                     window_graph.stats().dirty_region_count == window_dirty,
+                 "local-window maintenance requires a fresh odometry focus");
+    window_graph.requestUpdateFocus(first_odom);
+    ok &= expect(window_graph.update(window_query, 4) == 1 &&
+                     window_graph.stats().dirty_region_count + 1 == window_dirty,
+                 "local AABB must consume only the dirty region near current odometry");
+    ok &= expect(window_graph.update(window_query, 4) == 0 &&
+                     window_graph.stats().dirty_region_count == 2,
+                 "stationary odometry must not drain distant horizontal or vertical work");
+    window_graph.requestUpdateFocus(far_x);
+    ok &= expect(window_graph.update(window_query, 4) == 1 &&
+                     window_graph.stats().dirty_region_count == 1,
+                 "moving odometry must make the newly local horizontal region eligible");
+    window_graph.requestUpdateFocus(far_z);
+    ok &= expect(window_graph.update(window_query, 4) == 1 &&
+                     window_graph.stats().dirty_region_count == 0,
+                 "moving odometry must make the newly local vertical region eligible");
+
     rog_map::vec_Vec3f path;
     ok &= expect(!graph.findPath(Vec3f(0.5, 0.5, 0.5),
                                  Vec3f(5.5, 0.5, 0.5), query, path),

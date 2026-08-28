@@ -1093,7 +1093,61 @@ namespace fsm {
                 plan_request.phase = executionPhase();
                 plan_request.new_goal = gi_.new_goal;
                 plan_request.new_task = task_new_;
+                // The bag exposed the missing counterpart to the rolling
+                // replan isolation below: an initial state2state plan ran
+                // synchronously while holding fsm_tick_mutex_. That froze
+                // goal/status/PAUSE callbacks and left supervisor in PLANNING
+                // forever when the frontend or optimizer took a long time.
+                //
+                // The main FSM timer is on replan_nh_ in the composed runtime;
+                // release only the short FSM-state lock around the expensive
+                // backend call. A PAUSE/ARM or newer goal invalidates the
+                // result through its epoch/sequence, so it cannot be committed
+                // after control has moved on.
+                const bool release_fsm_lock_during_plan = state2stateMode();
+                const std::uint64_t plan_task_epoch = navigation_task_epoch_.load();
+                const std::uint64_t plan_goal_sequence =
+                        navigation_goal_sequence_.load();
+                if (release_fsm_lock_during_plan &&
+                    state2state_replan_in_progress_.exchange(true)) {
+                    return;
+                }
+                struct State2StatePlanGuard {
+                    std::atomic<bool> &in_progress;
+                    bool active;
+                    ~State2StatePlanGuard() {
+                        if (active) {
+                            in_progress.store(false);
+                        }
+                    }
+                } plan_guard{state2state_replan_in_progress_,
+                             release_fsm_lock_during_plan};
+                if (release_fsm_lock_during_plan) {
+                    tick_lock.unlock();
+                }
                 PlanResult plan_result = executor.plan(*this, plan_request);
+                if (release_fsm_lock_during_plan) {
+                    tick_lock.lock();
+                }
+                if (release_fsm_lock_during_plan &&
+                    (!navigation_execution_enabled_.load() ||
+                     navigation_task_epoch_.load() != plan_task_epoch ||
+                     navigation_goal_sequence_.load() != plan_goal_sequence ||
+                     machine_state_ != GENERATE_TRAJ)) {
+                    recordDiagnosticEvent(
+                            "WARN",
+                            "plan_from_rest_result_discarded",
+                            fmt::format("reason=task_invalidated;started_epoch={};current_epoch={};"
+                                        "started_goal_sequence={};current_goal_sequence={};"
+                                        "execution_enabled={}",
+                                        plan_task_epoch,
+                                        navigation_task_epoch_.load(),
+                                        plan_goal_sequence,
+                                        navigation_goal_sequence_.load(),
+                                        static_cast<int>(navigation_execution_enabled_.load())),
+                            plan_result.ret_code);
+                    return;
+                }
                 const TaskPlanContext &plan_context = plan_result.context;
                 const int retcode = plan_result.ret_code;
                 if (plan_context.missing_input || plan_context.handled) {

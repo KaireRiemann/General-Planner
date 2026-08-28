@@ -5,23 +5,13 @@
 namespace general_planner::planner_runtime {
 
 /**
- * Topology maintenance mutates the persistent navigation graph; map fusion
- * does not. Freeze the former during every handover and terminal hold while
- * continuing to ingest odometry/cloud data into the world map.
+ * The global topology belongs to the world model, not to an individual
+ * planner task.  HOLD, handovers and emergency command ownership changes may
+ * stop trajectories, but must never stop topology maintenance.  Locality is
+ * enforced by the odometry-centred dirty-region window in MapManager.
  */
-constexpr bool shouldMaintainTopology(
-    const PlannerMode active_mode, const PlannerPhase phase,
-    const bool transition_active, const bool maintain_during_stable_hold) {
-  if (transition_active || phase == PlannerPhase::BOOT ||
-      phase == PlannerPhase::BRAKING || phase == PlannerPhase::HOLD_VERIFY ||
-      phase == PlannerPhase::FAILED || phase == PlannerPhase::EMERGENCY) {
-    return false;
-  }
-  if (phase == PlannerPhase::STABLE_HOLD) {
-    return maintain_during_stable_hold;
-  }
-  return active_mode != PlannerMode::HOLD &&
-         active_mode != PlannerMode::EMERGENCY_STOP;
+constexpr bool shouldMaintainTopology() {
+  return true;
 }
 
 }  // namespace general_planner::planner_runtime

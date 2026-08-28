@@ -4,10 +4,9 @@
 # skeleton, not a second dense free-space map.
 global_topology:
   enabled: true
-  # Terminal verified HOLD keeps fusing odometry/cloud into the world map but
-  # freezes graph mutation. This prevents a stale dirty-region backlog from
-  # looking like random new topology while the vehicle is safely stopped.
-  maintain_during_stable_hold: false
+  # Topology is world-lifetime state: HOLD and planner handovers never stop
+  # maintenance.  The worker instead consumes only dirty regions inside the
+  # fresh odometry-centred local window below.
   # Keep a maximum-clearance core and boundary portals for each observed-free
   # component. Nodes and edges remain collision-validated, while open rooms
   # need only a few representatives instead of one node per 0.45 m cell.
@@ -38,6 +37,16 @@ global_topology:
   dirty_padding: 2.50
   bubble_overlap_margin: 0.10
   unknown_as_free: false
+  # Odom arrives continuously from GlobalMapRuntime. Without a fresh focus,
+  # defer the persistent dirty backlog rather than rebuilding remote history.
+  require_fresh_focus: true
+  focus_timeout: 0.50
+  # Full metric dimensions of the local dirty-region AABB. A 4 m topology
+  # region is consumed only when it intersects this box; non-intersecting
+  # regions remain queued until the vehicle approaches them.
+  local_update_window_x: 5.0
+  local_update_window_y: 5.0
+  local_update_window_z: 3.0
   # A zero-degree candidate is excluded from topology publication and route
   # search. Every component that has a validated edge remains visible; the
   # current robot attachment is checked only when a route is queried.

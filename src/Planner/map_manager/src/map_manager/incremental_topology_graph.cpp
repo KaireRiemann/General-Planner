@@ -74,6 +74,12 @@ IncrementalTopologyGraph::Config IncrementalTopologyGraph::sanitized(
     cfg.max_regions_per_update = std::max<std::size_t>(1, cfg.max_regions_per_update);
     cfg.focus_timeout = std::clamp(cfg.focus_timeout, 0.0, 60.0);
     cfg.max_focus_distance = std::clamp(cfg.max_focus_distance, 0.0, 1000.0);
+    cfg.local_update_window_x =
+        std::clamp(cfg.local_update_window_x, 0.0, 1000.0);
+    cfg.local_update_window_y =
+        std::clamp(cfg.local_update_window_y, 0.0, 1000.0);
+    cfg.local_update_window_z =
+        std::clamp(cfg.local_update_window_z, 0.0, 1000.0);
     cfg.update_period = std::max(0.02, cfg.update_period);
     cfg.publish_period = std::max(0.05, cfg.publish_period);
     return cfg;
@@ -838,6 +844,11 @@ bool IncrementalTopologyGraph::popDirtyRegion(
     std::vector<RegionKey> &changed_dense_cells,
     rog_map::vec_Vec3f &evidence_seeds,
     const rog_map::Vec3f *focus) {
+    Config config;
+    {
+        std::shared_lock<std::shared_mutex> graph_lock(graph_mutex_);
+        config = config_;
+    }
     std::lock_guard<std::mutex> lock(dirty_mutex_);
     changed_dense_cells.clear();
     evidence_seeds.clear();
@@ -852,20 +863,21 @@ bool IncrementalTopologyGraph::popDirtyRegion(
     };
     if (focus != nullptr && focus->allFinite()) {
         double best_distance = std::numeric_limits<double>::infinity();
-        for (auto candidate = dirty_regions_.begin();
-             candidate != dirty_regions_.end(); ++candidate) {
-            rog_map::Vec3f center = config_.region_size *
-                rog_map::Vec3f(candidate->x + 0.5,
-                               candidate->y + 0.5,
-                               candidate->z + 0.5);
-            if (config_.planar_mode) {
-                center.z() = config_.navigation_altitude;
+        const auto region_center = [&config](const RegionKey &key) {
+            rog_map::Vec3f center = config.region_size *
+                rog_map::Vec3f(key.x + 0.5, key.y + 0.5, key.z + 0.5);
+            if (config.planar_mode) {
+                center.z() = config.navigation_altitude;
             }
+            return center;
+        };
+        const auto consider = [&](decltype(iterator) candidate) {
+            const rog_map::Vec3f center = region_center(*candidate);
             const double distance = (center - *focus).squaredNorm();
-            const double max_distance = config_.max_focus_distance;
+            const double max_distance = config.max_focus_distance;
             if (max_distance > 0.0 &&
                 distance > max_distance * max_distance) {
-                continue;
+                return;
             }
             if (iterator == dirty_regions_.end() ||
                 distance < best_distance - 1.0e-9 ||
@@ -874,8 +886,53 @@ bool IncrementalTopologyGraph::popDirtyRegion(
                 best_distance = distance;
                 iterator = candidate;
             }
+        };
+
+        // With an odometry-driven local window, enumerate only the handful
+        // of globally aligned topology regions intersecting the requested
+        // AABB.  Do not scan the whole dirty set and do not consume remote
+        // history merely because the vehicle is stationary.  Intersection is
+        // deliberate: a 3 m vertical window can be smaller than the 4 m
+        // topology region size, but the region containing odometry must
+        // remain eligible as the robot crosses a grid boundary.
+        const bool use_local_window =
+            config.local_update_window_x > 0.0 &&
+            config.local_update_window_y > 0.0 &&
+            (config.planar_mode || config.local_update_window_z > 0.0);
+        if (use_local_window) {
+            const rog_map::Vec3f half_extent(
+                0.5 * config.local_update_window_x,
+                0.5 * config.local_update_window_y,
+                config.planar_mode ? 0.0
+                                   : 0.5 * config.local_update_window_z);
+            const auto region_of_config = [&config](const rog_map::Vec3f &point) {
+                return RegionKey{
+                    static_cast<int>(std::floor(point.x() / config.region_size)),
+                    static_cast<int>(std::floor(point.y() / config.region_size)),
+                    config.planar_mode
+                        ? 0
+                        : static_cast<int>(std::floor(point.z() / config.region_size))};
+            };
+            const RegionKey first = region_of_config(*focus - half_extent);
+            const RegionKey last = region_of_config(*focus + half_extent);
+            for (int x = first.x; x <= last.x; ++x) {
+                for (int y = first.y; y <= last.y; ++y) {
+                    for (int z = first.z; z <= last.z; ++z) {
+                        const auto candidate = dirty_regions_.find({x, y, z});
+                        if (candidate == dirty_regions_.end()) {
+                            continue;
+                        }
+                        consider(candidate);
+                    }
+                }
+            }
+        } else {
+            for (auto candidate = dirty_regions_.begin();
+                 candidate != dirty_regions_.end(); ++candidate) {
+                consider(candidate);
+            }
         }
-    } else if (!config_.require_fresh_focus) {
+    } else if (!config.require_fresh_focus) {
         iterator = std::min_element(dirty_regions_.begin(), dirty_regions_.end(),
                                     [&region_less](const RegionKey &lhs,
                                                    const RegionKey &rhs) {

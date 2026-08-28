@@ -201,7 +201,6 @@ private:
   double exploration_start_retry_period_{0.5};
   double source_startup_grace_duration_{2.0};
   double source_timeout_abort_duration_{1.0};
-  bool maintain_topology_during_stable_hold_{false};
   std::uint64_t next_text_request_id_{1};
   std::string runtime_session_id_;
 };

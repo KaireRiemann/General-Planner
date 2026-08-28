@@ -147,6 +147,18 @@ void GlobalMapRuntime::odomCallback(const nav_msgs::OdometryConstPtr &msg) {
     return;
   }
   context_->rog_map->ingestOdometry(msg);
+  // Topology is a world-lifetime resource, but its maintenance budget is
+  // local to the vehicle.  Refreshing this inexpensive focus on every odom
+  // makes a stale planner query unable to pull the worker into remote dirty
+  // regions while the vehicle is stopped.
+  if (context_->map_manager) {
+    const rog_map::Vec3f focus(msg->pose.pose.position.x,
+                                msg->pose.pose.position.y,
+                                msg->pose.pose.position.z);
+    if (focus.allFinite()) {
+      context_->map_manager->requestTopologyUpdateAround(focus);
+    }
+  }
 
   std::vector<OdomConsumer> consumers;
   {
@@ -202,10 +214,9 @@ void GlobalMapRuntime::cloudOdomCallback(
   }
   const MapManager::UpdateSnapshot update =
       context_->map_manager->updateMap(rog_cloud, pose);
-  // Topology graph mutation is independently gated by the supervisor. The
-  // accepted fusion above always updates the safety/world map; during a
-  // verified HOLD it only accumulates fresh map evidence and cannot grow the
-  // visible topological graph from a dirty-region backlog.
+  // World topology is maintained through task transitions as well. Its
+  // worker consumes only the odometry-local dirty-region window, while map
+  // fusion continues to record remote evidence for a future visit.
   if (topology_maintainer_ && topologyMaintenanceEnabled()) {
     topology_maintainer_->updateAndPublish();
     publishTopologyExpansionSnapshot();
