@@ -50,6 +50,9 @@ PlannerSupervisor::PlannerSupervisor(ros::NodeHandle &nh,
   nh_.param<std::string>("fsm/state2state_replan_watchdog_topic",
                          navigation_replan_watchdog_topic_,
                          "/planning/navigation/replan_watchdog");
+  nh_.param<std::string>("fsm/state2state_plan_watchdog_topic",
+                         navigation_plan_watchdog_topic_,
+                         "/planning/navigation/plan_watchdog");
   nh_.param<std::string>("gate_status_topic", gate_status_topic_,
                          "/planner/gate/status");
   nh_.param<std::string>("navigation_task_mode_topic",
@@ -180,6 +183,10 @@ PlannerSupervisor::PlannerSupervisor(ros::NodeHandle &nh,
       nh_.subscribe(navigation_replan_watchdog_topic_, 10,
                     &PlannerSupervisor::navigationReplanWatchdogCallback,
                     this);
+  navigation_plan_watchdog_sub_ =
+      nh_.subscribe(navigation_plan_watchdog_topic_, 10,
+                    &PlannerSupervisor::navigationPlanWatchdogCallback,
+                    this);
   gate_status_sub_ = nh_.subscribe(gate_status_topic_, 10,
                                    &PlannerSupervisor::gateStatusCallback,
                                    this);
@@ -207,6 +214,7 @@ PlannerSupervisor::PlannerSupervisor(ros::NodeHandle &nh,
                   << " target_goal=" << exploration_target_goal_in_topic_
                   << " -> " << exploration_target_goal_out_topic_
                   << " replan_watchdog=" << navigation_replan_watchdog_topic_
+                  << " plan_watchdog=" << navigation_plan_watchdog_topic_
                   << " gate_status=" << gate_status_topic_
                   << " task_request=" << exploration_task_request_topic_
                   << " source_timeout_abort="
@@ -236,6 +244,9 @@ void PlannerSupervisor::modeRequestCallback(
     break;
   case general_planner::PlannerModeRequest::MODE_GATE:
     mode = PlannerMode::GATE;
+    break;
+  case general_planner::PlannerModeRequest::MODE_TRACKING:
+    mode = PlannerMode::TRACKING;
     break;
   case general_planner::PlannerModeRequest::MODE_EMERGENCY_STOP:
     mode = PlannerMode::EMERGENCY_STOP;
@@ -268,15 +279,32 @@ void PlannerSupervisor::handleModeRequest(const std::uint64_t request_id,
                                           const std::string &task_id,
                                           const std::string &source) {
   std::lock_guard<std::mutex> lock(mutex_);
-  if (mode == PlannerMode::STATE2STATE && !navigation_enabled_ &&
+  // An explicit non-navigation mode selection is an operator decision to
+  // abandon any recoverable state2state target. Do not resurrect it later
+  // when an old worker finally returns.
+  if (mode != PlannerMode::STATE2STATE) {
+    clearState2StateRecoveryLocked();
+  }
+  if (isNavigationAdapterMode(mode) && !navigation_enabled_ &&
       !serial_handover_) {
     status_.accepted_request_id = request_id;
     status_.phase = PlannerPhase::FAILED;
     status_.reason =
         "navigation fsm disabled (relaunch with enable_navigation:=true or "
         "serial_handover:=true)";
-    ROS_WARN_STREAM("[planner_supervisor] reject state2state: "
+    ROS_WARN_STREAM("[planner_supervisor] reject " << toString(mode) << ": "
                     << status_.reason);
+    return;
+  }
+  // Serial handover launches a standalone click-demo FSM that only supports
+  // state2state goals. Tracking stays composed so target ingestion, map
+  // ownership, and command-source supervision remain in one process.
+  if (mode == PlannerMode::TRACKING && serial_handover_) {
+    status_.accepted_request_id = request_id;
+    status_.phase = PlannerPhase::FAILED;
+    status_.reason =
+        "tracking requires serial_handover=false (composed navigation adapter)";
+    ROS_WARN_STREAM("[planner_supervisor] reject tracking: " << status_.reason);
     return;
   }
   // Gate hands the final command bus to a different planner.  The legacy
@@ -327,6 +355,24 @@ void PlannerSupervisor::handleModeRequest(const std::uint64_t request_id,
     }
     status_.accepted_request_id = request_id;
     status_.reason = "queued until boot hover ready (" + source + ")";
+    return;
+  }
+
+  // A state2state watchdog has already retired the adapter to safe HOLD, but
+  // its backend may still hold planner references.  Do not ARM it merely
+  // because an operator re-sent the mode command; wait for READY, then a
+  // subsequent goal is dispatched in a fresh epoch.
+  if (mode == PlannerMode::STATE2STATE &&
+      state2state_recovery_allowed_ &&
+      (!navigation_worker_readiness_observed_ || !navigation_worker_ready_)) {
+    status_.accepted_request_id = request_id;
+    status_.requested_mode = PlannerMode::STATE2STATE;
+    if (!task_id.empty()) {
+      status_.task_id = task_id;
+    }
+    status_.reason = "state2state recovery waiting for previous planning worker";
+    ROS_WARN_STREAM("[planner_supervisor] defer state2state activation: "
+                    << "previous planning worker is BUSY");
     return;
   }
 
@@ -442,7 +488,7 @@ void PlannerSupervisor::requestAdapterStop(const PlannerMode mode,
   if (isExplorationMode(mode)) {
     publishExplorationCommand("PAUSE " + status_.task_id);
   }
-  if (mode == PlannerMode::STATE2STATE) {
+  if (isNavigationAdapterMode(mode)) {
     publishNavigationCommand("PAUSE " + std::to_string(status_.task_epoch));
   }
   ROS_INFO_STREAM("[planner_supervisor] request stop mode="
@@ -453,7 +499,7 @@ void PlannerSupervisor::resetAdapterTaskState(const PlannerMode mode) {
   if (isExplorationMode(mode)) {
     publishExplorationCommand("PAUSE " + status_.task_id);
   }
-  if (mode == PlannerMode::STATE2STATE) {
+  if (isNavigationAdapterMode(mode)) {
     publishNavigationCommand("CLEAR " + std::to_string(status_.task_epoch));
   }
 }
@@ -538,6 +584,33 @@ void PlannerSupervisor::activateMode(const PlannerMode mode,
     status_.reason = reason;
     publishNavigationTaskMode("state2state");
     publishNavigationCommand("ARM " + std::to_string(status_.task_epoch));
+    return;
+  }
+
+  if (mode == PlannerMode::TRACKING) {
+    if (!navigation_enabled_ || serial_handover_) {
+      status_.phase = PlannerPhase::FAILED;
+      status_.reason =
+          "cannot activate tracking without composed navigation fsm_node";
+      return;
+    }
+    exploration_start_pending_ = false;
+    gateway_.setPublishingEnabled(true);
+    publishExplorationCommand("PAUSE");
+    navigation_status_epoch_ = status_.task_epoch;
+    navigation_goal_dispatch_pending_ = false;
+    status_.phase = PlannerPhase::WAITING_INPUT;
+    status_.mode_state = ModeState::TRACK_WAIT_TARGET;
+    status_.stable_hover = true;
+    status_.ready_for_new_task = true;
+    status_.command_owner = CommandOwner::HOLD;
+    status_.task_result = PlannerTaskResult::NONE;
+    status_.reason = reason + "; waiting for tracking target input";
+    gateway_.setAuthorizedOwner(CommandOwner::HOLD, status_.task_epoch);
+    publishNavigationTaskMode("tracking");
+    publishNavigationCommand("ARM " + std::to_string(status_.task_epoch));
+    ROS_INFO_STREAM("[planner_supervisor] tracking armed; target odom/path is "
+                    "consumed by composed navigation adapter");
     return;
   }
 
@@ -662,8 +735,96 @@ void PlannerSupervisor::publishExplorationTaskRequestLocked(const bool start) {
   exploration_task_request_pub_.publish(request);
 }
 
+void PlannerSupervisor::clearState2StateRecoveryLocked() {
+  state2state_recovery_allowed_ = false;
+  state2state_recovery_pending_ = false;
+  pending_state2state_recovery_goal_ = geometry_msgs::PoseStamped{};
+  pending_state2state_recovery_preserve_height_ = false;
+}
+
+bool PlannerSupervisor::queueState2StateRecoveryGoalLocked(
+    const geometry_msgs::PoseStamped &msg, const bool preserve_message_height) {
+  if (!state2state_recovery_allowed_ || transition_active_ ||
+      status_.active_mode != PlannerMode::HOLD ||
+      status_.phase != PlannerPhase::STABLE_HOLD) {
+    return false;
+  }
+
+  state2state_recovery_pending_ = true;
+  pending_state2state_recovery_goal_ = msg;
+  pending_state2state_recovery_preserve_height_ = preserve_message_height;
+  // Stable HOLD only makes the vehicle safe.  It is not restartable until
+  // the timed-out state2state worker has cooperatively released replan_lock.
+  status_.ready_for_new_task = false;
+  status_.reason = navigation_worker_readiness_observed_ &&
+                           !navigation_worker_ready_
+                       ? "state2state recovery goal queued; waiting for previous planning worker"
+                       : "state2state recovery goal queued; waiting for fresh ARM";
+  if (navigation_worker_readiness_observed_ && !navigation_worker_ready_) {
+    status_.reason += "; stage=" + navigation_worker_stage_;
+  }
+  ROS_INFO_STREAM("[planner_supervisor] queue recoverable state2state goal p=("
+                  << msg.pose.position.x << "," << msg.pose.position.y << ","
+                  << msg.pose.position.z << ") worker="
+                  << (navigation_worker_ready_ ? "READY" : "BUSY"));
+  maybeStartState2StateRecoveryLocked();
+  return true;
+}
+
+void PlannerSupervisor::maybeStartState2StateRecoveryLocked() {
+  if (!state2state_recovery_allowed_ || !state2state_recovery_pending_ ||
+      transition_active_ || status_.active_mode != PlannerMode::HOLD ||
+      status_.phase != PlannerPhase::STABLE_HOLD) {
+    return;
+  }
+  if (!navigation_worker_readiness_observed_ || !navigation_worker_ready_) {
+    status_.ready_for_new_task = false;
+    status_.reason = "state2state recovery queued; waiting for previous planning worker";
+    if (navigation_worker_readiness_observed_) {
+      status_.reason += "; stage=" + navigation_worker_stage_;
+    }
+    return;
+  }
+  ROS_INFO("[planner_supervisor] previous state2state worker quiesced; "
+           "starting a fresh recovery ARM transition");
+  beginTransition(PlannerMode::STATE2STATE, status_.accepted_request_id, "",
+                  "recover after failed state2state task");
+}
+
+void PlannerSupervisor::maybeDispatchState2StateRecoveryGoalLocked(
+    const NavigationAdapterStatus &adapter_status) {
+  if (!state2state_recovery_pending_ || transition_active_ ||
+      status_.active_mode != PlannerMode::STATE2STATE ||
+      !navigation_worker_ready_ || !adapter_status.has_lifecycle ||
+      adapter_status.task_epoch != status_.task_epoch ||
+      adapter_status.state != "WAIT_GOAL") {
+    return;
+  }
+
+  const geometry_msgs::PoseStamped goal = pending_state2state_recovery_goal_;
+  const bool preserve_height = pending_state2state_recovery_preserve_height_;
+  // acceptNavigationGoalLocked() clears the recovery state for the normal
+  // execution path. Restore it only if the adapter unexpectedly rejects the
+  // dispatch, so no operator click is lost.
+  state2state_recovery_pending_ = false;
+  if (acceptNavigationGoalLocked(goal, preserve_height)) {
+    ROS_INFO_STREAM("[planner_supervisor] dispatched queued state2state recovery "
+                    << "goal in fresh epoch=" << status_.task_epoch);
+    return;
+  }
+  state2state_recovery_allowed_ = true;
+  state2state_recovery_pending_ = true;
+  pending_state2state_recovery_goal_ = goal;
+  pending_state2state_recovery_preserve_height_ = preserve_height;
+  status_.reason = "state2state recovery dispatch deferred";
+}
+
 bool PlannerSupervisor::acceptNavigationGoalLocked(
     const geometry_msgs::PoseStamped &msg, const bool preserve_message_height) {
+  if (status_.active_mode == PlannerMode::HOLD &&
+      queueState2StateRecoveryGoalLocked(msg, preserve_message_height)) {
+    return true;
+  }
   // A state2state goal replaces the current goal within the same navigation
   // task.  ready_for_new_task only governs starting a distinct task; it must
   // not block a rolling replan while this task is executing.
@@ -694,18 +855,23 @@ bool PlannerSupervisor::acceptNavigationGoalLocked(
                     << ")");
     return true;
   }
+  clearState2StateRecoveryLocked();
   status_.task_result = PlannerTaskResult::NONE;
   status_.phase = PlannerPhase::PLANNING;
   status_.ready_for_new_task = false;
   status_.stable_hover = false;
-  status_.command_owner = CommandOwner::STATE2STATE;
+  // A plan-from-rest has no adapter PositionCommand yet. Keep the verified
+  // supervisor HOLD authoritative until the FSM reports FOLLOW/STATIC;
+  // otherwise the command-source watchdog can turn a slow but safe initial
+  // plan into a false failure.
+  status_.command_owner = CommandOwner::HOLD;
   status_.reason = preserve_message_height ? "navigation 3d goal accepted"
                                            : "navigation goal accepted";
   navigation_goal_sequence_before_dispatch_ =
       navigation_status_epoch_ == status_.task_epoch
           ? navigation_goal_sequence_ : 0;
   navigation_goal_dispatch_pending_ = true;
-  gateway_.setAuthorizedOwner(CommandOwner::STATE2STATE, status_.task_epoch);
+  gateway_.setAuthorizedOwner(CommandOwner::HOLD, status_.task_epoch);
   if (preserve_message_height) {
     navigation_goal_3d_pub_.publish(msg);
   } else {
@@ -752,6 +918,15 @@ void PlannerSupervisor::clickGoalCallback(
     return;
   }
   if (status_.active_mode == PlannerMode::STATE2STATE) {
+    acceptNavigationGoalLocked(*msg);
+    return;
+  }
+  // A watchdog failure intentionally leaves active_mode=HOLD. During that
+  // recoverable HOLD, the same RViz click is the recovery request: latch it
+  // until the old planner worker has reported READY, then re-arm and forward
+  // it as a normal state2state goal.
+  if (status_.active_mode == PlannerMode::HOLD &&
+      state2state_recovery_allowed_) {
     acceptNavigationGoalLocked(*msg);
     return;
   }
@@ -1104,6 +1279,13 @@ void PlannerSupervisor::navigationStatusCallback(
   const std::string &state = adapter_status.state;
   std::lock_guard<std::mutex> lock(mutex_);
   navigation_status_ = state;
+  if (adapter_status.has_worker_readiness) {
+    navigation_worker_readiness_observed_ = true;
+    navigation_worker_ready_ = adapter_status.planning_worker_ready;
+  }
+  if (adapter_status.has_planning_stage) {
+    navigation_worker_stage_ = adapter_status.planning_stage;
+  }
   if (serial_handover_) {
     return;
   }
@@ -1111,6 +1293,11 @@ void PlannerSupervisor::navigationStatusCallback(
     // PAUSE/CLEAR can still produce a latched status from the previous task.
     // It must never complete or unlock the current supervisor epoch.
     if (adapter_status.task_epoch != status_.task_epoch) {
+      // The adapter deliberately bumps its own epoch during PAUSE. Its READY
+      // edge is nevertheless the only proof that the previous worker has
+      // released planner state, so it is valid for recovery while HOLD owns
+      // the command path.
+      maybeStartState2StateRecoveryLocked();
       return;
     }
     navigation_status_epoch_ = adapter_status.task_epoch;
@@ -1129,8 +1316,17 @@ void PlannerSupervisor::navigationStatusCallback(
     } else if (state == "GENERATE_TRAJ") {
       status_.phase = PlannerPhase::PLANNING;
       status_.ready_for_new_task = false;
-      status_.command_owner = CommandOwner::STATE2STATE;
-      gateway_.setAuthorizedOwner(CommandOwner::STATE2STATE, status_.task_epoch);
+      // On the first plan-from-rest, there is no FSM command yet. Retain the
+      // supervisor hold until FOLLOW/STATIC confirms a real command source.
+      // A replan that already owns a terminal backup stays state2state-owned
+      // and continues to publish that stationary endpoint.
+      if (status_.command_owner == CommandOwner::STATE2STATE) {
+        gateway_.setAuthorizedOwner(CommandOwner::STATE2STATE,
+                                    status_.task_epoch);
+      } else {
+        status_.command_owner = CommandOwner::HOLD;
+        gateway_.setAuthorizedOwner(CommandOwner::HOLD, status_.task_epoch);
+      }
       status_.reason = "navigation planning";
     } else if (state == "WAIT_GOAL") {
       const bool completed_dispatched_goal =
@@ -1157,7 +1353,8 @@ void PlannerSupervisor::navigationStatusCallback(
         return;
       }
       status_.phase = PlannerPhase::WAITING_INPUT;
-      status_.ready_for_new_task = true;
+      status_.ready_for_new_task = !navigation_worker_readiness_observed_ ||
+                                   navigation_worker_ready_;
       status_.stable_hover = hoverConditionMetLocked();
       status_.command_owner = CommandOwner::HOLD;
       if (!gateway_.hasHoldAnchor()) {
@@ -1165,10 +1362,60 @@ void PlannerSupervisor::navigationStatusCallback(
       } else {
         gateway_.setAuthorizedOwner(CommandOwner::HOLD, status_.task_epoch);
       }
-      status_.reason = "navigation wait goal";
+      status_.reason = status_.ready_for_new_task
+                           ? "navigation wait goal"
+                           : "navigation wait goal; planning worker busy; stage=" +
+                                 navigation_worker_stage_;
       status_.task_result = PlannerTaskResult::SUCCEEDED;
     }
+  } else if (status_.active_mode == PlannerMode::TRACKING &&
+             !transition_active_) {
+    status_.mode_state = modeStateFromTrackingString(state);
+    if (state == "FOLLOW_TRAJ" || state == "STATIC_TRACKING") {
+      status_.phase = PlannerPhase::EXECUTING;
+      status_.ready_for_new_task = false;
+      status_.stable_hover = false;
+      status_.command_owner = CommandOwner::TRACKING;
+      gateway_.setAuthorizedOwner(CommandOwner::TRACKING, status_.task_epoch);
+      status_.reason = "tracking " + state;
+    } else if (state == "GENERATE_TRAJ") {
+      status_.phase = PlannerPhase::PLANNING;
+      status_.ready_for_new_task = false;
+      // No target trajectory exists until the first commit. Keep the verified
+      // supervisor HOLD authoritative until FsmRos1 starts sampling it.
+      if (status_.command_owner == CommandOwner::TRACKING) {
+        gateway_.setAuthorizedOwner(CommandOwner::TRACKING, status_.task_epoch);
+      } else {
+        status_.command_owner = CommandOwner::HOLD;
+        gateway_.setAuthorizedOwner(CommandOwner::HOLD, status_.task_epoch);
+      }
+      status_.reason = "tracking planning";
+    } else if (state == "HOLD_TRACKING") {
+      status_.phase = PlannerPhase::WAITING_INPUT;
+      status_.ready_for_new_task = true;
+      status_.stable_hover = hoverConditionMetLocked();
+      status_.command_owner = CommandOwner::HOLD;
+      if (!gateway_.hasHoldAnchor()) {
+        authorizeHoldAtCurrentOdomLocked("tracking hold");
+      } else {
+        gateway_.setAuthorizedOwner(CommandOwner::HOLD, status_.task_epoch);
+      }
+      status_.reason = "tracking hold; waiting for renewed target input";
+    } else if (state == "WAIT_GOAL" || state == "INIT") {
+      status_.phase = PlannerPhase::WAITING_INPUT;
+      status_.ready_for_new_task = true;
+      status_.stable_hover = hoverConditionMetLocked();
+      status_.command_owner = CommandOwner::HOLD;
+      if (!gateway_.hasHoldAnchor()) {
+        authorizeHoldAtCurrentOdomLocked("tracking wait target");
+      } else {
+        gateway_.setAuthorizedOwner(CommandOwner::HOLD, status_.task_epoch);
+      }
+      status_.reason = "tracking waiting for fresh target input";
+    }
   }
+  maybeStartState2StateRecoveryLocked();
+  maybeDispatchState2StateRecoveryGoalLocked(adapter_status);
 }
 
 void PlannerSupervisor::gateStatusCallback(const std_msgs::StringConstPtr &msg) {
@@ -1297,6 +1544,9 @@ void PlannerSupervisor::failStaleCommandSourceLocked(
   status_.reason = "command source timeout in " +
                    std::string(toString(failed_mode)) + " (" + detail +
                    "); verified hold pending";
+  if (failed_mode == PlannerMode::STATE2STATE) {
+    state2state_recovery_allowed_ = true;
+  }
 }
 
 void PlannerSupervisor::navigationReplanWatchdogCallback(
@@ -1322,6 +1572,34 @@ void PlannerSupervisor::navigationReplanWatchdogCallback(
                   status_.task_id, "state2state replan watchdog timeout");
   status_.task_result = PlannerTaskResult::FAILED;
   status_.reason = "state2state replan watchdog timeout; verified hold pending";
+  state2state_recovery_allowed_ = true;
+}
+
+void PlannerSupervisor::navigationPlanWatchdogCallback(
+    const std_msgs::UInt64ConstPtr &msg) {
+  if (!msg) {
+    return;
+  }
+  std::lock_guard<std::mutex> lock(mutex_);
+  // Unlike rolling replan, plan-from-rest intentionally remains under the
+  // supervisor HOLD owner until it produces a first trajectory command.
+  if (transition_active_ || status_.active_mode != PlannerMode::STATE2STATE ||
+      msg->data != status_.task_epoch) {
+    ROS_WARN_STREAM("[planner_supervisor] ignore stale state2state plan "
+                    << "watchdog epoch=" << msg->data
+                    << " active_epoch=" << status_.task_epoch
+                    << " active_mode=" << toString(status_.active_mode));
+    return;
+  }
+
+  ROS_ERROR_STREAM("[planner_supervisor] state2state plan-from-rest blocked; "
+                   << "transitioning to verified HOLD, epoch=" << msg->data);
+  beginTransition(PlannerMode::HOLD, status_.accepted_request_id,
+                  status_.task_id, "state2state plan-from-rest watchdog timeout");
+  status_.task_result = PlannerTaskResult::FAILED;
+  status_.reason =
+      "state2state plan-from-rest watchdog timeout; verified hold pending";
+  state2state_recovery_allowed_ = true;
 }
 
 void PlannerSupervisor::odometryCallback(const nav_msgs::OdometryConstPtr &msg) {
@@ -1587,7 +1865,17 @@ void PlannerSupervisor::timerCallback(const ros::TimerEvent &) {
               status_.mode_state = ModeState::EXP_PAUSED;
               status_.ready_for_new_task = true;
             } else {
-              activateMode(target, "stable hold reached");
+              // Preserve the failure cause after the brake/hover phase. The
+              // runtime bag previously contained only "stable hold reached",
+              // which erased whether this was a source timeout, replan
+              // watchdog, or plan-from-rest watchdog.
+              const std::string activation_reason =
+                  target == PlannerMode::HOLD &&
+                          result == PlannerTaskResult::FAILED
+                      ? status_.reason + "; stable hold reached"
+                      : "stable hold reached";
+              activateMode(target, activation_reason);
+              maybeStartState2StateRecoveryLocked();
             }
           }
         } else {
@@ -1604,6 +1892,7 @@ void PlannerSupervisor::timerCallback(const ros::TimerEvent &) {
       const bool source_timeout_abort =
           shouldMonitorCommandSource(status_.phase) &&
           (active_owner == CommandOwner::STATE2STATE ||
+           active_owner == CommandOwner::TRACKING ||
            active_owner == CommandOwner::EXPLORATION) &&
           command_health.authorized_owner == active_owner &&
           shouldAbortCommandSource(
@@ -1729,7 +2018,10 @@ void PlannerSupervisor::updatePhaseFromActiveModeLocked() {
   }
   if (status_.active_mode == PlannerMode::HOLD) {
     status_.stable_hover = hoverConditionMetLocked();
-    status_.ready_for_new_task = status_.stable_hover;
+    const bool recovery_worker_busy =
+        state2state_recovery_pending_ &&
+        (!navigation_worker_readiness_observed_ || !navigation_worker_ready_);
+    status_.ready_for_new_task = status_.stable_hover && !recovery_worker_busy;
     status_.mode_state = ModeState::HOLD_IDLE;
     if (status_.stable_hover) {
       status_.phase = PlannerPhase::STABLE_HOLD;

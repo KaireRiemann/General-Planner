@@ -271,15 +271,29 @@ namespace fsm {
         vector<DiagnosticEvent> diagnostic_events_;
         vector<DiagnosticEvent> tracking_diagnostic_events_;
         mutable std::mutex fsm_tick_mutex_;
-        // State-to-state replanning may take longer than one FSM tick. Keep
+        enum class State2StatePlanningOperation : std::uint8_t {
+            NONE = 0,
+            PLAN_FROM_REST = 1,
+            REPLAN = 2,
+        };
+
+        // State-to-state planning may take longer than one FSM tick. Keep
         // the FSM lock free while it runs, but do not allow a plan-from-rest
-        // request to enter the same planner concurrently.
+        // request to enter the same planner concurrently.  The operation is
+        // published to the runtime through the navigation status heartbeat so
+        // a safe HOLD never re-arms while an old worker still owns planner
+        // state.
         std::atomic<bool> state2state_replan_in_progress_{false};
         // These wall-clock fields are consumed by the isolated command timer.
         // They deliberately do not depend on /clock: a simulator clock pause
         // must not hide an optimizer or frontend that no longer returns.
         std::atomic<std::uint64_t> state2state_replan_start_wall_ns_{0};
         std::atomic<bool> state2state_replan_watchdog_reported_{false};
+        std::atomic<std::uint8_t> state2state_planning_operation_{
+                static_cast<std::uint8_t>(State2StatePlanningOperation::NONE)};
+        // Set only after the committed backup has reached a stationary point.
+        // The command queue can then keep publishing this exact safe command
+        // while a subsequent plan-from-rest is still running.
         std::atomic<bool> state2state_terminal_backup_hold_{false};
         std::atomic<bool> navigation_execution_enabled_{true};
         std::atomic<bool> accept_external_goals_{true};
@@ -424,6 +438,14 @@ namespace fsm {
         }
         bool navigationGoalActive() const {
             return navigation_goal_active_.load();
+        }
+        bool state2StatePlanningWorkerReady() const {
+            return !state2state_replan_in_progress_.load(std::memory_order_acquire);
+        }
+        bool state2StatePlanFromRestInProgress() const {
+            return state2state_planning_operation_.load(std::memory_order_acquire) ==
+                   static_cast<std::uint8_t>(
+                           State2StatePlanningOperation::PLAN_FROM_REST);
         }
         const char *machineStateName() const {
             return MACHINE_STATE_STR[machine_state_].c_str();

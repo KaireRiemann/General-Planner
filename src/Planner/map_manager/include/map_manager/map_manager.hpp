@@ -4,6 +4,7 @@
 #include <atomic>
 #include <cmath>
 #include <cstdint>
+#include <functional>
 #include <limits>
 #include <memory>
 #include <mutex>
@@ -281,7 +282,8 @@ public:
     bool findTopologyPath(const rog_map::Vec3f &start,
                           const rog_map::Vec3f &goal,
                           rog_map::vec_Vec3f &path,
-                          const double attach_radius = 0.0) const
+                          const double attach_radius = 0.0,
+                          const std::function<bool()> &should_cancel = {}) const
     {
         if (!map_ || !topologyReady()) {
             path.clear();
@@ -289,7 +291,7 @@ public:
         }
         syncBoundaryMap();
         return topology_graph_->findPath(start, goal, makeTopologyQuery(),
-                                         path, attach_radius);
+                                         path, attach_radius, should_cancel);
     }
 
     bool findTopologyPath(
@@ -297,16 +299,19 @@ public:
         const rog_map::Vec3f &start,
         const rog_map::Vec3f &goal,
         rog_map::vec_Vec3f &path,
-        const double attach_radius = 0.0) const
+        const double attach_radius = 0.0,
+        const std::function<bool()> &should_cancel = {}) const
     {
         if (!map_ || !topologyReady() || !snapshot) {
             path.clear();
             return false;
         }
-        syncBoundaryMap();
+        // A snapshot query is used by the real-time planner.  Its topology
+        // data is immutable, and synchronizing/draining map state here can
+        // make a read-only planning worker wait behind map maintenance.
         return topology_graph_->findPath(snapshot, start, goal,
                                          makeTopologyQuery(), path,
-                                         attach_radius);
+                                         attach_radius, should_cancel);
     }
 
     rog_map::RobotState getRobotState() const

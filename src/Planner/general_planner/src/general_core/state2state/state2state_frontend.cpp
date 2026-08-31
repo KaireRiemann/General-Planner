@@ -201,6 +201,12 @@ namespace state2state_task {
             services.ros_ptr->error(" -- [GeneralPlanner] Goal waypoints empty or searching horizon negative, force return.");
             return false;
         }
+        const auto cancelled = [&services] {
+            return services.planning_control.cancelRequested();
+        };
+        if (cancelled()) {
+            return false;
+        }
 
         // 1) check and shift pts
         // 		For start point, must be collision free
@@ -218,7 +224,8 @@ namespace state2state_task {
 
         int flag_es = ON_PROB_MAP | (services.cfg.frontend_in_known_free ? UNKNOWN_AS_OCCUPIED : UNKNOWN_AS_FREE);
         vec_Vec3f out_path;
-        RET_CODE ret_es = services.astar->escapePathSearch(start_pt, flag_es, out_path);
+        RET_CODE ret_es = services.astar->escapePathSearch(start_pt, flag_es,
+                                                            out_path, cancelled);
         if (ret_es != NO_NEED) {
             if (ret_es != REACH_HORIZON && ret_es != REACH_GOAL) {
                 services.ros_ptr->error(
@@ -311,6 +318,9 @@ namespace state2state_task {
                                           RET_CODE &candidate_ret) {
             candidate.clear();
             candidate_ret = FAILED;
+            if (cancelled()) {
+                return false;
+            }
             if (!services.cfg.state2state_topology_query_capability_enable ||
                 !services.cfg.state2state_topology_enable ||
                 services.topology_route_runtime == nullptr) {
@@ -369,12 +379,22 @@ namespace state2state_task {
             const double query_interval = std::max(
                 0.0, services.cfg.state2state_topology_route_query_min_interval);
             const auto queryGlobalRoute = [&](const bool forced) {
-                if (!forced && std::isfinite(route.last_query_time) &&
+                if (cancelled()) {
+                    route.last_result = "TOPO_QUERY_CANCELLED";
+                    return false;
+                }
+                // Forced rejoin requests still obey the interval: without
+                // this, one obstructed/deviated tick can repeatedly launch a
+                // full graph query before the map has produced a new snapshot.
+                if (std::isfinite(route.last_query_time) &&
                     now - route.last_query_time < query_interval) {
-                    route.last_result = "TOPO_QUERY_RATE_LIMIT";
+                    route.last_result = forced ? "TOPO_REQUERY_RATE_LIMIT"
+                                               : "TOPO_QUERY_RATE_LIMIT";
                     return false;
                 }
                 route.last_query_time = now;
+                services.planning_control.setStage(
+                    State2StatePlanningStage::TOPOLOGY_QUERY);
                 if (!services.map_manager->topologyReady()) {
                     route.last_result = "NO_TOPO_SNAPSHOT";
                     return false;
@@ -388,7 +408,11 @@ namespace state2state_task {
 
                 vec_Vec3f raw_route;
                 bool reaches_goal = services.map_manager->findTopologyPath(
-                    snapshot, temp_start_point, goal, raw_route);
+                    snapshot, temp_start_point, goal, raw_route, 0.0, cancelled);
+                if (cancelled()) {
+                    route.last_result = "TOPO_QUERY_CANCELLED";
+                    return false;
+                }
                 if (!reaches_goal) {
                     struct RouteTarget {
                         Vec3f position;
@@ -400,6 +424,10 @@ namespace state2state_task {
                         direction = (goal - temp_start_point) / query_distance;
                     }
                     for (const auto &entry : snapshot->graph) {
+                        if (cancelled()) {
+                            route.last_result = "TOPO_QUERY_CANCELLED";
+                            return false;
+                        }
                         const Vec3f offset = entry.second.node.position - temp_start_point;
                         const double radial_distance = offset.norm();
                         const double progress = offset.dot(direction);
@@ -423,7 +451,12 @@ namespace state2state_task {
                         vec_Vec3f anchor_route;
                         if (!services.map_manager->findTopologyPath(
                                 snapshot, temp_start_point,
-                                targets[i].position, anchor_route)) {
+                                targets[i].position, anchor_route, 0.0,
+                                cancelled)) {
+                            if (cancelled()) {
+                                route.last_result = "TOPO_QUERY_CANCELLED";
+                                return false;
+                            }
                             continue;
                         }
                         if (geometry_utils::computePathLength(anchor_route) +
@@ -467,6 +500,11 @@ namespace state2state_task {
             double route_start_s = 0.0;
             Vec3f route_start;
             const auto acquireRouteProjection = [&]() {
+                services.planning_control.setStage(
+                    State2StatePlanningStage::TOPOLOGY_ATTACH);
+                if (cancelled()) {
+                    return false;
+                }
                 if (!route.valid ||
                     !projectRouteMonotonically(route.raw_topology_route,
                                                 route.arc_length,
@@ -480,9 +518,16 @@ namespace state2state_task {
                              2.0 * services.cfg.resolution);
             };
             if (!acquireRouteProjection()) {
+                const GlobalTopologyRouteContext previous_route = route;
                 clearRoute("TOPO_ROUTE_DEVIATED", false);
                 if (!queryGlobalRoute(true) || !acquireRouteProjection()) {
-                    route.last_result = "TOPO_ROUTE_REJOIN_FAILED";
+                    // The previous route is still useful as route context,
+                    // but this tick must fail safely.  Do not replace it with
+                    // a detached candidate and then fall through to A*.
+                    route = previous_route;
+                    route.last_query_time = now;
+                    route.last_result = cancelled() ? "TOPO_QUERY_CANCELLED"
+                                                    : "TOPO_ROUTE_REJOIN_FAILED";
                     return false;
                 }
             }
@@ -497,6 +542,11 @@ namespace state2state_task {
             const double route_end_s = std::min(route.arc_length.back(),
                                                 route_start_s + prefix_length);
             vec_Vec3f route_prefix;
+            services.planning_control.setStage(
+                State2StatePlanningStage::TOPOLOGY_PREFIX);
+            if (cancelled()) {
+                return false;
+            }
             if (!sliceRouteByArcLength(route.raw_topology_route, route.arc_length,
                                        route_start_s, route_end_s, route_prefix)) {
                 clearRoute("TOPO_ROUTE_SLICE_FAILED", false);
@@ -525,6 +575,9 @@ namespace state2state_task {
                 const int steps = std::max(1, static_cast<int>(
                     std::ceil(length / prefix_step)));
                 for (int i = 1; i <= steps; ++i) {
+                    if (cancelled()) {
+                        return false;
+                    }
                     const Vec3f sample = start +
                         (static_cast<double>(i) / static_cast<double>(steps)) *
                         (end - start);
@@ -596,6 +649,9 @@ namespace state2state_task {
                 };
                 std::vector<RejoinAnchor> anchors;
                 for (std::size_t i = 1; i < route.raw_topology_route.size(); ++i) {
+                    if (cancelled()) {
+                        return false;
+                    }
                     if (route.arc_length[i] <= route_start_s + services.cfg.resolution ||
                         route.arc_length[i] > route_end_s + services.cfg.resolution ||
                         !insideLocalInterior(route.raw_topology_route[i]) ||
@@ -613,11 +669,14 @@ namespace state2state_task {
                         1, services.cfg.state2state_topology_route_rejoin_max_candidates)),
                     anchors.size());
                 for (std::size_t attempt = 0; attempt < attempts; ++attempt) {
+                    if (cancelled()) {
+                        return false;
+                    }
                     vec_Vec3f repair_path;
                     const RET_CODE repair_ret = services.astar->pointToPointPathSearch(
                         temp_start_point, route.raw_topology_route[anchors[attempt].index],
                         flag, prefix_length, repair_path,
-                        services.cfg.frontend_astar_time_out);
+                        services.cfg.frontend_astar_time_out, cancelled);
                     if (repair_ret != REACH_GOAL || repair_path.size() < 2) {
                         continue;
                     }
@@ -679,6 +738,22 @@ namespace state2state_task {
         RET_CODE ret_code = FAILED;
         const bool topology_frontend =
                 buildTopologyCandidate(normal_path, ret_code);
+        const bool strict_topology_route = topologyRouteRequired(
+                services.cfg.state2state_topology_query_capability_enable,
+                services.cfg.state2state_topology_enable,
+                services.topology_route_runtime,
+                services.cfg.state2state_topology_strict_route_enable,
+                (goal - temp_start_point).norm(),
+                services.cfg.state2state_topology_min_query_distance);
+        if (cancelled()) {
+            return false;
+        }
+        if (strict_topology_route && !topology_frontend) {
+            services.ros_ptr->warn(
+                " -- [GeneralPlanner] Global-topology route is required but unavailable; reject this local replan.");
+            return false;
+        }
+        services.planning_control.setStage(State2StatePlanningStage::LOCAL_FRONTEND);
         const bool direct_line_frontend = !topology_frontend &&
                 buildDirectLineCandidate(normal_path, ret_code);
         if (!direct_line_frontend && !topology_frontend) {
@@ -687,7 +762,8 @@ namespace state2state_task {
                                                           flag,
                                                           temp_plannning_horizon,
                                                           normal_path,
-                                                          services.cfg.frontend_astar_time_out);
+                                                          services.cfg.frontend_astar_time_out,
+                                                          cancelled);
         } else if (services.cfg.print_log && direct_line_frontend) {
             services.ros_ptr->info(" -- [GeneralPlanner] Use direct-line frontend candidate: ret={}.",
                            RET_CODE_STR[ret_code]);
@@ -712,7 +788,8 @@ namespace state2state_task {
             fmt::print(fg(fmt::color::indian_red) | fmt::emphasis::bold,
                        " -- [Astar] Path search failed on inf map, try again on prob map.\n");
             ret_code = services.astar->pointToPointPathSearch(temp_start_point, goal, flag, temp_plannning_horizon,
-                                                          normal_path, services.cfg.frontend_astar_time_out);
+                                                          normal_path, services.cfg.frontend_astar_time_out,
+                                                          cancelled);
             if (ret_code == SUCCESS || ret_code == REACH_HORIZON || ret_code == REACH_GOAL) {
                 fmt::print(fg(fmt::color::lime_green) | fmt::emphasis::bold,
                            " -- [Astar] Path search on prob map success.\n");
@@ -822,7 +899,8 @@ namespace state2state_task {
         RET_CODE selected_ret = ret_code;
         vec_Vec3f over_wall_path;
         RET_CODE over_wall_ret = FAILED;
-        if (buildOverWallCandidate(over_wall_path, over_wall_ret)) {
+        if (!strict_topology_route &&
+            buildOverWallCandidate(over_wall_path, over_wall_ret)) {
             const Vec3f goal_dir = (goal - temp_start_point).norm() > 1.0e-6
                                        ? (goal - temp_start_point).normalized()
                                        : Vec3f::Zero();
@@ -896,14 +974,17 @@ namespace state2state_task {
         };
 
         const std::size_t raw_path_size = path.size();
-        path = shortcutPathByLineOfSight(path);
+        if (!strict_topology_route) {
+            path = shortcutPathByLineOfSight(path);
+        }
         if (services.cfg.print_log && path.size() + 2 < raw_path_size) {
             services.ros_ptr->info(" -- [GeneralPlanner] Frontend line-of-sight shortcut: {} -> {} points.",
                            raw_path_size,
                            path.size());
         }
 
-        if (services.cfg.state2state_over_goal_guard_enable) {
+        if (!strict_topology_route &&
+            services.cfg.state2state_over_goal_guard_enable) {
             const double near_goal_radius = std::max(services.cfg.resolution * 3.0,
                                                      services.cfg.state2state_near_goal_radius);
             const double near_goal_xy = (temp_start_point.head<2>() - goal.head<2>()).norm();

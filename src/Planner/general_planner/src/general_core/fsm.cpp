@@ -640,25 +640,43 @@ namespace fsm {
         }
         const std::uint64_t replan_task_epoch = navigation_task_epoch_.load();
         if (release_fsm_lock_during_replan) {
+            if (planner_ptr_) {
+                planner_ptr_->beginState2StatePlanningOperation();
+            }
             state2state_replan_start_wall_ns_.store(
                     ros::WallTime::now().toNSec(), std::memory_order_release);
             state2state_replan_watchdog_reported_.store(
                     false, std::memory_order_release);
+            state2state_planning_operation_.store(
+                    static_cast<std::uint8_t>(
+                            State2StatePlanningOperation::REPLAN),
+                    std::memory_order_release);
             state2state_terminal_backup_hold_.store(
                     false, std::memory_order_release);
         }
         struct State2StateReplanGuard {
             std::atomic<bool> &in_progress;
             std::atomic<std::uint64_t> &start_wall_ns;
+            std::atomic<std::uint8_t> &operation;
+            GeneralPlanner *planner;
             bool active;
             ~State2StateReplanGuard() {
                 if (active) {
+                    if (planner != nullptr) {
+                        planner->finishState2StatePlanningOperation();
+                    }
                     in_progress.store(false);
                     start_wall_ns.store(0, std::memory_order_release);
+                    operation.store(
+                            static_cast<std::uint8_t>(
+                                    State2StatePlanningOperation::NONE),
+                            std::memory_order_release);
                 }
             }
         } replan_guard{state2state_replan_in_progress_,
                        state2state_replan_start_wall_ns_,
+                       state2state_planning_operation_,
+                       planner_ptr_.get(),
                        release_fsm_lock_during_replan};
 
         TimeConsuming replan_once_time("replan_once_time", false);
@@ -1112,15 +1130,48 @@ namespace fsm {
                     state2state_replan_in_progress_.exchange(true)) {
                     return;
                 }
+                if (release_fsm_lock_during_plan) {
+                    if (planner_ptr_) {
+                        planner_ptr_->beginState2StatePlanningOperation();
+                    }
+                    // PLAN_FROM_REST uses the same planner and the same
+                    // lifetime contract as rolling replan.  Previously it
+                    // lacked this timestamp, so the independent command
+                    // queue could not expose a blocked initial/restart plan
+                    // to the runtime supervisor.
+                    state2state_replan_start_wall_ns_.store(
+                            ros::WallTime::now().toNSec(),
+                            std::memory_order_release);
+                    state2state_replan_watchdog_reported_.store(
+                            false, std::memory_order_release);
+                    state2state_planning_operation_.store(
+                            static_cast<std::uint8_t>(
+                                    State2StatePlanningOperation::PLAN_FROM_REST),
+                            std::memory_order_release);
+                }
                 struct State2StatePlanGuard {
                     std::atomic<bool> &in_progress;
+                    std::atomic<std::uint64_t> &start_wall_ns;
+                    std::atomic<std::uint8_t> &operation;
+                    GeneralPlanner *planner;
                     bool active;
                     ~State2StatePlanGuard() {
                         if (active) {
+                            if (planner != nullptr) {
+                                planner->finishState2StatePlanningOperation();
+                            }
                             in_progress.store(false);
+                            start_wall_ns.store(0, std::memory_order_release);
+                            operation.store(
+                                    static_cast<std::uint8_t>(
+                                            State2StatePlanningOperation::NONE),
+                                    std::memory_order_release);
                         }
                     }
                 } plan_guard{state2state_replan_in_progress_,
+                             state2state_replan_start_wall_ns_,
+                             state2state_planning_operation_,
+                             planner_ptr_.get(),
                              release_fsm_lock_during_plan};
                 if (release_fsm_lock_during_plan) {
                     tick_lock.unlock();
@@ -1421,6 +1472,14 @@ namespace fsm {
     }
 
     void Fsm::requestControlledStop(const std::string &reason) {
+        // The watchdog/PAUSE path may run on a different callback queue from
+        // the expensive planner call. Request a cooperative return before the
+        // task epoch is invalidated; the worker will release replan_lock and
+        // publish READY instead of leaving recovery permanently BUSY.
+        if (planner_ptr_ && state2state_replan_in_progress_.load(
+                                std::memory_order_acquire)) {
+            planner_ptr_->requestState2StatePlanningCancel();
+        }
         navigation_execution_enabled_ = false;
         accept_external_goals_ = false;
         navigation_goal_active_ = false;
@@ -1492,12 +1551,13 @@ namespace fsm {
                     cfg_.task_type == general_planner::architecture::TaskType::STATE_TO_STATE &&
                     (cfg_.backend_type == general_planner::architecture::BackendType::JERK_TRACKING ||
                      cfg_.backend_type == general_planner::architecture::BackendType::SNAP_TRACKING);
-            const bool tracking_with_state_backend =
+            const bool tracking_with_nontracking_backend =
                     cfg_.task_type == general_planner::architecture::TaskType::TRACKING &&
-                    cfg_.backend_type == general_planner::architecture::BackendType::SE3;
+                    cfg_.backend_type != general_planner::architecture::BackendType::JERK_TRACKING &&
+                    cfg_.backend_type != general_planner::architecture::BackendType::SNAP_TRACKING;
             if (cfg_.backend_type == general_planner::architecture::BackendType::AUTO ||
                 state2state_with_tracking_backend ||
-                tracking_with_state_backend) {
+                tracking_with_nontracking_backend) {
                 cfg_.backend_type = general_planner::architecture::defaultBackendForTask(cfg_.task_type);
                 cfg_.planning_backend_str = general_planner::architecture::toString(cfg_.backend_type);
             }

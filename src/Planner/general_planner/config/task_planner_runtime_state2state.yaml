@@ -15,7 +15,12 @@ fsm:
   click_goal_3d_topic: "/planning/click_goal_3d"
   click_height: 1.5
   click_yaw_en: true
+  # PlannerSupervisor can switch this composed adapter to `tracking` at
+  # runtime. Keep Odom as the single default input. A supplied Path can be
+  # enabled explicitly when an upstream predictor owns the full horizon.
   tracking_target_odom_topic: "/tracking/target_odom"
+  tracking_target_prediction_topic: "/tracking/target_prediction"
+  tracking_use_target_prediction_path: false
   perching_surface_odom_topic: "/perching/surface_odom"
   tracking_prediction_horizon: 4.0
   tracking_prediction_dt: 0.25
@@ -26,6 +31,12 @@ fsm:
   tracking_prediction_max_time: 0.03
   task_timeout: 1.0
   replan_rate: 15.0
+  # One bound covers both rolling replan and plan-from-rest. The latter has
+  # no command stream until a trajectory is committed, so it reports through
+  # its own watchdog topic while supervisor keeps a verified HOLD.
+  state2state_replan_watchdog_timeout: 2.0
+  state2state_replan_watchdog_topic: "/planning/navigation/replan_watchdog"
+  state2state_plan_watchdog_topic: "/planning/navigation/plan_watchdog"
   cmd_topic: "/planning/pos_cmd"
   mpc_cmd_topic: "/planning_cmd/poly_traj"
   timer_en: true
@@ -91,6 +102,10 @@ general_planner:
       # the option on: local-only remains the default until the user publishes
       # true on /planner/navigation/use_global_topology.
       query_capability_enable: true
+      # With global topology selected, a distant goal must remain on a
+      # topology route.  A failed rejoin is a safe planning failure, never a
+      # fallback to a direct/free-space route.
+      strict_route_enable: true
       selection_topic: /planner/navigation/use_global_topology
       # Global bubble A* supplies a route; the local planner executes only the
       # collision-checked prefix inside the rolling ROG window.

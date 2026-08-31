@@ -1,6 +1,5 @@
 #pragma once
 
-#include <atomic>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -8,6 +7,7 @@
 
 #include <general_core/state2state/state2state_backend_context.hpp>
 #include <general_core/state2state/state2state_exp_backup_backend.hpp>
+#include <general_core/state2state/state2state_planning_control.hpp>
 #include <utils/header/type_utils.hpp>
 
 namespace ros_interface {
@@ -24,6 +24,10 @@ class LogOneReplan;
 class MapManager;
 
 namespace state2state_task {
+
+struct StateToStateExpBackendServices;
+struct StateToStateBackupBackendServices;
+struct StateToStateSE3BackendServices;
 
 struct StateToStateTaskServices {
     std::mutex &replan_lock;
@@ -42,9 +46,8 @@ struct StateToStateTaskServices {
     double &backend_time_sum;
     int &backend_time_count;
     StateToStateBackendContext &backend_context;
+    State2StatePlanningControl &planning_control;
 };
-
-struct StateToStateSE3BackendServices;
 
 general_utils::RET_CODE planFromRest(StateToStateTaskServices &services,
                                    StateToStateExpBackendServices &exp_services,

@@ -59,6 +59,10 @@ private:
   // already committed backup trajectory while its rolling replan is still
   // blocked.  It is epoch-bound so an old worker cannot retire a new task.
   void navigationReplanWatchdogCallback(const std_msgs::UInt64ConstPtr &msg);
+  // Initial and post-backup plan-from-rest have no rolling command stream to
+  // watchdog. The adapter emits this separately so supervisor can retain a
+  // verified HOLD without mistaking it for a gateway source timeout.
+  void navigationPlanWatchdogCallback(const std_msgs::UInt64ConstPtr &msg);
   // External gate planner lifecycle ingress. The protocol is std_msgs/String:
   // START (or BEGIN/RUNNING) requests external control, END (or DONE/FINISHED)
   // releases it. Both edges are accepted only through the hover verification
@@ -88,6 +92,16 @@ private:
   // the recovery protocol by retiring the stalled task instead of letting the
   // supervisor report EXECUTING forever.
   void failStaleCommandSourceLocked(const CommandSourceHealth &health);
+  // A failed state2state task can be resumed by a later goal, but only after
+  // the old planning worker reports READY. These helpers keep the latest user
+  // goal latched during that quiescence fence and dispatch it after a fresh
+  // ARM epoch.
+  bool queueState2StateRecoveryGoalLocked(
+      const geometry_msgs::PoseStamped &msg, bool preserve_message_height);
+  void maybeStartState2StateRecoveryLocked();
+  void maybeDispatchState2StateRecoveryGoalLocked(
+      const NavigationAdapterStatus &adapter_status);
+  void clearState2StateRecoveryLocked();
   // `gateway_` has its own callback queue, so its cached odometry must never
   // be used as the source of a lifecycle HOLD.  This method runs under
   // `mutex_` and atomically installs the supervisor's validated pose.
@@ -112,6 +126,7 @@ private:
   ros::Subscriber exploration_status_sub_;
   ros::Subscriber navigation_status_sub_;
   ros::Subscriber navigation_replan_watchdog_sub_;
+  ros::Subscriber navigation_plan_watchdog_sub_;
   ros::Subscriber gate_status_sub_;
   ros::Subscriber handover_status_sub_;
   ros::Subscriber odom_sub_;
@@ -174,6 +189,16 @@ private:
   std::uint64_t navigation_goal_sequence_{0};
   std::uint64_t navigation_goal_sequence_before_dispatch_{0};
   bool navigation_goal_dispatch_pending_{false};
+  // Set from the optional READY/BUSY extension of navigation status. It is
+  // intentionally independent from supervisor task_epoch: PAUSE increments
+  // the adapter epoch before the supervisor may issue the recovery ARM.
+  bool navigation_worker_ready_{false};
+  bool navigation_worker_readiness_observed_{false};
+  std::string navigation_worker_stage_{"unknown"};
+  bool state2state_recovery_allowed_{false};
+  bool state2state_recovery_pending_{false};
+  geometry_msgs::PoseStamped pending_state2state_recovery_goal_;
+  bool pending_state2state_recovery_preserve_height_{false};
 
   std::string exploration_command_topic_;
   std::string exploration_task_request_topic_;
@@ -181,6 +206,7 @@ private:
   std::string navigation_command_topic_;
   std::string navigation_status_topic_;
   std::string navigation_replan_watchdog_topic_;
+  std::string navigation_plan_watchdog_topic_;
   std::string gate_status_topic_;
   std::string navigation_task_mode_topic_;
   std::string navigation_goal_out_topic_;

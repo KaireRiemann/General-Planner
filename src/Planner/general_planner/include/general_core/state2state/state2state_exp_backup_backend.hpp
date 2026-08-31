@@ -8,6 +8,7 @@
 
 #include <general_core/state2state/state2state_backend_context.hpp>
 #include <general_core/state2state/state2state_frontend_services.hpp>
+#include <general_core/state2state/state2state_planning_control.hpp>
 #include <general_core/runtime_trajectory_safety.hpp>
 #include <utils/header/type_utils.hpp>
 
@@ -87,6 +88,7 @@ struct StateToStateExpBackendServices {
     double &goal_yaw;
     bool &new_goal;
     State2StateZDebug &z_debug;
+    State2StatePlanningControl &planning_control;
 };
 
 struct StateToStateBackupBackendServices {
@@ -103,6 +105,7 @@ struct StateToStateBackupBackendServices {
     LogOneReplan &latest_replan;
     CmdTraj &cmd_traj_info;
     std::vector<double> &time_consuming;
+    State2StatePlanningControl &planning_control;
 };
 
 general_utils::RET_CODE generateExpTrajectory(StateToStateExpBackendServices &services,

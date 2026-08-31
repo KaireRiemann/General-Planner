@@ -66,6 +66,24 @@ struct State2StateTopologyRouteRuntime {
     }
 };
 
+// A global-topology selection is a routing policy, not merely a route hint:
+// for non-local goals it may require the frontend to reject a route that
+// cannot remain attached to the persistent topology graph.  Keeping this
+// predicate independent makes the fallback boundary explicit and testable.
+inline bool topologyRouteRequired(
+        const bool query_capability_enabled,
+        const bool topology_enabled,
+        const State2StateTopologyRouteRuntime *runtime,
+        const bool strict_route_enabled,
+        const double goal_distance,
+        const double min_query_distance) {
+    return query_capability_enabled && topology_enabled &&
+           strict_route_enabled && runtime != nullptr &&
+           runtime->policy_enabled.load(std::memory_order_acquire) &&
+           std::isfinite(goal_distance) &&
+           goal_distance >= std::max(0.0, min_query_distance);
+}
+
 inline void resetGlobalTopologyRoute(GlobalTopologyRouteContext &route,
                                      const std::string &reason) {
     route.valid = false;

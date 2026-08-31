@@ -23,6 +23,7 @@ int main() {
     using general_planner::state2state_task::buildRouteArcLength;
     using general_planner::state2state_task::projectRouteMonotonically;
     using general_planner::state2state_task::sliceRouteByArcLength;
+    using general_planner::state2state_task::topologyRouteRequired;
     using general_utils::Vec3f;
     using general_utils::vec_Vec3f;
 
@@ -68,6 +69,19 @@ int main() {
     runtime.setPolicy(false);
     expect(!runtime.policy_enabled.load() && runtime.policy_generation.load() == 2,
            "disable topology policy");
+
+    // A selected strict global-topology policy must reject generic local
+    // fallback only for distant goals. Nearby completion remains local.
+    runtime.setPolicy(true);
+    expect(topologyRouteRequired(true, true, &runtime, true, 8.0, 8.0),
+           "strict topology route required at remote threshold");
+    expect(!topologyRouteRequired(true, true, &runtime, true, 7.9, 8.0),
+           "nearby goal stays local");
+    expect(!topologyRouteRequired(true, true, &runtime, false, 20.0, 8.0),
+           "non-strict policy permits local fallback");
+    runtime.setPolicy(false);
+    expect(!topologyRouteRequired(true, true, &runtime, true, 20.0, 8.0),
+           "disabled topology policy permits local fallback");
 
     std::cout << "state2state_topology_route_self_test passed\n";
     return 0;

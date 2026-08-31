@@ -185,6 +185,16 @@ int main() {
                  "moving odometry must make the newly local vertical region eligible");
 
     rog_map::vec_Vec3f path;
+    // The state2state watchdog must be able to retire an in-flight topology
+    // query.  Cancellation is checked before any traversal or graph scan and
+    // must leave no partial route for a later planner stage to consume.
+    path = {Vec3f(99.0, 99.0, 99.0)};
+    ok &= expect(!graph.findPath(Vec3f(0.5, 0.5, 0.5),
+                                 Vec3f(5.5, 0.5, 0.5), query, path, 0.0,
+                                 []() { return true; }),
+                 "cancelled topology query must return failure");
+    ok &= expect(path.empty(),
+                 "cancelled topology query must clear its partial path");
     ok &= expect(!graph.findPath(Vec3f(0.5, 0.5, 0.5),
                                  Vec3f(5.5, 0.5, 0.5), query, path),
                  "a disconnected graph must not fabricate a direct path");

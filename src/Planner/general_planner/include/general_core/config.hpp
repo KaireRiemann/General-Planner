@@ -89,6 +89,10 @@ namespace general_planner {
         // Build/profile capability only. Runtime policy is selected with the
         // non-latched /planner/navigation/use_global_topology topic.
         bool state2state_topology_query_capability_enable{false};
+        // A selected global topology is a route policy for remote goals. If
+        // reattachment fails, keep the current safe command and reject the
+        // replan rather than falling back to a free-space/direct route.
+        bool state2state_topology_strict_route_enable{true};
         std::string state2state_topology_selection_topic{
             "/planner/navigation/use_global_topology"};
         std::string state2state_topology_construction_mode{
@@ -495,6 +499,9 @@ namespace general_planner {
                                  state2state_topology_query_capability_enable,
                                  false);
             }
+            loader.LoadParam("general_planner/state2state/topology/strict_route_enable",
+                             state2state_topology_strict_route_enable,
+                             true);
             loader.LoadParam("general_planner/state2state/topology/selection_topic",
                              state2state_topology_selection_topic,
                              std::string{"/planner/navigation/use_global_topology"});

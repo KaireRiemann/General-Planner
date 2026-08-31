@@ -287,13 +287,15 @@ public:
                   const rog_map::Vec3f &goal,
                   const TopologyMapView &map_view,
                   rog_map::vec_Vec3f &path,
-                  double attach_radius = 0.0) const;
+                  double attach_radius = 0.0,
+                  const std::function<bool()> &should_cancel = {}) const;
     bool findPath(const SearchSnapshotPtr &snapshot,
                   const rog_map::Vec3f &start,
                   const rog_map::Vec3f &goal,
                   const TopologyMapView &map_view,
                   rog_map::vec_Vec3f &path,
-                  double attach_radius = 0.0) const;
+                  double attach_radius = 0.0,
+                  const std::function<bool()> &should_cancel = {}) const;
 
 private:
     struct RegionKey {

@@ -29,6 +29,12 @@ int main() {
   expect(selectGatewayOutputMode(CommandOwner::STATE2STATE, false, false) ==
              GatewayOutputMode::SOURCE_TIMEOUT_HOLD,
          "stale navigation must use source-timeout hold, not explicit hold");
+  expect(selectGatewayOutputMode(CommandOwner::TRACKING, true, false) ==
+             GatewayOutputMode::NAVIGATION,
+         "fresh tracking must pass through navigation adapter");
+  expect(selectGatewayOutputMode(CommandOwner::TRACKING, false, false) ==
+             GatewayOutputMode::SOURCE_TIMEOUT_HOLD,
+         "stale tracking must use source-timeout hold");
   expect(selectGatewayOutputMode(CommandOwner::EXPLORATION, false, true) ==
              GatewayOutputMode::EXPLORATION,
          "fresh exploration must pass through");

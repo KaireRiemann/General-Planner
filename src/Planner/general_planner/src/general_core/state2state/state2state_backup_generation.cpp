@@ -100,6 +100,9 @@ namespace general_planner {
     RET_CODE generateBackupTrajectory(StateToStateBackupBackendServices &services,
                                       ExpTraj &ref_exp_traj,
                                       BackupTraj &back_traj_info) {
+        if (services.planning_control.cancelRequested()) {
+            return FAILED;
+        }
         services.drone_state_mutex.lock();
         back_traj_info.setRobotPos(services.robot_state.p);
         services.drone_state_mutex.unlock();
@@ -139,6 +142,9 @@ namespace general_planner {
 
         Vec3f last_pos = ref_exp_traj.getPos(start_t);
         for (out_t = start_t; out_t < total_dur; out_t += services.cfg.sample_traj_dt) {
+            if (services.planning_control.cancelRequested()) {
+                return FAILED;
+            }
             temp_point = ref_exp_traj.getPos(out_t);
             if ((last_pos - temp_point).norm() < services.cfg.resolution * 0.8) {
                 continue;
@@ -206,6 +212,9 @@ namespace general_planner {
 
         Line line{shifted_robot_p, seed_point};
         Polytope temp_poly;
+        if (services.planning_control.cancelRequested()) {
+            return FAILED;
+        }
         if (!services.corridor_generator->GeneratePolytopeFromLine(line, temp_poly)) {
             services.ros_ptr->warn(" -- [GeneralPlanner] GeneratePolytopeFromLine failed, force return");
             return FAILED;
@@ -241,6 +250,9 @@ namespace general_planner {
         double eval_t = eval_ps.back().first + services.cfg.sample_traj_dt;
         last_pos = eval_ps.back().second;
         while (temp_poly.PointIsInside(eval_ps.back().second) && eval_t < total_dur) {
+            if (services.planning_control.cancelRequested()) {
+                return FAILED;
+            }
             Vec3f cur_pos = ref_exp_traj.getPos(eval_t);
 
             if ((cur_pos - last_pos).norm() < services.cfg.resolution * 0.8) {
@@ -283,6 +295,9 @@ namespace general_planner {
         TimeConsuming t_back_opt("t_back_opt", false);
         double opt_ts = heu_ts;
         Trajectory temp_pos_traj;
+        if (services.planning_control.cancelRequested()) {
+            return FAILED;
+        }
         bool temp_ret = services.traj_manager->backup()->optimize(ref_exp_traj.posTraj(),
                                                           t0,
                                                           te,
@@ -293,6 +308,9 @@ namespace general_planner {
                                                           temp_pos_traj,
                                                           opt_ts);
         services.time_consuming[BACK_TRAJ_OPT] = t_back_opt.stop();
+        if (services.planning_control.cancelRequested()) {
+            return FAILED;
+        }
 
         double init_ts;
         VecDf init_times;

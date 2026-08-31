@@ -19,7 +19,8 @@ enum class GatewayOutputMode {
 constexpr GatewayOutputMode selectGatewayOutputMode(
     const CommandOwner authorized_owner, const bool navigation_fresh,
     const bool exploration_fresh) {
-  if (authorized_owner == CommandOwner::STATE2STATE) {
+  if (authorized_owner == CommandOwner::STATE2STATE ||
+      authorized_owner == CommandOwner::TRACKING) {
     return navigation_fresh ? GatewayOutputMode::NAVIGATION
                             : GatewayOutputMode::SOURCE_TIMEOUT_HOLD;
   }

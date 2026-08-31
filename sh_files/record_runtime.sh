@@ -213,6 +213,8 @@ add_topic /time_cost
 # Navigation adapter command / status / goal handoff.
 add_topic /planning/navigation/command
 add_topic /planning/navigation/status
+add_topic /planning/navigation/replan_watchdog
+add_topic /planning/navigation/plan_watchdog
 add_topic /planning/navigation/pos_cmd
 add_topic /planning/navigation_task_mode
 add_topic /planning/click_goal

@@ -179,6 +179,9 @@ namespace general_planner {
     RET_CODE generateExpTrajectory(StateToStateExpBackendServices &services,
                                    ExpTraj &last_exp_traj_info,
                                    ExpTraj &out_exp_traj_info) {
+        if (services.planning_control.cancelRequested()) {
+            return FAILED;
+        }
         TimeConsuming t_exp_frontend("t_exp_frontend", false);
         services.z_debug = State2StateZDebug{};
         services.z_debug.goal_z = services.goal_p.z();
@@ -313,6 +316,9 @@ namespace general_planner {
             eval_t += services.cfg.sample_traj_dt;
             int replan_id = -1;
             for (; eval_t < guide_pos_traj_total_time; eval_t += services.cfg.sample_traj_dt) {
+                if (services.planning_control.cancelRequested()) {
+                    return FAILED;
+                }
                 temp_pt = guide_pos_traj.getPos(eval_t);
                 if ((temp_pt - last_sample_pt).norm() < services.cfg.resolution * 0.8) {
                     continue;
@@ -516,8 +522,14 @@ namespace general_planner {
 
         services.shifted_sfc_start_pt = Vec3f(9999, 9999, 9999);
         if (!use_esdf_exp_traj && !use_plain_exp_traj) {
+            if (services.planning_control.cancelRequested()) {
+                return FAILED;
+            }
             bool bool_ret_code = services.corridor_generator->SearchPolytopeOnPath(guide_path, sfc, services.shifted_sfc_start_pt, services.cfg.use_fov_cut);
 
+            if (services.planning_control.cancelRequested()) {
+                return FAILED;
+            }
             if (!bool_ret_code) {
                 services.ros_ptr->warn(" -- [GeneralPlanner] SearchPolytopeOnPath for new path failed");
                 return FAILED;
@@ -612,6 +624,13 @@ namespace general_planner {
         bool temp_ret;
         Trajectory out_traj;
         TimeConsuming t_exp_opt("t_exp_opt", false);
+        // pathSearch may have published a finer-grained topology stage;
+        // once the guide is fixed, report the actual potentially expensive
+        // optimizer boundary to the watchdog/status channel.
+        services.planning_control.setStage(State2StatePlanningStage::EXP_TRAJECTORY);
+        if (services.planning_control.cancelRequested()) {
+            return FAILED;
+        }
         services.traj_manager->setSwarmCurrentWallTime(replan_process_start_WT);
         if (use_esdf_exp_traj) {
             temp_ret = services.traj_manager->esdf()->optimize(pos_init_state,
@@ -661,6 +680,9 @@ namespace general_planner {
                                                       out_traj);
         }
         services.time_consuming[EXP_TRAJ_OPT] = t_exp_opt.stop();
+        if (services.planning_control.cancelRequested()) {
+            return FAILED;
+        }
         copyZSummary(summarizeTrajectoryZ(out_traj, services.cfg.sample_traj_dt),
                      services.z_debug.optimized);
         if (services.z_debug.optimized.valid) {

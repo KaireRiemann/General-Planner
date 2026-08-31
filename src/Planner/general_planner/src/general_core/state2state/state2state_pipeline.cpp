@@ -35,7 +35,8 @@ namespace general_planner {
                 ft_cnt,
                 bt,
                 bt_cnt,
-                *state2state_backend_context_
+                *state2state_backend_context_,
+                state2state_planning_control_
         };
         return services;
     }
@@ -48,6 +49,7 @@ namespace general_planner {
                 astar_ptr_,
                 dynamic_obstacle_layer_.get(),
                 &state2state_topology_route_runtime_,
+                state2state_planning_control_,
                 local_start_p_,
                 gi_.goal_p,
                 gi_.goal_valid
@@ -78,7 +80,8 @@ namespace general_planner {
                 gi_.goal_p,
                 gi_.goal_yaw,
                 gi_.new_goal,
-                latest_state2state_z_debug_
+                latest_state2state_z_debug_,
+                state2state_planning_control_
         };
         return services;
     }
@@ -97,9 +100,31 @@ namespace general_planner {
                 gi_.goal_yaw,
                 latest_replan,
                 cmd_traj_info_,
-                time_consuming_
+                time_consuming_,
+                state2state_planning_control_
         };
         return services;
+    }
+
+    void GeneralPlanner::beginState2StatePlanningOperation() {
+        state2state_planning_control_.begin();
+    }
+
+    void GeneralPlanner::requestState2StatePlanningCancel() {
+        state2state_planning_control_.requestCancel();
+    }
+
+    void GeneralPlanner::finishState2StatePlanningOperation() {
+        state2state_planning_control_.finish();
+    }
+
+    bool GeneralPlanner::state2StatePlanningCancelRequested() const {
+        return state2state_planning_control_.cancelRequested();
+    }
+
+    const char *GeneralPlanner::state2StatePlanningStageName() const {
+        return state2state_task::state2StatePlanningStageName(
+            state2state_planning_control_.stage());
     }
 
     namespace {
@@ -185,6 +210,10 @@ namespace general_planner {
                                             const double goal_yaw,
                                             const bool new_goal) {
         std::lock_guard<std::mutex> guard(services.replan_lock);
+        services.planning_control.setStage(State2StatePlanningStage::INPUT);
+        if (services.planning_control.cancelRequested()) {
+            return FAILED;
+        }
         services.latest_replan.reset();
         const auto input_check = checker::checkState2StateInput(goal_p,
                                                                 goal_yaw,
@@ -234,10 +263,14 @@ namespace general_planner {
         BackupTraj back_traj_info;
         services.last_exp_traj_info.setEmpty();
         services.local_start_p = local_star_pt;
+        services.planning_control.setStage(State2StatePlanningStage::EXP_TRAJECTORY);
         RET_CODE exp_ret_code = generateExpTrajectory(
                 exp_services,
                 services.last_exp_traj_info,
                 exp_traj_info);
+        if (services.planning_control.cancelRequested()) {
+            return FAILED;
+        }
         if (exp_ret_code == FAILED) {
             services.ros_ptr->warn(" -- [GeneralPlanner] in [PlanFromRest] GenerateExpTrajectory failed with {}.",
                                    RET_CODE_STR[exp_ret_code].c_str());
@@ -292,10 +325,16 @@ namespace general_planner {
         }
 
         back_traj_info.setEmpty();
+        services.planning_control.setStage(State2StatePlanningStage::BACKUP_TRAJECTORY);
         RET_CODE back_ret_code = generateBackupTrajectory(
                 backup_services,
                 exp_traj_info,
                 back_traj_info);
+        if (services.planning_control.cancelRequested()) {
+            return FAILED;
+        }
+
+        services.planning_control.setStage(State2StatePlanningStage::COMMIT);
 
         if (back_ret_code == SUCCESS) {
             if (services.cfg.print_log) {
@@ -364,6 +403,10 @@ namespace general_planner {
                                           const bool new_goal) {
         TimeConsuming replan_total_t("ReplanOnce", false);
         std::lock_guard<std::mutex> guard(services.replan_lock);
+        services.planning_control.setStage(State2StatePlanningStage::INPUT);
+        if (services.planning_control.cancelRequested()) {
+            return FAILED;
+        }
 
         const auto input_check = checker::checkState2StateInput(goal_p,
                                                                 goal_yaw,
@@ -397,11 +440,15 @@ namespace general_planner {
 
         ExpTraj exp_traj_info;
         TimeConsuming t_exp("t_exp", false);
+        services.planning_control.setStage(State2StatePlanningStage::EXP_TRAJECTORY);
         RET_CODE exp_ret_code = generateExpTrajectory(
                 exp_services,
                 services.last_exp_traj_info,
                 exp_traj_info);
         services.time_consuming[GENERATE_EXP_TRAJ] = t_exp.stop();
+        if (services.planning_control.cancelRequested()) {
+            return FAILED;
+        }
 
         if (exp_ret_code == FAILED) {
             services.ros_ptr->warn(" -- [GeneralPlanner] in [ReplanOnce]: GenerateExpTrajectory failed, force return");
@@ -479,11 +526,15 @@ namespace general_planner {
 
         BackupTraj back_traj_info;
         TimeConsuming t_back("t_back", false);
+        services.planning_control.setStage(State2StatePlanningStage::BACKUP_TRAJECTORY);
         RET_CODE back_ret_code = generateBackupTrajectory(
                 backup_services,
                 exp_traj_info,
                 back_traj_info);
         services.time_consuming[GENERATE_BACK_TRAJ] = t_back.stop();
+        if (services.planning_control.cancelRequested()) {
+            return FAILED;
+        }
 
         {
             services.frontend_time_sum +=
@@ -599,6 +650,7 @@ namespace general_planner {
         };
 
         if (back_ret_code == SUCCESS) {
+            services.planning_control.setStage(State2StatePlanningStage::COMMIT);
             if (rejectOnCheckFailure(services.ros_ptr,
                                      "ReplanOnce exp+backup commit",
                                      checker::checkExpBackupCommit(exp_traj_info,

@@ -1907,9 +1907,10 @@ bool IncrementalTopologyGraph::findPath(const rog_map::Vec3f &start,
                                         const rog_map::Vec3f &goal,
                                         const TopologyMapView &map_view,
                                         rog_map::vec_Vec3f &path,
-                                        double attach_radius) const {
+                                        double attach_radius,
+                                        const std::function<bool()> &should_cancel) const {
     return findPath(acquireSearchSnapshot(), start, goal, map_view,
-                    path, attach_radius);
+                    path, attach_radius, should_cancel);
 }
 
 bool IncrementalTopologyGraph::findPath(
@@ -1918,8 +1919,15 @@ bool IncrementalTopologyGraph::findPath(
     const rog_map::Vec3f &goal,
     const TopologyMapView &map_view,
     rog_map::vec_Vec3f &path,
-    double attach_radius) const {
+    double attach_radius,
+    const std::function<bool()> &should_cancel) const {
     path.clear();
+    const auto cancelled = [&should_cancel] {
+        return should_cancel && should_cancel();
+    };
+    if (cancelled()) {
+        return false;
+    }
     if (!active() || !snapshot || !start.allFinite() || !goal.allFinite() ||
         !map_view.isTraversable(start) || !map_view.isTraversable(goal)) {
         return false;
@@ -1931,6 +1939,9 @@ bool IncrementalTopologyGraph::findPath(
     if ((goal - start).norm() <= query_config.edge_sample_spacing) {
         path = {start, goal};
         return true;
+    }
+    if (cancelled()) {
+        return false;
     }
     if (lineTraversable(start, goal, map_view,
                         query_config.edge_sample_spacing)) {
@@ -1949,6 +1960,9 @@ bool IncrementalTopologyGraph::findPath(
     nearest_start.reserve(graph.size());
     nearest_goal.reserve(graph.size());
     for (const auto &entry : graph) {
+        if (cancelled()) {
+            return false;
+        }
         const double start_distance =
             (entry.second.node.position - start).norm();
         if (start_distance <= attach_radius) {
@@ -1970,6 +1984,9 @@ bool IncrementalTopologyGraph::findPath(
     for (std::size_t i = 0;
          i < nearest_start.size() && i < attachment_checks &&
          start_candidates.size() < query_config.max_neighbors; ++i) {
+        if (cancelled()) {
+            return false;
+        }
         const auto node = graph.find(nearest_start[i].second);
         if (node != graph.end() &&
             lineTraversable(start, node->second.node.position, map_view,
@@ -1980,6 +1997,9 @@ bool IncrementalTopologyGraph::findPath(
     for (std::size_t i = 0;
          i < nearest_goal.size() && i < attachment_checks &&
          goal_links.size() < query_config.max_neighbors; ++i) {
+        if (cancelled()) {
+            return false;
+        }
         const auto node = graph.find(nearest_goal[i].second);
         if (node != graph.end() &&
             lineTraversable(node->second.node.position, goal, map_view,
@@ -2027,6 +2047,9 @@ bool IncrementalTopologyGraph::findPath(
     double best_goal_cost = std::numeric_limits<double>::infinity();
     NodeId best_goal_parent = 0;
     while (!queue.empty()) {
+        if (cancelled()) {
+            return false;
+        }
         const QueueEntry current = queue.top();
         queue.pop();
         const auto distance_it = distance.find(current.node_id);
@@ -2048,6 +2071,9 @@ bool IncrementalTopologyGraph::findPath(
             continue;
         }
         for (const auto &neighbor : graph_it->second.neighbors) {
+            if (cancelled()) {
+                return false;
+            }
             if (graph.count(neighbor.first) == 0U) {
                 continue;
             }
@@ -2068,6 +2094,9 @@ bool IncrementalTopologyGraph::findPath(
 
     std::vector<NodeId> reverse_ids;
     for (NodeId id = best_goal_parent; id != 0;) {
+        if (cancelled()) {
+            return false;
+        }
         reverse_ids.push_back(id);
         const auto parent_it = parent.find(id);
         if (parent_it == parent.end()) {
@@ -2077,6 +2106,10 @@ bool IncrementalTopologyGraph::findPath(
     }
     path.push_back(start);
     for (auto iterator = reverse_ids.rbegin(); iterator != reverse_ids.rend(); ++iterator) {
+        if (cancelled()) {
+            path.clear();
+            return false;
+        }
         path.push_back(graph.at(*iterator).node.position);
     }
     path.push_back(goal);

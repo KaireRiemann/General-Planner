@@ -199,12 +199,17 @@ namespace fsm {
         double task_timeout{0.6};
         int state2state_plan_from_rest_max_failures{0};
         bool state2state_clear_goal_on_plan_failure{false};
-        // Wall-clock bound for a rolling state2state replan.  The planner is
-        // allowed to finish its already committed backup trajectory first;
-        // after that, a still-running replan is reported to the runtime
-        // supervisor and the task is retired to HOLD.
+        // Wall-clock bound for a state2state planning operation. It applies
+        // to rolling replan after its committed backup, and to plan-from-rest
+        // before it has produced a first command. The runtime retires a timed
+        // out task to HOLD and waits for the worker to become quiescent before
+        // accepting a recovery ARM.
         double state2state_replan_watchdog_timeout{2.0};
         bool state2state_topology_query_capability_enable{false};
+        // When global-topology navigation is selected for a non-local goal,
+        // reject a planning cycle that cannot produce a valid topology route
+        // instead of silently falling back to a free-space/direct route.
+        bool state2state_topology_strict_route_enable{true};
         string state2state_topology_selection_topic{
                 "/planner/navigation/use_global_topology"};
         double yaw_dot_max{};
@@ -369,6 +374,10 @@ namespace fsm {
                                  state2state_topology_query_capability_enable,
                                  false);
             }
+            loader.LoadParam(
+                    "general_planner/state2state/topology/strict_route_enable",
+                    state2state_topology_strict_route_enable,
+                    true);
             loader.LoadParam("general_planner/state2state/topology/selection_topic",
                              state2state_topology_selection_topic,
                              string("/planner/navigation/use_global_topology"));
