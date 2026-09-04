@@ -119,7 +119,10 @@ general_planner:
     recovery_time_scale: 1.4
     recovery_reduce_visible_region_weight: 0.3
     recovery_reduce_target_forward_weight: 0.5
-    soft_recovery_enable: true
+    # The post-551 stationary soft-recovery can stop a valid in-flight
+    # trajectory after one transient forest-map rejection.  Preserve the
+    # proven 551 retry/keep-old behaviour for tracking.
+    soft_recovery_enable: false
     soft_recovery_margin: 0.2
     soft_recovery_hold_duration: 0.8
     reacquire_recovery_enable: true

@@ -2,7 +2,7 @@
 pcd_name: "forest.pcd"
 mesh_resource: "package://perfect_drone_sim/meshes/yunque-M.dae"
 init_position:
-  x: 0.0
+  x: -30.0
   y: 0.5
   z: 1.5
 init_yaw: 0.0

@@ -1093,10 +1093,7 @@ namespace fsm {
         }
 
         void trackingTargetCallback(const nav_msgs::OdometryConstPtr &msg) {
-            if (cfg_.tracking_use_target_prediction_path &&
-                !cfg_.tracking_target_prediction_topic.empty() &&
-                !last_tracking_prediction_path_time_.isZero() &&
-                (ros::Time::now() - last_tracking_prediction_path_time_).toSec() < 0.5) {
+            if (!msg) {
                 return;
             }
             const Vec3f p(msg->pose.pose.position.x,
@@ -1114,7 +1111,22 @@ namespace fsm {
                           buildKinodynamicTrackingPrediction(p, v, pose_yaw, prediction))) {
                 buildConstantVelocityTrackingPrediction(p, v, pose_yaw, prediction);
             }
-            setTrackingTargetPrediction(prediction);
+
+            // Target input and task-mode changes share the FSM lock.  Without
+            // this boundary, an estimator update received during state2state
+            // writes gi_.new_goal and starts an unintended navigation task.
+            std::lock_guard<std::mutex> lock(fsm_tick_mutex_);
+            if (cfg_.tracking_use_target_prediction_path &&
+                !cfg_.tracking_target_prediction_topic.empty() &&
+                !last_tracking_prediction_path_time_.isZero() &&
+                (ros::Time::now() - last_tracking_prediction_path_time_).toSec() < 0.5) {
+                return;
+            }
+            const bool activate_tracking_task = trackingMode() || trackingPerchingMode();
+            setTrackingTargetPrediction(prediction, activate_tracking_task);
+            if (!activate_tracking_task) {
+                return;
+            }
             traj_opt::DynamicTargetStates accepted_prediction;
             if (getTrackingTargetPrediction(accepted_prediction)) {
                 const double source_stamp = msg->header.stamp.isZero()
@@ -1136,7 +1148,7 @@ namespace fsm {
         }
 
         void trackingPredictionPathCallback(const nav_msgs::PathConstPtr &msg) {
-            if (!cfg_.tracking_use_target_prediction_path || msg->poses.size() < 2) {
+            if (!msg || !cfg_.tracking_use_target_prediction_path || msg->poses.size() < 2) {
                 if (useTrackingLogStream()) {
                     recordDiagnosticEvent("WARN",
                                           "tracking_target_input_rejected",
@@ -1144,7 +1156,7 @@ namespace fsm {
                                                       cfg_.tracking_use_target_prediction_path
                                                           ? "insufficient_path_samples"
                                                           : "prediction_path_disabled",
-                                                      msg->poses.size()));
+                                                      msg ? msg->poses.size() : 0));
                 }
                 return;
             }
@@ -1189,8 +1201,15 @@ namespace fsm {
                 prediction.emplace_back(target);
             }
 
+            // See trackingTargetCallback(): cache external prediction in any
+            // mode, but let it change task state only in a tracking mode.
+            std::lock_guard<std::mutex> lock(fsm_tick_mutex_);
             last_tracking_prediction_path_time_ = ros::Time::now();
-            setTrackingTargetPrediction(prediction);
+            const bool activate_tracking_task = trackingMode() || trackingPerchingMode();
+            setTrackingTargetPrediction(prediction, activate_tracking_task);
+            if (!activate_tracking_task) {
+                return;
+            }
             traj_opt::DynamicTargetStates accepted_prediction;
             if (getTrackingTargetPrediction(accepted_prediction)) {
                 double source_stamp = msg->header.stamp.isZero()
@@ -1243,9 +1262,10 @@ namespace fsm {
             // Replacing the executor while a replan owns a raw reference to
             // it would be unsafe.  The supervisor's PAUSE path remains
             // available and retires the current task first.
-            if (state2state_replan_in_progress_.load()) {
-                requestControlledStop("task-mode request while state2state replan is active");
-                ROS_WARN_STREAM("[Fsm] defer task-mode switch until active state2state replan returns");
+            if (state2state_replan_in_progress_.load() ||
+                tracking_replan_in_progress_.load()) {
+                requestControlledStop("task-mode request while planner replan is active");
+                ROS_WARN_STREAM("[Fsm] defer task-mode switch until active planner replan returns");
                 return;
             }
             // `hold` is a Supervisor control state, not one of the legacy

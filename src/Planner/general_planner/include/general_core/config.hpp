@@ -234,7 +234,11 @@ namespace general_planner {
         double tracking_recovery_time_scale{1.4};
         double tracking_recovery_reduce_visible_region_weight{0.3};
         double tracking_recovery_reduce_target_forward_weight{0.5};
-        bool tracking_soft_recovery_enable{true};
+        // Keep the tracking failure path compatible with the proven 551caef
+        // behaviour: retain a still-commandable old trajectory and retry,
+        // rather than replacing it with a stationary hold after one rejected
+        // candidate in cluttered scenes.
+        bool tracking_soft_recovery_enable{false};
         double tracking_soft_recovery_margin{0.2};
         double tracking_soft_recovery_hold_duration{0.8};
         bool tracking_reacquire_recovery_enable{true};
@@ -722,7 +726,7 @@ namespace general_planner {
             loader.LoadParam("general_planner/tracking/recovery_reduce_target_forward_weight",
                              tracking_recovery_reduce_target_forward_weight, 0.5);
             loader.LoadParam("general_planner/tracking/soft_recovery_enable",
-                             tracking_soft_recovery_enable, true);
+                             tracking_soft_recovery_enable, false);
             loader.LoadParam("general_planner/tracking/soft_recovery_margin",
                              tracking_soft_recovery_margin, 0.2);
             loader.LoadParam("general_planner/tracking/soft_recovery_hold_duration",

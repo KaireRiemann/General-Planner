@@ -633,13 +633,27 @@ namespace fsm {
             return;
         }
 
-        const bool release_fsm_lock_during_replan = state2stateMode();
-        if (release_fsm_lock_during_replan &&
-            state2state_replan_in_progress_.exchange(true)) {
+        const bool tracking_replan = executor.trackingLike();
+        if (tracking_replan && !trackingTaskReady()) {
+            handleTrackingTargetInputTimeout();
+            return;
+        }
+
+        // The committed command trajectory has its own lock inside
+        // GeneralPlanner.  Holding the global FSM mutex while a tracking
+        // frontend/optimizer runs therefore only blocks the independent
+        // 100 Hz command queue and creates a command-source timeout.  Keep
+        // the same lock-release model already used by state2state replans.
+        const bool state2state_replan = state2stateMode();
+        const bool release_fsm_lock_during_replan = state2state_replan || tracking_replan;
+        if (state2state_replan && state2state_replan_in_progress_.exchange(true)) {
+            return;
+        }
+        if (tracking_replan && tracking_replan_in_progress_.exchange(true)) {
             return;
         }
         const std::uint64_t replan_task_epoch = navigation_task_epoch_.load();
-        if (release_fsm_lock_during_replan) {
+        if (state2state_replan) {
             if (planner_ptr_) {
                 planner_ptr_->beginState2StatePlanningOperation();
             }
@@ -677,7 +691,17 @@ namespace fsm {
                        state2state_replan_start_wall_ns_,
                        state2state_planning_operation_,
                        planner_ptr_.get(),
-                       release_fsm_lock_during_replan};
+                       state2state_replan};
+
+        struct TrackingReplanGuard {
+            std::atomic<bool> &in_progress;
+            bool active;
+            ~TrackingReplanGuard() {
+                if (active) {
+                    in_progress.store(false, std::memory_order_release);
+                }
+            }
+        } tracking_replan_guard{tracking_replan_in_progress_, tracking_replan};
 
         TimeConsuming replan_once_time("replan_once_time", false);
         active_replan_id_ = next_replan_id_++;
@@ -732,6 +756,14 @@ namespace fsm {
                                               navigation_task_epoch_.load(),
                                               static_cast<int>(navigation_execution_enabled_.load())),
                                   plan_result.ret_code);
+            return;
+        }
+        // The target can become stale while an already-started tracking
+        // planner call owns the backend. Never commit that now-obsolete
+        // candidate: replace the previous moving command with a current-pose
+        // hold as soon as the worker returns.
+        if (tracking_replan && !trackingTaskReady()) {
+            handleTrackingTargetInputTimeout();
             return;
         }
         const TaskPlanContext &replan_context = plan_result.context;
@@ -1817,6 +1849,30 @@ namespace fsm {
         }
 
         if (tracking_unfinished) {
+            if (tracking_target_timeout_holding_) {
+                task_new_ = false;
+                plan_from_rest_ = false;
+                finish_plan = false;
+                if (log_finish_once) {
+                    last_tracking_unfinished_traj_seq_ = trajectory_seq;
+                    const bool hold_committed = planner_ptr_->commitTrackingHoldTrajectory(
+                            "tracking target input remains stale");
+                    recordDiagnosticEvent(
+                            hold_committed ? "WARN" : "ERROR",
+                            "tracking_target_timeout_hold_refresh",
+                            fmt::format("trajectory_id={};hold_committed={}",
+                                        trajectory_id,
+                                        static_cast<int>(hold_committed)),
+                            -1,
+                            trajectory_seq,
+                            on_backup);
+                    if (hold_committed) {
+                        publishPolyTraj();
+                    }
+                }
+                result.tracking_unfinished = true;
+                return result;
+            }
             task_new_ = true;
             plan_from_rest_ = true;
             finish_plan = false;
@@ -2020,7 +2076,8 @@ namespace fsm {
         return true;
     }
 
-    void Fsm::setTrackingTargetPrediction(const traj_opt::DynamicTargetStates &prediction) {
+    void Fsm::setTrackingTargetPrediction(const traj_opt::DynamicTargetStates &prediction,
+                                          const bool activate_tracking_task) {
         if (prediction.empty()) {
             return;
         }
@@ -2040,11 +2097,21 @@ namespace fsm {
                       trackingPredictionChanged(tracking_target_prediction_, filtered_prediction);
             tracking_target_prediction_ = filtered_prediction;
             tracking_target_rcv_time_ = now;
-            task_new_ = task_new_ || changed;
+            // Keep the most recent prediction warm in every mode so a
+            // subsequent, explicit transition to tracking can use it.  A
+            // target observation must not, however, arm a state2state task.
+            if (activate_tracking_task) {
+                task_new_ = task_new_ || changed;
+            }
+        }
+        if (!activate_tracking_task) {
+            return;
         }
         gi_.goal_p = filtered_prediction.back().position;
         gi_.goal_yaw = filtered_prediction.back().yaw;
         gi_.new_goal = gi_.new_goal || changed;
+        const bool leave_timeout_hold = tracking_target_timeout_holding_;
+        tracking_target_timeout_holding_ = false;
         if (changed) {
             finish_plan = false;
             resetTrackingPlanFromRestFailureState();
@@ -2059,6 +2126,68 @@ namespace fsm {
                                               cfg_.task_timeout,
                                               filtered_prediction.size()));
         }
+        if (leave_timeout_hold) {
+            recordDiagnosticEvent("INFO",
+                                  "tracking_target_timeout_hold_released",
+                                  fmt::format("prediction.size()={};target_input_fresh=1",
+                                              filtered_prediction.size()));
+        }
+    }
+
+    void Fsm::handleTrackingTargetInputTimeout() {
+        if (tracking_target_timeout_holding_) {
+            return;
+        }
+
+        const double now = ros_ptr_->getSimTime();
+        double target_age = std::numeric_limits<double>::infinity();
+        {
+            std::lock_guard<std::mutex> lock(task_mutex_);
+            if (tracking_target_rcv_time_ >= 0.0) {
+                target_age = std::max(0.0, now - tracking_target_rcv_time_);
+            }
+        }
+
+        if (planner_ptr_ == nullptr) {
+            recordDiagnosticEvent("ERROR",
+                                  "tracking_target_timeout_hold_failed",
+                                  "reason=planner_missing");
+            ChangeState("TrackingTargetTimeout", HOLD_TRACKING);
+            return;
+        }
+
+        // commitTrackingHoldTrajectory uses GeneralPlanner's latest robot
+        // snapshot. Refresh it immediately so the hold anchors at the pose
+        // where target input was actually lost, rather than an old replan
+        // snapshot.
+        planner_ptr_->getRobotState(robot_state_);
+        const bool hold_committed = planner_ptr_->commitTrackingHoldTrajectory(
+                "tracking target input timeout");
+        if (!hold_committed) {
+            recordDiagnosticEvent(
+                    "ERROR",
+                    "tracking_target_timeout_hold_failed",
+                    fmt::format("target_age={:.3f};timeout={:.3f};robot_state_received={}",
+                                target_age,
+                                cfg_.task_timeout,
+                                static_cast<int>(robot_state_.rcv)));
+            ChangeState("TrackingTargetTimeout", HOLD_TRACKING);
+            return;
+        }
+
+        tracking_target_timeout_holding_ = true;
+        gi_.new_goal = false;
+        task_new_ = false;
+        plan_from_rest_ = false;
+        finish_plan = false;
+        publishPolyTraj();
+        ChangeState("TrackingTargetTimeout", STATIC_TRACKING);
+        recordDiagnosticEvent(
+                "WARN",
+                "tracking_target_timeout_hold_committed",
+                fmt::format("target_age={:.3f};timeout={:.3f};hold_committed=1",
+                            target_age,
+                            cfg_.task_timeout));
     }
 
     void Fsm::setPerchingSurface(const traj_opt::PerchingSurfaceState &surface) {

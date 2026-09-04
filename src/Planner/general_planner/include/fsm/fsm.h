@@ -115,6 +115,11 @@ namespace fsm {
         double perching_surface_first_rcv_time_{-1.0};
         double last_dynamic_takeoff_wait_log_time_{-1.0};
         bool task_new_{false};
+        // Once an executing tracking task loses its target input, replace the
+        // moving trajectory with a stationary one and keep refreshing that
+        // hold until a fresh target observation arrives.  Access is
+        // serialized by fsm_tick_mutex_.
+        bool tracking_target_timeout_holding_{false};
         bool perching_contact_reached_{false};
         Vec3f perching_contact_surface_position_{Vec3f::Zero()};
         double last_static_tracking_replan_log_time_{-1.0};
@@ -284,6 +289,11 @@ namespace fsm {
         // a safe HOLD never re-arms while an old worker still owns planner
         // state.
         std::atomic<bool> state2state_replan_in_progress_{false};
+        // Tracking replans are allowed to release fsm_tick_mutex_ so the
+        // independent command queue can keep sampling the already committed
+        // trajectory.  Keep the executor alive while that worker is active:
+        // a task-mode callback must not replace it underneath the worker.
+        std::atomic<bool> tracking_replan_in_progress_{false};
         // These wall-clock fields are consumed by the isolated command timer.
         // They deliberately do not depend on /clock: a simulator clock pause
         // must not hide an optimizer or frontend that no longer returns.
@@ -453,6 +463,11 @@ namespace fsm {
 
         bool trackingTaskReady();
 
+        // Called from the replan tick while fsm_tick_mutex_ is held.  A stale
+        // target must never leave the previous moving tracking trajectory in
+        // command sampling; commit a current-pose hold instead.
+        void handleTrackingTargetInputTimeout();
+
         bool perchingTaskReady();
 
         bool dynamicTakeoffTaskReady();
@@ -503,7 +518,12 @@ namespace fsm {
 
         bool shouldSkipStaticTrackingReplan(const traj_opt::DynamicTargetStates &prediction);
 
-        void setTrackingTargetPrediction(const traj_opt::DynamicTargetStates &prediction);
+        // A tracking source is always allowed to refresh its cache.  It may
+        // promote that cache to an active task only after the caller has
+        // verified that the current task mode is tracking-related.  This
+        // keeps target observations from becoming state2state click goals.
+        void setTrackingTargetPrediction(const traj_opt::DynamicTargetStates &prediction,
+                                         bool activate_tracking_task);
 
         void setPerchingSurface(const traj_opt::PerchingSurfaceState &surface);
 
