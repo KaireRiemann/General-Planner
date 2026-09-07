@@ -173,6 +173,22 @@ namespace rog_map {
                 point_filt_num = 1;
             }
 
+            loader.LoadParam(name_space + "/temporal_filter/enable", temporal_filter_en, false);
+            loader.LoadParam(name_space + "/temporal_filter/voxel_size", temporal_filter_voxel_size, 0.30);
+            loader.LoadParam(name_space + "/temporal_filter/min_observations", temporal_filter_min_observations, 4);
+            loader.LoadParam(name_space + "/temporal_filter/min_observation_span", temporal_filter_min_observation_span, 0.30);
+            loader.LoadParam(name_space + "/temporal_filter/min_observer_baseline", temporal_filter_min_observer_baseline, 0.0);
+            loader.LoadParam(name_space + "/temporal_filter/max_observation_gap", temporal_filter_max_observation_gap, 0.60);
+            loader.LoadParam(name_space + "/temporal_filter/max_voxels", temporal_filter_max_voxels, 250000);
+            if (temporal_filter_voxel_size <= 0.0 ||
+                temporal_filter_min_observations <= 0 ||
+                temporal_filter_min_observation_span < 0.0 ||
+                temporal_filter_min_observer_baseline < 0.0 ||
+                temporal_filter_max_observation_gap <= 0.0 ||
+                temporal_filter_max_voxels <= 0) {
+                throw std::invalid_argument("Temporal filter configuration is invalid!");
+            }
+
 
             // raycasting
             loader.LoadParam(name_space + "/raycasting/enable", raycasting_en, true);
@@ -330,6 +346,13 @@ namespace rog_map {
         double raycast_range_min{}, raycast_range_max{};
         double sqr_raycast_range_min{}, sqr_raycast_range_max{};
         int point_filt_num{}, batch_update_size{};
+        bool temporal_filter_en{false};
+        double temporal_filter_voxel_size{0.30};
+        int temporal_filter_min_observations{4};
+        double temporal_filter_min_observation_span{0.30};
+        double temporal_filter_min_observer_baseline{0.0};
+        double temporal_filter_max_observation_gap{0.60};
+        int temporal_filter_max_voxels{250000};
         float p_hit{}, p_miss{}, p_min{}, p_max{}, p_occ{}, p_free{};
         float l_hit{}, l_miss{}, l_min{}, l_max{}, l_occ{}, l_free{};
 

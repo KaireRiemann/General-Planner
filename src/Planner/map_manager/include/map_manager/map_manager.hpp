@@ -12,6 +12,7 @@
 
 #include <map_manager/boundary_map.hpp>
 #include <map_manager/incremental_topology_graph.hpp>
+#include <map_manager/temporal_static_filter.hpp>
 #include <rog_map/rog_map.h>
 #include <rog_map_ros/rog_map_ros1.hpp>
 #include <rog_map_ros/rog_map_ros2.hpp>
@@ -73,6 +74,19 @@ public:
             topology_graph_->clear();
         }
         if (map_) {
+            const rog_map::Config config = map_->getMapConfig();
+            TemporalStaticFilter::Config temporal_filter_config;
+            temporal_filter_config.enabled = config.temporal_filter_en;
+            temporal_filter_config.voxel_size = config.temporal_filter_voxel_size;
+            temporal_filter_config.min_observations = config.temporal_filter_min_observations;
+            temporal_filter_config.min_observation_span = config.temporal_filter_min_observation_span;
+            temporal_filter_config.min_observer_baseline =
+                config.temporal_filter_min_observer_baseline;
+            temporal_filter_config.max_observation_gap = config.temporal_filter_max_observation_gap;
+            temporal_filter_config.max_voxels =
+                static_cast<std::size_t>(config.temporal_filter_max_voxels);
+            temporal_static_filter_.configure(temporal_filter_config);
+
             // BoundaryMap consumes only sensor-driven discrete transitions.
             // Any pending stream from a previous owner is not part of this
             // manager's global history.
@@ -132,12 +146,30 @@ public:
     }
 
     UpdateSnapshot updateMap(const rog_map::PointCloud &cloud,
-                             const general_utils::Pose &pose) const
+                             const general_utils::Pose &pose,
+                             const double observation_stamp =
+                                 std::numeric_limits<double>::quiet_NaN(),
+                             rog_map::PointCloud *static_cloud_out = nullptr) const
     {
+        if (static_cloud_out) {
+            static_cloud_out->clear();
+        }
         if (!map_) {
             return latestUpdate();
         }
-        map_->updateMap(cloud, pose);
+        rog_map::PointCloud static_cloud;
+        {
+            std::lock_guard<std::mutex> lock(temporal_filter_mutex_);
+            static_cloud = temporal_static_filter_.filter(
+                cloud, observation_stamp, &pose.first);
+        }
+        if (static_cloud_out) {
+            *static_cloud_out = static_cloud;
+        }
+        if (static_cloud.empty()) {
+            return latestUpdate();
+        }
+        map_->updateMap(static_cloud, pose);
 
         UpdateSnapshot snapshot;
         snapshot.revision =
@@ -702,6 +734,8 @@ private:
     BoundaryMap::Ptr boundary_map_;
     IncrementalTopologyGraph::Ptr topology_graph_{
         std::make_shared<IncrementalTopologyGraph>()};
+    mutable TemporalStaticFilter temporal_static_filter_;
+    mutable std::mutex temporal_filter_mutex_;
     mutable std::atomic<bool> topology_seeded_{false};
     mutable std::atomic<std::uint64_t> map_revision_{0};
     std::atomic<std::uint64_t> world_epoch_{1};

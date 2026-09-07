@@ -22,6 +22,9 @@
 */
 
 #include <rog_map/prob_map.h>
+#include <rog_map/rog_map_core/raycast_geometry.hpp>
+
+#include <unordered_set>
 using namespace rog_map;
 using namespace general_utils;
 
@@ -748,6 +751,13 @@ void ProbMap::raycastProcess(const PointCloud& input_cloud, const Vec3f& cur_odo
     // new version of raycasting process
     auto raycasting_cloud = vec_Vec3f{};
     raycasting_cloud.reserve(cloud_in_size);
+    // A dense cloud can contain hundreds of returns in one ROG voxel.  They
+    // are one observation, not hundreds of independent confirmations.  The
+    // old count saturated log odds in a single callback, which made a moving
+    // object effectively impossible to clear with later miss rays.
+    std::unordered_set<int> hit_voxels_this_frame;
+    hit_voxels_this_frame.reserve(static_cast<std::size_t>(cloud_in_size));
+    std::unordered_set<int> miss_voxels_this_frame;
 
     // 1) process all non-inf points, update occupied probability
     int temperol_cnt{0};
@@ -774,7 +784,10 @@ void ProbMap::raycastProcess(const PointCloud& input_cloud, const Vec3f& cur_odo
                     continue;
                 }
                 posToGlobalIndex(p, pt_id_g);
-                insertUpdateCandidate(pt_id_g, true);
+                if (hit_voxels_this_frame.insert(
+                        getHashIndexFromGlobalIndex(pt_id_g)).second) {
+                    insertUpdateCandidate(pt_id_g, true);
+                }
                 // record cache box size;
                 raycast_data_.cache_box_min = raycast_data_.cache_box_min.cwiseMin(p);
                 raycast_data_.cache_box_max = raycast_data_.cache_box_max.cwiseMax(p);
@@ -786,26 +799,27 @@ void ProbMap::raycastProcess(const PointCloud& input_cloud, const Vec3f& cur_odo
         // 1.3) filter for virtual ceil and ground
         if (p.z() > cfg_.virtual_ceil_height) {
             update_hit = false;
-            // find the intersect point with the ceil
-            const double dz = p.z() - cur_odom.z();
-            const double pc = cfg_.virtual_ceil_height - cur_odom.z();
-            p = cur_odom + (p - cur_odom).normalized() * pc / dz;
+            if (!raycast_geometry::clipSegmentToHeightPlane(
+                    p, cur_odom, cfg_.virtual_ceil_height)) {
+                continue;
+            }
         }
         else if (p.z() < cfg_.virtual_ground_height) {
             update_hit = false;
-            // find the intersect point with the ground
-            const double dz = p.z() - cur_odom.z();
-            const double pc = cfg_.virtual_ground_height - cur_odom.z();
-            p = cur_odom + (p - cur_odom).normalized() * pc / dz;
+            if (!raycast_geometry::clipSegmentToHeightPlane(
+                    p, cur_odom, cfg_.virtual_ground_height)) {
+                continue;
+            }
         }
 
         // 1.4) bounding box filter
         // raycasting max
-        const double sqr_dis = (p - cur_odom).squaredNorm();
+        double sqr_dis = (p - cur_odom).squaredNorm();
         if (sqr_dis > cfg_.sqr_raycast_range_max) {
             double k = cfg_.raycast_range_max / sqrt(sqr_dis);
             p = k * (p - cur_odom) + cur_odom;
             update_hit = false;
+            sqr_dis = (p - cur_odom).squaredNorm();
         }
 
         if(sqr_dis < cfg_.sqr_raycast_range_min) {
@@ -832,7 +846,10 @@ void ProbMap::raycastProcess(const PointCloud& input_cloud, const Vec3f& cur_odo
 
         if (update_hit) {
             posToGlobalIndex(p, pt_id_g);
-            insertUpdateCandidate(pt_id_g, true);
+            if (hit_voxels_this_frame.insert(
+                    getHashIndexFromGlobalIndex(pt_id_g)).second) {
+                insertUpdateCandidate(pt_id_g, true);
+            }
         }
     }
 
@@ -848,7 +865,10 @@ void ProbMap::raycastProcess(const PointCloud& input_cloud, const Vec3f& cur_odo
                 if (!insideLocalMap(cur_ray_id_g)) {
                     break;
                 }
-                insertUpdateCandidate(cur_ray_id_g, false);
+                const int hash_id = getHashIndexFromGlobalIndex(cur_ray_id_g);
+                if (miss_voxels_this_frame.insert(hash_id).second) {
+                    insertUpdateCandidate(cur_ray_id_g, false);
+                }
             }
         }
     }

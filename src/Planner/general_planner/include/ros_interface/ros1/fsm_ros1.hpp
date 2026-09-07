@@ -29,6 +29,7 @@
 
 #include "fsm/fsm.h"
 #include "ros_interface/ros_adapter_contract.hpp"
+#include "general_core/pointcloud_utils.hpp"
 #include <map_manager/topology_graph_ros1.hpp>
 
 #include "ros/ros.h"
@@ -925,7 +926,14 @@ namespace fsm {
             }
 
             rog_map::PointCloud cloud;
-            pcl::fromROSMsg(*msg, cloud);
+            std::string conversion_error;
+            if (!general_planner::pointcloud::toRogPointCloud(
+                    *msg, cloud, &conversion_error)) {
+                ROS_WARN_STREAM_THROTTLE(
+                    1.0, " -- [Fsm] Dynamic obstacle cloud skipped: invalid XYZ layout: "
+                    << conversion_error);
+                return;
+            }
             planner_ptr_->updateDynamicObstacleCloud(cloud, robot_state.p, now);
         }
 

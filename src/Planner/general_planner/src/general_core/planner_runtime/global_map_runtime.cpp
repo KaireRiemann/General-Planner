@@ -1,6 +1,7 @@
 #include <general_core/planner_runtime/global_map_runtime.hpp>
 
 #include <general_core/exploration/exploration_utils/lidar_map/lidar_map.h>
+#include <general_core/pointcloud_utils.hpp>
 #include <general_planner/TopologyExpansionPoint.h>
 #include <general_planner/TopologyExpansionPointArray.h>
 
@@ -188,7 +189,13 @@ void GlobalMapRuntime::cloudOdomCallback(
   }
 
   rog_map::PointCloud rog_cloud;
-  pcl::fromROSMsg(*cloud, rog_cloud);
+  std::string conversion_error;
+  if (!pointcloud::toRogPointCloud(*cloud, rog_cloud, &conversion_error)) {
+    ROS_WARN_STREAM_THROTTLE(1.0,
+        "[global_map_runtime] drop cloud with invalid XYZ layout: "
+        << conversion_error);
+    return;
+  }
   if (rog_cloud.empty()) {
     return;
   }
@@ -208,12 +215,22 @@ void GlobalMapRuntime::cloudOdomCallback(
     lio_map = context_->lio_map;
     consumers = cloud_consumers_;
   }
-  // LIO and ROG are each updated exactly once for an accepted sensor pair.
-  if (lio_map) {
-    lio_map->updateCloudMapOdometry(cloud, odom);
-  }
+  // Only geometry that survived temporal and multi-view confirmation enters
+  // either long-lived map. Raw clouds below still reach dynamic consumers.
+  rog_map::PointCloud static_rog_cloud;
   const MapManager::UpdateSnapshot update =
-      context_->map_manager->updateMap(rog_cloud, pose);
+      context_->map_manager->updateMap(
+          rog_cloud, pose,
+          cloud->header.stamp.isZero() ? now.toSec()
+                                       : cloud->header.stamp.toSec(),
+          &static_rog_cloud);
+  if (lio_map && !static_rog_cloud.empty()) {
+    sensor_msgs::PointCloud2Ptr static_cloud_msg(
+        new sensor_msgs::PointCloud2);
+    pcl::toROSMsg(static_rog_cloud, *static_cloud_msg);
+    static_cloud_msg->header = cloud->header;
+    lio_map->updateCloudMapOdometry(static_cloud_msg, odom);
+  }
   // World topology is maintained through task transitions as well. Its
   // worker consumes only the odometry-local dirty-region window, while map
   // fusion continues to record remote evidence for a future visit.

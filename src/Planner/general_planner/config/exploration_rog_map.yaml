@@ -35,17 +35,29 @@ rog_map:
   intensity_thresh: -10
   map_size: [72.0, 72.0, 8.0]
   point_filt_num: 1
+  # Only persistent geometry observed across a real viewpoint baseline enters
+  # the world-lifetime maps. Raw clouds still feed dynamic collision avoidance.
+  temporal_filter:
+    enable: true
+    voxel_size: 0.20
+    min_observations: 10
+    min_observation_span: 0.90
+    min_observer_baseline: 0.40
+    max_observation_gap: 0.45
+    max_voxels: 250000
 
   raycasting:
     enable: true
     batch_update_size: 1
     unk_thresh: 1.0
-    p_hit: 0.90
-    p_miss: 0.49
+    # One voxel receives at most one hit per cloud.  Keep confidence gradual
+    # so a later empty observation can clear transient geometry promptly.
+    p_hit: 0.70
+    p_miss: 0.35
     p_min: 0.12
     p_max: 0.97
     p_occ: 0.85
-    p_free: 0.499
+    p_free: 0.40
     ray_range: [0.50, 60.0]
     local_update_box: [70.0, 70.0, 6.0]
 
