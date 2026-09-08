@@ -157,8 +157,10 @@ namespace general_planner {
         gi_.new_goal = false;
     }
 
-    void GeneralPlanner::setState2StateTopologyPolicy(const bool enabled) {
+    bool GeneralPlanner::setState2StateTopologyPolicy(const bool enabled) {
+        const auto previous = state2state_topology_route_runtime_.policy_generation.load();
         state2state_topology_route_runtime_.setPolicy(enabled);
+        return previous != state2state_topology_route_runtime_.policy_generation.load();
     }
 
     void GeneralPlanner::setState2StateTopologyTaskEpoch(

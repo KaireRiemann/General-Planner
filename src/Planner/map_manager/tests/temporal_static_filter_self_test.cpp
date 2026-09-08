@@ -57,8 +57,8 @@ int main() {
          "second static observation must not enter the map");
   expect(filter.filter(static_cloud, 0.20, &observer_2).empty(),
          "third static observation must not enter the map");
-  expect(filter.filter(static_cloud, 0.31, &observer_3).empty(),
-         "insufficient viewpoint baseline must keep a point out of the map");
+  expect(filter.filter(static_cloud, 0.31, &observer_3).size() == 1,
+         "legacy viewpoint baseline must not prevent temporal promotion");
   expect(filter.filter(static_cloud, 0.41, &observer_4).size() == 1,
          "persistent multi-view point must enter after the configured gates");
 
@@ -69,8 +69,8 @@ int main() {
          "hovering baseline test frame two");
   expect(filter.filter(static_cloud, 0.70, &observer_0).empty(),
          "hovering baseline test frame three");
-  expect(filter.filter(static_cloud, 0.81, &observer_0).empty(),
-         "a fixed observer must not satisfy a multi-view requirement");
+  expect(filter.filter(static_cloud, 0.81, &observer_0).size() == 1,
+         "a hovering observer must bootstrap persistent geometry");
 
   filter.reset();
   expect(filter.filter(makeCloud({makePoint(0.0F, 0.0F, 1.0F)}), 1.00,

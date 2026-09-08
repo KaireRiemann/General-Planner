@@ -1148,6 +1148,14 @@ void FastExplorationFSM::publishTaskStatus() {
     state_name = "FAILED";
   } else if (state_ == INIT || state_ == WAIT_TRIGGER) {
     state_name = "IDLE";
+  } else if (state_ == PLAN_TRAJ) {
+    state_name = !planner_manager_->topo_graph_->odom_node_ ||
+                 planner_manager_->topo_graph_->odom_node_->neighbors_.empty()
+        ? "WAITING_TOPOLOGY" : "PLAN_TRAJ";
+  } else if (state_ == EXEC_TRAJ) {
+    state_name = "EXEC_TRAJ";
+  } else if (state_ == REORIENT) {
+    state_name = "REORIENT";
   } else {
     state_name = "RUNNING";
   }
@@ -1289,8 +1297,11 @@ void FastExplorationFSM::CloudOdomCallback(
     // exploration's local frontier/Bubble consumers.
     planner_manager_->notifyGlobalMapUpdated();
   } else {
-    planner_manager_->lidar_map_interface_->updateCloudMapOdometry(msg, odom_);
-    planner_manager_->updateRogMap(msg, odom_);
+    // The standalone ROG owner also updates LIO from the same observations.
+    // Keep the legacy path only for profiles without a ROG backend.
+    if (!planner_manager_->updateRogMap(msg, odom_)) {
+      planner_manager_->lidar_map_interface_->updateCloudMapOdometry(msg, odom_);
+    }
   }
   // The topology timer runs faster than the point-cloud input. Track accepted
   // map updates so the same cloud does not rebuild the skeleton and historical

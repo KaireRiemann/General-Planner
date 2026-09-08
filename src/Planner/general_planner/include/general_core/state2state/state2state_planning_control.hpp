@@ -2,6 +2,8 @@
 
 #include <atomic>
 #include <cstdint>
+#include <chrono>
+#include <cmath>
 
 namespace general_planner::state2state_task {
 
@@ -39,7 +41,10 @@ inline const char *state2StatePlanningStageName(
 
 class State2StatePlanningControl {
 public:
-    void begin() {
+    void begin(double timeout_seconds = 2.0) {
+        if (!std::isfinite(timeout_seconds) || timeout_seconds <= 0.0) timeout_seconds = 2.0;
+        deadline_ns_.store(nowNs() + static_cast<std::int64_t>(timeout_seconds * 1e9),
+                           std::memory_order_release);
         cancel_requested_.store(false, std::memory_order_release);
         setStage(State2StatePlanningStage::INPUT);
     }
@@ -49,7 +54,9 @@ public:
     }
 
     bool cancelRequested() const {
-        return cancel_requested_.load(std::memory_order_acquire);
+        const auto deadline = deadline_ns_.load(std::memory_order_acquire);
+        return cancel_requested_.load(std::memory_order_acquire) ||
+               (deadline > 0 && nowNs() >= deadline);
     }
 
     void setStage(const State2StatePlanningStage stage) {
@@ -62,10 +69,16 @@ public:
     }
 
     void finish() {
+        deadline_ns_.store(0, std::memory_order_release);
         setStage(State2StatePlanningStage::IDLE);
     }
 
 private:
+    static std::int64_t nowNs() {
+        return std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count();
+    }
+    std::atomic<std::int64_t> deadline_ns_{0};
     std::atomic<bool> cancel_requested_{false};
     std::atomic<std::uint8_t> stage_{
         static_cast<std::uint8_t>(State2StatePlanningStage::IDLE)};

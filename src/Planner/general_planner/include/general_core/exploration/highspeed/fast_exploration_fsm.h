@@ -112,6 +112,7 @@ private:
   // not a successful coverage completion or an internal failure. Keep this
   // separate from PAUSED so PlannerSupervisor preserves the topology graph.
   bool target_unreachable_pending_{false};
+  bool validateTargetWorkspace();
   bool execution_enabled_published_{false};
   bool last_execution_enabled_{true};
   // In M2 GlobalMapRuntime owns the only cloud/odom subscriptions.  This FSM

@@ -241,6 +241,9 @@ add_executable(planner_status_self_test
 )
 target_include_directories(planner_status_self_test PRIVATE include)
 
+add_executable(lio_observation_fusion_self_test tests/lio_observation_fusion_self_test.cpp)
+target_link_libraries(lio_observation_fusion_self_test general_planner_exploration_utils ${THIRD_PARTY})
+
 add_executable(planner_command_gateway_policy_self_test
         tests/planner_command_gateway_policy_self_test.cpp
 )
@@ -264,10 +267,20 @@ add_executable(target_directed_exploration_self_test
 )
 target_include_directories(target_directed_exploration_self_test PRIVATE include)
 
+add_executable(target_workspace_self_test tests/target_workspace_self_test.cpp)
+target_include_directories(target_workspace_self_test PRIVATE include)
+# Assertions are the test oracle even in Release builds.
+target_compile_options(target_workspace_self_test PRIVATE -UNDEBUG)
+
 add_executable(state2state_topology_route_self_test
         tests/state2state_topology_route_self_test.cpp
 )
 target_include_directories(state2state_topology_route_self_test PRIVATE include)
+
+add_executable(state2state_planning_control_self_test
+        tests/state2state_planning_control_self_test.cpp src/utils/lbfgs.cpp)
+target_include_directories(state2state_planning_control_self_test PRIVATE include)
+target_link_libraries(state2state_planning_control_self_test pthread)
 
 add_executable(coverage_guidance_self_test
         ${GENERAL_PLANNER_EXPLORATION_UTILS_DIR}/coverage_guidance/coverage_guidance_self_test.cpp

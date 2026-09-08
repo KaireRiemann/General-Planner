@@ -106,8 +106,8 @@ namespace general_planner {
         return services;
     }
 
-    void GeneralPlanner::beginState2StatePlanningOperation() {
-        state2state_planning_control_.begin();
+    void GeneralPlanner::beginState2StatePlanningOperation(double timeout_seconds) {
+        state2state_planning_control_.begin(timeout_seconds);
     }
 
     void GeneralPlanner::requestState2StatePlanningCancel() {

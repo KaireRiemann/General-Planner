@@ -439,6 +439,7 @@ void PlannerSupervisor::beginTransition(const PlannerMode target,
                                         const std::uint64_t request_id,
                                         const std::string &task_id,
                                         const std::string &reason) {
+  exploration_trigger_waiting_for_map_ = false;
   ++status_.transition_id;
   // Invalidate any in-flight plans/commands from the previous task epoch.
   ++status_.task_epoch;
@@ -524,6 +525,19 @@ void PlannerSupervisor::enterStableHold(const std::string &reason,
 
 void PlannerSupervisor::activateMode(const PlannerMode mode,
                                      const std::string &reason) {
+  if (isNavigationAdapterMode(mode) && !serial_handover_ &&
+      navigation_worker_readiness_observed_ && !navigation_worker_ready_) {
+    // Hover does not imply planner quiescence. Keep the requested transition
+    // pending so the periodic transition check retries ARM after READY; do
+    // not lose a mode switch behind an old, cooperatively cancelling worker.
+    transition_target_ = mode;
+    transition_active_ = true;
+    status_.requested_mode = mode;
+    status_.phase = PlannerPhase::HOLD_VERIFY;
+    status_.ready_for_new_task = false;
+    status_.reason = "waiting for navigation worker; stage=" + navigation_worker_stage_;
+    return;
+  }
   resetAdapterTaskState(status_.active_mode);
   status_.active_mode = mode;
   status_.requested_mode = mode;
@@ -686,9 +700,12 @@ void PlannerSupervisor::activateMode(const PlannerMode mode,
           reason + "; relaunching exploration stack via serial handover";
       publishHandoverCommand("start_exploration");
     } else {
-      status_.ready_for_new_task = true;
+      status_.ready_for_new_task = !map_status_provider_ ||
+          (status_.map_ready && status_.odom_valid);
       status_.reason =
           reason + "; waiting for exploration trigger (/planner/click_goal)";
+      if (!status_.ready_for_new_task)
+        status_.reason = !status_.map_ready ? "WAITING_MAP" : "WAITING_ODOMETRY";
     }
     status_.phase = PlannerPhase::WAITING_INPUT;
     status_.mode_state = ModeState::EXP_WAIT_TRIGGER;
@@ -857,6 +874,7 @@ bool PlannerSupervisor::acceptNavigationGoalLocked(
   }
   clearState2StateRecoveryLocked();
   status_.task_result = PlannerTaskResult::NONE;
+  navigation_terminal_reason_.clear();
   status_.phase = PlannerPhase::PLANNING;
   status_.ready_for_new_task = false;
   status_.stable_hover = false;
@@ -952,6 +970,18 @@ bool PlannerSupervisor::acceptExplorationTriggerLocked(
     return false;
   }
   const bool target_mode = isTargetExplorationMode(status_.active_mode);
+  if (map_status_provider_ && (!status_.map_ready || !status_.odom_valid) &&
+      status_.command_owner == CommandOwner::HOLD &&
+      status_.phase == PlannerPhase::WAITING_INPUT) {
+    // Coalesce clicks while bootstrapping; do not publish START or arm a
+    // command-source watchdog for a task which cannot plan yet.
+    pending_exploration_trigger_ = msg;
+    exploration_trigger_waiting_for_map_ = true;
+    status_.ready_for_new_task = false;
+    status_.reason = !status_.map_ready ? "WAITING_MAP; target queued"
+                                      : "WAITING_ODOMETRY; target queued";
+    return true;
+  }
   if (target_mode && target_replacement_pending_) {
     // Coalesce repeated RViz clicks during the controlled brake: the last
     // target is the one armed after the old task reports PAUSED.
@@ -1188,9 +1218,20 @@ void PlannerSupervisor::explorationStatusCallback(
                           : PlannerPhase::PLANNING;
       status_.ready_for_new_task = false;
       status_.stable_hover = false;
-      status_.command_owner = CommandOwner::EXPLORATION;
-      gateway_.setAuthorizedOwner(CommandOwner::EXPLORATION, status_.task_epoch);
+      // RUNNING/PLAN_TRAJ acknowledges task acceptance, not a command source.
+      // Keep the initial HOLD until execution is announced. Rolling replans
+      // retain their already committed exploration command owner.
+      if (state == "EXEC_TRAJ" || state == "REORIENT" ||
+          status_.command_owner == CommandOwner::EXPLORATION) {
+        status_.command_owner = CommandOwner::EXPLORATION;
+        gateway_.setAuthorizedOwner(CommandOwner::EXPLORATION, status_.task_epoch);
+      }
       status_.reason = "exploration " + state;
+    } else if (state == "WAITING_MAP" || state == "WAITING_TOPOLOGY") {
+      exploration_start_pending_ = false;
+      status_.phase = PlannerPhase::PLANNING;
+      status_.ready_for_new_task = false;
+      status_.reason = state;
     } else if (state == "SUCCEEDED") {
       exploration_start_pending_ = false;
       // FastExplorationFSM publishes this terminal status continuously at its
@@ -1336,14 +1377,19 @@ void PlannerSupervisor::navigationStatusCallback(
               navigation_goal_sequence_before_dispatch_ &&
           !adapter_status.goal_active;
       if (completed_dispatched_goal) {
+        navigation_terminal_reason_ = adapter_status.task_result == "blocked"
+            ? "navigation blocked: " + adapter_status.failure_reason : "";
         // Reuse the normal transition path so stale commands are cleared and
         // the next navigation task is accepted only after a verified hover.
         navigation_goal_dispatch_pending_ = false;
         beginTransition(PlannerMode::STATE2STATE,
                         status_.accepted_request_id,
                         "",
-                        "navigation goal completed");
-        status_.task_result = PlannerTaskResult::SUCCEEDED;
+                        adapter_status.task_result == "blocked"
+                            ? "navigation blocked: " + adapter_status.failure_reason
+                            : "navigation goal completed");
+        status_.task_result = adapter_status.task_result == "blocked"
+            ? PlannerTaskResult::BLOCKED : PlannerTaskResult::SUCCEEDED;
         return;
       }
       // The FSM has accepted this goal but is still in the one-tick
@@ -1366,7 +1412,13 @@ void PlannerSupervisor::navigationStatusCallback(
                            ? "navigation wait goal"
                            : "navigation wait goal; planning worker busy; stage=" +
                                  navigation_worker_stage_;
-      status_.task_result = PlannerTaskResult::SUCCEEDED;
+      if (adapter_status.task_result == "blocked") {
+        status_.task_result = PlannerTaskResult::BLOCKED;
+        status_.reason = "navigation blocked: " + adapter_status.failure_reason;
+      } else if (status_.task_result == PlannerTaskResult::BLOCKED &&
+                 !navigation_terminal_reason_.empty()) {
+        status_.reason = navigation_terminal_reason_;
+      }
     }
   } else if (status_.active_mode == PlannerMode::TRACKING &&
              !transition_active_) {
@@ -1811,6 +1863,27 @@ void PlannerSupervisor::timerCallback(const ros::TimerEvent &) {
       status_.odom_valid = supervisor_odom_valid;
       status_.map_ready = supervisor_odom_valid;
       status_.topology_ready = supervisor_odom_valid;
+    }
+
+    if (boot_complete_ && !transition_active_ && map_status_provider_ &&
+        isExplorationMode(status_.active_mode) &&
+        status_.phase == PlannerPhase::WAITING_INPUT && !serial_handover_pending_) {
+      // Global topology is optional and distinct from exploration's bubble
+      // graph. The adapter reports WAITING_TOPOLOGY for its own graph.
+      const bool ready = status_.map_ready && status_.odom_valid &&
+                         hoverConditionMetLocked();
+      status_.ready_for_new_task = ready;
+      if (!ready) {
+        status_.reason = !status_.map_ready ? "WAITING_MAP" :
+            (!status_.odom_valid ? "WAITING_ODOMETRY" : "WAITING_STABLE_HOVER");
+        if (exploration_trigger_waiting_for_map_) status_.reason += "; target queued";
+      } else if (exploration_trigger_waiting_for_map_) {
+        const auto goal = pending_exploration_trigger_;
+        exploration_trigger_waiting_for_map_ = false;
+        acceptExplorationTriggerLocked(goal);
+      } else {
+        status_.reason = "waiting for exploration target";
+      }
     }
 
     if (!boot_complete_) {

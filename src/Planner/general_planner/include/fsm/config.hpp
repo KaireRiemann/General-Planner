@@ -197,8 +197,9 @@ namespace fsm {
         int dynamic_obstacle_layer_cloud_queue_size{3};
         double dynamic_obstacle_layer_odom_timeout{0.2};
         double task_timeout{0.6};
-        int state2state_plan_from_rest_max_failures{0};
-        bool state2state_clear_goal_on_plan_failure{false};
+        int state2state_plan_from_rest_max_failures{5};
+        bool state2state_clear_goal_on_plan_failure{true};
+        double state2state_plan_from_rest_failure_backoff{0.6};
         // Wall-clock bound for a state2state planning operation. It applies
         // to rolling replan after its committed backup, and to plan-from-rest
         // before it has produced a first command. The runtime retires a timed
@@ -357,10 +358,14 @@ namespace fsm {
             loader.LoadParam("fsm/task_timeout", task_timeout, 0.6);
             loader.LoadParam("fsm/state2state_plan_from_rest_max_failures",
                              state2state_plan_from_rest_max_failures,
-                             0);
+                             5);
             loader.LoadParam("fsm/state2state_clear_goal_on_plan_failure",
                              state2state_clear_goal_on_plan_failure,
-                             false);
+                             true);
+            loader.LoadParam("fsm/state2state_plan_from_rest_failure_backoff",
+                             state2state_plan_from_rest_failure_backoff, 0.6);
+            state2state_plan_from_rest_failure_backoff = std::clamp(
+                state2state_plan_from_rest_failure_backoff, 0.05, 5.0);
             loader.LoadParam("fsm/state2state_replan_watchdog_timeout",
                              state2state_replan_watchdog_timeout,
                              2.0);

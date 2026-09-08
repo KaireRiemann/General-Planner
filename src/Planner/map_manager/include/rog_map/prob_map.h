@@ -138,7 +138,8 @@ namespace rog_map {
 
         void writeMapInfoToLog(std::ofstream &log_file);
 
-        void updateProbMap(const PointCloud &cloud, const Pose &pose);
+        void updateProbMap(const PointCloud &cloud, const Pose &pose,
+                           const PointCloud *confirmed_hits = nullptr);
 
         /** Enable the compact discrete-state delta stream used by a global map. */
         void setStateChangeTrackingEnabled(bool enabled);
@@ -218,7 +219,8 @@ namespace rog_map {
 
         void notifyStateChangeCallback();
 
-        void raycastProcess(const PointCloud &input_cloud, const Vec3f &cur_odom);
+        void raycastProcess(const PointCloud &input_cloud, const Vec3f &cur_odom,
+                            const PointCloud *confirmed_hits = nullptr);
 
         void insertUpdateCandidate(const Vec3i &id_g, bool is_hit);
 

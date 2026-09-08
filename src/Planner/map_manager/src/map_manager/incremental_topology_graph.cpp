@@ -382,8 +382,9 @@ void IncrementalTopologyGraph::observePlannedPath(
 bool IncrementalTopologyGraph::lineTraversable(const rog_map::Vec3f &start,
                                                 const rog_map::Vec3f &goal,
                                                 const TopologyMapView &map_view,
-                                                double sample_spacing) const {
-    return lineEvidence(start, goal, map_view, sample_spacing) ==
+                                                double sample_spacing,
+                                                const std::function<bool()> &should_cancel) const {
+    return lineEvidence(start, goal, map_view, sample_spacing, should_cancel) ==
            TopologyMapView::EvidenceState::KNOWN_FREE;
 }
 
@@ -391,7 +392,8 @@ TopologyMapView::EvidenceState IncrementalTopologyGraph::lineEvidence(
     const rog_map::Vec3f &start,
     const rog_map::Vec3f &goal,
     const TopologyMapView &map_view,
-    double sample_spacing) const {
+    double sample_spacing,
+    const std::function<bool()> &should_cancel) const {
     using EvidenceState = TopologyMapView::EvidenceState;
     if (!start.allFinite() || !goal.allFinite()) {
         return EvidenceState::OCCUPIED;
@@ -401,10 +403,14 @@ TopologyMapView::EvidenceState IncrementalTopologyGraph::lineEvidence(
         std::shared_lock<std::shared_mutex> lock(graph_mutex_);
         sample_spacing = config_.edge_sample_spacing;
     }
-    const int steps = std::max(1, static_cast<int>(std::ceil(
-        distance / sample_spacing)));
+    const double step_count = std::ceil(distance / sample_spacing);
+    if (!std::isfinite(step_count) || step_count > 1000000.0 || sample_spacing <= 0.0) {
+        return EvidenceState::OCCUPIED;
+    }
+    const int steps = std::max(1, static_cast<int>(step_count));
     EvidenceState result = EvidenceState::KNOWN_FREE;
     for (int i = 0; i <= steps; ++i) {
+        if (should_cancel && should_cancel()) return EvidenceState::OCCUPIED;
         const double ratio = static_cast<double>(i) / static_cast<double>(steps);
         const rog_map::Vec3f sample =
             start + ratio * (goal - start);
@@ -1944,7 +1950,7 @@ bool IncrementalTopologyGraph::findPath(
         return false;
     }
     if (lineTraversable(start, goal, map_view,
-                        query_config.edge_sample_spacing)) {
+                        query_config.edge_sample_spacing, should_cancel)) {
         path = {start, goal};
         return true;
     }
@@ -1990,7 +1996,7 @@ bool IncrementalTopologyGraph::findPath(
         const auto node = graph.find(nearest_start[i].second);
         if (node != graph.end() &&
             lineTraversable(start, node->second.node.position, map_view,
-                            query_config.edge_sample_spacing)) {
+                            query_config.edge_sample_spacing, should_cancel)) {
             start_candidates.push_back(nearest_start[i]);
         }
     }
@@ -2003,7 +2009,7 @@ bool IncrementalTopologyGraph::findPath(
         const auto node = graph.find(nearest_goal[i].second);
         if (node != graph.end() &&
             lineTraversable(node->second.node.position, goal, map_view,
-                            query_config.edge_sample_spacing)) {
+                            query_config.edge_sample_spacing, should_cancel)) {
             goal_links.emplace(nearest_goal[i].second, nearest_goal[i].first);
         }
     }
@@ -2080,6 +2086,17 @@ bool IncrementalTopologyGraph::findPath(
             const double proposed = current.path_cost + neighbor.second;
             const auto known = distance.find(neighbor.first);
             if (known == distance.end() || proposed < known->second) {
+                // Snapshots can retain historical edges after the live map
+                // changes. Exclude explicit collisions during this query so
+                // A* can actually choose a different homotopy. UNKNOWN alone
+                // does not erase historical connectivity; the local prefix
+                // still undergoes its own collision validation.
+                if (lineEvidence(graph_it->second.node.position,
+                                 graph.at(neighbor.first).node.position,
+                                 map_view, query_config.edge_sample_spacing,
+                                 should_cancel) == TopologyMapView::EvidenceState::OCCUPIED) {
+                    continue;
+                }
                 distance[neighbor.first] = proposed;
                 parent[neighbor.first] = current.node_id;
                 queue.push({proposed +

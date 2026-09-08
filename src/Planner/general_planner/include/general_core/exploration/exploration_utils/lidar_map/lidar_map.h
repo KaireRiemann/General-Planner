@@ -6,6 +6,9 @@
 #include <Eigen/StdVector>
 #include <geometry_msgs/PoseStamped.h>
 #include <memory>
+#include <mutex>
+#include <functional>
+#include <pcl/kdtree/kdtree_flann.h>
 #include <message_filters/subscriber.h>
 #include <message_filters/sync_policies/approximate_time.h>
 #include <message_filters/sync_policies/exact_time.h>
@@ -61,7 +64,11 @@ public:
   void boxSearch(const Eigen::Vector3f &min, const Eigen::Vector3f &max,
                  PointVector &pts);
   void updateCloudMapOdometry(const sensor_msgs::PointCloud2ConstPtr &msg,
-                              const nav_msgs::Odometry::ConstPtr &odom_);
+                              const nav_msgs::Odometry::ConstPtr &odom_,
+                              const sensor_msgs::PointCloud2ConstPtr &confirmed = {},
+                              const std::function<bool(const Eigen::Vector3d &)> &observed_free = {},
+                              const Eigen::Vector3d &changed_min = Eigen::Vector3d::Zero(),
+                              const Eigen::Vector3d &changed_max = Eigen::Vector3d::Zero());
   unique_ptr<LIOInterfaceParam> lp_;
   unique_ptr<LIOInterfaceData> ld_;
 
@@ -77,6 +84,9 @@ private:
   ros::Publisher update_trigger_puber_;
 
   KD_TREE<PointType> ikd_Tree_map;
+  std::mutex map_mutex_;
+  pcl::KdTreeFLANN<PointType> current_scan_tree_;
+  pcl::PointCloud<PointType>::Ptr current_scan_;
 
   EIGEN_MAKE_ALIGNED_OPERATOR_NEW
 };
@@ -112,6 +122,7 @@ struct LIOInterfaceData {
 };
 
 inline bool LIOInterface::IsInBox(const Eigen::Vector3f &pos) {
+  if (!pos.allFinite()) return false;
   auto inbox = [&](const Eigen::Vector3f &pt, const Eigen::Vector3f &min,
                    const Eigen::Vector3f &max) -> bool {
     for (int i = 0; i < 3; i++) {

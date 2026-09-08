@@ -347,11 +347,13 @@ private:
         const rog_map::Vec3f &start,
         const rog_map::Vec3f &goal,
         const TopologyMapView &map_view,
-        double sample_spacing = 0.0) const;
+        double sample_spacing = 0.0,
+        const std::function<bool()> &should_cancel = {}) const;
     bool lineTraversable(const rog_map::Vec3f &start,
                          const rog_map::Vec3f &goal,
                          const TopologyMapView &map_view,
-                         double sample_spacing = 0.0) const;
+                         double sample_spacing = 0.0,
+                         const std::function<bool()> &should_cancel = {}) const;
     double estimateClearance(const rog_map::Vec3f &position,
                              const TopologyMapView &map_view) const;
     std::vector<Node, Eigen::aligned_allocator<Node>> generateCandidates(

@@ -28,6 +28,7 @@
 #include <iostream>
 #include "memory"
 #include "common_lib.hpp"
+#include <cstdint>
 
 #ifndef ORIGIN_AT_CORNER
 #ifndef ORIGIN_AT_CENTER
@@ -71,8 +72,11 @@ namespace rog_map {
             bool setInput(const Eigen::Vector3d &start, const Eigen::Vector3d &end);
 
             bool step(Eigen::Vector3d &ray_pt);
+            bool validInput() const { return valid_input_; }
 
         private:
+            bool valid_input_{false};
+            std::int64_t remaining_steps_{0};
             double resolution_{-1};
             bool first_point{true};
             // progress variables
@@ -88,5 +92,3 @@ namespace rog_map {
         };
     }
 }
-
-

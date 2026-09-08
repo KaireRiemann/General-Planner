@@ -54,6 +54,9 @@ fsm:
   # no command stream until a trajectory is committed, so it reports through
   # its own watchdog topic while supervisor keeps a verified HOLD.
   state2state_replan_watchdog_timeout: 2.0
+  state2state_plan_from_rest_max_failures: 5
+  state2state_clear_goal_on_plan_failure: true
+  state2state_plan_from_rest_failure_backoff: 0.6
   state2state_replan_watchdog_topic: "/planning/navigation/replan_watchdog"
   state2state_plan_watchdog_topic: "/planning/navigation/plan_watchdog"
   cmd_topic: "/planning/pos_cmd"

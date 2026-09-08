@@ -711,6 +711,42 @@ int main() {
     delayed_release.join();
     slow_worker.join();
 
+    // A stale snapshot has both a short blocked route and a longer feasible
+    // route. Query-time collision rejection must change the selected branch,
+    // without waiting for graph maintenance to remove the stale edges.
+    auto stale = std::make_shared<IncrementalTopologyGraph::SearchSnapshot>();
+    stale->config = config;
+    stale->config.connection_radius = 0.2;
+    const std::vector<Vec3f> nodes{Vec3f(0, 0, 1), Vec3f(2, 0, 1), Vec3f(4, 0, 1),
+                                  Vec3f(0, 2, 1), Vec3f(2, 2, 1), Vec3f(4, 2, 1)};
+    for (std::size_t i = 0; i < nodes.size(); ++i) {
+        stale->graph[i + 1].node.id = i + 1;
+        stale->graph[i + 1].node.position = nodes[i];
+    }
+    const auto edge = [&](int a, int b) {
+        const double cost = (nodes[a - 1] - nodes[b - 1]).norm();
+        stale->graph[a].neighbors[b] = cost;
+        stale->graph[b].neighbors[a] = cost;
+    };
+    edge(1, 2); edge(2, 3);
+    edge(1, 4); edge(4, 5); edge(5, 6); edge(6, 3);
+    IncrementalTopologyGraph::Query live;
+    live.evidence = [](const Vec3f &p) {
+        using E = general_planner::TopologyMapView::EvidenceState;
+        return std::abs(p.x() - 2.0) < 0.2 && p.y() < 1.0 ? E::OCCUPIED : E::KNOWN_FREE;
+    };
+    path.clear();
+    ok &= expect(graph.findPath(stale, nodes.front(), nodes[2], live, path),
+                 "live obstacle must allow the longer alternative route");
+    bool detoured = false;
+    for (const auto &p : path) detoured = detoured || p.y() > 1.0;
+    ok &= expect(detoured, "query reused a blocked snapshot edge instead of detouring");
+    int cancel_polls = 0;
+    path.clear();
+    ok &= expect(!graph.findPath(stale, nodes.front(), nodes[2], live, path, 0.0,
+                                [&] { return ++cancel_polls >= 10; }) && path.empty(),
+                 "cancellation during edge sampling must return no candidate");
+
     if (!ok) {
         return EXIT_FAILURE;
     }

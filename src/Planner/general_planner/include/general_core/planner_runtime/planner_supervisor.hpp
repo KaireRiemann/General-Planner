@@ -195,6 +195,9 @@ private:
   bool navigation_worker_ready_{false};
   bool navigation_worker_readiness_observed_{false};
   std::string navigation_worker_stage_{"unknown"};
+  std::string navigation_terminal_reason_;
+  bool exploration_trigger_waiting_for_map_{false};
+  geometry_msgs::PoseStamped pending_exploration_trigger_;
   bool state2state_recovery_allowed_{false};
   bool state2state_recovery_pending_{false};
   geometry_msgs::PoseStamped pending_state2state_recovery_goal_;

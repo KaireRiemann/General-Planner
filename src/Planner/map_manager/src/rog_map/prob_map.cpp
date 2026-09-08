@@ -352,7 +352,8 @@ void ProbMap::recordStateChange(const Vec3i& id_g,
     }
 }
 
-void ProbMap::updateProbMap(const PointCloud& cloud, const Pose& pose) {
+void ProbMap::updateProbMap(const PointCloud& cloud, const Pose& pose,
+                            const PointCloud *confirmed_hits) {
     TimeConsuming tc("updateMap", false);
     const Vec3f& pos = pose.first;
     time_consuming_[4] = cloud.size();
@@ -383,7 +384,7 @@ void ProbMap::updateProbMap(const PointCloud& cloud, const Pose& pose) {
 
     updateLocalBox(pos);
     TimeConsuming t_raycast("raycast", false);
-    raycastProcess(cloud, pos);
+    raycastProcess(cloud, pos, confirmed_hits);
     time_consuming_[1] = t_raycast.stop();
     raycast_data_.batch_update_counter++;
     if (raycast_data_.batch_update_counter >= cfg_.batch_update_size) {
@@ -734,7 +735,8 @@ void ProbMap::missPointUpdate(const Vec3f& pos, const int& hash_id, const int& h
     }
 }
 
-void ProbMap::raycastProcess(const PointCloud& input_cloud, const Vec3f& cur_odom) {
+void ProbMap::raycastProcess(const PointCloud& input_cloud, const Vec3f& cur_odom,
+                             const PointCloud *confirmed_hits) {
     // bounding box of updated region
     raycast_data_.cache_box_min = cur_odom;
     raycast_data_.cache_box_max = cur_odom;
@@ -758,6 +760,17 @@ void ProbMap::raycastProcess(const PointCloud& input_cloud, const Vec3f& cur_odo
     std::unordered_set<int> hit_voxels_this_frame;
     hit_voxels_this_frame.reserve(static_cast<std::size_t>(cloud_in_size));
     std::unordered_set<int> miss_voxels_this_frame;
+    std::unordered_set<int> confirmed_voxels;
+    std::unordered_set<int> observed_endpoints;
+    if (confirmed_hits) {
+        for (const auto &point : *confirmed_hits) {
+            const Vec3f p(point.x, point.y, point.z);
+            if (!p.allFinite() || !insideLocalMap(p)) continue;
+            Vec3i id;
+            posToGlobalIndex(p, id);
+            confirmed_voxels.insert(getHashIndexFromGlobalIndex(id));
+        }
+    }
 
     // 1) process all non-inf points, update occupied probability
     int temperol_cnt{0};
@@ -774,6 +787,7 @@ void ProbMap::raycastProcess(const PointCloud& input_cloud, const Vec3f& cur_odo
         }
 
         Vec3f p(pcl_p.x, pcl_p.y, pcl_p.z);
+        if (!p.allFinite()) continue;
         Vec3i pt_id_g;
 
         // no raycasting, purely add occ pints
@@ -784,7 +798,8 @@ void ProbMap::raycastProcess(const PointCloud& input_cloud, const Vec3f& cur_odo
                     continue;
                 }
                 posToGlobalIndex(p, pt_id_g);
-                if (hit_voxels_this_frame.insert(
+                if ((!confirmed_hits || confirmed_voxels.count(getHashIndexFromGlobalIndex(pt_id_g))) &&
+                    hit_voxels_this_frame.insert(
                         getHashIndexFromGlobalIndex(pt_id_g)).second) {
                     insertUpdateCandidate(pt_id_g, true);
                 }
@@ -846,7 +861,11 @@ void ProbMap::raycastProcess(const PointCloud& input_cloud, const Vec3f& cur_odo
 
         if (update_hit) {
             posToGlobalIndex(p, pt_id_g);
-            if (hit_voxels_this_frame.insert(
+            // A rejected static hit is NOT a missing return. Protect every
+            // actual endpoint from other rays; never carve through it.
+            observed_endpoints.insert(getHashIndexFromGlobalIndex(pt_id_g));
+            if ((!confirmed_hits || confirmed_voxels.count(getHashIndexFromGlobalIndex(pt_id_g))) &&
+                hit_voxels_this_frame.insert(
                     getHashIndexFromGlobalIndex(pt_id_g)).second) {
                 insertUpdateCandidate(pt_id_g, true);
             }
@@ -866,7 +885,8 @@ void ProbMap::raycastProcess(const PointCloud& input_cloud, const Vec3f& cur_odo
                     break;
                 }
                 const int hash_id = getHashIndexFromGlobalIndex(cur_ray_id_g);
-                if (miss_voxels_this_frame.insert(hash_id).second) {
+                if (!observed_endpoints.count(hash_id) &&
+                    miss_voxels_this_frame.insert(hash_id).second) {
                     insertUpdateCandidate(cur_ray_id_g, false);
                 }
             }

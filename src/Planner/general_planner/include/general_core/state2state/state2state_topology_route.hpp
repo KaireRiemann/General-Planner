@@ -66,6 +66,11 @@ struct State2StateTopologyRouteRuntime {
     }
 };
 
+inline bool topologyRetryDeferred(const std::string &result) {
+    return result == "TOPO_QUERY_RATE_LIMIT" ||
+           result == "TOPO_REQUERY_RATE_LIMIT";
+}
+
 // A global-topology selection is a routing policy, not merely a route hint:
 // for non-local goals it may require the frontend to reject a route that
 // cannot remain attached to the persistent topology graph.  Keeping this

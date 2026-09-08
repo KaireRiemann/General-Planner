@@ -3344,7 +3344,24 @@ bool FastPlannerManager::updateRogMap(const sensor_msgs::PointCloud2ConstPtr &cl
                                      odom_msg->pose.pose.orientation.z);
   try
   {
-    map_manager_->updateMap(cloud, pose);
+    rog_map::PointCloud occupied_returns;
+    const auto update = map_manager_->updateMap(
+        cloud, pose, cloud_msg->header.stamp.toSec(), &occupied_returns);
+    if (lidar_map_interface_) {
+      sensor_msgs::PointCloud2Ptr persistent(new sensor_msgs::PointCloud2);
+      pcl::toROSMsg(occupied_returns, *persistent);
+      persistent->header = cloud_msg->header;
+      const auto manager = map_manager_;
+      lidar_map_interface_->updateCloudMapOdometry(
+          cloud_msg, odom_msg, persistent,
+          update.changed_box_valid
+              ? std::function<bool(const Eigen::Vector3d &)>([manager](const Eigen::Vector3d &p) {
+                  return manager->insideLocalMap(p) &&
+                         manager->getGridType(p) == general_utils::KNOWN_FREE;
+                })
+              : std::function<bool(const Eigen::Vector3d &)>{},
+          update.changed_min, update.changed_max);
+    }
     rog_map_updated_ = true;
   }
   catch (const std::exception &e)

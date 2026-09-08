@@ -28,6 +28,18 @@ void expect(const bool ok, const char *msg) {
 } // namespace
 
 int main() {
+  expect(modeStateFromExplorationString("WAITING_MAP") == ModeState::EXP_PLAN_TRAJ,
+         "map bootstrap is planning, not execution");
+  expect(modeStateFromExplorationString("WAITING_TOPOLOGY") == ModeState::EXP_PLAN_TRAJ,
+         "topology bootstrap is planning, not execution");
+  NavigationAdapterStatus blocked_navigation;
+  expect(parseNavigationAdapterStatus(
+      "WAIT_GOAL 7 12 IDLE READY stage=idle result=blocked reason=TOPO_PREFIX_BLOCKED",
+      blocked_navigation), "parse blocked navigation status");
+  expect(blocked_navigation.task_result == "blocked" &&
+         blocked_navigation.failure_reason == "TOPO_PREFIX_BLOCKED" &&
+         blocked_navigation.planning_worker_ready && !blocked_navigation.goal_active,
+         "failed navigation must be distinct from goal completion");
   PlannerMode mode = PlannerMode::HOLD;
   expect(parsePlannerMode("exploration", mode), "parse exploration");
   expect(mode == PlannerMode::EXPLORATION, "mode exploration");

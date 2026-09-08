@@ -38,7 +38,7 @@ namespace rog_map {
 #endif
 #endif
 
-            if (resolution < 0) {
+            if (!std::isfinite(resolution) || resolution <= 0) {
                 throw std::runtime_error(" -- [Raycaster]: resolution must be positive!");
             } else {
                 resolution_ = resolution;
@@ -46,6 +46,10 @@ namespace rog_map {
         }
 
         void RayCaster::setResolution(const double &resolution) {
+            if (!std::isfinite(resolution) || resolution <= 0) {
+                throw std::invalid_argument("RayCaster resolution must be finite and positive");
+            }
+            valid_input_ = false;
             resolution_ = resolution;
         }
 
@@ -69,8 +73,18 @@ namespace rog_map {
         }
 
         bool RayCaster::setInput(const Eigen::Vector3d &start, const Eigen::Vector3d &end) {
-            if (resolution_ < 0) {
+            valid_input_ = false;
+            remaining_steps_ = 0;
+            if (!std::isfinite(resolution_) || resolution_ <= 0) {
                 throw std::runtime_error(" -- [RayCaster] Resolution is not set!");
+            }
+            // Reject invalid/out-of-range coordinates before floating-to-int
+            // conversion. A reused caster must not retain its previous ray.
+            const double index_limit = std::numeric_limits<int>::max() / 4.0;
+            if (!start.allFinite() || !end.allFinite() ||
+                (start / resolution_).cwiseAbs().maxCoeff() > index_limit ||
+                (end / resolution_).cwiseAbs().maxCoeff() > index_limit) {
+                return false;
             }
             start_x_d_ = start.x();
             start_y_d_ = start.y();
@@ -92,6 +106,9 @@ namespace rog_map {
             int delta_X = end_x_i_ - start_x_i_;
             int delta_Y = end_y_i_ - start_y_i_;
             int delta_Z = end_z_i_ - start_z_i_;
+            remaining_steps_ = static_cast<std::int64_t>(std::abs(delta_X)) +
+                               std::abs(delta_Y) + std::abs(delta_Z);
+            valid_input_ = true;
 
             cur_ray_pt_id_x_ = start_x_i_;
             cur_ray_pt_id_y_ = start_y_i_;
@@ -153,6 +170,10 @@ namespace rog_map {
         }
 
         bool RayCaster::step(Eigen::Vector3d &ray_pt) {
+            if (!valid_input_ || remaining_steps_ <= 0) {
+                return false;
+            }
+            --remaining_steps_;
 #ifdef ORIGIN_AT_CORNER
 #ifdef ORIGIN_AT_CENTER
             throw std::runtime_error(" -- [RayCaster]: ORIGIN_AT_CORNER and ORIGIN_AT_CENTER cannot be both true!");
@@ -183,6 +204,12 @@ namespace rog_map {
             }
 
             // compute firest bound point
+            // Once an axis reaches the target voxel it must never advance
+            // again. Boundary ties/roundoff (especially at negative grid
+            // coordinates) otherwise allow overshoot and a non-terminating ray.
+            if (cur_ray_pt_id_x_ == end_x_i_) t_to_bound_x_ = std::numeric_limits<double>::infinity();
+            if (cur_ray_pt_id_y_ == end_y_i_) t_to_bound_y_ = std::numeric_limits<double>::infinity();
+            if (cur_ray_pt_id_z_ == end_z_i_) t_to_bound_z_ = std::numeric_limits<double>::infinity();
             if (t_to_bound_x_ < t_to_bound_y_) {
                 if (t_to_bound_x_ < t_to_bound_z_) {
 //                        std::cout << "Expand X" << std::endl;

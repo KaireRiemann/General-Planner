@@ -1333,18 +1333,16 @@ namespace fsm {
                 return;
             }
             std::lock_guard<std::mutex> lock(fsm_tick_mutex_);
-            if (state2state_replan_in_progress_.load()) {
-                // The route runtime is owned by the active backend.  A
-                // selection arriving during a blocked replan must not mutate
-                // it from the control queue. The caller can resend it after
-                // the watchdog has retired this task.
-                ROS_WARN_STREAM("[Fsm] ignore topology-policy update while "
-                                << "state2state replan is active");
-                return;
-            }
             // This callback only records policy. The next state2state
             // plan/replan owns route invalidation and topology work.
-            planner_ptr_->setState2StateTopologyPolicy(msg->data);
+            if (planner_ptr_->setState2StateTopologyPolicy(msg->data)) {
+                ++state2state_policy_sequence_;
+                state2state_retry_after_wall_ = 0.0;
+                state2state_plan_from_rest_fail_count_ = 0;
+                if (state2state_replan_in_progress_.load()) {
+                    planner_ptr_->requestState2StatePlanningCancel();
+                }
+            }
             ROS_INFO_STREAM("[Fsm] global topology navigation policy="
                             << (msg->data ? "enabled" : "disabled"));
         }
@@ -1362,7 +1360,9 @@ namespace fsm {
                           (state2StatePlanningWorkerReady() ? "READY" : "BUSY") +
                           " stage=" +
                           (planner_ptr_ ? planner_ptr_->state2StatePlanningStageName()
-                                        : "unavailable");
+                                        : "unavailable") +
+                          " result=" + state2state_task_result_ +
+                          " reason=" + state2state_failure_reason_;
             navigation_status_pub_.publish(status);
         }
 
@@ -1807,6 +1807,7 @@ namespace fsm {
                 }
                 const double elapsed =
                     static_cast<double>(now_ns - start_ns) * 1.0e-9;
+                if (planner_ptr_) planner_ptr_->requestState2StatePlanningCancel();
                 std_msgs::UInt64 watchdog;
                 watchdog.data = navigationTaskEpoch();
                 plan_watchdog_pub_.publish(watchdog);

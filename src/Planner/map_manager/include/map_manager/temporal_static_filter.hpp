@@ -14,11 +14,11 @@ namespace general_planner {
 
 /**
  * Promotes a point to the static-map stream only after its spatial voxel has
- * been observed in distinct cloud frames for a continuous multi-view interval.
+ * been observed in distinct cloud frames for a continuous time interval.
  *
- * This deliberately sits before ROG fusion: the real-time cloud remains
- * available to the dynamic-obstacle layer, while a passing object cannot
- * leave world-lifetime evidence in BoundaryMap after the rolling map moves.
+ * This gates persistent hits, never raw free-space rays or current obstacles.
+ * Temporal persistence is not semantic classification: an object that stops
+ * can be promoted, so measured free-space evidence must also remove old hits.
  */
 class TemporalStaticFilter {
  public:
@@ -27,7 +27,7 @@ class TemporalStaticFilter {
     double voxel_size{0.30};
     int min_observations{4};
     double min_observation_span{0.30};
-    double min_observer_baseline{0.0};
+    double min_observer_baseline{0.0};  // Legacy compatibility; not a gate.
     double max_observation_gap{0.60};
     std::size_t max_voxels{250000};
   };
@@ -126,13 +126,11 @@ class TemporalStaticFilter {
       const bool sufficient_duration =
           !timestamp_valid || stamp - observation.first_stamp >=
                                   config_.min_observation_span;
-      const bool sufficient_baseline =
-          config_.min_observer_baseline <= 0.0 ||
-          (observation.has_observer_position &&
-           observation.max_observer_baseline >=
-               config_.min_observer_baseline);
+      // Observer motion is not evidence of object stationarity and cannot be
+      // a prerequisite for building the map needed to plan that motion.
+      // Keep the legacy configuration readable, but do not gate promotion on it.
       if (observation.count >= config_.min_observations &&
-          sufficient_duration && sufficient_baseline) {
+          sufficient_duration) {
         output.points.push_back(point);
       }
     }

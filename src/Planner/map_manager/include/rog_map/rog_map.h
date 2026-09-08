@@ -112,7 +112,8 @@ namespace rog_map {
         }
 
 
-        void updateMap(const PointCloud& cloud, const Pose& pose);
+        void updateMap(const PointCloud& cloud, const Pose& pose,
+                       const PointCloud *confirmed_hits = nullptr);
 
         RobotState getRobotState() const;
 

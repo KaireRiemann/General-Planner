@@ -2491,8 +2491,8 @@ int FastExplorationManager::planGlobalPath(const Eigen::Vector3d &pos,
                      "exploration capacity: goal=("
                      << ed_->mission_goal_.transpose()
                      << "). Increase target_exploration/auto_workspace/"
-                        "half_extent_xy before launch, or use a target inside "
-                        "the configured legacy coverage boxes.");
+                        "half_extent_xy before launch and check exclusion "
+                        "zones. Target capacity is not a coverage objective.");
     return TARGET_UNREACHABLE;
   }
   if (target_directed && missionGoalReached(pos)) {

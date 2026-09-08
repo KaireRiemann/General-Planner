@@ -35,14 +35,14 @@ rog_map:
   intensity_thresh: -10
   map_size: [72.0, 72.0, 8.0]
   point_filt_num: 1
-  # Only persistent geometry observed across a real viewpoint baseline enters
-  # the world-lifetime maps. Raw clouds still feed dynamic collision avoidance.
+  # Legacy configuration only. Local fusion must never depend on temporal
+  # confirmation; persistent LIO geometry uses ROG occupancy probability.
   temporal_filter:
-    enable: true
+    enable: false
     voxel_size: 0.20
     min_observations: 10
     min_observation_span: 0.90
-    min_observer_baseline: 0.40
+    min_observer_baseline: 0.0  # Deprecated: motion must never gate map bootstrap.
     max_observation_gap: 0.45
     max_voxels: 250000
 
@@ -50,9 +50,10 @@ rog_map:
     enable: true
     batch_update_size: 1
     unk_thresh: 1.0
-    # One voxel receives at most one hit per cloud.  Keep confidence gradual
-    # so a later empty observation can clear transient geometry promptly.
-    p_hit: 0.70
+    # Restore prompt local obstacle insertion. Per-frame dedup prevents a
+    # dense scan from counting as hundreds of independent hits; measured
+    # misses clear old occupancy without a temporal admission gate.
+    p_hit: 0.90
     p_miss: 0.35
     p_min: 0.12
     p_max: 0.97

@@ -12,7 +12,6 @@
 
 #include <map_manager/boundary_map.hpp>
 #include <map_manager/incremental_topology_graph.hpp>
-#include <map_manager/temporal_static_filter.hpp>
 #include <rog_map/rog_map.h>
 #include <rog_map_ros/rog_map_ros1.hpp>
 #include <rog_map_ros/rog_map_ros2.hpp>
@@ -74,19 +73,6 @@ public:
             topology_graph_->clear();
         }
         if (map_) {
-            const rog_map::Config config = map_->getMapConfig();
-            TemporalStaticFilter::Config temporal_filter_config;
-            temporal_filter_config.enabled = config.temporal_filter_en;
-            temporal_filter_config.voxel_size = config.temporal_filter_voxel_size;
-            temporal_filter_config.min_observations = config.temporal_filter_min_observations;
-            temporal_filter_config.min_observation_span = config.temporal_filter_min_observation_span;
-            temporal_filter_config.min_observer_baseline =
-                config.temporal_filter_min_observer_baseline;
-            temporal_filter_config.max_observation_gap = config.temporal_filter_max_observation_gap;
-            temporal_filter_config.max_voxels =
-                static_cast<std::size_t>(config.temporal_filter_max_voxels);
-            temporal_static_filter_.configure(temporal_filter_config);
-
             // BoundaryMap consumes only sensor-driven discrete transitions.
             // Any pending stream from a previous owner is not part of this
             // manager's global history.
@@ -157,19 +143,23 @@ public:
         if (!map_) {
             return latestUpdate();
         }
-        rog_map::PointCloud static_cloud;
-        {
-            std::lock_guard<std::mutex> lock(temporal_filter_mutex_);
-            static_cloud = temporal_static_filter_.filter(
-                cloud, observation_stamp, &pose.first);
-        }
-        if (static_cloud_out) {
-            *static_cloud_out = static_cloud;
-        }
-        if (static_cloud.empty()) {
+        (void)observation_stamp;  // Legacy API; time continuity never gates fusion.
+        if (cloud.empty()) {
             return latestUpdate();
         }
-        map_->updateMap(static_cloud, pose);
+        // Restore ordinary local occupancy fusion. Every measured return
+        // contributes a hit and every measured ray contributes free evidence,
+        // regardless of observer motion, input rate, or temporal-filter YAML.
+        map_->updateMap(cloud, pose);
+        // Optional persistent-geometry stream for LIO: reuse ROG's existing
+        // probability state, not a second time/observation-count gate.
+        if (static_cloud_out) {
+            for (const auto &p : cloud) {
+                const rog_map::Vec3f position(p.x, p.y, p.z);
+                if (position.allFinite() && map_->insideLocalMap(position) &&
+                    map_->isOccupied(position)) static_cloud_out->push_back(p);
+            }
+        }
 
         UpdateSnapshot snapshot;
         snapshot.revision =
@@ -344,6 +334,10 @@ public:
         return topology_graph_->findPath(snapshot, start, goal,
                                          makeTopologyQuery(), path,
                                          attach_radius, should_cancel);
+    }
+
+    IncrementalTopologyGraph::Query topologyQueryView() const {
+        return makeTopologyQuery();
     }
 
     rog_map::RobotState getRobotState() const
@@ -734,8 +728,6 @@ private:
     BoundaryMap::Ptr boundary_map_;
     IncrementalTopologyGraph::Ptr topology_graph_{
         std::make_shared<IncrementalTopologyGraph>()};
-    mutable TemporalStaticFilter temporal_static_filter_;
-    mutable std::mutex temporal_filter_mutex_;
     mutable std::atomic<bool> topology_seeded_{false};
     mutable std::atomic<std::uint64_t> map_revision_{0};
     std::atomic<std::uint64_t> world_epoch_{1};

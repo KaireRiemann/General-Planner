@@ -23,6 +23,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cctype>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -46,9 +47,19 @@ namespace {
  * explicit multi-box profile in their YAML.
  */
 bool configureAutomaticTargetWorkspace(ros::NodeHandle &nh) {
-  bool enabled = false;
+  // Capacity is allocated once, before later supervisor mode switches.
+  std::string mission_mode{"coverage"};
+  nh.param("exploration/mission_mode", mission_mode, mission_mode);
+  std::transform(mission_mode.begin(), mission_mode.end(), mission_mode.begin(),
+                 [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+  bool enabled = mission_mode == "target" || mission_mode == "target_directed";
   nh.param("target_exploration/auto_workspace/enabled", enabled, enabled);
   if (!enabled) {
+    if (mission_mode == "target" || mission_mode == "target_directed") {
+      ROS_WARN("[target workspace] automatic capacity explicitly disabled; "
+               "target tasks remain limited to configured boxes even after "
+               "switching from navigation. This is not an unbounded target domain.");
+    }
     return false;
   }
 

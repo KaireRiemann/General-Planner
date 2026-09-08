@@ -22,10 +22,12 @@
 */
 
 #include <fsm/fsm.h>
+#include <utils/optimization/cancellation.hpp>
 #include <checker/common_checker.hpp>
 #include <algorithm>
 #include <boost/filesystem.hpp>
 #include <cmath>
+#include <chrono>
 #include <iomanip>
 #include <memory>
 #include <sstream>
@@ -34,6 +36,10 @@ using namespace general_utils;
 
 namespace fsm {
     namespace {
+        double planningSteadyTime() {
+            return std::chrono::duration<double>(
+                std::chrono::steady_clock::now().time_since_epoch()).count();
+        }
         double yawDiff(const double lhs, const double rhs) {
             return std::atan2(std::sin(lhs - rhs), std::cos(lhs - rhs));
         }
@@ -653,9 +659,11 @@ namespace fsm {
             return;
         }
         const std::uint64_t replan_task_epoch = navigation_task_epoch_.load();
+        const auto replan_goal_sequence = navigation_goal_sequence_.load();
+        const auto replan_policy_sequence = state2state_policy_sequence_;
         if (state2state_replan) {
             if (planner_ptr_) {
-                planner_ptr_->beginState2StatePlanningOperation();
+                planner_ptr_->beginState2StatePlanningOperation(cfg_.state2state_replan_watchdog_timeout);
             }
             state2state_replan_start_wall_ns_.store(
                     ros::WallTime::now().toNSec(), std::memory_order_release);
@@ -739,6 +747,9 @@ namespace fsm {
         if (release_fsm_lock_during_replan) {
             tick_lock.unlock();
         }
+        math_utils::ScopedCancellation replan_cancellation([this, state2state_replan] {
+            return state2state_replan && planner_ptr_->state2StatePlanningCancelRequested();
+        });
         PlanResult plan_result = executor.replan(*this, replan_request);
         if (release_fsm_lock_during_replan) {
             tick_lock.lock();
@@ -748,7 +759,10 @@ namespace fsm {
         // for an invalidated task must never be applied to the new task.
         if (release_fsm_lock_during_replan &&
             (!navigation_execution_enabled_.load() ||
-             navigation_task_epoch_.load() != replan_task_epoch)) {
+             navigation_task_epoch_.load() != replan_task_epoch ||
+             (state2state_replan &&
+              (navigation_goal_sequence_.load() != replan_goal_sequence ||
+               state2state_policy_sequence_ != replan_policy_sequence)))) {
             recordDiagnosticEvent("WARN",
                                   "replan_result_discarded",
                                   fmt::format("reason=task_invalidated;started_epoch={};current_epoch={};execution_enabled={}",
@@ -1094,6 +1108,9 @@ namespace fsm {
                 break;
             }
             case GENERATE_TRAJ: {
+                if (state2stateMode() && planningSteadyTime() < state2state_retry_after_wall_) {
+                    return;
+                }
                 // A state-to-state rolling replan can still be finishing after
                 // the command trajectory reaches its end. Do not start a
                 // concurrent plan-from-rest on the same planner; keep the FSM
@@ -1158,13 +1175,14 @@ namespace fsm {
                 const std::uint64_t plan_task_epoch = navigation_task_epoch_.load();
                 const std::uint64_t plan_goal_sequence =
                         navigation_goal_sequence_.load();
+                const auto plan_policy_sequence = state2state_policy_sequence_;
                 if (release_fsm_lock_during_plan &&
                     state2state_replan_in_progress_.exchange(true)) {
                     return;
                 }
                 if (release_fsm_lock_during_plan) {
                     if (planner_ptr_) {
-                        planner_ptr_->beginState2StatePlanningOperation();
+                        planner_ptr_->beginState2StatePlanningOperation(cfg_.state2state_replan_watchdog_timeout);
                     }
                     // PLAN_FROM_REST uses the same planner and the same
                     // lifetime contract as rolling replan.  Previously it
@@ -1208,6 +1226,9 @@ namespace fsm {
                 if (release_fsm_lock_during_plan) {
                     tick_lock.unlock();
                 }
+                math_utils::ScopedCancellation plan_cancellation([this, release_fsm_lock_during_plan] {
+                    return release_fsm_lock_during_plan && planner_ptr_->state2StatePlanningCancelRequested();
+                });
                 PlanResult plan_result = executor.plan(*this, plan_request);
                 if (release_fsm_lock_during_plan) {
                     tick_lock.lock();
@@ -1216,6 +1237,7 @@ namespace fsm {
                     (!navigation_execution_enabled_.load() ||
                      navigation_task_epoch_.load() != plan_task_epoch ||
                      navigation_goal_sequence_.load() != plan_goal_sequence ||
+                     state2state_policy_sequence_ != plan_policy_sequence ||
                      machine_state_ != GENERATE_TRAJ)) {
                     recordDiagnosticEvent(
                             "WARN",
@@ -1233,6 +1255,21 @@ namespace fsm {
                 }
                 const TaskPlanContext &plan_context = plan_result.context;
                 const int retcode = plan_result.ret_code;
+                if (release_fsm_lock_during_plan) {
+                    state2state_failure_reason_ = planner_ptr_->state2StatePlanningCancelRequested()
+                        ? "PLANNING_TIMEOUT_OR_CANCELLED"
+                        : planner_ptr_->getLatestState2StateTopologyResult();
+                    if (!planner_ptr_->state2StatePlanningCancelRequested()) {
+                        const std::string stage = planner_ptr_->state2StatePlanningStageName();
+                        if (stage == "exp_trajectory") state2state_failure_reason_ = "EXP_TRAJECTORY_FAILED";
+                        else if (stage == "backup_trajectory") state2state_failure_reason_ = "BACKUP_TRAJECTORY_FAILED";
+                        else if (stage == "local_frontend") state2state_failure_reason_ = "LOCAL_FRONTEND_FAILED";
+                        else if (stage == "input") state2state_failure_reason_ = "PLANNING_INPUT_FAILED";
+                        else if (stage == "commit") state2state_failure_reason_ = "TRAJECTORY_COMMIT_REJECTED";
+                    }
+                    recordDiagnosticEvent("INFO", "state2state_frontend_result",
+                        planner_ptr_->getLatestState2StateTopologyDebugInfo(), retcode);
+                }
                 if (plan_context.missing_input || plan_context.handled) {
                     return;
                 }
@@ -1240,6 +1277,8 @@ namespace fsm {
                 const std::size_t plan_tracking_input_prediction_size =
                         plan_context.tracking_input_prediction_size;
                 if (executor.goalLike() && !planner_ptr_->goalValid()) {
+                    state2state_task_result_ = "blocked";
+                    state2state_failure_reason_ = "INVALID_GOAL";
                     cout << YELLOW << " -- [Fsm] Goal is invalid, skip this goal." << RESET << endl;
                     recordDiagnosticEvent("WARN",
                                           "plan_from_rest_result",
@@ -1324,6 +1363,8 @@ namespace fsm {
                             exploration_plan_from_rest_fail_count_ = 0;
                         } else if (executor.goalLike()) {
                             state2state_plan_from_rest_fail_count_ = 0;
+                            state2state_failure_reason_ = "none";
+                            state2state_retry_after_wall_ = 0.0;
                         } else if (executor.trackingLike()) {
                             resetTrackingPlanFromRestFailureState();
                         }
@@ -1341,6 +1382,7 @@ namespace fsm {
                         ChangeState("MainFsmCallback", EMER_STOP);
                         break;
                     case general_planner::architecture::CommitAction::REQUEST_NEW_INPUT:
+                        if (state2stateMode()) state2state_task_result_ = "blocked";
                         gi_.new_goal = false;
                         started_ = false;
                         plan_from_rest_ = false;
@@ -1370,6 +1412,12 @@ namespace fsm {
                                                               retCodeName(retcode)),
                                                   retcode);
                         } else if (executor.goalLike()) {
+                            state2state_retry_after_wall_ = planningSteadyTime() +
+                                cfg_.state2state_plan_from_rest_failure_backoff;
+                            // Throttling is a wait, not another failed search.
+                            if (general_planner::state2state_task::topologyRetryDeferred(state2state_failure_reason_)) {
+                                break;
+                            }
                             ++state2state_plan_from_rest_fail_count_;
                             const int failure_limit = cfg_.state2state_plan_from_rest_max_failures;
                             cout << YELLOW << " -- [Fsm] PlanFromRest failed, try replan. consecutive_failures="
@@ -1396,6 +1444,7 @@ namespace fsm {
                                                                           cfg_.state2state_clear_goal_on_plan_failure)),
                                                       retcode);
                                 if (cfg_.state2state_clear_goal_on_plan_failure) {
+                                    state2state_task_result_ = "blocked";
                                     cout << YELLOW << " -- [Fsm] PlanFromRest failed "
                                          << state2state_plan_from_rest_fail_count_
                                          << " times, clear current state2state goal and wait for a new goal."
@@ -1543,6 +1592,15 @@ namespace fsm {
     }
 
     void Fsm::armNavigationTask(const std::uint64_t task_epoch) {
+        if (state2state_replan_in_progress_.load(std::memory_order_acquire)) {
+            cout << YELLOW << " -- [Fsm] ARM deferred: previous planning worker is still BUSY."
+                 << RESET << endl;
+            return;
+        }
+        state2state_task_result_ = "none";
+        state2state_failure_reason_ = "none";
+        state2state_retry_after_wall_ = 0.0;
+        state2state_plan_from_rest_fail_count_ = 0;
         navigation_task_epoch_ = task_epoch;
         if (planner_ptr_ && !state2state_replan_in_progress_.load()) {
             planner_ptr_->setState2StateTopologyTaskEpoch(task_epoch);
@@ -2397,6 +2455,12 @@ namespace fsm {
         if (state2stateMode()) {
             ++navigation_goal_sequence_;
             navigation_goal_active_ = true;
+            state2state_task_result_ = "running";
+            state2state_failure_reason_ = "none";
+            state2state_retry_after_wall_ = 0.0;
+            if (planner_ptr_ && state2state_replan_in_progress_.load()) {
+                planner_ptr_->requestState2StatePlanningCancel();
+            }
         }
         state2state_plan_from_rest_fail_count_ = 0;
         recordDiagnosticEvent("INFO",
@@ -2427,6 +2491,10 @@ namespace fsm {
         // navigation_goal_active_ == false and therefore remain plain idle
         // notifications to the runtime supervisor.
         if (new_state == WAIT_GOAL && navigation_goal_active_.load()) {
+            if (state2state_task_result_ == "running") {
+                state2state_task_result_ = "succeeded";
+                state2state_failure_reason_ = "none";
+            }
             navigation_goal_active_ = false;
         }
         machine_state_ = new_state;

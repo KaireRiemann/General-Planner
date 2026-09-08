@@ -320,6 +320,12 @@ namespace fsm {
         uint64_t next_replan_id_{1};
         uint64_t active_replan_id_{0};
         int state2state_plan_from_rest_fail_count_{0};
+        double state2state_retry_after_wall_{0.0};
+        std::uint64_t state2state_policy_sequence_{0};
+        // Only accessed under fsm_tick_mutex_; status callbacks never acquire
+        // the planner's long-held replan lock to retrieve failure diagnostics.
+        std::string state2state_task_result_{"none"};
+        std::string state2state_failure_reason_{"none"};
         int exploration_plan_from_rest_fail_count_{0};
         int tracking_plan_from_rest_fail_count_{0};
         double tracking_plan_from_rest_backoff_until_{-1.0};

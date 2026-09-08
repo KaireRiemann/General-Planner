@@ -363,7 +363,7 @@ namespace general_planner {
         // timeout never kills a thread; it asks the active frontend/backend to
         // return, so its planner lock and task-local topology route are still
         // released in normal C++ control flow.
-        void beginState2StatePlanningOperation();
+        void beginState2StatePlanningOperation(double timeout_seconds = 2.0);
         void requestState2StatePlanningCancel();
         void finishState2StatePlanningOperation();
         bool state2StatePlanningCancelRequested() const;
@@ -371,7 +371,8 @@ namespace general_planner {
 
         // M3 runtime entry points. They only change task-local route-consumer
         // state; MapManager remains the sole global topology owner.
-        void setState2StateTopologyPolicy(bool enabled);
+        bool setState2StateTopologyPolicy(bool enabled);
+        std::string getLatestState2StateTopologyResult() const;
         void setState2StateTopologyTaskEpoch(std::uint64_t epoch);
         std::string getLatestState2StateTopologyDebugInfo() const;
 

@@ -131,7 +131,7 @@ bool ROGMap::findNearestInfCellThat(const bool & is, const GridType& target_type
 
 bool ROGMap::isLineFree(const rog_map::Vec3f& start_pt, const rog_map::Vec3f& end_pt,
                         const bool& use_inf_map, const bool& use_unk_as_occ) const {
-    if (start_pt.array().isNaN().any() || end_pt.array().isNaN().any()) {
+    if (!start_pt.allFinite() || !end_pt.allFinite()) {
         cout << YELLOW << " -- [ROGMap] Call isLineFree with NaN in start or end pt, return false." << RESET << endl;
         return false;
     }
@@ -143,7 +143,19 @@ bool ROGMap::isLineFree(const rog_map::Vec3f& start_pt, const rog_map::Vec3f& en
         raycaster.setResolution(cfg_.resolution);
     }
     Vec3f ray_pt;
+    // RayCaster intentionally excludes the terminal voxel (mapping uses a
+    // different endpoint update). Collision queries must check both ends,
+    // including a same-voxel / zero-length segment.
+    const auto endpoint_free = [&](const Vec3f &point) {
+        if (use_inf_map) {
+            return !isOccupiedInflate(point) &&
+                   (!use_unk_as_occ || !isUnknownInflate(point));
+        }
+        return use_unk_as_occ ? isKnownFree(point) : !isOccupied(point);
+    };
+    if (!endpoint_free(start_pt) || !endpoint_free(end_pt)) return false;
     raycaster.setInput(start_pt, end_pt);
+    if (!raycaster.validInput()) return false;
     while (raycaster.step(ray_pt)) {
         if (!use_unk_as_occ) {
             // allow both unk and free
@@ -180,6 +192,7 @@ bool ROGMap::isLineFree(const Vec3f& start_pt, const Vec3f& end_pt, const double
     raycaster.setResolution(cfg_.resolution);
     Vec3f ray_pt;
     raycaster.setInput(start_pt, end_pt);
+    if (!raycaster.validInput()) return false;
     while (raycaster.step(ray_pt)) {
         if (max_dis > 0 && (ray_pt - start_pt).norm() > max_dis) {
             return false;
@@ -211,6 +224,7 @@ bool ROGMap::isLineFree(const Vec3f& start_pt, const Vec3f& end_pt, Vec3f& free_
     Vec3f ray_pt;
     raycaster.setInput(start_pt, end_pt);
     free_local_goal = start_pt;
+    if (!raycaster.validInput()) return false;
     while (raycaster.step(ray_pt)) {
         free_local_goal = ray_pt;
         if (max_dis > 0 && (ray_pt - start_pt).norm() > max_dis) {
@@ -237,7 +251,8 @@ bool ROGMap::isLineFree(const Vec3f& start_pt, const Vec3f& end_pt, Vec3f& free_
     return true;
 }
 
-void ROGMap::updateMap(const PointCloud& cloud, const Pose& pose) {
+void ROGMap::updateMap(const PointCloud& cloud, const Pose& pose,
+                       const PointCloud *confirmed_hits) {
     TimeConsuming ssss("updateMap", true);
     if (cfg_.ros_callback_en) {
         std::cout << YELLOW << "ROS callback is enabled, can not insert map from updateMap API." << RESET
@@ -255,7 +270,7 @@ void ROGMap::updateMap(const PointCloud& cloud, const Pose& pose) {
     }
 
     updateRobotState(pose);
-    updateProbMap(cloud, pose);
+    updateProbMap(cloud, pose, confirmed_hits);
 
 
     writeTimeConsumingToLog(time_log_file_);

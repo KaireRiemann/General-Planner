@@ -24,6 +24,7 @@ int main() {
     using general_planner::state2state_task::projectRouteMonotonically;
     using general_planner::state2state_task::sliceRouteByArcLength;
     using general_planner::state2state_task::topologyRouteRequired;
+    using general_planner::state2state_task::topologyRetryDeferred;
     using general_utils::Vec3f;
     using general_utils::vec_Vec3f;
 
@@ -60,6 +61,11 @@ int main() {
            "route slice end");
 
     State2StateTopologyRouteRuntime runtime;
+    expect(topologyRetryDeferred("TOPO_QUERY_RATE_LIMIT"), "rate limit is not a failed search");
+    expect(!topologyRetryDeferred("TOPO_PREFIX_BLOCKED_REQUERY_READY"),
+           "requery after a blocked prefix must not erase the actual failure");
+    expect(!topologyRetryDeferred("TOPO_PREFIX_BLOCKED"), "blocked prefix consumes retry budget");
+    expect(!topologyRetryDeferred("TOPO_ATTACH_OR_GRAPH_DISCONNECTED"), "attachment failure consumes retry budget");
     expect(!runtime.policy_enabled.load(), "local-only default");
     runtime.setPolicy(true);
     expect(runtime.policy_enabled.load() && runtime.policy_generation.load() == 1,

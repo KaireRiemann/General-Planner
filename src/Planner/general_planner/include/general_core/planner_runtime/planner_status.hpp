@@ -138,6 +138,8 @@ struct NavigationAdapterStatus {
   bool has_worker_readiness{false};
   std::string planning_stage{"unknown"};
   bool has_planning_stage{false};
+  std::string task_result{"none"};
+  std::string failure_reason{"none"};
 };
 
 inline bool parseNavigationAdapterStatus(const std::string &text,
@@ -174,12 +176,16 @@ inline bool parseNavigationAdapterStatus(const std::string &text,
     }
   }
   std::string stage;
-  if (stream >> stage) {
+  while (stream >> stage) {
     constexpr const char kStagePrefix[] = "stage=";
     if (stage.rfind(kStagePrefix, 0) == 0 &&
         stage.size() > sizeof(kStagePrefix) - 1) {
       status.planning_stage = stage.substr(sizeof(kStagePrefix) - 1);
       status.has_planning_stage = true;
+    } else if (stage.rfind("result=", 0) == 0) {
+      status.task_result = stage.substr(7);
+    } else if (stage.rfind("reason=", 0) == 0) {
+      status.failure_reason = stage.substr(7);
     }
   }
   return true;
@@ -422,7 +428,8 @@ inline ModeState modeStateFromExplorationString(const std::string &state) {
   if (state == "BLOCKED") {
     return ModeState::EXP_PAUSED;
   }
-  if (state == "PLAN_TRAJ" || state == "RUNNING") {
+  if (state == "PLAN_TRAJ" || state == "RUNNING" ||
+      state == "WAITING_MAP" || state == "WAITING_TOPOLOGY") {
     return ModeState::EXP_PLAN_TRAJ;
   }
   if (state == "EXEC_TRAJ") {
