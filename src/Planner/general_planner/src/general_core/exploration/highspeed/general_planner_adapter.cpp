@@ -8,8 +8,6 @@
 #include <utils/header/type_utils.hpp>
 #include <utils/geometry/geometry_utils.h>
 #include <utils/optimization/polynomial_interpolation.h>
-#include <utils/optimization/cancellation.hpp>
-#include <chrono>
 
 namespace general_planner
 {
@@ -643,9 +641,6 @@ bool constrainSfcsToExplorationBoxes(
     double min_overlap_depth,
     geometry_utils::PolytopeVec &sfcs)
 {
-  // SFC obstacle/overlap checks and final known-free trajectory validation
-  // still apply. Only the coverage-box clipping is inapplicable to navigation.
-  if (lidar_map && lidar_map->targetNavigation()) return !sfcs.empty();
   if (!lidar_map || !lidar_map->lp_ || sfcs.empty() ||
       lidar_map->lp_->box_num_ <= 0)
   {
@@ -1181,8 +1176,6 @@ void FastPlannerManager::initPlanModules(ros::NodeHandle &nh,
                                              &shared_map_manager)
 {
   gcopter_config_->init(nh);
-  nh.param("exploration/optimization_budget_sec", optimization_budget_sec_, 2.0);
-  optimization_budget_sec_ = std::clamp(optimization_budget_sec_, 0.1, 10.0);
   nh.param("max_traj_len", max_traj_len_, 12.0);
   parallel_path_finder_ = parallel_path_finder;
   topo_graph_ = graph;
@@ -1368,11 +1361,6 @@ bool FastPlannerManager::planExploreTraj(
     bool rolling_horizon)
 {
   const ros::Time plan_process_start = ros::Time::now();
-  const auto deadline = std::chrono::steady_clock::now() +
-      std::chrono::duration<double>(optimization_budget_sec_);
-  math_utils::ScopedCancellation optimization_budget([deadline] {
-    return !ros::ok() || std::chrono::steady_clock::now() >= deadline;
-  });
   last_frontend_path_ = path;
   if (!exploration_traj_opt_ || !yaw_traj_opt_)
   {
@@ -1830,7 +1818,6 @@ bool FastPlannerManager::planExploreTraj(
   };
   for (const double opt_speed : opt_speed_attempts)
   {
-    if (math_utils::optimizationCancelled()) return false;
     ++opt_attempt;
     geometry_utils::PolytopeVec attempt_sfcs = sfcs;
     const double attempt_scale =
@@ -2609,7 +2596,6 @@ bool FastPlannerManager::planExploreTraj(
     return false;
   }
 
-  if (math_utils::optimizationCancelled()) return false;
   if (backup_available)
   {
     const geometry_utils::Trajectory &candidate_pos = candidate_cmd.posTraj();
@@ -2645,7 +2631,6 @@ bool FastPlannerManager::planExploreTraj(
 
   if (backup_available)
   {
-    if (math_utils::optimizationCancelled()) return false;
     if (!commit_store_->cmd_traj_info.setTrajectory(exp_traj_info, backup_traj_info))
     {
       ROS_WARN("[highspeed_exp adapter] failed to commit backup command trajectory.");
@@ -2654,7 +2639,6 @@ bool FastPlannerManager::planExploreTraj(
   }
   else
   {
-    if (math_utils::optimizationCancelled()) return false;
     commit_store_->cmd_traj_info.setTrajectory(exp_traj_info);
   }
   commit_store_->last_exp_traj_info = exp_traj_info;
@@ -3360,24 +3344,7 @@ bool FastPlannerManager::updateRogMap(const sensor_msgs::PointCloud2ConstPtr &cl
                                      odom_msg->pose.pose.orientation.z);
   try
   {
-    rog_map::PointCloud occupied_returns;
-    const auto update = map_manager_->updateMap(
-        cloud, pose, cloud_msg->header.stamp.toSec(), &occupied_returns);
-    if (lidar_map_interface_) {
-      sensor_msgs::PointCloud2Ptr persistent(new sensor_msgs::PointCloud2);
-      pcl::toROSMsg(occupied_returns, *persistent);
-      persistent->header = cloud_msg->header;
-      const auto manager = map_manager_;
-      lidar_map_interface_->updateCloudMapOdometry(
-          cloud_msg, odom_msg, persistent,
-          update.changed_box_valid
-              ? std::function<bool(const Eigen::Vector3d &)>([manager](const Eigen::Vector3d &p) {
-                  return manager->insideLocalMap(p) &&
-                         manager->getGridType(p) == general_utils::KNOWN_FREE;
-                })
-              : std::function<bool(const Eigen::Vector3d &)>{},
-          update.changed_min, update.changed_max);
-    }
+    map_manager_->updateMap(cloud, pose);
     rog_map_updated_ = true;
   }
   catch (const std::exception &e)

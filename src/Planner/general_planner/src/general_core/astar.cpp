@@ -235,14 +235,10 @@ namespace path_search {
 
     RET_CODE Astar::pointToPointPathSearch(const rog_map::Vec3f &start_pt, const rog_map::Vec3f &end_pt,
                                            const int &flag, const double &searching_horizon,
-                                           rog_map::vec_Vec3f &out_path, const double &time_out,
-                                           const std::function<bool()> &should_cancel) {
+                                           rog_map::vec_Vec3f &out_path, const double &time_out) {
         RET_CODE setup_ret = setup(start_pt, end_pt, flag, searching_horizon);
         if (setup_ret != SUCCESS) {
             return setup_ret;
-        }
-        if (should_cancel && should_cancel()) {
-            return TIME_OUT;
         }
         out_path.clear();
         const auto search_start = std::chrono::steady_clock::now();
@@ -368,9 +364,6 @@ namespace path_search {
         }
 
         while (!open_set.empty()) {
-            if (should_cancel && should_cancel()) {
-                return TIME_OUT;
-            }
             num_iter++;
             current = open_set.top();
             open_set.pop();
@@ -568,17 +561,11 @@ namespace path_search {
         return NO_PATH;
     }
 
-    RET_CODE Astar::escapePathSearch(const rog_map::Vec3f &start_pt,
-                                     const int flag,
-                                     rog_map::vec_Vec3f &out_path,
-                                     const std::function<bool()> &should_cancel) {
+    RET_CODE Astar::escapePathSearch(const rog_map::Vec3f &start_pt, const int flag, rog_map::vec_Vec3f &out_path) {
         Vec3f tmp;
         RET_CODE setup_ret = setup(start_pt, tmp, flag, 999);
         if (setup_ret != SUCCESS) {
             return setup_ret;
-        }
-        if (should_cancel && should_cancel()) {
-            return TIME_OUT;
         }
 
         const auto search_start = std::chrono::steady_clock::now();
@@ -627,9 +614,6 @@ namespace path_search {
                                      1);
         }
         while (!open_set.empty()) {
-            if (should_cancel && should_cancel()) {
-                return TIME_OUT;
-            }
             num_iter++;
             current = open_set.top();
             open_set.pop();

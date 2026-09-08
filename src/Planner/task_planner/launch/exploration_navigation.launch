@@ -13,12 +13,12 @@
   <arg name="traj_server" default="true" />
   <arg name="initial_mode" default="target_exploration" />
   <arg name="exploration_mission_mode" default="target" />
-  <arg name="target_exploration_auto_workspace" default="false" />
+  <arg name="target_exploration_auto_workspace" default="true" />
   <arg name="target_exploration_workspace_half_extent_xy" default="120.0" />
   <arg name="target_exploration_workspace_below_odom" default="2.0" />
-  <!-- Deprecated capacity arguments are forwarded for launch compatibility.
-       Flight safety heights belong to the map/safety configuration, not to
-       a target-navigation coverage box. -->
+  <!-- forest.pcd is a single-level click-demo scene; keep the automatic
+       capacity below the 2.5 m navigation ceiling instead of inheriting the
+       villa's second-floor airspace. -->
   <arg name="target_exploration_workspace_above_odom" default="1.2" />
   <arg name="sim_config"
        default="$(find perfect_drone_sim)/config/click.yaml" />

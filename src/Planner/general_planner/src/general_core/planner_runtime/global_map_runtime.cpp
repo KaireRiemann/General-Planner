@@ -1,7 +1,6 @@
 #include <general_core/planner_runtime/global_map_runtime.hpp>
 
 #include <general_core/exploration/exploration_utils/lidar_map/lidar_map.h>
-#include <general_core/pointcloud_utils.hpp>
 #include <general_planner/TopologyExpansionPoint.h>
 #include <general_planner/TopologyExpansionPointArray.h>
 
@@ -189,13 +188,7 @@ void GlobalMapRuntime::cloudOdomCallback(
   }
 
   rog_map::PointCloud rog_cloud;
-  std::string conversion_error;
-  if (!pointcloud::toRogPointCloud(*cloud, rog_cloud, &conversion_error)) {
-    ROS_WARN_STREAM_THROTTLE(1.0,
-        "[global_map_runtime] drop cloud with invalid XYZ layout: "
-        << conversion_error);
-    return;
-  }
+  pcl::fromROSMsg(*cloud, rog_cloud);
   if (rog_cloud.empty()) {
     return;
   }
@@ -215,30 +208,12 @@ void GlobalMapRuntime::cloudOdomCallback(
     lio_map = context_->lio_map;
     consumers = cloud_consumers_;
   }
-  // Raw observations always update local ROG. Persistent LIO points are
-  // selected from the resulting occupancy state; current collision queries
-  // still include all raw returns, even before probability reaches occupied.
-  rog_map::PointCloud static_rog_cloud;
-  const MapManager::UpdateSnapshot update =
-      context_->map_manager->updateMap(
-          rog_cloud, pose,
-          cloud->header.stamp.isZero() ? now.toSec()
-                                       : cloud->header.stamp.toSec(),
-          &static_rog_cloud);
+  // LIO and ROG are each updated exactly once for an accepted sensor pair.
   if (lio_map) {
-    sensor_msgs::PointCloud2Ptr static_cloud_msg(
-        new sensor_msgs::PointCloud2);
-    pcl::toROSMsg(static_rog_cloud, *static_cloud_msg);
-    static_cloud_msg->header = cloud->header;
-    const auto manager = context_->map_manager;
-    lio_map->updateCloudMapOdometry(cloud, odom, static_cloud_msg,
-        update.changed_box_valid
-            ? std::function<bool(const Eigen::Vector3d &)>([manager](const Eigen::Vector3d &p) {
-                return manager->insideLocalMap(p) && manager->getGridType(p) == general_utils::KNOWN_FREE;
-              })
-            : std::function<bool(const Eigen::Vector3d &)>{},
-        update.changed_min, update.changed_max);
+    lio_map->updateCloudMapOdometry(cloud, odom);
   }
+  const MapManager::UpdateSnapshot update =
+      context_->map_manager->updateMap(rog_cloud, pose);
   // World topology is maintained through task transitions as well. Its
   // worker consumes only the odometry-local dirty-region window, while map
   // fusion continues to record remote evidence for a future visit.
@@ -356,8 +331,7 @@ GlobalMapStatus GlobalMapRuntime::status() const {
   result.map_revision = context_->map_manager->mapRevision();
   result.odom_valid = !last_odom.isZero() &&
       (now - last_odom).toSec() <= max_odom_age_;
-  result.map_ready = !last_map.isZero() && result.map_revision > 0 &&
-      (now - last_map).toSec() >= 0.0 && (now - last_map).toSec() <= max_cloud_age_;
+  result.map_ready = !last_map.isZero() && result.map_revision > 0;
   const auto snapshot = context_->map_manager->topologySearchSnapshot();
   result.topo_revision = snapshot ? snapshot->revision : 0;
   result.topology_ready = result.map_ready &&

@@ -160,8 +160,7 @@ CommandSourceHealth PlannerCommandGateway::commandSourceHealth() const {
   health.authorization_age_seconds =
       std::max(0.0, (now - authorization_time_).toSec());
 
-  const bool navigation = authorized_owner_ == CommandOwner::STATE2STATE ||
-                          authorized_owner_ == CommandOwner::TRACKING;
+  const bool navigation = authorized_owner_ == CommandOwner::STATE2STATE;
   const bool exploration = authorized_owner_ == CommandOwner::EXPLORATION;
   health.source_expected = navigation || exploration;
   if (!health.source_expected) {
@@ -332,8 +331,7 @@ void PlannerCommandGateway::timerCallback(const ros::WallTimerEvent &) {
                have_odom_) {
       entered_source_timeout_hold = !source_timeout_hold_active_;
       event_owner = authorized_owner_;
-      if ((authorized_owner_ == CommandOwner::STATE2STATE ||
-           authorized_owner_ == CommandOwner::TRACKING) &&
+      if (authorized_owner_ == CommandOwner::STATE2STATE &&
           navigation_received_since_authorization) {
         source_age = (now - navigation_rx_time_).toSec();
       } else if (authorized_owner_ == CommandOwner::EXPLORATION &&

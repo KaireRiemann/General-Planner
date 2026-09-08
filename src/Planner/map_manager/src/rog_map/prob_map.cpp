@@ -22,8 +22,6 @@
 */
 
 #include <rog_map/prob_map.h>
-#include <rog_map/rog_map_core/raycast_geometry.hpp>
-
 #include <unordered_set>
 using namespace rog_map;
 using namespace general_utils;
@@ -352,8 +350,7 @@ void ProbMap::recordStateChange(const Vec3i& id_g,
     }
 }
 
-void ProbMap::updateProbMap(const PointCloud& cloud, const Pose& pose,
-                            const PointCloud *confirmed_hits) {
+void ProbMap::updateProbMap(const PointCloud& cloud, const Pose& pose) {
     TimeConsuming tc("updateMap", false);
     const Vec3f& pos = pose.first;
     time_consuming_[4] = cloud.size();
@@ -384,7 +381,7 @@ void ProbMap::updateProbMap(const PointCloud& cloud, const Pose& pose,
 
     updateLocalBox(pos);
     TimeConsuming t_raycast("raycast", false);
-    raycastProcess(cloud, pos, confirmed_hits);
+    raycastProcess(cloud, pos);
     time_consuming_[1] = t_raycast.stop();
     raycast_data_.batch_update_counter++;
     if (raycast_data_.batch_update_counter >= cfg_.batch_update_size) {
@@ -403,8 +400,7 @@ void ProbMap::updateProbMap(const PointCloud& cloud, const Pose& pose,
         esdf_map_->updateESDF3D(pos);
     }
 
-    // Free evidence comes only from valid observed rays, including their
-    // origin voxel. Never bootstrap by clearing an unobserved sphere.
+    // Only valid observed rays provide free evidence; never clear a sphere.
     notifyStateChangeCallback();
 }
 
@@ -720,8 +716,7 @@ void ProbMap::missPointUpdate(const Vec3f& pos, const int& hash_id, const int& h
     }
 }
 
-void ProbMap::raycastProcess(const PointCloud& input_cloud, const Vec3f& cur_odom,
-                             const PointCloud *confirmed_hits) {
+void ProbMap::raycastProcess(const PointCloud& input_cloud, const Vec3f& cur_odom) {
     // bounding box of updated region
     raycast_data_.cache_box_min = cur_odom;
     raycast_data_.cache_box_max = cur_odom;
@@ -738,24 +733,8 @@ void ProbMap::raycastProcess(const PointCloud& input_cloud, const Vec3f& cur_odo
     // new version of raycasting process
     auto raycasting_cloud = vec_Vec3f{};
     raycasting_cloud.reserve(cloud_in_size);
-    // A dense cloud can contain hundreds of returns in one ROG voxel.  They
-    // are one observation, not hundreds of independent confirmations.  The
-    // old count saturated log odds in a single callback, which made a moving
-    // object effectively impossible to clear with later miss rays.
-    std::unordered_set<int> hit_voxels_this_frame;
-    hit_voxels_this_frame.reserve(static_cast<std::size_t>(cloud_in_size));
-    std::unordered_set<int> miss_voxels_this_frame;
-    std::unordered_set<int> confirmed_voxels;
-    std::unordered_set<int> observed_endpoints;
-    if (confirmed_hits) {
-        for (const auto &point : *confirmed_hits) {
-            const Vec3f p(point.x, point.y, point.z);
-            if (!p.allFinite() || !insideLocalMap(p)) continue;
-            Vec3i id;
-            posToGlobalIndex(p, id);
-            confirmed_voxels.insert(getHashIndexFromGlobalIndex(id));
-        }
-    }
+    std::unordered_set<int> hit_voxels, miss_voxels;
+    hit_voxels.reserve(cloud_in_size);
 
     // 1) process all non-inf points, update occupied probability
     int temperol_cnt{0};
@@ -783,11 +762,8 @@ void ProbMap::raycastProcess(const PointCloud& input_cloud, const Vec3f& cur_odo
                     continue;
                 }
                 posToGlobalIndex(p, pt_id_g);
-                if ((!confirmed_hits || confirmed_voxels.count(getHashIndexFromGlobalIndex(pt_id_g))) &&
-                    hit_voxels_this_frame.insert(
-                        getHashIndexFromGlobalIndex(pt_id_g)).second) {
+                if (hit_voxels.insert(getHashIndexFromGlobalIndex(pt_id_g)).second)
                     insertUpdateCandidate(pt_id_g, true);
-                }
                 // record cache box size;
                 raycast_data_.cache_box_min = raycast_data_.cache_box_min.cwiseMin(p);
                 raycast_data_.cache_box_max = raycast_data_.cache_box_max.cwiseMax(p);
@@ -799,17 +775,19 @@ void ProbMap::raycastProcess(const PointCloud& input_cloud, const Vec3f& cur_odo
         // 1.3) filter for virtual ceil and ground
         if (p.z() > cfg_.virtual_ceil_height) {
             update_hit = false;
-            if (!raycast_geometry::clipSegmentToHeightPlane(
-                    p, cur_odom, cfg_.virtual_ceil_height)) {
-                continue;
-            }
+            // find the intersect point with the ceil
+            const double dz = p.z() - cur_odom.z();
+            const double pc = cfg_.virtual_ceil_height - cur_odom.z();
+            if (std::abs(dz) < 1.0e-12) continue;
+            p = cur_odom + (p - cur_odom) * (pc / dz);
         }
         else if (p.z() < cfg_.virtual_ground_height) {
             update_hit = false;
-            if (!raycast_geometry::clipSegmentToHeightPlane(
-                    p, cur_odom, cfg_.virtual_ground_height)) {
-                continue;
-            }
+            // find the intersect point with the ground
+            const double dz = p.z() - cur_odom.z();
+            const double pc = cfg_.virtual_ground_height - cur_odom.z();
+            if (std::abs(dz) < 1.0e-12) continue;
+            p = cur_odom + (p - cur_odom) * (pc / dz);
         }
 
         // 1.4) bounding box filter
@@ -846,24 +824,16 @@ void ProbMap::raycastProcess(const PointCloud& input_cloud, const Vec3f& cur_odo
 
         if (update_hit) {
             posToGlobalIndex(p, pt_id_g);
-            // A rejected static hit is NOT a missing return. Protect every
-            // actual endpoint from other rays; never carve through it.
-            observed_endpoints.insert(getHashIndexFromGlobalIndex(pt_id_g));
-            if ((!confirmed_hits || confirmed_voxels.count(getHashIndexFromGlobalIndex(pt_id_g))) &&
-                hit_voxels_this_frame.insert(
-                    getHashIndexFromGlobalIndex(pt_id_g)).second) {
+            if (hit_voxels.insert(getHashIndexFromGlobalIndex(pt_id_g)).second)
                 insertUpdateCandidate(pt_id_g, true);
-            }
         }
     }
 
     if (cfg_.raycasting_en) {
         // 4) process all inf points, updae free probability
         for (const auto& p : raycasting_cloud) {
-            // min range rejects unreliable RETURNS; it must not truncate
-            // the visibility segment of an accepted return. Otherwise the
-            // current origin remains UNKNOWN after moving into a new voxel.
-            // Endpoint protection and once-per-frame misses still apply.
+            // min range validates returns, not the visibility prefix of an
+            // accepted return. This also bootstraps free space while hovering.
             raycast_data_.raycaster.setInput(cur_odom, p);
             Vec3f ray_pt;
             while (raycast_data_.raycaster.step(ray_pt)) {
@@ -872,11 +842,11 @@ void ProbMap::raycastProcess(const PointCloud& input_cloud, const Vec3f& cur_odo
                 if (!insideLocalMap(cur_ray_id_g)) {
                     break;
                 }
-                const int hash_id = getHashIndexFromGlobalIndex(cur_ray_id_g);
-                if (!observed_endpoints.count(hash_id) &&
-                    miss_voxels_this_frame.insert(hash_id).second) {
+                const int hash = getHashIndexFromGlobalIndex(cur_ray_id_g);
+                // All current endpoints win over crossing miss rays. Count
+                // at most one independent miss per voxel per observation.
+                if (!hit_voxels.count(hash) && miss_voxels.insert(hash).second)
                     insertUpdateCandidate(cur_ray_id_g, false);
-                }
             }
         }
     }

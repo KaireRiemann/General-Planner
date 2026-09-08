@@ -287,15 +287,13 @@ public:
                   const rog_map::Vec3f &goal,
                   const TopologyMapView &map_view,
                   rog_map::vec_Vec3f &path,
-                  double attach_radius = 0.0,
-                  const std::function<bool()> &should_cancel = {}) const;
+                  double attach_radius = 0.0) const;
     bool findPath(const SearchSnapshotPtr &snapshot,
                   const rog_map::Vec3f &start,
                   const rog_map::Vec3f &goal,
                   const TopologyMapView &map_view,
                   rog_map::vec_Vec3f &path,
-                  double attach_radius = 0.0,
-                  const std::function<bool()> &should_cancel = {}) const;
+                  double attach_radius = 0.0) const;
 
 private:
     struct RegionKey {
@@ -347,13 +345,11 @@ private:
         const rog_map::Vec3f &start,
         const rog_map::Vec3f &goal,
         const TopologyMapView &map_view,
-        double sample_spacing = 0.0,
-        const std::function<bool()> &should_cancel = {}) const;
+        double sample_spacing = 0.0) const;
     bool lineTraversable(const rog_map::Vec3f &start,
                          const rog_map::Vec3f &goal,
                          const TopologyMapView &map_view,
-                         double sample_spacing = 0.0,
-                         const std::function<bool()> &should_cancel = {}) const;
+                         double sample_spacing = 0.0) const;
     double estimateClearance(const rog_map::Vec3f &position,
                              const TopologyMapView &map_view) const;
     std::vector<Node, Eigen::aligned_allocator<Node>> generateCandidates(

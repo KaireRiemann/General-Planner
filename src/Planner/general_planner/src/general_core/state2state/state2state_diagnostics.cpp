@@ -53,11 +53,6 @@ namespace general_planner {
         return oss.str();
     }
 
-    std::string GeneralPlanner::getLatestState2StateTopologyResult() const {
-        std::lock_guard<std::mutex> lock(replan_lock_);
-        return state2state_topology_route_runtime_.route.last_result;
-    }
-
     std::string GeneralPlanner::getLatestState2StateTopologyDebugInfo() const {
         std::lock_guard<std::mutex> lock(replan_lock_);
         const auto &runtime = state2state_topology_route_runtime_;

@@ -56,11 +56,8 @@ const TargetTopologyGuide &TargetTopologyGuidance::update(
       }
       candidates.push_back({node.position.cast<float>(), node.expansion_mask});
     }
-    auto ranking_config = config_;
-    ranking_config.anchor_candidate_count = std::min(
-        config_.anchor_candidate_count, config_.anchor_query_attempts);
     const auto ranked =
-        rankTargetTopologyAnchors(start, goal, candidates, ranking_config);
+        rankTargetTopologyAnchors(start, goal, candidates, config_);
     raw_route.clear();
     const int attempts = std::min<int>(
         config_.anchor_query_attempts, static_cast<int>(ranked.size()));

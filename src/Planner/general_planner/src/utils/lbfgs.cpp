@@ -1,5 +1,4 @@
 #include "utils/optimization/lbfgs.h"
-#include "utils/optimization/cancellation.hpp"
 
 const char *math_utils::lbfgs::lbfgs_strerror(const int err) {
     switch (err) {
@@ -148,9 +147,7 @@ int math_utils::lbfgs::lbfgs_optimize(Eigen::VectorXd &x, double &f,
     cd.proc_progress = proc_progress;
 
     /* Evaluate the function value and its gradient. */
-    if (optimizationCancelled()) return LBFGS_CANCELED;
     fx = cd.proc_evaluate(cd.instance, x, g);
-    if (optimizationCancelled()) return LBFGS_CANCELED;
 
     /* Store the initial value of the cost function. */
     pf(0) = fx;
@@ -181,7 +178,6 @@ int math_utils::lbfgs::lbfgs_optimize(Eigen::VectorXd &x, double &f,
         bound = 0;
 
         while (true) {
-            if (optimizationCancelled()) { ret = LBFGS_CANCELED; break; }
             /* Store the current position and gradient vectors. */
             xp = x;
             gp = g;
@@ -197,13 +193,6 @@ int math_utils::lbfgs::lbfgs_optimize(Eigen::VectorXd &x, double &f,
 
             /* Search for an optimal step. */
             ls = line_search_lewisoverton(x, fx, g, step, d, xp, gp, step_min, step_max, cd, param);
-
-            if (optimizationCancelled()) {
-                x = xp;
-                g = gp;
-                ret = LBFGS_CANCELED;
-                break;
-            }
 
             if (ls < 0) {
                 /* Revert to the previous point. */
@@ -371,12 +360,10 @@ int math_utils::lbfgs::line_search_lewisoverton(Eigen::VectorXd &x, double &f, E
     dstest = param.s_curv_coeff * dginit;
 
     while (true) {
-        if (optimizationCancelled()) return LBFGS_CANCELED;
         x = xp + stp * s;
 
         /* Evaluate the function and gradient values. */
         f = cd.proc_evaluate(cd.instance, x, g);
-        if (optimizationCancelled()) return LBFGS_CANCELED;
         ++count;
 
         /* Test for errors. */

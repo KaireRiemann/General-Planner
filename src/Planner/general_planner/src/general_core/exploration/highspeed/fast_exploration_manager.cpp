@@ -138,7 +138,6 @@ void FastExplorationManager::initialize(
                  });
   if (mission_mode == "target" || mission_mode == "target_directed") {
     ep_->target_directed_mode_ = true;
-    planner_manager_->lidar_map_interface_->setTargetNavigation(true);
   } else if (mission_mode != "coverage") {
     ROS_WARN_STREAM("[target exploration] invalid mission_mode='"
                     << mission_mode << "'; fall back to coverage");
@@ -802,7 +801,6 @@ bool FastExplorationManager::setMissionMode(const std::string &mode) {
                     << mode << "' (expected target or coverage)");
     return false;
   }
-  planner_manager_->lidar_map_interface_->setTargetNavigation(target);
   if (ep_->target_directed_mode_ == target) {
     return true;
   }
@@ -2479,17 +2477,22 @@ int FastExplorationManager::planGlobalPath(const Eigen::Vector3d &pos,
                     << ed_->mission_start_.transpose() << ") goal=("
                     << ed_->mission_goal_.transpose() << ")");
   }
-  // Mission validity is independent of the current map/topology extent.
-  // Unknown goals are approached through safe local frontiers; only explicit
-  // exclusions (and invalid coordinates) reject the destination here.
+  // The frontier and local Bubble-Topo modules share a finite internal index
+  // domain.  A destination outside it can never become a valid direct target
+  // or frontier bridge; continuing to rank frontiers would look like arbitrary
+  // wandering.  Fail the task explicitly so the operator can enlarge the
+  // automatic capacity (or correct an accidental click) without confusing it
+  // with a map/topology failure.
   if (target_directed && planner_manager_ &&
       planner_manager_->lidar_map_interface_ &&
-      !planner_manager_->lidar_map_interface_->isAllowedByExclusions(
+      !planner_manager_->lidar_map_interface_->IsInBox(
           ed_->mission_goal_)) {
-    ROS_ERROR_STREAM("[target exploration] mission goal violates exclusion "
-                     "or coordinate validity: goal=("
+    ROS_ERROR_STREAM("[target exploration] mission goal outside the active "
+                     "exploration capacity: goal=("
                      << ed_->mission_goal_.transpose()
-                     << "). Unknown or remote goals are otherwise allowed.");
+                     << "). Increase target_exploration/auto_workspace/"
+                        "half_extent_xy before launch, or use a target inside "
+                        "the configured legacy coverage boxes.");
     return TARGET_UNREACHABLE;
   }
   if (target_directed && missionGoalReached(pos)) {

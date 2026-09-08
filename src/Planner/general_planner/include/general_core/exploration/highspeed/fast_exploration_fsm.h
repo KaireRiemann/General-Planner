@@ -112,11 +112,6 @@ private:
   // not a successful coverage completion or an internal failure. Keep this
   // separate from PAUSED so PlannerSupervisor preserves the topology graph.
   bool target_unreachable_pending_{false};
-  // Layout changes here require rebuilding every FSM translation unit before
-  // running the composed runtime; the startup smoke test exercises that ABI.
-  ros::WallTime topology_wait_since_;
-  ros::WallTime last_land_publish_;
-  bool validateTargetWorkspace();
   bool execution_enabled_published_{false};
   bool last_execution_enabled_{true};
   // In M2 GlobalMapRuntime owns the only cloud/odom subscriptions.  This FSM

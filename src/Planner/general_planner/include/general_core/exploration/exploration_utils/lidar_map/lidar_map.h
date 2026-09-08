@@ -6,10 +6,6 @@
 #include <Eigen/StdVector>
 #include <geometry_msgs/PoseStamped.h>
 #include <memory>
-#include <atomic>
-#include <mutex>
-#include <functional>
-#include <pcl/kdtree/kdtree_flann.h>
 #include <message_filters/subscriber.h>
 #include <message_filters/sync_policies/approximate_time.h>
 #include <message_filters/sync_policies/exact_time.h>
@@ -54,9 +50,6 @@ public:
   bool setSingleExplorationBox(const Eigen::Vector3f &box_min,
                                const Eigen::Vector3f &box_max);
   bool IsInBox(const Eigen::Vector3f &pos);
-  bool isAllowedByExclusions(const Eigen::Vector3f &pos) const;
-  bool targetNavigation() const { return target_navigation_.load(); }
-  void setTargetNavigation(bool enabled) { target_navigation_.store(enabled); }
   bool IsInBox(const PointType &pos);
   bool IsInMap(const Eigen::Vector3f &pos);
   bool IsInMap(const PointType &pos);
@@ -68,16 +61,11 @@ public:
   void boxSearch(const Eigen::Vector3f &min, const Eigen::Vector3f &max,
                  PointVector &pts);
   void updateCloudMapOdometry(const sensor_msgs::PointCloud2ConstPtr &msg,
-                              const nav_msgs::Odometry::ConstPtr &odom_,
-                              const sensor_msgs::PointCloud2ConstPtr &confirmed = {},
-                              const std::function<bool(const Eigen::Vector3d &)> &observed_free = {},
-                              const Eigen::Vector3d &changed_min = Eigen::Vector3d::Zero(),
-                              const Eigen::Vector3d &changed_max = Eigen::Vector3d::Zero());
+                              const nav_msgs::Odometry::ConstPtr &odom_);
   unique_ptr<LIOInterfaceParam> lp_;
   unique_ptr<LIOInterfaceData> ld_;
 
 private:
-  std::atomic<bool> target_navigation_{false};
   typedef message_filters::sync_policies::ApproximateTime<
       sensor_msgs::PointCloud2, nav_msgs::Odometry>
       SyncPolicyCloudOdom;
@@ -89,9 +77,6 @@ private:
   ros::Publisher update_trigger_puber_;
 
   KD_TREE<PointType> ikd_Tree_map;
-  std::mutex map_mutex_;
-  pcl::KdTreeFLANN<PointType> current_scan_tree_;
-  pcl::PointCloud<PointType>::Ptr current_scan_;
 
   EIGEN_MAKE_ALIGNED_OPERATOR_NEW
 };
@@ -126,8 +111,7 @@ struct LIOInterfaceData {
   EIGEN_MAKE_ALIGNED_OPERATOR_NEW
 };
 
-inline bool LIOInterface::isAllowedByExclusions(const Eigen::Vector3f &pos) const {
-  if (!pos.allFinite()) return false;
+inline bool LIOInterface::IsInBox(const Eigen::Vector3f &pos) {
   auto inbox = [&](const Eigen::Vector3f &pt, const Eigen::Vector3f &min,
                    const Eigen::Vector3f &max) -> bool {
     for (int i = 0; i < 3; i++) {
@@ -144,23 +128,15 @@ inline bool LIOInterface::isAllowedByExclusions(const Eigen::Vector3f &pos) cons
       return false;
   }
 
-  return true;
-}
-
-inline bool LIOInterface::IsInBox(const Eigen::Vector3f &pos) {
-  if (!isAllowedByExclusions(pos)) return false;
-  if (targetNavigation()) return true;
   for (int i = 0; i < lp_->box_num_; i++) {
     Eigen::Vector3f min_ = lp_->global_box_min_boundary_vec_[i];
     Eigen::Vector3f max_ = lp_->global_box_max_boundary_vec_[i];
-    if ((pos.array() >= min_.array()).all() &&
-        (pos.array() <= max_.array()).all()) return true;
+    if (inbox(pos, min_, max_))
+      return true;
   }
   return false;
 }
 inline bool LIOInterface::IsInMap(const Eigen::Vector3f &pos) {
-  if (!pos.allFinite()) return false;
-  if (targetNavigation()) return isAllowedByExclusions(pos);
   if (pos(0) < lp_->global_map_min_boundary_(0) + 1e-4 ||
       pos(1) < lp_->global_map_min_boundary_(1) + 1e-4 ||
       pos(2) < lp_->global_map_min_boundary_(2) + 1e-4)
@@ -178,7 +154,15 @@ inline bool LIOInterface::IsInBox(const PointType &pos) {
 }
 
 inline bool LIOInterface::IsInMap(const PointType &pos) {
-  return IsInMap(Eigen::Vector3f(pos.x, pos.y, pos.z));
+  if (pos.x < lp_->global_map_min_boundary_(0) + 1e-4 ||
+      pos.y < lp_->global_map_min_boundary_(1) + 1e-4 ||
+      pos.z < lp_->global_map_min_boundary_(2) + 1e-4)
+    return false;
+  if (pos.x > lp_->global_map_max_boundary_(0) - 1e-4 ||
+      pos.y > lp_->global_map_max_boundary_(1) - 1e-4 ||
+      pos.z > lp_->global_map_max_boundary_(2) - 1e-4)
+    return false;
+  return true;
 }
 
 } // namespace fast_planner

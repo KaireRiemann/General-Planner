@@ -26,7 +26,6 @@
 
 #include "Eigen/Dense"
 #include "vector"
-#include <functional>
 #include <map_manager/map_manager.hpp>
 #include "queue"
 #include "path_search/config.hpp"
@@ -152,16 +151,12 @@ namespace path_search {
                                         const int &flag,
                                         const double &searching_horizon,
                                         rog_map::vec_Vec3f &out_path,
-                                        const double &time_out = 0.1,
-                                        const std::function<bool()> &should_cancel = {});
+                                        const double &time_out = 0.1);
 
         /// @ brief: The escape path only for path search from prob map to inf map. from non-occupied point to
         ///          inf map free (or known freee) point . Aim to find a path from current point to (known) free point
         /// @ param:
-        RET_CODE escapePathSearch(const rog_map::Vec3f &start_pt,
-                                  const int flag,
-                                  rog_map::vec_Vec3f &out_path,
-                                  const std::function<bool()> &should_cancel = {});
+        RET_CODE escapePathSearch(const rog_map::Vec3f &start_pt, const int flag, rog_map::vec_Vec3f &out_path);
 
 
     };

@@ -29,7 +29,6 @@
 
 #include "fsm/fsm.h"
 #include "ros_interface/ros_adapter_contract.hpp"
-#include "general_core/pointcloud_utils.hpp"
 #include <map_manager/topology_graph_ros1.hpp>
 
 #include "ros/ros.h"
@@ -86,7 +85,6 @@ namespace fsm {
         ros::Publisher diagnostic_event_pub_;
         ros::Publisher navigation_status_pub_;
         ros::Publisher replan_watchdog_pub_;
-        ros::Publisher plan_watchdog_pub_;
         ros::Timer execution_timer_, replan_timer_, cmd_timer_, perception_safety_timer_;
         ros::Timer navigation_status_timer_;
         quadrotor_msgs::PositionCommand pid_cmd_;
@@ -103,8 +101,6 @@ namespace fsm {
         ros::Time last_tracking_prediction_path_time_;
         std::string replan_watchdog_topic_{
             "/planning/navigation/replan_watchdog"};
-        std::string plan_watchdog_topic_{
-            "/planning/navigation/plan_watchdog"};
 
         struct CommandLogEntry {
             quadrotor_msgs::PositionCommand cmd;
@@ -926,14 +922,7 @@ namespace fsm {
             }
 
             rog_map::PointCloud cloud;
-            std::string conversion_error;
-            if (!general_planner::pointcloud::toRogPointCloud(
-                    *msg, cloud, &conversion_error)) {
-                ROS_WARN_STREAM_THROTTLE(
-                    1.0, " -- [Fsm] Dynamic obstacle cloud skipped: invalid XYZ layout: "
-                    << conversion_error);
-                return;
-            }
+            pcl::fromROSMsg(*msg, cloud);
             planner_ptr_->updateDynamicObstacleCloud(cloud, robot_state.p, now);
         }
 
@@ -1101,7 +1090,10 @@ namespace fsm {
         }
 
         void trackingTargetCallback(const nav_msgs::OdometryConstPtr &msg) {
-            if (!msg) {
+            if (cfg_.tracking_use_target_prediction_path &&
+                !cfg_.tracking_target_prediction_topic.empty() &&
+                !last_tracking_prediction_path_time_.isZero() &&
+                (ros::Time::now() - last_tracking_prediction_path_time_).toSec() < 0.5) {
                 return;
             }
             const Vec3f p(msg->pose.pose.position.x,
@@ -1119,22 +1111,7 @@ namespace fsm {
                           buildKinodynamicTrackingPrediction(p, v, pose_yaw, prediction))) {
                 buildConstantVelocityTrackingPrediction(p, v, pose_yaw, prediction);
             }
-
-            // Target input and task-mode changes share the FSM lock.  Without
-            // this boundary, an estimator update received during state2state
-            // writes gi_.new_goal and starts an unintended navigation task.
-            std::lock_guard<std::mutex> lock(fsm_tick_mutex_);
-            if (cfg_.tracking_use_target_prediction_path &&
-                !cfg_.tracking_target_prediction_topic.empty() &&
-                !last_tracking_prediction_path_time_.isZero() &&
-                (ros::Time::now() - last_tracking_prediction_path_time_).toSec() < 0.5) {
-                return;
-            }
-            const bool activate_tracking_task = trackingMode() || trackingPerchingMode();
-            setTrackingTargetPrediction(prediction, activate_tracking_task);
-            if (!activate_tracking_task) {
-                return;
-            }
+            setTrackingTargetPrediction(prediction);
             traj_opt::DynamicTargetStates accepted_prediction;
             if (getTrackingTargetPrediction(accepted_prediction)) {
                 const double source_stamp = msg->header.stamp.isZero()
@@ -1156,7 +1133,7 @@ namespace fsm {
         }
 
         void trackingPredictionPathCallback(const nav_msgs::PathConstPtr &msg) {
-            if (!msg || !cfg_.tracking_use_target_prediction_path || msg->poses.size() < 2) {
+            if (!cfg_.tracking_use_target_prediction_path || msg->poses.size() < 2) {
                 if (useTrackingLogStream()) {
                     recordDiagnosticEvent("WARN",
                                           "tracking_target_input_rejected",
@@ -1164,7 +1141,7 @@ namespace fsm {
                                                       cfg_.tracking_use_target_prediction_path
                                                           ? "insufficient_path_samples"
                                                           : "prediction_path_disabled",
-                                                      msg ? msg->poses.size() : 0));
+                                                      msg->poses.size()));
                 }
                 return;
             }
@@ -1209,15 +1186,8 @@ namespace fsm {
                 prediction.emplace_back(target);
             }
 
-            // See trackingTargetCallback(): cache external prediction in any
-            // mode, but let it change task state only in a tracking mode.
-            std::lock_guard<std::mutex> lock(fsm_tick_mutex_);
             last_tracking_prediction_path_time_ = ros::Time::now();
-            const bool activate_tracking_task = trackingMode() || trackingPerchingMode();
-            setTrackingTargetPrediction(prediction, activate_tracking_task);
-            if (!activate_tracking_task) {
-                return;
-            }
+            setTrackingTargetPrediction(prediction);
             traj_opt::DynamicTargetStates accepted_prediction;
             if (getTrackingTargetPrediction(accepted_prediction)) {
                 double source_stamp = msg->header.stamp.isZero()
@@ -1270,10 +1240,9 @@ namespace fsm {
             // Replacing the executor while a replan owns a raw reference to
             // it would be unsafe.  The supervisor's PAUSE path remains
             // available and retires the current task first.
-            if (state2state_replan_in_progress_.load() ||
-                tracking_replan_in_progress_.load()) {
-                requestControlledStop("task-mode request while planner replan is active");
-                ROS_WARN_STREAM("[Fsm] defer task-mode switch until active planner replan returns");
+            if (state2state_replan_in_progress_.load()) {
+                requestControlledStop("task-mode request while state2state replan is active");
+                ROS_WARN_STREAM("[Fsm] defer task-mode switch until active state2state replan returns");
                 return;
             }
             // `hold` is a Supervisor control state, not one of the legacy
@@ -1333,16 +1302,18 @@ namespace fsm {
                 return;
             }
             std::lock_guard<std::mutex> lock(fsm_tick_mutex_);
+            if (state2state_replan_in_progress_.load()) {
+                // The route runtime is owned by the active backend.  A
+                // selection arriving during a blocked replan must not mutate
+                // it from the control queue. The caller can resend it after
+                // the watchdog has retired this task.
+                ROS_WARN_STREAM("[Fsm] ignore topology-policy update while "
+                                << "state2state replan is active");
+                return;
+            }
             // This callback only records policy. The next state2state
             // plan/replan owns route invalidation and topology work.
-            if (planner_ptr_->setState2StateTopologyPolicy(msg->data)) {
-                ++state2state_policy_sequence_;
-                state2state_retry_after_wall_ = 0.0;
-                state2state_plan_from_rest_fail_count_ = 0;
-                if (state2state_replan_in_progress_.load()) {
-                    planner_ptr_->requestState2StatePlanningCancel();
-                }
-            }
+            planner_ptr_->setState2StateTopologyPolicy(msg->data);
             ROS_INFO_STREAM("[Fsm] global topology navigation policy="
                             << (msg->data ? "enabled" : "disabled"));
         }
@@ -1356,13 +1327,7 @@ namespace fsm {
             status.data = std::string(machineStateName()) + " " +
                           std::to_string(navigationTaskEpoch()) + " " +
                           std::to_string(navigationGoalSequence()) + " " +
-                          (navigationGoalActive() ? "ACTIVE" : "IDLE") + " " +
-                          (state2StatePlanningWorkerReady() ? "READY" : "BUSY") +
-                          " stage=" +
-                          (planner_ptr_ ? planner_ptr_->state2StatePlanningStageName()
-                                        : "unavailable") +
-                          " result=" + state2state_task_result_ +
-                          " reason=" + state2state_failure_reason_;
+                          (navigationGoalActive() ? "ACTIVE" : "IDLE");
             navigation_status_pub_.publish(status);
         }
 
@@ -1463,11 +1428,6 @@ namespace fsm {
                                    replan_watchdog_topic_);
             replan_watchdog_pub_ =
                 command_nh_.advertise<std_msgs::UInt64>(replan_watchdog_topic_, 1, false);
-            nh_.param<std::string>("fsm/state2state_plan_watchdog_topic",
-                                   plan_watchdog_topic_,
-                                   plan_watchdog_topic_);
-            plan_watchdog_pub_ =
-                command_nh_.advertise<std_msgs::UInt64>(plan_watchdog_topic_, 1, false);
             // PAUSE/CLEAR/ARM are lifecycle controls.  Keep them on the
             // command queue rather than the navigation queue, whose main FSM
             // timer may be waiting on status/goal callbacks.
@@ -1791,66 +1751,9 @@ namespace fsm {
             if (!navigationExecutionEnabled()) {
                 return;
             }
-            const auto reportPlanFromRestWatchdog = [this]() {
-                if (!state2stateMode() || !state2StatePlanFromRestInProgress()) {
-                    return;
-                }
-                const std::uint64_t start_ns =
-                    state2state_replan_start_wall_ns_.load(std::memory_order_acquire);
-                const std::uint64_t now_ns = ros::WallTime::now().toNSec();
-                const std::uint64_t timeout_ns = static_cast<std::uint64_t>(
-                    cfg_.state2state_replan_watchdog_timeout * 1.0e9);
-                if (start_ns == 0 || now_ns < start_ns ||
-                    now_ns - start_ns < timeout_ns ||
-                    state2state_replan_watchdog_reported_.exchange(true)) {
-                    return;
-                }
-                const double elapsed =
-                    static_cast<double>(now_ns - start_ns) * 1.0e-9;
-                if (planner_ptr_) planner_ptr_->requestState2StatePlanningCancel();
-                std_msgs::UInt64 watchdog;
-                watchdog.data = navigationTaskEpoch();
-                plan_watchdog_pub_.publish(watchdog);
-                ROS_ERROR_STREAM("[Fsm] state2state plan-from-rest watchdog fired after "
-                                 << elapsed << "s; requesting supervisor HOLD for epoch="
-                                 << watchdog.data);
-            };
-            const auto publishTerminalBackupHold = [this]() {
-                // `pid_cmd_` was sampled from the committed backup at its
-                // stationary endpoint. Re-stamp and explicitly zero all
-                // derivatives so a slow replacement plan cannot create a
-                // command-source hole after that backup has finished.
-                quadrotor_msgs::PositionCommand hold = pid_cmd_;
-                hold.header.stamp = ros::Time::now();
-                hold.velocity.x = 0.0;
-                hold.velocity.y = 0.0;
-                hold.velocity.z = 0.0;
-                hold.acceleration.x = 0.0;
-                hold.acceleration.y = 0.0;
-                hold.acceleration.z = 0.0;
-                hold.jerk.x = 0.0;
-                hold.jerk.y = 0.0;
-                hold.jerk.z = 0.0;
-                hold.yaw_dot = 0.0;
-                hold.trajectory_flag = 2;
-                hold.vel_norm = 0.0;
-                hold.acc_norm = 0.0;
-                cmd_pub.publish(hold);
-            };
             if (machine_state_ != FOLLOW_TRAJ &&
                 machine_state_ != STATIC_TRACKING &&
                 machine_state_ != EMER_STOP) {
-                // Initial plans do not yet have an adapter command. Keep
-                // supervisor HOLD authoritative and expose a blocked worker
-                // through a dedicated watchdog. If a terminal backup already
-                // exists, continue publishing that exact stationary command
-                // while the next plan-from-rest owns the planner.
-                if (state2stateMode() &&
-                    state2state_replan_in_progress_.load(std::memory_order_acquire) &&
-                    state2state_terminal_backup_hold_.load(std::memory_order_acquire)) {
-                    publishTerminalBackupHold();
-                }
-                reportPlanFromRestWatchdog();
                 return;
             }
 
@@ -1875,7 +1778,6 @@ namespace fsm {
                     pid_cmd_.acc_norm <= 1.0e-1;
                 if (state2stateMode() &&
                     state2state_replan_in_progress_.load() &&
-                    !state2StatePlanFromRestInProgress() &&
                     stationary_backup_terminal) {
                     const bool entered_terminal_hold =
                         !state2state_terminal_backup_hold_.exchange(true);

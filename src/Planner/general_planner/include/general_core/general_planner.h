@@ -116,8 +116,6 @@ namespace general_planner {
         state2state_task::State2StateZDebug latest_state2state_z_debug_;
         state2state_task::State2StateTopologyRouteRuntime
                 state2state_topology_route_runtime_;
-        state2state_task::State2StatePlanningControl
-                state2state_planning_control_;
 
         struct GoalInfo {
             Vec3f goal_p{0, 0, 0};
@@ -359,20 +357,9 @@ namespace general_planner {
 
         std::string getLatestState2StateZDebugInfo() const;
 
-        // Cooperative cancellation boundary for a state2state invocation.  A
-        // timeout never kills a thread; it asks the active frontend/backend to
-        // return, so its planner lock and task-local topology route are still
-        // released in normal C++ control flow.
-        void beginState2StatePlanningOperation(double timeout_seconds = 2.0);
-        void requestState2StatePlanningCancel();
-        void finishState2StatePlanningOperation();
-        bool state2StatePlanningCancelRequested() const;
-        const char *state2StatePlanningStageName() const;
-
         // M3 runtime entry points. They only change task-local route-consumer
         // state; MapManager remains the sole global topology owner.
-        bool setState2StateTopologyPolicy(bool enabled);
-        std::string getLatestState2StateTopologyResult() const;
+        void setState2StateTopologyPolicy(bool enabled);
         void setState2StateTopologyTaskEpoch(std::uint64_t epoch);
         std::string getLatestState2StateTopologyDebugInfo() const;
 

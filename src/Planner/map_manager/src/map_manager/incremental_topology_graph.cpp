@@ -382,9 +382,8 @@ void IncrementalTopologyGraph::observePlannedPath(
 bool IncrementalTopologyGraph::lineTraversable(const rog_map::Vec3f &start,
                                                 const rog_map::Vec3f &goal,
                                                 const TopologyMapView &map_view,
-                                                double sample_spacing,
-                                                const std::function<bool()> &should_cancel) const {
-    return lineEvidence(start, goal, map_view, sample_spacing, should_cancel) ==
+                                                double sample_spacing) const {
+    return lineEvidence(start, goal, map_view, sample_spacing) ==
            TopologyMapView::EvidenceState::KNOWN_FREE;
 }
 
@@ -392,8 +391,7 @@ TopologyMapView::EvidenceState IncrementalTopologyGraph::lineEvidence(
     const rog_map::Vec3f &start,
     const rog_map::Vec3f &goal,
     const TopologyMapView &map_view,
-    double sample_spacing,
-    const std::function<bool()> &should_cancel) const {
+    double sample_spacing) const {
     using EvidenceState = TopologyMapView::EvidenceState;
     if (!start.allFinite() || !goal.allFinite()) {
         return EvidenceState::OCCUPIED;
@@ -403,14 +401,10 @@ TopologyMapView::EvidenceState IncrementalTopologyGraph::lineEvidence(
         std::shared_lock<std::shared_mutex> lock(graph_mutex_);
         sample_spacing = config_.edge_sample_spacing;
     }
-    const double step_count = std::ceil(distance / sample_spacing);
-    if (!std::isfinite(step_count) || step_count > 1000000.0 || sample_spacing <= 0.0) {
-        return EvidenceState::OCCUPIED;
-    }
-    const int steps = std::max(1, static_cast<int>(step_count));
+    const int steps = std::max(1, static_cast<int>(std::ceil(
+        distance / sample_spacing)));
     EvidenceState result = EvidenceState::KNOWN_FREE;
     for (int i = 0; i <= steps; ++i) {
-        if (should_cancel && should_cancel()) return EvidenceState::OCCUPIED;
         const double ratio = static_cast<double>(i) / static_cast<double>(steps);
         const rog_map::Vec3f sample =
             start + ratio * (goal - start);
@@ -1913,10 +1907,9 @@ bool IncrementalTopologyGraph::findPath(const rog_map::Vec3f &start,
                                         const rog_map::Vec3f &goal,
                                         const TopologyMapView &map_view,
                                         rog_map::vec_Vec3f &path,
-                                        double attach_radius,
-                                        const std::function<bool()> &should_cancel) const {
+                                        double attach_radius) const {
     return findPath(acquireSearchSnapshot(), start, goal, map_view,
-                    path, attach_radius, should_cancel);
+                    path, attach_radius);
 }
 
 bool IncrementalTopologyGraph::findPath(
@@ -1925,15 +1918,8 @@ bool IncrementalTopologyGraph::findPath(
     const rog_map::Vec3f &goal,
     const TopologyMapView &map_view,
     rog_map::vec_Vec3f &path,
-    double attach_radius,
-    const std::function<bool()> &should_cancel) const {
+    double attach_radius) const {
     path.clear();
-    const auto cancelled = [&should_cancel] {
-        return should_cancel && should_cancel();
-    };
-    if (cancelled()) {
-        return false;
-    }
     if (!active() || !snapshot || !start.allFinite() || !goal.allFinite() ||
         !map_view.isTraversable(start) || !map_view.isTraversable(goal)) {
         return false;
@@ -1946,11 +1932,8 @@ bool IncrementalTopologyGraph::findPath(
         path = {start, goal};
         return true;
     }
-    if (cancelled()) {
-        return false;
-    }
     if (lineTraversable(start, goal, map_view,
-                        query_config.edge_sample_spacing, should_cancel)) {
+                        query_config.edge_sample_spacing)) {
         path = {start, goal};
         return true;
     }
@@ -1966,9 +1949,6 @@ bool IncrementalTopologyGraph::findPath(
     nearest_start.reserve(graph.size());
     nearest_goal.reserve(graph.size());
     for (const auto &entry : graph) {
-        if (cancelled()) {
-            return false;
-        }
         const double start_distance =
             (entry.second.node.position - start).norm();
         if (start_distance <= attach_radius) {
@@ -1990,26 +1970,20 @@ bool IncrementalTopologyGraph::findPath(
     for (std::size_t i = 0;
          i < nearest_start.size() && i < attachment_checks &&
          start_candidates.size() < query_config.max_neighbors; ++i) {
-        if (cancelled()) {
-            return false;
-        }
         const auto node = graph.find(nearest_start[i].second);
         if (node != graph.end() &&
             lineTraversable(start, node->second.node.position, map_view,
-                            query_config.edge_sample_spacing, should_cancel)) {
+                            query_config.edge_sample_spacing)) {
             start_candidates.push_back(nearest_start[i]);
         }
     }
     for (std::size_t i = 0;
          i < nearest_goal.size() && i < attachment_checks &&
          goal_links.size() < query_config.max_neighbors; ++i) {
-        if (cancelled()) {
-            return false;
-        }
         const auto node = graph.find(nearest_goal[i].second);
         if (node != graph.end() &&
             lineTraversable(node->second.node.position, goal, map_view,
-                            query_config.edge_sample_spacing, should_cancel)) {
+                            query_config.edge_sample_spacing)) {
             goal_links.emplace(nearest_goal[i].second, nearest_goal[i].first);
         }
     }
@@ -2053,9 +2027,6 @@ bool IncrementalTopologyGraph::findPath(
     double best_goal_cost = std::numeric_limits<double>::infinity();
     NodeId best_goal_parent = 0;
     while (!queue.empty()) {
-        if (cancelled()) {
-            return false;
-        }
         const QueueEntry current = queue.top();
         queue.pop();
         const auto distance_it = distance.find(current.node_id);
@@ -2077,26 +2048,12 @@ bool IncrementalTopologyGraph::findPath(
             continue;
         }
         for (const auto &neighbor : graph_it->second.neighbors) {
-            if (cancelled()) {
-                return false;
-            }
             if (graph.count(neighbor.first) == 0U) {
                 continue;
             }
             const double proposed = current.path_cost + neighbor.second;
             const auto known = distance.find(neighbor.first);
             if (known == distance.end() || proposed < known->second) {
-                // Snapshots can retain historical edges after the live map
-                // changes. Exclude explicit collisions during this query so
-                // A* can actually choose a different homotopy. UNKNOWN alone
-                // does not erase historical connectivity; the local prefix
-                // still undergoes its own collision validation.
-                if (lineEvidence(graph_it->second.node.position,
-                                 graph.at(neighbor.first).node.position,
-                                 map_view, query_config.edge_sample_spacing,
-                                 should_cancel) == TopologyMapView::EvidenceState::OCCUPIED) {
-                    continue;
-                }
                 distance[neighbor.first] = proposed;
                 parent[neighbor.first] = current.node_id;
                 queue.push({proposed +
@@ -2111,9 +2068,6 @@ bool IncrementalTopologyGraph::findPath(
 
     std::vector<NodeId> reverse_ids;
     for (NodeId id = best_goal_parent; id != 0;) {
-        if (cancelled()) {
-            return false;
-        }
         reverse_ids.push_back(id);
         const auto parent_it = parent.find(id);
         if (parent_it == parent.end()) {
@@ -2123,10 +2077,6 @@ bool IncrementalTopologyGraph::findPath(
     }
     path.push_back(start);
     for (auto iterator = reverse_ids.rbegin(); iterator != reverse_ids.rend(); ++iterator) {
-        if (cancelled()) {
-            path.clear();
-            return false;
-        }
         path.push_back(graph.at(*iterator).node.position);
     }
     path.push_back(goal);

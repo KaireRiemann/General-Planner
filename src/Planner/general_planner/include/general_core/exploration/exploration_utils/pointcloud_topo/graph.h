@@ -247,8 +247,7 @@ public:
   void getIndex(const Eigen::Vector3f &point, Eigen::Vector3i &region_idx_);
   bool index2boundary(const Eigen::Vector3i &region_idx_, Eigen::Vector3f &low_bd, Eigen::Vector3f &high_bd);
   RegionNode::Ptr getRegionNode(const Eigen::Vector3i &region_idx_);
-  // Target regions are allocated by serial observation maintenance; coverage
-  // regions are initialized from boxes. A remote mission goal need not own one.
+  // A topology region exists only for the configured exploration volume.
   // Callers that create temporary target/viewpoint nodes must check this
   // before attempting region ownership insertion.
   bool hasRegionForPoint(const Eigen::Vector3f &point);
@@ -278,7 +277,7 @@ public:
 private:
   PointVector check_pts_;
   pcl::octree::OctreePointCloudSearch<pcl::PointXYZ> check_pts_octree_;
-  int max_update_region_num_{32};
+  int max_update_region_num_;
   bool use_prior_map_;
   double update_connection_timeout, insert_node_timeout;
   // Connecting the live odometry node to every skeleton node in the

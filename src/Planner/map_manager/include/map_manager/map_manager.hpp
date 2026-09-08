@@ -4,7 +4,6 @@
 #include <atomic>
 #include <cmath>
 #include <cstdint>
-#include <functional>
 #include <limits>
 #include <memory>
 #include <mutex>
@@ -132,34 +131,12 @@ public:
     }
 
     UpdateSnapshot updateMap(const rog_map::PointCloud &cloud,
-                             const general_utils::Pose &pose,
-                             const double observation_stamp =
-                                 std::numeric_limits<double>::quiet_NaN(),
-                             rog_map::PointCloud *static_cloud_out = nullptr) const
+                             const general_utils::Pose &pose) const
     {
-        if (static_cloud_out) {
-            static_cloud_out->clear();
-        }
         if (!map_) {
             return latestUpdate();
         }
-        (void)observation_stamp;  // Legacy API; time continuity never gates fusion.
-        if (cloud.empty()) {
-            return latestUpdate();
-        }
-        // Restore ordinary local occupancy fusion. Every measured return
-        // contributes a hit and every measured ray contributes free evidence,
-        // regardless of observer motion, input rate, or temporal-filter YAML.
         map_->updateMap(cloud, pose);
-        // Optional persistent-geometry stream for LIO: reuse ROG's existing
-        // probability state, not a second time/observation-count gate.
-        if (static_cloud_out) {
-            for (const auto &p : cloud) {
-                const rog_map::Vec3f position(p.x, p.y, p.z);
-                if (position.allFinite() && map_->insideLocalMap(position) &&
-                    map_->isOccupied(position)) static_cloud_out->push_back(p);
-            }
-        }
 
         UpdateSnapshot snapshot;
         snapshot.revision =
@@ -304,8 +281,7 @@ public:
     bool findTopologyPath(const rog_map::Vec3f &start,
                           const rog_map::Vec3f &goal,
                           rog_map::vec_Vec3f &path,
-                          const double attach_radius = 0.0,
-                          const std::function<bool()> &should_cancel = {}) const
+                          const double attach_radius = 0.0) const
     {
         if (!map_ || !topologyReady()) {
             path.clear();
@@ -313,7 +289,7 @@ public:
         }
         syncBoundaryMap();
         return topology_graph_->findPath(start, goal, makeTopologyQuery(),
-                                         path, attach_radius, should_cancel);
+                                         path, attach_radius);
     }
 
     bool findTopologyPath(
@@ -321,23 +297,16 @@ public:
         const rog_map::Vec3f &start,
         const rog_map::Vec3f &goal,
         rog_map::vec_Vec3f &path,
-        const double attach_radius = 0.0,
-        const std::function<bool()> &should_cancel = {}) const
+        const double attach_radius = 0.0) const
     {
         if (!map_ || !topologyReady() || !snapshot) {
             path.clear();
             return false;
         }
-        // A snapshot query is used by the real-time planner.  Its topology
-        // data is immutable, and synchronizing/draining map state here can
-        // make a read-only planning worker wait behind map maintenance.
+        syncBoundaryMap();
         return topology_graph_->findPath(snapshot, start, goal,
                                          makeTopologyQuery(), path,
-                                         attach_radius, should_cancel);
-    }
-
-    IncrementalTopologyGraph::Query topologyQueryView() const {
-        return makeTopologyQuery();
+                                         attach_radius);
     }
 
     rog_map::RobotState getRobotState() const
@@ -686,16 +655,16 @@ private:
             }
             if (map_->insideLocalMap(position)) {
                 const rog_map::GridType raw = map_->getGridType(position);
-                const rog_map::GridType inflated = map_->getInfGridType(position);
-                // Historical free evidence must never override a current
-                // inflation obstacle, including when the raw cell is UNKNOWN.
-                if (raw == rog_map::GridType::OCCUPIED ||
-                    inflated == rog_map::GridType::OCCUPIED ||
-                    inflated == rog_map::GridType::OUT_OF_MAP) {
+                if (raw == rog_map::GridType::OCCUPIED) {
                     return EvidenceState::OCCUPIED;
                 }
                 if (raw == rog_map::GridType::KNOWN_FREE) {
-                    return EvidenceState::KNOWN_FREE;
+                    const rog_map::GridType inflated =
+                        map_->getInfGridType(position);
+                    return inflated == rog_map::GridType::OCCUPIED ||
+                           inflated == rog_map::GridType::OUT_OF_MAP
+                        ? EvidenceState::OCCUPIED
+                        : EvidenceState::KNOWN_FREE;
                 }
                 // A local ring-buffer UNKNOWN does not override older global
                 // evidence. This is the persistence rule which prevents ROG

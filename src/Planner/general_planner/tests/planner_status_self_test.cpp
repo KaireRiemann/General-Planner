@@ -10,11 +10,9 @@ using general_planner::planner_runtime::PlannerMode;
 using general_planner::planner_runtime::PlannerTaskResult;
 using general_planner::planner_runtime::isExplorationMode;
 using general_planner::planner_runtime::isTargetExplorationMode;
-using general_planner::planner_runtime::isNavigationAdapterMode;
 using general_planner::planner_runtime::ownerForMode;
 using general_planner::planner_runtime::modeStateFromExplorationString;
 using general_planner::planner_runtime::modeStateFromNavigationString;
-using general_planner::planner_runtime::modeStateFromTrackingString;
 using general_planner::planner_runtime::parseNavigationAdapterStatus;
 using general_planner::planner_runtime::parsePlannerMode;
 using general_planner::planner_runtime::toString;
@@ -28,18 +26,6 @@ void expect(const bool ok, const char *msg) {
 } // namespace
 
 int main() {
-  expect(modeStateFromExplorationString("WAITING_MAP") == ModeState::EXP_PLAN_TRAJ,
-         "map bootstrap is planning, not execution");
-  expect(modeStateFromExplorationString("WAITING_TOPOLOGY") == ModeState::EXP_PLAN_TRAJ,
-         "topology bootstrap is planning, not execution");
-  NavigationAdapterStatus blocked_navigation;
-  expect(parseNavigationAdapterStatus(
-      "WAIT_GOAL 7 12 IDLE READY stage=idle result=blocked reason=TOPO_PREFIX_BLOCKED",
-      blocked_navigation), "parse blocked navigation status");
-  expect(blocked_navigation.task_result == "blocked" &&
-         blocked_navigation.failure_reason == "TOPO_PREFIX_BLOCKED" &&
-         blocked_navigation.planning_worker_ready && !blocked_navigation.goal_active,
-         "failed navigation must be distinct from goal completion");
   PlannerMode mode = PlannerMode::HOLD;
   expect(parsePlannerMode("exploration", mode), "parse exploration");
   expect(mode == PlannerMode::EXPLORATION, "mode exploration");
@@ -59,11 +45,6 @@ int main() {
          "toString gate mode");
   expect(std::strcmp(toString(ownerForMode(PlannerMode::GATE)), "gate") == 0,
          "gate has external command owner");
-  expect(parsePlannerMode("tracking", mode), "parse tracking");
-  expect(mode == PlannerMode::TRACKING, "mode tracking");
-  expect(isNavigationAdapterMode(mode), "tracking uses navigation adapter");
-  expect(std::strcmp(toString(ownerForMode(mode)), "tracking") == 0,
-         "tracking has isolated command owner");
   expect(parsePlannerMode("hold", mode), "parse hold");
   expect(mode == PlannerMode::HOLD, "mode hold");
   expect(!parsePlannerMode("not_a_mode", mode), "reject unknown");
@@ -83,38 +64,23 @@ int main() {
   expect(modeStateFromNavigationString("FOLLOW_TRAJ") ==
              ModeState::S2S_FOLLOW_TRAJ,
          "nav follow");
-  expect(modeStateFromTrackingString("STATIC_TRACKING") ==
-             ModeState::TRACK_STATIC,
-         "tracking static");
   expect(modeStateFromExplorationString("SUCCEEDED") == ModeState::EXP_PAUSED,
          "exp succeeded");
   expect(modeStateFromExplorationString("EXEC_TRAJ") == ModeState::EXP_EXEC_TRAJ,
          "exp exec");
 
   NavigationAdapterStatus navigation_status;
-  expect(parseNavigationAdapterStatus("WAIT_GOAL 7 3 IDLE READY stage=idle", navigation_status),
+  expect(parseNavigationAdapterStatus("WAIT_GOAL 7 3 IDLE", navigation_status),
          "parse lifecycle status");
   expect(navigation_status.state == "WAIT_GOAL", "lifecycle state");
   expect(navigation_status.task_epoch == 7, "lifecycle epoch");
   expect(navigation_status.goal_sequence == 3, "lifecycle goal sequence");
   expect(navigation_status.has_lifecycle && !navigation_status.goal_active,
          "lifecycle idle");
-  expect(navigation_status.has_worker_readiness &&
-             navigation_status.planning_worker_ready,
-         "worker ready");
-  expect(navigation_status.has_planning_stage &&
-             navigation_status.planning_stage == "idle",
-         "worker ready stage");
-  expect(parseNavigationAdapterStatus("FOLLOW_TRAJ 7 3 ACTIVE BUSY stage=topology_query", navigation_status),
+  expect(parseNavigationAdapterStatus("FOLLOW_TRAJ 7 3 ACTIVE", navigation_status),
          "parse active lifecycle status");
   expect(navigation_status.has_lifecycle && navigation_status.goal_active,
          "lifecycle active");
-  expect(navigation_status.has_worker_readiness &&
-             !navigation_status.planning_worker_ready,
-         "worker busy");
-  expect(navigation_status.has_planning_stage &&
-             navigation_status.planning_stage == "topology_query",
-         "worker busy stage");
   expect(parseNavigationAdapterStatus("WAIT_GOAL 7", navigation_status),
          "parse legacy status");
   expect(!navigation_status.has_lifecycle, "legacy status remains nonterminal");

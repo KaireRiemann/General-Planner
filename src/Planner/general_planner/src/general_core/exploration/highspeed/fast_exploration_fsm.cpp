@@ -12,7 +12,6 @@
 #include <general_core/exploration/highspeed/fast_exploration_manager.h>
 #include <general_core/exploration/highspeed/planner_manager.h>
 #include <general_core/exploration/highspeed/target_directed_exploration.h>
-#include <general_core/exploration/highspeed/target_workspace_validation.h>
 #include <algorithm>
 #include <limits>
 #include <std_msgs/Float32.h>
@@ -210,28 +209,14 @@ void FastExplorationFSM::FSMCallback(const ros::TimerEvent &e) {
   case PLAN_TRAJ: {
     if (!fd_->trigger_)
       return;
-    if (!validateTargetWorkspace())
-      return;
     const ros::Time plan_now = ros::Time::now();
     if (!fd_->next_plan_retry_time_.isZero() &&
         plan_now < fd_->next_plan_retry_time_) {
       return;
     }
     if (!planner_manager_->topo_graph_->odom_node_ ||
-        planner_manager_->topo_graph_->odom_node_->neighbors_.empty()) {
-      if (expl_manager_->targetDirectedModeActive()) {
-        if (topology_wait_since_.isZero()) topology_wait_since_ = ros::WallTime::now();
-        if ((ros::WallTime::now() - topology_wait_since_).toSec() >=
-            expl_manager_->ep_->target_no_progress_timeout_) {
-          ROS_ERROR("[target exploration] LOCAL_CONNECTION_TIMEOUT: no odom "
-                    "connection; hold recoverably, not proof of an unreachable goal");
-          target_unreachable_pending_ = true;
-          beginPause("local topology connection timeout", false);
-        }
-      }
+        planner_manager_->topo_graph_->odom_node_->neighbors_.empty())
       return;
-    }
-    topology_wait_since_ = ros::WallTime();
     if (expl_manager_->ed_->global_tour_.size() < 2) {
       const ros::Time now = ros::Time::now();
       const double min_update_interval =
@@ -605,16 +590,15 @@ void FastExplorationFSM::FSMCallback(const ros::TimerEvent &e) {
     break;
   }
   case LAND: {
-    if (last_land_publish_.isZero()) stopTraj("LAND");
+    stopTraj("LAND");
+    exec_timer_.stop();
     global_path_update_timer_.stop();
-    // Repeat the terminal land command without trapping the world callback
-    // thread in a sleep loop (which also prevented clean shutdown).
-    const auto now = ros::WallTime::now();
-    if (last_land_publish_.isZero() || (now - last_land_publish_).toSec() >= 0.2) {
-      last_land_publish_ = now;
+    // 没电了！！再飞就会炸鸡，降落！！！
+    while (1) {
       quadrotor_msgs::TakeoffLand land_msg;
       land_msg.takeoff_land_cmd = land_msg.LAND;
       land_pub_.publish(land_msg);
+      ros::Duration(0.2).sleep();
       ROS_WARN_THROTTLE(1.0, "NO POWER. LAND!!");
     }
 
@@ -920,31 +904,6 @@ void FastExplorationFSM::battaryCallback(
   // }
 }
 
-bool FastExplorationFSM::validateTargetWorkspace() {
-  if (!fd_->trigger_ || !fd_->have_odom_ ||
-      !expl_manager_->targetDirectedModeActive()) {
-    return true;
-  }
-  const auto &lio = planner_manager_->lidar_map_interface_;
-  const char *failure = targetWorkspaceFailure(
-      fd_->odom_pos_, expl_manager_->ed_->mission_goal_,
-      expl_manager_->ep_->target_goal_use_message_z_ ||
-          !expl_manager_->ed_->mission_goal_needs_initialization_,
-      [&lio](const Eigen::Vector3f &p) { return lio->isAllowedByExclusions(p); });
-  if (!failure) return true;
-  ROS_ERROR_STREAM("[target exploration] " << failure
-                   << " task_id=" << active_task_id_
-                   << " start=[" << fd_->odom_pos_.transpose()
-                   << "] target=[" << expl_manager_->ed_->mission_goal_.transpose()
-                   << "]. Check coordinates and exclusion zones; "
-                      "topology/optimizer retries cannot fix this condition.");
-  target_unreachable_pending_ = true;
-  target_arrival_verification_pending_ = false;
-  beginPause(failure, false);
-  publishTaskStatus();
-  return false;
-}
-
 void FastExplorationFSM::updateTopoAndGlobalPath() {
   if (!(state_ == WAIT_TRIGGER || state_ == PLAN_TRAJ || state_ == EXEC_TRAJ ||
         state_ == REORIENT)) {
@@ -956,10 +915,6 @@ void FastExplorationFSM::updateTopoAndGlobalPath() {
     global_path_update_timer_.stop();
     return;
   }
-
-  // Reject deterministic domain errors before topology construction or the
-  // empty-odom-neighbors return can hide them as WAITING_TOPOLOGY forever.
-  if (!validateTargetWorkspace()) return;
 
   // PLAN_TRAJ may request an immediate global update while a timer callback
   // from the same period is already queued. Coalesce those callbacks here so

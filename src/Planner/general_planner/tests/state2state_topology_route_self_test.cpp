@@ -19,22 +19,10 @@ bool near(const double lhs, const double rhs, const double tolerance = 1.0e-6) {
 }  // namespace
 
 int main() {
-    using general_planner::state2state_task::waitForTopologyStart;
-    double since = -std::numeric_limits<double>::infinity();
-    expect(waitForTopologyStart(100.0, since), "first unknown start waits");
-    expect(waitForTopologyStart(109.9, since), "observation grace interval");
-    expect(!waitForTopologyStart(110.0, since), "recovery has finite wall deadline");
-    expect(!waitForTopologyStart(120.0, since), "retries must not renew deadline");
-    expect(general_planner::state2state_task::topologyRetryDeferred(
-        "TOPO_START_WAITING_FOR_OBSERVATION"), "observation wait preserves failure budget");
-    expect(!general_planner::state2state_task::topologyRetryDeferred(
-        "TOPO_START_OBSERVATION_TIMEOUT"), "timeout consumes failure budget");
     using general_planner::state2state_task::State2StateTopologyRouteRuntime;
     using general_planner::state2state_task::buildRouteArcLength;
     using general_planner::state2state_task::projectRouteMonotonically;
     using general_planner::state2state_task::sliceRouteByArcLength;
-    using general_planner::state2state_task::topologyRouteRequired;
-    using general_planner::state2state_task::topologyRetryDeferred;
     using general_utils::Vec3f;
     using general_utils::vec_Vec3f;
 
@@ -71,11 +59,6 @@ int main() {
            "route slice end");
 
     State2StateTopologyRouteRuntime runtime;
-    expect(topologyRetryDeferred("TOPO_QUERY_RATE_LIMIT"), "rate limit is not a failed search");
-    expect(!topologyRetryDeferred("TOPO_PREFIX_BLOCKED_REQUERY_READY"),
-           "requery after a blocked prefix must not erase the actual failure");
-    expect(!topologyRetryDeferred("TOPO_PREFIX_BLOCKED"), "blocked prefix consumes retry budget");
-    expect(!topologyRetryDeferred("TOPO_ATTACH_OR_GRAPH_DISCONNECTED"), "attachment failure consumes retry budget");
     expect(!runtime.policy_enabled.load(), "local-only default");
     runtime.setPolicy(true);
     expect(runtime.policy_enabled.load() && runtime.policy_generation.load() == 1,
@@ -85,19 +68,6 @@ int main() {
     runtime.setPolicy(false);
     expect(!runtime.policy_enabled.load() && runtime.policy_generation.load() == 2,
            "disable topology policy");
-
-    // A selected strict global-topology policy must reject generic local
-    // fallback only for distant goals. Nearby completion remains local.
-    runtime.setPolicy(true);
-    expect(topologyRouteRequired(true, true, &runtime, true, 8.0, 8.0),
-           "strict topology route required at remote threshold");
-    expect(!topologyRouteRequired(true, true, &runtime, true, 7.9, 8.0),
-           "nearby goal stays local");
-    expect(!topologyRouteRequired(true, true, &runtime, false, 20.0, 8.0),
-           "non-strict policy permits local fallback");
-    runtime.setPolicy(false);
-    expect(!topologyRouteRequired(true, true, &runtime, true, 20.0, 8.0),
-           "disabled topology policy permits local fallback");
 
     std::cout << "state2state_topology_route_self_test passed\n";
     return 0;

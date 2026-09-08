@@ -115,11 +115,6 @@ namespace fsm {
         double perching_surface_first_rcv_time_{-1.0};
         double last_dynamic_takeoff_wait_log_time_{-1.0};
         bool task_new_{false};
-        // Once an executing tracking task loses its target input, replace the
-        // moving trajectory with a stationary one and keep refreshing that
-        // hold until a fresh target observation arrives.  Access is
-        // serialized by fsm_tick_mutex_.
-        bool tracking_target_timeout_holding_{false};
         bool perching_contact_reached_{false};
         Vec3f perching_contact_surface_position_{Vec3f::Zero()};
         double last_static_tracking_replan_log_time_{-1.0};
@@ -276,34 +271,15 @@ namespace fsm {
         vector<DiagnosticEvent> diagnostic_events_;
         vector<DiagnosticEvent> tracking_diagnostic_events_;
         mutable std::mutex fsm_tick_mutex_;
-        enum class State2StatePlanningOperation : std::uint8_t {
-            NONE = 0,
-            PLAN_FROM_REST = 1,
-            REPLAN = 2,
-        };
-
-        // State-to-state planning may take longer than one FSM tick. Keep
+        // State-to-state replanning may take longer than one FSM tick. Keep
         // the FSM lock free while it runs, but do not allow a plan-from-rest
-        // request to enter the same planner concurrently.  The operation is
-        // published to the runtime through the navigation status heartbeat so
-        // a safe HOLD never re-arms while an old worker still owns planner
-        // state.
+        // request to enter the same planner concurrently.
         std::atomic<bool> state2state_replan_in_progress_{false};
-        // Tracking replans are allowed to release fsm_tick_mutex_ so the
-        // independent command queue can keep sampling the already committed
-        // trajectory.  Keep the executor alive while that worker is active:
-        // a task-mode callback must not replace it underneath the worker.
-        std::atomic<bool> tracking_replan_in_progress_{false};
         // These wall-clock fields are consumed by the isolated command timer.
         // They deliberately do not depend on /clock: a simulator clock pause
         // must not hide an optimizer or frontend that no longer returns.
         std::atomic<std::uint64_t> state2state_replan_start_wall_ns_{0};
         std::atomic<bool> state2state_replan_watchdog_reported_{false};
-        std::atomic<std::uint8_t> state2state_planning_operation_{
-                static_cast<std::uint8_t>(State2StatePlanningOperation::NONE)};
-        // Set only after the committed backup has reached a stationary point.
-        // The command queue can then keep publishing this exact safe command
-        // while a subsequent plan-from-rest is still running.
         std::atomic<bool> state2state_terminal_backup_hold_{false};
         std::atomic<bool> navigation_execution_enabled_{true};
         std::atomic<bool> accept_external_goals_{true};
@@ -320,12 +296,6 @@ namespace fsm {
         uint64_t next_replan_id_{1};
         uint64_t active_replan_id_{0};
         int state2state_plan_from_rest_fail_count_{0};
-        double state2state_retry_after_wall_{0.0};
-        std::uint64_t state2state_policy_sequence_{0};
-        // Only accessed under fsm_tick_mutex_; status callbacks never acquire
-        // the planner's long-held replan lock to retrieve failure diagnostics.
-        std::string state2state_task_result_{"none"};
-        std::string state2state_failure_reason_{"none"};
         int exploration_plan_from_rest_fail_count_{0};
         int tracking_plan_from_rest_fail_count_{0};
         double tracking_plan_from_rest_backoff_until_{-1.0};
@@ -455,24 +425,11 @@ namespace fsm {
         bool navigationGoalActive() const {
             return navigation_goal_active_.load();
         }
-        bool state2StatePlanningWorkerReady() const {
-            return !state2state_replan_in_progress_.load(std::memory_order_acquire);
-        }
-        bool state2StatePlanFromRestInProgress() const {
-            return state2state_planning_operation_.load(std::memory_order_acquire) ==
-                   static_cast<std::uint8_t>(
-                           State2StatePlanningOperation::PLAN_FROM_REST);
-        }
         const char *machineStateName() const {
             return MACHINE_STATE_STR[machine_state_].c_str();
         }
 
         bool trackingTaskReady();
-
-        // Called from the replan tick while fsm_tick_mutex_ is held.  A stale
-        // target must never leave the previous moving tracking trajectory in
-        // command sampling; commit a current-pose hold instead.
-        void handleTrackingTargetInputTimeout();
 
         bool perchingTaskReady();
 
@@ -524,12 +481,7 @@ namespace fsm {
 
         bool shouldSkipStaticTrackingReplan(const traj_opt::DynamicTargetStates &prediction);
 
-        // A tracking source is always allowed to refresh its cache.  It may
-        // promote that cache to an active task only after the caller has
-        // verified that the current task mode is tracking-related.  This
-        // keeps target observations from becoming state2state click goals.
-        void setTrackingTargetPrediction(const traj_opt::DynamicTargetStates &prediction,
-                                         bool activate_tracking_task);
+        void setTrackingTargetPrediction(const traj_opt::DynamicTargetStates &prediction);
 
         void setPerchingSurface(const traj_opt::PerchingSurfaceState &surface);
 

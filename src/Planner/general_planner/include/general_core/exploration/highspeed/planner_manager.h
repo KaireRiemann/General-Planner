@@ -522,7 +522,6 @@ public:
 
 private:
   std::shared_ptr<ros_interface::RosInterface> ros_ptr_;
-  double optimization_budget_sec_{2.0};
   std::unique_ptr<GeneralCommitStore> commit_store_;
   std::shared_ptr<traj_opt::ExplorationTrajOpt> exploration_traj_opt_;
   std::shared_ptr<traj_opt::BackupTrajOpt> backup_traj_opt_;

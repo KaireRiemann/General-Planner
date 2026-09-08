@@ -51,16 +51,12 @@ mkdir -p "${BAG_DIR}"
 # exploration process for old serial-handover recordings.
 ODOM_TOPIC="${ODOM_TOPIC:-}"
 CLOUD_TOPIC="${CLOUD_TOPIC:-}"
-TARGET_ODOM_TOPIC="${TARGET_ODOM_TOPIC:-}"
 if command -v rosparam >/dev/null 2>&1 && [[ -n "${RUNTIME_NS}" ]]; then
   if [[ -z "${ODOM_TOPIC}" ]]; then
     ODOM_TOPIC="$(rosparam get "${RUNTIME_NS}/odometry_topic" 2>/dev/null || true)"
   fi
   if [[ -z "${CLOUD_TOPIC}" ]]; then
     CLOUD_TOPIC="$(rosparam get "${RUNTIME_NS}/cloud_topic" 2>/dev/null || true)"
-  fi
-  if [[ -z "${TARGET_ODOM_TOPIC}" ]]; then
-    TARGET_ODOM_TOPIC="$(rosparam get "${RUNTIME_NS}/fsm/tracking_target_odom_topic" 2>/dev/null || true)"
   fi
 fi
 if command -v rosparam >/dev/null 2>&1 && [[ -n "${EXPLORATION_NS}" ]]; then
@@ -73,9 +69,6 @@ if command -v rosparam >/dev/null 2>&1 && [[ -n "${EXPLORATION_NS}" ]]; then
 fi
 ODOM_TOPIC="${ODOM_TOPIC:-/lidar_slam/odom}"
 CLOUD_TOPIC="${CLOUD_TOPIC:-/cloud_registered}"
-# Unity's target estimator publishes this stream directly.  Keep it explicit
-# in every runtime bag so input gaps can be separated from planner latency.
-TARGET_ODOM_TOPIC="${TARGET_ODOM_TOPIC:-/target_ekf_node/target_odom}"
 
 if [[ -z "${GLOBAL_TOPOLOGY_TOPIC}" ]] && command -v rosparam >/dev/null 2>&1 &&
    [[ -n "${RUNTIME_NS}" ]]; then
@@ -189,7 +182,6 @@ add_topic "${TOPOLOGY_DECISION_TOPIC}"
 # Perception / state inputs.
 add_topic "${ODOM_TOPIC}"
 add_topic "${CLOUD_TOPIC}"
-add_topic "${TARGET_ODOM_TOPIC}"
 add_topic /lidar_slam/odom
 add_topic /Odometry
 add_topic /ekf/ekf_odom
@@ -221,8 +213,6 @@ add_topic /time_cost
 # Navigation adapter command / status / goal handoff.
 add_topic /planning/navigation/command
 add_topic /planning/navigation/status
-add_topic /planning/navigation/replan_watchdog
-add_topic /planning/navigation/plan_watchdog
 add_topic /planning/navigation/pos_cmd
 add_topic /planning/navigation_task_mode
 add_topic /planning/click_goal
@@ -321,7 +311,6 @@ if [[ "${RECORD_MANIFEST:-1}" == "1" ]]; then
     printf 'legacy_navigation_namespace=%s\n' "${NAVIGATION_NS:-/}"
     printf 'odom_topic=%s\n' "${ODOM_TOPIC}"
     printf 'cloud_topic=%s\n' "${CLOUD_TOPIC}"
-    printf 'target_odom_topic=%s\n' "${TARGET_ODOM_TOPIC}"
     printf 'global_topology_topic=%s\n' "${GLOBAL_TOPOLOGY_TOPIC}"
     printf 'topic_count=%s\n' "${#topics[@]}"
     if command -v git >/dev/null 2>&1 && git -C "${REPO_ROOT}" rev-parse --is-inside-work-tree >/dev/null 2>&1; then

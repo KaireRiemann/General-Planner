@@ -2,15 +2,12 @@
 #
 # Load this after the environment/base exploration profile and before an
 # optional scene overlay. It owns only target-task policy; lidar, Bubble-Topo,
-# vehicle limits remain in the base profile. Target navigation uses sparse
-# world-indexed regions and does not inherit coverage boxes as mission limits.
+# vehicle limits and finite workspace capacity remain in the base profile or
+# launch arguments. A scene overlay may override height and progress settings.
 
 # A 2D RViz goal has z=0. Keep the current flight height unless a 3D target is
 # deliberately sent by setting this true in a scene-specific overlay.
 exploration/mission_mode: target
-# Cooperative LBFGS budget, checked across iterations and line searches.
-# This is not a hard real-time bound on PCL or one objective evaluation.
-exploration/optimization_budget_sec: 2.0
 exploration/target_goal_use_message_z: false
 exploration/target_heuristic_weight: 3.0
 exploration/target_lateral_weight: 0.15

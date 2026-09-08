@@ -149,7 +149,7 @@ public:
                 general_planner::architecture::TrackingPlanRequest{
                         request,
                         prediction,
-                        request.new_task},
+                        fsm.task_new_},
                 context,
                 "track_target");
     }
@@ -187,7 +187,7 @@ public:
                 general_planner::architecture::TrackingPlanRequest{
                         request,
                         prediction,
-                        request.new_task},
+                        fsm.task_new_},
                 context,
                 "track_target");
     }
@@ -250,7 +250,7 @@ public:
         const general_planner::architecture::TrackingPlanRequest tracking_request{
                 request,
                 prediction,
-                request.new_task};
+                fsm.task_new_};
         PlanResult result = planner(fsm).plan(tracking_request, context, "track_target");
         int ret = result.ret_code;
         traj_opt::PerchingSurfaceState surface;
@@ -325,7 +325,7 @@ public:
                         general_planner::architecture::TrackingPlanRequest{
                                 request,
                                 prediction,
-                                request.new_task},
+                                fsm.task_new_},
                         surface,
                         context,
                         context.mission_node);
@@ -335,7 +335,7 @@ public:
                 general_planner::architecture::TrackingPlanRequest{
                         request,
                         prediction,
-                        request.new_task},
+                        fsm.task_new_},
                 context,
                 context.mission_node);
     }

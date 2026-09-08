@@ -33,7 +33,6 @@ struct GlobalTopologyRouteContext {
     std::vector<double> arc_length;
     double committed_route_s{0.0};
     double last_query_time{-std::numeric_limits<double>::infinity()};
-    double start_unknown_since{-std::numeric_limits<double>::infinity()};
     std::string last_result{"LOCAL_ONLY"};
 };
 
@@ -66,37 +65,6 @@ struct State2StateTopologyRouteRuntime {
         }
     }
 };
-
-inline bool topologyRetryDeferred(const std::string &result) {
-    return result == "TOPO_QUERY_RATE_LIMIT" ||
-           result == "TOPO_REQUERY_RATE_LIMIT" ||
-           result == "TOPO_START_WAITING_FOR_OBSERVATION";
-}
-
-// Wall-clock bounded recovery: map revisions can advance without adding any
-// evidence at the start. Do not reset this deadline on every map update.
-inline bool waitForTopologyStart(double now, double &since, double timeout = 10.0) {
-    if (!std::isfinite(since)) since = now;
-    return std::isfinite(now) && now - since < timeout;
-}
-
-// A global-topology selection is a routing policy, not merely a route hint:
-// for non-local goals it may require the frontend to reject a route that
-// cannot remain attached to the persistent topology graph.  Keeping this
-// predicate independent makes the fallback boundary explicit and testable.
-inline bool topologyRouteRequired(
-        const bool query_capability_enabled,
-        const bool topology_enabled,
-        const State2StateTopologyRouteRuntime *runtime,
-        const bool strict_route_enabled,
-        const double goal_distance,
-        const double min_query_distance) {
-    return query_capability_enabled && topology_enabled &&
-           strict_route_enabled && runtime != nullptr &&
-           runtime->policy_enabled.load(std::memory_order_acquire) &&
-           std::isfinite(goal_distance) &&
-           goal_distance >= std::max(0.0, min_query_distance);
-}
 
 inline void resetGlobalTopologyRoute(GlobalTopologyRouteContext &route,
                                      const std::string &reason) {
