@@ -22,6 +22,8 @@ int main(int argc, char **argv) {
     near.x = 1.575f; near.y = 0.075f; near.z = 1.575f; near.intensity = 1;
     rog_map::PclPoint far = near; far.x = 3.075f;
     rog_map::PointCloud raw, confirmed;
+    map.updateProbMap(raw, pose);
+    expect(map.isUnknown(pose.first), "empty startup scan must not clear a sphere");
     raw.push_back(near);
     for (int i = 0; i < 20; ++i) map.updateProbMap(raw, pose, &confirmed);
     expect(map.isKnownFree(rog_map::Vec3f(0.975, 0.075, 1.575)),
@@ -52,5 +54,29 @@ int main(int argc, char **argv) {
            "raw local fusion must clear a departed obstacle");
     expect(map.isOccupied(rog_map::Vec3f(4.575, 0.075, 1.575)),
            "clearing old occupancy must not discard the new obstacle");
+    // Move to a previously unobserved row and hover: the origin must acquire
+    // ray evidence without a displacement gate or startup-only clear.
+    pose.first = rog_map::Vec3f(-2.925, 2.025, 1.575);
+    raw.clear();
+    map.updateProbMap(raw, pose);
+    expect(map.isUnknown(pose.first), "moving odom alone is not free evidence");
+    far.x = -0.925f; far.y = 2.025f;
+    raw.push_back(far);
+    for (int i = 0; i < 12; ++i) map.updateProbMap(raw, pose);
+    expect(map.isKnownFree(pose.first), "valid rays must clear the current origin at rest");
+    expect(map.isKnownFree(rog_map::Vec3f(pose.first + rog_map::Vec3f(0.15, 0, 0))),
+           "accepted rays must not leave a min-range unknown hole");
+    expect(map.isUnknown(rog_map::Vec3f(pose.first + rog_map::Vec3f(0, -0.30, 0))),
+           "unobserved nearby cells must not be sphere-cleared");
+    expect(map.isOccupied(rog_map::Vec3f(far.x, far.y, far.z)),
+           "valid endpoints remain occupied");
+    pose.first = rog_map::Vec3f(-62.625, 26.475, 1.575);
+    far.x = -60.625f; far.y = 26.475f;
+    raw.clear(); raw.push_back(far);
+    for (int i = 0; i < 12; ++i) map.updateProbMap(raw, pose);
+    expect(map.isKnownFree(pose.first),
+           "sliding to a distant negative-coordinate origin must resume free fusion");
+    expect(map.isOccupied(rog_map::Vec3f(far.x, far.y, far.z)),
+           "sliding must preserve endpoint fusion semantics");
     std::cout << "observed_ray_fusion_self_test: PASS\n";
 }

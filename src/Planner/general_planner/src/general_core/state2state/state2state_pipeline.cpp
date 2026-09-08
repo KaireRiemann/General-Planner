@@ -247,8 +247,18 @@ namespace general_planner {
             services.time_consuming[VISUALIZATION] += t_viz.stop();
         }
 
-        Vec3f local_star_pt;
-        if (!services.map_manager->getNearestInfCellNot(GridType::OCCUPIED,
+        const bool strict_topology_start = topologyRouteRequired(
+                services.cfg.state2state_topology_query_capability_enable,
+                services.cfg.state2state_topology_enable,
+                exp_services.frontend.topology_route_runtime,
+                services.cfg.state2state_topology_strict_route_enable,
+                (goal_p - services.robot_state.p).norm(),
+                services.cfg.state2state_topology_min_query_distance);
+        // Do not teleport a strict topology start to a nonoccupied (possibly
+        // UNKNOWN) voxel. The frontend validates the actual continuous start.
+        Vec3f local_star_pt = services.robot_state.p;
+        if (!strict_topology_start &&
+            !services.map_manager->getNearestInfCellNot(GridType::OCCUPIED,
                                                         services.robot_state.p,
                                                         local_star_pt,
                                                         3.0)) {

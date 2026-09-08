@@ -59,6 +59,8 @@ rog_map:
     p_max: 0.97
     p_occ: 0.85
     p_free: 0.40
+    # Min filters unreliable near returns, not the free-space prefix of an
+    # accepted ray. Valid rays fuse from their origin; no blind sphere clear.
     ray_range: [0.50, 60.0]
     local_update_box: [70.0, 70.0, 6.0]
 

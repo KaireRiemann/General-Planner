@@ -33,6 +33,7 @@ struct GlobalTopologyRouteContext {
     std::vector<double> arc_length;
     double committed_route_s{0.0};
     double last_query_time{-std::numeric_limits<double>::infinity()};
+    double start_unknown_since{-std::numeric_limits<double>::infinity()};
     std::string last_result{"LOCAL_ONLY"};
 };
 
@@ -68,7 +69,15 @@ struct State2StateTopologyRouteRuntime {
 
 inline bool topologyRetryDeferred(const std::string &result) {
     return result == "TOPO_QUERY_RATE_LIMIT" ||
-           result == "TOPO_REQUERY_RATE_LIMIT";
+           result == "TOPO_REQUERY_RATE_LIMIT" ||
+           result == "TOPO_START_WAITING_FOR_OBSERVATION";
+}
+
+// Wall-clock bounded recovery: map revisions can advance without adding any
+// evidence at the start. Do not reset this deadline on every map update.
+inline bool waitForTopologyStart(double now, double &since, double timeout = 10.0) {
+    if (!std::isfinite(since)) since = now;
+    return std::isfinite(now) && now - since < timeout;
 }
 
 // A global-topology selection is a routing policy, not merely a route hint:

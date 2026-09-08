@@ -686,16 +686,16 @@ private:
             }
             if (map_->insideLocalMap(position)) {
                 const rog_map::GridType raw = map_->getGridType(position);
-                if (raw == rog_map::GridType::OCCUPIED) {
+                const rog_map::GridType inflated = map_->getInfGridType(position);
+                // Historical free evidence must never override a current
+                // inflation obstacle, including when the raw cell is UNKNOWN.
+                if (raw == rog_map::GridType::OCCUPIED ||
+                    inflated == rog_map::GridType::OCCUPIED ||
+                    inflated == rog_map::GridType::OUT_OF_MAP) {
                     return EvidenceState::OCCUPIED;
                 }
                 if (raw == rog_map::GridType::KNOWN_FREE) {
-                    const rog_map::GridType inflated =
-                        map_->getInfGridType(position);
-                    return inflated == rog_map::GridType::OCCUPIED ||
-                           inflated == rog_map::GridType::OUT_OF_MAP
-                        ? EvidenceState::OCCUPIED
-                        : EvidenceState::KNOWN_FREE;
+                    return EvidenceState::KNOWN_FREE;
                 }
                 // A local ring-buffer UNKNOWN does not override older global
                 // evidence. This is the persistence rule which prevents ROG

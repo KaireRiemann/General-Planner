@@ -403,23 +403,8 @@ void ProbMap::updateProbMap(const PointCloud& cloud, const Pose& pose,
         esdf_map_->updateESDF3D(pos);
     }
 
-    /* For the first frame, clear all unknown around the robot */
-    static bool first = true;
-    if (first) {
-        first = false;
-        for (double dx = -cfg_.raycast_range_min; dx <= cfg_.raycast_range_min; dx += cfg_.resolution) {
-            for (double dy = -cfg_.raycast_range_min; dy <= cfg_.raycast_range_min; dy += cfg_.resolution) {
-                for (double dz = -cfg_.raycast_range_min; dz <= cfg_.raycast_range_min; dz += cfg_.resolution) {
-                    Vec3f p(dx, dy, dz);
-                    if (p.norm() <= cfg_.raycast_range_min) {
-                        Vec3f pp = pos + p;
-                        int hash_id = getHashIndexFromPos(pp);
-                        missPointUpdate(pp, hash_id, 999);
-                    }
-                }
-            }
-        }
-    }
+    // Free evidence comes only from valid observed rays, including their
+    // origin voxel. Never bootstrap by clearing an unobserved sphere.
     notifyStateChangeCallback();
 }
 
@@ -875,8 +860,11 @@ void ProbMap::raycastProcess(const PointCloud& input_cloud, const Vec3f& cur_odo
     if (cfg_.raycasting_en) {
         // 4) process all inf points, updae free probability
         for (const auto& p : raycasting_cloud) {
-            Vec3f raycast_start = (p - cur_odom).normalized() * cfg_.raycast_range_min + cur_odom;
-            raycast_data_.raycaster.setInput(raycast_start, p);
+            // min range rejects unreliable RETURNS; it must not truncate
+            // the visibility segment of an accepted return. Otherwise the
+            // current origin remains UNKNOWN after moving into a new voxel.
+            // Endpoint protection and once-per-frame misses still apply.
+            raycast_data_.raycaster.setInput(cur_odom, p);
             Vec3f ray_pt;
             while (raycast_data_.raycaster.step(ray_pt)) {
                 Vec3i cur_ray_id_g;

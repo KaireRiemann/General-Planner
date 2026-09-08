@@ -209,14 +209,23 @@ namespace state2state_task {
             return false;
         }
 
+        const bool strict_topology_route = topologyRouteRequired(
+                services.cfg.state2state_topology_query_capability_enable,
+                services.cfg.state2state_topology_enable,
+                services.topology_route_runtime,
+                services.cfg.state2state_topology_strict_route_enable,
+                (goal - start_pt).norm(),
+                services.cfg.state2state_topology_min_query_distance);
+
         // 1) check and shift pts
         // 		For start point, must be collision free
         rog_map::GridType start_type;
         start_type = services.map_manager->getGridType(start_pt);
 
         /// If the start_pt is obstacle in prob map, just shift it to the nearest free point.
-        if (start_type == rog_map::GridType::OCCUPIED ||
-            start_type == rog_map::GridType::OUT_OF_MAP) {
+        if (!strict_topology_route &&
+            (start_type == rog_map::GridType::OCCUPIED ||
+             start_type == rog_map::GridType::OUT_OF_MAP)) {
             services.ros_ptr->warn(
                     " -- [GeneralPlanner] The start point in obstacle, this should not happen since the start point should be shift before pathsearch.");
             return false;
@@ -225,8 +234,11 @@ namespace state2state_task {
 
         int flag_es = ON_PROB_MAP | (services.cfg.frontend_in_known_free ? UNKNOWN_AS_OCCUPIED : UNKNOWN_AS_FREE);
         vec_Vec3f out_path;
-        RET_CODE ret_es = services.astar->escapePathSearch(start_pt, flag_es,
-                                                            out_path, cancelled);
+        // A permissive escape may traverse UNKNOWN and hide the invalid
+        // prefix from the topology validator. Strict routes keep their real
+        // start and let the live evidence gate decide whether to wait.
+        RET_CODE ret_es = strict_topology_route ? NO_NEED :
+            services.astar->escapePathSearch(start_pt, flag_es, out_path, cancelled);
         if (ret_es != NO_NEED) {
             if (ret_es != REACH_HORIZON && ret_es != REACH_GOAL) {
                 services.ros_ptr->error(
@@ -335,6 +347,7 @@ namespace state2state_task {
                 resetGlobalTopologyRoute(route, reason);
                 if (reset_query_timer) {
                     route.last_query_time = -std::numeric_limits<double>::infinity();
+                    route.start_unknown_since = -std::numeric_limits<double>::infinity();
                 }
             };
 
@@ -385,6 +398,10 @@ namespace state2state_task {
             const double query_interval = std::max(
                 0.0, services.cfg.state2state_topology_route_query_min_interval);
             const auto queryGlobalRoute = [&](const bool forced) {
+                // Preserve topology wait reasons in the FSM even when this
+                // invocation exits before launching an actual graph query.
+                services.planning_control.setStage(
+                    State2StatePlanningStage::TOPOLOGY_QUERY);
                 if (cancelled()) {
                     route.last_result = "TOPO_QUERY_CANCELLED";
                     return false;
@@ -399,8 +416,33 @@ namespace state2state_task {
                     return false;
                 }
                 route.last_query_time = now;
-                services.planning_control.setStage(
-                    State2StatePlanningStage::TOPOLOGY_QUERY);
+                // Check live start evidence before scanning graph nodes or
+                // trying progress anchors. No connector can repair a missing
+                // start observation without inventing a free-space segment.
+                const auto start_view = services.map_manager->topologyQueryView();
+                const auto start_evidence = start_view.evidenceState(temp_start_point);
+                if (start_evidence != TopologyMapView::EvidenceState::KNOWN_FREE) {
+                    const bool unknown = start_evidence == TopologyMapView::EvidenceState::UNKNOWN;
+                    route.last_result = unknown
+                        ? (waitForTopologyStart(now, route.start_unknown_since)
+                            ? "TOPO_START_WAITING_FOR_OBSERVATION"
+                            : "TOPO_START_OBSERVATION_TIMEOUT")
+                        : "TOPO_START_OCCUPIED";
+                    route.valid = false;
+                    services.ros_ptr->warn(
+                        " -- [GeneralPlanner] Topology start rejected: reason={}, "
+                        "start=({},{},{}), shifted=({},{},{}), raw={}, inflated={}, "
+                        "evidence={}, inside_local={}, map_revision={}.",
+                        route.last_result, start_pt.x(), start_pt.y(), start_pt.z(),
+                        temp_start_point.x(), temp_start_point.y(), temp_start_point.z(),
+                        static_cast<int>(services.map_manager->getGridType(temp_start_point)),
+                        static_cast<int>(services.map_manager->getInfGridType(temp_start_point)),
+                        static_cast<int>(start_evidence),
+                        services.map_manager->insideLocalMap(temp_start_point),
+                        services.map_manager->mapRevision());
+                    return false;
+                }
+                route.start_unknown_since = -std::numeric_limits<double>::infinity();
                 if (!services.map_manager->topologyReady()) {
                     route.last_result = "NO_TOPO_SNAPSHOT";
                     return false;
@@ -615,6 +657,12 @@ namespace state2state_task {
                 return true;
             };
 
+            // Cached graph geometry does not certify today's start cell.
+            // Re-enter the same bounded evidence gate when local fusion or
+            // inflation invalidates it, even if the graph revision is stable.
+            if (route.valid && !services.map_manager->topologyQueryView().isTraversable(temp_start_point)) {
+                route.valid = false;
+            }
             if (!route.valid && !queryGlobalRoute(false)) {
                 return false;
             }
@@ -873,13 +921,6 @@ namespace state2state_task {
         RET_CODE ret_code = FAILED;
         const bool topology_frontend =
                 buildTopologyCandidate(normal_path, ret_code);
-        const bool strict_topology_route = topologyRouteRequired(
-                services.cfg.state2state_topology_query_capability_enable,
-                services.cfg.state2state_topology_enable,
-                services.topology_route_runtime,
-                services.cfg.state2state_topology_strict_route_enable,
-                (goal - temp_start_point).norm(),
-                services.cfg.state2state_topology_min_query_distance);
         if (cancelled()) {
             return false;
         }

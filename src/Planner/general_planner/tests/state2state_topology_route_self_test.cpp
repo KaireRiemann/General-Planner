@@ -19,6 +19,16 @@ bool near(const double lhs, const double rhs, const double tolerance = 1.0e-6) {
 }  // namespace
 
 int main() {
+    using general_planner::state2state_task::waitForTopologyStart;
+    double since = -std::numeric_limits<double>::infinity();
+    expect(waitForTopologyStart(100.0, since), "first unknown start waits");
+    expect(waitForTopologyStart(109.9, since), "observation grace interval");
+    expect(!waitForTopologyStart(110.0, since), "recovery has finite wall deadline");
+    expect(!waitForTopologyStart(120.0, since), "retries must not renew deadline");
+    expect(general_planner::state2state_task::topologyRetryDeferred(
+        "TOPO_START_WAITING_FOR_OBSERVATION"), "observation wait preserves failure budget");
+    expect(!general_planner::state2state_task::topologyRetryDeferred(
+        "TOPO_START_OBSERVATION_TIMEOUT"), "timeout consumes failure budget");
     using general_planner::state2state_task::State2StateTopologyRouteRuntime;
     using general_planner::state2state_task::buildRouteArcLength;
     using general_planner::state2state_task::projectRouteMonotonically;
