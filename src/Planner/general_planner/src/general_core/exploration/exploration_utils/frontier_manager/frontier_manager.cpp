@@ -503,19 +503,8 @@ void FrontierManager::init(ros::NodeHandle &nh, LIOInterface::Ptr &lio_interface
           .cast<int>()
           .matrix() +
       Eigen::Vector3i::Ones();
-  frtp_.bits_need_.x() = std::ceil(std::log2(frtp_.cell_max_cnt_.x()));
-  frtp_.bits_need_.y() = std::ceil(std::log2(frtp_.cell_max_cnt_.y()));
-  frtp_.bits_need_.z() = std::ceil(std::log2(frtp_.cell_max_cnt_.z()));
-  frtp_.idx_byte_size_ =
-      (frtp_.bits_need_.x() + frtp_.bits_need_.y() + frtp_.bits_need_.z() + 7) /
-      8;
-  const int total_index_bits = frtp_.bits_need_.sum();
-  if (total_index_bits > 64 || frtp_.idx_byte_size_ > sizeof(uint64_t)) {
-    ROS_FATAL_STREAM("Frontier cell index needs " << total_index_bits
-                     << " bits, but the compact key supports at most 64");
-    throw std::runtime_error("frontier map dimensions exceed 64-bit key");
-  }
-
+  frtp_.bits_need_.setConstant(32);
+  frtp_.idx_byte_size_ = 3 * sizeof(int32_t);
   float start_degree = 0;
   float degree_step = 2 * M_PI / vpp_.sample_pillar_circle_sample_num_;
   float start_degree_step =
@@ -542,7 +531,7 @@ void FrontierManager::init(ros::NodeHandle &nh, LIOInterface::Ptr &lio_interface
   frtd_ = FrontierData(frtp_.idx_byte_size_);
   frtd_.label_map_.max_load_factor(1.5);
   frtd_.frt_map_.max_load_factor(1.5);
-  ROS_INFO_STREAM("[frontier storage] compact inline key enabled, bits="
+  ROS_INFO_STREAM("[frontier storage] signed world-cell key enabled, bits="
                   << frtp_.bits_need_.transpose()
                   << " bytes=" << static_cast<int>(frtp_.idx_byte_size_));
 }
@@ -565,39 +554,16 @@ void FrontierManager::pos2idx(const Eigen::Vector3f &pt, Eigen::Vector3i &idx) {
 
 void FrontierManager::idx2bytes(const Eigen::Vector3i &idx,
                                 ByteArrayRaw &bytes) {
-  // 无需resize，因为ByteArrayRaw在构造时已分配好固定大小
-  uint64_t value = (static_cast<uint64_t>(idx.x())
-                    << (frtp_.bits_need_.y() + frtp_.bits_need_.z())) |
-                   (static_cast<uint64_t>(idx.y()) << frtp_.bits_need_.z()) |
-                   static_cast<uint64_t>(idx.z());
-
-  for (int i = 0; i < frtp_.idx_byte_size_; ++i) {
-    bytes.data[i] = static_cast<uint8_t>(value >> (i * 8));
-  }
+  bytes.index = {{idx.x(), idx.y(), idx.z()}};
 }
 
 void FrontierManager::bytes2pos(const ByteArrayRaw &bytes, PointType &pt) {
-  Eigen::Vector3i idx;
-
-  uint64_t value = 0;
-  for (int i = frtp_.idx_byte_size_ - 1; i >= 0; --i) {
-    value = (value << 8) | static_cast<uint64_t>(bytes.data[i]);
-  }
-
-  idx.z() = static_cast<int>(value & ((1 << frtp_.bits_need_.z()) - 1));
-  value >>= frtp_.bits_need_.z();
-
-  idx.y() = static_cast<int>(value & ((1 << frtp_.bits_need_.y()) - 1));
-  value >>= frtp_.bits_need_.y();
-
-  idx.x() = static_cast<int>(value);
-
-  Eigen::Vector3f pt_v3f =
-      (idx.cast<float>() + 0.5 * Eigen::Vector3f::Ones()) * frtp_.cell_size_ +
-      frtp_.map_min_;
-  pt.x = pt_v3f.x();
-  pt.y = pt_v3f.y();
-  pt.z = pt_v3f.z();
+  const Eigen::Vector3f idx(bytes.index[0], bytes.index[1], bytes.index[2]);
+  const Eigen::Vector3f position =
+      (idx.array() + 0.5f).matrix() * frtp_.cell_size_ + frtp_.map_min_;
+  pt.x = position.x();
+  pt.y = position.y();
+  pt.z = position.z();
 }
 
 void FrontierManager::pos2bytes(const PointType &pt, ByteArrayRaw &bytes) {
@@ -625,6 +591,7 @@ CELL_STATE FrontierManager::get_state(const Eigen::Vector3i &idx) {
 }
 
 bool FrontierManager::is_boundary_cell(const Eigen::Vector3i &idx) const {
+  if (lidar_map_interface_->targetNavigation()) return false;
   const int margin = frtp_.boundary_ignore_cells_;
   if (margin <= 0) {
     return false;

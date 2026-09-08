@@ -18,7 +18,7 @@ for initial in ("hold", "state2state", "target_exploration", "exploration"):
             assert len(matches) == 1, (suffix, matches)
             return matches[0]
         target = mission != "coverage"
-        assert param("/target_exploration/auto_workspace/enabled") == target
+        assert param("/target_exploration/auto_workspace/enabled") is False
         assert param("/coverage_guidance/mode") == ("off" if target else "full")
 config = roslaunch.config.ROSLaunchConfig()
 roslaunch.xmlloader.XmlLoader().load(

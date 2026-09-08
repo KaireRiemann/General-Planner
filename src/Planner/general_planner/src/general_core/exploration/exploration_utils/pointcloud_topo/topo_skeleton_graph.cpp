@@ -97,10 +97,11 @@ RegionNode::RegionNode(Eigen::Vector3i region_idx) {
 }
 
 RegionNode::Ptr TopoGraph::getRegionNode(const Eigen::Vector3i &region_idx_) {
-  if (reg_map_idx2ptr_.find(region_idx_) == reg_map_idx2ptr_.end()) {
+  const auto found = reg_map_idx2ptr_.find(region_idx_);
+  if (found == reg_map_idx2ptr_.end()) {
     return nullptr;
   }
-  return reg_map_idx2ptr_[region_idx_];
+  return found->second;
 }
 
 bool TopoGraph::hasRegionForPoint(const Eigen::Vector3f &point) {
@@ -113,9 +114,9 @@ bool TopoGraph::hasRegionForPoint(const Eigen::Vector3f &point) {
 }
 
 void TopoGraph::getIndex(const Eigen::Vector3f &point, Eigen::Vector3i &region_idx_) {
-  region_idx_.x() = int((point[0] - min_bd[0]) / init_region_size_x_);
-  region_idx_.y() = int((point[1] - min_bd[1]) / init_region_size_y_);
-  region_idx_.z() = int((point[2] - min_bd[2]) / init_region_size_z_);
+  region_idx_.x() = std::floor((point[0] - min_bd[0]) / init_region_size_x_);
+  region_idx_.y() = std::floor((point[1] - min_bd[1]) / init_region_size_y_);
+  region_idx_.z() = std::floor((point[2] - min_bd[2]) / init_region_size_z_);
 }
 
 bool TopoGraph::index2boundary(const Eigen::Vector3i &region_idx_, Eigen::Vector3f &low_bd, Eigen::Vector3f &high_bd) {
@@ -768,14 +769,29 @@ void TopoGraph::getRegionsToUpdate() {
   viewpoints_update_region_arr_.clear();
   toponodes_update_region_arr_.clear();
   unordered_set<RegionNode::Ptr> region_set;
+  // Allocate only observed/local regions, on this serial maintenance path.
+  // getRegionNode stays read-only: OpenMP skeleton/search workers call it.
+  // The origin never moves, so historical node/edge ownership stays valid.
+  auto observed_region = [&](const Eigen::Vector3i &idx) {
+    auto region = getRegionNode(idx);
+    if (!region && lidar_map_interface_->targetNavigation()) {
+      region = std::make_shared<RegionNode>(idx);
+      reg_map_idx2ptr_.emplace(idx, region);
+    }
+    return region;
+  };
+  Eigen::Vector3i odom_idx;
+  getIndex(lidar_map_interface_->ld_->lidar_pose_, odom_idx);
+  if (auto region = observed_region(odom_idx)) region_set.insert(region);
   for (auto &pt : lidar_map_interface_->ld_->lidar_cloud_.points) {
     Eigen::Vector3f pt3d = pt.getArray3fMap();
+    if (!pt3d.allFinite()) continue;
     if ((pt3d - lidar_map_interface_->ld_->lidar_pose_).norm() > lidar_map_interface_->lp_->max_ray_length_)
       pt3d = lidar_map_interface_->ld_->lidar_pose_ + lidar_map_interface_->lp_->max_ray_length_ * (pt3d - lidar_map_interface_->ld_->lidar_pose_) /
                                                    (pt3d - lidar_map_interface_->ld_->lidar_pose_).norm();
     Eigen::Vector3i region_idx;
     getIndex(pt3d, region_idx);
-    auto region = getRegionNode(region_idx);
+    auto region = observed_region(region_idx);
     if (region != nullptr)
       region_set.insert(region);
   }
@@ -811,13 +827,14 @@ void TopoGraph::getRegionsToUpdate() {
     goal = 0.5 * (lb + hb);
     Eigen::Vector3f dir = goal - lidar_map_interface_->ld_->lidar_pose_;
     int step_num = (int)(dir.norm() / step_size) + 1;
+    if (dir.norm() < 1e-6) continue;
     dir.normalize();
     Eigen::Vector3f step = dir * step_size;
     for (int i = 0; i < step_num; ++i) {
       Eigen::Vector3f pos = lidar_map_interface_->ld_->lidar_pose_ + step * i;
       Eigen::Vector3i region_idx;
       getIndex(pos, region_idx);
-      auto region = getRegionNode(region_idx);
+      auto region = observed_region(region_idx);
       if (region != nullptr)
         region_set.insert(region);
     }

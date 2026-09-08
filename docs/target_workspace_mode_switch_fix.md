@@ -1,5 +1,8 @@
 # Target exploration 启动模式耦合修复
 
+> 历史记录：固定自动容量及域外目标拒绝方案已被本轮稀疏索引方案替代。
+> 当前设计和验证边界见 target_navigation_sparse_domain.md。
+
 ## 证据与根因
 
 `runtime_20260908_054033_0.bag` 对应参数：initial_mode=state2state，

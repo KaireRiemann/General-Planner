@@ -516,11 +516,11 @@ void BubbleAstar::goal_refine(Eigen::Vector3f &goal, bool use_map_bd) {
     p.y = curr_goal.y();
     p.z = curr_goal.z();
     for (int i = 0; i < 3; i++) {
-      if (goal[i] - min_bd[i] < 0) {
+      if (!lidar_map_interface_->targetNavigation() && goal[i] - min_bd[i] < 0) {
         goal[i] = min_bd[i] + 1e-3;
       }
 
-      if (max_bd[i] - goal[i] < 0) {
+      if (!lidar_map_interface_->targetNavigation() && max_bd[i] - goal[i] < 0) {
         goal[i] = max_bd[i] - 1e-3;
       }
     }

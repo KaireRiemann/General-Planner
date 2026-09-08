@@ -17,12 +17,10 @@
        while yielding /planning/pos_cmd to an external slit/gate planner. -->
   <arg name="initial_mode" default="target_exploration" />
   <arg name="exploration_mission_mode" default="target" />
-  <!-- HighSpeedExp needs a finite internal index capacity, but destination
-       tasks must not require a hand-measured scene box.  In target mode this
-       bootstraps that capacity even when starting in hold/state2state; set false only
-       for a legacy coverage mission that intentionally uses its YAML boxes. -->
+  <!-- Deprecated compatibility arguments: sparse target navigation no longer
+       rewrites coverage boxes or limits mission distance to this capacity. -->
   <arg name="target_exploration_auto_workspace"
-       default="$(eval 'true' if arg('exploration_mission_mode') in ['target', 'target_directed'] else 'false')" />
+       default="false" />
   <arg name="target_exploration_workspace_half_extent_xy" default="120.0" />
   <arg name="target_exploration_workspace_below_odom" default="2.0" />
   <arg name="target_exploration_workspace_above_odom" default="5.0" />

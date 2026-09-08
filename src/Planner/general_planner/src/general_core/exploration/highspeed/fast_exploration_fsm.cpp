@@ -218,8 +218,20 @@ void FastExplorationFSM::FSMCallback(const ros::TimerEvent &e) {
       return;
     }
     if (!planner_manager_->topo_graph_->odom_node_ ||
-        planner_manager_->topo_graph_->odom_node_->neighbors_.empty())
+        planner_manager_->topo_graph_->odom_node_->neighbors_.empty()) {
+      if (expl_manager_->targetDirectedModeActive()) {
+        if (topology_wait_since_.isZero()) topology_wait_since_ = ros::WallTime::now();
+        if ((ros::WallTime::now() - topology_wait_since_).toSec() >=
+            expl_manager_->ep_->target_no_progress_timeout_) {
+          ROS_ERROR("[target exploration] LOCAL_CONNECTION_TIMEOUT: no odom "
+                    "connection; hold recoverably, not proof of an unreachable goal");
+          target_unreachable_pending_ = true;
+          beginPause("local topology connection timeout", false);
+        }
+      }
       return;
+    }
+    topology_wait_since_ = ros::WallTime();
     if (expl_manager_->ed_->global_tour_.size() < 2) {
       const ros::Time now = ros::Time::now();
       const double min_update_interval =
@@ -593,15 +605,16 @@ void FastExplorationFSM::FSMCallback(const ros::TimerEvent &e) {
     break;
   }
   case LAND: {
-    stopTraj("LAND");
-    exec_timer_.stop();
+    if (last_land_publish_.isZero()) stopTraj("LAND");
     global_path_update_timer_.stop();
-    // 没电了！！再飞就会炸鸡，降落！！！
-    while (1) {
+    // Repeat the terminal land command without trapping the world callback
+    // thread in a sleep loop (which also prevented clean shutdown).
+    const auto now = ros::WallTime::now();
+    if (last_land_publish_.isZero() || (now - last_land_publish_).toSec() >= 0.2) {
+      last_land_publish_ = now;
       quadrotor_msgs::TakeoffLand land_msg;
       land_msg.takeoff_land_cmd = land_msg.LAND;
       land_pub_.publish(land_msg);
-      ros::Duration(0.2).sleep();
       ROS_WARN_THROTTLE(1.0, "NO POWER. LAND!!");
     }
 
@@ -917,13 +930,13 @@ bool FastExplorationFSM::validateTargetWorkspace() {
       fd_->odom_pos_, expl_manager_->ed_->mission_goal_,
       expl_manager_->ep_->target_goal_use_message_z_ ||
           !expl_manager_->ed_->mission_goal_needs_initialization_,
-      [&lio](const Eigen::Vector3f &p) { return lio->IsInBox(p); });
+      [&lio](const Eigen::Vector3f &p) { return lio->isAllowedByExclusions(p); });
   if (!failure) return true;
   ROS_ERROR_STREAM("[target exploration] " << failure
                    << " task_id=" << active_task_id_
                    << " start=[" << fd_->odom_pos_.transpose()
                    << "] target=[" << expl_manager_->ed_->mission_goal_.transpose()
-                   << "]. Check startup target capacity and exclusion zones; "
+                   << "]. Check coordinates and exclusion zones; "
                       "topology/optimizer retries cannot fix this condition.");
   target_unreachable_pending_ = true;
   target_arrival_verification_pending_ = false;

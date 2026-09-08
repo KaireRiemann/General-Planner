@@ -269,6 +269,7 @@ target_include_directories(target_directed_exploration_self_test PRIVATE include
 
 add_executable(target_workspace_self_test tests/target_workspace_self_test.cpp)
 target_include_directories(target_workspace_self_test PRIVATE include)
+target_link_libraries(target_workspace_self_test general_planner_exploration_utils ${THIRD_PARTY})
 # Assertions are the test oracle even in Release builds.
 target_compile_options(target_workspace_self_test PRIVATE -UNDEBUG)
 

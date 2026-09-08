@@ -1065,6 +1065,7 @@ void FastExplorationFSM::startExplorationTask(const std::string &task_id,
 
   active_task_id_ = task_id;
   pending_target_task_id_.clear();
+  topology_wait_since_ = ros::WallTime();
   completion_pending_ = false;
   target_arrival_verification_pending_ = false;
   target_arrival_correction_count_ = 0;
