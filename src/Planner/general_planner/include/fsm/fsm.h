@@ -481,7 +481,9 @@ namespace fsm {
 
         bool shouldSkipStaticTrackingReplan(const traj_opt::DynamicTargetStates &prediction);
 
-        void setTrackingTargetPrediction(const traj_opt::DynamicTargetStates &prediction);
+        // Caller holds fsm_tick_mutex_: target observations are not navigation goals.
+        void setTrackingTargetPrediction(const traj_opt::DynamicTargetStates &prediction,
+                                         bool activate_tracking_task);
 
         void setPerchingSurface(const traj_opt::PerchingSurfaceState &surface);
 

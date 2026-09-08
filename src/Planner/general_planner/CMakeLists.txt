@@ -204,6 +204,10 @@ target_link_libraries(highspeed_traj_server
         ${THIRD_PARTY}
 )
 
+add_executable(tracking_input_isolation_self_test tests/tracking_input_isolation_self_test.cpp)
+add_dependencies(tracking_input_isolation_self_test ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
+target_link_libraries(tracking_input_isolation_self_test general_planner_core ${THIRD_PARTY})
+
 add_executable(mission_command_mux
         ${GENERAL_PLANNER_EXPLORATION_DIR}/mission_command_mux.cpp
 )

@@ -1090,10 +1090,7 @@ namespace fsm {
         }
 
         void trackingTargetCallback(const nav_msgs::OdometryConstPtr &msg) {
-            if (cfg_.tracking_use_target_prediction_path &&
-                !cfg_.tracking_target_prediction_topic.empty() &&
-                !last_tracking_prediction_path_time_.isZero() &&
-                (ros::Time::now() - last_tracking_prediction_path_time_).toSec() < 0.5) {
+            if (!msg) {
                 return;
             }
             const Vec3f p(msg->pose.pose.position.x,
@@ -1111,7 +1108,19 @@ namespace fsm {
                           buildKinodynamicTrackingPrediction(p, v, pose_yaw, prediction))) {
                 buildConstantVelocityTrackingPrediction(p, v, pose_yaw, prediction);
             }
-            setTrackingTargetPrediction(prediction);
+            // Serialize mode selection and goal mutation with task-mode changes.
+            std::lock_guard<std::mutex> lock(fsm_tick_mutex_);
+            if (cfg_.tracking_use_target_prediction_path &&
+                !cfg_.tracking_target_prediction_topic.empty() &&
+                !last_tracking_prediction_path_time_.isZero() &&
+                (ros::Time::now() - last_tracking_prediction_path_time_).toSec() < 0.5) {
+                return;
+            }
+            const bool activate_tracking_task = trackingMode() || trackingPerchingMode();
+            setTrackingTargetPrediction(prediction, activate_tracking_task);
+            if (!activate_tracking_task) {
+                return;
+            }
             traj_opt::DynamicTargetStates accepted_prediction;
             if (getTrackingTargetPrediction(accepted_prediction)) {
                 const double source_stamp = msg->header.stamp.isZero()
@@ -1133,7 +1142,7 @@ namespace fsm {
         }
 
         void trackingPredictionPathCallback(const nav_msgs::PathConstPtr &msg) {
-            if (!cfg_.tracking_use_target_prediction_path || msg->poses.size() < 2) {
+            if (!msg || !cfg_.tracking_use_target_prediction_path || msg->poses.size() < 2) {
                 if (useTrackingLogStream()) {
                     recordDiagnosticEvent("WARN",
                                           "tracking_target_input_rejected",
@@ -1141,7 +1150,7 @@ namespace fsm {
                                                       cfg_.tracking_use_target_prediction_path
                                                           ? "insufficient_path_samples"
                                                           : "prediction_path_disabled",
-                                                      msg->poses.size()));
+                                                      msg ? msg->poses.size() : 0));
                 }
                 return;
             }
@@ -1186,8 +1195,13 @@ namespace fsm {
                 prediction.emplace_back(target);
             }
 
+            std::lock_guard<std::mutex> lock(fsm_tick_mutex_);
             last_tracking_prediction_path_time_ = ros::Time::now();
-            setTrackingTargetPrediction(prediction);
+            const bool activate_tracking_task = trackingMode() || trackingPerchingMode();
+            setTrackingTargetPrediction(prediction, activate_tracking_task);
+            if (!activate_tracking_task) {
+                return;
+            }
             traj_opt::DynamicTargetStates accepted_prediction;
             if (getTrackingTargetPrediction(accepted_prediction)) {
                 double source_stamp = msg->header.stamp.isZero()

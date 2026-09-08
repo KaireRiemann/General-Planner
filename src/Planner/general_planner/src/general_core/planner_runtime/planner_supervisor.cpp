@@ -1587,7 +1587,12 @@ void PlannerSupervisor::timerCallback(const ros::TimerEvent &) {
               status_.mode_state = ModeState::EXP_PAUSED;
               status_.ready_for_new_task = true;
             } else {
-              activateMode(target, "stable hold reached");
+              const std::string activation_reason =
+                  target == PlannerMode::HOLD &&
+                          result == PlannerTaskResult::FAILED
+                      ? status_.reason + "; stable hold reached"
+                      : "stable hold reached";
+              activateMode(target, activation_reason);
             }
           }
         } else {

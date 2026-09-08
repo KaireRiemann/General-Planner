@@ -1960,7 +1960,8 @@ namespace fsm {
         return true;
     }
 
-    void Fsm::setTrackingTargetPrediction(const traj_opt::DynamicTargetStates &prediction) {
+    void Fsm::setTrackingTargetPrediction(const traj_opt::DynamicTargetStates &prediction,
+                                         const bool activate_tracking_task) {
         if (prediction.empty()) {
             return;
         }
@@ -1980,7 +1981,13 @@ namespace fsm {
                       trackingPredictionChanged(tracking_target_prediction_, filtered_prediction);
             tracking_target_prediction_ = filtered_prediction;
             tracking_target_rcv_time_ = now;
-            task_new_ = task_new_ || changed;
+            // Keep observations warm without arming an unrelated navigation task.
+            if (activate_tracking_task) {
+                task_new_ = task_new_ || changed;
+            }
+        }
+        if (!activate_tracking_task) {
+            return;
         }
         gi_.goal_p = filtered_prediction.back().position;
         gi_.goal_yaw = filtered_prediction.back().yaw;
