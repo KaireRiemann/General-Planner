@@ -110,6 +110,8 @@ PlannerSupervisor::PlannerSupervisor(ros::NodeHandle &nh,
 
   status_pub_ =
       nh_.advertise<general_planner::PlannerStatus>("/planner/status", 10, true);
+  target_status_pub_ = nh_.advertise<general_planner::TargetExplorationStatus>(
+      "/planner/target_exploration/status", 10, true);
   // Latched so late-joining exploration_node still receives the latest START.
   exploration_command_pub_ =
       nh_.advertise<std_msgs::String>(exploration_command_topic_, 10, true);
@@ -1473,6 +1475,7 @@ void PlannerSupervisor::handoverStatusCallback(
 
 void PlannerSupervisor::publishStatus() {
   general_planner::PlannerStatus msg;
+  general_planner::TargetExplorationStatus target_msg;
   {
     std::lock_guard<std::mutex> lock(mutex_);
     msg.header.stamp = ros::Time::now();
@@ -1505,8 +1508,18 @@ void PlannerSupervisor::publishStatus() {
     msg.speed_mps = status_.speed_mps;
     msg.yaw_rate_rps = status_.yaw_rate_rps;
     msg.reason = status_.reason;
+    const auto summary = target_status_projector_.update(
+        status_, !boot_complete_ || transition_active_ ||
+                     target_replacement_pending_ || exploration_start_pending_,
+        hoverConditionMetLocked());
+    target_msg.header = msg.header;
+    target_msg.task_epoch = msg.task_epoch;
+    target_msg.task_id = msg.task_id;
+    target_msg.result = static_cast<std::uint8_t>(summary.result);
+    target_msg.reason = summary.reason;
   }
   status_pub_.publish(msg);
+  target_status_pub_.publish(target_msg);
 }
 
 void PlannerSupervisor::timerCallback(const ros::TimerEvent &) {

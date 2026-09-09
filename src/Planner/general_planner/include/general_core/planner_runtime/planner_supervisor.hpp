@@ -13,6 +13,8 @@
 #include <general_planner/ExplorationTaskRequest.h>
 #include <general_planner/PlannerModeRequest.h>
 #include <general_planner/PlannerStatus.h>
+#include <general_planner/TargetExplorationStatus.h>
+#include <general_core/planner_runtime/target_exploration_status.hpp>
 #include <geometry_msgs/PoseStamped.h>
 #include <nav_msgs/Odometry.h>
 #include <ros/ros.h>
@@ -116,6 +118,8 @@ private:
   ros::Subscriber handover_status_sub_;
   ros::Subscriber odom_sub_;
   ros::Publisher status_pub_;
+  ros::Publisher target_status_pub_;
+  TargetExplorationStatusProjector target_status_projector_;
   ros::Publisher exploration_command_pub_;
   ros::Publisher exploration_task_request_pub_;
   ros::Publisher navigation_command_pub_;

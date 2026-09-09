@@ -45,6 +45,7 @@ add_message_files(
         ExplorationTaskRequest.msg
         PlannerModeRequest.msg
         PlannerStatus.msg
+        TargetExplorationStatus.msg
         TopologyExpansionPoint.msg
         TopologyExpansionPointArray.msg
 )
@@ -244,6 +245,10 @@ add_executable(planner_status_self_test
         tests/planner_status_self_test.cpp
 )
 target_include_directories(planner_status_self_test PRIVATE include)
+
+add_executable(target_exploration_status_self_test
+        tests/target_exploration_status_self_test.cpp)
+target_include_directories(target_exploration_status_self_test PRIVATE include)
 
 add_executable(planner_command_gateway_policy_self_test
         tests/planner_command_gateway_policy_self_test.cpp
