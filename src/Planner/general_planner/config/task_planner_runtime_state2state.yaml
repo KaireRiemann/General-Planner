@@ -3,6 +3,10 @@
 # config/exploration_rog_map.yaml; the mirrored ROG section below therefore
 # uses the same Villa exploration bounds and has no ROS callbacks.
 fsm:
+  # Bounded retry: zero/negative legacy limits no longer mean unlimited.
+  state2state_plan_from_rest_max_failures: 5
+  state2state_plan_from_rest_failure_backoff: 0.25
+  state2state_clear_goal_on_plan_failure: true
   task_mode: "state2state"
   task_planner_en: true
   task_mode_topic: "/planning/navigation_task_mode"

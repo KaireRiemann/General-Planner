@@ -19,17 +19,23 @@ GlobalMapRuntime::~GlobalMapRuntime() {
   cloud_sub_.reset();
   odom_sync_sub_.reset();
   odom_sub_.shutdown();
+  odom_ingress_sub_.shutdown();
   topology_expansion_timer_.stop();
   topology_maintainer_.reset();
 }
 
 void GlobalMapRuntime::init(ros::NodeHandle nh,
-                            const std::string &map_config_path) {
+                            const std::string &map_config_path,
+                            ros::NodeHandle odometry_nh) {
   if (initialized_) {
     throw std::logic_error("GlobalMapRuntime::init called twice");
   }
   if (map_config_path.empty()) {
     throw std::invalid_argument("global map config path is empty");
+  }
+  if (nh.getCallbackQueue() == odometry_nh.getCallbackQueue()) {
+    throw std::invalid_argument(
+        "GlobalMapRuntime odometry ingress requires a separate callback queue");
   }
 
   nh_ = std::move(nh);
@@ -46,6 +52,7 @@ void GlobalMapRuntime::init(ros::NodeHandle nh,
         "otherwise ROGMapROS would fuse cloud frames a second time");
   }
   context_->map_manager = std::make_shared<MapManager>(context_->rog_map);
+  context_->map_manager->enableIndependentOdometry();
   context_->map_manager->setWorldEpoch(
       context_->world_epoch.load(std::memory_order_acquire));
 
@@ -84,7 +91,10 @@ void GlobalMapRuntime::init(ros::NodeHandle nh,
   cloud_queue = std::max(1, cloud_queue);
   sync_queue = std::max(1, sync_queue);
 
-  odom_sub_ = nh_.subscribe(odom_topic, odom_queue,
+  odom_ingress_sub_ = odometry_nh.subscribe(odom_topic, 1,
+                             &GlobalMapRuntime::odomIngressCallback, this,
+                             ros::TransportHints().tcpNoDelay());
+  odom_sub_ = nh_.subscribe(odom_topic, 1,
                              &GlobalMapRuntime::odomCallback, this,
                              ros::TransportHints().tcpNoDelay());
   cloud_sub_ = std::make_shared<message_filters::Subscriber<sensor_msgs::PointCloud2>>(
@@ -142,6 +152,34 @@ bool GlobalMapRuntime::topologyMaintenanceEnabled() const {
   return topology_maintainer_ && topology_maintainer_->maintenanceEnabled();
 }
 
+void GlobalMapRuntime::odomIngressCallback(const nav_msgs::OdometryConstPtr &msg) {
+  if (!msg || !context_ || !context_->map_manager) {
+    return;
+  }
+  const ros::Time received = ros::Time::now();
+  rog_map::RobotState state{};
+  state.p = rog_map::Vec3f(msg->pose.pose.position.x,
+                         msg->pose.pose.position.y, msg->pose.pose.position.z);
+  state.q = rog_map::Quatf(msg->pose.pose.orientation.w,
+                         msg->pose.pose.orientation.x,
+                         msg->pose.pose.orientation.y,
+                         msg->pose.pose.orientation.z);
+  state.v = rog_map::Vec3f(msg->twist.twist.linear.x,
+                         msg->twist.twist.linear.y, msg->twist.twist.linear.z);
+  if (!state.p.allFinite() || !state.v.allFinite() ||
+      !state.q.coeffs().allFinite() || state.q.norm() < 1e-6) {
+    return;  // Invalid packets must not extend sensor freshness.
+  }
+  state.q.normalize();
+  state.yaw = std::atan2(2.0 * (state.q.w() * state.q.z() + state.q.x() * state.q.y()),
+                        1.0 - 2.0 * (state.q.y() * state.q.y() + state.q.z() * state.q.z()));
+  state.rcv = true;
+  state.rcv_time = received.toSec();
+  context_->map_manager->updateOdometrySnapshot(state);
+  std::lock_guard<std::mutex> lock(mutex_);
+  last_odom_time_ = received;
+}
+
 void GlobalMapRuntime::odomCallback(const nav_msgs::OdometryConstPtr &msg) {
   if (!msg || !context_ || !context_->rog_map) {
     return;
@@ -163,7 +201,6 @@ void GlobalMapRuntime::odomCallback(const nav_msgs::OdometryConstPtr &msg) {
   std::vector<OdomConsumer> consumers;
   {
     std::lock_guard<std::mutex> lock(mutex_);
-    last_odom_time_ = ros::Time::now();
     consumers = odom_consumers_;
   }
   for (const auto &consumer : consumers) {

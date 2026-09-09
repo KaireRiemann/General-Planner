@@ -193,9 +193,6 @@ struct PlannerStatus_
 #if defined(_WIN32) && defined(MODE_GATE)
   #undef MODE_GATE
 #endif
-#if defined(_WIN32) && defined(MODE_TRACKING)
-  #undef MODE_TRACKING
-#endif
 #if defined(_WIN32) && defined(PHASE_BOOT)
   #undef PHASE_BOOT
 #endif
@@ -249,9 +246,6 @@ struct PlannerStatus_
 #endif
 #if defined(_WIN32) && defined(OWNER_GATE)
   #undef OWNER_GATE
-#endif
-#if defined(_WIN32) && defined(OWNER_TRACKING)
-  #undef OWNER_TRACKING
 #endif
 #if defined(_WIN32) && defined(MODE_STATE_UNKNOWN)
   #undef MODE_STATE_UNKNOWN
@@ -316,21 +310,6 @@ struct PlannerStatus_
 #if defined(_WIN32) && defined(MODE_STATE_GATE_COMPLETE)
   #undef MODE_STATE_GATE_COMPLETE
 #endif
-#if defined(_WIN32) && defined(MODE_STATE_TRACK_WAIT_TARGET)
-  #undef MODE_STATE_TRACK_WAIT_TARGET
-#endif
-#if defined(_WIN32) && defined(MODE_STATE_TRACK_GENERATE_TRAJ)
-  #undef MODE_STATE_TRACK_GENERATE_TRAJ
-#endif
-#if defined(_WIN32) && defined(MODE_STATE_TRACK_FOLLOW_TRAJ)
-  #undef MODE_STATE_TRACK_FOLLOW_TRAJ
-#endif
-#if defined(_WIN32) && defined(MODE_STATE_TRACK_STATIC)
-  #undef MODE_STATE_TRACK_STATIC
-#endif
-#if defined(_WIN32) && defined(MODE_STATE_TRACK_HOLD)
-  #undef MODE_STATE_TRACK_HOLD
-#endif
 
   enum {
     MODE_HOLD = 0u,
@@ -339,7 +318,6 @@ struct PlannerStatus_
     MODE_EMERGENCY_STOP = 3u,
     MODE_TARGET_EXPLORATION = 4u,
     MODE_GATE = 5u,
-    MODE_TRACKING = 6u,
     PHASE_BOOT = 0u,
     PHASE_WAITING_INPUT = 1u,
     PHASE_PLANNING = 2u,
@@ -358,7 +336,6 @@ struct PlannerStatus_
     OWNER_STATE2STATE = 1u,
     OWNER_EXPLORATION = 2u,
     OWNER_GATE = 3u,
-    OWNER_TRACKING = 4u,
     MODE_STATE_UNKNOWN = 0u,
     MODE_STATE_S2S_WAIT_GOAL = 1u,
     MODE_STATE_S2S_GENERATE_TRAJ = 2u,
@@ -380,11 +357,6 @@ struct PlannerStatus_
     MODE_STATE_GATE_EXECUTING = 31u,
     MODE_STATE_GATE_END_VERIFY = 32u,
     MODE_STATE_GATE_COMPLETE = 33u,
-    MODE_STATE_TRACK_WAIT_TARGET = 40u,
-    MODE_STATE_TRACK_GENERATE_TRAJ = 41u,
-    MODE_STATE_TRACK_FOLLOW_TRAJ = 42u,
-    MODE_STATE_TRACK_STATIC = 43u,
-    MODE_STATE_TRACK_HOLD = 44u,
   };
 
 
@@ -399,20 +371,6 @@ typedef boost::shared_ptr< ::general_planner::PlannerStatus > PlannerStatusPtr;
 typedef boost::shared_ptr< ::general_planner::PlannerStatus const> PlannerStatusConstPtr;
 
 // constants requiring out of line definition
-
-   
-
-   
-
-   
-
-   
-
-   
-
-   
-
-   
 
    
 
@@ -601,12 +559,12 @@ struct MD5Sum< ::general_planner::PlannerStatus_<ContainerAllocator> >
 {
   static const char* value()
   {
-    return "81fd60c3c39131a4d3e6e083c13d1e28";
+    return "ea88b140bff057d80a7df2da783ac7f1";
   }
 
   static const char* value(const ::general_planner::PlannerStatus_<ContainerAllocator>&) { return value(); }
-  static const uint64_t static_value1 = 0x81fd60c3c39131a4ULL;
-  static const uint64_t static_value2 = 0xd3e6e083c13d1e28ULL;
+  static const uint64_t static_value1 = 0xea88b140bff057d8ULL;
+  static const uint64_t static_value2 = 0x0a7df2da783ac7f1ULL;
 };
 
 template<class ContainerAllocator>
@@ -664,7 +622,6 @@ struct Definition< ::general_planner::PlannerStatus_<ContainerAllocator> >
 "uint8 MODE_EMERGENCY_STOP=3\n"
 "uint8 MODE_TARGET_EXPLORATION=4\n"
 "uint8 MODE_GATE=5\n"
-"uint8 MODE_TRACKING=6\n"
 "\n"
 "uint8 PHASE_BOOT=0\n"
 "uint8 PHASE_WAITING_INPUT=1\n"
@@ -686,7 +643,6 @@ struct Definition< ::general_planner::PlannerStatus_<ContainerAllocator> >
 "uint8 OWNER_STATE2STATE=1\n"
 "uint8 OWNER_EXPLORATION=2\n"
 "uint8 OWNER_GATE=3\n"
-"uint8 OWNER_TRACKING=4\n"
 "\n"
 "uint16 MODE_STATE_UNKNOWN=0\n"
 "uint16 MODE_STATE_S2S_WAIT_GOAL=1\n"
@@ -709,11 +665,6 @@ struct Definition< ::general_planner::PlannerStatus_<ContainerAllocator> >
 "uint16 MODE_STATE_GATE_EXECUTING=31\n"
 "uint16 MODE_STATE_GATE_END_VERIFY=32\n"
 "uint16 MODE_STATE_GATE_COMPLETE=33\n"
-"uint16 MODE_STATE_TRACK_WAIT_TARGET=40\n"
-"uint16 MODE_STATE_TRACK_GENERATE_TRAJ=41\n"
-"uint16 MODE_STATE_TRACK_FOLLOW_TRAJ=42\n"
-"uint16 MODE_STATE_TRACK_STATIC=43\n"
-"uint16 MODE_STATE_TRACK_HOLD=44\n"
 "\n"
 "================================================================================\n"
 "MSG: std_msgs/Header\n"

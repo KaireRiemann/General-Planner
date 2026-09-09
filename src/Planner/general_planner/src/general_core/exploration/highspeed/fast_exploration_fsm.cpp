@@ -48,6 +48,7 @@ FastExplorationFSM::~FastExplorationFSM() {
 }
 
 void FastExplorationFSM::FSMCallback(const ros::TimerEvent &e) {
+  refreshRuntimeOdometry();
   pubState();
   if (expl_manager_->swarm_coordinator_ &&
       expl_manager_->swarm_coordinator_->enabled()) {
@@ -1091,6 +1092,7 @@ void FastExplorationFSM::updateTopoAndGlobalPath() {
 }
 
 void FastExplorationFSM::globalPathUpdateCallback(const ros::TimerEvent &e) {
+  refreshRuntimeOdometry();
   const ros::WallTime now = ros::WallTime::now();
   if (!last_global_callback_wall_time_.isZero()) {
     ROS_INFO_STREAM_THROTTLE(

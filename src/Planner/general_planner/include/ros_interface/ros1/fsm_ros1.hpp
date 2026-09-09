@@ -1338,7 +1338,8 @@ namespace fsm {
             }
             std::lock_guard<std::mutex> lock(fsm_tick_mutex_);
             std_msgs::String status;
-            status.data = std::string(machineStateName()) + " " +
+            status.data = std::string(state2stateMode() && state2state_plan_failed_
+                                      ? "FAILED" : machineStateName()) + " " +
                           std::to_string(navigationTaskEpoch()) + " " +
                           std::to_string(navigationGoalSequence()) + " " +
                           (navigationGoalActive() ? "ACTIVE" : "IDLE");

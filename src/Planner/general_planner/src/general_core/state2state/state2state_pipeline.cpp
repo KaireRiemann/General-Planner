@@ -186,6 +186,9 @@ namespace general_planner {
                                             const bool new_goal) {
         std::lock_guard<std::mutex> guard(services.replan_lock);
         services.latest_replan.reset();
+        if (services.map_manager) {
+            services.robot_state = services.map_manager->getRobotState();
+        }
         const auto input_check = checker::checkState2StateInput(goal_p,
                                                                 goal_yaw,
                                                                 services.robot_state,
@@ -365,6 +368,11 @@ namespace general_planner {
         TimeConsuming replan_total_t("ReplanOnce", false);
         std::lock_guard<std::mutex> guard(services.replan_lock);
 
+        // Acquire once after waiting for the backend lock; keep this working
+        // snapshot stable for the entire replan, not for the preceding wait.
+        if (services.map_manager) {
+            services.robot_state = services.map_manager->getRobotState();
+        }
         const auto input_check = checker::checkState2StateInput(goal_p,
                                                                 goal_yaw,
                                                                 services.robot_state,

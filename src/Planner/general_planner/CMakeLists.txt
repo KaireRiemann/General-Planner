@@ -246,6 +246,21 @@ add_executable(planner_status_self_test
 )
 target_include_directories(planner_status_self_test PRIVATE include)
 
+add_executable(planning_retry_self_test tests/planning_retry_self_test.cpp)
+target_include_directories(planning_retry_self_test PRIVATE include)
+
+add_executable(planning_failure_integration_test
+        tests/planning_failure_integration_test.cpp
+        src/general_core/planner_runtime/planner_supervisor.cpp
+        src/general_core/planner_runtime/planner_command_gateway.cpp)
+add_dependencies(planning_failure_integration_test ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
+target_include_directories(planning_failure_integration_test PRIVATE include)
+target_link_libraries(planning_failure_integration_test ${THIRD_PARTY})
+
+add_executable(odometry_snapshot_self_test tests/odometry_snapshot_self_test.cpp)
+target_include_directories(odometry_snapshot_self_test PRIVATE include)
+target_link_libraries(odometry_snapshot_self_test ${catkin_LIBRARIES} ${THIRD_PARTY})
+
 add_executable(target_exploration_status_self_test
         tests/target_exploration_status_self_test.cpp)
 target_include_directories(target_exploration_status_self_test PRIVATE include)

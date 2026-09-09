@@ -22,6 +22,7 @@
 */
 
 #include <fsm/fsm.h>
+#include <general_core/planning_retry_policy.hpp>
 #include <checker/common_checker.hpp>
 #include <algorithm>
 #include <boost/filesystem.hpp>
@@ -1044,6 +1045,11 @@ namespace fsm {
                 break;
             }
             case GENERATE_TRAJ: {
+                if (state2stateMode() &&
+                    (state2state_plan_failed_ ||
+                     general_planner::planningWallSeconds() < state2state_next_plan_attempt_wall_)) {
+                    return;
+                }
                 // A state-to-state rolling replan can still be finishing after
                 // the command trajectory reaches its end. Do not start a
                 // concurrent plan-from-rest on the same planner; keep the FSM
@@ -1158,6 +1164,8 @@ namespace fsm {
                         plan_context.tracking_input_prediction_size;
                 if (executor.goalLike() && !planner_ptr_->goalValid()) {
                     cout << YELLOW << " -- [Fsm] Goal is invalid, skip this goal." << RESET << endl;
+                    state2state_plan_failed_ = state2stateMode();
+                    navigation_goal_active_ = false;
                     recordDiagnosticEvent("WARN",
                                           "plan_from_rest_result",
                                           "goal_valid=0",
@@ -1258,6 +1266,8 @@ namespace fsm {
                         ChangeState("MainFsmCallback", EMER_STOP);
                         break;
                     case general_planner::architecture::CommitAction::REQUEST_NEW_INPUT:
+                        state2state_plan_failed_ = state2stateMode();
+                        navigation_goal_active_ = false;
                         gi_.new_goal = false;
                         started_ = false;
                         plan_from_rest_ = false;
@@ -1288,7 +1298,12 @@ namespace fsm {
                                                   retcode);
                         } else if (executor.goalLike()) {
                             ++state2state_plan_from_rest_fail_count_;
-                            const int failure_limit = cfg_.state2state_plan_from_rest_max_failures;
+                            const int failure_limit = general_planner::planningFailureLimit(
+                                    cfg_.state2state_plan_from_rest_max_failures);
+                            state2state_next_plan_attempt_wall_ =
+                                    general_planner::planningWallSeconds() +
+                                    general_planner::planningRetryBackoff(
+                                        cfg_.state2state_plan_from_rest_failure_backoff);
                             cout << YELLOW << " -- [Fsm] PlanFromRest failed, try replan. consecutive_failures="
                                  << state2state_plan_from_rest_fail_count_;
                             if (failure_limit > 0) {
@@ -1312,7 +1327,10 @@ namespace fsm {
                                                                   static_cast<int>(
                                                                           cfg_.state2state_clear_goal_on_plan_failure)),
                                                       retcode);
-                                if (cfg_.state2state_clear_goal_on_plan_failure) {
+                                // Failure must terminate even with a legacy
+                                // clear_goal=false configuration. Keep goal
+                                // coordinates for diagnostics, not execution.
+                                {
                                     cout << YELLOW << " -- [Fsm] PlanFromRest failed "
                                          << state2state_plan_from_rest_fail_count_
                                          << " times, clear current state2state goal and wait for a new goal."
@@ -1321,9 +1339,12 @@ namespace fsm {
                                     started_ = false;
                                     plan_from_rest_ = false;
                                     finish_plan = true;
+                                    state2state_plan_failed_ = true;
+                                    navigation_goal_active_ = false;
                                     ChangeState("PlanFromRestFailureLimit", WAIT_GOAL);
                                 }
-                                state2state_plan_from_rest_fail_count_ = 0;
+                                // Retain the terminal count until a new task
+                                // is explicitly accepted/armed.
                             }
                         } else if (executor.trackingLike()) {
                             handleTrackingPlanFromRestFailure(retcode,
@@ -1452,6 +1473,9 @@ namespace fsm {
     }
 
     void Fsm::armNavigationTask(const std::uint64_t task_epoch) {
+        state2state_plan_failed_ = false;
+        state2state_next_plan_attempt_wall_ = 0.0;
+        state2state_plan_from_rest_fail_count_ = 0;
         navigation_task_epoch_ = task_epoch;
         if (planner_ptr_ && !state2state_replan_in_progress_.load()) {
             planner_ptr_->setState2StateTopologyTaskEpoch(task_epoch);
@@ -2140,10 +2164,12 @@ namespace fsm {
         const Vec3f last_goal_p = gi_.goal_p;
         const double last_goal_yaw = gi_.goal_yaw;
 
-        gi_.goal_p = click_point;
+        // Validate/project a candidate first. A rejected goal must leave the
+        // running task untouched (especially the too-close branch).
+        Vec3f candidate_goal = click_point;
         if (planner_ptr_->getMapManager()->getInfGridType(click_point) == GridType::OCCUPIED) {
-            if (planner_ptr_->getMapManager()->getNearestInfCellNot(GridType::OCCUPIED, click_point, gi_.goal_p, 3.0)) {
-                cout << GREEN << " -- [Fsm] Project occupied goal to " << RESET << gi_.goal_p.transpose() << endl;
+            if (planner_ptr_->getMapManager()->getNearestInfCellNot(GridType::OCCUPIED, click_point, candidate_goal, 3.0)) {
+                cout << GREEN << " -- [Fsm] Project occupied goal to " << RESET << candidate_goal.transpose() << endl;
             } else {
                 fmt::print(fg(fmt::color::indian_red), "Goal is deeply occupied, skip this goal.\n");
                 recordDiagnosticEvent("WARN",
@@ -2159,15 +2185,15 @@ namespace fsm {
                 return;
             }
         } else {
-            cout << GREEN << " -- [Fsm] Get goal at " << RESET << gi_.goal_p.transpose() << endl;
+            cout << GREEN << " -- [Fsm] Get goal at " << RESET << candidate_goal.transpose() << endl;
         }
-        if ((robot_state_.p - gi_.goal_p).norm() <
+        if ((robot_state_.p - candidate_goal).norm() <
             0.1) {
             //                print(fg(color::gray), " -- [Rviz] Too close to goal, skip this target.\n");
             recordDiagnosticEvent("INFO",
                                   "goal_rejected",
                                   fmt::format("reason=too_close;distance={:.3f}",
-                                              (robot_state_.p - gi_.goal_p).norm()),
+                                              (robot_state_.p - candidate_goal).norm()),
                                   -1,
                                   -1,
                                   false,
@@ -2176,31 +2202,30 @@ namespace fsm {
             return;
         }
 
+        double candidate_yaw = NAN;
         if (cfg_.click_yaw_en) {
             if (isnan(q.w()) || isnan(q.x()) || isnan(q.y()) || isnan(q.z())) {
-                gi_.goal_yaw = NAN;
                 ros_ptr_->info(" -- [Fsm] Receive click goal at: [{}, {}, {}]; goal yaw disabled",
-                               gi_.goal_p.x(), gi_.goal_p.y(), gi_.goal_p.z());
+                               candidate_goal.x(), candidate_goal.y(), candidate_goal.z());
             } else {
-                gi_.goal_yaw = geometry_utils::get_yaw_from_quaternion(q);
-                cout << GREEN << " -- [Fsm] Receive click goal at: [" << gi_.goal_p.transpose() << "]; goal yaw: "
-                     << gi_.goal_yaw * 57.3 << " deg" << RESET << endl;
+                candidate_yaw = geometry_utils::get_yaw_from_quaternion(q);
+                cout << GREEN << " -- [Fsm] Receive click goal at: [" << candidate_goal.transpose() << "]; goal yaw: "
+                     << candidate_yaw * 57.3 << " deg" << RESET << endl;
             }
 
         } else {
-            gi_.goal_yaw = NAN;
-            cout << GREEN << " -- [Fsm] Receive click goal at: [" << gi_.goal_p.transpose() << "]; goal yaw disabled"
+            cout << GREEN << " -- [Fsm] Receive click goal at: [" << candidate_goal.transpose() << "]; goal yaw disabled"
                  << RESET << endl;
         }
 
-        const bool same_yaw = (std::isnan(last_goal_yaw) && std::isnan(gi_.goal_yaw)) ||
-                              (std::isfinite(last_goal_yaw) && std::isfinite(gi_.goal_yaw) &&
-                               std::fabs(last_goal_yaw - gi_.goal_yaw) < 0.02);
-        if (had_goal && (last_goal_p - gi_.goal_p).norm() < 0.05 && same_yaw) {
+        const bool same_yaw = (std::isnan(last_goal_yaw) && std::isnan(candidate_yaw)) ||
+                              (std::isfinite(last_goal_yaw) && std::isfinite(candidate_yaw) &&
+                               std::fabs(last_goal_yaw - candidate_yaw) < 0.02);
+        if (had_goal && (last_goal_p - candidate_goal).norm() < 0.05 && same_yaw) {
             recordDiagnosticEvent("INFO",
                                   "goal_duplicated",
                                   fmt::format("position_delta={:.3f};same_yaw={}",
-                                              (last_goal_p - gi_.goal_p).norm(),
+                                              (last_goal_p - candidate_goal).norm(),
                                               static_cast<int>(same_yaw)),
                                   -1,
                                   -1,
@@ -2210,8 +2235,12 @@ namespace fsm {
             return;
         }
 
+        gi_.goal_p = candidate_goal;
+        gi_.goal_yaw = candidate_yaw;
         started_ = true;
         gi_.new_goal = true;
+        state2state_plan_failed_ = false;
+        state2state_next_plan_attempt_wall_ = 0.0;
         if (state2stateMode()) {
             ++navigation_goal_sequence_;
             navigation_goal_active_ = true;

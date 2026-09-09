@@ -172,6 +172,9 @@ private:
   bool handoverSafe() const;
   void publishTaskStatus();
   void odometryCallback(const nav_msgs::OdometryConstPtr &msg);
+  void refreshRuntimeOdometry();
+  void applyOdometry(const nav_msgs::OdometryConstPtr &msg,
+                     const ros::Time &received);
   void stopTraj(const string &reason);
 
   // void goal_cb(const geometry_msgs::PoseStamped::ConstPtr &msg);

@@ -311,7 +311,26 @@ public:
 
     rog_map::RobotState getRobotState() const
     {
+        std::lock_guard<std::mutex> lock(odometry_mutex_);
+        if (independent_odometry_) {
+            return latest_odometry_;
+        }
         return map_->getRobotState();
+    }
+
+    // Independent sensor ingress must not mutate the map/sliding window.
+    // Enable before callbacks start so map fusion cannot masquerade as odom.
+    void enableIndependentOdometry()
+    {
+        std::lock_guard<std::mutex> lock(odometry_mutex_);
+        independent_odometry_ = true;
+        latest_odometry_.rcv = false;
+    }
+
+    void updateOdometrySnapshot(const rog_map::RobotState &state)
+    {
+        std::lock_guard<std::mutex> lock(odometry_mutex_);
+        latest_odometry_ = state;
     }
 
     double getResolution() const
@@ -592,6 +611,9 @@ public:
     }
 
 private:
+    mutable std::mutex odometry_mutex_;
+    bool independent_odometry_{false};
+    rog_map::RobotState latest_odometry_{};
     /**
      * Delay the initial dirty-window seed until the first real odometry has
      * initialized ROG's sliding-map origin. Construction then samples only

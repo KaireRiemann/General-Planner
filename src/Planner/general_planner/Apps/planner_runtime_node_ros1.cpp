@@ -150,18 +150,21 @@ int main(int argc, char **argv) {
     // frontend/optimizer must never delay supervisor handover, navigation
     // control, or the state2state command source.
     ros::CallbackQueue world_callback_queue;
+    ros::CallbackQueue odometry_callback_queue;
     ros::CallbackQueue navigation_callback_queue;
     ros::CallbackQueue navigation_command_callback_queue;
     ros::CallbackQueue navigation_replan_callback_queue;
     ros::CallbackQueue supervisor_callback_queue;
     ros::CallbackQueue gateway_callback_queue;
     ros::NodeHandle world_nh(nh);
+    ros::NodeHandle odometry_nh(nh);
     ros::NodeHandle navigation_nh(nh);
     ros::NodeHandle navigation_command_nh(nh);
     ros::NodeHandle navigation_replan_nh(nh);
     ros::NodeHandle supervisor_nh(nh);
     ros::NodeHandle gateway_nh(nh);
     world_nh.setCallbackQueue(&world_callback_queue);
+    odometry_nh.setCallbackQueue(&odometry_callback_queue);
     navigation_nh.setCallbackQueue(&navigation_callback_queue);
     navigation_command_nh.setCallbackQueue(&navigation_command_callback_queue);
     navigation_replan_nh.setCallbackQueue(&navigation_replan_callback_queue);
@@ -169,7 +172,7 @@ int main(int argc, char **argv) {
     gateway_nh.setCallbackQueue(&gateway_callback_queue);
 
     auto global_map_runtime = std::make_shared<GlobalMapRuntime>();
-    global_map_runtime->init(world_nh, global_map_config);
+    global_map_runtime->init(world_nh, global_map_config, odometry_nh);
 
     // Keep LIO/Bubble/frontier task structures local to exploration, but make
     // the LIO evidence and ROG safety map world-lifetime resources.
@@ -263,9 +266,10 @@ int main(int argc, char **argv) {
         });
 
     ROS_INFO("[M2 runtime] composed exploration + state2state adapters share "
-             "one GlobalMapRuntime; queues=world,navigation,nav_command,"
+             "one GlobalMapRuntime; queues=world,odometry,navigation,nav_command,"
              "nav_replan,supervisor,gateway (one serial thread each)");
     ros::AsyncSpinner world_spinner(1, &world_callback_queue);
+    ros::AsyncSpinner odometry_spinner(1, &odometry_callback_queue);
     ros::AsyncSpinner navigation_spinner(1, &navigation_callback_queue);
     ros::AsyncSpinner navigation_command_spinner(
         1, &navigation_command_callback_queue);
@@ -274,6 +278,7 @@ int main(int argc, char **argv) {
     ros::AsyncSpinner supervisor_spinner(1, &supervisor_callback_queue);
     ros::AsyncSpinner gateway_spinner(1, &gateway_callback_queue);
     world_spinner.start();
+    odometry_spinner.start();
     navigation_spinner.start();
     navigation_command_spinner.start();
     navigation_replan_spinner.start();
@@ -286,6 +291,7 @@ int main(int argc, char **argv) {
     navigation_command_spinner.stop();
     navigation_spinner.stop();
     world_spinner.stop();
+    odometry_spinner.stop();
   } catch (const std::exception &error) {
     ROS_FATAL_STREAM("[M2 runtime] initialization failed: " << error.what());
     return 1;

@@ -80,6 +80,7 @@ PlannerSupervisor::PlannerSupervisor(ros::NodeHandle &nh,
   nh_.param("hover_hold_duration", hover_hold_duration_, 0.50);
   nh_.param("max_odom_age", max_odom_age_, 0.20);
   nh_.param("status_rate", status_rate_, 10.0);
+  nh_.param("navigation_planning_timeout", planning_timeout_, 5.0);
   nh_.param("navigation_enabled", navigation_enabled_, true);
   nh_.param("exploration_enabled", exploration_enabled_, true);
   nh_.param("serial_handover", serial_handover_, true);
@@ -1115,10 +1116,23 @@ void PlannerSupervisor::navigationStatusCallback(
     if (adapter_status.task_epoch != status_.task_epoch) {
       return;
     }
+    if (adapter_status.goal_sequence < navigation_goal_sequence_) {
+      return;
+    }
     navigation_status_epoch_ = adapter_status.task_epoch;
     navigation_goal_sequence_ = adapter_status.goal_sequence;
   }
   if (status_.active_mode == PlannerMode::STATE2STATE && !transition_active_) {
+    if (state == "FAILED" && adapter_status.has_lifecycle &&
+        (!navigation_goal_dispatch_pending_ ||
+         adapter_status.goal_sequence > navigation_goal_sequence_before_dispatch_)) {
+      navigation_goal_dispatch_pending_ = false;
+      beginTransition(PlannerMode::HOLD, status_.accepted_request_id,
+                      status_.task_id, "navigation planning retries exhausted");
+      status_.task_result = PlannerTaskResult::FAILED;
+      status_.reason = "navigation planning retries exhausted; verified hold pending";
+      return;
+    }
     status_.mode_state = modeStateFromNavigationString(state);
     if (state == "FOLLOW_TRAJ" || state == "STATIC_TRACKING" ||
         state == "HOLD_TRACKING" || state == "YAWING") {
@@ -1618,6 +1632,20 @@ void PlannerSupervisor::timerCallback(const ros::TimerEvent &) {
         status_.stable_hover = false;
       }
     } else {
+      // Independent supervisor queue: also bounds an optimizer which never
+      // returns, not just the fast-failure retry loop in the navigation FSM.
+      if (planning_deadline_.expired(
+              status_.active_mode == PlannerMode::STATE2STATE &&
+                  status_.phase == PlannerPhase::PLANNING,
+              status_.task_epoch, navigation_goal_sequence_,
+              general_planner::planningWallSeconds(), planning_timeout_)) {
+        navigation_goal_dispatch_pending_ = false;
+        beginTransition(PlannerMode::HOLD, status_.accepted_request_id,
+                        status_.task_id, "navigation planning deadline exceeded");
+        status_.task_result = PlannerTaskResult::FAILED;
+        status_.reason = "navigation planning deadline exceeded; verified hold pending";
+        return;
+      }
       const CommandOwner active_owner = ownerForMode(status_.active_mode);
       const bool source_timeout_abort =
           shouldMonitorCommandSource(status_.phase) &&

@@ -55,6 +55,9 @@ struct GlobalMapStatus {
  * ROGMapROS must be configured with `rog_map/ros_callback/enable: false`.
  * The runtime receives raw odom plus one cloud/odom synchronized stream,
  * updates LIO and ROG exactly once, then notifies read-side task adapters.
+ * Raw odometry snapshots use a dedicated, lightweight callback queue. Map
+ * mutation and exploration consumers stay serialized on the world queue;
+ * their execution time must never be used as a sensor receive timestamp.
  */
 class GlobalMapRuntime {
  public:
@@ -71,7 +74,9 @@ class GlobalMapRuntime {
   GlobalMapRuntime(const GlobalMapRuntime &) = delete;
   GlobalMapRuntime &operator=(const GlobalMapRuntime &) = delete;
 
-  void init(ros::NodeHandle nh, const std::string &map_config_path);
+  // odometry_nh must have its own serviced callback queue (not the world queue).
+  void init(ros::NodeHandle nh, const std::string &map_config_path,
+            ros::NodeHandle odometry_nh);
 
   GlobalMapContext::Ptr context() const { return context_; }
   MapManager::Ptr mapManager() const {
@@ -98,6 +103,7 @@ class GlobalMapRuntime {
       sensor_msgs::PointCloud2, nav_msgs::Odometry>;
 
   void odomCallback(const nav_msgs::OdometryConstPtr &msg);
+  void odomIngressCallback(const nav_msgs::OdometryConstPtr &msg);
   void cloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr &cloud,
                          const nav_msgs::OdometryConstPtr &odom);
   void topologyExpansionTimerCallback(const ros::WallTimerEvent &);
@@ -111,6 +117,7 @@ class GlobalMapRuntime {
   ros::WallTimer topology_expansion_timer_;
 
   ros::Subscriber odom_sub_;
+  ros::Subscriber odom_ingress_sub_;
   std::shared_ptr<message_filters::Subscriber<sensor_msgs::PointCloud2>>
       cloud_sub_;
   std::shared_ptr<message_filters::Subscriber<nav_msgs::Odometry>> odom_sync_sub_;

@@ -197,7 +197,10 @@ namespace fsm {
         int dynamic_obstacle_layer_cloud_queue_size{3};
         double dynamic_obstacle_layer_odom_timeout{0.2};
         double task_timeout{0.6};
-        int state2state_plan_from_rest_max_failures{0};
+        int state2state_plan_from_rest_max_failures{5};
+        double state2state_plan_from_rest_failure_backoff{0.25};
+        // Legacy compatibility only: exhausted retries now always retire the
+        // task, even when an old profile sets this flag to false.
         bool state2state_clear_goal_on_plan_failure{false};
         // Wall-clock bound for a rolling state2state replan.  The planner is
         // allowed to finish its already committed backup trajectory first;
@@ -352,7 +355,9 @@ namespace fsm {
             loader.LoadParam("fsm/task_timeout", task_timeout, 0.6);
             loader.LoadParam("fsm/state2state_plan_from_rest_max_failures",
                              state2state_plan_from_rest_max_failures,
-                             0);
+                             5);
+            loader.LoadParam("fsm/state2state_plan_from_rest_failure_backoff",
+                             state2state_plan_from_rest_failure_backoff, 0.25);
             loader.LoadParam("fsm/state2state_clear_goal_on_plan_failure",
                              state2state_clear_goal_on_plan_failure,
                              false);

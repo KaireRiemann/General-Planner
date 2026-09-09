@@ -1,3 +1,5 @@
+// Parse map headers before legacy exploration headers export global enums.
+#include <map_manager/map_manager.hpp>
 #include <general_core/exploration/highspeed/expl_data.h>
 #include <general_core/exploration/highspeed/fast_exploration_fsm.h>
 #include <general_core/exploration/highspeed/target_directed_exploration.h>
@@ -1158,6 +1160,38 @@ void FastExplorationFSM::publishTaskStatus() {
 
 void FastExplorationFSM::odometryCallback(
     const nav_msgs::OdometryConstPtr &msg) {
+  if (external_sensor_ingress_) {
+    refreshRuntimeOdometry();
+    return;
+  }
+  applyOdometry(msg, ros::Time::now());
+}
+
+void FastExplorationFSM::refreshRuntimeOdometry() {
+  if (!external_sensor_ingress_ || !planner_manager_) return;
+  const auto manager = planner_manager_->sharedMapManager();
+  if (!manager) return;
+  const auto state = manager->getRobotState();
+  if (!state.rcv) return;
+  nav_msgs::OdometryPtr msg(new nav_msgs::Odometry);
+  msg->pose.pose.position.x = state.p.x();
+  msg->pose.pose.position.y = state.p.y();
+  msg->pose.pose.position.z = state.p.z();
+  msg->pose.pose.orientation.w = state.q.w();
+  msg->pose.pose.orientation.x = state.q.x();
+  msg->pose.pose.orientation.y = state.q.y();
+  msg->pose.pose.orientation.z = state.q.z();
+  msg->twist.twist.linear.x = state.v.x();
+  msg->twist.twist.linear.y = state.v.y();
+  msg->twist.twist.linear.z = state.v.z();
+  ros::Time received;
+  received.fromSec(state.rcv_time);
+  msg->header.stamp = received;
+  applyOdometry(msg, received);
+}
+
+void FastExplorationFSM::applyOdometry(
+    const nav_msgs::OdometryConstPtr &msg, const ros::Time &received) {
   if (!msg) {
     return;
   }
@@ -1165,7 +1199,7 @@ void FastExplorationFSM::odometryCallback(
   // Keep the complete message for latest_odom mode.  Wall time deliberately
   // measures local transport freshness and is independent of /clock or of the
   // timestamp convention used by an external simulator.
-  {
+  if (!external_sensor_ingress_) {
     std::lock_guard<std::mutex> lock(latest_odom_mutex_);
     latest_odom_msg_ = msg;
     latest_odom_receive_wall_time_ = ros::WallTime::now();
@@ -1182,7 +1216,7 @@ void FastExplorationFSM::odometryCallback(
                                         msg->pose.pose.orientation.y,
                                         msg->pose.pose.orientation.z);
   fd_->odom_yaw_ = static_cast<float>(tf::getYaw(msg->pose.pose.orientation));
-  fd_->last_odom_receive_time_ = ros::Time::now();
+  fd_->last_odom_receive_time_ = received;
 
   if (!fd_->have_odom_) {
     fd_->first_odom_time_ = fd_->last_odom_receive_time_;
