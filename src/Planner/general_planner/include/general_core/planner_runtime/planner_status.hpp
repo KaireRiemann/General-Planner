@@ -119,6 +119,7 @@ struct NavigationAdapterStatus {
   std::uint64_t goal_sequence{0};
   bool goal_active{false};
   bool has_lifecycle{false};
+  bool quiescent{false}; // Explicit acknowledgement; legacy publishers cannot unlock recovery.
 };
 
 inline bool parseNavigationAdapterStatus(const std::string &text,
@@ -143,6 +144,10 @@ inline bool parseNavigationAdapterStatus(const std::string &text,
   } else if (lifecycle == "IDLE") {
     status.goal_active = false;
     status.has_lifecycle = true;
+  }
+  std::string worker;
+  if (status.has_lifecycle && stream >> worker) {
+    status.quiescent = worker == "QUIESCENT" && !status.goal_active;
   }
   return true;
 }

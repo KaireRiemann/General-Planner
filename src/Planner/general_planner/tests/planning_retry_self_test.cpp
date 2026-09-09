@@ -39,5 +39,12 @@ int main() {
   expect(status.has_lifecycle && status.task_epoch == 42 &&
          status.goal_sequence == 3 && !status.goal_active && status.state == "FAILED",
          "failure retains task identity and cannot be success");
+  expect(!status.quiescent, "legacy status cannot acknowledge worker exit");
+  planner_runtime::parseNavigationAdapterStatus("FAILED 43 3 IDLE BUSY", status);
+  expect(!status.quiescent, "busy optimizer cannot acknowledge exit");
+  planner_runtime::parseNavigationAdapterStatus("FAILED 43 3 IDLE QUIESCENT", status);
+  expect(status.quiescent, "stopped worker acknowledgement");
+  planner_runtime::parseNavigationAdapterStatus("WAIT_GOAL 43 3 ACTIVE QUIESCENT", status);
+  expect(!status.quiescent, "active goal cannot acknowledge stop");
   std::cout << "planning_retry_self_test passed\n";
 }

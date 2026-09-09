@@ -1291,13 +1291,27 @@ namespace fsm {
                            [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
             if (command == "PAUSE" || command == "CANCEL") {
                 requestControlledStop("navigation command " + command);
+                // Echo the supervisor's cancellation epoch, not a locally
+                // incremented epoch, so it can verify that this stop was seen.
+                if (!payload.empty()) {
+                    try { navigation_task_epoch_ = std::stoull(payload); }
+                    catch (...) { }
+                }
                 return;
             }
             if (command == "CLEAR") {
                 clearNavigationTask("navigation command CLEAR");
+                if (!payload.empty()) {
+                    try { navigation_task_epoch_ = std::stoull(payload); }
+                    catch (...) { }
+                }
                 return;
             }
             if (command == "ARM" || command == "RESUME") {
+                if (state2state_replan_in_progress_.load()) {
+                    ROS_WARN_STREAM("[Fsm] reject ARM until canceled planning returns");
+                    return;
+                }
                 std::uint64_t epoch = navigationTaskEpoch();
                 if (!payload.empty()) {
                     try {
@@ -1342,7 +1356,9 @@ namespace fsm {
                                       ? "FAILED" : machineStateName()) + " " +
                           std::to_string(navigationTaskEpoch()) + " " +
                           std::to_string(navigationGoalSequence()) + " " +
-                          (navigationGoalActive() ? "ACTIVE" : "IDLE");
+                          (navigationGoalActive() ? "ACTIVE" : "IDLE") +
+                          std::string(state2state_replan_in_progress_.load()
+                                          ? " BUSY" : " QUIESCENT");
             navigation_status_pub_.publish(status);
         }
 

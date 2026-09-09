@@ -66,13 +66,52 @@ int main(int argc, char **argv) {
              std::to_string(latest.task_epoch) + " 1 " +
              (deadline_test ? "ACTIVE" : "IDLE");
   nav_pub.publish(nav);
-  if (!wait([&] { return latest.active_mode_str == "hold" &&
-                        latest.task_result_str == "failed" && latest.ready_for_new_task; }, 4)) {
-    std::cerr << "failure did not reach ready HOLD: " << latest.reason << '\n'; return 1;
+  if (!wait([&] { return latest.task_result_str == "failed"; }, 3)) {
+    std::cerr << "failure was not detected\n"; return 1;
+  }
+  const auto canceled_epoch = latest.task_epoch;
+  // A stable vehicle alone must not unlock a still-running optimizer.
+  nav.data = "FAILED " + std::to_string(canceled_epoch) + " 1 IDLE BUSY";
+  nav_pub.publish(nav);
+  wait([] { return false; }, 1.0);
+  if (latest.ready_for_new_task) {
+    std::cerr << "busy optimizer exposed readiness\n"; return 1;
+  }
+  nav.data = "FAILED " + std::to_string(canceled_epoch - 1) + " 1 IDLE QUIESCENT";
+  nav_pub.publish(nav);
+  wait([] { return false; }, .15);
+  if (latest.ready_for_new_task) {
+    std::cerr << "stale epoch unlocked recovery\n"; return 1;
+  }
+  nav.data = "FAILED " + std::to_string(canceled_epoch) + " 1 IDLE QUIESCENT";
+  nav_pub.publish(nav);
+  if (!wait([&] { return latest.task_epoch > canceled_epoch &&
+                        latest.phase_str == "waiting_input"; }, 2)) {
+    std::cerr << "recovery did not ARM a new epoch: " << latest.reason << '\n'; return 1;
+  }
+  if (latest.ready_for_new_task) {
+    std::cerr << "ready before ARM acknowledgement\n"; return 1;
+  }
+  const std::string failure_reason = latest.reason;
+  nav.data = "WAIT_GOAL " + std::to_string(latest.task_epoch) + " 1 IDLE QUIESCENT";
+  nav_pub.publish(nav);
+  if (!wait([&] { return latest.active_mode_str == "state2state" &&
+                        latest.task_result_str == "failed" && latest.ready_for_new_task; }, 2)) {
+    std::cerr << "failure did not recover to ready state2state: " << latest.reason << '\n'; return 1;
   }
   const std::string expected = deadline_test ? "deadline exceeded" : "retries exhausted";
-  if (latest.reason.find(expected) == std::string::npos) {
+  if (failure_reason.find(expected) == std::string::npos) {
     std::cerr << "wrong failure path: " << latest.reason << '\n'; return 1;
+  }
+  nav.data = "FAILED " + std::to_string(canceled_epoch) + " 1 IDLE QUIESCENT";
+  nav_pub.publish(nav);
+  wait([] { return false; }, .15);
+  if (latest.task_result_str != "failed" || !latest.ready_for_new_task) {
+    std::cerr << "idle status lost failure outcome\n"; return 1;
+  }
+  goal_pub.publish(goal);
+  if (!wait([&] { return latest.phase_str == "planning" && !latest.ready_for_new_task; }, 1)) {
+    std::cerr << "recovered adapter refused next goal\n"; return 1;
   }
   std::cout << "planning_failure_integration_test " << expected << " passed\n";
 }

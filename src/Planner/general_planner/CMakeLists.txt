@@ -249,6 +249,11 @@ target_include_directories(planner_status_self_test PRIVATE include)
 add_executable(planning_retry_self_test tests/planning_retry_self_test.cpp)
 target_include_directories(planning_retry_self_test PRIVATE include)
 
+add_executable(rest_trajectory_retiming_self_test
+        tests/rest_trajectory_retiming_self_test.cpp
+        src/utils/trajectory.cpp src/utils/piece.cpp src/utils/root_finder.cpp)
+target_include_directories(rest_trajectory_retiming_self_test PRIVATE include)
+
 add_executable(planning_failure_integration_test
         tests/planning_failure_integration_test.cpp
         src/general_core/planner_runtime/planner_supervisor.cpp

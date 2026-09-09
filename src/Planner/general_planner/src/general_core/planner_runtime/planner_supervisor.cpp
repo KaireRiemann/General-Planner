@@ -399,6 +399,7 @@ void PlannerSupervisor::beginTransition(const PlannerMode target,
   ++status_.transition_id;
   // Invalidate any in-flight plans/commands from the previous task epoch.
   ++status_.task_epoch;
+  navigation_quiescent_ = false;
   status_.accepted_request_id = request_id;
   status_.requested_mode = target;
   transition_target_ = target;
@@ -503,6 +504,13 @@ void PlannerSupervisor::activateMode(const PlannerMode mode,
           "cannot activate state2state without navigation fsm_node";
       return;
     }
+    const bool recovering_failure = status_.task_result == PlannerTaskResult::FAILED;
+    if (recovering_failure && !serial_handover_) {
+      // Separate stopped-worker acknowledgements from the new ARM. A queued
+      // FAILED/WAIT_GOAL from cancellation must not unlock the new adapter.
+      ++status_.task_epoch;
+      navigation_quiescent_ = false;
+    }
     exploration_start_pending_ = false;
     if (!serial_handover_) {
       gateway_.setPublishingEnabled(true);
@@ -537,7 +545,7 @@ void PlannerSupervisor::activateMode(const PlannerMode mode,
           "start click-demo fsm_node");
       return;
     }
-    status_.ready_for_new_task = true;
+    status_.ready_for_new_task = !recovering_failure;
     status_.reason = reason;
     publishNavigationTaskMode("state2state");
     publishNavigationCommand("ARM " + std::to_string(status_.task_epoch));
@@ -675,6 +683,10 @@ bool PlannerSupervisor::acceptNavigationGoalLocked(
                       "[planner_supervisor] drop navigation goal: inactive "
                       "or transitioning (mode=%s transition=%d)",
                       toString(status_.active_mode), transition_active_);
+    return false;
+  }
+  if (status_.task_result == PlannerTaskResult::FAILED && !status_.ready_for_new_task) {
+    ROS_WARN_THROTTLE(1.0, "[planner_supervisor] drop navigation goal: recovery ARM pending");
     return false;
   }
   if (serial_handover_) {
@@ -1121,13 +1133,17 @@ void PlannerSupervisor::navigationStatusCallback(
     }
     navigation_status_epoch_ = adapter_status.task_epoch;
     navigation_goal_sequence_ = adapter_status.goal_sequence;
+    navigation_quiescent_ = adapter_status.quiescent;
+    navigation_quiescent_received_ = ros::WallTime::now();
   }
   if (status_.active_mode == PlannerMode::STATE2STATE && !transition_active_) {
     if (state == "FAILED" && adapter_status.has_lifecycle &&
+        (navigation_goal_dispatch_pending_ || status_.phase == PlannerPhase::PLANNING ||
+         status_.phase == PlannerPhase::EXECUTING) &&
         (!navigation_goal_dispatch_pending_ ||
          adapter_status.goal_sequence > navigation_goal_sequence_before_dispatch_)) {
       navigation_goal_dispatch_pending_ = false;
-      beginTransition(PlannerMode::HOLD, status_.accepted_request_id,
+      beginTransition(PlannerMode::STATE2STATE, status_.accepted_request_id,
                       status_.task_id, "navigation planning retries exhausted");
       status_.task_result = PlannerTaskResult::FAILED;
       status_.reason = "navigation planning retries exhausted; verified hold pending";
@@ -1149,6 +1165,10 @@ void PlannerSupervisor::navigationStatusCallback(
       gateway_.setAuthorizedOwner(CommandOwner::STATE2STATE, status_.task_epoch);
       status_.reason = "navigation planning";
     } else if (state == "WAIT_GOAL") {
+      if (status_.task_result == PlannerTaskResult::FAILED &&
+          (!adapter_status.has_lifecycle || !adapter_status.quiescent)) {
+        return;
+      }
       const bool completed_dispatched_goal =
           adapter_status.has_lifecycle &&
           navigation_goal_dispatch_pending_ &&
@@ -1181,8 +1201,11 @@ void PlannerSupervisor::navigationStatusCallback(
       } else {
         gateway_.setAuthorizedOwner(CommandOwner::HOLD, status_.task_epoch);
       }
-      status_.reason = "navigation wait goal";
-      status_.task_result = PlannerTaskResult::SUCCEEDED;
+      // An idle adapter is not evidence that the previous failed goal succeeded.
+      if (status_.task_result != PlannerTaskResult::FAILED) {
+        status_.reason = "navigation wait goal";
+        status_.task_result = PlannerTaskResult::SUCCEEDED;
+      }
     }
   }
 }
@@ -1307,7 +1330,9 @@ void PlannerSupervisor::failStaleCommandSourceLocked(
                    << toString(health.authorized_owner) << " " << detail
                    << "; transition to verified hold");
 
-  beginTransition(PlannerMode::HOLD, status_.accepted_request_id,
+  beginTransition(failed_mode == PlannerMode::STATE2STATE
+                      ? PlannerMode::STATE2STATE : PlannerMode::HOLD,
+                  status_.accepted_request_id,
                   status_.task_id, "command source timeout");
   status_.task_result = PlannerTaskResult::FAILED;
   status_.reason = "command source timeout in " +
@@ -1334,7 +1359,7 @@ void PlannerSupervisor::navigationReplanWatchdogCallback(
   ROS_ERROR_STREAM("[planner_supervisor] state2state replan blocked after "
                    << "the committed backup reached its stationary endpoint; "
                    << "transitioning to verified HOLD, epoch=" << msg->data);
-  beginTransition(PlannerMode::HOLD, status_.accepted_request_id,
+  beginTransition(PlannerMode::STATE2STATE, status_.accepted_request_id,
                   status_.task_id, "state2state replan watchdog timeout");
   status_.task_result = PlannerTaskResult::FAILED;
   status_.reason = "state2state replan watchdog timeout; verified hold pending";
@@ -1593,7 +1618,9 @@ void PlannerSupervisor::timerCallback(const ros::TimerEvent &) {
             authorizeHoldAtCurrentOdomLocked("transition hover verify");
         status_.command_owner = CommandOwner::HOLD;
         status_.phase = PlannerPhase::HOLD_VERIFY;
-        status_.reason = "hold verify";
+        if (status_.task_result != PlannerTaskResult::FAILED) {
+          status_.reason = "hold verify";
+        }
         hover_satisfied_since_ = ros::Time::now();
       } else if (hold_anchor_locked_for_transition_) {
         if (hoverConditionMetLocked()) {
@@ -1604,7 +1631,14 @@ void PlannerSupervisor::timerCallback(const ros::TimerEvent &) {
               hover_hold_duration_) {
             const PlannerMode target = transition_target_;
             const PlannerTaskResult result = status_.task_result;
-            if (isExplorationMode(target) &&
+            if (target == PlannerMode::STATE2STATE &&
+                result == PlannerTaskResult::FAILED &&
+                (!navigation_quiescent_ ||
+                 (ros::WallTime::now() - navigation_quiescent_received_).toSec() > 0.5)) {
+              // HOLD owns commands until the canceled optimizer has actually
+              // returned. Never ARM on a timeout alone or retry the old goal.
+              status_.ready_for_new_task = false;
+            } else if (isExplorationMode(target) &&
                 result == PlannerTaskResult::SUCCEEDED &&
                 isExplorationMode(status_.active_mode)) {
               // Finished exploration stays in exploration mode but idle.
@@ -1615,8 +1649,7 @@ void PlannerSupervisor::timerCallback(const ros::TimerEvent &) {
               status_.ready_for_new_task = true;
             } else {
               const std::string activation_reason =
-                  target == PlannerMode::HOLD &&
-                          result == PlannerTaskResult::FAILED
+                  result == PlannerTaskResult::FAILED
                       ? status_.reason + "; stable hold reached"
                       : "stable hold reached";
               activateMode(target, activation_reason);
@@ -1640,7 +1673,7 @@ void PlannerSupervisor::timerCallback(const ros::TimerEvent &) {
               status_.task_epoch, navigation_goal_sequence_,
               general_planner::planningWallSeconds(), planning_timeout_)) {
         navigation_goal_dispatch_pending_ = false;
-        beginTransition(PlannerMode::HOLD, status_.accepted_request_id,
+        beginTransition(PlannerMode::STATE2STATE, status_.accepted_request_id,
                         status_.task_id, "navigation planning deadline exceeded");
         status_.task_result = PlannerTaskResult::FAILED;
         status_.reason = "navigation planning deadline exceeded; verified hold pending";

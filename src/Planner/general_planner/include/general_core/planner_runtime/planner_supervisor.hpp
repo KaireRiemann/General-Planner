@@ -175,6 +175,8 @@ private:
   geometry_msgs::PoseStamped pending_target_replacement_goal_;
   std::string target_replacement_task_id_;
   std::string navigation_status_{"INIT"};
+  bool navigation_quiescent_{false};
+  ros::WallTime navigation_quiescent_received_;
   std::uint64_t navigation_status_epoch_{0};
   std::uint64_t navigation_goal_sequence_{0};
   std::uint64_t navigation_goal_sequence_before_dispatch_{0};

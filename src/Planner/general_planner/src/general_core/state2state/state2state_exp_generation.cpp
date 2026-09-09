@@ -21,6 +21,7 @@ using namespace geometry_utils;
 #include <data_structure/exp_traj.h>
 #include <checker/state2state_checker.hpp>
 #include <checker/trajectory_checker.hpp>
+#include <general_core/state2state/rest_trajectory_retiming.hpp>
 #include <general_core/config.hpp>
 #include <general_core/corridor_generator.h>
 #include <map_manager/map_manager.hpp>
@@ -661,6 +662,19 @@ namespace general_planner {
                                                       out_traj);
         }
         services.time_consuming[EXP_TRAJ_OPT] = t_exp_opt.stop();
+        if (temp_ret && planning_from_rest && last_exp_traj_info.empty() &&
+            !services.cfg.swarm_enable) {
+            // Preserve the optimized spatial curve/corridor. Generate yaw
+            // only after retiming, and keep the final output checker enabled.
+            const double old_duration = out_traj.getTotalDuration();
+            retimeRestTrajectory(out_traj, services.cfg.exp_traj_cfg.max_vel,
+                                 services.cfg.exp_traj_cfg.max_acc,
+                                 services.cfg.exp_traj_cfg.max_jerk);
+            if (out_traj.getTotalDuration() > old_duration + 1e-6) {
+                services.ros_ptr->warn(" -- [GeneralPlanner] Rest trajectory retimed from {} to {} seconds for dynamic limits.",
+                                      old_duration, out_traj.getTotalDuration());
+            }
+        }
         copyZSummary(summarizeTrajectoryZ(out_traj, services.cfg.sample_traj_dt),
                      services.z_debug.optimized);
         if (services.z_debug.optimized.valid) {
