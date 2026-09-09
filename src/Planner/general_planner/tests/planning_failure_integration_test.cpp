@@ -10,6 +10,7 @@ int main(int argc, char **argv) {
     std::cerr << "requires isolated ROS_MASTER_URI=http://127.0.0.1:11381\n";
     return 2;
   }
+  const bool tracking_test = argc > 1 && std::string(argv[1]) == "tracking";
   const bool deadline_test = argc > 1 && std::string(argv[1]) == "deadline";
   ros::init(argc, argv, "planning_failure_integration_test");
   ros::NodeHandle nh("~");
@@ -29,6 +30,12 @@ int main(int argc, char **argv) {
       [&](const general_planner::PlannerStatusConstPtr &m) { latest = *m; });
   auto odom_pub = nh.advertise<nav_msgs::Odometry>("/failure_test/odom", 1);
   auto goal_pub = nh.advertise<geometry_msgs::PoseStamped>("/goal_3d", 1);
+  std::string last_arm;
+  auto commands = nh.subscribe<std_msgs::String>("/planning/navigation/command", 10,
+      [&](const std_msgs::StringConstPtr &m) {
+        if (m->data.rfind("ARM ", 0) == 0) last_arm = m->data;
+      });
+  auto mode_pub = nh.advertise<std_msgs::String>("/planner/mode_request_text", 1);
   auto nav_pub = nh.advertise<std_msgs::String>("/planning/navigation/status", 1);
   auto wait = [&](const std::function<bool()> &predicate, double seconds) {
     const auto start = ros::WallTime::now();
@@ -45,6 +52,46 @@ int main(int argc, char **argv) {
   if (!wait([&] { return latest.active_mode_str == "state2state" &&
                         latest.ready_for_new_task && goal_pub.getNumSubscribers(); }, 5)) {
     std::cerr << "boot failed: " << latest.reason << '\n'; return 1;
+  }
+  if (tracking_test) {
+    std_msgs::String request;
+    request.data = "tracking";
+    if (!wait([&] { return mode_pub.getNumSubscribers() > 0; }, 2)) return 1;
+    mode_pub.publish(request);
+    if (!wait([&] { return latest.active_mode_str == "tracking" &&
+                          latest.phase_str == "waiting_input" &&
+                          last_arm.find(" tracking") != std::string::npos; }, 5)) {
+      std::cerr << "tracking activation failed: " << latest.reason << '\n'; return 1;
+    }
+    const auto tracking_epoch = latest.task_epoch;
+    std_msgs::String nav;
+    nav.data = "GENERATE_TRAJ " + std::to_string(tracking_epoch) + " 0 ACTIVE";
+    nav_pub.publish(nav);
+    if (!wait([&] { return latest.phase_str == "planning" && latest.command_owner == 1; }, .3)) return 1;
+    nav.data = "FOLLOW_TRAJ " + std::to_string(tracking_epoch) + " 0 ACTIVE";
+    nav_pub.publish(nav);
+    if (!wait([&] { return latest.phase_str == "executing"; }, .3)) return 1;
+    nav.data = "WAIT_GOAL " + std::to_string(tracking_epoch) + " 0 IDLE QUIESCENT";
+    nav_pub.publish(nav);
+    if (!wait([&] { return latest.phase_str == "waiting_input" &&
+                          latest.task_result_str == "none" && latest.command_owner == 0; }, .3)) return 1;
+    request.data = "state2state";
+    mode_pub.publish(request);
+    if (!wait([&] { return latest.active_mode_str == "state2state" &&
+                          last_arm.find(" state2state") != std::string::npos; }, 5)) return 1;
+    // A late tracking state must not reopen the previous command epoch.
+    nav.data = "FOLLOW_TRAJ " + std::to_string(tracking_epoch) + " 0 ACTIVE";
+    nav_pub.publish(nav);
+    wait([] { return false; }, .15);
+    if (latest.phase_str == "executing") return 1;
+    request.data = "tracking";
+    mode_pub.publish(request);
+    if (!wait([&] { return latest.active_mode_str == "tracking"; }, 5)) return 1;
+    request.data = "hold";
+    mode_pub.publish(request);
+    if (!wait([&] { return latest.active_mode_str == "hold" && latest.command_owner == 0; }, 5)) return 1;
+    std::cout << "tracking supervisor lifecycle passed\n";
+    return 0;
   }
   geometry_msgs::PoseStamped goal;
   goal.header.frame_id = "world"; goal.pose.position.x = 10;

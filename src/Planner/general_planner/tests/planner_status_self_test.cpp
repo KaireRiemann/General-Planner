@@ -39,6 +39,12 @@ int main() {
          "toString blocked result");
   expect(parsePlannerMode("state2state", mode), "parse state2state");
   expect(mode == PlannerMode::STATE2STATE, "mode state2state");
+  expect(parsePlannerMode("TRACKING", mode), "parse tracking case insensitive");
+  expect(mode == PlannerMode::TRACKING, "tracking has its own mode");
+  expect(general_planner::planner_runtime::isNavigationMode(mode), "tracking uses navigation adapter");
+  expect(ownerForMode(mode) == ownerForMode(PlannerMode::STATE2STATE), "tracking uses single navigation command owner");
+  expect(std::strcmp(toString(mode), "tracking") == 0, "tracking status name");
+  expect(!isExplorationMode(mode), "tracking does not start exploration");
   expect(parsePlannerMode("gate", mode), "parse gate");
   expect(mode == PlannerMode::GATE, "mode gate");
   expect(std::strcmp(toString(PlannerMode::GATE), "gate") == 0,

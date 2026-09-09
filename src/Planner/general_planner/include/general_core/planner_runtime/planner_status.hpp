@@ -19,7 +19,9 @@ enum class PlannerMode : std::uint8_t {
   // Map-only handover mode.  The runtime keeps the world model/topology
   // alive, but never publishes a PositionCommand: an external gate planner
   // owns the vehicle until it reports END and the vehicle is again stable.
-  GATE = 5
+  GATE = 5,
+  // Tracking shares the navigation adapter and its command gateway.
+  TRACKING = 6
 };
 
 enum class PlannerPhase : std::uint8_t {
@@ -156,6 +158,8 @@ inline const char *toString(const PlannerMode mode) {
   switch (mode) {
   case PlannerMode::STATE2STATE:
     return "state2state";
+  case PlannerMode::TRACKING:
+    return "tracking";
   case PlannerMode::EXPLORATION:
     return "exploration";
   case PlannerMode::TARGET_EXPLORATION:
@@ -285,6 +289,10 @@ inline bool parsePlannerMode(std::string text, PlannerMode &mode) {
     mode = PlannerMode::STATE2STATE;
     return true;
   }
+  if (text == "tracking") {
+    mode = PlannerMode::TRACKING;
+    return true;
+  }
   if (text == "exploration" || text == "explore") {
     mode = PlannerMode::EXPLORATION;
     return true;
@@ -304,6 +312,10 @@ inline bool parsePlannerMode(std::string text, PlannerMode &mode) {
     return true;
   }
   return false;
+}
+
+inline bool isNavigationMode(const PlannerMode mode) {
+  return mode == PlannerMode::STATE2STATE || mode == PlannerMode::TRACKING;
 }
 
 inline bool isExplorationMode(const PlannerMode mode) {
@@ -378,6 +390,7 @@ inline ModeState modeStateFromExplorationString(const std::string &state) {
 inline CommandOwner ownerForMode(const PlannerMode mode) {
   switch (mode) {
   case PlannerMode::STATE2STATE:
+  case PlannerMode::TRACKING:
     return CommandOwner::STATE2STATE;
   case PlannerMode::EXPLORATION:
   case PlannerMode::TARGET_EXPLORATION:

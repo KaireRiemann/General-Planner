@@ -1319,6 +1319,17 @@ namespace fsm {
                     } catch (...) {
                     }
                 }
+                // Optional mode is applied atomically with ARM on the FSM lock.
+                std::istringstream arm_payload(payload);
+                std::string epoch_text, task_mode;
+                arm_payload >> epoch_text >> task_mode;
+                if (!task_mode.empty()) {
+                    if (task_mode != "state2state" && task_mode != "tracking") {
+                        ROS_WARN_STREAM("[Fsm] reject unsupported ARM mode=" << task_mode);
+                        return;
+                    }
+                    setTaskModeFromString(task_mode);
+                }
                 armNavigationTask(epoch);
                 return;
             }
@@ -1363,6 +1374,8 @@ namespace fsm {
         }
 
         void applyLaunchOverrides() {
+            nh_.getParam("tracking_target_odom_topic", cfg_.tracking_target_odom_topic);
+            nh_.getParam("tracking_target_prediction_topic", cfg_.tracking_target_prediction_topic);
             int swarm_drone_id = cfg_.swarm_drone_id;
             bool swarm_id_overridden = nh_.getParam("swarm_drone_id", swarm_drone_id);
             if (!swarm_id_overridden) {

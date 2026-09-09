@@ -63,6 +63,8 @@
        default="$(find general_planner)/rviz/planner_runtime_exploration.rviz" />
   <arg name="state2state_rviz_config"
        default="$(find general_planner)/rviz/planner_runtime_state2state.rviz" />
+  <arg name="tracking_target_odom_topic" default="/tracking/target_odom" />
+  <arg name="tracking_target_prediction_topic" default="/tracking/target_prediction" />
   <arg name="odom_topic" default="/lidar_slam/odom" />
   <arg name="cloud_topic" default="/cloud_registered" />
 
@@ -142,6 +144,8 @@
          be another uncontrolled writer on /planning/pos_cmd. -->
     <param name="gate_status_topic" value="$(arg gate_status_topic)" type="string" />
     <param name="global_map_config" value="$(arg rog_map_config)" type="string" />
+    <param name="tracking_target_odom_topic" value="$(arg tracking_target_odom_topic)" />
+    <param name="tracking_target_prediction_topic" value="$(arg tracking_target_prediction_topic)" />
     <param name="navigation_config" value="$(arg navigation_config)" type="string" />
     <param name="odometry_topic" value="$(arg odom_topic)" type="string" />
     <param name="cloud_topic" value="$(arg cloud_topic)" type="string" />
