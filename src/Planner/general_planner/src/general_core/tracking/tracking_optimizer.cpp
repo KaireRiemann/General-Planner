@@ -399,6 +399,23 @@ namespace general_planner {
                                problem.target_prediction.size());
             }
 
+            // Target velocity is a prediction, not an achievable vehicle
+            // boundary. Every recovery attempt must use feasible terminal
+            // derivatives; keep the target prediction and current head intact.
+            const double terminal_limits[] = {
+                cfg_.tracking_traj_cfg.max_vel,
+                cfg_.tracking_traj_cfg.max_acc,
+                cfg_.tracking_traj_cfg.max_jerk};
+            for (int derivative=1; derivative<=3; ++derivative) {
+                const double norm = problem.tail_pvaj.col(derivative).norm();
+                const double limit = terminal_limits[derivative-1];
+                if (!std::isfinite(norm) || !std::isfinite(limit) || limit <= 0.0)
+                    return false;
+                if (norm > limit)
+                    problem.tail_pvaj.col(derivative) *= limit/norm;
+            }
+            problem.tail_yaw(0,1) = std::clamp(problem.tail_yaw(0,1),
+                -cfg_.tracking_yaw_rate_limit,cfg_.tracking_yaw_rate_limit);
             Trajectory candidate_pos;
             Trajectory candidate_yaw;
             const bool ok = cfg_.tracking_use_snap
@@ -922,6 +939,8 @@ namespace general_planner {
             return failOrKeepOld("Tracking frontend failed.");
         }
         problem.static_tracking_mode = static_tracking;
+        problem.max_yaw_rate = cfg_.tracking_yaw_rate_limit;
+        problem.max_yaw_acceleration = cfg_.tracking_yaw_acceleration_limit;
         const double tracking_frontend_t = t_frontend.stop();
         time_consuming_[EPX_TRAJ_FRONTEND] = tracking_frontend_t;
 

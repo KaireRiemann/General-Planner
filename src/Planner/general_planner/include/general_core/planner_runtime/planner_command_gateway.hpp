@@ -43,6 +43,9 @@ public:
   // two operations can otherwise publish the previous task's hold point.
   void setHoldAnchorAndAuthorize(double x, double y, double z, double yaw,
                                  std::uint64_t task_epoch);
+  // Finish navigation braking at its stationary command endpoint, atomically.
+  // Returns false until a fresh stopped command from this authorization arrives.
+  bool authorizeHoldAtNavigationEndpoint(std::uint64_t task_epoch);
   // Used only when the supervisor has no valid current odometry.  Dropping an
   // old anchor is safer than continuing to command a known stale position.
   void clearHoldAnchor();

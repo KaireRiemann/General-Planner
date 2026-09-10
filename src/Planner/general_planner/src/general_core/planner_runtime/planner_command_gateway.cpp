@@ -84,6 +84,44 @@ void PlannerCommandGateway::setHoldAnchorAndAuthorize(
                   << " yaw=" << hold_yaw_);
 }
 
+bool PlannerCommandGateway::authorizeHoldAtNavigationEndpoint(
+    const std::uint64_t task_epoch) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (authorized_epoch_ != task_epoch) return false;
+  if (authorized_owner_ == CommandOwner::HOLD) return hold_anchor_valid_;
+  if (authorized_owner_ != CommandOwner::STATE2STATE ||
+      !have_navigation_cmd_ || navigation_rx_time_ < authorization_time_ ||
+      (ros::WallTime::now() - navigation_rx_time_).toSec() > command_timeout_) {
+    return false;
+  }
+  const auto &cmd = navigation_cmd_;
+  const auto stopped = [](const geometry_msgs::Vector3 &v) {
+    return std::isfinite(v.x) && std::isfinite(v.y) && std::isfinite(v.z) &&
+           std::abs(v.x) < 1.e-3 && std::abs(v.y) < 1.e-3 &&
+           std::abs(v.z) < 1.e-3;
+  };
+  if (!std::isfinite(cmd.position.x) || !std::isfinite(cmd.position.y) ||
+      !std::isfinite(cmd.position.z) || !std::isfinite(cmd.yaw) ||
+      !std::isfinite(cmd.yaw_dot) || std::abs(cmd.yaw_dot) >= 1.e-3 ||
+      !stopped(cmd.velocity) || !stopped(cmd.acceleration) ||
+      !stopped(cmd.jerk)) {
+    return false;
+  }
+  // Do not use odometry here: its delayed sample may precede the brake
+  // endpoint. Never expose the previous task's anchor between these writes.
+  hold_x_ = cmd.position.x;
+  hold_y_ = cmd.position.y;
+  hold_z_ = cmd.position.z;
+  hold_yaw_ = cmd.yaw;
+  hold_anchor_valid_ = true;
+  hold_anchor_required_ = false;
+  authorized_owner_ = CommandOwner::HOLD;
+  authorization_time_ = ros::WallTime::now();
+  ++hold_sequence_;
+  clearSourceTimeoutHoldLocked();
+  return true;
+}
+
 void PlannerCommandGateway::clearHoldAnchor() {
   std::lock_guard<std::mutex> lock(mutex_);
   if (!hold_anchor_valid_ && hold_anchor_required_) {

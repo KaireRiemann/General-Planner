@@ -170,6 +170,37 @@ int main(int argc, char **argv) {
                2.0),
            "fresh state2state command did not resume after timeout hold");
 
+    expect(!gateway.authorizeHoldAtNavigationEndpoint(999),
+           "wrong epoch accepted at tracking brake handover");
+    navigation.trajectory_id = 1002;
+    navigation.velocity.x = 1.0;
+    navigation_publisher.publish(navigation);
+    expect(output_capture.waitFor([](const PositionCommand &command) {
+      return command.trajectory_id == 1002;
+    }, 2.), "moving navigation command not received");
+    expect(!gateway.authorizeHoldAtNavigationEndpoint(1),
+           "moving command accepted as a stopped endpoint");
+    navigation.trajectory_id = 1003;
+    navigation.velocity.x = 0.;
+    navigation.position.x = 17.5;
+    navigation.yaw = 1.1;
+    navigation_publisher.publish(navigation);
+    expect(output_capture.waitFor([](const PositionCommand &command) {
+      return command.trajectory_id == 1003;
+    }, 2.), "brake endpoint not received");
+    expect(gateway.authorizeHoldAtNavigationEndpoint(1),
+           "stationary endpoint handover failed");
+    expect(output_capture.waitFor([](const PositionCommand &command) {
+      return command.trajectory_id != 1003 &&
+             positionNear(command.position, 17.5, 2., 3.) &&
+             std::abs(command.yaw - 1.1) < 1.e-9;
+    }, 2.), "tracking HOLD did not preserve endpoint position and yaw");
+    expect(gateway.authorizeHoldAtNavigationEndpoint(1),
+           "repeated tracking lost status changed the hold");
+    expect(!output_capture.waitFor([](const PositionCommand &command) {
+      return positionNear(command.position, -64.15, 8.94, 1.70);
+    }, .10), "tracking lost replayed historical hold anchor");
+
     // Gate is an internal epoch-fenced source with the same timeout fallback.
     gateway.setAuthorizedOwner(CommandOwner::GATE, 2);
     expect(!gateway.submitGateCommand(navigation, 1), "old gate epoch accepted");

@@ -1723,6 +1723,29 @@ private:
                                                                    ga_integral,
                                                                    gj_integral,
                                                                    gt_integral);
+        // The final commit enforces yaw dynamics. Include the same limits
+        // in optimization, with gradients through coefficients and duration.
+        typename YawTraj::BasisRow ybp, ybv, yba, ybj, ybs;
+        YawTraj::computeBasisFunctions(t_local, ybp, ybv, yba, ybj, ybs);
+        const double rate = (ybv * yaw_block)(0, 0);
+        const double angular_acc = (yba * yaw_block)(0, 0);
+        const double angular_jerk = (ybj * yaw_block)(0, 0);
+        const double rate_cap = std::max(problem_.max_yaw_rate, std::abs(problem_.head_yaw(0,1)));
+        double yaw_cost = 0.0, grad_rate = 0.0, grad_acc = 0.0;
+        auto bound = [&](double value, double cap, double &gradient) {
+          const double excess = std::abs(value) - cap;
+          if (excess <= 0.0) return 0.0;
+          const double weight = std::max(0.0, cfg_.penna_omg);
+          gradient = 2.0 * weight * excess * (value < 0.0 ? -1.0 : 1.0);
+          return weight * excess * excess;
+        };
+        yaw_cost += bound(rate, rate_cap, grad_rate);
+        yaw_cost += bound(angular_acc, problem_.max_yaw_acceleration, grad_acc);
+        total_cost += yaw_cost * common_weight;
+        gdC_yaw.template block<YawTraj::COEFF_NUM, 1>(yaw_base, 0).noalias() +=
+            (ybv.transpose() * grad_rate + yba.transpose() * grad_acc) * common_weight;
+        gdT_yaw(i) += yaw_cost * trap_weight * inv_K +
+            (grad_rate * angular_acc + grad_acc * angular_jerk) * alpha * common_weight;
         const double c_integral = c_corridor + c_continuous;
         total_cost += c_integral * common_weight;
         gdC_pos.template block<PosTraj::COEFF_NUM, 3>(pos_base, 0).noalias() +=

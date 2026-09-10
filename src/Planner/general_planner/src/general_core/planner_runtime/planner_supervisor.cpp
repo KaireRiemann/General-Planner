@@ -1185,6 +1185,18 @@ void PlannerSupervisor::navigationStatusCallback(
       if (navigation_goal_dispatch_pending_) {
         return;
       }
+      // The status and command subscribers use separate callback queues.
+      // Wait for the stopped command before handing off; an existing HOLD
+      // anchor can still belong to the position before tracking started.
+      if (status_.active_mode == PlannerMode::TRACKING &&
+          gateway_.authorizedOwner() == CommandOwner::STATE2STATE &&
+          !gateway_.authorizeHoldAtNavigationEndpoint(status_.task_epoch)) {
+        status_.phase = PlannerPhase::BRAKING;
+        status_.ready_for_new_task = false;
+        status_.stable_hover = false;
+        status_.reason = "tracking waiting for stationary command endpoint";
+        return;
+      }
       status_.phase = PlannerPhase::WAITING_INPUT;
       status_.ready_for_new_task = true;
       status_.stable_hover = hoverConditionMetLocked();

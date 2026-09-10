@@ -1,5 +1,6 @@
 #include <general_core/planner_runtime/planner_supervisor.hpp>
 #include <cstdlib>
+#include <cmath>
 #include <iostream>
 
 int main(int argc, char **argv) {
@@ -37,13 +38,30 @@ int main(int argc, char **argv) {
       });
   auto mode_pub = nh.advertise<std_msgs::String>("/planner/mode_request_text", 1);
   auto nav_pub = nh.advertise<std_msgs::String>("/planning/navigation/status", 1);
+  auto cmd_pub = nh.advertise<quadrotor_msgs::PositionCommand>("/planning/navigation/pos_cmd", 1);
+  quadrotor_msgs::PositionCommand endpoint;
+  endpoint.position.x = 17.5; endpoint.position.y = 2.; endpoint.position.z = 3.;
+  endpoint.yaw = 1.1;
+  bool send_endpoint = false;
+  bool check_hold_endpoint = false, bad_hold_endpoint = false, saw_hold_endpoint = false;
+  auto output = nh.subscribe<quadrotor_msgs::PositionCommand>("/planning/pos_cmd", 50,
+      [&](const quadrotor_msgs::PositionCommandConstPtr &m) {
+        if (!check_hold_endpoint) return;
+        saw_hold_endpoint = true;
+        if (std::abs(m->position.x - endpoint.position.x) > 1.e-6 ||
+            std::abs(m->position.y - endpoint.position.y) > 1.e-6 ||
+            std::abs(m->position.z - endpoint.position.z) > 1.e-6 ||
+            std::abs(m->yaw - endpoint.yaw) > 1.e-6) bad_hold_endpoint = true;
+      });
   auto wait = [&](const std::function<bool()> &predicate, double seconds) {
     const auto start = ros::WallTime::now();
     while (ros::ok() && (ros::WallTime::now() - start).toSec() < seconds) {
       nav_msgs::Odometry odom;
       odom.header.stamp = ros::Time::now(); odom.header.frame_id = "world";
       odom.pose.pose.orientation.w = 1; odom.pose.pose.position.z = 1;
-      odom_pub.publish(odom); ros::spinOnce();
+      odom_pub.publish(odom);
+      if (send_endpoint) cmd_pub.publish(endpoint);
+      ros::spinOnce();
       if (predicate()) return true;
       ros::WallDuration(.01).sleep();
     }
@@ -64,6 +82,7 @@ int main(int argc, char **argv) {
       std::cerr << "tracking activation failed: " << latest.reason << '\n'; return 1;
     }
     const auto tracking_epoch = latest.task_epoch;
+    send_endpoint = true;
     std_msgs::String nav;
     nav.data = "GENERATE_TRAJ " + std::to_string(tracking_epoch) + " 0 ACTIVE";
     nav_pub.publish(nav);
@@ -74,6 +93,7 @@ int main(int argc, char **argv) {
     nav.data = "TRACKING_BRAKING " + std::to_string(tracking_epoch) + " 0 ACTIVE";
     nav_pub.publish(nav);
     if (!wait([&] { return latest.phase_str == "braking" && latest.command_owner == 1; }, .5)) return 1;
+    check_hold_endpoint = true;
     nav.data = "TRACKING_LOST " + std::to_string(tracking_epoch) + " 0 IDLE QUIESCENT";
     nav_pub.publish(nav);
     if (!wait([&] { return latest.phase_str == "waiting_input" &&
@@ -90,6 +110,13 @@ int main(int argc, char **argv) {
     nav_pub.publish(nav);
     if (!wait([&] { return latest.phase_str == "waiting_input" &&
                           latest.task_result_str == "none" && latest.command_owner == 0; }, .3)) return 1;
+    wait([] { return false; }, .15);
+    if (!saw_hold_endpoint || bad_hold_endpoint) {
+      std::cerr << "tracking loss/reacquisition output returned to old hold/odom pose\n";
+      return 1;
+    }
+    check_hold_endpoint = false;
+    send_endpoint = false;
     request.data = "state2state";
     mode_pub.publish(request);
     if (!wait([&] { return latest.active_mode_str == "state2state" &&

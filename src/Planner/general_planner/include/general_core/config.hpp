@@ -1,3 +1,4 @@
+#include <stdexcept>
 /**
 * This file is part of SUPER
 *
@@ -200,6 +201,7 @@ namespace general_planner {
         double tracking_anti_rollback_dt{0.25};
         double tracking_anti_rollback_margin{0.35};
         double tracking_keep_old_horizon{1.0};
+        double tracking_keep_old_startup_grace{1.0};
         double tracking_keep_old_safety_dt{0.05};
         bool tracking_keep_old_short_safety_grace_enable{true};
         double tracking_keep_old_short_safety_grace_horizon{0.25};
@@ -277,6 +279,11 @@ namespace general_planner {
         double tracking_static_height_tolerance_scale{0.5};
         double tracking_static_tangent_weight_scale{3.0};
         double tracking_static_tail_speed_epsilon{0.08};
+        // Optical-camera to body extrinsics, shared convention with target estimator.
+        std::vector<double> tracking_camera_R{0,0,1,-1,0,0,0,-1,0};
+        std::vector<double> tracking_camera_p{0,0,0};
+        double tracking_target_half_height{0.7};
+        double tracking_target_half_width{0.5};
         double tracking_fov_horizontal_deg{90.0};
         double tracking_fov_vertical_deg{60.0};
         double tracking_fov_range{4.0};
@@ -666,6 +673,8 @@ namespace general_planner {
             loader.LoadParam("general_planner/tracking/anti_rollback_margin",
                              tracking_anti_rollback_margin, 0.35);
             loader.LoadParam("general_planner/tracking/keep_old_horizon", tracking_keep_old_horizon, 1.0);
+            loader.LoadParam("general_planner/tracking/keep_old_startup_grace", tracking_keep_old_startup_grace, 1.0);
+            tracking_keep_old_startup_grace = std::clamp(tracking_keep_old_startup_grace, 0.0, 2.0);
             loader.LoadParam("general_planner/tracking/keep_old_safety_dt", tracking_keep_old_safety_dt, 0.05);
             loader.LoadParam("general_planner/tracking/keep_old_short_safety_grace_enable",
                              tracking_keep_old_short_safety_grace_enable, true);
@@ -805,6 +814,14 @@ namespace general_planner {
                              tracking_static_tangent_weight_scale, 3.0);
             loader.LoadParam("general_planner/tracking/static_tail_speed_epsilon",
                              tracking_static_tail_speed_epsilon, 0.08);
+            loader.LoadParam("general_planner/tracking/cam2body_R", tracking_camera_R,
+                             std::vector<double>{0,0,1,-1,0,0,0,-1,0});
+            loader.LoadParam("general_planner/tracking/cam2body_p", tracking_camera_p,
+                             std::vector<double>{0,0,0});
+            loader.LoadParam("general_planner/tracking/target_half_height", tracking_target_half_height, 0.7);
+            loader.LoadParam("general_planner/tracking/target_half_width", tracking_target_half_width, 0.5);
+            if (tracking_camera_R.size()!=9 || tracking_camera_p.size()!=3)
+                throw std::invalid_argument("tracking camera extrinsic dimensions");
             loader.LoadParam("general_planner/tracking/fov_horizontal_deg", tracking_fov_horizontal_deg, 90.0);
             loader.LoadParam("general_planner/tracking/fov_vertical_deg", tracking_fov_vertical_deg, 60.0);
             loader.LoadParam("general_planner/tracking/fov_range", tracking_fov_range, 4.0);

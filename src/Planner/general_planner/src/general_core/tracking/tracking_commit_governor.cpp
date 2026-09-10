@@ -205,14 +205,6 @@ namespace general_planner {
             if (activity.remaining < cfg_.tracking_keep_old_min_remaining) {
                 return false;
             }
-            const int consecutive_keep_old =
-                    runtime_managed && tracking_runtime_manager_
-                        ? tracking_runtime_manager_->consecutiveKeepOld()
-                        : tracking_consecutive_keep_old_;
-            if (cfg_.tracking_max_consecutive_keep_old > 0 &&
-                consecutive_keep_old >= cfg_.tracking_max_consecutive_keep_old) {
-                return false;
-            }
 
             const double grace_horizon =
                     std::min({std::max(0.0, cfg_.tracking_keep_old_short_safety_grace_horizon),
@@ -245,7 +237,12 @@ namespace general_planner {
             const bool fov_degraded_grace =
                     !old_fov_ok &&
                     cfg_.tracking_reacquire_fov_relax_enable;
-            if (!old_fov_ok && !fov_degraded_grace) {
+            // A safe, visible committed trajectory remains executable even
+            // when activity metrics call its initial low speed "inactive".
+            // Degraded visibility is allowed only during a bounded startup
+            // interval measured from the original commit, never from a retry.
+            if (!old_fov_ok && (!fov_degraded_grace ||
+                old_local_t > cfg_.tracking_keep_old_startup_grace)) {
                 return false;
             }
 
@@ -832,15 +829,56 @@ namespace general_planner {
             const double yaw = yaw_state(0, 0);
             const Vec3f target =
                     interpolateTargetPrediction(target_prediction, target_begin + s).position;
-            const auto fov =
-                    evaluateYawOnlyTrackingFov(p,
-                                               target,
-                                               yaw,
-                                               cfg_.tracking_fov_horizontal_deg,
-                                               cfg_.tracking_fov_vertical_deg,
-                                               range,
-                                               cfg_.tracking_fov_range_margin,
-                                               cfg_.tracking_fov_front_margin);
+            // Match the flatness attitude actually sent to the vehicle.
+            const Vec3f thrust = pos_traj.getAcc(t) + Vec3f(0.0, 0.0, 9.81);
+            if (!thrust.allFinite() || thrust.norm() < 1.e-6) {
+                setFailureReason(reason, "invalid FOV thrust");
+                return false;
+            }
+            const Vec3f body_z = thrust.normalized();
+            const Vec3f cross_y = body_z.cross(Vec3f(std::cos(yaw),std::sin(yaw),0.0));
+            if (cross_y.norm() < 1.e-6) return false;
+            const Vec3f body_y = cross_y.normalized();
+            Eigen::Matrix3d body_R;
+            body_R.col(0)=body_y.cross(body_z); body_R.col(1)=body_y; body_R.col(2)=body_z;
+            Eigen::Matrix3d camera_R;
+            for (int row=0; row<3; ++row)
+                for (int col=0; col<3; ++col)
+                    camera_R(row,col)=cfg_.tracking_camera_R[row*3+col];
+            if (!camera_R.allFinite() ||
+                !(camera_R.transpose()*camera_R).isApprox(Eigen::Matrix3d::Identity(),1.e-5) ||
+                std::abs(camera_R.determinant()-1.0)>1.e-5) {
+                setFailureReason(reason, "invalid tracking camera rotation");
+                return false;
+            }
+            const Vec3f camera_p = p + body_R * Vec3f(cfg_.tracking_camera_p[0],
+                                                       cfg_.tracking_camera_p[1],
+                                                       cfg_.tracking_camera_p[2]);
+            const Eigen::Matrix3d world_to_camera = (body_R*camera_R).transpose();
+            auto sample = [&](const Vec3f &point) {
+                const Vec3f optical = world_to_camera * (point-camera_p);
+                return evaluateYawOnlyTrackingFov(Vec3f::Zero(),
+                    Vec3f(optical.z(),optical.x(),optical.y()),0.0,
+                    cfg_.tracking_fov_horizontal_deg,cfg_.tracking_fov_vertical_deg,
+                    range,cfg_.tracking_fov_range_margin,cfg_.tracking_fov_front_margin);
+            };
+            auto fov = sample(target);
+            // Include the ground contact and a conservative target width,
+            // instead of allowing a visible center with a clipped bbox bottom.
+            for (const Vec3f &offset : std::vector<Vec3f>{
+                    Vec3f(0,0,-cfg_.tracking_target_half_height),
+                    Vec3f(0,0,cfg_.tracking_target_half_height),
+                    Vec3f(cfg_.tracking_target_half_width,0,0),
+                    Vec3f(-cfg_.tracking_target_half_width,0,0),
+                    Vec3f(0,cfg_.tracking_target_half_width,0),
+                    Vec3f(0,-cfg_.tracking_target_half_width,0)}) {
+                const auto edge = sample(target+offset);
+                fov.inside = fov.inside && edge.inside;
+                fov.h_violation = std::max(fov.h_violation,edge.h_violation);
+                fov.v_violation = std::max(fov.v_violation,edge.v_violation);
+                fov.range_violation = std::max(fov.range_violation,edge.range_violation);
+                fov.front_violation = std::max(fov.front_violation,edge.front_violation);
+            }
             const bool violated = !fov.inside;
             if (total_sample_count == 0) {
                 initial_distance = fov.distance;

@@ -42,11 +42,11 @@ public:
 	                            const Eigen::Vector3d &position,
 	                            const Eigen::Vector3d &velocity,
 	                            const Eigen::Vector3d &acceleration,
-	                            const Eigen::Vector3d &,
+	                            const Eigen::Vector3d &jerk,
 	                            Eigen::Vector3d &grad_position,
 	                            Eigen::Vector3d &grad_velocity,
 	                            Eigen::Vector3d &grad_acceleration,
-	                            Eigen::Vector3d &,
+	                            Eigen::Vector3d &grad_jerk,
 	                            double &) const
 	    {
 	        (void)t_global;
@@ -54,6 +54,23 @@ public:
 	        cost += addObstacleAvoidanceCost(position, grad_position);
 	        cost += addVelocityBoundCost(velocity, grad_velocity);
 	        cost += addAccelerationBoundCost(acceleration, grad_acceleration);
+            if (cfg_ != nullptr) {
+                cost += cost_functional::accumulateSquaredNormBoundPenalty(
+                    jerk, cfg_->max_jerk * cfg_->max_jerk,
+                    cfg_->smooth_eps, cfg_->penna_jerk, grad_jerk);
+                // Tilt cone: ||a_xy|| <= (g+a_z) tan(max_tilt).
+                const double horizontal = acceleration.head<2>().norm();
+                const double tangent = std::tan(cfg_->max_tilt);
+                const double violation = horizontal - (9.81 + acceleration.z()) * tangent;
+                if (violation > 0.0 && cfg_->max_tilt > 0.0) {
+                    const double weight = std::max(0.0, cfg_->penna_acc);
+                    cost += weight * violation * violation;
+                    if (horizontal > 1.e-9)
+                        grad_acceleration.head<2>() += 2.0 * weight * violation *
+                                                       acceleration.head<2>() / horizontal;
+                    grad_acceleration.z() -= 2.0 * weight * violation * tangent;
+                }
+            }
 	        return cost;
 	    }
 

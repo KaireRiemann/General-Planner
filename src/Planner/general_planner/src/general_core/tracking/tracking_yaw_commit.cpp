@@ -73,9 +73,26 @@ namespace general_planner {
         goal_yaw[1] = std::clamp((goal_yaw[0]-previous_yaw)/tail_dt,
                                  -cfg_.tracking_yaw_rate_limit,cfg_.tracking_yaw_rate_limit);
         yaw_traj = poly_interpo::minimumSnapInterpolation<1>(init_yaw, goal_yaw, way_pts, times);
-        if (yaw_traj.getMaxVelRate() > std::max(cfg_.tracking_yaw_rate_limit,std::abs(init_yaw[1]))+0.02 ||
-            yaw_traj.getMaxAccRate() > std::max(cfg_.tracking_yaw_acceleration_limit,std::abs(init_yaw[2]))+0.02)
-            return false;
+        const auto feasible = [&]() {
+            return !yaw_traj.empty() &&
+                yaw_traj.getMaxVelRate() <= std::max(cfg_.tracking_yaw_rate_limit,std::abs(init_yaw[1]))+0.02 &&
+                yaw_traj.getMaxAccRate() <= std::max(cfg_.tracking_yaw_acceleration_limit,std::abs(init_yaw[2]))+0.02;
+        };
+        // If exact camera-facing samples turn faster than physically allowed,
+        // generate a bounded partial turn. The caller still verifies FOV;
+        // never approve it solely because the angular dynamics are feasible.
+        if (!feasible()) {
+            VecDf one_time(1); one_time(0) = pos_traj.getTotalDuration();
+            VecDf no_waypoints(0);
+            const double delta = goal_yaw[0] - init_yaw[0];
+            for (double fraction = 1.0; fraction >= 0.01; fraction *= 0.5) {
+                Vec4f partial{init_yaw[0] + fraction * delta, 0.0, 0.0, 0.0};
+                yaw_traj = poly_interpo::minimumSnapInterpolation<1>(
+                    init_yaw, partial, no_waypoints, one_time);
+                if (feasible()) break;
+            }
+            if (!feasible()) return false;
+        }
         yaw_traj.start_WT = pos_traj.start_WT;
         return !yaw_traj.empty();
     }

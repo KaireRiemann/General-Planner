@@ -7,6 +7,7 @@ try: rosgraph.Master("/probe").getPid()
 except Exception: pass
 else: raise RuntimeError("isolated port 11329 already in use")
 mode="state2state" if "--state2state" in sys.argv else "tracking"
+moving_target="--moving-target" in sys.argv and mode=="tracking"
 processes=[]
 def spawn(args,name):
     log=open("/tmp/tracking_runtime_smoke_"+name+".log","w")
@@ -65,14 +66,18 @@ try:
         if now-last_cloud>.1:
             cloud.publish(point_cloud2.create_cloud_xyz32(Header(stamp=stamp,frame_id="world"),floor));last_cloud=now
         path=Path();path.header=m.header
-        lost=mode=="tracking" and moving_since is not None and now-moving_since>1.5
+        lost=mode=="tracking" and moving_since is not None and now-moving_since>(6.0 if moving_target else 1.5)
         if not lost:
             for i in range(7):
                 pose=PoseStamped();pose.header.stamp=stamp+rospy.Duration(i*.25)
                 pose.header.frame_id="world";pose.pose.position.x=8.;pose.pose.position.z=.7;pose.pose.orientation.w=1
+                if moving_target:
+                    target_t=max(0.,now-start-2)+i*.25
+                    pose.pose.position.x=8.+.5*target_t
+                    pose.pose.position.y=1.5*math.sin(.15*target_t)
                 path.poses.append(pose)
         target.publish(path)
-        if moving_since and now-moving_since>7:break
+        if moving_since and now-moving_since>(11.0 if moving_target else 7.0):break
         time.sleep(.02)
     failures=[msg for t,msg in events if "source timeout" in msg and moving_since and t>moving_since]
     result=dict(mode=mode,moved=moving_since is not None,commands=len(commands),
@@ -86,11 +91,19 @@ try:
         result["max_jerk"]=max(math.sqrt(sum(x*x for x in c[10:13])) for c in commands)
         result["max_acceleration_step"]=max((math.sqrt(sum((b[i]-a[i])**2 for i in range(7,10))) for a,b in zip(commands,commands[1:])),default=0)
         result["terminal_speed"]=math.sqrt(sum(x*x for x in commands[-1][4:7]))
+        moving_commands=[c for c in commands if moving_since is not None and c[0]>=moving_since]
+        result["max_position_step"]=max((math.sqrt(sum((b[i]-a[i])**2 for i in range(1,4)))
+                                         for a,b in zip(moving_commands,moving_commands[1:])),default=0)
+
+    if moving_target:
+        result["unexpected_recovery_holds"]=[m for t,m in events
+            if "TRACKING_HOLD_COMMITTED" in m and "recovery hold after failure" in m]
     with open("/tmp/"+mode+"_runtime_command_smoke.json","w") as f:json.dump(result,f,indent=2)
     with open("/tmp/"+mode+"_runtime_trace.json","w") as f:json.dump(dict(commands=commands,events=events,states=states),f)
     print(json.dumps(result,indent=2),flush=True)
     if not result["moved"] or failures:sys.exit(1)
-    if mode=="tracking" and ("braking" not in result["phases"] or result["max_acceleration"]>3.2 or result["max_jerk"]>13 or result["max_acceleration_step"]>.8 or result["terminal_speed"]>.01):sys.exit(1)
+    if moving_target and result["unexpected_recovery_holds"]:sys.exit(1)
+    if mode=="tracking" and ("braking" not in result["phases"] or result["max_acceleration"]>3.2 or result["max_jerk"]>13 or result["max_acceleration_step"]>.8 or result["terminal_speed"]>.01 or result["max_position_step"]>.15):sys.exit(1)
 finally:
     for p in reversed(processes):
         if p.poll() is None:

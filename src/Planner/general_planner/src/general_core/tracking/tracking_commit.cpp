@@ -785,7 +785,12 @@ namespace general_planner {
                 std::max(cfg_.tracking_yaw_rate_limit,std::abs(yaw_head(0,1)))+0.02 ||
             committed_yaw_traj.getMaxAccRate() >
                 std::max(cfg_.tracking_yaw_acceleration_limit,std::abs(yaw_head(0,2)))+0.02) {
-            setTrackingCommitRejectInfo("yaw dynamic limits exceeded","camera-facing yaw is not feasible");
+            setTrackingCommitRejectInfo("yaw dynamic limits exceeded",
+                fmt::format("yaw_rate={:.6f}|rate_limit={:.6f}|yaw_acc={:.6f}|acc_limit={:.6f}",
+                    committed_yaw_traj.getMaxVelRate(),
+                    std::max(cfg_.tracking_yaw_rate_limit,std::abs(yaw_head(0,1)))+0.02,
+                    committed_yaw_traj.getMaxAccRate(),
+                    std::max(cfg_.tracking_yaw_acceleration_limit,std::abs(yaw_head(0,2)))+0.02));
             return keepOldFromSnapshot("yaw dynamic limits exceeded");
         }
         // The optimizer uses soft penalties; validate the issued trajectory
@@ -802,17 +807,25 @@ namespace general_planner {
         const double jerk_cap = std::max(cfg_.tracking_traj_cfg.max_jerk, head.col(3).norm())*1.05;
         const double head_tilt = std::atan2(head.col(2).head<2>().norm(), 9.81+head(2,2));
         const double tilt_cap = std::max(cfg_.tracking_traj_cfg.max_tilt, head_tilt)+0.01;
-        bool dynamics_ok = committed_pos_traj.getMaxVelRate() <= speed_cap &&
-                           committed_pos_traj.getMaxAccRate() <= acc_cap;
+        const double peak_speed = committed_pos_traj.getMaxVelRate();
+        const double peak_acc = committed_pos_traj.getMaxAccRate();
+        double peak_jerk = 0.0, peak_tilt = 0.0;
+        bool dynamics_ok = std::isfinite(peak_speed) && std::isfinite(peak_acc) &&
+                           peak_speed <= speed_cap && peak_acc <= acc_cap;
         const double duration = committed_pos_traj.getTotalDuration();
         const int samples = std::max(1, static_cast<int>(std::ceil(duration/0.02)));
-        for (int i=0; dynamics_ok && i<=samples; ++i) {
+        for (int i=0; i<=samples; ++i) {
             const auto state = committed_pos_traj.getState(duration*i/samples);
-            dynamics_ok = state.allFinite() && state.col(3).norm() <= jerk_cap &&
-                std::atan2(state.col(2).head<2>().norm(),9.81+state(2,2)) <= tilt_cap;
+            peak_jerk = std::max(peak_jerk, state.col(3).norm());
+            peak_tilt = std::max(peak_tilt,
+                std::atan2(state.col(2).head<2>().norm(),9.81+state(2,2)));
+            dynamics_ok = dynamics_ok && state.allFinite() &&
+                          peak_jerk <= jerk_cap && peak_tilt <= tilt_cap;
         }
         if (!dynamics_ok) {
-            setTrackingCommitRejectInfo("tracking dynamics exceeded","velocity/acceleration/jerk/tilt limit");
+            setTrackingCommitRejectInfo("tracking dynamics exceeded",
+                fmt::format("velocity={:.6f}|velocity_limit={:.6f}|acceleration={:.6f}|acceleration_limit={:.6f}|jerk={:.6f}|jerk_limit={:.6f}|tilt={:.6f}|tilt_limit={:.6f}",
+                    peak_speed,speed_cap,peak_acc,acc_cap,peak_jerk,jerk_cap,peak_tilt,tilt_cap));
             return keepOldFromSnapshot("tracking dynamics exceeded");
         }
         ExpTraj task_exp_traj;

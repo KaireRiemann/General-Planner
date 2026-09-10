@@ -51,6 +51,8 @@ struct TrackingVisibleRegion
 
 struct TrackingProblem
 {
+  double max_yaw_rate{1.2};
+  double max_yaw_acceleration{2.0};
   EIGEN_MAKE_ALIGNED_OPERATOR_NEW
 
   general_utils::StatePVAJ head_pvaj{general_utils::StatePVAJ::Zero()};

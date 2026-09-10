@@ -566,3 +566,8 @@ if(CATKIN_ENABLE_TESTING)
   add_executable(tracking_brake_self_test tests/tracking_brake_self_test.cpp)
   add_test(NAME tracking_brake_self_test COMMAND tracking_brake_self_test)
 endif()
+
+add_executable(tracking_dynamics_cost_self_test tests/tracking_dynamics_cost_self_test.cpp)
+add_dependencies(tracking_dynamics_cost_self_test ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
+target_include_directories(tracking_dynamics_cost_self_test PRIVATE include)
+target_link_libraries(tracking_dynamics_cost_self_test general_planner_core ${THIRD_PARTY})
