@@ -71,6 +71,21 @@ int main(int argc, char **argv) {
     nav.data = "FOLLOW_TRAJ " + std::to_string(tracking_epoch) + " 0 ACTIVE";
     nav_pub.publish(nav);
     if (!wait([&] { return latest.phase_str == "executing"; }, .3)) return 1;
+    nav.data = "TRACKING_BRAKING " + std::to_string(tracking_epoch) + " 0 ACTIVE";
+    nav_pub.publish(nav);
+    if (!wait([&] { return latest.phase_str == "braking" && latest.command_owner == 1; }, .5)) return 1;
+    nav.data = "TRACKING_LOST " + std::to_string(tracking_epoch) + " 0 IDLE QUIESCENT";
+    nav_pub.publish(nav);
+    if (!wait([&] { return latest.phase_str == "waiting_input" &&
+                          latest.active_mode_str == "tracking" &&
+                          latest.task_epoch == tracking_epoch &&
+                          latest.reason.find("lost") != std::string::npos; }, .5)) return 1;
+    nav.data = "GENERATE_TRAJ " + std::to_string(tracking_epoch) + " 0 ACTIVE";
+    nav_pub.publish(nav);
+    if (!wait([&] { return latest.phase_str == "planning" && latest.command_owner == 1; }, .5)) return 1;
+    nav.data = "FOLLOW_TRAJ " + std::to_string(tracking_epoch) + " 0 ACTIVE";
+    nav_pub.publish(nav);
+    if (!wait([&] { return latest.phase_str == "executing"; }, .5)) return 1;
     nav.data = "WAIT_GOAL " + std::to_string(tracking_epoch) + " 0 IDLE QUIESCENT";
     nav_pub.publish(nav);
     if (!wait([&] { return latest.phase_str == "waiting_input" &&

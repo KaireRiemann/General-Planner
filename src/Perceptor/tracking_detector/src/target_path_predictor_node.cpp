@@ -3,6 +3,8 @@
 #include <nav_msgs/Odometry.h>
 #include <nav_msgs/Path.h>
 #include <ros/ros.h>
+#include <std_msgs/Bool.h>
+#include <std_msgs/Float64.h>
 
 #include <algorithm>
 #include <cmath>
@@ -46,7 +48,10 @@ struct TargetStateSample {
 class TargetPathPredictor {
  public:
   TargetPathPredictor() : nh_("~") {
-    nh_.param("prediction_horizon", prediction_horizon_, 4.0);
+    nh_.param("prediction_horizon", prediction_horizon_, 1.5);
+    nh_.param("minimum_prediction_horizon", minimum_prediction_horizon_, 0.75);
+    nh_.param("require_target_valid", require_target_valid_, false);
+    nh_.param("enable_turn_prediction", enable_turn_prediction_, false);
     nh_.param("prediction_dt", prediction_dt_, 0.25);
     nh_.param("publish_rate", publish_rate_, 20.0);
     nh_.param("input_timeout", input_timeout_, 0.4);
@@ -71,6 +76,22 @@ class TargetPathPredictor {
     maximum_turn_rate_ = std::max(maximum_turn_rate_, 0.01);
     turn_rate_deadband_ = std::max(turn_rate_deadband_, 0.0);
 
+    valid_sub_ = nh_.subscribe<std_msgs::Bool>("target_valid", 1,
+        [this](const std_msgs::BoolConstPtr& msg) {
+          std::lock_guard<std::mutex> lock(mutex_);
+          target_valid_ = msg->data;
+          validity_receipt_ = ros::Time::now();
+          if (!target_valid_) {
+            has_target_ = false;
+            history_.clear();
+            turn_rate_ = 0.0;
+          }
+        });
+    age_sub_ = nh_.subscribe<std_msgs::Float64>("observation_age", 1,
+        [this](const std_msgs::Float64ConstPtr& msg) {
+          std::lock_guard<std::mutex> lock(mutex_);
+          observation_age_ = std::isfinite(msg->data) ? std::max(0.0, msg->data) : 1e3;
+        });
     target_sub_ = nh_.subscribe("target_odom", 20, &TargetPathPredictor::targetCallback, this,
                                 ros::TransportHints().tcpNoDelay());
     prediction_pub_ = nh_.advertise<nav_msgs::Path>("prediction", 10);
@@ -87,6 +108,11 @@ class TargetPathPredictor {
     const Eigen::Vector2d velocity(message->twist.twist.linear.x, message->twist.twist.linear.y);
 
     std::lock_guard<std::mutex> lock(mutex_);
+    if (require_target_valid_ && !target_valid_) return;
+    if (!std::isfinite(message->pose.pose.position.x) ||
+        !std::isfinite(message->pose.pose.position.y) ||
+        !std::isfinite(message->pose.pose.position.z) || !velocity.allFinite()) return;
+    if (!history_.empty() && stamp <= history_.back().stamp) return;
     latest_target_ = *message;
     latest_target_receipt_stamp_ = ros::Time::now();
     has_target_ = true;
@@ -144,14 +170,31 @@ class TargetPathPredictor {
   void publishTimerCallback(const ros::TimerEvent&) {
     nav_msgs::Odometry target;
     double turn_rate = 0.0;
+    double horizon = prediction_horizon_;
     {
       std::lock_guard<std::mutex> lock(mutex_);
       if (!has_target_ ||
-          (ros::Time::now() - latest_target_receipt_stamp_).toSec() > input_timeout_) {
+          (ros::Time::now() - latest_target_receipt_stamp_).toSec() > input_timeout_ ||
+          (ros::Time::now() - latest_target_.header.stamp).toSec() > input_timeout_ ||
+          (require_target_valid_ && (!target_valid_ ||
+            (ros::Time::now()-validity_receipt_).toSec() > input_timeout_))) {
+        nav_msgs::Path invalid;
+        invalid.header.stamp = ros::Time::now();
+        invalid.header.frame_id = fallback_frame_id_;
+        prediction_pub_.publish(invalid);  // Explicitly retire cached planner input.
+        history_.clear();
+        turn_rate_ = 0.0;
         return;
       }
+      if (require_target_valid_) {
+        double variance = std::max({latest_target_.pose.covariance[0],
+                                   latest_target_.pose.covariance[7],
+                                   latest_target_.pose.covariance[14], 0.0});
+        horizon = std::max(std::min(prediction_horizon_, std::max(prediction_dt_, minimum_prediction_horizon_)),
+            prediction_horizon_ / (1.0 + 2.0*observation_age_ + std::sqrt(variance)));
+      }
       target = latest_target_;
-      turn_rate = turn_rate_;
+      turn_rate = enable_turn_prediction_ ? turn_rate_ : 0.0;
       if (!last_turn_rate_update_stamp_.isZero()) {
         const double time_without_turn_update =
             std::max(0.0, (target.header.stamp - last_turn_rate_update_stamp_).toSec());
@@ -178,10 +221,10 @@ class TargetPathPredictor {
     nav_msgs::Path prediction;
     prediction.header.stamp = ros::Time::now();
     prediction.header.frame_id = target.header.frame_id.empty() ? fallback_frame_id_ : target.header.frame_id;
-    const int sample_count = static_cast<int>(std::ceil(prediction_horizon_ / prediction_dt_));
+    const int sample_count = std::max(1, static_cast<int>(std::floor(horizon / prediction_dt_)));
     prediction.poses.reserve(sample_count + 1);
     for (int index = 0; index <= sample_count; ++index) {
-      const double time_from_start = std::min(prediction_horizon_, index * prediction_dt_);
+      const double time_from_start = index * prediction_dt_;
       Eigen::Vector3d position = start_position;
       double yaw = heading;
       if (turn_rate == 0.0) {
@@ -206,6 +249,10 @@ class TargetPathPredictor {
     prediction_pub_.publish(prediction);
   }
 
+  ros::Subscriber valid_sub_, age_sub_;
+  bool require_target_valid_{false}, target_valid_{false}, enable_turn_prediction_{false};
+  ros::Time validity_receipt_;
+  double observation_age_{0.0};
   ros::NodeHandle nh_;
   ros::Subscriber target_sub_;
   ros::Publisher prediction_pub_;
@@ -220,6 +267,7 @@ class TargetPathPredictor {
   double turn_rate_ = 0.0;
 
   double prediction_horizon_;
+  double minimum_prediction_horizon_;
   double prediction_dt_;
   double publish_rate_;
   double input_timeout_;

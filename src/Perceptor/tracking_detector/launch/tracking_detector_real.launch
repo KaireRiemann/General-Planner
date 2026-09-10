@@ -1,0 +1,29 @@
+<launch>
+  <!-- Use measured calibration and acquisition-stamped vehicle feedback. -->
+  <arg name="camera_config" />
+  <arg name="estimator_config" default="$(find tracking_detector)/config/estimator.yaml" />
+  <arg name="odom_topic" />
+  <arg name="rgb_topic" />
+  <arg name="camera_info_topic" />
+  <arg name="rgb_compressed" default="false" />
+  <arg name="range_method" default="depth" />
+  <arg name="depth_topic" />
+  <arg name="depth_registered" />
+  <arg name="ground_z" default="0.0" />
+  <arg name="target_center_height" default="0.7" />
+  <arg name="target_label" default="car" />
+  <include file="$(find tracking_detector)/launch/tracking_detector.launch">
+    <arg name="camera_config" value="$(arg camera_config)" />
+    <arg name="estimator_config" value="$(arg estimator_config)" />
+    <arg name="odom_topic" value="$(arg odom_topic)" />
+    <arg name="rgb_topic" value="$(arg rgb_topic)" />
+    <arg name="rgb_compressed" value="$(arg rgb_compressed)" />
+    <arg name="camera_info_topic" value="$(arg camera_info_topic)" />
+    <arg name="range_method" value="$(arg range_method)" />
+    <arg name="depth_topic" value="$(arg depth_topic)" />
+    <arg name="depth_registered" value="$(arg depth_registered)" />
+    <arg name="ground_z" value="$(arg ground_z)" />
+    <arg name="target_center_height" value="$(arg target_center_height)" />
+    <arg name="target_label" value="$(arg target_label)" />
+  </include>
+</launch>

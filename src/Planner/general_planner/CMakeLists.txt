@@ -561,3 +561,8 @@ target_include_directories(gate_body_voxel_self_test PRIVATE include ${Eigen3_IN
 add_executable(gate_snapshot_replay tests/gate_snapshot_replay.cpp)
 add_dependencies(gate_snapshot_replay ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
 target_link_libraries(gate_snapshot_replay general_planner_core ${THIRD_PARTY})
+
+if(CATKIN_ENABLE_TESTING)
+  add_executable(tracking_brake_self_test tests/tracking_brake_self_test.cpp)
+  add_test(NAME tracking_brake_self_test COMMAND tracking_brake_self_test)
+endif()

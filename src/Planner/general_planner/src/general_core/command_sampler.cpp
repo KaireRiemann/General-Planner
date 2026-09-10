@@ -30,6 +30,36 @@ namespace general_planner {
         }
     }
 
+    bool GeneralPlanner::sampleCommittedCommand(StatePVAJ &pvaj, double &yaw,
+                                                 double &yaw_dot, bool &on_backup,
+                                                 double &start_wt) {
+        cmd_traj_info_.lock();
+        if (cmd_traj_info_.empty()) {
+            cmd_traj_info_.unlock();
+            return false;
+        }
+        start_wt = cmd_traj_info_.getStartWallTime();
+        const double duration = cmd_traj_info_.getTotalDuration();
+        const double now = ros_ptr_->getSimTime();
+        if (!std::isfinite(start_wt) || !std::isfinite(duration) ||
+            duration <= 0.0 || !std::isfinite(now)) {
+            cmd_traj_info_.unlock();
+            return false;
+        }
+        const double t = std::clamp(now-start_wt, 0.0, duration);
+        pvaj = cmd_traj_info_.posTraj().getState(t);
+        yaw = cmd_traj_info_.getYaw(t)[0];
+        yaw_dot = cmd_traj_info_.getYawRate(t)[0];
+        on_backup = cmd_traj_info_.isTTOnBackupTraj(t);
+        cmd_traj_info_.unlock();
+        // An exhausted moving endpoint is not a fresh executable command.
+        // Leave it to the gateway watchdog instead of advertising it forever.
+        if (now-start_wt > duration &&
+            (pvaj.col(1).norm()>1.0e-2 || pvaj.col(2).norm()>1.0e-1 ||
+             pvaj.col(3).norm()>1.0e-1 || std::abs(yaw_dot)>1.0e-2)) return false;
+        return pvaj.allFinite() && std::isfinite(yaw) && std::isfinite(yaw_dot);
+    }
+
     void GeneralPlanner::getOneCommandFromTraj(StatePVAJ &pvaj,
                                                double &yaw,
                                                double &yaw_dot,

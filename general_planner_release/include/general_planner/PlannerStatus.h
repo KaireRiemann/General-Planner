@@ -174,7 +174,7 @@ struct PlannerStatus_
 
 
 
-// reducing the odds to have name collisions with Windows.h 
+// reducing the odds to have name collisions with Windows.h
 #if defined(_WIN32) && defined(MODE_HOLD)
   #undef MODE_HOLD
 #endif
@@ -192,6 +192,9 @@ struct PlannerStatus_
 #endif
 #if defined(_WIN32) && defined(MODE_GATE)
   #undef MODE_GATE
+#endif
+#if defined(_WIN32) && defined(MODE_TRACKING)
+  #undef MODE_TRACKING
 #endif
 #if defined(_WIN32) && defined(PHASE_BOOT)
   #undef PHASE_BOOT
@@ -310,6 +313,15 @@ struct PlannerStatus_
 #if defined(_WIN32) && defined(MODE_STATE_GATE_COMPLETE)
   #undef MODE_STATE_GATE_COMPLETE
 #endif
+#if defined(_WIN32) && defined(MODE_STATE_GATE_WAIT_OBSERVATION)
+  #undef MODE_STATE_GATE_WAIT_OBSERVATION
+#endif
+#if defined(_WIN32) && defined(MODE_STATE_GATE_PLANNING)
+  #undef MODE_STATE_GATE_PLANNING
+#endif
+#if defined(_WIN32) && defined(MODE_STATE_GATE_FAILED)
+  #undef MODE_STATE_GATE_FAILED
+#endif
 
   enum {
     MODE_HOLD = 0u,
@@ -318,6 +330,7 @@ struct PlannerStatus_
     MODE_EMERGENCY_STOP = 3u,
     MODE_TARGET_EXPLORATION = 4u,
     MODE_GATE = 5u,
+    MODE_TRACKING = 6u,
     PHASE_BOOT = 0u,
     PHASE_WAITING_INPUT = 1u,
     PHASE_PLANNING = 2u,
@@ -357,6 +370,9 @@ struct PlannerStatus_
     MODE_STATE_GATE_EXECUTING = 31u,
     MODE_STATE_GATE_END_VERIFY = 32u,
     MODE_STATE_GATE_COMPLETE = 33u,
+    MODE_STATE_GATE_WAIT_OBSERVATION = 34u,
+    MODE_STATE_GATE_PLANNING = 35u,
+    MODE_STATE_GATE_FAILED = 36u,
   };
 
 
@@ -372,95 +388,103 @@ typedef boost::shared_ptr< ::general_planner::PlannerStatus const> PlannerStatus
 
 // constants requiring out of line definition
 
-   
 
-   
 
-   
 
-   
 
-   
 
-   
 
-   
 
-   
 
-   
 
-   
 
-   
 
-   
 
-   
 
-   
 
-   
 
-   
 
-   
 
-   
 
-   
 
-   
 
-   
 
-   
 
-   
 
-   
 
-   
 
-   
 
-   
 
-   
 
-   
 
-   
 
-   
 
-   
 
-   
 
-   
 
-   
 
-   
 
-   
 
-   
 
-   
 
-   
 
-   
 
-   
 
-   
 
-   
 
-   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
@@ -559,12 +583,12 @@ struct MD5Sum< ::general_planner::PlannerStatus_<ContainerAllocator> >
 {
   static const char* value()
   {
-    return "ea88b140bff057d80a7df2da783ac7f1";
+    return "3d038676a4f3a26e56e9d1fd909c5059";
   }
 
   static const char* value(const ::general_planner::PlannerStatus_<ContainerAllocator>&) { return value(); }
-  static const uint64_t static_value1 = 0xea88b140bff057d8ULL;
-  static const uint64_t static_value2 = 0x0a7df2da783ac7f1ULL;
+  static const uint64_t static_value1 = 0x3d038676a4f3a26eULL;
+  static const uint64_t static_value2 = 0x56e9d1fd909c5059ULL;
 };
 
 template<class ContainerAllocator>
@@ -622,6 +646,7 @@ struct Definition< ::general_planner::PlannerStatus_<ContainerAllocator> >
 "uint8 MODE_EMERGENCY_STOP=3\n"
 "uint8 MODE_TARGET_EXPLORATION=4\n"
 "uint8 MODE_GATE=5\n"
+"uint8 MODE_TRACKING=6\n"
 "\n"
 "uint8 PHASE_BOOT=0\n"
 "uint8 PHASE_WAITING_INPUT=1\n"
@@ -665,6 +690,10 @@ struct Definition< ::general_planner::PlannerStatus_<ContainerAllocator> >
 "uint16 MODE_STATE_GATE_EXECUTING=31\n"
 "uint16 MODE_STATE_GATE_END_VERIFY=32\n"
 "uint16 MODE_STATE_GATE_COMPLETE=33\n"
+"\n"
+"uint16 MODE_STATE_GATE_WAIT_OBSERVATION=34\n"
+"uint16 MODE_STATE_GATE_PLANNING=35\n"
+"uint16 MODE_STATE_GATE_FAILED=36\n"
 "\n"
 "================================================================================\n"
 "MSG: std_msgs/Header\n"

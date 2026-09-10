@@ -10,6 +10,7 @@
   <arg name="raw_target_odom_topic" default="/target_ekf_node/yolo_odom" />
   <arg name="prediction_topic" default="/tracking/target_prediction" />
   <arg name="camera_config" default="$(find tracking_detector)/config/camera.yaml" />
+  <arg name="estimator_config" default="$(find tracking_detector)/config/estimator.yaml" />
   <arg name="yoloe_root" default="$(find tracking_detector)/vendor/yoloe" />
   <arg name="model_path" default="$(arg yoloe_root)/prompt/yoloe_pretrain/yoloe-11m-seg.pt" />
   <arg name="prompt_path" default="$(find tracking_detector)/config/prompts.txt" />
@@ -19,7 +20,18 @@
   <arg name="publish_visualization" default="true" />
   <arg name="start_detector" default="true" />
   <arg name="start_predictor" default="true" />
-  <arg name="prediction_horizon" default="4.0" />
+  <arg name="prediction_horizon" default="1.5" />
+  <arg name="minimum_prediction_horizon" default="0.75" />
+  <arg name="camera_info_topic" default="/camera0/color/info" />
+  <arg name="depth_topic" default="/camera0/depth/image/compressed" />
+  <!-- Ground-plane ranging for the level Unity road; registered metric depth is opt-in. -->
+  <arg name="range_method" default="ground_plane" />
+  <arg name="depth_registered" default="false" />
+  <arg name="ground_z" default="0.0" />
+  <arg name="target_center_height" default="0.7" />
+  <arg name="valid_topic" default="/tracking/target_valid" />
+  <arg name="status_topic" default="/tracking/status" />
+  <arg name="observation_age_topic" default="/tracking/observation_age" />
   <arg name="prediction_dt" default="0.25" />
   <group ns="$(arg namespace)">
     <node if="$(arg start_detector)" pkg="tracking_detector" type="yoloe_bbox_node.py" name="yoloe" output="screen" clear_params="true" required="true">
@@ -34,13 +46,24 @@
       <param name="device" value="$(arg device)" />
       <param name="confidence" value="$(arg confidence)" />
       <param name="publish_visualization" value="$(arg publish_visualization)" />
+      <param name="tracking_status_topic" value="$(arg status_topic)" />
       <param name="output_width" value="640" />
       <param name="output_height" value="480" />
     </node>
-    <node pkg="tracking_detector" type="target_ekf_node" name="target_ekf" output="screen" clear_params="true" required="true">
+    <node pkg="tracking_detector" type="target_state_estimator.py" name="target_ekf" output="screen" clear_params="true" required="true">
       <rosparam command="load" file="$(arg camera_config)" />
+      <rosparam command="load" file="$(arg estimator_config)" />
       <param name="target_label" value="$(arg target_label)" />
-      <param name="pitch_thr" value="37" />
+      <param name="range_method" value="$(arg range_method)" />
+      <param name="depth_registered" value="$(arg depth_registered)" />
+      <param name="depth_compressed" value="$(eval arg('depth_topic').endswith('/compressed') or arg('depth_topic').endswith('/compressedDepth'))" />
+      <param name="ground_z" value="$(arg ground_z)" />
+      <param name="target_center_height" value="$(arg target_center_height)" />
+      <remap from="~camera_info" to="$(arg camera_info_topic)" />
+      <remap from="~depth" to="$(arg depth_topic)" />
+      <remap from="~valid" to="$(arg valid_topic)" />
+      <remap from="~status" to="$(arg status_topic)" />
+      <remap from="~observation_age" to="$(arg observation_age_topic)" />
       <remap from="~yolo" to="$(arg bbox_topic)" />
       <remap from="~odom" to="$(arg odom_topic)" />
       <remap from="~target_odom" to="$(arg target_odom_topic)" />
@@ -48,9 +71,14 @@
     </node>
     <node if="$(arg start_predictor)" pkg="tracking_detector" type="target_path_predictor_node" name="predictor" output="screen" clear_params="true" required="true">
       <param name="prediction_horizon" value="$(arg prediction_horizon)" />
+      <param name="minimum_prediction_horizon" value="$(arg minimum_prediction_horizon)" />
       <param name="prediction_dt" value="$(arg prediction_dt)" />
       <param name="publish_rate" value="20.0" />
-      <param name="input_timeout" value="0.4" />
+      <param name="input_timeout" value="0.25" />
+      <param name="require_target_valid" value="true" />
+      <param name="enable_turn_prediction" value="false" />
+      <remap from="~target_valid" to="$(arg valid_topic)" />
+      <remap from="~observation_age" to="$(arg observation_age_topic)" />
       <remap from="~target_odom" to="$(arg target_odom_topic)" />
       <remap from="~prediction" to="$(arg prediction_topic)" />
     </node>

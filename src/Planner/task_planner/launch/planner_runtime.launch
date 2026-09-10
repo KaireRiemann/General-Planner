@@ -1,12 +1,20 @@
 <launch>
   <!-- Start perception with runtime so tracking can be selected without another launch. -->
   <arg name="tracking_detector" default="true" />
+  <arg name="tracking_camera_info_topic" default="/camera0/color/info" />
+  <arg name="tracking_rgb_compressed" default="true" />
+  <arg name="tracking_depth_topic" default="/camera0/depth/image/compressed" />
+  <arg name="tracking_range_method" default="ground_plane" />
+  <arg name="tracking_depth_registered" default="false" />
+  <arg name="tracking_ground_z" default="0.0" />
+  <arg name="tracking_target_center_height" default="0.7" />
   <arg name="tracking_image_topic" default="/camera0/color/image/compressed" />
   <arg name="tracking_odom_topic" default="/unity_odom" />
   <arg name="tracking_device" default="cpu" />
   <arg name="tracking_target_label" default="car" />
   <arg name="tracking_confidence" default="0.6" />
   <arg name="tracking_camera_config" default="$(find tracking_detector)/config/camera.yaml" />
+  <arg name="tracking_estimator_config" default="$(find tracking_detector)/config/estimator.yaml" />
 
   <!-- M2 composed runtime. planner_runtime_node owns exactly one ROG map,
        MapManager, BoundaryMap and global topology worker.  Exploration and
@@ -272,6 +280,13 @@
   <node if="$(arg tracking_detector)" pkg="general_planner" type="planner_detector_switcher.py"
         name="tracking_detector_switcher" output="screen">
     <param name="active_mode" value="tracking" />
+    <param name="launch_args/camera_info_topic" value="$(arg tracking_camera_info_topic)" type="str" />
+    <param name="launch_args/rgb_compressed" value="$(arg tracking_rgb_compressed)" type="str" />
+    <param name="launch_args/depth_topic" value="$(arg tracking_depth_topic)" type="str" />
+    <param name="launch_args/range_method" value="$(arg tracking_range_method)" type="str" />
+    <param name="launch_args/depth_registered" value="$(arg tracking_depth_registered)" type="str" />
+    <param name="launch_args/ground_z" value="$(arg tracking_ground_z)" type="str" />
+    <param name="launch_args/target_center_height" value="$(arg tracking_target_center_height)" type="str" />
     <param name="status_topic" value="/planner/status" />
     <param name="launch_file" value="$(find tracking_detector)/launch/tracking_detector.launch" />
     <param name="launch_args/rgb_topic" value="$(arg tracking_image_topic)" type="str" />
@@ -280,6 +295,7 @@
     <param name="launch_args/target_label" value="$(arg tracking_target_label)" type="str" />
     <param name="launch_args/confidence" value="$(arg tracking_confidence)" type="str" />
     <param name="launch_args/camera_config" value="$(arg tracking_camera_config)" type="str" />
+    <param name="launch_args/estimator_config" value="$(arg tracking_estimator_config)" type="str" />
     <param name="launch_args/target_odom_topic" value="$(arg tracking_target_odom_topic)" type="str" />
     <param name="launch_args/prediction_topic" value="$(arg tracking_target_prediction_topic)" type="str" />
   </node>

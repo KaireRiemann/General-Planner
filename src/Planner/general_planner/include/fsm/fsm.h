@@ -111,6 +111,8 @@ namespace fsm {
         traj_opt::DynamicTargetStates tracking_target_prediction_;
         traj_opt::PerchingSurfaceState perching_surface_;
         double tracking_target_rcv_time_{-1.0};
+        std::atomic<bool> tracking_lost_braking_{false};
+        std::atomic<bool> tracking_target_lost_{false};
         double perching_surface_rcv_time_{-1.0};
         double perching_surface_first_rcv_time_{-1.0};
         double last_dynamic_takeoff_wait_log_time_{-1.0};
@@ -412,6 +414,13 @@ namespace fsm {
         void requestControlledStop(const std::string &reason);
         void clearNavigationTask(const std::string &reason);
         void armNavigationTask(std::uint64_t task_epoch);
+        bool commandExecutionState() const {
+            return machine_state_ == FOLLOW_TRAJ ||
+                   machine_state_ == STATIC_TRACKING ||
+                   machine_state_ == HOLD_TRACKING ||
+                   machine_state_ == EMER_STOP;
+        }
+
         bool navigationExecutionEnabled() const {
             return navigation_execution_enabled_.load();
         }

@@ -13,7 +13,7 @@ foreach(node target_ekf_node target_path_predictor_node)
   target_link_libraries(${node} ${catkin_LIBRARIES})
   install(TARGETS ${node} RUNTIME DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION})
 endforeach()
-catkin_install_python(PROGRAMS scripts/yoloe_bbox_node.py scripts/check_runtime.py DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION})
+catkin_install_python(PROGRAMS scripts/yoloe_bbox_node.py scripts/check_runtime.py scripts/target_state_estimator.py DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION})
 install(DIRECTORY launch config vendor DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}
   PATTERN "__pycache__" EXCLUDE PATTERN "*.pyc" EXCLUDE)
 install(FILES README.md THIRD_PARTY.md LICENSE.target_ekf DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION})

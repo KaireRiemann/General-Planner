@@ -28,3 +28,16 @@ This validates packaging/inference/wiring, not the previously identified trackin
 源码 runtime、Unity、release runtime/sim launch 解析通过；关闭 tracking_detector/perceptor 后不加载管理器。
 这组回归验证进程生命周期，不代表重新验证 YOLOE 推理或跟踪质量。
 日志：容器 /tmp/detector_mode_test_*.log。
+
+## 优化版（2026-09-10）
+新估计器和预测器的验证以 docs/tracking_frontend_optimization.md 为准。
+test_estimation.py覆盖滤波、几何、异常输入；estimator_ros_test.py --predictor
+自带master11329，验证移动相机+延迟检测、丢失失效和确认恢复。
+旧版4秒/17点Path的固定断言已改为自适应短预测。
+真实CPU smoke通过：car=8、empty=1、odom=6、path=5。
+优化前后现场bag没有目标真值，未报告位置RMSE改善百分比。
+
+最终验证：4项纯估计测试、移动相机延迟观测ROS回归、
+制动C3边界、planner输入撤销/真实采样间隔、
+tracking状态转换、state2state失败/超时恢复均通过。
+release必要二进制及前端同步完成，tar.gz归档未刷新。

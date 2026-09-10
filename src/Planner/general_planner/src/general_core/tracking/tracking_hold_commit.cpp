@@ -7,6 +7,7 @@
 */
 
 #include <general_core/general_planner.h>
+#include <general_core/tracking/tracking_brake.hpp>
 
 #include <algorithm>
 #include <cmath>
@@ -16,46 +17,6 @@
 using namespace general_utils;
 
 namespace general_planner {
-    namespace {
-        bool buildConstantPositionTrajectory(const Vec3f &position,
-                                             const double duration,
-                                             const double start_wt,
-                                             Trajectory &traj) {
-            if (!position.allFinite() ||
-                !std::isfinite(duration) ||
-                duration <= 1.0e-5 ||
-                !std::isfinite(start_wt)) {
-                return false;
-            }
-
-            Eigen::MatrixXd coeff = Eigen::MatrixXd::Zero(3, 8);
-            coeff.col(7) = position;
-            traj.clear();
-            traj.emplace_back(duration, coeff);
-            traj.start_WT = start_wt;
-            return !traj.empty();
-        }
-
-        bool buildConstantYawTrajectory(const double yaw,
-                                        const double duration,
-                                        const double start_wt,
-                                        Trajectory &traj) {
-            if (!std::isfinite(yaw) ||
-                !std::isfinite(duration) ||
-                duration <= 1.0e-5 ||
-                !std::isfinite(start_wt)) {
-                return false;
-            }
-
-            Eigen::MatrixXd coeff = Eigen::MatrixXd::Zero(3, 8);
-            coeff(0, 7) = yaw;
-            traj.clear();
-            traj.emplace_back(duration, coeff);
-            traj.start_WT = start_wt;
-            return !traj.empty();
-        }
-    }
-
     bool GeneralPlanner::commitTrackingHoldTrajectory(const std::string &reason,
                                                       const double duration,
                                                       const bool require_safe) {
@@ -66,33 +27,61 @@ namespace general_planner {
         }
 
         const double commit_wt = ros_ptr_->getSimTime();
-        const double hold_duration =
+        double hold_duration =
                 std::max(0.2,
                          std::isfinite(duration) && duration > 1.0e-5
                              ? duration
                              : std::max(0.8, cfg_.tracking_min_commit_duration));
         Trajectory hold_pos_traj;
         Trajectory hold_yaw_traj;
-        const double hold_yaw =
-                std::isfinite(robot_state_.yaw) ? robot_state_.yaw : 0.0;
-        if (!buildConstantPositionTrajectory(robot_state_.p,
-                                             hold_duration,
-                                             commit_wt,
-                                             hold_pos_traj) ||
-            !buildConstantYawTrajectory(hold_yaw,
-                                        hold_duration,
-                                        commit_wt,
-                                        hold_yaw_traj)) {
-            ros_ptr_->warn(" -- [Tracking] TRACKING_HOLD_COMMIT_FAILED reason={}, build_constant_traj=0",
-                           reason);
+        StatePVAJ start = StatePVAJ::Zero();
+        start.col(0) = robot_state_.p;
+        start.col(1) = robot_state_.v;
+        start.col(2) = robot_state_.a;
+        StatePVAJ yaw_start = StatePVAJ::Zero();
+        yaw_start(0,0) = std::isfinite(robot_state_.yaw) ? robot_state_.yaw : 0.0;
+        // Start at the currently issued command, preserving p/v/a/j and yaw rate.
+        cmd_traj_info_.lock();
+        if (!cmd_traj_info_.empty()) {
+            const double t = std::clamp(commit_wt-cmd_traj_info_.getStartWallTime(),
+                                      0.0,cmd_traj_info_.getTotalDuration());
+            cmd_traj_info_.posTraj().getState(t,start);
+            if (!cmd_traj_info_.yawTraj().empty()) cmd_traj_info_.yawTraj().getState(t,yaw_start);
+        }
+        cmd_traj_info_.unlock();
+        if (!start.allFinite() || !yaw_start.allFinite()) return false;
+        const double acc_limit = std::max(0.5, cfg_.tracking_traj_cfg.max_acc);
+        const double jerk_limit = std::max(1.0, cfg_.tracking_traj_cfg.max_jerk);
+        hold_duration = std::max(hold_duration, 2.0*start.col(1).norm()/acc_limit);
+        bool feasible = false;
+        for (int attempt=0; attempt<8; ++attempt) {
+            hold_pos_traj.clear();
+            hold_yaw_traj.clear();
+            hold_pos_traj.emplace_back(hold_duration, trackingBrakeCoefficients(start,hold_duration));
+            hold_yaw_traj.emplace_back(hold_duration, trackingBrakeCoefficients(yaw_start,hold_duration));
+            hold_pos_traj.start_WT = hold_yaw_traj.start_WT = commit_wt;
+            feasible = true;
+            for (int k=0;k<=100;++k) {
+                const auto state = hold_pos_traj.getState(hold_duration*k/100.0);
+                const auto yaw = hold_yaw_traj.getState(hold_duration*k/100.0);
+                if (state.col(2).norm() > std::max(acc_limit,start.col(2).norm())*1.02 ||
+                    state.col(3).norm() > std::max(jerk_limit,start.col(3).norm())*1.02 ||
+                    std::abs(yaw(0,1)) > std::max(cfg_.tracking_yaw_rate_limit,std::abs(yaw_start(0,1)))*1.02 ||
+                    std::abs(yaw(0,2)) > std::max(cfg_.tracking_yaw_acceleration_limit,std::abs(yaw_start(0,2)))*1.02)
+                    feasible = false;
+            }
+            if (feasible) break;
+            hold_duration *= 1.3;
+        }
+        if (!feasible) {
+            ros_ptr_->warn(" -- [Tracking] braking boundary infeasible");
             return false;
         }
 
         std::string safety_reason;
         std::string safety_detail;
         const double safety_horizon =
-                std::min(std::max(0.0, cfg_.tracking_keep_old_horizon),
-                         hold_pos_traj.getTotalDuration());
+                hold_pos_traj.getTotalDuration();
         const bool hold_safe =
                 trackingTrajectorySafeForHorizonDetailed(hold_pos_traj,
                                                          0.0,
@@ -100,9 +89,9 @@ namespace general_planner {
                                                          cfg_.tracking_keep_old_safety_dt,
                                                          &safety_reason,
                                                          &safety_detail);
-        if (require_safe && !hold_safe) {
-            ros_ptr_->warn(" -- [Tracking] TRACKING_HOLD_COMMIT_FAILED reason={}, require_safe=1, safety_reason={}, safety_detail={}",
-                           reason,
+        if (!hold_safe) {
+            ros_ptr_->warn(" -- [Tracking] TRACKING_HOLD_COMMIT_FAILED reason={}, require_safe={}, safety_reason={}, safety_detail={}",
+                           reason, require_safe,
                            safety_reason.empty() ? "none" : safety_reason,
                            safety_detail.empty() ? "none" : safety_detail);
             return false;

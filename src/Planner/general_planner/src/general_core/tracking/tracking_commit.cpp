@@ -41,7 +41,7 @@ namespace general_planner {
         }
         clearTrackingCommitRejectInfo();
 
-        const double commit_wt = ros_ptr_->getSimTime();
+        double commit_wt = ros_ptr_->getSimTime();
         bool has_old_cmd = false;
         Trajectory old_pos_traj;
         Trajectory old_yaw_traj;
@@ -55,6 +55,14 @@ namespace general_planner {
             old_start_wt = cmd_traj_info_.getStartWallTime();
             old_total_dur = cmd_traj_info_.getTotalDuration();
             cmd_traj_info_.unlock();
+        }
+
+        const bool old_stationary_endpoint = has_old_cmd && !old_pos_traj.empty() &&
+            commit_wt-old_start_wt >= old_total_dur &&
+            old_pos_traj.getState(old_total_dur).col(1).norm() < 1.0e-2 &&
+            old_pos_traj.getState(old_total_dur).col(2).norm() < 1.0e-1;
+        if (!has_old_cmd || old_stationary_endpoint) {
+            commit_wt += 0.15; // stationary start handover; rolling replans keep their fixed head time
         }
 
         const bool runtime_has_committed_tracking =
@@ -488,7 +496,13 @@ namespace general_planner {
         };
 
         Trajectory yaw_traj = optimized_yaw_traj;
-        if (yaw_traj.empty() && !buildTrackingTargetYawTrajectory(pos_traj, target_prediction, yaw_traj)) {
+        Trajectory facing_yaw;
+        Trajectory yaw_reference_pos = pos_traj;
+        yaw_reference_pos.start_WT = candidate_head_wt > 0.0 ? candidate_head_wt : commit_wt;
+        if (buildTrackingTargetYawTrajectory(yaw_reference_pos, target_prediction, facing_yaw)) {
+            yaw_traj = facing_yaw;
+        }
+        if (yaw_traj.empty()) {
             setTrackingCommitRejectInfo(
                     "yaw generation failed",
                     fmt::format("failure=yaw_generation_failed|candidate_duration={:.3f}|target_prediction_size={}",
@@ -766,6 +780,41 @@ namespace general_planner {
             return false;
         }
 
+        const auto yaw_head = committed_yaw_traj.getState(0.0);
+        if (committed_yaw_traj.getMaxVelRate() >
+                std::max(cfg_.tracking_yaw_rate_limit,std::abs(yaw_head(0,1)))+0.02 ||
+            committed_yaw_traj.getMaxAccRate() >
+                std::max(cfg_.tracking_yaw_acceleration_limit,std::abs(yaw_head(0,2)))+0.02) {
+            setTrackingCommitRejectInfo("yaw dynamic limits exceeded","camera-facing yaw is not feasible");
+            return keepOldFromSnapshot("yaw dynamic limits exceeded");
+        }
+        // The optimizer uses soft penalties; validate the issued trajectory
+        // as well. Preserve a pre-existing boundary that is already moving.
+        StatePVAJ head = StatePVAJ::Zero();
+        if (has_old_cmd && !old_pos_traj.empty()) {
+            head = old_pos_traj.getState(std::clamp(commit_wt-old_start_wt,0.0,old_total_dur));
+        } else {
+            head.col(1)=robot_state_.v;
+            head.col(2)=robot_state_.a;
+        }
+        const double speed_cap = std::max(cfg_.tracking_traj_cfg.max_vel, head.col(1).norm())*1.05;
+        const double acc_cap = std::max(cfg_.tracking_traj_cfg.max_acc, head.col(2).norm())*1.05;
+        const double jerk_cap = std::max(cfg_.tracking_traj_cfg.max_jerk, head.col(3).norm())*1.05;
+        const double head_tilt = std::atan2(head.col(2).head<2>().norm(), 9.81+head(2,2));
+        const double tilt_cap = std::max(cfg_.tracking_traj_cfg.max_tilt, head_tilt)+0.01;
+        bool dynamics_ok = committed_pos_traj.getMaxVelRate() <= speed_cap &&
+                           committed_pos_traj.getMaxAccRate() <= acc_cap;
+        const double duration = committed_pos_traj.getTotalDuration();
+        const int samples = std::max(1, static_cast<int>(std::ceil(duration/0.02)));
+        for (int i=0; dynamics_ok && i<=samples; ++i) {
+            const auto state = committed_pos_traj.getState(duration*i/samples);
+            dynamics_ok = state.allFinite() && state.col(3).norm() <= jerk_cap &&
+                std::atan2(state.col(2).head<2>().norm(),9.81+state(2,2)) <= tilt_cap;
+        }
+        if (!dynamics_ok) {
+            setTrackingCommitRejectInfo("tracking dynamics exceeded","velocity/acceleration/jerk/tilt limit");
+            return keepOldFromSnapshot("tracking dynamics exceeded");
+        }
         ExpTraj task_exp_traj;
         task_exp_traj.setGoalConnectedFlag(true);
         task_exp_traj.setWholeTrajKnownFreeFlag(true);

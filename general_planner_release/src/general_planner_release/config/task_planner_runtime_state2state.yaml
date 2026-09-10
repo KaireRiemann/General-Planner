@@ -46,6 +46,16 @@ fsm:
   perception_replan_emergency_horizon: 0.45
 
 general_planner:
+  # Tracking-only limits: do not change the state2state optimizer.
+  tracking:
+    use_snap: true
+    max_vel: 3.0
+    max_acc: 3.0
+    max_jerk: 12.0
+    max_tilt: 0.45
+    max_omg: 1.2
+    yaw_rate_limit: 0.8
+    yaw_acceleration_limit: 1.6
   backup_traj_en: true
   esdf_traj_en: false
   esdf_safe_distance: 0.3
@@ -139,7 +149,7 @@ general_planner:
     near_goal_radius: 2.0
     accept_exp_without_backup_near_goal: true
   unknown_goal_reveal_en: true
-  yaw_dot_max: 3.0
+  yaw_dot_max: 1.2
   # Yaw mode: 1 heading to velocity, 2 heading to goal
   yaw_mode: 1
   mpc_horizon: 15
@@ -152,11 +162,12 @@ traj_opt:
     print_optimizer_log: false
 
   boundary:
-    max_vel: 5.0
-    max_acc: 7.0
-    max_jerk: 70.0
-    max_omg: 3.5
-    max_tilt: 1.05
+    # Runtime camera/attitude stability profile; tune against the real controller.
+    max_vel: 3.0
+    max_acc: 3.0
+    max_jerk: 12.0
+    max_omg: 1.2
+    max_tilt: 0.45
     max_acc_thr: 22.0
     min_acc_thr: 6.0
     penna_margin: 0.05

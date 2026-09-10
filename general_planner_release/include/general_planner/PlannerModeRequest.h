@@ -54,7 +54,7 @@ struct PlannerModeRequest_
 
 
 
-// reducing the odds to have name collisions with Windows.h 
+// reducing the odds to have name collisions with Windows.h
 #if defined(_WIN32) && defined(MODE_HOLD)
   #undef MODE_HOLD
 #endif
@@ -73,6 +73,9 @@ struct PlannerModeRequest_
 #if defined(_WIN32) && defined(MODE_GATE)
   #undef MODE_GATE
 #endif
+#if defined(_WIN32) && defined(MODE_TRACKING)
+  #undef MODE_TRACKING
+#endif
 
   enum {
     MODE_HOLD = 0u,
@@ -81,6 +84,7 @@ struct PlannerModeRequest_
     MODE_EMERGENCY_STOP = 3u,
     MODE_TARGET_EXPLORATION = 4u,
     MODE_GATE = 5u,
+    MODE_TRACKING = 6u,
   };
 
 
@@ -96,17 +100,19 @@ typedef boost::shared_ptr< ::general_planner::PlannerModeRequest const> PlannerM
 
 // constants requiring out of line definition
 
-   
 
-   
 
-   
 
-   
 
-   
 
-   
+
+
+
+
+
+
+
+
 
 
 
@@ -181,12 +187,12 @@ struct MD5Sum< ::general_planner::PlannerModeRequest_<ContainerAllocator> >
 {
   static const char* value()
   {
-    return "1b73041e80f522d835aea5cecd36fd1c";
+    return "e2046de42477b5019586465f081758f9";
   }
 
   static const char* value(const ::general_planner::PlannerModeRequest_<ContainerAllocator>&) { return value(); }
-  static const uint64_t static_value1 = 0x1b73041e80f522d8ULL;
-  static const uint64_t static_value2 = 0x35aea5cecd36fd1cULL;
+  static const uint64_t static_value1 = 0xe2046de42477b501ULL;
+  static const uint64_t static_value2 = 0x9586465f081758f9ULL;
 };
 
 template<class ContainerAllocator>
@@ -216,6 +222,7 @@ struct Definition< ::general_planner::PlannerModeRequest_<ContainerAllocator> >
 "uint8 MODE_EMERGENCY_STOP=3\n"
 "uint8 MODE_TARGET_EXPLORATION=4\n"
 "uint8 MODE_GATE=5\n"
+"uint8 MODE_TRACKING=6\n"
 "\n"
 "================================================================================\n"
 "MSG: std_msgs/Header\n"

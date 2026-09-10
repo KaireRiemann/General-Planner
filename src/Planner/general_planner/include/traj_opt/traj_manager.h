@@ -960,7 +960,8 @@ public:
               double yaw_dot_max,
               double esdf_safe_distance,
               const ros_interface::RosInterface::Ptr &ros_ptr,
-              const general_planner::MapManager::Ptr &map_manager);
+              const general_planner::MapManager::Ptr &map_manager,
+              const traj_opt::Config *tracking_cfg = nullptr);
 
   ExpTrajOpt::Ptr exp() const { return exp_traj_opt_; }
   ESDFTrajOpt::Ptr esdf() const { return esdf_traj_opt_; }

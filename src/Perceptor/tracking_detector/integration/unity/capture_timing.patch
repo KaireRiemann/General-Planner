@@ -1,0 +1,65 @@
+--- a/Library/PackageCache/com.frj.unity-sensors@c33247ddf2/Runtime/Scripts/Sensors/Camera/RGBCamera/RGBCameraSensor.cs
++++ b/Library/PackageCache/com.frj.unity-sensors@c33247ddf2/Runtime/Scripts/Sensors/Camera/RGBCamera/RGBCameraSensor.cs
+@@ -2,5 +2,17 @@
+ {
+     public class RGBCameraSensor : CameraSensor
+     {
++        protected override void Init()
++        {
++            base.Init();
++            // Render only at acquisition, using the pose for sensor.time.
++            m_camera.enabled = false;
++        }
++
++        protected override void UpdateSensor()
++        {
++            m_camera.Render();
++            base.UpdateSensor();
++        }
+     }
+ }
+--- a/Library/PackageCache/com.frj.unity-sensors-ros@c33247ddf2/Runtime/Scripts/Publishers/RosMsgPublisher.cs
++++ b/Library/PackageCache/com.frj.unity-sensors-ros@c33247ddf2/Runtime/Scripts/Publishers/RosMsgPublisher.cs
+@@ -36,12 +36,17 @@
+             _serializer.Init(GetComponent<T>());
+         }
+ 
++        protected void PublishMessage()
++        {
++            _ros.Publish(_topicName, _serializer.Serialize());
++        }
++
+         protected virtual void Update()
+         {
+             _dt += Time.deltaTime;
+             if (_dt < _frequency_inv) return;
+ 
+-            _ros.Publish(_topicName, _serializer.Serialize());
++            PublishMessage();
+ 
+             _dt -= _frequency_inv;
+         }
+--- a/Library/PackageCache/com.frj.unity-sensors-ros@c33247ddf2/Runtime/Scripts/Publishers/Camera/CameraImageMsgPublisher.cs
++++ b/Library/PackageCache/com.frj.unity-sensors-ros@c33247ddf2/Runtime/Scripts/Publishers/Camera/CameraImageMsgPublisher.cs
+@@ -6,5 +6,21 @@
+     [RequireComponent(typeof(CameraSensor))]
+     public class CameraImageMsgPublisher : ImageMsgPublisher<CameraSensor>
+     {
++        private CameraSensor _sensor;
++
++        protected override void Start()
++        {
++            base.Start();
++            _sensor = GetComponent<CameraSensor>();
++            _sensor.onSensorUpdated += PublishMessage;
++        }
++
++        // Publishing from a second timer can serialize a different capture.
++        protected override void Update() { }
++
++        private void OnDestroy()
++        {
++            if (_sensor != null) _sensor.onSensorUpdated -= PublishMessage;
++        }
+     }
+ }

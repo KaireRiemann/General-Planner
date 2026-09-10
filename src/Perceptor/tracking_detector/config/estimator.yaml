@@ -1,0 +1,11 @@
+output_frame: world
+# Sensor age includes inference/transport delay; receipt gap bounds missed detections.
+max_observation_age: 1.0
+max_detection_gap: 0.45
+fresh_observation_age: 0.25
+confirmations: 3
+sync_tolerance: 0.15
+max_position_std: 2.0
+max_range: 30.0
+object_height: 1.4
+# cam2body_R/p are loaded from camera_config; ground_z/center height are launch args.

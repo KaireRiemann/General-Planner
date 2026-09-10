@@ -1093,12 +1093,15 @@ namespace fsm {
             if (!msg) {
                 return;
             }
+            const double age = (ros::Time::now()-msg->header.stamp).toSec();
+            if (!msg->header.stamp.isZero() && (age > cfg_.task_timeout || age < -0.1)) return;
             const Vec3f p(msg->pose.pose.position.x,
                           msg->pose.pose.position.y,
                           msg->pose.pose.position.z);
             const Vec3f v(msg->twist.twist.linear.x,
                           msg->twist.twist.linear.y,
                           msg->twist.twist.linear.z);
+            if (!p.allFinite() || !v.allFinite()) return;
             const double pose_yaw = yawFromMsgQuat(msg->pose.pose.orientation);
 
             traj_opt::DynamicTargetStates prediction;
@@ -1116,6 +1119,8 @@ namespace fsm {
                 (ros::Time::now() - last_tracking_prediction_path_time_).toSec() < 0.5) {
                 return;
             }
+            if (!msg->header.stamp.isZero() &&
+                (ros::Time::now()-msg->header.stamp).toSec() > cfg_.task_timeout) return;
             const bool activate_tracking_task = trackingMode() || trackingPerchingMode();
             setTrackingTargetPrediction(prediction, activate_tracking_task);
             if (!activate_tracking_task) {
@@ -1142,6 +1147,12 @@ namespace fsm {
         }
 
         void trackingPredictionPathCallback(const nav_msgs::PathConstPtr &msg) {
+            if (msg && cfg_.tracking_use_target_prediction_path && msg->poses.empty()) {
+                std::lock_guard<std::mutex> lock(fsm_tick_mutex_);
+                last_tracking_prediction_path_time_ = ros::Time::now();
+                setTrackingTargetPrediction({}, false);
+                return;
+            }
             if (!msg || !cfg_.tracking_use_target_prediction_path || msg->poses.size() < 2) {
                 if (useTrackingLogStream()) {
                     recordDiagnosticEvent("WARN",
@@ -1155,6 +1166,9 @@ namespace fsm {
                 return;
             }
 
+            const double source_age = (ros::Time::now()-msg->header.stamp).toSec();
+            if (!msg->header.stamp.isZero() &&
+                (source_age > cfg_.task_timeout || source_age < -0.1)) return;
             const double dt = std::max(0.05, cfg_.tracking_prediction_dt);
             const double horizon = std::max(dt, cfg_.tracking_prediction_horizon);
             const std::size_t max_samples =
@@ -1164,7 +1178,19 @@ namespace fsm {
             std::vector<Vec3f> positions;
             positions.reserve(sample_num);
             for (std::size_t i = 0; i < sample_num; ++i) {
-                positions.emplace_back(poseMsgPosition(msg->poses[i]));
+                const Vec3f point = poseMsgPosition(msg->poses[i]);
+                if (!point.allFinite()) return;
+                positions.emplace_back(point);
+            }
+
+            std::vector<double> sample_times(sample_num, 0.0);
+            const bool stamped = !msg->poses.front().header.stamp.isZero();
+            for (std::size_t i=1;i<sample_num;++i) {
+                sample_times[i] = stamped
+                    ? (msg->poses[i].header.stamp-msg->poses.front().header.stamp).toSec()
+                    : i*dt;
+                if (!std::isfinite(sample_times[i]) ||
+                    sample_times[i]-sample_times[i-1] <= 1.0e-4) return;
             }
 
             traj_opt::DynamicTargetStates prediction;
@@ -1172,18 +1198,20 @@ namespace fsm {
             for (std::size_t i = 0; i < sample_num; ++i) {
                 Vec3f velocity = Vec3f::Zero();
                 if (i + 1 < sample_num) {
-                    velocity = (positions[i + 1] - positions[i]) / dt;
+                    velocity = (positions[i + 1] - positions[i]) / (sample_times[i+1]-sample_times[i]);
                 } else if (i > 0) {
-                    velocity = (positions[i] - positions[i - 1]) / dt;
+                    velocity = (positions[i] - positions[i - 1]) / (sample_times[i]-sample_times[i-1]);
                 }
 
                 Vec3f acceleration = Vec3f::Zero();
                 if (i > 0 && i + 1 < sample_num) {
-                    acceleration = (positions[i + 1] - 2.0 * positions[i] + positions[i - 1]) / (dt * dt);
+                    const Vec3f v_next = (positions[i+1]-positions[i])/(sample_times[i+1]-sample_times[i]);
+                    const Vec3f v_prev = (positions[i]-positions[i-1])/(sample_times[i]-sample_times[i-1]);
+                    acceleration = 2.0*(v_next-v_prev)/(sample_times[i+1]-sample_times[i-1]);
                 }
 
                 traj_opt::DynamicTargetState target;
-                target.t = static_cast<double>(i) * dt;
+                target.t = sample_times[i];
                 target.position = positions[i];
                 target.velocity = velocity;
                 target.acceleration = acceleration;
@@ -1197,6 +1225,8 @@ namespace fsm {
 
             std::lock_guard<std::mutex> lock(fsm_tick_mutex_);
             last_tracking_prediction_path_time_ = ros::Time::now();
+            if (!msg->header.stamp.isZero() &&
+                (ros::Time::now()-msg->header.stamp).toSec() > cfg_.task_timeout) return;
             const bool activate_tracking_task = trackingMode() || trackingPerchingMode();
             setTrackingTargetPrediction(prediction, activate_tracking_task);
             if (!activate_tracking_task) {
@@ -1364,7 +1394,9 @@ namespace fsm {
             std::lock_guard<std::mutex> lock(fsm_tick_mutex_);
             std_msgs::String status;
             status.data = std::string(state2stateMode() && state2state_plan_failed_
-                                      ? "FAILED" : machineStateName()) + " " +
+                                      ? "FAILED" : (trackingMode() && tracking_target_lost_
+                                          ? (tracking_lost_braking_ ? "TRACKING_BRAKING" : "TRACKING_LOST")
+                                          : machineStateName())) + " " +
                           std::to_string(navigationTaskEpoch()) + " " +
                           std::to_string(navigationGoalSequence()) + " " +
                           (navigationGoalActive() ? "ACTIVE" : "IDLE") +
@@ -1547,11 +1579,11 @@ namespace fsm {
                 goal_sub_ = nh_.subscribe(cfg_.click_goal_topic, 10,
                                           &FsmRos1::goalCallback, this);
                 subscribe3DGoal(10, true);
-                tracking_target_sub_ = nh_.subscribe(cfg_.tracking_target_odom_topic, 10,
+                tracking_target_sub_ = nh_.subscribe(cfg_.tracking_target_odom_topic, 1,
                                                      &FsmRos1::trackingTargetCallback, this);
                 if (cfg_.tracking_use_target_prediction_path && !cfg_.tracking_target_prediction_topic.empty()) {
                     tracking_prediction_sub_ =
-                        nh_.subscribe(cfg_.tracking_target_prediction_topic, 10,
+                        nh_.subscribe(cfg_.tracking_target_prediction_topic, 1,
                                       &FsmRos1::trackingPredictionPathCallback, this);
                 }
                 perching_surface_sub_ = nh_.subscribe(cfg_.perching_surface_odom_topic, 10,
@@ -1583,11 +1615,11 @@ namespace fsm {
                     cmd_cnt++;
                 }
             } else if (trackingMode() || trackingPerchingMode()) {
-                tracking_target_sub_ = nh_.subscribe(cfg_.tracking_target_odom_topic, 10,
+                tracking_target_sub_ = nh_.subscribe(cfg_.tracking_target_odom_topic, 1,
                                                      &FsmRos1::trackingTargetCallback, this);
                 if (cfg_.tracking_use_target_prediction_path && !cfg_.tracking_target_prediction_topic.empty()) {
                     tracking_prediction_sub_ =
-                        nh_.subscribe(cfg_.tracking_target_prediction_topic, 10,
+                        nh_.subscribe(cfg_.tracking_target_prediction_topic, 1,
                                       &FsmRos1::trackingPredictionPathCallback, this);
                 }
                 cout << YELLOW << " -- [Fsm] TRACKING TASK ENABLE, target odom: "
@@ -1781,12 +1813,56 @@ namespace fsm {
             pid_cmd_.kv[2] = 4.0;
         }
 
+        // Written only by the dedicated command callback queue.
+        quadrotor_msgs::PositionCommand last_execution_cmd_;
+        bool have_command_epoch_{false};
+        std::uint64_t last_command_epoch_{0};
+
+        void publishWhilePlannerBusy() {
+            const auto epoch = navigationTaskEpoch();
+            if (!have_command_epoch_ || last_command_epoch_ != epoch ||
+                !navigationExecutionEnabled()) return;
+            StatePVAJ state;
+            double yaw, yaw_dot, start_wt;
+            bool backup;
+            if (!planner_ptr_->sampleCommittedCommand(state, yaw, yaw_dot, backup, start_wt)) return;
+            // Start from the last command's gains/metadata, never replay its
+            // old PVA: evaluate the committed polynomial at the current time.
+            auto cmd = last_execution_cmd_;
+            cmd.header.stamp = ros::Time::now();
+            cmd.position.x=state(0,0); cmd.position.y=state(1,0); cmd.position.z=state(2,0);
+            cmd.velocity.x=state(0,1); cmd.velocity.y=state(1,1); cmd.velocity.z=state(2,1);
+            cmd.acceleration.x=state(0,2); cmd.acceleration.y=state(1,2); cmd.acceleration.z=state(2,2);
+            cmd.jerk.x=state(0,3); cmd.jerk.y=state(1,3); cmd.jerk.z=state(2,3);
+            cmd.yaw=yaw; cmd.yaw_dot=yaw_dot;
+            cmd.vel_norm=state.col(1).norm(); cmd.acc_norm=state.col(2).norm();
+            cmd.trajectory_flag=backup ? 2 : 1;
+            Vec3f rpy, omg; double thrust;
+            geometry_utils::convertFlatOutputToAttAndOmg(state.col(0),state.col(1),
+                state.col(2),state.col(3),yaw,yaw_dot,rpy,omg,thrust);
+            if (!rpy.allFinite() || !omg.allFinite() || !std::isfinite(thrust)) return;
+            cmd.attitude.x=rpy.x(); cmd.attitude.y=rpy.y(); cmd.attitude.z=rpy.z();
+            cmd.angular_velocity.x=omg.x(); cmd.angular_velocity.y=omg.y(); cmd.angular_velocity.z=omg.z();
+            cmd.thrust.z=thrust;
+            if (!navigationExecutionEnabled() || navigationTaskEpoch()!=epoch) return;
+            quadrotor_msgs::PolynomialTrajectory heartbeat;
+            heartbeat.type=quadrotor_msgs::PolynomialTrajectory::HEART_BEAT;
+            heartbeat.header=cmd.header; heartbeat.start_WT_pos=ros::Time(start_wt);
+            mpc_cmd_pub_.publish(heartbeat);
+            cmd_pub.publish(cmd);
+            if (cfg_.publish_so3_cmd) {
+                quadrotor_msgs::SO3Command so3;
+                if (getOneSO3Command(cmd,so3)) so3_cmd_pub_.publish(so3);
+            }
+        }
+
         void pubCmdTimerCallback(const ros::TimerEvent &event) {
             // This callback runs independently from replan, but the small
             // FSM-state critical section remains serialized with goal/control
             // callbacks and trajectory commits.
             std::unique_lock<std::mutex> tick_lock(fsm_tick_mutex_, std::try_to_lock);
             if (!tick_lock.owns_lock()) {
+                publishWhilePlannerBusy();
                 return;
             }
             if (stop) {
@@ -1795,9 +1871,10 @@ namespace fsm {
             if (!navigationExecutionEnabled()) {
                 return;
             }
-            if (machine_state_ != FOLLOW_TRAJ &&
-                machine_state_ != STATIC_TRACKING &&
-                machine_state_ != EMER_STOP) {
+            // HOLD_TRACKING owns a committed stop trajectory. Keep sampling
+            // it through its endpoint; withholding commands here makes the
+            // gateway time out and replace a moving command with a hard hold.
+            if (!commandExecutionState()) {
                 return;
             }
 
@@ -1807,6 +1884,9 @@ namespace fsm {
             publishSwarmState();
             mpc_cmd_pub_.publish(heartbeat);
             cmd_pub.publish(pid_cmd_);
+            last_execution_cmd_ = pid_cmd_;
+            last_command_epoch_ = navigationTaskEpoch();
+            have_command_epoch_ = true;
             if (cfg_.publish_so3_cmd) {
                 quadrotor_msgs::SO3Command so3_cmd;
                 if (getOneSO3Command(pid_cmd_, so3_cmd)) {

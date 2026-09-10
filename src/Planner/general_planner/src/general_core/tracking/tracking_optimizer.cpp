@@ -850,7 +850,7 @@ namespace general_planner {
         frontend_cfg.fov_range = effective_tracking_fov_range;
         frontend_cfg.fov_range_margin = cfg_.tracking_frontend_fov_range_margin;
         frontend_cfg.fov_front_margin = cfg_.tracking_fov_front_margin;
-        frontend_cfg.max_yaw_rate = cfg_.yaw_dot_max;
+        frontend_cfg.max_yaw_rate = cfg_.tracking_yaw_rate_limit;
         frontend_cfg.yaw_rate_margin = cfg_.tracking_frontend_yaw_rate_margin;
         frontend_cfg.obstacle_recovery_enable = cfg_.tracking_frontend_obstacle_recovery_enable;
         frontend_cfg.grid_neighbor_mode = cfg_.tracking_frontend_grid_neighbor_mode;

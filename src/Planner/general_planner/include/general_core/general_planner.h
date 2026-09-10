@@ -279,6 +279,10 @@ namespace general_planner {
 
         void markTrackingPerchingContact();
 
+        // Read only the committed trajectory under its own lock. Safe while
+        // a planner worker owns the FSM; never reads mutable robot/task state.
+        bool sampleCommittedCommand(StatePVAJ &pvaj, double &yaw, double &yaw_dot,
+                                    bool &on_backup, double &start_wt);
         void getOneCommandFromTraj(StatePVAJ &pvaj,
                                    double &yaw,
                                    double &yaw_dot,

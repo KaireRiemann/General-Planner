@@ -11,7 +11,7 @@ import numpy as np
 import rospkg
 import rospy
 from nav_msgs.msg import Odometry, Path as Prediction
-from sensor_msgs.msg import CompressedImage
+from sensor_msgs.msg import CompressedImage, CameraInfo
 from tracking_detector.msg import BoundingBoxes
 
 if os.environ.get('ROS_MASTER_URI') != 'http://127.0.0.1:11329':
@@ -38,8 +38,10 @@ def target(m):
     counts['odom'] += 1
 
 def path(m):
-    assert len(m.poses) == 17
-    assert abs((m.poses[-1].header.stamp - m.poses[0].header.stamp).to_sec() - 4) < 1e-6
+    if not m.poses:
+        return
+    assert 2 <= len(m.poses) <= 7
+    assert (m.poses[-1].header.stamp - m.poses[0].header.stamp).to_sec() <= 1.5
     counts['path'] += 1
 
 subs = [rospy.Subscriber('/tracking/bboxes', BoundingBoxes, boxes),
@@ -47,13 +49,16 @@ subs = [rospy.Subscriber('/tracking/bboxes', BoundingBoxes, boxes),
         rospy.Subscriber('/tracking/target_prediction', Prediction, path)]
 rgb = rospy.Publisher('/camera0/color/image/compressed', CompressedImage, queue_size=1)
 odom = rospy.Publisher('/unity_odom', Odometry, queue_size=20)
+info = rospy.Publisher('/camera0/color/info', CameraInfo, queue_size=1, latch=True)
 def send(im):
     now = rospy.Time.now()
     o = Odometry(); o.header.stamp = now; o.header.frame_id = 'world'
     o.pose.pose.orientation.w = 1; o.pose.pose.position.z = 1.5
     m = CompressedImage(); m.header.stamp = now; m.header.frame_id = 'camera'
     m.format = 'jpeg'; m.data = cv2.imencode('.jpg', im)[1].tobytes()
-    odom.publish(o); rgb.publish(m)
+    c=CameraInfo();c.header=m.header;c.width=640;c.height=480
+    c.K=[415.6922,0,320,0,415.6922,240,0,0,1]
+    info.publish(c); odom.publish(o); rgb.publish(m)
 end = time.monotonic() + 60
 while time.monotonic() < end and not all(counts[k] for k in ('car', 'odom', 'path')):
     send(photo); time.sleep(.1)

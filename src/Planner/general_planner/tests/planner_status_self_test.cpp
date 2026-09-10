@@ -39,6 +39,8 @@ int main() {
          "toString blocked result");
   expect(parsePlannerMode("state2state", mode), "parse state2state");
   expect(mode == PlannerMode::STATE2STATE, "mode state2state");
+  expect(modeStateFromNavigationString("TRACKING_LOST") == ModeState::S2S_WAIT_GOAL, "lost tracking waits");
+  expect(modeStateFromNavigationString("TRACKING_BRAKING") == ModeState::S2S_FOLLOW_TRAJ, "tracking brake remains navigation-owned");
   expect(parsePlannerMode("TRACKING", mode), "parse tracking case insensitive");
   expect(mode == PlannerMode::TRACKING, "tracking has its own mode");
   expect(general_planner::planner_runtime::isNavigationMode(mode), "tracking uses navigation adapter");

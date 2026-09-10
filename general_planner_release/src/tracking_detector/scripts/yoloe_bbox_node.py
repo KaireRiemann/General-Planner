@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import os
+import json
 import sys
 import threading
 from pathlib import Path
@@ -14,6 +15,7 @@ import rospy
 from cv_bridge import CvBridge, CvBridgeError
 from nav_msgs.msg import Odometry
 from sensor_msgs.msg import CompressedImage, Image
+from std_msgs.msg import String
 
 from tracking_detector.msg import BoundingBox, BoundingBoxes
 
@@ -35,6 +37,10 @@ class YoloeSemanticPublisher:
         self.bounding_boxes_pub = rospy.Publisher(bounding_boxes_topic, BoundingBoxes, queue_size=2)
         self.visualization_pub = rospy.Publisher(visualization_topic, Image, queue_size=1)
 
+        self.tracking_status = {}
+        self.status_sub = rospy.Subscriber(
+            rospy.get_param("~tracking_status_topic", "/tracking/status"), String,
+            self._status_callback, queue_size=1)
         self.frame_queue = Queue(maxsize=1)
         self.running = True
         self.worker = threading.Thread(target=self._processing_loop, daemon=True)
@@ -47,6 +53,12 @@ class YoloeSemanticPublisher:
             bounding_boxes_topic,
             self.device,
         )
+
+    def _status_callback(self, message):
+        try:
+            self.tracking_status = json.loads(message.data)
+        except (ValueError, TypeError):
+            pass
 
     def _resolve_yoloe_root(self):
         package_path = Path(rospkg.RosPack().get_path("tracking_detector")).resolve()
@@ -129,23 +141,14 @@ class YoloeSemanticPublisher:
 
     def _create_subscribers(self):
         rgb_topic = rospy.get_param("~rgb_topic", "/camera0/color/image/compressed")
-        odom_topic = rospy.get_param("~odom_topic", "/unity_odom")
         rgb_type = CompressedImage if rospy.get_param("~rgb_compressed", True) else Image
-
-        self.rgb_sub = message_filters.Subscriber(rgb_topic, rgb_type, queue_size=2)
-        self.odom_sub = message_filters.Subscriber(odom_topic, Odometry, queue_size=100)
-        self.rgb_odom_sync = message_filters.ApproximateTimeSynchronizer(
-            [self.rgb_sub, self.odom_sub], queue_size=100, slop=self.odom_sync_slop
-        )
-        self.rgb_odom_sync.registerCallback(self._rgb_odom_callback)
-        rospy.loginfo("Subscribing to RGB=%s, odom=%s.", rgb_topic, odom_topic)
+        # Detection does not need odometry. The estimator matches historical poses.
+        self.rgb_sub = rospy.Subscriber(rgb_topic, rgb_type,
+            lambda msg: self._rgb_odom_callback(msg, None), queue_size=1,
+            buff_size=8*1024*1024)
+        rospy.loginfo("Subscribing to RGB=%s.", rgb_topic)
 
     def _rgb_odom_callback(self, rgb_msg, odom_msg):
-        if not rgb_msg.header.stamp.is_zero() and not odom_msg.header.stamp.is_zero():
-            sync_delta = abs((rgb_msg.header.stamp - odom_msg.header.stamp).to_sec())
-            rospy.loginfo_throttle(
-                5.0, "RGB/odometry sync delta: %.1f ms", sync_delta * 1e3
-            )
         frame = (rgb_msg, odom_msg)
         try:
             self.frame_queue.put_nowait(frame)
@@ -193,20 +196,36 @@ class YoloeSemanticPublisher:
                 conf=self.confidence,
                 imgsz=(self.output_height, self.output_width),
                 device=self.device,
-                retina_masks=True,
+                retina_masks=False,
                 verbose=self.debug,
             )
         if not results:
+            empty = BoundingBoxes()
+            empty.header = rgb_msg.header
+            empty.image_header = rgb_msg.header
+            self.bounding_boxes_pub.publish(empty)
             return
 
         result = results[0]
         if self.publish_visualization:
-            visualization = result.plot(boxes=True, masks=True, conf=True, labels=True)
+            visualization = result.plot(boxes=True, masks=False, conf=True, labels=True)
+            status = self.tracking_status
+            age = status.get("observation_age")
+            age_text = "{:.2f}s".format(age) if isinstance(age, (int,float)) else "n/a"
+            label = "{} | age {} | {}".format(status.get("state","acquiring"),
+                                                age_text, status.get("range_method","none"))
+            color = (0,220,0) if status.get("valid") else (0,160,255)
+            cv2.putText(visualization, label, (8,22), cv2.FONT_HERSHEY_SIMPLEX,
+                        0.5, color, 1, cv2.LINE_AA)
             visualization_msg = self.bridge.cv2_to_imgmsg(visualization, "bgr8")
             visualization_msg.header = rgb_msg.header
             self.visualization_pub.publish(visualization_msg)
 
         if result.boxes is None:
+            empty = BoundingBoxes()
+            empty.header = rgb_msg.header
+            empty.image_header = rgb_msg.header
+            self.bounding_boxes_pub.publish(empty)
             return
 
         class_ids = result.boxes.cls.detach().cpu().numpy().astype(int)

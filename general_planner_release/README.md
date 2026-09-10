@@ -336,3 +336,10 @@ The controller should consume `quadrotor_msgs/PositionCommand` and, if needed, `
 感知运行文件与模型位于`src/tracking_detector`，生成消息位于`lib/python3/dist-packages/tracking_detector`。Python/PyTorch依赖沿用容器环境。感知管理器跟随 planner 已生效的任务模式，不主动切换任务。
 
 感知按模式启停：tracking 前端仅在 /planner/status 确认 tracking 模式后启动，离开后关闭。state2state 不运行 tracking 检测。重新进入 tracking 需要等待模型加载。release 当前未包含 gate detector 启动链路；源码 runtime 的 gate detector 仅在 gate 模式启动。
+
+
+Tracking优化版使用CameraInfo和按观测时间更新的新估计器，支持地平面或已配准米制深度定位。
+默认平面道路ground_z=0、目标中心高度0.7，需核对相机挂载与场景地面高度。
+通过tracking_range_method、tracking_depth_registered、tracking_ground_z、
+tracking_target_center_height配置；完整说明见src/tracking_detector/README.md。
+目标丢失后保持tracking模式，planner先制动再等待确认重捕获；预测器用空Path撤销旧输入。

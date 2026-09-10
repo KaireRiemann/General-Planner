@@ -43,7 +43,7 @@ namespace general_planner {
             YAW_TO_GOAL = 2
         };
 
-        traj_opt::Config exp_traj_cfg, back_traj_cfg, esdf_traj_cfg, plain_traj_cfg;
+        traj_opt::Config exp_traj_cfg, back_traj_cfg, esdf_traj_cfg, plain_traj_cfg, tracking_traj_cfg;
 
         // Bool Params
         bool visualization_en{true};
@@ -139,6 +139,8 @@ namespace general_planner {
         int mpc_horizon{};
 
         double yaw_dot_max;
+        double tracking_yaw_rate_limit{1.2};
+        double tracking_yaw_acceleration_limit{2.4};
         // Yaw mode: 1 heading to velocity, 2 heading to goal
         int yaw_mode = YAW_TO_VEL;
 
@@ -421,6 +423,12 @@ namespace general_planner {
             back_traj_cfg = traj_opt::Config(cfg_path, "backup_traj");
             esdf_traj_cfg = traj_opt::Config(cfg_path, "esdf_traj");
             plain_traj_cfg = traj_opt::Config(cfg_path, "plain_traj");
+            tracking_traj_cfg = esdf_traj_cfg;
+            loader.LoadParam("general_planner/tracking/max_vel", tracking_traj_cfg.max_vel, esdf_traj_cfg.max_vel);
+            loader.LoadParam("general_planner/tracking/max_acc", tracking_traj_cfg.max_acc, esdf_traj_cfg.max_acc);
+            loader.LoadParam("general_planner/tracking/max_jerk", tracking_traj_cfg.max_jerk, esdf_traj_cfg.max_jerk);
+            loader.LoadParam("general_planner/tracking/max_tilt", tracking_traj_cfg.max_tilt, esdf_traj_cfg.max_tilt);
+            loader.LoadParam("general_planner/tracking/max_omg", tracking_traj_cfg.max_omg, esdf_traj_cfg.max_omg);
             loader.LoadParam("general_planner/print_log", print_log, false);
             loader.LoadParam("general_planner/detailed_log_en", detailed_log_en, false);
             loader.LoadParam("general_planner/visualization_en", visualization_en, false);
@@ -576,6 +584,10 @@ namespace general_planner {
             loader.LoadParam("general_planner/yaw_mode", yaw_mode, 1);
             loader.LoadParam("general_planner/mpc_horizon", mpc_horizon, 1);
             loader.LoadParam("general_planner/yaw_dot_max", yaw_dot_max, 3.14);
+            loader.LoadParam("general_planner/tracking/yaw_rate_limit", tracking_yaw_rate_limit, 1.2);
+            loader.LoadParam("general_planner/tracking/yaw_acceleration_limit", tracking_yaw_acceleration_limit, 2.4);
+            tracking_yaw_rate_limit = std::max(0.1, std::min(yaw_dot_max, tracking_yaw_rate_limit));
+            tracking_yaw_acceleration_limit = std::max(0.1, tracking_yaw_acceleration_limit);
             loader.LoadParam("general_planner/se3_aggressive/enable", se3_aggressive_enable, true);
             loader.LoadParam("general_planner/se3_aggressive/piece_num", se3_piece_num, 4);
             loader.LoadParam("general_planner/se3_aggressive/reference_speed", se3_reference_speed, 3.0);

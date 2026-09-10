@@ -1024,6 +1024,40 @@ namespace fsm {
                  << RESET << endl;
         }
 
+        // Loss is an input state inside tracking, not a task/mode cancellation.
+        if (trackingMode()) {
+            if (tracking_lost_braking_) {
+                // Wait until the command queue has actually sampled the zero-
+                // derivative endpoint, not merely until it is 50 ms away.
+                if (planner_ptr_->getCommittedTrajectoryRemainingDuration() > 1.0e-6 ||
+                    !traj_finish_) return;
+                tracking_lost_braking_ = false;
+                plan_from_rest_ = true;
+                task_new_ = true;
+                ChangeState("tracking stop complete", trackingTaskReady() ? GENERATE_TRAJ : WAIT_GOAL);
+            }
+            if (!trackingTaskReady() &&
+                (trackingExecutionState() || machine_state_ == GENERATE_TRAJ)) {
+                tracking_target_lost_ = true;
+                const bool stopped = planner_ptr_->commitTrackingHoldTrajectory(
+                    "tracking observation lost: controlled braking", 0.0, true);
+                recordDiagnosticEvent(stopped ? "WARN" : "ERROR", "tracking_target_lost",
+                                      stopped ? "controlled_braking" : "brake_unsafe_emergency");
+                if (stopped) {
+                    tracking_lost_braking_ = true;
+                    publishPolyTraj();
+                    ChangeState("tracking target lost", HOLD_TRACKING);
+                } else {
+                    ChangeState("tracking brake unsafe", EMER_STOP);
+                }
+                return;
+            }
+            if (trackingTaskReady()) tracking_target_lost_ = false;
+        } else {
+            tracking_lost_braking_ = false;
+            tracking_target_lost_ = false;
+        }
+
         switch (machine_state_) {
             case INIT: {
                 if (!started_) {
@@ -1741,8 +1775,10 @@ namespace fsm {
             const bool record_regular_finish,
             const bool mark_static_target_finished) {
         ExecutedTrajectoryFinishResult result;
+        if (tracking_lost_braking_) return result;
         const bool close_to_goal = closeToGoal(0.1);
         const bool tracking_unfinished =
+                !tracking_lost_braking_ && !tracking_target_lost_ &&
                 (trackingMode() || trackingPerchingMode()) &&
                 !trackingPerchingPerchingActive() &&
                 !close_to_goal;
@@ -1987,6 +2023,9 @@ namespace fsm {
     void Fsm::setTrackingTargetPrediction(const traj_opt::DynamicTargetStates &prediction,
                                          const bool activate_tracking_task) {
         if (prediction.empty()) {
+            std::lock_guard<std::mutex> lock(task_mutex_);
+            tracking_target_prediction_.clear();
+            tracking_target_rcv_time_ = -1.0;
             return;
         }
         const traj_opt::DynamicTargetStates filtered_prediction = filterStaticTrackingPrediction(prediction);

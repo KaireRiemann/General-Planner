@@ -32,7 +32,9 @@ namespace general_planner {
             const double total_dur = cmd_traj_info_.getTotalDuration();
             cmd_traj_info_.unlock();
 
-            const double eval_t = ros_ptr_->getSimTime() - start_wt;
+            const double trajectory_start = std::isfinite(pos_traj.start_WT) && pos_traj.start_WT > 0.0
+                                                ? pos_traj.start_WT : ros_ptr_->getSimTime();
+            const double eval_t = trajectory_start - start_wt;
             StatePVAJ yaw_state;
             if (!committed_yaw_traj.empty() && eval_t >= 0.0 && eval_t <= total_dur &&
                 committed_yaw_traj.getState(eval_t, yaw_state)) {
@@ -65,12 +67,15 @@ namespace general_planner {
             geometry_utils::normalizeNextYaw(way_pts(way_pts.size() - 1), goal_yaw[0]);
         }
 
-        const Vec2f init_state = init_yaw.head(2);
-        const Vec2f goal_state = goal_yaw.head(2);
-        yaw_traj = poly_interpo::minimumAccInterpolation<1>(init_state,
-                                                            goal_state,
-                                                            way_pts,
-                                                            times);
+        const double tail_dt = std::min(0.05,pos_traj.getTotalDuration()*0.25);
+        const double previous_yaw = yawFacingTarget(pos_traj,target_prediction,
+                                                    pos_traj.getTotalDuration()-tail_dt,goal_yaw[0]);
+        goal_yaw[1] = std::clamp((goal_yaw[0]-previous_yaw)/tail_dt,
+                                 -cfg_.tracking_yaw_rate_limit,cfg_.tracking_yaw_rate_limit);
+        yaw_traj = poly_interpo::minimumSnapInterpolation<1>(init_yaw, goal_yaw, way_pts, times);
+        if (yaw_traj.getMaxVelRate() > std::max(cfg_.tracking_yaw_rate_limit,std::abs(init_yaw[1]))+0.02 ||
+            yaw_traj.getMaxAccRate() > std::max(cfg_.tracking_yaw_acceleration_limit,std::abs(init_yaw[2]))+0.02)
+            return false;
         yaw_traj.start_WT = pos_traj.start_WT;
         return !yaw_traj.empty();
     }

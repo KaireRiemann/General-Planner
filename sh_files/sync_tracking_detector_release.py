@@ -23,9 +23,9 @@ def main():
             raise RuntimeError('Build tracking_detector / provision assets before packaging: ' + str(path))
     dst.mkdir(parents=True, exist_ok=True)
     ignore = shutil.ignore_patterns('__pycache__', '*.pyc', '.git')
-    for name in ('launch', 'config', 'msg', 'scripts', 'vendor'):
+    for name in ('launch', 'config', 'msg', 'scripts', 'vendor', 'integration'):
         shutil.copytree(src / name, dst / name, dirs_exist_ok=True, ignore=ignore)
-    for name in ('package.xml', 'README.md', 'THIRD_PARTY.md', 'LICENSE.target_ekf', '.gitignore'):
+    for name in ('package.xml', 'README.md', 'RUNTIME_SETUP.md', 'THIRD_PARTY.md', 'LICENSE.target_ekf', '.gitignore'):
         shutil.copy2(src / name, dst / name)
     # Source Python scripts are portable; catkin devel wrappers embed source paths.
     for name in ('target_ekf_node', 'target_path_predictor_node'):

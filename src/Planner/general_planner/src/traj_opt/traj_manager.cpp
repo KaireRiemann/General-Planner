@@ -6086,7 +6086,8 @@ TrajManager::TrajManager(const traj_opt::Config &exp_cfg,
                          double yaw_dot_max,
                          double esdf_safe_distance,
                          const ros_interface::RosInterface::Ptr &ros_ptr,
-                         const general_planner::MapManager::Ptr &map_manager)
+                         const general_planner::MapManager::Ptr &map_manager,
+                         const traj_opt::Config *tracking_cfg)
 {
   exp_traj_opt_ = std::make_shared<ExpTrajOpt>(exp_cfg, ros_ptr);
   esdf_traj_opt_ = std::make_shared<ESDFTrajOpt>(esdf_cfg, ros_ptr);
@@ -6098,8 +6099,8 @@ TrajManager::TrajManager(const traj_opt::Config &exp_cfg,
   plain_traj_opt_->setShortcutGuide(true);
   backup_traj_opt_ = std::make_shared<BackupTrajOpt>(backup_cfg, ros_ptr);
   yaw_traj_opt_ = std::make_shared<YawTrajOpt>(yaw_dot_max);
-  tracking_jerk_traj_opt_ = std::make_shared<TrackingJerkTrajOpt>(esdf_cfg, ros_ptr);
-  tracking_snap_traj_opt_ = std::make_shared<TrackingSnapTrajOpt>(esdf_cfg, ros_ptr);
+  tracking_jerk_traj_opt_ = std::make_shared<TrackingJerkTrajOpt>(tracking_cfg ? *tracking_cfg : esdf_cfg, ros_ptr);
+  tracking_snap_traj_opt_ = std::make_shared<TrackingSnapTrajOpt>(tracking_cfg ? *tracking_cfg : esdf_cfg, ros_ptr);
   perching_snap_traj_opt_ = std::make_shared<PerchingSnapTrajOpt>(esdf_cfg, ros_ptr);
   tracking_jerk_traj_opt_->setMapManager(map_manager);
   tracking_snap_traj_opt_->setMapManager(map_manager);

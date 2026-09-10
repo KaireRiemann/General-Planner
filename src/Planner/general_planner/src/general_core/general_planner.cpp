@@ -287,7 +287,7 @@ namespace general_planner {
                                                                 cfg_.yaw_dot_max,
                                                                 cfg_.esdf_safe_distance,
                                                                 ros_ptr_,
-                                                                map_manager_);
+                                                                map_manager_, &cfg_.tracking_traj_cfg);
         dynamic_obstacle_layer_ = std::make_unique<DynamicObstacleLayer>();
         DynamicObstacleLayer::Config dynamic_obstacle_cfg;
         dynamic_obstacle_cfg.enable = cfg_.dynamic_obstacle_layer_enable;

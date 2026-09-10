@@ -1134,7 +1134,14 @@ void PlannerSupervisor::navigationStatusCallback(
       return;
     }
     status_.mode_state = modeStateFromNavigationString(state);
-    if (state == "FOLLOW_TRAJ" || state == "STATIC_TRACKING" ||
+    if (state == "TRACKING_BRAKING" && status_.active_mode == PlannerMode::TRACKING) {
+      status_.phase = PlannerPhase::BRAKING;
+      status_.ready_for_new_task = false;
+      status_.stable_hover = false;
+      status_.command_owner = CommandOwner::STATE2STATE;
+      gateway_.setAuthorizedOwner(CommandOwner::STATE2STATE, status_.task_epoch);
+      status_.reason = "tracking target lost; controlled braking";
+    } else if (state == "FOLLOW_TRAJ" || state == "STATIC_TRACKING" ||
         state == "HOLD_TRACKING" || state == "YAWING") {
       status_.phase = PlannerPhase::EXECUTING;
       status_.ready_for_new_task = false;
@@ -1148,7 +1155,8 @@ void PlannerSupervisor::navigationStatusCallback(
       status_.command_owner = CommandOwner::STATE2STATE;
       gateway_.setAuthorizedOwner(CommandOwner::STATE2STATE, status_.task_epoch);
       status_.reason = "navigation planning";
-    } else if (state == "WAIT_GOAL") {
+    } else if (state == "WAIT_GOAL" ||
+               (state == "TRACKING_LOST" && status_.active_mode == PlannerMode::TRACKING)) {
       if (status_.task_result == PlannerTaskResult::FAILED &&
           (!adapter_status.has_lifecycle || !adapter_status.quiescent)) {
         return;
@@ -1189,7 +1197,10 @@ void PlannerSupervisor::navigationStatusCallback(
       // An idle adapter is not evidence that the previous failed goal succeeded.
       if (status_.task_result != PlannerTaskResult::FAILED) {
         const bool tracking = status_.active_mode == PlannerMode::TRACKING;
-        status_.reason = tracking ? "tracking waiting for fresh target" : "navigation wait goal";
+        status_.reason = tracking
+            ? (state == "TRACKING_LOST" ? "tracking target lost; waiting for confirmed reacquisition"
+                                        : "tracking waiting for fresh target")
+            : "navigation wait goal";
         status_.task_result = tracking ? PlannerTaskResult::NONE : PlannerTaskResult::SUCCEEDED;
       }
     }

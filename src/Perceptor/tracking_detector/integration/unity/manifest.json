@@ -1,0 +1,17 @@
+[
+  {
+    "path": "Library/PackageCache/com.frj.unity-sensors@c33247ddf2/Runtime/Scripts/Sensors/Camera/RGBCamera/RGBCameraSensor.cs",
+    "original_sha256": "3c9e638e187830a3f3f7b0ce5196b2e525b320ce4d3ced084deea198b3d7c6a8",
+    "replacement": "RGBCameraSensor.cs"
+  },
+  {
+    "path": "Library/PackageCache/com.frj.unity-sensors-ros@c33247ddf2/Runtime/Scripts/Publishers/RosMsgPublisher.cs",
+    "original_sha256": "8ee0b152dfa7af279ca327e2a08784a30060acca980fa45108f1e305643a9d86",
+    "replacement": "RosMsgPublisher.cs"
+  },
+  {
+    "path": "Library/PackageCache/com.frj.unity-sensors-ros@c33247ddf2/Runtime/Scripts/Publishers/Camera/CameraImageMsgPublisher.cs",
+    "original_sha256": "5772e55e90f52a1fac317cdaf74f1ef6849144cab6d6d87a128988e63e5bc1aa",
+    "replacement": "CameraImageMsgPublisher.cs"
+  }
+]

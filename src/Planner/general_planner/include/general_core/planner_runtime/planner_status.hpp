@@ -333,14 +333,14 @@ inline bool isTargetExplorationMode(const PlannerMode mode) {
 }
 
 inline ModeState modeStateFromNavigationString(const std::string &state) {
-  if (state == "WAIT_GOAL") {
+  if (state == "WAIT_GOAL" || state == "TRACKING_LOST") {
     return ModeState::S2S_WAIT_GOAL;
   }
   if (state == "GENERATE_TRAJ") {
     return ModeState::S2S_GENERATE_TRAJ;
   }
   if (state == "FOLLOW_TRAJ" || state == "STATIC_TRACKING" ||
-      state == "HOLD_TRACKING") {
+      state == "HOLD_TRACKING" || state == "TRACKING_BRAKING") {
     return ModeState::S2S_FOLLOW_TRAJ;
   }
   if (state == "YAWING") {

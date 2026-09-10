@@ -1,0 +1,13 @@
+# MainScene/RGBCamera0_ros: local p=0, Unity local yaw=90 deg. Body odom is /unity_odom.
+# New estimator reads live CameraInfo; intrinsics below are retained for legacy comparison only.
+cam_width:  640
+cam_height: 480
+cam_fx: 415.6921977
+cam_fy: 415.6921977
+cam_cx: 320.0
+cam_cy: 240.0
+
+cam2body_R: [ 0.0,  0.0,  1.0,
+             -1.0,  0.0,  0.0,
+              0.0, -1.0,  0.0]
+cam2body_p: [0.0, 0.0, 0.0]
