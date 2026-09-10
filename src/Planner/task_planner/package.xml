@@ -72,6 +72,7 @@
     <exec_depend>mavros_msgs</exec_depend>
     <!-- Runtime components started by launch/exploration.launch. -->
     <exec_depend>general_planner</exec_depend>
+    <exec_depend>aperture_detector</exec_depend>
     <exec_depend>perfect_drone_sim</exec_depend>
     <exec_depend>rviz</exec_depend>
     <exec_depend>tf</exec_depend>

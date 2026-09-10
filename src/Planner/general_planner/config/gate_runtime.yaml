@@ -1,0 +1,56 @@
+# Internal Gate task. All distances in metres; thrust limits are acceleration (m/s^2).
+gate:
+  # corridor_only trusts the detected corridor; corridor_and_map also checks voxels.
+  validation_policy: corridor_and_map
+  # Additional transport/plant lag searched before feedback receipt (0..0.3 s).
+  # Receipt age is compensated separately; no unbounded nearest-path matching.
+  feedback_max_delay: 0.0
+  observation_topic: /polygon_hole_step_viz/observation
+  detection_enable_topic: /polygon_hole_step_viz/detection_enable
+  body_radius: 0.165
+  body_height: 0.10  # vertical semi-axis
+  margin: 0.03
+  mass: 1.168
+  wall_depth: 0.30  # configured thickness when depth_known=false; match the actual wall
+  exit_distance: 1.5
+  max_distance: 5.0
+  piece_length: 0.6
+  speed: 2.0
+  thrust_min: 4.0
+  thrust_max: 19.0
+  body_rate: 4.0
+  tilt: 0.78
+  weight_time: 5.0
+  weight_corridor: 2500000.0
+  stable_observations: 2
+  observation_timeout: 20.0
+  observation_max_age: 2.0
+  planning_timeout: 8.0
+  odom_timeout: 0.3
+  finish_timeout: 5.0
+  finish_radius: 0.15
+  tracking_error: 0.5
+  validation_dt: 0.02
+  require_known_free: true
+  # Auto lower bound leaves enough overlap for the full body in both cells.
+  tunnel_half_depth: 0.0
+  overlap_slack: 0.05
+  corridor_half_width: 1.0
+  corridor_half_height: 0.8
+  restore_start_height: false
+  weight_velocity: 100000.0
+  weight_body_rate: 100000.0
+  weight_tilt: 100000.0
+  weight_thrust: 100000.0
+  smooth_eps: 0.01
+  relative_cost_tolerance: 0.000001
+  integral_steps: 24
+  max_iterations: 400
+  center_tolerance: 0.02
+  normal_tolerance: 0.05
+  area_tolerance: 0.15
+  near_gate_lateral_error: 0.025
+  max_spatial_step: 0.01
+  completion_hold_time: 0.5
+  map_anchor_search_radius: 0.08
+  map_anchor_search_step: 0.01

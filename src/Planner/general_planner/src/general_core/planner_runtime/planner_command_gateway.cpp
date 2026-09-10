@@ -37,6 +37,13 @@ PlannerCommandGateway::PlannerCommandGateway(ros::NodeHandle &nh) : nh_(nh) {
                   << " output=" << output_cmd_topic_);
 }
 
+bool PlannerCommandGateway::submitGateCommand(const quadrotor_msgs::PositionCommand &command, std::uint64_t epoch) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (authorized_owner_ != CommandOwner::GATE || authorized_epoch_ != epoch) return false;
+  gate_cmd_=command; gate_rx_time_=ros::WallTime::now(); gate_epoch_=epoch; have_gate_cmd_=true;
+  return true;
+}
+
 void PlannerCommandGateway::setAuthorizedOwner(const CommandOwner owner,
                                                const std::uint64_t task_epoch) {
   std::lock_guard<std::mutex> lock(mutex_);
@@ -162,15 +169,15 @@ CommandSourceHealth PlannerCommandGateway::commandSourceHealth() const {
 
   const bool navigation = authorized_owner_ == CommandOwner::STATE2STATE;
   const bool exploration = authorized_owner_ == CommandOwner::EXPLORATION;
-  health.source_expected = navigation || exploration;
+  const bool gate = authorized_owner_ == CommandOwner::GATE;
+  health.source_expected = navigation || exploration || gate;
   if (!health.source_expected) {
     return health;
   }
 
-  const bool have_source = navigation ? have_navigation_cmd_
-                                      : have_exploration_cmd_;
-  const ros::WallTime received = navigation ? navigation_rx_time_
-                                             : exploration_rx_time_;
+  const bool have_source = gate ? (have_gate_cmd_ && gate_epoch_ == authorized_epoch_) :
+      (navigation ? have_navigation_cmd_ : have_exploration_cmd_);
+  const ros::WallTime received = gate ? gate_rx_time_ : (navigation ? navigation_rx_time_ : exploration_rx_time_);
   health.source_received_since_authorization =
       have_source && received >= authorization_time_;
   if (!health.source_received_since_authorization) {
@@ -309,12 +316,13 @@ void PlannerCommandGateway::timerCallback(const ros::WallTimerEvent &) {
         have_exploration_cmd_ && exploration_rx_time_ >= authorization_time_;
 
     const GatewayOutputMode output_mode = selectGatewayOutputMode(
-        authorized_owner_, navigation_fresh, exploration_fresh);
-    if (output_mode == GatewayOutputMode::EXTERNAL_GATE_SUPPRESSED) {
-      // Gate mode is a command-bus handover.  In particular, never fall
-      // through to makeHoldCommandLocked(): doing so would race the external
-      // gate planner on /planning/pos_cmd.
-      return;
+        authorized_owner_, navigation_fresh, exploration_fresh,
+        have_gate_cmd_ && gate_epoch_==authorized_epoch_ && gate_rx_time_>=authorization_time_ &&
+        (now-gate_rx_time_).toSec()<=command_timeout_);
+    if (output_mode == GatewayOutputMode::GATE) {
+      resumed_source_after_timeout=source_timeout_hold_active_;
+      event_owner=authorized_owner_; clearSourceTimeoutHoldLocked();
+      output=gate_cmd_; publish=true;
     } else if (output_mode == GatewayOutputMode::NAVIGATION) {
       resumed_source_after_timeout = source_timeout_hold_active_;
       event_owner = authorized_owner_;
@@ -337,6 +345,9 @@ void PlannerCommandGateway::timerCallback(const ros::WallTimerEvent &) {
       } else if (authorized_owner_ == CommandOwner::EXPLORATION &&
                  exploration_received_since_authorization) {
         source_age = (now - exploration_rx_time_).toSec();
+      } else if (authorized_owner_ == CommandOwner::GATE && have_gate_cmd_ &&
+                 gate_epoch_ == authorized_epoch_ && gate_rx_time_ >= authorization_time_) {
+        source_age = (now - gate_rx_time_).toSec();
       } else {
         awaiting_first_source_command = true;
         source_age = std::max(0.0, (now - authorization_time_).toSec());

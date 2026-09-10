@@ -1352,6 +1352,7 @@ private:
                                         ? static_cast<int>(std::ceil(path_length /
                                                                      config_.lengthPerPiece))
                                         : 1);
+        problem.piece_num = std::max(problem.piece_num, static_cast<int>(corridor.size()));
         problem.reference_speed = reference_speed;
         problem.min_duration = std::max(0.15, 0.5 * target_duration);
         problem.max_duration = std::max(problem.min_duration + 1.0e-3, 2.0 * target_duration);

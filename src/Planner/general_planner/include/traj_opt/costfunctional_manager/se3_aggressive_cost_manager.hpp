@@ -63,6 +63,19 @@ public:
     double cost = 0.0;
     cost += addVelocityCost(velocity, grad_velocity);
     cost += addThrustCost(acceleration, grad_acceleration);
+    if (problem_->max_tilt > 0.0 && problem_->weight_tilt > 0.0) {
+      const Eigen::Vector3d u = acceleration + cfg_->grav * Eigen::Vector3d::UnitZ();
+      const double norm = u.norm();
+      if (norm > 1e-8) {
+        double penalty = 0.0, derivative = 0.0;
+        if (cost_functional::smoothedL1(std::cos(problem_->max_tilt) - u.z() / norm,
+                                        cfg_->smooth_eps, penalty, derivative)) {
+          cost += problem_->weight_tilt * penalty;
+          grad_acceleration += problem_->weight_tilt * derivative *
+              (-Eigen::Vector3d::UnitZ() / norm + u.z() * u / (norm * norm * norm));
+        }
+      }
+    }
     cost += addBodyRateCost(velocity,
                             acceleration,
                             jerk,

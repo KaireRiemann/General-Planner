@@ -1,4 +1,5 @@
 #include <general_core/planner_runtime/planner_supervisor.hpp>
+#include <general_core/gate/gate_runtime.hpp>
 
 #include <algorithm>
 #include <cctype>
@@ -22,8 +23,10 @@ PlannerSupervisor::PlannerSupervisor(ros::NodeHandle &nh,
                                      PlannerCommandGateway &gateway,
                                      MapStatusProvider map_status_provider,
                                      TopologyMaintenanceSetter
-                                         topology_maintenance_setter)
+                                         topology_maintenance_setter,
+                                     std::shared_ptr<gate::Runtime> gate_runtime)
     : nh_(nh), gateway_(gateway),
+      gate_runtime_(std::move(gate_runtime)),
       map_status_provider_(std::move(map_status_provider)),
       topology_maintenance_setter_(std::move(topology_maintenance_setter)) {
   std::string initial_mode_text = "hold";
@@ -356,25 +359,12 @@ void PlannerSupervisor::handleModeRequest(const std::uint64_t request_id,
     return;
   }
 
-  // Do not let a normal mode request re-enable this runtime's command path
-  // while the external gate planner is still flying.  Its END notification is
-  // the ownership-release edge; the following stable-hover verification is
-  // completed before a navigation/exploration request can take effect.
-  if (status_.active_mode == PlannerMode::GATE && gate_executing_ &&
-      mode != PlannerMode::GATE) {
-    status_.accepted_request_id = request_id;
-    status_.requested_mode = PlannerMode::GATE;
-    status_.reason = "reject " + std::string(toString(mode)) +
-                     ": wait for gate END and stable hover";
-    ROS_WARN_STREAM("[planner_supervisor] " << status_.reason);
-    return;
-  }
-
   if (status_.active_mode == mode &&
       (status_.phase == PlannerPhase::WAITING_INPUT ||
        status_.phase == PlannerPhase::STABLE_HOLD ||
        status_.phase == PlannerPhase::PLANNING ||
-       status_.phase == PlannerPhase::EXECUTING)) {
+       status_.phase == PlannerPhase::EXECUTING ||
+       (mode == PlannerMode::GATE && status_.mode_state == ModeState::GATE_END_VERIFY))) {
     status_.accepted_request_id = request_id;
     status_.requested_mode = mode;
     if (!task_id.empty()) {
@@ -421,14 +411,6 @@ void PlannerSupervisor::beginTransition(const PlannerMode target,
   status_.phase = PlannerPhase::BRAKING;
   status_.reason = "braking for " + std::string(toString(target)) + " (" +
                    reason + ")";
-  if (target == PlannerMode::GATE) {
-    // A new gate run requires a fresh external START edge.  Clearing these at
-    // the beginning of the transition makes a repeated gate request safe.
-    gate_start_requested_ = false;
-    gate_executing_ = false;
-    gate_end_requested_ = false;
-    gate_edge_hover_satisfied_since_ = ros::Time();
-  }
   if (!task_id.empty()) {
     status_.task_id = task_id;
   } else {
@@ -452,6 +434,7 @@ void PlannerSupervisor::beginTransition(const PlannerMode target,
 
 void PlannerSupervisor::requestAdapterStop(const PlannerMode mode,
                                            const std::string &reason) {
+  if (mode == PlannerMode::GATE && gate_runtime_) gate_runtime_->cancel();
   if (isExplorationMode(mode)) {
     publishExplorationCommand("PAUSE " + status_.task_id);
   }
@@ -498,7 +481,7 @@ void PlannerSupervisor::activateMode(const PlannerMode mode,
   hold_anchor_locked_for_transition_ = true;
 
   if (mode == PlannerMode::HOLD) {
-    // A gate run may be canceled before START. Once the normal verified
+    // After canceling an internal task, the normal verified
     // transition has completed, HOLD is again this runtime's command owner.
     gateway_.setPublishingEnabled(true);
     enterStableHold(reason, status_.task_result);
@@ -566,41 +549,31 @@ void PlannerSupervisor::activateMode(const PlannerMode mode,
   if (mode == PlannerMode::GATE) {
     if (serial_handover_) {
       status_.phase = PlannerPhase::FAILED;
-      status_.reason =
-          "cannot activate gate while serial_handover is enabled";
+      status_.mode_state = ModeState::GATE_FAILED;
+      status_.task_result = PlannerTaskResult::FAILED;
+      status_.reason = "internal gate requires composed command gateway";
       return;
     }
-
-    // Stop both internal task adapters before the command bus is released.
-    // GlobalMapRuntime deliberately remains untouched: it continues fusing
-    // cloud/odom and updating the persistent global topology while gate owns
-    // the vehicle.
-    exploration_start_pending_ = false;
-    serial_state2state_ready_ = false;
-    serial_handover_pending_ = false;
+    exploration_start_pending_=false;
     publishExplorationCommand("PAUSE " + status_.task_id);
     if (navigation_enabled_) {
       publishNavigationCommand("CLEAR " + std::to_string(status_.task_epoch));
       publishNavigationTaskMode("hold");
     }
-
-    // GATE is never an alias for HOLD: HOLD emits a fixed PositionCommand.
-    // Set both safeguards before exposing gate readiness. The command gateway
-    // policy also suppresses output for CommandOwner::GATE in case this flag
-    // is accidentally re-enabled elsewhere.
-    gateway_.setAuthorizedOwner(CommandOwner::GATE, status_.task_epoch);
-    gateway_.setPublishingEnabled(false);
-    status_.phase = PlannerPhase::WAITING_INPUT;
-    status_.mode_state = ModeState::GATE_WAIT_START;
-    status_.stable_hover = true;
-    status_.ready_for_new_task = true;
-    status_.command_owner = CommandOwner::GATE;
-    status_.task_result = PlannerTaskResult::NONE;
-    status_.reason =
-        reason + "; gate command handover ready; waiting for START on " +
-        gate_status_topic_;
-    ROS_INFO_STREAM("[planner_supervisor] gate ready: output command gateway "
-                    "suppressed, global map/topology continue");
+    gateway_.setPublishingEnabled(true);
+    authorizeHoldAtCurrentOdomLocked("internal gate observation");
+    status_.command_owner=CommandOwner::HOLD;
+    status_.ready_for_new_task=false;
+    status_.task_result=PlannerTaskResult::NONE;
+    if (!gate_runtime_) {
+      status_.phase=PlannerPhase::FAILED; status_.mode_state=ModeState::GATE_FAILED;
+      status_.task_result=PlannerTaskResult::FAILED; status_.reason="internal gate runtime unavailable";
+      return;
+    }
+    gate_runtime_->start(status_.task_epoch);
+    status_.phase=PlannerPhase::WAITING_INPUT;
+    status_.mode_state=ModeState::GATE_WAIT_OBSERVATION;
+    status_.reason="waiting for detector aperture observations";
     return;
   }
 
@@ -1223,99 +1196,56 @@ void PlannerSupervisor::navigationStatusCallback(
   }
 }
 
-void PlannerSupervisor::gateStatusCallback(const std_msgs::StringConstPtr &msg) {
-  if (!msg) {
+void PlannerSupervisor::gateStatusCallback(const std_msgs::StringConstPtr &) {
+  ROS_WARN_THROTTLE(5.0, "External gate START/END ignored: mode_request_text=gate runs the internal SE3 task.");
+}
+
+void PlannerSupervisor::updateInternalGateLocked() {
+  if (status_.mode_state==ModeState::GATE_COMPLETE || status_.mode_state==ModeState::GATE_FAILED) {
+    status_.stable_hover=hoverConditionMetLocked();
+    status_.ready_for_new_task=status_.stable_hover;
     return;
   }
-
-  std::string command = msg->data;
-  const auto first = command.find_first_not_of(" \t\r\n");
-  if (first == std::string::npos) {
+  if (!gate_runtime_) return;
+  const auto task=gate_runtime_->status();
+  if (task.epoch!=status_.task_epoch) return;
+  status_.reason=task.reason;
+  status_.ready_for_new_task=false;
+  if (task.phase==gate::Phase::FAILED || !status_.odom_valid) {
+    gate_runtime_->cancel();
+    authorizeHoldAtCurrentOdomLocked("internal gate failed");
+    status_.command_owner=CommandOwner::HOLD; status_.phase=PlannerPhase::FAILED;
+    status_.mode_state=ModeState::GATE_FAILED; status_.task_result=PlannerTaskResult::FAILED;
+    if (!status_.odom_valid) status_.reason="gate odometry unavailable";
     return;
   }
-  const auto last = command.find_last_not_of(" \t\r\n");
-  command = command.substr(first, last - first + 1);
-  std::transform(command.begin(), command.end(), command.begin(),
-                 [](const unsigned char c) {
-                   return static_cast<char>(std::toupper(c));
-                 });
-
-  const bool start = command == "START" || command == "BEGIN" ||
-                     command == "RUNNING";
-  const bool end = command == "END" || command == "DONE" ||
-                   command == "FINISHED" || command == "COMPLETE";
-  if (!start && !end) {
-    ROS_WARN_STREAM_THROTTLE(
-        1.0, "[planner_supervisor] ignore gate status='" << msg->data
-                                                           << "' (need START or END)");
-    return;
-  }
-
-  std::lock_guard<std::mutex> lock(mutex_);
-  // START may be delivered just before the state2state->gate brake has
-  // finished. Latch it, then activate it only after activateMode(GATE) has
-  // suppressed our command output and timerCallback has re-verified hover.
-  const bool gate_requested =
-      status_.active_mode == PlannerMode::GATE ||
-      status_.requested_mode == PlannerMode::GATE;
-  if (!gate_requested) {
-    ROS_WARN_THROTTLE(1.0,
-                      "[planner_supervisor] ignore gate %s: gate mode inactive",
-                      command.c_str());
-    return;
-  }
-
-  if (start) {
-    if (status_.active_mode != PlannerMode::GATE || transition_active_) {
-      gate_start_requested_ = true;
-      ROS_INFO("[planner_supervisor] gate START latched pending safe handover");
-      return;
+  if (task.phase==gate::Phase::OBSERVING) {
+    status_.phase=PlannerPhase::WAITING_INPUT; status_.mode_state=ModeState::GATE_WAIT_OBSERVATION;
+    status_.command_owner=CommandOwner::HOLD;
+  } else if (task.phase==gate::Phase::PLANNING) {
+    status_.phase=PlannerPhase::PLANNING; status_.mode_state=ModeState::GATE_PLANNING;
+    status_.command_owner=CommandOwner::HOLD;
+  } else if (task.phase==gate::Phase::READY) {
+    gateway_.setAuthorizedOwner(CommandOwner::GATE,status_.task_epoch);
+    if (!gate_runtime_->execute(status_.task_epoch)) {
+      gate_runtime_->cancel(); authorizeHoldAtCurrentOdomLocked("gate start state changed");
+      status_.phase=PlannerPhase::FAILED; status_.mode_state=ModeState::GATE_FAILED;
+      status_.task_result=PlannerTaskResult::FAILED; status_.command_owner=CommandOwner::HOLD;
+      status_.reason="gate start state changed before execution";
+    } else {
+      status_.phase=PlannerPhase::EXECUTING; status_.mode_state=ModeState::GATE_EXECUTING;
+      status_.command_owner=CommandOwner::GATE;
     }
-    if (gate_executing_) {
-      return;
-    }
-    if (status_.mode_state != ModeState::GATE_WAIT_START) {
-      ROS_WARN("[planner_supervisor] ignore gate START: rearm gate mode first");
-      return;
-    }
-    gate_start_requested_ = true;
-    gate_edge_hover_satisfied_since_ = ros::Time();
-    status_.phase = PlannerPhase::HOLD_VERIFY;
-    status_.mode_state = ModeState::GATE_WAIT_START;
-    status_.stable_hover = false;
-    status_.ready_for_new_task = false;
-    status_.command_owner = CommandOwner::GATE;
-    status_.reason = "gate START received; verifying stable hover";
-    return;
+  } else if (task.phase==gate::Phase::EXECUTING || task.phase==gate::Phase::SETTLING) {
+    status_.phase=task.phase==gate::Phase::SETTLING ? PlannerPhase::HOLD_VERIFY : PlannerPhase::EXECUTING;
+    status_.mode_state=task.phase==gate::Phase::SETTLING ? ModeState::GATE_END_VERIFY : ModeState::GATE_EXECUTING;
+    status_.command_owner=CommandOwner::GATE;
+  } else if (task.phase==gate::Phase::SUCCEEDED) {
+    gate_runtime_->cancel(); completeGateExitLocked();
   }
-
-  if (status_.active_mode != PlannerMode::GATE || !gate_executing_ ||
-      transition_active_) {
-    ROS_WARN_THROTTLE(1.0,
-                      "[planner_supervisor] ignore gate END: gate is not executing");
-    return;
-  }
-  if (gate_end_requested_) {
-    return;
-  }
-  // Do not publish a hold command here. The external planner owns the brake
-  // through the end of the verification window; only after stable odometry is
-  // confirmed do we atomically reclaim the bus with a current-pose hold.
-  gate_end_requested_ = true;
-  gate_edge_hover_satisfied_since_ = ros::Time();
-  status_.phase = PlannerPhase::HOLD_VERIFY;
-  status_.mode_state = ModeState::GATE_END_VERIFY;
-  status_.stable_hover = false;
-  status_.ready_for_new_task = false;
-  status_.command_owner = CommandOwner::GATE;
-  status_.reason = "gate END received; verifying stable hover";
 }
 
 void PlannerSupervisor::completeGateExitLocked() {
-  gate_end_requested_ = false;
-  gate_start_requested_ = false;
-  gate_executing_ = false;
-  gate_edge_hover_satisfied_since_ = ros::Time();
 
   // Keep the first command after the gate at the actual final odometry pose,
   // rather than a transition anchor from before traversing the slit.
@@ -1694,9 +1624,10 @@ void PlannerSupervisor::timerCallback(const ros::TimerEvent &) {
       }
       const CommandOwner active_owner = ownerForMode(status_.active_mode);
       const bool source_timeout_abort =
-          shouldMonitorCommandSource(status_.phase) &&
+          (shouldMonitorCommandSource(status_.phase) ||
+           (status_.active_mode == PlannerMode::GATE && status_.mode_state == ModeState::GATE_END_VERIFY)) &&
           (active_owner == CommandOwner::STATE2STATE ||
-           active_owner == CommandOwner::EXPLORATION) &&
+           active_owner == CommandOwner::EXPLORATION || active_owner == CommandOwner::GATE) &&
           command_health.authorized_owner == active_owner &&
           shouldAbortCommandSource(
               command_health.source_expected,
@@ -1715,66 +1646,7 @@ void PlannerSupervisor::timerCallback(const ros::TimerEvent &) {
         // for an operator-requested transition.
       } else {
       if (status_.active_mode == PlannerMode::GATE) {
-        // No branch in this block is allowed to authorize HOLD, navigation or
-        // exploration output while gate is active. The external planner owns
-        // the vehicle until END has remained inside the same hover threshold
-        // used for every other runtime handover.
-        if (gate_end_requested_) {
-          status_.phase = PlannerPhase::HOLD_VERIFY;
-          status_.mode_state = ModeState::GATE_END_VERIFY;
-          status_.stable_hover = false;
-          status_.ready_for_new_task = false;
-          status_.command_owner = CommandOwner::GATE;
-          if (!hoverConditionMetLocked()) {
-            gate_edge_hover_satisfied_since_ = ros::Time();
-          } else {
-            if (gate_edge_hover_satisfied_since_.isZero()) {
-              gate_edge_hover_satisfied_since_ = ros::Time::now();
-            }
-            if ((ros::Time::now() - gate_edge_hover_satisfied_since_).toSec() >=
-                hover_hold_duration_) {
-              completeGateExitLocked();
-            }
-          }
-        } else if (gate_start_requested_ && !gate_executing_) {
-          status_.phase = PlannerPhase::HOLD_VERIFY;
-          status_.mode_state = ModeState::GATE_WAIT_START;
-          status_.stable_hover = false;
-          status_.ready_for_new_task = false;
-          status_.command_owner = CommandOwner::GATE;
-          if (!hoverConditionMetLocked()) {
-            gate_edge_hover_satisfied_since_ = ros::Time();
-          } else {
-            if (gate_edge_hover_satisfied_since_.isZero()) {
-              gate_edge_hover_satisfied_since_ = ros::Time::now();
-            }
-            if ((ros::Time::now() - gate_edge_hover_satisfied_since_).toSec() >=
-                hover_hold_duration_) {
-              gate_executing_ = true;
-              gate_start_requested_ = false;
-              gate_edge_hover_satisfied_since_ = ros::Time();
-              status_.phase = PlannerPhase::EXECUTING;
-              status_.mode_state = ModeState::GATE_EXECUTING;
-              status_.stable_hover = false;
-              status_.ready_for_new_task = false;
-              status_.command_owner = CommandOwner::GATE;
-              status_.reason = "gate START accepted; external planner owns command bus";
-              ROS_INFO("[planner_supervisor] gate START accepted after stable hover");
-            }
-          }
-        } else if (gate_executing_) {
-          status_.phase = PlannerPhase::EXECUTING;
-          status_.mode_state = ModeState::GATE_EXECUTING;
-          status_.stable_hover = false;
-          status_.ready_for_new_task = false;
-          status_.command_owner = CommandOwner::GATE;
-        } else {
-          status_.phase = PlannerPhase::WAITING_INPUT;
-          status_.mode_state = ModeState::GATE_WAIT_START;
-          status_.stable_hover = hoverConditionMetLocked();
-          status_.ready_for_new_task = status_.stable_hover;
-          status_.command_owner = CommandOwner::GATE;
-        }
+        updateInternalGateLocked();
       } else {
         updatePhaseFromActiveModeLocked();
       }

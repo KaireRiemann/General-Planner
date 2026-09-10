@@ -1,0 +1,17 @@
+<launch>
+  <arg name="base_url" default="http://127.0.0.1:18000/v1" />
+  <arg name="api_key" default="diff" />
+  <arg name="model" default="auto" />
+  <arg name="detection_period" default="3.0" />
+  
+
+  <node pkg="aperture_detector" type="windowtec_vlm_box_node.py" name="windowtec_vlm_box_node" output="screen">
+    <param name="image_topic" value="/camera0/color/image/compressed" />
+    <param name="box_topic" value="/windowtec/window_box" />
+    <param name="overlay_topic" value="/windowtec/overlay_image" />
+    <param name="base_url" value="$(arg base_url)" />
+    <param name="api_key" value="$(arg api_key)" />
+    <param name="model" value="$(arg model)" />
+    <param name="detection_period" value="$(arg detection_period)" />
+  </node>
+</launch>

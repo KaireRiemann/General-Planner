@@ -16,9 +16,8 @@ enum class PlannerMode : std::uint8_t {
   // uses the same HighSpeedExp adapter and command owner as coverage
   // exploration, but selects safe frontier bridges toward one remote goal.
   TARGET_EXPLORATION = 4,
-  // Map-only handover mode.  The runtime keeps the world model/topology
-  // alive, but never publishes a PositionCommand: an external gate planner
-  // owns the vehicle until it reports END and the vehicle is again stable.
+  // Internal aperture detection, SE3 planning and execution task.
+  // The shared world map/topology remains active throughout.
   GATE = 5,
   // Tracking shares the navigation adapter and its command gateway.
   TRACKING = 6
@@ -77,6 +76,9 @@ enum class ModeState : std::uint16_t {
   GATE_WAIT_START = 30,
   GATE_EXECUTING = 31,
   GATE_END_VERIFY = 32,
+  GATE_WAIT_OBSERVATION = 34,
+  GATE_PLANNING = 35,
+  GATE_FAILED = 36,
   GATE_COMPLETE = 33
 };
 
@@ -262,6 +264,9 @@ inline const char *toString(const ModeState state) {
     return "exp_wait_target";
   case ModeState::HOLD_IDLE:
     return "hold_idle";
+  case ModeState::GATE_WAIT_OBSERVATION: return "gate_wait_observation";
+  case ModeState::GATE_PLANNING: return "gate_planning";
+  case ModeState::GATE_FAILED: return "gate_failed";
   case ModeState::GATE_WAIT_START:
     return "gate_wait_start";
   case ModeState::GATE_EXECUTING:

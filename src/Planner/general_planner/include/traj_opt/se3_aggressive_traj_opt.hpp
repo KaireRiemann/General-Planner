@@ -1,6 +1,7 @@
 #pragma once
 
 #include <memory>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -11,6 +12,7 @@
 #include "ros_interface/ros_interface.hpp"
 #include "traj_opt/config.hpp"
 #include "traj_opt/minco/minco_trajectory.hpp"
+#include "traj_opt/costfunctional/spatialmap/polytope_spatial_map.hpp"
 #include "utils/header/type_utils.hpp"
 
 namespace traj_opt {
@@ -41,6 +43,10 @@ struct SE3AggressiveProblem {
   double thrust_acc_max{20.0};
   double body_rate_max{5.0};
   double yaw_rate_max{3.0};
+  double max_tilt{-1.0};
+  double weight_tilt{0.0};
+  int max_iterations{0};
+  std::function<bool()> should_stop;
 
   double weight_time{10.0};
   double weight_corridor{1.0e4};
@@ -71,6 +77,9 @@ public:
                 geometry_utils::Trajectory &out_traj);
 
 private:
+  friend struct SE3SpatialMapTestAccess;
+  bool initializeSpatialMap();
+
   struct OptimizationVariables {
     EIGEN_MAKE_ALIGNED_OPERATOR_NEW
 
@@ -107,6 +116,9 @@ private:
   ros_interface::RosInterface::Ptr ros_ptr_;
   general_planner::MapManager::Ptr map_manager_;
   JerkTraj minco_traj_;
+  spatial_map::PolyhedraV spatial_polys_;
+  Eigen::VectorXi spatial_poly_idx_;
+  spatial_map::PolytopeSpatialMap spatial_map_;
   OptimizationVariables opt_vars_;
 };
 

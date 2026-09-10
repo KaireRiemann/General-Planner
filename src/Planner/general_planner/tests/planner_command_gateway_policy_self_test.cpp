@@ -38,9 +38,12 @@ int main() {
   expect(selectGatewayOutputMode(CommandOwner::HOLD, true, true) ==
              GatewayOutputMode::EXPLICIT_HOLD,
          "explicit hold must remain independent of source freshness");
-  expect(selectGatewayOutputMode(CommandOwner::GATE, true, true) ==
-             GatewayOutputMode::EXTERNAL_GATE_SUPPRESSED,
-         "gate must suppress every runtime position-command source");
+  expect(selectGatewayOutputMode(CommandOwner::GATE, true, true, true) ==
+             GatewayOutputMode::GATE,
+         "fresh internal gate must pass through");
+
+  expect(selectGatewayOutputMode(CommandOwner::GATE, true, true, false) ==
+             GatewayOutputMode::SOURCE_TIMEOUT_HOLD, "stale gate must hold");
 
   // The authorization-to-first-command interval must not be interpreted as
   // an infinite-age stale source. The gateway still publishes a safe fallback

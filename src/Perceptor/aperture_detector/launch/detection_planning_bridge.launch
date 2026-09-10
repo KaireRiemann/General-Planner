@@ -1,0 +1,25 @@
+<launch>
+  <arg name="detector_enable_topic" default="/polygon_hole_step_viz/detection_enable" />
+  <arg name="planning_snapshot_topic" default="/polygon_hole_step_viz/planning_snapshot_json" />
+  <arg name="planning_trigger_topic" default="/gate_planner/planning_trigger_odom" />
+  <arg name="position_command_topic" default="/setpoints_cmd" />
+  <arg name="frame_id" default="world" />
+  <arg name="initial_detection_enabled" default="true" />
+  <arg name="require_detection_ready" default="true" />
+  <arg name="snapshot_timeout" default="1.5" />
+  <arg name="planning_start_timeout" default="3.0" />
+  <arg name="command_timeout" default="1.0" />
+
+  <node pkg="aperture_detector" type="detection_planning_bridge" name="detection_planning_bridge" output="screen">
+    <param name="detector_enable_topic" value="$(arg detector_enable_topic)" />
+    <param name="planning_snapshot_topic" value="$(arg planning_snapshot_topic)" />
+    <param name="planning_trigger_topic" value="$(arg planning_trigger_topic)" />
+    <param name="position_command_topic" value="$(arg position_command_topic)" />
+    <param name="frame_id" value="$(arg frame_id)" />
+    <param name="initial_detection_enabled" value="$(arg initial_detection_enabled)" />
+    <param name="require_detection_ready" value="$(arg require_detection_ready)" />
+    <param name="snapshot_timeout" value="$(arg snapshot_timeout)" />
+    <param name="planning_start_timeout" value="$(arg planning_start_timeout)" />
+    <param name="command_timeout" value="$(arg command_timeout)" />
+  </node>
+</launch>

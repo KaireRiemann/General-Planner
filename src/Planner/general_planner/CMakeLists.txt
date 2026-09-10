@@ -29,6 +29,7 @@ find_package(catkin REQUIRED COMPONENTS
         nav_msgs
         sensor_msgs
         message_generation
+        aperture_detector
         quadrotor_msgs
         visualization_msgs
         message_filters
@@ -67,7 +68,7 @@ catkin_package(
         LIBRARIES general_planner_core general_planner_exploration_utils general_planner_exploration
         CATKIN_DEPENDS roscpp rospy std_msgs geometry_msgs nav_msgs sensor_msgs
                        visualization_msgs message_filters cv_bridge map_manager
-                       lkh_tsp_solver traj_utils tf message_runtime
+                       lkh_tsp_solver traj_utils tf message_runtime aperture_detector
         #  DEPENDS system_lib
 )
 
@@ -260,7 +261,7 @@ add_executable(planning_failure_integration_test
         src/general_core/planner_runtime/planner_command_gateway.cpp)
 add_dependencies(planning_failure_integration_test ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
 target_include_directories(planning_failure_integration_test PRIVATE include)
-target_link_libraries(planning_failure_integration_test ${THIRD_PARTY})
+target_link_libraries(planning_failure_integration_test general_planner_core ${THIRD_PARTY})
 
 add_executable(odometry_snapshot_self_test tests/odometry_snapshot_self_test.cpp)
 target_include_directories(odometry_snapshot_self_test PRIVATE include)
@@ -540,3 +541,22 @@ catkin_install_python(PROGRAMS
         scripts/planner_rviz_switcher.py
         DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
+
+add_executable(se3_spatial_map_self_test tests/se3_spatial_map_self_test.cpp)
+target_link_libraries(se3_spatial_map_self_test general_planner_core ${THIRD_PARTY})
+if(CATKIN_ENABLE_TESTING)
+  add_test(NAME se3_spatial_map_self_test COMMAND se3_spatial_map_self_test)
+endif()
+
+add_executable(internal_gate_integration_test
+        tests/internal_gate_integration_test.cpp
+        src/general_core/planner_runtime/planner_supervisor.cpp
+        src/general_core/planner_runtime/planner_command_gateway.cpp)
+add_dependencies(internal_gate_integration_test ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
+target_link_libraries(internal_gate_integration_test general_planner_core ${THIRD_PARTY})
+
+add_executable(gate_body_voxel_self_test tests/gate_body_voxel_self_test.cpp)
+target_include_directories(gate_body_voxel_self_test PRIVATE include ${Eigen3_INCLUDE_DIRS})
+add_executable(gate_snapshot_replay tests/gate_snapshot_replay.cpp)
+add_dependencies(gate_snapshot_replay ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
+target_link_libraries(gate_snapshot_replay general_planner_core ${THIRD_PARTY})

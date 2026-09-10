@@ -22,6 +22,8 @@
 #include <std_msgs/String.h>
 #include <std_msgs/UInt64.h>
 
+namespace general_planner::gate { class Runtime; }
+
 namespace general_planner::planner_runtime {
 
 class PlannerSupervisor {
@@ -31,7 +33,8 @@ public:
 
   PlannerSupervisor(ros::NodeHandle &nh, PlannerCommandGateway &gateway,
                     MapStatusProvider map_status_provider = {},
-                    TopologyMaintenanceSetter topology_maintenance_setter = {});
+                    TopologyMaintenanceSetter topology_maintenance_setter = {},
+                    std::shared_ptr<gate::Runtime> gate_runtime = {});
 
 private:
   void modeRequestCallback(const general_planner::PlannerModeRequestConstPtr &msg);
@@ -62,10 +65,7 @@ private:
   // already committed backup trajectory while its rolling replan is still
   // blocked.  It is epoch-bound so an old worker cannot retire a new task.
   void navigationReplanWatchdogCallback(const std_msgs::UInt64ConstPtr &msg);
-  // External gate planner lifecycle ingress. The protocol is std_msgs/String:
-  // START (or BEGIN/RUNNING) requests external control, END (or DONE/FINISHED)
-  // releases it. Both edges are accepted only through the hover verification
-  // performed by timerCallback().
+  // Legacy ingress retained only to report that external START/END are ignored.
   void gateStatusCallback(const std_msgs::StringConstPtr &msg);
   void handoverStatusCallback(const std_msgs::StringConstPtr &msg);
   void odometryCallback(const nav_msgs::OdometryConstPtr &msg);
@@ -87,6 +87,7 @@ private:
   void publishHandoverCommand(const std::string &command);
   void requestExplorationStartLocked(const std::string &reason);
   void completeGateExitLocked();
+  void updateInternalGateLocked();
   // A gateway timeout is already a safe current-pose hold.  This completes
   // the recovery protocol by retiring the stalled task instead of letting the
   // supervisor report EXECUTING forever.
@@ -102,6 +103,7 @@ private:
 
   ros::NodeHandle nh_;
   PlannerCommandGateway &gateway_;
+  std::shared_ptr<gate::Runtime> gate_runtime_;
   MapStatusProvider map_status_provider_;
   TopologyMaintenanceSetter topology_maintenance_setter_;
 
@@ -151,10 +153,6 @@ private:
   // Gate requests may arrive while the regular mode handover is still
   // braking. Keep them latched, but do not release command output until the
   // same verified-hover condition has completed.
-  bool gate_start_requested_{false};
-  bool gate_executing_{false};
-  bool gate_end_requested_{false};
-  ros::Time gate_edge_hover_satisfied_since_;
   ros::Time hover_satisfied_since_;
   ros::Time last_odom_time_;
   ros::Time last_exploration_start_pub_;

@@ -196,6 +196,7 @@ bool SE3AggressiveFrontend::buildProblem(const general_utils::StatePVAJ &head,
               << reason << std::endl;
     return false;
   }
+  problem.piece_num = std::max(problem.piece_num, static_cast<int>(problem.hpolys.size()));
   fillPieceCorridorMap(problem);
 
   int hpoly_plane_num = 0;

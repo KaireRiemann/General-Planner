@@ -1,0 +1,14 @@
+# Scene overrides, loaded AFTER gate_runtime.yaml. All units are SI.
+gate:
+  # Detection -> corridor -> SE3, as in the standalone gate test.
+  # Entry/exit boxes are assumed clear; global map/topology still update.
+  validation_policy: corridor_only
+  # Unity feedback is about 8 Hz; allow bounded transport/plant lag as well.
+  feedback_max_delay: 0.20
+  restore_start_height: true
+  # Match the actual Unity collider; do not shrink the body to pass validation.
+  body_radius: 0.165
+  body_height: 0.10
+  margin: 0.03
+  wall_depth: 0.30
+  near_gate_lateral_error: 0.025

@@ -170,13 +170,21 @@ int main(int argc, char **argv) {
                2.0),
            "fresh state2state command did not resume after timeout hold");
 
-    // Gate is an external-control handover, not an explicit HOLD. Even if
-    // publishing_enabled were accidentally left true, the gateway policy must
-    // emit no PositionCommand while CommandOwner::GATE is authorized.
-    const std::size_t output_count_before_gate = output_capture.messageCount();
+    // Gate is an internal epoch-fenced source with the same timeout fallback.
     gateway.setAuthorizedOwner(CommandOwner::GATE, 2);
-    expect(output_capture.waitForNoNewMessages(output_count_before_gate, 0.15),
-           "gate owner unexpectedly published a position command");
+    expect(!gateway.submitGateCommand(navigation, 1), "old gate epoch accepted");
+    PositionCommand gate = navigation;
+    gate.trajectory_id = 2002; gate.position.x = 11.5;
+    expect(gateway.submitGateCommand(gate, 2), "authorized gate command rejected");
+    expect(output_capture.waitFor([](const PositionCommand &command) {
+      return command.trajectory_id == 2002 && positionNear(command.position, 11.5, 2., 3.);
+    }, 2.), "internal gate command did not pass through");
+    ros::WallDuration(.12).sleep();
+    const auto health = gateway.commandSourceHealth();
+    expect(health.source_expected && health.source_received_since_authorization &&
+           !health.source_fresh && health.timeout_hold_active, "stale gate did not enter timeout hold");
+    gateway.setAuthorizedOwner(CommandOwner::HOLD, 3);
+    expect(!gateway.submitGateCommand(gate, 2), "retired gate command accepted");
 
     spinner.stop();
     std::cout << "planner_command_gateway_behavior_self_test passed\n";

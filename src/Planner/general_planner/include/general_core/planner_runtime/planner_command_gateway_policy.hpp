@@ -11,14 +11,13 @@ enum class GatewayOutputMode {
   EXPLORATION,
   EXPLICIT_HOLD,
   SOURCE_TIMEOUT_HOLD,
-  // Do not turn an external-control handover into a HOLD command.  This is a
-  // second, policy-level guard in addition to publishing_enabled=false.
-  EXTERNAL_GATE_SUPPRESSED,
+  // Internal Gate commands use the same freshness fallback as other sources.
+  GATE,
 };
 
 constexpr GatewayOutputMode selectGatewayOutputMode(
     const CommandOwner authorized_owner, const bool navigation_fresh,
-    const bool exploration_fresh) {
+    const bool exploration_fresh, const bool gate_fresh = false) {
   if (authorized_owner == CommandOwner::STATE2STATE) {
     return navigation_fresh ? GatewayOutputMode::NAVIGATION
                             : GatewayOutputMode::SOURCE_TIMEOUT_HOLD;
@@ -28,7 +27,7 @@ constexpr GatewayOutputMode selectGatewayOutputMode(
                              : GatewayOutputMode::SOURCE_TIMEOUT_HOLD;
   }
   if (authorized_owner == CommandOwner::GATE) {
-    return GatewayOutputMode::EXTERNAL_GATE_SUPPRESSED;
+    return gate_fresh ? GatewayOutputMode::GATE : GatewayOutputMode::SOURCE_TIMEOUT_HOLD;
   }
   return GatewayOutputMode::EXPLICIT_HOLD;
 }

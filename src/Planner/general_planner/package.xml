@@ -25,6 +25,7 @@
 
   <depend>lkh_tsp_solver</depend>
   <depend>map_manager</depend>
+  <depend>aperture_detector</depend>
   <depend>traj_utils</depend>
 
   <build_depend>message_generation</build_depend>

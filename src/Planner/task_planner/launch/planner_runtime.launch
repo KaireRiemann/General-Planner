@@ -5,6 +5,18 @@
        planner or recreates a map. -->
   <!-- The base runtime consumes external odometry/cloud by default.  A
        perfect_drone_sim run must explicitly select marsim:=true. -->
+  <!-- Detector is enabled on demand by an explicit internal Gate request. -->
+  <arg name="perceptor_config" default="$(find aperture_detector)/config/polygon_hole_step_viz_unity_sim.yaml" />
+  <arg name="gate_overlay_config" default="" />
+  <arg name="perceptor" default="true" />
+  <arg name="perceptor_vlm" default="true" />
+  <arg name="perceptor_frame_id" default="world" />
+  <arg name="perceptor_image_topic" default="/camera0/color/image/compressed" />
+  <arg name="perceptor_camera_info_topic" default="/camera0/color/info" />
+  <arg name="perceptor_vlm_model" default="auto" />
+  <arg name="perceptor_vlm_timeout" default="10.0" />
+  <arg name="perceptor_vlm_period" default="3.0" />
+  <arg name="perceptor_vlm_base_url" default="http://127.0.0.1:18000/v1" />
   <arg name="marsim" default="false" />
   <arg name="rviz" default="true" />
   <arg name="auto_rviz_switch" default="true" />
@@ -14,7 +26,8 @@
   <arg name="planner_runtime_launch_prefix" default="" />
   <!-- Runtime modes: hold, state2state, exploration (legacy coverage),
        target_exploration, or gate. Gate keeps the world map/topology alive
-       while yielding /planning/pos_cmd to an external slit/gate planner. -->
+       while the internal SE3 gate task uses the same command gateway. -->
+  <arg name="gate_config" default="$(find general_planner)/config/gate_runtime.yaml" />
   <arg name="initial_mode" default="target_exploration" />
   <arg name="exploration_mission_mode" default="target" />
   <!-- HighSpeedExp needs a finite internal index capacity, but destination
@@ -27,8 +40,7 @@
   <arg name="target_exploration_workspace_below_odom" default="2.0" />
   <arg name="target_exploration_workspace_above_odom" default="5.0" />
   <arg name="enable_exploration" default="true" />
-  <!-- std_msgs/String protocol from the external gate planner:
-       START (BEGIN/RUNNING accepted) and END (DONE/FINISHED accepted). -->
+  <!-- Legacy topic retained for compatibility; external START/END are ignored. -->
   <arg name="gate_status_topic" default="/planner/gate/status" />
 
   <arg name="sim_config"
@@ -118,6 +130,8 @@
         output="screen" clear_params="true"
         launch-prefix="$(arg planner_runtime_launch_prefix)">
     <rosparam file="$(arg exploration_config)" command="load" />
+    <rosparam file="$(arg gate_config)" command="load" />
+    <rosparam if="$(eval arg('gate_overlay_config') != '')" file="$(arg gate_overlay_config)" command="load" />
     <rosparam file="$(arg target_exploration_config)" command="load" />
     <rosparam if="$(eval arg('exploration_overlay_config') != '')"
               file="$(arg exploration_overlay_config)" command="load" />
@@ -227,4 +241,17 @@
     <node pkg="tf" type="static_transform_publisher" name="exploration_world_tf"
           args="0 0 0 0 0 0 world navigation 100" />
   </group>
+  <include if="$(arg perceptor)" file="$(find aperture_detector)/launch/detector.launch">
+    <arg name="config" value="$(arg perceptor_config)" />
+    <arg name="cloud_topic" value="$(arg cloud_topic)" />
+    <arg name="odom_topic" value="$(arg odom_topic)" />
+    <arg name="frame_id" value="$(arg perceptor_frame_id)" />
+    <arg name="vlm" value="$(arg perceptor_vlm)" />
+    <arg name="image_topic" value="$(arg perceptor_image_topic)" />
+    <arg name="camera_info_topic" value="$(arg perceptor_camera_info_topic)" />
+    <arg name="vlm_model" value="$(arg perceptor_vlm_model)" />
+    <arg name="vlm_timeout" value="$(arg perceptor_vlm_timeout)" />
+    <arg name="vlm_period" value="$(arg perceptor_vlm_period)" />
+    <arg name="vlm_base_url" value="$(arg perceptor_vlm_base_url)" />
+  </include>
 </launch>

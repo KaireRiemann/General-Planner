@@ -10,6 +10,7 @@
 #include "traj_opt/costfunctional_manager/se3_aggressive_cost_manager.hpp"
 #include "traj_opt/flatness/se3_flatness_map.hpp"
 #include "utils/optimization/lbfgs.h"
+#include "utils/geometry/geometry_utils.h"
 
 using general_utils::Mat3Df;
 using general_utils::StatePVAJ;
@@ -115,7 +116,68 @@ bool SE3AggressiveTrajOpt::initialize(const SE3AggressiveProblem &problem) {
         length * static_cast<double>(i) / static_cast<double>(opt_vars_.piece_num);
     opt_vars_.inner_points.col(i - 1) = interpolateByArc(path, arc, target_arc);
   }
-  return opt_vars_.times.allFinite() && opt_vars_.times.minCoeff() > 1.0e-6;
+  return opt_vars_.times.allFinite() && opt_vars_.times.minCoeff() > 1.0e-6 &&
+         initializeSpatialMap();
+}
+
+bool SE3AggressiveTrajOpt::initializeSpatialMap() {
+  spatial_polys_.clear();
+  spatial_poly_idx_.resize(0);
+  spatial_map_.reset(nullptr, nullptr, 0, true);
+  const auto &problem = opt_vars_.problem;
+  if (!problem.use_corridor) return true;
+  const int count = static_cast<int>(problem.hpolys.size());
+  const int pieces = opt_vars_.piece_num;
+  const auto &ids = problem.piece_to_corridor;
+  // Every corridor must be traversed in order. Never silently skip a gate.
+  if (count == 0 || static_cast<int>(ids.size()) != pieces ||
+      ids.front() != 0 || ids.back() != count - 1) return false;
+  for (int i = 0; i < pieces; ++i) {
+    if (ids[i] < 0 || ids[i] >= count ||
+        (i > 0 && (ids[i] < ids[i - 1] || ids[i] > ids[i - 1] + 1))) return false;
+  }
+  spatial_map::PolyhedraH planes;
+  for (const auto &poly : problem.hpolys) {
+    if (poly.cols() < 4 || !poly.allFinite()) return false;
+    spatial_map::PolyhedronH h(poly.cols(), 4);
+    for (int k = 0; k < poly.cols(); ++k) {
+      const double norm = poly.col(k).head<3>().norm();
+      if (norm < 1e-9) return false;
+      const Eigen::Vector3d n = poly.col(k).head<3>() / norm;
+      h.row(k).head<3>() = n.transpose();
+      h(k, 3) = -n.dot(poly.col(k).tail<3>());
+    }
+    Eigen::Matrix3Xd vertices;
+    if (!geometry_utils::enumerateVs(h, vertices) || !vertices.allFinite()) return false;
+    planes.push_back(h);
+  }
+  auto inside = [](const spatial_map::PolyhedronH &h, const Eigen::Vector3d &p) {
+    return p.allFinite() && (h.leftCols<3>() * p + h.col(3)).maxCoeff() <= 1e-6;
+  };
+  if (!inside(planes.front(), problem.head_pvaj.col(0)) ||
+      !inside(planes.back(), problem.tail_pvaj.col(0))) return false;
+  spatial_poly_idx_.resize(pieces - 1);
+  for (int i = 0; i < pieces - 1; ++i) {
+    spatial_map::PolyhedronH h = planes[ids[i]];
+    if (ids[i] != ids[i + 1]) {
+      const int rows = h.rows();
+      h.conservativeResize(rows + planes[ids[i + 1]].rows(), 4);
+      h.bottomRows(planes[ids[i + 1]].rows()) = planes[ids[i + 1]];
+    }
+    Eigen::Matrix3Xd vertices;
+    if (!geometry_utils::enumerateVs(h, vertices) || vertices.cols() < 4 ||
+        !vertices.allFinite()) return false;
+    // PolytopeSpatialMap stores a base vertex followed by offsets, not raw vertices.
+    Eigen::Matrix3Xd local = vertices;
+    local.rightCols(vertices.cols() - 1).colwise() -= vertices.col(0);
+    spatial_polys_.push_back(local);
+    spatial_poly_idx_(i) = i;
+    if (!inside(h, opt_vars_.inner_points.col(i))) {
+      opt_vars_.inner_points.col(i) = vertices.rowwise().mean();
+    }
+  }
+  spatial_map_.reset(&spatial_polys_, &spatial_poly_idx_, pieces - 1, false);
+  return true;
 }
 
 void SE3AggressiveTrajOpt::decodeOptimizationVector(
@@ -131,8 +193,9 @@ void SE3AggressiveTrajOpt::decodeOptimizationVector(
   inner.resize(3, std::max(0, opt_vars_.piece_num - 1));
   int offset = opt_vars_.piece_num;
   for (int i = 0; i < opt_vars_.piece_num - 1; ++i) {
-    inner.col(i) = x.segment<3>(offset);
-    offset += 3;
+    const int dim = spatial_map_.getUnconstrainedDim(i + 1);
+    inner.col(i) = spatial_map_.toPhysical(x.segment(offset, dim), i + 1);
+    offset += dim;
   }
 }
 
@@ -148,6 +211,7 @@ double SE3AggressiveTrajOpt::evaluateCurrentCost(const Eigen::VectorXd &x,
   const SE3AggressiveProblem &problem = opt_vars_.problem;
   ++opt_vars_.iter_num;
   g.setZero();
+  if (problem.should_stop && problem.should_stop()) return std::numeric_limits<double>::infinity();
 
   VecDf times;
   Mat3Df inner;
@@ -313,8 +377,12 @@ double SE3AggressiveTrajOpt::evaluateCurrentCost(const Eigen::VectorXd &x,
 
   int offset = opt_vars_.piece_num;
   for (int i = 0; i < opt_vars_.piece_num - 1; ++i) {
-    g.segment<3>(offset) += grad_result.grad_by_points.col(i);
-    offset += 3;
+    const int dim = spatial_map_.getUnconstrainedDim(i + 1);
+    const Eigen::VectorXd xi = x.segment(offset, dim);
+    Eigen::VectorXd grad_xi = spatial_map_.backwardGrad(xi, grad_result.grad_by_points.col(i), i + 1);
+    spatial_map_.addNormPenalty(xi, cost, grad_xi);
+    g.segment(offset, dim) += grad_xi;
+    offset += dim;
   }
 
   opt_vars_.penalty_log.tail(4) = cost_manager.getPenaltyLog();
@@ -325,14 +393,19 @@ double SE3AggressiveTrajOpt::evaluateCurrentCost(const Eigen::VectorXd &x,
 double SE3AggressiveTrajOpt::optimizeInternal(geometry_utils::Trajectory &traj,
                                               double rel_cost_tol) {
   temporal_map::QuadInvTimeMap time_map;
-  Eigen::VectorXd x(opt_vars_.piece_num + 3 * std::max(0, opt_vars_.piece_num - 1));
+  int variable_count = opt_vars_.piece_num;
+  for (int i = 1; i < opt_vars_.piece_num; ++i) {
+    variable_count += spatial_map_.getUnconstrainedDim(i);
+  }
+  Eigen::VectorXd x(variable_count);
   for (int i = 0; i < opt_vars_.piece_num; ++i) {
     x(i) = time_map.toTau(opt_vars_.times(i));
   }
   int offset = opt_vars_.piece_num;
   for (int i = 0; i < opt_vars_.piece_num - 1; ++i) {
-    x.segment<3>(offset) = opt_vars_.inner_points.col(i);
-    offset += 3;
+    const int dim = spatial_map_.getUnconstrainedDim(i + 1);
+    x.segment(offset, dim) = spatial_map_.toUnconstrained(opt_vars_.inner_points.col(i), i + 1);
+    offset += dim;
   }
 
   opt_vars_.iter_num = 0;
@@ -343,12 +416,17 @@ double SE3AggressiveTrajOpt::optimizeInternal(geometry_utils::Trajectory &traj,
   params.min_step = 1.0e-32;
   params.g_epsilon = 0.0;
   params.delta = rel_cost_tol;
+  params.max_iterations = opt_vars_.problem.max_iterations;
 
   const int ret = math_utils::lbfgs::lbfgs_optimize(x,
                                                    min_cost,
                                                    &SE3AggressiveTrajOpt::costFunctional,
                                                    nullptr,
-                                                   nullptr,
+                                                   [](void *instance, const Eigen::VectorXd &, const Eigen::VectorXd &,
+                                                      double, double, int, int) -> int {
+                                                     const auto &p = static_cast<SE3AggressiveTrajOpt *>(instance)->opt_vars_.problem;
+                                                     return p.should_stop && p.should_stop() ? 1 : 0;
+                                                   },
                                                    this,
                                                    params);
   const bool recoverable_ret =
@@ -378,6 +456,7 @@ double SE3AggressiveTrajOpt::optimizeInternal(geometry_utils::Trajectory &traj,
 
 bool SE3AggressiveTrajOpt::optimize(const SE3AggressiveProblem &problem,
                                     geometry_utils::Trajectory &out_traj) {
+  out_traj.clear();
   if (!initialize(problem)) {
     std::cout << " -- [SE3AggressiveTrajOpt] SE3_OPT_FAILED reason=INIT_FAILED" << std::endl;
     return false;
@@ -388,6 +467,7 @@ bool SE3AggressiveTrajOpt::optimize(const SE3AggressiveProblem &problem,
   out_traj.clear();
   const double rel_tol = cfg_.opt_accuracy > 0.0 ? cfg_.opt_accuracy : 1.0e-5;
   const double cost = optimizeInternal(out_traj, rel_tol);
+  if (problem.should_stop && problem.should_stop()) { out_traj.clear(); return false; }
   if (!std::isfinite(cost) || out_traj.empty()) {
     return false;
   }

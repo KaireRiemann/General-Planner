@@ -50,7 +50,7 @@ int main() {
   expect(std::strcmp(toString(PlannerMode::GATE), "gate") == 0,
          "toString gate mode");
   expect(std::strcmp(toString(ownerForMode(PlannerMode::GATE)), "gate") == 0,
-         "gate has external command owner");
+         "gate has internal command owner");
   expect(parsePlannerMode("hold", mode), "parse hold");
   expect(mode == PlannerMode::HOLD, "mode hold");
   expect(!parsePlannerMode("not_a_mode", mode), "reject unknown");

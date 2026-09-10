@@ -35,6 +35,7 @@ class PlannerCommandGateway {
 public:
   explicit PlannerCommandGateway(ros::NodeHandle &nh);
 
+  bool submitGateCommand(const quadrotor_msgs::PositionCommand &command, std::uint64_t epoch);
   void setAuthorizedOwner(CommandOwner owner, std::uint64_t task_epoch);
   // Atomically transfer command ownership to HOLD and replace its anchor.
   // Lifecycle edges must use this rather than separately authorizing HOLD and
@@ -87,6 +88,10 @@ private:
   std::uint64_t authorized_epoch_{0};
   ros::WallTime authorization_time_{ros::WallTime::now()};
 
+  quadrotor_msgs::PositionCommand gate_cmd_;
+  ros::WallTime gate_rx_time_;
+  bool have_gate_cmd_{false};
+  std::uint64_t gate_epoch_{0};
   quadrotor_msgs::PositionCommand navigation_cmd_;
   quadrotor_msgs::PositionCommand exploration_cmd_;
   ros::WallTime navigation_rx_time_;

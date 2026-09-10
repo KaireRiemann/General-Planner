@@ -1,0 +1,32 @@
+<launch>
+  <arg name="cloud_topic" default="/cloud_registered" />
+  <arg name="odom_topic" default="/lidar_slam/odom" />
+  <arg name="frame_id" default="world" />
+  <arg name="image_topic" default="/camera0/color/image/compressed" />
+  <arg name="camera_info_topic" default="/camera0/color/info" />
+  <arg name="vlm" default="true" />
+  <arg name="vlm_base_url" default="http://127.0.0.1:18000/v1" />
+  <arg name="vlm_timeout" default="10.0" />
+  <arg name="vlm_period" default="3.0" />
+  <arg name="vlm_model" default="auto" />
+  <arg name="config" default="$(find aperture_detector)/config/polygon_hole_step_viz_unity_sim.yaml" />
+  <node pkg="aperture_detector" type="polygon_hole_step_viz" name="polygon_hole_step_viz" output="screen">
+    <rosparam file="$(arg config)" command="load" subst_value="true" />
+    <param name="lidar_topic" value="$(arg cloud_topic)" />
+    <param name="dynamic_roi_odom_topic" value="$(arg odom_topic)" />
+    <param name="frame_id" value="$(arg frame_id)" />
+    <param name="image_topic" value="$(arg image_topic)" />
+    <param name="visual_camera_info_topic" value="$(arg camera_info_topic)" />
+    <param name="visual_roi_enable" value="$(arg vlm)" />
+    <param name="transform_input_to_target_frame" value="true" />
+  </node>
+  <node if="$(arg vlm)" pkg="aperture_detector" type="windowtec_vlm_box_node.py" name="windowtec_vlm_box_node" output="screen">
+    <param name="image_topic" value="$(arg image_topic)" />
+    <param name="box_topic" value="/windowtec/window_box" />
+    <param name="overlay_topic" value="/windowtec/overlay_image" />
+    <param name="base_url" value="$(arg vlm_base_url)" />
+    <param name="model" value="$(arg vlm_model)" />
+    <param name="timeout" value="$(arg vlm_timeout)" />
+    <param name="detection_period" value="$(arg vlm_period)" />
+  </node>
+</launch>

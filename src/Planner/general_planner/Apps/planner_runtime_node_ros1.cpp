@@ -1,6 +1,7 @@
 #include <general_core/planner_runtime/planner_command_gateway.hpp>
 #include <general_core/planner_runtime/global_map_runtime.hpp>
 #include <general_core/planner_runtime/planner_supervisor.hpp>
+#include <general_core/gate/gate_runtime.hpp>
 
 // This must precede the HighSpeedExp headers.  A legacy HighSpeedExp header
 // exports `using namespace fast_planner`, whose template Trajectory otherwise
@@ -156,6 +157,7 @@ int main(int argc, char **argv) {
     ros::CallbackQueue navigation_replan_callback_queue;
     ros::CallbackQueue supervisor_callback_queue;
     ros::CallbackQueue gateway_callback_queue;
+    ros::CallbackQueue gate_callback_queue;
     ros::NodeHandle world_nh(nh);
     ros::NodeHandle odometry_nh(nh);
     ros::NodeHandle navigation_nh(nh);
@@ -163,6 +165,8 @@ int main(int argc, char **argv) {
     ros::NodeHandle navigation_replan_nh(nh);
     ros::NodeHandle supervisor_nh(nh);
     ros::NodeHandle gateway_nh(nh);
+    ros::NodeHandle gate_nh(nh);
+    gate_nh.setCallbackQueue(&gate_callback_queue);
     world_nh.setCallbackQueue(&world_callback_queue);
     odometry_nh.setCallbackQueue(&odometry_callback_queue);
     navigation_nh.setCallbackQueue(&navigation_callback_queue);
@@ -258,12 +262,14 @@ int main(int argc, char **argv) {
     // The gateway is the last safety boundary and the supervisor owns task
     // handover.  Neither is allowed to share the map/exploration queue.
     general_planner::planner_runtime::PlannerCommandGateway gateway(gateway_nh);
+    auto gate_runtime = std::make_shared<general_planner::gate::Runtime>(
+        gate_nh, gateway, global_map_runtime->mapManager());
     general_planner::planner_runtime::PlannerSupervisor supervisor(
         supervisor_nh, gateway,
         [global_map_runtime]() { return global_map_runtime->status(); },
         [global_map_runtime](const bool enabled) {
           global_map_runtime->setTopologyMaintenanceEnabled(enabled);
-        });
+        }, gate_runtime);
 
     ROS_INFO("[M2 runtime] composed exploration + state2state adapters share "
              "one GlobalMapRuntime; queues=world,odometry,navigation,nav_command,"
@@ -277,6 +283,8 @@ int main(int argc, char **argv) {
         1, &navigation_replan_callback_queue);
     ros::AsyncSpinner supervisor_spinner(1, &supervisor_callback_queue);
     ros::AsyncSpinner gateway_spinner(1, &gateway_callback_queue);
+    ros::AsyncSpinner gate_spinner(1, &gate_callback_queue);
+    gate_spinner.start();
     world_spinner.start();
     odometry_spinner.start();
     navigation_spinner.start();
@@ -285,6 +293,7 @@ int main(int argc, char **argv) {
     supervisor_spinner.start();
     gateway_spinner.start();
     ros::waitForShutdown();
+    gate_spinner.stop();
     gateway_spinner.stop();
     supervisor_spinner.stop();
     navigation_replan_spinner.stop();
