@@ -641,6 +641,8 @@ bool constrainSfcsToExplorationBoxes(
     double min_overlap_depth,
     geometry_utils::PolytopeVec &sfcs)
 {
+  // Navigation keeps obstacle SFCs and final known-free validation.
+  if (lidar_map && lidar_map->targetNavigation()) return !sfcs.empty();
   if (!lidar_map || !lidar_map->lp_ || sfcs.empty() ||
       lidar_map->lp_->box_num_ <= 0)
   {
@@ -1757,7 +1759,8 @@ bool FastPlannerManager::planExploreTraj(
           p,
           clearance_recovery
               ? true
-              : !gcopter_config_->safetyMapUnknownAllowedForExplore,
+              : (lidar_map_interface_->targetNavigation() ||
+               !gcopter_config_->safetyMapUnknownAllowedForExplore),
           ray_safe_distance,
           step);
       const double point_clearance = safetyDistanceToOcc(p);
@@ -1775,7 +1778,8 @@ bool FastPlannerManager::planExploreTraj(
           !lidar_map_interface_->IsInBox(p.cast<float>());
       if (safety.blocked_by_occupied ||
           ((clearance_recovery ||
-            !gcopter_config_->safetyMapUnknownAllowedForExplore) &&
+            (lidar_map_interface_->targetNavigation() ||
+               !gcopter_config_->safetyMapUnknownAllowedForExplore)) &&
            safety.blocked_by_unknown) ||
           recovery_clearance_regressed ||
           left_exploration_boxes)
@@ -3470,6 +3474,9 @@ MapVoxelState FastPlannerManager::querySafetyState(const Eigen::Vector3d &pos) c
     return MapVoxelState::OUT_OF_MAP;
   }
 
+  if (lidar_map_interface_->targetNavigation() &&
+      (!map_manager_ || !rog_map_updated_)) return MapVoxelState::UNKNOWN;
+
   const double safe_distance =
       gcopter_config_ ? std::max(0.05, gcopter_config_->commitKnownFreeSafeDistance)
                       : 0.45;
@@ -3538,7 +3545,8 @@ MapVoxelState FastPlannerManager::querySafetyState(const Eigen::Vector3d &pos) c
        (raw_state == rog_map::GridType::UNKNOWN ||
         raw_state == rog_map::GridType::UNDEFINED ||
         raw_state == rog_map::GridType::FRONTIER));
-  if (gcopter_config_ && gcopter_config_->rogKnownFreeFallbackToLio &&
+  if (!lidar_map_interface_->targetNavigation() && gcopter_config_ &&
+      gcopter_config_->rogKnownFreeFallbackToLio &&
       lio_safe && rog_unknown_like)
   {
     return MapVoxelState::KNOWN_FREE;
@@ -3627,7 +3635,9 @@ RaycastSafetyInfo FastPlannerManager::raycastSafety(const Eigen::Vector3d &start
       return info;
     }
 
-    if (i > 0)
+    if (lidar_map_interface_->targetNavigation() &&
+        state != MapVoxelState::KNOWN_FREE) info.all_known_free = false;
+    if (i > 0 && info.all_known_free)
     {
       info.known_free_length += (p - prev).norm();
     }
@@ -4079,9 +4089,17 @@ EdgeSafetyCost FastPlannerManager::estimateHighSpeedEdgeCost(const std::vector<E
       safety.current_speed * latency +
       safety.current_speed * safety.current_speed / (2.0 * brake_acc) +
       std::max(0.0, gcopter_config_->safetyBrakeMargin);
-  safety.backup_feasible =
+  // Match the stationary short-path rule in evaluatePathSegmentSafety for
+  // target navigation. Otherwise a fully observed final 1-3 m approach is
+  // rejected forever by the cruise runway threshold even after braking.
+  // Coverage keeps its original edge-ranking policy.
+  const bool target_stationary_step =
+      lidar_map_interface_ && lidar_map_interface_->targetNavigation() &&
+      safety.current_speed <= 0.20 && safety.path_length > 0.05 &&
+      safety.known_free_length + 0.05 >= safety.path_length;
+  safety.backup_feasible = target_stationary_step ||
       safety.known_free_length >=
-      std::max(gcopter_config_->knownFreeShortLength, stop_distance);
+          std::max(gcopter_config_->knownFreeShortLength, stop_distance);
   const SegmentVelocityLimit limit = computeSegmentVelocityLimit(safety);
 
   cost.path_length = safety.path_length;

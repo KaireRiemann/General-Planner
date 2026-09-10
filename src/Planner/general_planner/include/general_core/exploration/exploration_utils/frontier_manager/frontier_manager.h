@@ -10,6 +10,7 @@
 #include "general_core/exploration/exploration_utils/lidar_map/ikd_Tree.h"
 #include <bits/stdc++.h>
 #include <functional>
+#include <array>
 #include <general_core/exploration/exploration_utils/frontier_manager/raycast.h>
 #include <general_core/exploration/exploration_utils/lidar_map/lidar_map.h>
 #include <pcl/kdtree/kdtree_flann.h>
@@ -70,30 +71,24 @@ struct ViewpointParam {
   int consider_range_, global_recluster_size_, local_tsp_size_;
   int top_candidate_num_;
 };
+// Signed, dimension-independent keys: changing mission mode or travelling past
+// the original coverage box cannot alias old frontier cells.
 struct ByteArrayRaw {
-  // Frontier indices already fit in <= 64 bits. Keeping the packed bytes
-  // inline removes one heap allocation and one pointer indirection per hash
-  // entry without changing the key representation or lookup semantics.
-  union {
-    uint64_t value;
-    uint8_t data[sizeof(uint64_t)];
-  };
+  std::array<int32_t, 3> index{{0, 0, 0}};
   static size_t size;
-
-  ByteArrayRaw() : value(0) {}
-
-  bool operator==(const ByteArrayRaw &other) const {
-    return value == other.value;
-  }
+  bool operator==(const ByteArrayRaw &other) const { return index == other.index; }
 };
-
 struct ByteArrayRawHasher {
-  size_t operator()(const ByteArrayRaw &arr) const {
-    return std::hash<uint64_t>{}(arr.value);
+  size_t operator()(const ByteArrayRaw &key) const {
+    size_t h = 0;
+    for (const auto axis : key.index) {
+      h ^= std::hash<int32_t>{}(axis) + 0x9e3779b9U + (h << 6) + (h >> 2);
+    }
+    return h;
   }
 };
 struct FrontierData {
-  FrontierData() { ByteArrayRaw::size = 8; }
+  FrontierData() { ByteArrayRaw::size = 12; }
   FrontierData(size_t idx_bytes_size) {
     ByteArrayRaw::size = idx_bytes_size; // 设置全局size
   }
@@ -226,6 +221,10 @@ struct HighSpeedViewScoreContext {
 
 class FrontierManager {
 private:
+  // Mission lifecycle (visited/deferred/viewpoint caches) is not map evidence.
+  // Keep it separate so target frontiers never become coverage objectives.
+  std::list<ClusterInfo::Ptr> inactive_task_clusters_;
+  bool target_task_domain_{false};
   FrontierParam frtp_;
   FrontierData frtd_;
   ViewpointParam vpp_;
@@ -316,6 +315,7 @@ public:
   void updateFrontierClusters(vector<ClusterInfo::Ptr> &cluster_updated,
                               vector<int> &cluster_removed);
   void requestGlobalRecluster();
+  void setTaskDomain(bool target);
   void forceGlobalRefresh(vector<ClusterInfo::Ptr> &cluster_updated,
                           vector<int> &cluster_removed);
   bool markClusterVisitedNear(const Eigen::Vector3f &goal, float radius);

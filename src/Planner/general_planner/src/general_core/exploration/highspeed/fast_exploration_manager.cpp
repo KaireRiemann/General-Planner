@@ -138,6 +138,8 @@ void FastExplorationManager::initialize(
                  });
   if (mission_mode == "target" || mission_mode == "target_directed") {
     ep_->target_directed_mode_ = true;
+    planner_manager_->lidar_map_interface_->setTargetNavigation(true);
+    frontier_manager_ptr_->setTaskDomain(true);
   } else if (mission_mode != "coverage") {
     ROS_WARN_STREAM("[target exploration] invalid mission_mode='"
                     << mission_mode << "'; fall back to coverage");
@@ -801,6 +803,8 @@ bool FastExplorationManager::setMissionMode(const std::string &mode) {
                     << mode << "' (expected target or coverage)");
     return false;
   }
+  planner_manager_->lidar_map_interface_->setTargetNavigation(target);
+  frontier_manager_ptr_->setTaskDomain(target);
   if (ep_->target_directed_mode_ == target) {
     return true;
   }
@@ -2477,22 +2481,14 @@ int FastExplorationManager::planGlobalPath(const Eigen::Vector3d &pos,
                     << ed_->mission_start_.transpose() << ") goal=("
                     << ed_->mission_goal_.transpose() << ")");
   }
-  // The frontier and local Bubble-Topo modules share a finite internal index
-  // domain.  A destination outside it can never become a valid direct target
-  // or frontier bridge; continuing to rank frontiers would look like arbitrary
-  // wandering.  Fail the task explicitly so the operator can enlarge the
-  // automatic capacity (or correct an accidental click) without confusing it
-  // with a map/topology failure.
+  // A remote goal need not belong to any observed region or local map window.
+  // Only explicit exclusions and coordinate validity reject the mission here.
   if (target_directed && planner_manager_ &&
       planner_manager_->lidar_map_interface_ &&
-      !planner_manager_->lidar_map_interface_->IsInBox(
+      !planner_manager_->lidar_map_interface_->isAllowedByExclusions(
           ed_->mission_goal_)) {
-    ROS_ERROR_STREAM("[target exploration] mission goal outside the active "
-                     "exploration capacity: goal=("
-                     << ed_->mission_goal_.transpose()
-                     << "). Increase target_exploration/auto_workspace/"
-                        "half_extent_xy before launch, or use a target inside "
-                        "the configured legacy coverage boxes.");
+    ROS_ERROR_STREAM("[target exploration] invalid or excluded mission goal=("
+                     << ed_->mission_goal_.transpose() << ")");
     return TARGET_UNREACHABLE;
   }
   if (target_directed && missionGoalReached(pos)) {
@@ -4464,6 +4460,25 @@ void FastExplorationManager::updateGoalNode() {
       edge2insert_mtx.lock();
       edge2insert.insert({std::make_pair(ed_->next_goal_node_, nbr), path});
       edge2insert_mtx.unlock();
+    }
+  }
+  // A nearby mission goal can be visible even when attaching both endpoints
+  // to skeleton nodes produces a detour through unobserved voxels. Add only a
+  // currently certified local edge; preflight and FSM search then use the same
+  // graph edge. This is target-only and never bypasses trajectory validation.
+  const auto odom = planner_manager_->topo_graph_->odom_node_;
+  if (targetDirectedModeActive() && odom &&
+      (goal - ed_->mission_goal_).norm() < 1.0e-3f &&
+      (goal - odom->center_).norm() <= ep_->target_preflight_horizon_) {
+    const double clearance = std::max(
+        planner_manager_->gcopter_config_->commitKnownFreeSafeDistance,
+        planner_manager_->gcopter_config_->dilateRadiusSoft +
+            planner_manager_->gcopter_config_->safetyClearanceTolerance);
+    const auto certificate = planner_manager_->raycastSafety(
+        odom->center_.cast<double>(), goal.cast<double>(), true, clearance, 0.05);
+    if (certificate.all_known_free && !certificate.blocked_by_occupied &&
+        !certificate.blocked_by_unknown) {
+      edge2insert[{ed_->next_goal_node_, odom}] = {goal, odom->center_};
     }
   }
   if (edge2insert.size() > 0) {

@@ -31,24 +31,20 @@
 
 namespace {
 
-/**
- * The HighSpeedExp frontend predates the composed runtime and requires a
- * finite index domain for its frontier key packing and Bubble-Topo regions.
- * A destination task must not, however, require operators to measure and
- * configure the whole scene before clicking a goal.  This bootstrap creates a
- * sufficiently large *internal capacity domain* around the first valid
- * odometry pose.  It is not a coverage boundary: target-directed ranking,
- * known-free commit checks, and the ROG map still decide where the vehicle may
- * travel.
- *
- * It deliberately runs before LIO, FrontierManager and TopoGraph are created;
- * those structures cache the domain origin/dimensions and cannot safely be
- * resized after startup.  Coverage deployments can disable it and retain the
- * explicit multi-box profile in their YAML.
- */
+// Preserve explicitly requested legacy coverage workspaces. Target navigation
+// has no bootstrap capacity and must never overwrite the coverage boxes.
 bool configureAutomaticTargetWorkspace(ros::NodeHandle &nh) {
   bool enabled = false;
   nh.param("target_exploration/auto_workspace/enabled", enabled, enabled);
+  std::string mission_mode;
+  nh.param<std::string>("exploration/mission_mode", mission_mode, "coverage");
+  if (mission_mode == "target" || mission_mode == "target_directed" ||
+      mission_mode == "target_exploration") {
+    if (enabled) ROS_WARN("[target workspace] auto_workspace is ignored for target "
+                          "navigation; observed regions grow with the mission");
+    return false;
+  }
+
   if (!enabled) {
     return false;
   }
@@ -192,20 +188,23 @@ int main(int argc, char **argv) {
     auto exploration_fsm = std::make_shared<fast_planner::FastExplorationFSM>();
 
     // Dynamic RViz corner selection is retained for coverage missions.  A
-    // target-exploration launch normally chooses the automatic workspace below
-    // instead, so its first interaction remains a single destination click.
+    // target mission uses sparse storage and accepts a destination directly.
     const bool automatic_workspace = configureAutomaticTargetWorkspace(nh);
+    std::string mission_mode;
+    nh.param<std::string>("exploration/mission_mode", mission_mode, "coverage");
+    const bool target_mission = mission_mode == "target" ||
+        mission_mode == "target_directed" || mission_mode == "target_exploration";
     fast_planner::DynamicBoundingBoxSelector bbox_selector;
     bbox_selector.init(nh);
     bool dynamic_box_selected = false;
     Eigen::Vector3f selected_min;
     Eigen::Vector3f selected_max;
     if (bbox_selector.enabled() && automatic_workspace) {
-      ROS_FATAL("[M2 runtime] automatic target workspace and dynamic bounding "
+      ROS_FATAL("[M2 runtime] automatic coverage workspace and dynamic bounding "
                 "box selection cannot be enabled together");
       return 3;
     }
-    if (bbox_selector.enabled()) {
+    if (bbox_selector.enabled() && !target_mission) {
       if (!bbox_selector.waitForSelection(selected_min, selected_max)) {
         if (!ros::ok()) {
           return 0;

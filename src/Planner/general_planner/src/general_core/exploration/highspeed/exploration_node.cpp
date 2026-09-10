@@ -38,8 +38,11 @@ int main(int argc, char **argv) {
   bool dynamic_box_selected = false;
   Eigen::Vector3f selected_min;
   Eigen::Vector3f selected_max;
-  //阻塞等待动态搜索范围
-  if (bbox_selector.enabled()) {
+  std::string mission_mode;
+  nh.param<std::string>("exploration/mission_mode", mission_mode, "coverage");
+  const bool target_mission = mission_mode == "target" || mission_mode == "target_directed";
+  // Only coverage tasks ask the operator for a region.
+  if (bbox_selector.enabled() && !target_mission) {
     if (bbox_selector.waitForSelection(selected_min, selected_max)) {
       dynamic_box_selected = true;
       const std::vector<double> min_param = {

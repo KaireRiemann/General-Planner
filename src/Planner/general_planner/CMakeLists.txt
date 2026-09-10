@@ -571,3 +571,11 @@ add_executable(tracking_dynamics_cost_self_test tests/tracking_dynamics_cost_sel
 add_dependencies(tracking_dynamics_cost_self_test ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
 target_include_directories(tracking_dynamics_cost_self_test PRIVATE include)
 target_link_libraries(tracking_dynamics_cost_self_test general_planner_core ${THIRD_PARTY})
+
+# Real LIO/Region ownership regression across the former fixed workspace.
+add_executable(target_sparse_domain_self_test tests/target_sparse_domain_self_test.cpp)
+target_compile_options(target_sparse_domain_self_test PRIVATE -UNDEBUG)
+target_link_libraries(target_sparse_domain_self_test general_planner_exploration ${THIRD_PARTY})
+if(CATKIN_ENABLE_TESTING)
+  add_test(NAME target_sparse_domain_self_test COMMAND target_sparse_domain_self_test)
+endif()

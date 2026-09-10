@@ -6,6 +6,7 @@
 #include <Eigen/StdVector>
 #include <geometry_msgs/PoseStamped.h>
 #include <memory>
+#include <atomic>
 #include <message_filters/subscriber.h>
 #include <message_filters/sync_policies/approximate_time.h>
 #include <message_filters/sync_policies/exact_time.h>
@@ -49,6 +50,10 @@ public:
   void init(ros::NodeHandle &nh);
   bool setSingleExplorationBox(const Eigen::Vector3f &box_min,
                                const Eigen::Vector3f &box_max);
+  // Task-domain policy only; this never certifies observed free space.
+  bool isAllowedByExclusions(const Eigen::Vector3f &pos) const;
+  bool targetNavigation() const { return target_navigation_.load(); }
+  void setTargetNavigation(bool enabled) { target_navigation_.store(enabled); }
   bool IsInBox(const Eigen::Vector3f &pos);
   bool IsInBox(const PointType &pos);
   bool IsInMap(const Eigen::Vector3f &pos);
@@ -66,6 +71,7 @@ public:
   unique_ptr<LIOInterfaceData> ld_;
 
 private:
+  std::atomic<bool> target_navigation_{false};
   typedef message_filters::sync_policies::ApproximateTime<
       sensor_msgs::PointCloud2, nav_msgs::Odometry>
       SyncPolicyCloudOdom;
@@ -111,7 +117,8 @@ struct LIOInterfaceData {
   EIGEN_MAKE_ALIGNED_OPERATOR_NEW
 };
 
-inline bool LIOInterface::IsInBox(const Eigen::Vector3f &pos) {
+inline bool LIOInterface::isAllowedByExclusions(const Eigen::Vector3f &pos) const {
+  if (!pos.allFinite()) return false;
   auto inbox = [&](const Eigen::Vector3f &pt, const Eigen::Vector3f &min,
                    const Eigen::Vector3f &max) -> bool {
     for (int i = 0; i < 3; i++) {
@@ -128,15 +135,23 @@ inline bool LIOInterface::IsInBox(const Eigen::Vector3f &pos) {
       return false;
   }
 
+  return true;
+}
+
+inline bool LIOInterface::IsInBox(const Eigen::Vector3f &pos) {
+  if (!isAllowedByExclusions(pos)) return false;
+  if (targetNavigation()) return true;
   for (int i = 0; i < lp_->box_num_; i++) {
     Eigen::Vector3f min_ = lp_->global_box_min_boundary_vec_[i];
     Eigen::Vector3f max_ = lp_->global_box_max_boundary_vec_[i];
-    if (inbox(pos, min_, max_))
-      return true;
+    if ((pos.array() >= min_.array()).all() &&
+        (pos.array() <= max_.array()).all()) return true;
   }
   return false;
 }
 inline bool LIOInterface::IsInMap(const Eigen::Vector3f &pos) {
+  if (!pos.allFinite()) return false;
+  if (targetNavigation()) return isAllowedByExclusions(pos);
   if (pos(0) < lp_->global_map_min_boundary_(0) + 1e-4 ||
       pos(1) < lp_->global_map_min_boundary_(1) + 1e-4 ||
       pos(2) < lp_->global_map_min_boundary_(2) + 1e-4)
@@ -154,15 +169,7 @@ inline bool LIOInterface::IsInBox(const PointType &pos) {
 }
 
 inline bool LIOInterface::IsInMap(const PointType &pos) {
-  if (pos.x < lp_->global_map_min_boundary_(0) + 1e-4 ||
-      pos.y < lp_->global_map_min_boundary_(1) + 1e-4 ||
-      pos.z < lp_->global_map_min_boundary_(2) + 1e-4)
-    return false;
-  if (pos.x > lp_->global_map_max_boundary_(0) - 1e-4 ||
-      pos.y > lp_->global_map_max_boundary_(1) - 1e-4 ||
-      pos.z > lp_->global_map_max_boundary_(2) - 1e-4)
-    return false;
-  return true;
+  return IsInMap(Eigen::Vector3f(pos.x, pos.y, pos.z));
 }
 
 } // namespace fast_planner

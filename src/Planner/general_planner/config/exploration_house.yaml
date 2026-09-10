@@ -192,15 +192,10 @@ ViewpointManager/global_recluster_size: 36
 ViewpointManager/view_direction_range: 140.0
 ViewpointManager/local_tsp_size: 10
 ViewpointManager/top_candidate_num: 2
-# Destination-task workspace bootstrap.  The old HighSpeedExp data structures
-# require finite index bounds, but target_exploration must not ask an operator
-# to predefine the whole scene.  planner_runtime enables this automatically
-# for `initial_mode:=target_exploration`: it centers a sparse, 240 m-wide
-# capacity domain on the first odometry pose before Frontier/Bubble-Topo are
-# initialized.  It is an implementation capacity, not a coverage objective;
-# all movement still requires known-free/safety validation from the shared map.
-# A legacy coverage launch keeps this disabled and uses the explicit boxes
-# below, because coverage completion has a genuine finite-area definition.
+# Deprecated compatibility parameters. Target navigation grows sparse regions
+# from observations and does not use these values as a fixed workspace.
+# Coverage defaults to its explicit boxes below; an explicit legacy enable
+# still bootstraps a finite coverage workspace.
 target_exploration/auto_workspace/enabled: false
 target_exploration/auto_workspace/half_extent_xy: 120.0
 target_exploration/auto_workspace/below_odom: 2.0

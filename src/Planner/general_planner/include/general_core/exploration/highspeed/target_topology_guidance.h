@@ -167,14 +167,17 @@ rankTargetTopologyAnchors(
   };
   std::stable_sort(progressing.begin(), progressing.end(), compare);
   std::stable_sort(detours.begin(), detours.end(), compare);
-  const auto &primary = progressing.empty() ? detours : progressing;
   const int max_count = std::max(0, config.anchor_candidate_count);
   std::vector<TargetTopologyAnchorCandidate> result;
-  result.reserve(std::min<int>(max_count, static_cast<int>(primary.size())));
-  for (const auto &ranked : primary) {
-    if (static_cast<int>(result.size()) >= max_count) {
-      break;
-    }
+  // Forward anchors are not yet connectivity-checked. Reserve a detour slot
+  // so disconnected forward anchors cannot permanently suppress an escape.
+  const int forward_limit = max_count - (!detours.empty() && max_count > 1 ? 1 : 0);
+  for (const auto &ranked : progressing) {
+    if (static_cast<int>(result.size()) >= forward_limit) break;
+    result.emplace_back(ranked.candidate);
+  }
+  for (const auto &ranked : detours) {
+    if (static_cast<int>(result.size()) >= max_count) break;
     result.emplace_back(ranked.candidate);
   }
   return result;
