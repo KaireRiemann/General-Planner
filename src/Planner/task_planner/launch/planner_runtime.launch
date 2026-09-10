@@ -1,11 +1,20 @@
 <launch>
+  <!-- Start perception with runtime so tracking can be selected without another launch. -->
+  <arg name="tracking_detector" default="true" />
+  <arg name="tracking_image_topic" default="/camera0/color/image/compressed" />
+  <arg name="tracking_odom_topic" default="/unity_odom" />
+  <arg name="tracking_device" default="cpu" />
+  <arg name="tracking_target_label" default="car" />
+  <arg name="tracking_confidence" default="0.6" />
+  <arg name="tracking_camera_config" default="$(find tracking_detector)/config/camera.yaml" />
+
   <!-- M2 composed runtime. planner_runtime_node owns exactly one ROG map,
        MapManager, BoundaryMap and global topology worker.  Exploration and
        state2state are in-process adapters; switching modes never kills a
        planner or recreates a map. -->
   <!-- The base runtime consumes external odometry/cloud by default.  A
        perfect_drone_sim run must explicitly select marsim:=true. -->
-  <!-- Detector is enabled on demand by an explicit internal Gate request. -->
+  <!-- Detector processes run only in active Gate mode; requests also gate detection internally. -->
   <arg name="perceptor_config" default="$(find aperture_detector)/config/polygon_hole_step_viz_unity_sim.yaml" />
   <arg name="gate_overlay_config" default="" />
   <arg name="perceptor" default="true" />
@@ -241,17 +250,38 @@
     <node pkg="tf" type="static_transform_publisher" name="exploration_world_tf"
           args="0 0 0 0 0 0 world navigation 100" />
   </group>
-  <include if="$(arg perceptor)" file="$(find aperture_detector)/launch/detector.launch">
-    <arg name="config" value="$(arg perceptor_config)" />
-    <arg name="cloud_topic" value="$(arg cloud_topic)" />
-    <arg name="odom_topic" value="$(arg odom_topic)" />
-    <arg name="frame_id" value="$(arg perceptor_frame_id)" />
-    <arg name="vlm" value="$(arg perceptor_vlm)" />
-    <arg name="image_topic" value="$(arg perceptor_image_topic)" />
-    <arg name="camera_info_topic" value="$(arg perceptor_camera_info_topic)" />
-    <arg name="vlm_model" value="$(arg perceptor_vlm_model)" />
-    <arg name="vlm_timeout" value="$(arg perceptor_vlm_timeout)" />
-    <arg name="vlm_period" value="$(arg perceptor_vlm_period)" />
-    <arg name="vlm_base_url" value="$(arg perceptor_vlm_base_url)" />
-  </include>
+  <!-- Start/stop the pipeline on confirmed runtime mode changes. -->
+  <node if="$(arg perceptor)" pkg="general_planner" type="planner_detector_switcher.py"
+        name="gate_detector_switcher" output="screen">
+    <param name="active_mode" value="gate" />
+    <param name="status_topic" value="/planner/status" />
+    <param name="launch_file" value="$(find aperture_detector)/launch/detector.launch" />
+    <param name="launch_args/config" value="$(arg perceptor_config)" type="str" />
+    <param name="launch_args/cloud_topic" value="$(arg cloud_topic)" type="str" />
+    <param name="launch_args/odom_topic" value="$(arg odom_topic)" type="str" />
+    <param name="launch_args/frame_id" value="$(arg perceptor_frame_id)" type="str" />
+    <param name="launch_args/vlm" value="$(arg perceptor_vlm)" type="str" />
+    <param name="launch_args/image_topic" value="$(arg perceptor_image_topic)" type="str" />
+    <param name="launch_args/camera_info_topic" value="$(arg perceptor_camera_info_topic)" type="str" />
+    <param name="launch_args/vlm_model" value="$(arg perceptor_vlm_model)" type="str" />
+    <param name="launch_args/vlm_timeout" value="$(arg perceptor_vlm_timeout)" type="str" />
+    <param name="launch_args/vlm_period" value="$(arg perceptor_vlm_period)" type="str" />
+    <param name="launch_args/vlm_base_url" value="$(arg perceptor_vlm_base_url)" type="str" />
+  </node>
+  <!-- Start/stop the pipeline on confirmed runtime mode changes. -->
+  <node if="$(arg tracking_detector)" pkg="general_planner" type="planner_detector_switcher.py"
+        name="tracking_detector_switcher" output="screen">
+    <param name="active_mode" value="tracking" />
+    <param name="status_topic" value="/planner/status" />
+    <param name="launch_file" value="$(find tracking_detector)/launch/tracking_detector.launch" />
+    <param name="launch_args/rgb_topic" value="$(arg tracking_image_topic)" type="str" />
+    <param name="launch_args/odom_topic" value="$(arg tracking_odom_topic)" type="str" />
+    <param name="launch_args/device" value="$(arg tracking_device)" type="str" />
+    <param name="launch_args/target_label" value="$(arg tracking_target_label)" type="str" />
+    <param name="launch_args/confidence" value="$(arg tracking_confidence)" type="str" />
+    <param name="launch_args/camera_config" value="$(arg tracking_camera_config)" type="str" />
+    <param name="launch_args/target_odom_topic" value="$(arg tracking_target_odom_topic)" type="str" />
+    <param name="launch_args/prediction_topic" value="$(arg tracking_target_prediction_topic)" type="str" />
+  </node>
+
 </launch>

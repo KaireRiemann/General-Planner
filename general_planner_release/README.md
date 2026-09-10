@@ -328,3 +328,11 @@ The controller should consume `quadrotor_msgs/PositionCommand` and, if needed, `
 - Do not edit generated runtime YAML under `~/.ros/general_planner_runtime`; edit the full YAML under `config/` or pass your own `interface_config`.
 - If target hardware is not Ubuntu 20.04 x86_64 / ROS Noetic, rebuild the binary on the target ABI.
 - The bundled `quadrotor_msgs` are public interface definitions, not planner implementation source.
+
+## Tracking detector 自动启动
+
+`roslaunch general_planner_release planner_runtime.launch` 默认启动模式管理器，进入 tracking 模式后启动 tracking_detector 的 YOLOE、EKF 和预测节点。无需另开scene_graph或target_ekf。可用`tracking_detector:=false`关闭，`tracking_device:=cpu`设置设备，`tracking_image_topic`和`tracking_odom_topic`设置同一采集时间轴的图像与实际位姿。默认目标话题`/target_ekf_node/target_odom`，预测`/tracking/target_prediction`，两端可由同名tracking_target参数统一修改。
+
+感知运行文件与模型位于`src/tracking_detector`，生成消息位于`lib/python3/dist-packages/tracking_detector`。Python/PyTorch依赖沿用容器环境。感知管理器跟随 planner 已生效的任务模式，不主动切换任务。
+
+感知按模式启停：tracking 前端仅在 /planner/status 确认 tracking 模式后启动，离开后关闭。state2state 不运行 tracking 检测。重新进入 tracking 需要等待模型加载。release 当前未包含 gate detector 启动链路；源码 runtime 的 gate detector 仅在 gate 模式启动。

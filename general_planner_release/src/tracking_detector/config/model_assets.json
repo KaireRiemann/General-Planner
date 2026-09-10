@@ -1,0 +1,10 @@
+{
+  "vendor/yoloe/mobileclip_blt.pt": {
+    "bytes": 599214572,
+    "sha256": "670844f7a886dd6eff7a9285adfc53f3d3c889c03bfc8354010cb5c6bf27441a"
+  },
+  "vendor/yoloe/prompt/yoloe_pretrain/yoloe-11m-seg.pt": {
+    "bytes": 60276714,
+    "sha256": "785199b7cc75a5f4041dec15782a4b8a4105e5a34d7ffb287a0a10781724c5bd"
+  }
+}

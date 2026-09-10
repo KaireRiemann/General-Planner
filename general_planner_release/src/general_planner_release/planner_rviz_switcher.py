@@ -31,6 +31,7 @@ class PlannerRvizSwitcher(object):
     MODE_EXPLORATION = 2
     MODE_TARGET_EXPLORATION = 4
     MODE_GATE = 5
+    MODE_TRACKING = 6
 
     def __init__(self):
         self.rviz_node_name = rospy.get_param(
@@ -76,7 +77,7 @@ class PlannerRvizSwitcher(object):
     @staticmethod
     def _mode_key_from_name(name):
         name = (name or "").strip().lower()
-        if name in ("state2state", "s2s", "navigation", "nav"):
+        if name in ("state2state", "s2s", "navigation", "nav", "tracking"):
             return "state2state"
         return "exploration"
 
@@ -101,7 +102,7 @@ class PlannerRvizSwitcher(object):
         if self.prefer_handover and self._handover_lock is not None:
             return
         mode = int(msg.active_mode)
-        if mode == self.MODE_STATE2STATE:
+        if mode in (self.MODE_STATE2STATE, self.MODE_TRACKING):
             self._set_desired("state2state", "planner_status")
         elif mode in (self.MODE_EXPLORATION, self.MODE_TARGET_EXPLORATION,
                       self.MODE_GATE):

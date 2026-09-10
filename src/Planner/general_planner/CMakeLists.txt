@@ -538,6 +538,7 @@ catkin_install_python(PROGRAMS
         scripts/corridor_benchmark.py
         scripts/se3_so3_command_monitor.py
         scripts/planner_serial_handover.py
+        scripts/planner_detector_switcher.py
         scripts/planner_rviz_switcher.py
         DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )

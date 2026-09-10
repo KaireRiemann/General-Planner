@@ -21,4 +21,6 @@
   <exec_depend>tf</exec_depend>
   <exec_depend>rviz</exec_depend>
   <exec_depend>general_planner_rviz_plugins</exec_depend>
+  <exec_depend>tracking_detector</exec_depend>
+  <exec_depend>roslaunch</exec_depend>
 </package>

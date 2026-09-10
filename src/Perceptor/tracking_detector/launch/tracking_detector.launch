@@ -1,0 +1,58 @@
+<launch>
+  <arg name="namespace" default="tracking_detector" />
+  <arg name="rgb_topic" default="/camera0/color/image/compressed" />
+  <arg name="rgb_compressed" default="true" />
+  <!-- Must share the camera acquisition clock, not a restamped command odometry. -->
+  <arg name="odom_topic" default="/unity_odom" />
+  <arg name="bbox_topic" default="/tracking/bboxes" />
+  <arg name="visualization_topic" default="/tracking/detections/image" />
+  <arg name="target_odom_topic" default="/target_ekf_node/target_odom" />
+  <arg name="raw_target_odom_topic" default="/target_ekf_node/yolo_odom" />
+  <arg name="prediction_topic" default="/tracking/target_prediction" />
+  <arg name="camera_config" default="$(find tracking_detector)/config/camera.yaml" />
+  <arg name="yoloe_root" default="$(find tracking_detector)/vendor/yoloe" />
+  <arg name="model_path" default="$(arg yoloe_root)/prompt/yoloe_pretrain/yoloe-11m-seg.pt" />
+  <arg name="prompt_path" default="$(find tracking_detector)/config/prompts.txt" />
+  <arg name="device" default="cpu" />
+  <arg name="confidence" default="0.6" />
+  <arg name="target_label" default="car" />
+  <arg name="publish_visualization" default="true" />
+  <arg name="start_detector" default="true" />
+  <arg name="start_predictor" default="true" />
+  <arg name="prediction_horizon" default="4.0" />
+  <arg name="prediction_dt" default="0.25" />
+  <group ns="$(arg namespace)">
+    <node if="$(arg start_detector)" pkg="tracking_detector" type="yoloe_bbox_node.py" name="yoloe" output="screen" clear_params="true" required="true">
+      <param name="rgb_topic" value="$(arg rgb_topic)" />
+      <param name="rgb_compressed" value="$(arg rgb_compressed)" />
+      <param name="odom_topic" value="$(arg odom_topic)" />
+      <param name="bounding_boxes_topic" value="$(arg bbox_topic)" />
+      <param name="visualization_topic" value="$(arg visualization_topic)" />
+      <param name="yoloe_root" value="$(arg yoloe_root)" />
+      <param name="model_path" value="$(arg model_path)" />
+      <param name="prompt_path" value="$(arg prompt_path)" />
+      <param name="device" value="$(arg device)" />
+      <param name="confidence" value="$(arg confidence)" />
+      <param name="publish_visualization" value="$(arg publish_visualization)" />
+      <param name="output_width" value="640" />
+      <param name="output_height" value="480" />
+    </node>
+    <node pkg="tracking_detector" type="target_ekf_node" name="target_ekf" output="screen" clear_params="true" required="true">
+      <rosparam command="load" file="$(arg camera_config)" />
+      <param name="target_label" value="$(arg target_label)" />
+      <param name="pitch_thr" value="37" />
+      <remap from="~yolo" to="$(arg bbox_topic)" />
+      <remap from="~odom" to="$(arg odom_topic)" />
+      <remap from="~target_odom" to="$(arg target_odom_topic)" />
+      <remap from="~yolo_odom" to="$(arg raw_target_odom_topic)" />
+    </node>
+    <node if="$(arg start_predictor)" pkg="tracking_detector" type="target_path_predictor_node" name="predictor" output="screen" clear_params="true" required="true">
+      <param name="prediction_horizon" value="$(arg prediction_horizon)" />
+      <param name="prediction_dt" value="$(arg prediction_dt)" />
+      <param name="publish_rate" value="20.0" />
+      <param name="input_timeout" value="0.4" />
+      <remap from="~target_odom" to="$(arg target_odom_topic)" />
+      <remap from="~prediction" to="$(arg prediction_topic)" />
+    </node>
+  </group>
+</launch>

@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+# Large model assets are copied into this installation; transfer separately for a fresh checkout.
+vendor/yoloe/**/*.pt
+vendor/yoloe/*.pt
+vendor/yoloe/**/*.onnx

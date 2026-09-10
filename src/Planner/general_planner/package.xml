@@ -34,4 +34,5 @@
   <exec_depend>general_planner_rviz_plugins</exec_depend>
 
   <export/>
+  <exec_depend>roslaunch</exec_depend>
 </package>

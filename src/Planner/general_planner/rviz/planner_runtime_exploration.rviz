@@ -55,6 +55,14 @@ Toolbars:
 Visualization Manager:
   Class: ""
   Displays:
+    - Class: rviz/Image
+      Enabled: true
+      Image Topic: /tracking/detections/image
+      Name: Tracking Detection
+      Queue Size: 1
+      Transport Hint: raw
+      Normalize Range: true
+      Value: true
     - Alpha: 0.5
       Cell Size: 1
       Class: rviz/Grid

@@ -1,4 +1,15 @@
 <launch>
+  <!-- Start perception with runtime so tracking can be selected without another launch. -->
+  <arg name="tracking_target_odom_topic" default="/target_ekf_node/target_odom" />
+  <arg name="tracking_target_prediction_topic" default="/tracking/target_prediction" />
+  <arg name="tracking_detector" default="true" />
+  <arg name="tracking_image_topic" default="/camera0/color/image/compressed" />
+  <arg name="tracking_odom_topic" default="/unity_odom" />
+  <arg name="tracking_device" default="cpu" />
+  <arg name="tracking_target_label" default="car" />
+  <arg name="tracking_confidence" default="0.6" />
+  <arg name="tracking_camera_config" default="$(find tracking_detector)/config/camera.yaml" />
+
   <!-- M2 simulator convenience entry.  It delegates all planner ownership to
        planner_runtime.launch and only selects the bundled perfect_drone sim. -->
   <arg name="rviz" default="true" />
@@ -32,6 +43,15 @@
   <arg name="source_timeout_abort_duration" default="1.0" />
 
   <include file="$(find general_planner_release)/launch/planner_runtime.launch">
+    <arg name="tracking_target_odom_topic" value="$(arg tracking_target_odom_topic)" />
+    <arg name="tracking_target_prediction_topic" value="$(arg tracking_target_prediction_topic)" />
+    <arg name="tracking_detector" value="$(arg tracking_detector)" />
+    <arg name="tracking_image_topic" value="$(arg tracking_image_topic)" />
+    <arg name="tracking_odom_topic" value="$(arg tracking_odom_topic)" />
+    <arg name="tracking_device" value="$(arg tracking_device)" />
+    <arg name="tracking_target_label" value="$(arg tracking_target_label)" />
+    <arg name="tracking_confidence" value="$(arg tracking_confidence)" />
+    <arg name="tracking_camera_config" value="$(arg tracking_camera_config)" />
     <arg name="marsim" value="true" />
     <arg name="rviz" value="$(arg rviz)" />
     <arg name="auto_rviz_switch" value="$(arg auto_rviz_switch)" />

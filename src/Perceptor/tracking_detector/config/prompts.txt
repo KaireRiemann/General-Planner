@@ -1,0 +1,26 @@
+car
+person
+soldier
+tank
+motorcycle
+helicopter
+drone
+artillery
+trench
+sandbag wall
+table
+sofa
+bed
+cabinet
+laptop
+keyboard
+mouse
+refrigerator
+microwave
+oven
+sink
+toilet
+bathtub
+RPG rocket launcher
+detonator
+C4 explosive

@@ -1,4 +1,15 @@
 <launch>
+  <arg name="tracking_target_odom_topic" default="/target_ekf_node/target_odom" />
+  <arg name="tracking_target_prediction_topic" default="/tracking/target_prediction" />
+  <!-- Start perception with runtime so tracking can be selected without another launch. -->
+  <arg name="tracking_detector" default="true" />
+  <arg name="tracking_image_topic" default="/camera0/color/image/compressed" />
+  <arg name="tracking_odom_topic" default="/unity_odom" />
+  <arg name="tracking_device" default="cpu" />
+  <arg name="tracking_target_label" default="car" />
+  <arg name="tracking_confidence" default="0.6" />
+  <arg name="tracking_camera_config" default="$(find tracking_detector)/config/camera.yaml" />
+
   <!-- M2 binary-release runtime entry point.  The included launch keeps one
        planner_runtime_node alive for the entire mission: it owns the shared
        ROG/MapManager/global-topology resources and composes exploration plus
@@ -117,6 +128,8 @@
     <param name="serial_handover" value="false" type="bool" />
     <param name="gate_status_topic" value="$(arg gate_status_topic)" type="string" />
     <param name="global_map_config" value="$(arg rog_map_config)" type="string" />
+    <param name="tracking_target_odom_topic" value="$(arg tracking_target_odom_topic)" />
+    <param name="tracking_target_prediction_topic" value="$(arg tracking_target_prediction_topic)" />
     <param name="navigation_config" value="$(arg navigation_config)" type="string" />
     <param name="odometry_topic" value="$(arg odom_topic)" type="string" />
     <param name="cloud_topic" value="$(arg cloud_topic)" type="string" />
@@ -203,4 +216,20 @@
     <node pkg="tf" type="static_transform_publisher" name="exploration_world_tf"
           args="0 0 0 0 0 0 world navigation 100" />
   </group>
+  <!-- Start/stop the pipeline on confirmed runtime mode changes. -->
+  <node if="$(arg tracking_detector)" pkg="general_planner_release" type="planner_detector_switcher.py"
+        name="tracking_detector_switcher" output="screen">
+    <param name="active_mode" value="tracking" />
+    <param name="status_topic" value="/planner/status" />
+    <param name="launch_file" value="$(find tracking_detector)/launch/tracking_detector.launch" />
+    <param name="launch_args/rgb_topic" value="$(arg tracking_image_topic)" type="str" />
+    <param name="launch_args/odom_topic" value="$(arg tracking_odom_topic)" type="str" />
+    <param name="launch_args/device" value="$(arg tracking_device)" type="str" />
+    <param name="launch_args/target_label" value="$(arg tracking_target_label)" type="str" />
+    <param name="launch_args/confidence" value="$(arg tracking_confidence)" type="str" />
+    <param name="launch_args/camera_config" value="$(arg tracking_camera_config)" type="str" />
+    <param name="launch_args/target_odom_topic" value="$(arg tracking_target_odom_topic)" type="str" />
+    <param name="launch_args/prediction_topic" value="$(arg tracking_target_prediction_topic)" type="str" />
+  </node>
+
 </launch>

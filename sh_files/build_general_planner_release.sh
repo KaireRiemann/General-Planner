@@ -121,7 +121,7 @@ cd "${WORKSPACE_ROOT}"
 catkin_cmd=(
   catkin_make
   --force-cmake
-  "-DCATKIN_WHITELIST_PACKAGES=map_manager;general_planner;general_planner_rviz_plugins"
+  "-DCATKIN_WHITELIST_PACKAGES=map_manager;general_planner;general_planner_rviz_plugins;tracking_detector"
   -DCMAKE_BUILD_TYPE="${BUILD_TYPE}"
 )
 if [[ -n "${GP_CATKIN_ARGS:-}" ]]; then
@@ -252,6 +252,8 @@ sync_binary "${TRAJ_SERVER_BINARY_SRC}" "${TRAJ_SERVER_BINARY_DST}"
 
 echo "[build_release] Sync planner_runtime helper scripts"
 cp "${SERIAL_HANDOVER_SCRIPT_SRC}" "${RELEASE_PKG_DIR}/planner_serial_handover.py"
+cp "${PLANNER_SCRIPTS_DIR}/planner_detector_switcher.py" "${RELEASE_PKG_DIR}/planner_detector_switcher.py"
+chmod +x "${RELEASE_PKG_DIR}/planner_detector_switcher.py"
 cp "${RVIZ_SWITCHER_SCRIPT_SRC}" "${RELEASE_PKG_DIR}/planner_rviz_switcher.py"
 chmod +x \
   "${RELEASE_PKG_DIR}/planner_runtime_node" \
@@ -345,6 +347,8 @@ echo "[build_release] Sync generated C++ message headers"
 rm -rf "${CPP_MSG_DST}"
 mkdir -p "$(dirname "${CPP_MSG_DST}")"
 cp -a "${CPP_MSG_SRC}" "${CPP_MSG_DST}"
+
+python3 "${SCRIPT_DIR}/sync_tracking_detector_release.py" --workspace "${WORKSPACE_ROOT}" --repo "${REPO_ROOT}"
 
 echo "[build_release] Sync generated Python message package"
 rm -rf "${PY_MSG_DST}"

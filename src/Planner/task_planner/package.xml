@@ -83,4 +83,5 @@
         <!-- Other tools can request additional information be placed here -->
 
     </export>
+  <exec_depend>tracking_detector</exec_depend>
 </package>
