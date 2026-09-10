@@ -1,9 +1,9 @@
 # Target-directed exploration profile.
 #
 # Load this after the environment/base exploration profile and before an
-# optional scene overlay. It owns only target-task policy; lidar, Bubble-Topo,
-# vehicle limits and finite workspace capacity remain in the base profile or
-# launch arguments. A scene overlay may override height and progress settings.
+# optional scene overlay. Targets are independent of coverage boxes and the
+# current local map window. Frontier/Topo regions grow from observations.
+# Explicit exclusions, flight limits and local known-free checks still apply.
 
 # A 2D RViz goal has z=0. Keep the current flight height unless a 3D target is
 # deliberately sent by setting this true in a scene-specific overlay.

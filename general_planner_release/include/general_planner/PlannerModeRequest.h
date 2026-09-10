@@ -54,7 +54,7 @@ struct PlannerModeRequest_
 
 
 
-// reducing the odds to have name collisions with Windows.h
+// reducing the odds to have name collisions with Windows.h 
 #if defined(_WIN32) && defined(MODE_HOLD)
   #undef MODE_HOLD
 #endif
@@ -100,19 +100,19 @@ typedef boost::shared_ptr< ::general_planner::PlannerModeRequest const> PlannerM
 
 // constants requiring out of line definition
 
+   
 
+   
 
+   
 
+   
 
+   
 
+   
 
-
-
-
-
-
-
-
+   
 
 
 

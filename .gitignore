@@ -8,6 +8,8 @@ src/Localization/FAST_LIO/PCD
 *.csv
 *.pcd
 *.bin
+# Release executables are deliverables, not disposable build intermediates.
+!/general_planner_release/src/general_planner_release/bin/*.bin
 *.bag
 __pycache__/
 *.pyc

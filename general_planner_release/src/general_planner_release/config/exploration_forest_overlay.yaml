@@ -57,17 +57,8 @@ lidar_perception/fov_viewpoint_up: 85.0
 lidar_perception/fov_viewpoint_down: -85.0
 lidar_perception/max_ray_length: 70.0
 
-# Do not encode forest.pcd's bounds here.  This is a destination task, not a
-# coverage task: planner_runtime creates its internal sparse capacity around
-# the initial odometry pose, so RViz needs only one target click.  The 120 m
-# half extent covers the click forest and leaves enough room for detours;
-# increase only this capacity for a genuinely longer mission, never by copying
-# PCD/world bounds into box_0.
-target_exploration/auto_workspace/half_extent_xy: 120.0
-target_exploration/auto_workspace/below_odom: 2.0
-# The initial forest odometry is z=1.5 m, therefore this yields a z capacity
-# of [-0.5, 2.7] m and matches the single-level virtual ceiling below.
-target_exploration/auto_workspace/above_odom: 1.2
+# Target navigation grows from observations and does not require scene bounds.
+# Flight-height constraints remain in the map/navigation configuration below.
 
 # HighSpeedExp validates both the shared ROG inflated map (0.45 m) and the
 # Bubble-Topo minimum radius (0.46 m).  Keep every corridor and commit gate

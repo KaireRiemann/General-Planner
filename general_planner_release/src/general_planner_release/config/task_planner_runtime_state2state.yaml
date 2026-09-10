@@ -56,6 +56,18 @@ general_planner:
     max_omg: 1.2
     yaw_rate_limit: 0.8
     yaw_acceleration_limit: 1.6
+    keep_old_startup_grace: 1.0
+    # Match Unity CameraInfo and the estimator's camera_unity_main_scene.yaml.
+    fov_horizontal_deg: 75.178
+    fov_vertical_deg: 60.0
+    cam2body_R: [0, 0, 1, -1, 0, 0, 0, -1, 0]
+    cam2body_p: [0, 0, 0]
+    target_half_height: 0.7
+    target_half_width: 0.5
+    # Leave turning room and keep the ground contact away from image edges.
+    distance: 3.5
+    height_offset: 0.7
+    height_tolerance: 0.3
   backup_traj_en: true
   esdf_traj_en: false
   esdf_safe_distance: 0.3
