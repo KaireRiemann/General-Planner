@@ -1,0 +1,3 @@
+# Isolated software regression fixture only; production defaults stay enabled.
+global_topology:
+  enabled: false

@@ -1,0 +1,20 @@
+{
+  "name": "windowtec-vlm-window-corners",
+  "version": "1.0.0",
+  "release_date": "2026-08-04",
+  "python": ">=3.10",
+  "tested_model": "Qwen3.6-35B-A3B-UN-NVFP4",
+  "coordinate_scale": 1000,
+  "model_output": {
+    "windows": [
+      {
+        "points": [
+          ["top-left x", "top-left y"],
+          ["top-right x", "top-right y"],
+          ["bottom-right x", "bottom-right y"],
+          ["bottom-left x", "bottom-left y"]
+        ]
+      }
+    ]
+  }
+}

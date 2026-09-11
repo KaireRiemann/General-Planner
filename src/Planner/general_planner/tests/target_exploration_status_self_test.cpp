@@ -17,6 +17,12 @@ int main() {
   s.phase = PlannerPhase::WAITING_INPUT;
   s.ready_for_new_task = s.stable_hover = s.odom_valid = s.map_ready = true;
   check(R::READY);
+  s.ready_for_new_task = false;
+  s.mode_state = modeStateFromExplorationString("WAITING_LOCAL_PLAN");
+  if (s.mode_state != ModeState::EXP_PLAN_TRAJ)
+    throw std::runtime_error("first-command wait lost its exploration mode state");
+  check(R::RUNNING); // HOLD while preparing a local plan never grants dispatch.
+  s.ready_for_new_task = true;
   check(R::RUNNING, true); // Replacement/start acknowledgement pending.
   check(R::RUNNING, false, false); // Cached stable_hover is not enough.
   s.phase = PlannerPhase::PLANNING;

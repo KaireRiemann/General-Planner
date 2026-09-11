@@ -838,7 +838,8 @@ struct PathProjectionInfo
 };
 
 PathProjectionInfo nearestPathProjection(const std::vector<Eigen::Vector3d> &path,
-                                         const Eigen::Vector3d &start)
+                                         const Eigen::Vector3d &start,
+                                         double max_arc = std::numeric_limits<double>::infinity())
 {
   PathProjectionInfo info;
   if (path.empty())
@@ -853,7 +854,8 @@ PathProjectionInfo nearestPathProjection(const std::vector<Eigen::Vector3d> &pat
     return info;
   }
 
-  for (std::size_t i = 0; i + 1U < path.size(); ++i)
+  double arc = 0.0;
+  for (std::size_t i = 0; i + 1U < path.size() && arc <= max_arc; ++i)
   {
     const Eigen::Vector3d seg = path[i + 1U] - path[i];
     const double len2 = seg.squaredNorm();
@@ -861,7 +863,8 @@ PathProjectionInfo nearestPathProjection(const std::vector<Eigen::Vector3d> &pat
     Eigen::Vector3d proj = path[i];
     if (len2 > 1.0e-8)
     {
-      alpha = std::clamp((start - path[i]).dot(seg) / len2, 0.0, 1.0);
+      alpha = std::clamp((start - path[i]).dot(seg) / len2, 0.0,
+                         std::min(1.0, std::max(0.0, max_arc - arc) / std::sqrt(len2)));
       proj = path[i] + alpha * seg;
     }
     const double dist = (start - proj).norm();
@@ -873,6 +876,7 @@ PathProjectionInfo nearestPathProjection(const std::vector<Eigen::Vector3d> &pat
       info.point = proj;
       info.valid = std::isfinite(dist);
     }
+    arc += std::sqrt(len2);
   }
   return info;
 }
@@ -899,7 +903,8 @@ bool appendUniquePathPoint(std::vector<Eigen::Vector3d> &path,
 bool alignPathStart(std::vector<Eigen::Vector3d> &path,
                     const Eigen::Vector3d &start,
                     bool trim_to_projection,
-                    double max_projection_distance)
+                    double max_projection_distance,
+                    double max_projection_arc = std::numeric_limits<double>::infinity())
 {
   if (!start.allFinite())
   {
@@ -917,7 +922,7 @@ bool alignPathStart(std::vector<Eigen::Vector3d> &path,
   }
   if (trim_to_projection && path.size() >= 2U)
   {
-    const PathProjectionInfo projection = nearestPathProjection(path, start);
+    const PathProjectionInfo projection = nearestPathProjection(path, start, max_projection_arc);
     if (!projection.valid ||
         projection.distance > std::max(0.05, max_projection_distance))
     {
@@ -1190,6 +1195,7 @@ void FastPlannerManager::initPlanModules(ros::NodeHandle &nh,
   yaw_traj_opt_ = std::make_shared<traj_opt::YawTrajOpt>(std::max(0.2, gcopter_config_->yaw_max_vel));
 
   rog_map_updated_ = false;
+  injected_world_map_ = static_cast<bool>(shared_map_manager);
   if (shared_map_manager)
   {
     // M2 ownership rule: exploration is a reader of the same world model as
@@ -1360,9 +1366,13 @@ bool FastPlannerManager::planExploreTraj(
     const std::vector<Eigen::Vector3f> &path,
     bool is_static,
     bool clearance_recovery,
-    bool rolling_horizon)
+    bool rolling_horizon,
+    const TargetRouteExecutionContext &route)
 {
   const ros::Time plan_process_start = ros::Time::now();
+  if (route.enabled() && (!injected_world_map_ || !map_manager_ ||
+                          route.world != map_manager_->worldEpoch())) return false;
+  if (route.enabled() && route.stop_at_boundary) rolling_horizon = false;
   last_frontend_path_ = path;
   if (!exploration_traj_opt_ || !yaw_traj_opt_)
   {
@@ -1477,10 +1487,14 @@ bool FastPlannerManager::planExploreTraj(
       std::max({0.75,
                 2.5 * std::max(0.05, gcopter_config_->corridorMaxStartShift),
                 0.25 * local_data_.curr_vel_.norm() * std::max(0.05, switch_delay) + 0.50});
+  const double max_head_arc = route.enabled()
+      ? std::max(1.0, local_data_.curr_vel_.norm() * switch_delay +
+                     0.5 * gcopter_config_->maxAccMag * switch_delay * switch_delay + 0.5)
+      : std::numeric_limits<double>::infinity();
   if (!alignPathStart(local_path,
                       head.col(0),
                       use_committed_replan_state,
-                      max_head_projection_dist))
+                      max_head_projection_dist, max_head_arc))
   {
     ROS_WARN_STREAM("[highspeed_exp adapter] reject frontend path: failed to align optimization head."
                     << " head_path_dist=" << committed_head_path_dist
@@ -1492,6 +1506,15 @@ bool FastPlannerManager::planExploreTraj(
   if (local_path.size() < 2)
   {
     return false;
+  }
+  if (route.enabled()) {
+    const double step = std::min(0.10, 0.5 * map_manager_->getResolution());
+    for (std::size_t i = 1; i < local_path.size(); ++i) {
+      const Eigen::Vector3d a = local_path[i - 1], b = local_path[i];
+      if (!targetRouteTrajectoryKnownFree(1.0, 1.0, step,
+          [a, b](double t) -> Eigen::Vector3d { return a + t * (b - a); },
+          [this](const Eigen::Vector3d &p) { return isObservedLocalKnownFree(p); })) return false;
+    }
   }
 
   const general_utils::vec_E<general_utils::Vec3f> guide_path = toVec3fPath(local_path);
@@ -2600,6 +2623,26 @@ bool FastPlannerManager::planExploreTraj(
     return false;
   }
 
+  // Common, final route-specific authority gate BEFORE either commit branch.
+  // Check the actual composed head/body/backup, not the frontend polyline or
+  // only the primary suffix. Historical free cells and inflated UNKNOWN are
+  // not current observed evidence. Do not alter legacy/coverage semantics.
+  if (route.enabled())
+  {
+    const auto &candidate = candidate_cmd.posTraj();
+    const double duration = candidate.getTotalDuration();
+    const double step = std::min(0.10, 0.5 * map_manager_->rawMap()->getMapConfig().resolution);
+    const double dt = std::min(0.01, step / std::max(1.0, gcopter_config_->maxVelMag));
+    if (candidate.empty() || !targetRouteTrajectoryKnownFree(duration, dt, step,
+          [&candidate](double t) { return candidate.getPos(t); },
+          [this](const Eigen::Vector3d &p) { return isObservedLocalKnownFree(p); })) {
+      ROS_WARN_STREAM("[target route commit] reject raw-local evidence route="
+                      << route.route_id << " backup=" << backup_available);
+      return false;
+    }
+    if (route.world != map_manager_->worldEpoch()) return false;
+  }
+
   if (backup_available)
   {
     const geometry_utils::Trajectory &candidate_pos = candidate_cmd.posTraj();
@@ -2646,6 +2689,15 @@ bool FastPlannerManager::planExploreTraj(
     commit_store_->cmd_traj_info.setTrajectory(exp_traj_info);
   }
   commit_store_->last_exp_traj_info = exp_traj_info;
+  if (route.enabled()) {
+    ROS_INFO_STREAM("[target route commit] accepted route=" << route.route_id
+                    << " source=" << (route.source == TargetRouteSource::KNOWN_GOAL ? "KNOWN_GOAL" :
+                                       route.source == TargetRouteSource::KNOWN_ANCHOR ? "KNOWN_ANCHOR" : "LOCAL_GOAL")
+                    << " task=" << route.task << " world=" << route.world
+                    << " traj=" << (local_data_.traj_id_ + 1)
+                    << " duration=" << candidate_cmd.posTraj().getTotalDuration()
+                    << " backup=" << backup_available);
+  }
   committed_stop_active_ = false;
 
   *committed_pos_traj_ = commit_store_->cmd_traj_info.posTraj();
@@ -3457,6 +3509,25 @@ bool FastPlannerManager::isSafetyMapReady() const
   const bool lio_ready = lidar_map_interface_ && lidar_map_interface_->ld_ &&
                          !lidar_map_interface_->ld_->lidar_cloud_.points.empty();
   return rog_map_updated_ || lio_ready;
+}
+
+bool FastPlannerManager::isObservedLocalKnownFree(const Eigen::Vector3d &pos) const
+{
+  if (!pos.allFinite() || !map_manager_ || !rog_map_updated_ ||
+      !lidar_map_interface_ || !lidar_map_interface_->IsInBox(pos.cast<float>()) ||
+      !map_manager_->insideLocalMap(pos) ||
+      map_manager_->getGridType(pos) != rog_map::GridType::KNOWN_FREE ||
+      map_manager_->isOccupiedInflate(pos)) return false;
+  const double clearance = safetyDistanceToOcc(pos);
+  const double required = std::max(0.05, gcopter_config_->commitKnownFreeSafeDistance);
+  if (!std::isfinite(clearance) || clearance < required) return false;
+  if (map_manager_->hasESDF()) {
+    double distance = 0.0;
+    general_utils::Vec3f gradient = general_utils::Vec3f::Zero();
+    if (!map_manager_->evaluateESDF(pos, distance, gradient) ||
+        !std::isfinite(distance) || distance < required) return false;
+  }
+  return true;
 }
 
 MapVoxelState FastPlannerManager::querySafetyState(const Eigen::Vector3d &pos) const

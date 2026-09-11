@@ -1,0 +1,37 @@
+<launch>
+  <!-- Attach UAV-Diff (Unity ROS-TCP client) to an already-running planner.
+       Open MainScene, Robotics IP 127.0.0.1 port 10000, then press Play.
+       MainScene drives the drone from /drone_0_visual_slam/odom and publishes
+       /drone_0_pcl_render_node/cloud. -->
+  <arg name="tcp_ip" default="0.0.0.0" />
+  <arg name="tcp_port" default="10000" />
+  <arg name="init_x" default="0.0" />
+  <arg name="init_y" default="0.0" />
+  <arg name="init_z" default="1.5" />
+  <arg name="init_yaw" default="0.0" />
+  <arg name="estimate_feedback_twist" default="true" />
+  <arg name="unity_feedback_odom_topic" default="/unity_odom" />
+
+  <include file="$(find ros_tcp_endpoint)/launch/endpoint.launch">
+    <arg name="tcp_ip" value="$(arg tcp_ip)" />
+    <arg name="tcp_port" value="$(arg tcp_port)" />
+  </include>
+
+  <node pkg="unity_planner_bridge" type="unity_cmd_odom_bridge.py"
+        name="unity_cmd_odom_bridge" output="screen">
+    <param name="cmd_topic" value="/planning/pos_cmd" />
+    <rosparam param="unity_odom_topics">[/drone_0_visual_slam/odom, /odom]</rosparam>
+    <param name="planner_odom_topic" value="/lidar_slam/odom" />
+    <param name="estimate_feedback_twist" value="$(arg estimate_feedback_twist)" />
+    <param name="unity_feedback_odom_topic" value="$(arg unity_feedback_odom_topic)" />
+    <rosparam param="unity_cloud_topics">[/drone_0_pcl_render_node/cloud, /mid360/points]</rosparam>
+    <param name="planner_cloud_topic" value="/cloud_registered" />
+    <param name="frame_id" value="world" />
+    <param name="child_frame_id" value="body" />
+    <param name="rate" value="100.0" />
+    <param name="init_x" value="$(arg init_x)" />
+    <param name="init_y" value="$(arg init_y)" />
+    <param name="init_z" value="$(arg init_z)" />
+    <param name="init_yaw" value="$(arg init_yaw)" />
+  </node>
+</launch>

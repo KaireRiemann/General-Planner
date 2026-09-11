@@ -1,0 +1,25 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>unity_planner_bridge</name>
+  <version>0.1.0</version>
+  <description>ROS-TCP + kinematic bridge between UAV-Diff Unity and real_planner.</description>
+  <maintainer email="diffbot@example.com">diffbot</maintainer>
+  <license>BSD</license>
+
+  <buildtool_depend>catkin</buildtool_depend>
+  <build_depend>rospy</build_depend>
+  <exec_depend>rospy</exec_depend>
+  <exec_depend>roslaunch</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+  <exec_depend>nav_msgs</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>quadrotor_msgs</exec_depend>
+  <exec_depend>tf</exec_depend>
+  <exec_depend>python3-numpy</exec_depend>
+  <exec_depend>ros_tcp_endpoint</exec_depend>
+  <exec_depend>topic_tools</exec_depend>
+  <exec_depend>general_planner</exec_depend>
+  <!-- unity_planner_release.launch includes the deployed runtime directly. -->
+  <exec_depend>general_planner_release</exec_depend>
+</package>

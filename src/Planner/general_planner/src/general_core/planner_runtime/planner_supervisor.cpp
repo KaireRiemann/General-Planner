@@ -84,6 +84,9 @@ PlannerSupervisor::PlannerSupervisor(ros::NodeHandle &nh,
   nh_.param("max_odom_age", max_odom_age_, 0.20);
   nh_.param("status_rate", status_rate_, 10.0);
   nh_.param("navigation_planning_timeout", planning_timeout_, 5.0);
+  nh_.param("exploration_first_command_timeout", exploration_first_command_timeout_, 15.0);
+  exploration_first_command_timeout_ = std::isfinite(exploration_first_command_timeout_)
+      ? std::clamp(exploration_first_command_timeout_, 2.0, 60.0) : 15.0;
   nh_.param("navigation_enabled", navigation_enabled_, true);
   nh_.param("exploration_enabled", exploration_enabled_, true);
   nh_.param("serial_handover", serial_handover_, true);
@@ -629,6 +632,15 @@ void PlannerSupervisor::requestExplorationStartLocked(const std::string &reason)
   if (status_.task_id.empty()) {
     status_.task_id = makeTaskId(status_.active_mode);
   }
+  if (isTargetExplorationMode(status_.active_mode) &&
+      exploration_plan_wait_task_id_ != status_.task_id) {
+    exploration_plan_wait_task_id_ = status_.task_id;
+    exploration_plan_wait_started_ = ros::WallTime::now();
+    status_.phase = PlannerPhase::WAITING_INPUT;
+    status_.ready_for_new_task = false;
+    status_.command_owner = CommandOwner::HOLD;
+    authorizeHoldAtCurrentOdomLocked("target exploration waiting for first command");
+  }
   exploration_start_pending_ = true;
   last_exploration_start_pub_ = ros::Time::now();
   publishExplorationTaskRequestLocked(true);
@@ -993,6 +1005,8 @@ void PlannerSupervisor::explorationStatusCallback(
   }
   exploration_status_ = state;
   exploration_status_task_id_ = task_id;
+  if (!task_id.empty() && task_id == failed_exploration_plan_task_id_ &&
+      state != "PAUSED" && state != "PAUSING") return;
   if (isExplorationMode(status_.active_mode) && !transition_active_) {
     if (target_replacement_pending_) {
       // All RUNNING/PAUSING reports still refer to the task that is braking.
@@ -1004,8 +1018,17 @@ void PlannerSupervisor::explorationStatusCallback(
       return;
     }
     status_.mode_state = modeStateFromExplorationString(state);
-    if (state == "RUNNING" || state == "PLAN_TRAJ" || state == "EXEC_TRAJ" ||
+    if (state == "WAITING_LOCAL_PLAN" && isTargetExplorationMode(status_.active_mode)) {
+      exploration_start_pending_ = false;  // START acknowledged, no command yet
+      status_.phase = PlannerPhase::WAITING_INPUT;
+      status_.ready_for_new_task = false;
+      status_.stable_hover = hoverConditionMetLocked();
+      status_.command_owner = CommandOwner::HOLD;
+      gateway_.setAuthorizedOwner(CommandOwner::HOLD, status_.task_epoch);
+      status_.reason = "target exploration waiting for first verified local trajectory";
+    } else if (state == "RUNNING" || state == "PLAN_TRAJ" || state == "EXEC_TRAJ" ||
         state == "REORIENT" || state == "CAUTION") {
+      exploration_plan_wait_started_ = ros::WallTime();
       exploration_start_pending_ = false;
       status_.phase = (state == "EXEC_TRAJ" || state == "REORIENT")
                           ? PlannerPhase::EXECUTING
@@ -1016,6 +1039,7 @@ void PlannerSupervisor::explorationStatusCallback(
       gateway_.setAuthorizedOwner(CommandOwner::EXPLORATION, status_.task_epoch);
       status_.reason = "exploration " + state;
     } else if (state == "SUCCEEDED") {
+      exploration_plan_wait_started_ = ros::WallTime();
       exploration_start_pending_ = false;
       // FastExplorationFSM publishes this terminal status continuously at its
       // FSM rate.  Only the first terminal notification for this task starts
@@ -1047,6 +1071,7 @@ void PlannerSupervisor::explorationStatusCallback(
             authorizeHoldAtCurrentOdomLocked("exploration succeeded");
       }
     } else if (state == "BLOCKED") {
+      exploration_plan_wait_started_ = ros::WallTime();
       exploration_start_pending_ = false;
       if (!task_id.empty() && task_id == terminal_exploration_task_id_ &&
           terminal_exploration_result_ == PlannerTaskResult::BLOCKED) {
@@ -1068,6 +1093,7 @@ void PlannerSupervisor::explorationStatusCallback(
         gateway_.setAuthorizedOwner(CommandOwner::HOLD, status_.task_epoch);
       }
     } else if (state == "FAILED") {
+      exploration_plan_wait_started_ = ros::WallTime();
       exploration_start_pending_ = false;
       if (!task_id.empty() && task_id == terminal_exploration_task_id_ &&
           terminal_exploration_result_ == PlannerTaskResult::FAILED) {
@@ -1633,6 +1659,20 @@ void PlannerSupervisor::timerCallback(const ros::TimerEvent &) {
     } else {
       // Independent supervisor queue: also bounds an optimizer which never
       // returns, not just the fast-failure retry loop in the navigation FSM.
+      if (isTargetExplorationMode(status_.active_mode) &&
+          exploration_plan_wait_task_id_ == status_.task_id &&
+          !exploration_plan_wait_started_.isZero() &&
+          (ros::WallTime::now() - exploration_plan_wait_started_).toSec() >=
+              exploration_first_command_timeout_) {
+        failed_exploration_plan_task_id_ = status_.task_id;
+        exploration_plan_wait_started_ = ros::WallTime();
+        exploration_start_pending_ = false;
+        beginTransition(status_.active_mode, status_.accepted_request_id,
+                        status_.task_id, "target exploration first-command deadline exceeded");
+        status_.task_result = PlannerTaskResult::FAILED;
+        status_.reason = "target exploration first-command deadline exceeded; verified hold pending";
+        return;
+      }
       if (planning_deadline_.expired(
               isNavigationMode(status_.active_mode) &&
                   status_.phase == PlannerPhase::PLANNING,

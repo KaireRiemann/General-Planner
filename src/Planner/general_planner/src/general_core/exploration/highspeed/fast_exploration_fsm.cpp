@@ -50,6 +50,23 @@ FastExplorationFSM::~FastExplorationFSM() {
 void FastExplorationFSM::FSMCallback(const ros::TimerEvent &e) {
   refreshRuntimeOdometry();
   pubState();
+  if (fd_->trigger_ && fd_->have_odom_ && expl_manager_->targetDirectedModeActive() &&
+      (state_ == PLAN_TRAJ || state_ == EXEC_TRAJ || state_ == CAUTION || state_ == REORIENT)) {
+    const auto now = ros::WallTime::now();
+    if (target_last_motion_time_.isZero() ||
+        (fd_->odom_pos_ - target_last_motion_pos_).norm() >= 0.25) {
+      target_last_motion_time_ = now;
+      target_last_motion_pos_ = fd_->odom_pos_;
+    } else if ((now - target_last_motion_time_).toSec() >=
+                   expl_manager_->ep_->target_no_progress_timeout_ &&
+               !expl_manager_->missionGoalReached(fd_->odom_pos_.cast<double>())) {
+      // Also covers prerequisite waits/CAUTION, which never reach the legacy
+      // planGlobalPath watchdog. No Euclidean-to-goal progress assumption.
+      target_unreachable_pending_ = true;
+      beginPause("target exploration: no measured motion within deadline", false);
+      return;
+    }
+  }
   if (expl_manager_->swarm_coordinator_ &&
       expl_manager_->swarm_coordinator_->enabled()) {
     int priority_robot = -1;
@@ -215,10 +232,12 @@ void FastExplorationFSM::FSMCallback(const ros::TimerEvent &e) {
         plan_now < fd_->next_plan_retry_time_) {
       return;
     }
-    if (!planner_manager_->topo_graph_->odom_node_ ||
-        planner_manager_->topo_graph_->odom_node_->neighbors_.empty())
-      return;
-    if (expl_manager_->ed_->global_tour_.size() < 2) {
+    prepared_target_route_ = expl_manager_->prepareTargetRoute(fd_->odom_pos_.cast<double>());
+    if (expl_manager_->targetDirectedModeActive() && handleGoalReached()) return;
+    if (!prepared_target_route_.ready() &&
+        (!planner_manager_->topo_graph_->odom_node_ ||
+         planner_manager_->topo_graph_->odom_node_->neighbors_.empty())) return;
+    if (!prepared_target_route_.ready() && expl_manager_->ed_->global_tour_.size() < 2) {
       const ros::Time now = ros::Time::now();
       const double min_update_interval =
           std::max(0.02, fp_->global_path_update_min_interval_);
@@ -231,7 +250,8 @@ void FastExplorationFSM::FSMCallback(const ros::TimerEvent &e) {
       if (state_ != PLAN_TRAJ) {
         return;
       }
-      if (expl_manager_->ed_->global_tour_.size() < 2) {
+      prepared_target_route_ = expl_manager_->prepareTargetRoute(fd_->odom_pos_.cast<double>());
+      if (!prepared_target_route_.ready() && expl_manager_->ed_->global_tour_.size() < 2) {
         return;
       }
     }
@@ -273,6 +293,8 @@ void FastExplorationFSM::FSMCallback(const ros::TimerEvent &e) {
       resetFinishGate("PLAN_TRAJ succeed");
       poly_yaw_traj_pub_.publish(fd_->newest_yaw_traj_);
       poly_traj_pub_.publish(fd_->newest_traj_);
+      task_command_started_ = true;
+      publishTaskStatus();
       fd_->static_state_ = false;
       if (fd_->use_bubble_a_star_) {
         transitState(EXEC_TRAJ,
@@ -283,6 +305,29 @@ void FastExplorationFSM::FSMCallback(const ros::TimerEvent &e) {
       fd_->use_bubble_a_star_ = false;
       fd_->half_resolution = false;
 
+    } else if (last_plan_used_target_route_) {
+      // Route failure identities never enter frontier/coverage blacklists.
+      // A full backend invocation has happened at most once. Keep a safe
+      // committed command, or use the existing controlled-stop path.
+      fd_->next_plan_retry_time_ = ros::Time::now() + ros::Duration(fp_->plan_failure_retry_delay_);
+      if (fp_->controlled_reorientation_enable_ && fd_->reorientation_required_) {
+        fd_->reorientation_start_time_ = ros::Time::now();
+        fd_->reorientation_stop_requested_ = false;
+        fd_->reorientation_last_stop_request_time_ = ros::Time(0);
+        transitState(REORIENT, "target route: brake before large turn", true);
+        break;
+      }
+      expl_manager_->failTargetRoute("LOCAL_PLAN_FAILED");
+      double collision_time = 0.0;
+      const bool safe = planner_manager_->hasCommittedTrajectory() &&
+          planner_manager_->committedTrajectoryRemainingTime() > 0.08 &&
+          planner_manager_->checkTrajCollision(collision_time);
+      if (safe) transitState(EXEC_TRAJ, "target route failed; retain safe command", true);
+      else {
+        if (fd_->odom_vel_.norm() > fp_->reorient_exit_speed_)
+          stopTraj("target route failed without safe committed command");
+        transitState(PLAN_TRAJ, "target route: local fallback", true);
+      }
     } else if (res == NO_FRONTIER) {
       handleNoFrontierResult("PLAN_TRAJ: no frontier");
     } else if (res == FAIL) {
@@ -571,6 +616,8 @@ void FastExplorationFSM::FSMCallback(const ros::TimerEvent &e) {
       planner_manager_->polyTraj2ROSMsg(poly_traj_msg, info->start_time_);
       fd_->newest_traj_ = poly_traj_msg;
       poly_traj_pub_.publish(fd_->newest_traj_);
+      task_command_started_ = true;
+      publishTaskStatus();
       ros::Duration(0.2).sleep();
       fd_->static_state_ = false;
       fd_->consecutive_plan_failures_ = 0;
@@ -983,7 +1030,9 @@ void FastExplorationFSM::updateTopoAndGlobalPath() {
     return;
   }
 
-  if (planner_manager_->topo_graph_->odom_node_->neighbors_.empty()) {
+  const auto target_prefix = expl_manager_->prepareTargetRoute(fd_->odom_pos_.cast<double>());
+  if (!target_prefix.ready() && (!planner_manager_->topo_graph_->odom_node_ ||
+      planner_manager_->topo_graph_->odom_node_->neighbors_.empty())) {
     double time;
     if (planner_manager_->hasCommittedTrajectory()) {
       bool safe = planner_manager_->checkTrajCollision(time);
@@ -1013,6 +1062,14 @@ void FastExplorationFSM::updateTopoAndGlobalPath() {
       global_path_update_timer_.start();
       return;
     }
+  }
+  if (target_prefix.ready()) {
+    // Local graph maintenance above remains intact, but it is not an entry
+    // prerequisite for an independently certified known-route prefix.
+    prepared_target_route_ = target_prefix;
+    if (state_ != REORIENT) transitState(PLAN_TRAJ, "target route prefix ready", true);
+    global_path_update_timer_.start();
+    return;
   }
   cout << endl << endl;
   cout << "\033[1;33m------------- <" << cnt

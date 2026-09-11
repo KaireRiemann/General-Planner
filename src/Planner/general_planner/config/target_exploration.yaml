@@ -35,9 +35,25 @@ exploration/target_near_goal_remaining: 15.0
 exploration/target_spatial_blacklist_radius: 2.5
 exploration/target_spatial_blacklist_duration: 8.0
 
-# Persistent MapManager topology is advisory. A path prefix becomes an
-# executable temporary waypoint only when the current local map verifies it as
-# known free; otherwise these values only rank safe frontier viewpoints.
+# V2: full known routes, strict raw-local prefixes, one shared MINCO backend.
+# Empty/disabled global topology always falls back to local target exploration.
+# legacy restores the prior point-guide frontend; shadow only diagnoses V2.
+exploration/target_route/mode: prefer_known
+exploration_first_command_timeout: 15.0
+exploration/target_route/query_interval: 1.0
+exploration/target_route/query_budget_ms: 12.0
+exploration/target_route/max_nodes: 16000
+exploration/target_route/max_expansions: 4000
+exploration/target_route/max_map_checks: 16000
+exploration/target_route/prefix_length: 12.0
+exploration/target_route/min_prefix_length: 0.75
+exploration/target_route/stop_margin: 0.40
+exploration/target_route/projection_radius: 1.50
+exploration/target_route/progress_timeout: 12.0
+exploration/target_route/cooldown: 5.0
+exploration/target_route/anchor_switch_margin: 1.0
+
+# Previous advisory guide: used by legacy/shadow only, not an extra query in V2.
 exploration/target_topology_guidance_enable: true
 exploration/target_topology_query_interval: 1.0
 exploration/target_topology_local_prefix_length: 12.0

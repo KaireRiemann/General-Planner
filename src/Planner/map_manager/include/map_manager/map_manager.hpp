@@ -401,6 +401,24 @@ public:
         return getGlobalGridType(pos) == rog_map::GridType::KNOWN_FREE;
     }
 
+    /** Read-only route query on the serial world/map-owner queue. Unlike
+     * getGlobalGridType(), this never drains BoundaryMap events, requests
+     * topology work, or publishes. Current raw observations retain priority.
+     * Not a snapshot of the live ROG map; do not call from a new worker. */
+    rog_map::GridType peekGlobalGridType(const rog_map::Vec3f &pos) const
+    {
+        if (!map_ || !pos.allFinite()) return rog_map::GridType::OUT_OF_MAP;
+        const auto config = map_->getMapConfig();
+        if (pos.z() <= config.virtual_ground_height ||
+            pos.z() >= config.virtual_ceil_height) return rog_map::GridType::OCCUPIED;
+        if (map_->insideLocalMap(pos)) {
+            const auto local = map_->getGridType(pos);
+            if (local == rog_map::GridType::KNOWN_FREE ||
+                local == rog_map::GridType::OCCUPIED) return local;
+        }
+        return boundary_map_ ? boundary_map_->getGridType(pos) : rog_map::GridType::UNKNOWN;
+    }
+
     bool isGloballyOccupied(const rog_map::Vec3f &pos) const
     {
         return getGlobalGridType(pos) == rog_map::GridType::OCCUPIED;

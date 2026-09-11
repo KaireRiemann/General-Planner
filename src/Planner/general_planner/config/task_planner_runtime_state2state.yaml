@@ -48,7 +48,8 @@ fsm:
 general_planner:
   # Tracking-only limits: do not change the state2state optimizer.
   tracking:
-    use_snap: true
+    # false: minimum-jerk position trajectory; true: minimum-snap.
+    use_snap: false
     max_vel: 3.0
     max_acc: 3.0
     max_jerk: 12.0

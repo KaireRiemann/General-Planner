@@ -8,6 +8,7 @@
  */
 
 #include <general_core/exploration/highspeed/expl_data.h>
+#include <map_manager/map_manager.hpp>
 #include <general_core/exploration/highspeed/fast_exploration_manager.h>
 #include <general_core/exploration/highspeed/target_directed_exploration.h>
 #include <lkh_tsp_solver/lkh_interface.h>
@@ -321,6 +322,23 @@ void FastExplorationManager::initialize(
   ep_->target_spatial_blacklist_duration_ =
       std::clamp(ep_->target_spatial_blacklist_duration_, 1.0, 60.0);
   target_topology_guidance_.configure(targetTopologyGuidanceConfig());
+  TargetRouteConfig route_config;
+  nh.param("exploration/target_route/mode", route_config.mode, route_config.mode);
+  nh.param("exploration/target_route/query_interval", route_config.query_interval, route_config.query_interval);
+  nh.param("exploration/target_route/query_budget_ms", route_config.query_budget_ms, route_config.query_budget_ms);
+  nh.param("exploration/target_route/max_nodes", route_config.max_nodes, route_config.max_nodes);
+  nh.param("exploration/target_route/max_expansions", route_config.max_expansions, route_config.max_expansions);
+  nh.param("exploration/target_route/max_map_checks", route_config.max_map_checks, route_config.max_map_checks);
+  nh.param("exploration/target_route/prefix_length", route_config.prefix_length, route_config.prefix_length);
+  nh.param("exploration/target_route/min_prefix_length", route_config.min_prefix_length, route_config.min_prefix_length);
+  nh.param("exploration/target_route/stop_margin", route_config.stop_margin, route_config.stop_margin);
+  nh.param("exploration/target_route/projection_radius", route_config.projection_radius, route_config.projection_radius);
+  nh.param("exploration/target_route/progress_timeout", route_config.progress_timeout, route_config.progress_timeout);
+  nh.param("exploration/target_route/cooldown", route_config.cooldown, route_config.cooldown);
+  nh.param("exploration/target_route/anchor_switch_margin", route_config.anchor_switch_margin, route_config.anchor_switch_margin);
+  if (planner_manager_->sharedMapManager() && planner_manager_->sharedMapManager()->rawMap())
+    route_config.sample_step = std::min(0.10, 0.5 * planner_manager_->sharedMapManager()->rawMap()->getMapConfig().resolution);
+  target_route_.configure(route_config);
   frontier_progress_timeout_ =
       std::clamp(frontier_progress_timeout_, 4.0, 60.0);
   frontier_progress_min_cost_drop_ =
@@ -753,6 +771,7 @@ void FastExplorationManager::setMissionGoal(
   resetNormalGoalProgress();
   resetTargetNoProgressWatchdog();
   target_topology_guidance_.reset();
+  resetTargetRoute();
   ROS_INFO_STREAM("[target exploration] set mission goal=("
                   << ed_->mission_goal_.transpose() << ") start=("
                   << ed_->mission_start_.transpose() << ")");
@@ -819,6 +838,7 @@ bool FastExplorationManager::setMissionMode(const std::string &mode) {
   resetNormalGoalProgress();
   resetTargetNoProgressWatchdog();
   target_topology_guidance_.reset();
+  resetTargetRoute();
   if (!target) {
     ed_->has_mission_goal_ = false;
     ed_->mission_goal_needs_initialization_ = false;
@@ -832,6 +852,63 @@ bool FastExplorationManager::setMissionMode(const std::string &mode) {
 
 std::string FastExplorationManager::missionMode() const {
   return targetDirectedModeConfigured() ? "target" : "coverage";
+}
+
+TargetRoutePrefix FastExplorationManager::prepareTargetRoute(const Eigen::Vector3d &position) {
+  const bool was_selected = target_route_selected_;
+  target_route_selected_ = false;
+  if (!targetDirectedModeActive() || !planner_manager_ ||
+      !planner_manager_->hasInjectedWorldMap() ||
+      target_route_.config().mode == "legacy") return {};
+  Eigen::Vector3d route_goal = ed_->mission_goal_.cast<double>();
+  if (ed_->mission_goal_needs_initialization_ && !ep_->target_goal_use_message_z_)
+    route_goal.z() = position.z();
+  if (ed_->mission_goal_needs_initialization_ && target_route_.config().mode != "shadow") {
+    ed_->mission_start_ = position.cast<float>();
+    if (!ep_->target_goal_use_message_z_) ed_->mission_goal_.z() = position.z();
+    ed_->mission_goal_needs_initialization_ = false;
+  }
+  const auto map = planner_manager_->sharedMapManager();
+  if (!map) return {};
+  TargetRouteMapView view;
+  view.local_free = [this](const Eigen::Vector3d &p) {
+    return planner_manager_->isObservedLocalKnownFree(p);
+  };
+  view.global = [this, &map](const Eigen::Vector3d &p) {
+    if (!planner_manager_->lidar_map_interface_->isAllowedByExclusions(p.cast<float>()))
+      return TargetRouteEvidence::EXCLUDED;
+    const auto state = map->peekGlobalGridType(p);
+    if (state == rog_map::GridType::KNOWN_FREE) return TargetRouteEvidence::FREE;
+    if (state == rog_map::GridType::OCCUPIED || state == rog_map::GridType::OUT_OF_MAP)
+      return TargetRouteEvidence::OCCUPIED;
+    return TargetRouteEvidence::UNKNOWN;
+  };
+  // An existing local tour wins against an anchor unless the anchor has a
+  // clear route-potential advantage. Goal-reaching known routes have priority.
+  double local_objective = std::numeric_limits<double>::infinity();
+  if (ed_->global_tour_.size() >= 2) {
+    const Eigen::Vector3d next = ed_->global_tour_[1].cast<double>();
+    local_objective = (next - position).norm() + (next - ed_->mission_goal_.cast<double>()).norm();
+  }
+  auto prefix = target_route_.prepare(map->topologyReady() ? map->topologySearchSnapshot() : nullptr, map->worldEpoch(),
+      position, route_goal, ros::WallTime::now().toSec(), view, local_objective);
+  target_route_selected_ = prefix.ready();
+  if (prefix.ready() && !was_selected) {
+    // Freeze no stale frontier tour under a route. A later route->local
+    // handoff regenerates it normally, without marking any goal as failed.
+    ed_->global_tour_.clear();
+    ed_->has_goal_lock_ = false;
+    ed_->locked_goal_is_mission_ = false;
+  }
+  if (prefix.ready()) resetTargetNoProgressWatchdog();
+  ROS_INFO_STREAM_THROTTLE(1.0, "[target route] mode=" << target_route_.config().mode
+      << " status=" << target_route_.status() << " route=" << target_route_.route().id
+      << " progress=" << target_route_.route().progress << " remaining=" << prefix.remaining
+      << " points=" << prefix.path.size() << " selected=" << prefix.ready()
+      << " local=" << prefix.reason << " cooldowns=" << target_route_.cooldownSize()
+      << " query_ms=" << target_route_.lastQueryMs() << " checks=" << target_route_.lastMapChecks()
+      << " expanded=" << target_route_.lastExpansions() << " stage=" << target_route_.queryStage());
+  return prefix;
 }
 
 double FastExplorationManager::missionGoalDistance(
@@ -883,7 +960,11 @@ FastExplorationManager::targetTopologyGuidanceConfig() const {
   if (!ep_) {
     return config;
   }
-  config.enabled = ep_->target_topology_guidance_enable_;
+  // prefer_known has one bounded route provider. Do not additionally invoke
+  // the old unbounded point-guide query during its local fallback. legacy and
+  // shadow deliberately retain the previous frontier ranking behavior.
+  config.enabled = ep_->target_topology_guidance_enable_ &&
+      target_route_.config().mode != "prefer_known";
   config.query_interval = ep_->target_topology_query_interval_;
   config.local_prefix_length = ep_->target_topology_local_prefix_length_;
   config.goal_change_tolerance =

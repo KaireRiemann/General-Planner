@@ -1,0 +1,21 @@
+<launch>
+  <arg name="rviz" default="true" />
+  <arg name="use_sim_time" default="false" />
+  <arg name="use_mid360_yaml" default="true" />
+  <arg name="mid360_yaml" default="$(find aperture_detector)/config/mid360.yaml" />
+  <arg name="use_detector_params" default="true" />
+  <arg name="detector_polygon_yaml" default="$(find aperture_detector)/config/polygon_hole_step_viz.yaml" />
+  <arg name="detector_mid360_yaml" default="$(find aperture_detector)/config/mid360.yaml" />
+
+  <param name="/use_sim_time" value="$(arg use_sim_time)" />
+
+  <node pkg="aperture_detector" type="polygon_hole_step_viz" name="polygon_hole_step_viz" output="screen">
+    <rosparam if="$(arg use_detector_params)" file="$(arg detector_polygon_yaml)" command="load" subst_value="true"/>
+    <rosparam if="$(arg use_detector_params)" file="$(arg detector_mid360_yaml)" command="load" subst_value="true"/>
+    <rosparam if="$(arg use_mid360_yaml)" file="$(arg mid360_yaml)" command="load" subst_value="true"/>
+  </node>
+
+  <group if="$(arg rviz)">
+    <node pkg="rviz" type="rviz" name="rviz" args="-d $(find aperture_detector)/rviz_cfg/polygon_hole_step.rviz" />
+  </group>
+</launch>

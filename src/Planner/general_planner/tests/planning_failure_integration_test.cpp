@@ -7,8 +7,9 @@ int main(int argc, char **argv) {
   // This fixture publishes synthetic vehicle data. Never allow the normal
   // vehicle master: run only with the explicitly isolated test master.
   const char *master = std::getenv("ROS_MASTER_URI");
-  if (!master || std::string(master) != "http://127.0.0.1:11381") {
-    std::cerr << "requires isolated ROS_MASTER_URI=http://127.0.0.1:11381\n";
+  if (!master || (std::string(master) != "http://127.0.0.1:11381" &&
+                  std::string(master) != "http://127.0.0.1:11383")) {
+    std::cerr << "requires isolated ROS_MASTER_URI on loopback port 11381 or 11383\n";
     return 2;
   }
   const bool tracking_test = argc > 1 && std::string(argv[1]) == "tracking";

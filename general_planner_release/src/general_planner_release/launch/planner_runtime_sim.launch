@@ -1,4 +1,16 @@
 <launch>
+  <arg name="gate_config" default="$(find general_planner_release)/config/gate_runtime.yaml" />
+  <arg name="gate_overlay_config" default="" />
+  <arg name="perceptor" default="true" />
+  <arg name="perceptor_config" default="$(find general_planner_release)/../aperture_detector/config/polygon_hole_step_viz_unity_sim.yaml" />
+  <arg name="perceptor_vlm" default="true" />
+  <arg name="perceptor_frame_id" default="world" />
+  <arg name="perceptor_image_topic" default="/camera0/color/image/compressed" />
+  <arg name="perceptor_camera_info_topic" default="/camera0/color/info" />
+  <arg name="perceptor_vlm_model" default="auto" />
+  <arg name="perceptor_vlm_timeout" default="10.0" />
+  <arg name="perceptor_vlm_period" default="3.0" />
+  <arg name="perceptor_vlm_base_url" default="http://127.0.0.1:18000/v1" />
   <!-- Start perception with runtime so tracking can be selected without another launch. -->
   <arg name="tracking_target_odom_topic" default="/target_ekf_node/target_odom" />
   <arg name="tracking_target_prediction_topic" default="/tracking/target_prediction" />
@@ -15,8 +27,8 @@
   <arg name="tracking_device" default="cpu" />
   <arg name="tracking_target_label" default="car" />
   <arg name="tracking_confidence" default="0.6" />
-  <arg name="tracking_camera_config" default="$(find tracking_detector)/config/camera_unity_main_scene.yaml" />
-  <arg name="tracking_estimator_config" default="$(find tracking_detector)/config/estimator.yaml" />
+  <arg name="tracking_camera_config" default="$(find general_planner_release)/../tracking_detector/config/camera_unity_main_scene.yaml" />
+  <arg name="tracking_estimator_config" default="$(find general_planner_release)/../tracking_detector/config/estimator.yaml" />
 
   <!-- M2 simulator convenience entry.  It delegates all planner ownership to
        planner_runtime.launch and only selects the bundled perfect_drone sim. -->
@@ -51,6 +63,18 @@
   <arg name="source_timeout_abort_duration" default="1.0" />
 
   <include file="$(find general_planner_release)/launch/planner_runtime.launch">
+    <arg name="gate_config" value="$(arg gate_config)" />
+    <arg name="gate_overlay_config" value="$(arg gate_overlay_config)" />
+    <arg name="perceptor" value="$(arg perceptor)" />
+    <arg name="perceptor_config" value="$(arg perceptor_config)" />
+    <arg name="perceptor_vlm" value="$(arg perceptor_vlm)" />
+    <arg name="perceptor_frame_id" value="$(arg perceptor_frame_id)" />
+    <arg name="perceptor_image_topic" value="$(arg perceptor_image_topic)" />
+    <arg name="perceptor_camera_info_topic" value="$(arg perceptor_camera_info_topic)" />
+    <arg name="perceptor_vlm_model" value="$(arg perceptor_vlm_model)" />
+    <arg name="perceptor_vlm_timeout" value="$(arg perceptor_vlm_timeout)" />
+    <arg name="perceptor_vlm_period" value="$(arg perceptor_vlm_period)" />
+    <arg name="perceptor_vlm_base_url" value="$(arg perceptor_vlm_base_url)" />
     <arg name="tracking_target_odom_topic" value="$(arg tracking_target_odom_topic)" />
     <arg name="tracking_target_prediction_topic" value="$(arg tracking_target_prediction_topic)" />
     <arg name="tracking_detector" value="$(arg tracking_detector)" />

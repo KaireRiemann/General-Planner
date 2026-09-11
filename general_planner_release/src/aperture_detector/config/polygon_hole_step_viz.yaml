@@ -1,0 +1,153 @@
+# Input
+lidar_topic: "/laserMapping/cloud_registered_body"
+bag_path: ""
+image_path: ""
+output_path: "/tmp/aperture_detector"
+
+# ROI selected by user.
+# dynamic_roi_enable=false 时，这里是固定 ROI 的世界系边界。
+# dynamic_roi_enable=true 时，这里是相对 dynamic_roi_pose_topic 中 pose.position 的偏移量：
+# 实际 ROI = [pose.x + x_min, pose.x + x_max] 等。
+x_min: 1.0
+x_max: 5.0
+y_min: -2.0
+y_max: 2.0
+z_min: -1.5
+z_max: 1.5
+
+# 动态 ROI：订阅 geometry_msgs/PoseStamped，用该 pose 的位置作为 ROI 相对包围盒参考点。
+# 默认该话题和检测节点 frame_id 处于同一坐标系，不做 frame_id 检查或 TF 转换。
+# 超过 dynamic_roi_timeout 没有新 pose 时，回退到上面的固定 ROI。
+dynamic_roi_enable: false
+dynamic_roi_pose_topic: "goal"
+dynamic_roi_timeout: 0.5
+
+# Camera intrinsics (kept for consistency with shared params)
+fx: 455.242
+fy: 456.381
+cx: 325.124
+cy: 244.97
+k1: 0.0653478
+k2: -0.0649651
+p1: 0.00143937
+p2: 0.00069082
+
+# LiDAR(body) -> usb_cam extrinsic
+Rcl: [-0.036318, -0.997869,  0.054214,
+       0.217654, -0.060846, -0.974128,
+       0.975350, -0.023579,  0.219400]
+Pcl: [0.016699, -0.086773, -0.157002]
+
+# Step logic parameters
+frame_id: "world"
+realtime_mode: true
+save_hole_polygon_txt: false
+publish_planning_snapshot_json: true
+planning_snapshot_json_topic: "planning_snapshot_json"
+detection_initial_enabled: true
+detection_enable_topic: "detection_enable"
+voxel_leaf: 0.01
+plane_distance_threshold: 0.015
+hole_depth_gap_threshold: 0.15
+cluster_tolerance: 0.06
+min_hole_cluster_size: 12
+max_hole_cluster_size: 200000
+pass_area_ratio: 0.15
+line_width: 0.02
+center_marker_size: 0.08
+roi_line_width: 0.015
+publish_rate: 1.0
+publish_overlay_image: false
+image_topic: "/usb_cam/image_raw"
+save_overlay_image: false
+planning_snapshot_min_vertices: 4
+hole_polygon_txt_path: "/tmp/aperture_planning_snapshot.txt"
+transform_input_to_target_frame: true
+tf_lookup_timeout: 0.05
+projection_use_tf: true
+projection_camera_frame: "usb_cam"
+enable_plane_orientation_filter: true
+# 平面“上方向”参考轴（通常是世界系/相机初始化系的 z 轴）
+# 用于过滤掉地面这类“法向接近上方向”的平面。
+plane_filter_up_axis: [0.0, 0.0, 1.0]
+# 平面法向与 up_axis 的点积上限（取绝对值后比较）。
+# 若 |dot(n, up_axis)| > 该阈值，则认为太像地面/天花板，剔除。
+# 阈值越小越严格，越不容易把地面识别成目标平面。
+plane_filter_max_up_dot: 0.6
+# 最多尝试多少个候选平面（RANSAC 失败或被方向过滤后继续找下一个）。
+# 数值越大鲁棒性越好，但计算稍慢。
+plane_candidate_max_trials: 6
+# 平面边界是否使用凹包（Concave Hull）。
+# false=凸包（更稳定但可能偏大）；true=凹包（更贴边但对噪声敏感）。
+plane_polygon_use_concave_hull: false
+# 凹包 alpha 参数，仅在 plane_polygon_use_concave_hull=true 时生效。
+# alpha 越小边界越“贴点云”、越复杂；越大越平滑、越接近凸包。
+plane_polygon_concave_alpha: 0.08
+# 平面多边形拟合前，是否仅保留平面点云最大连通簇（去除离群点，防止边界突然变大）。
+plane_polygon_use_largest_cluster: true
+# 平面连通簇聚类半径（米）。
+plane_polygon_cluster_tolerance: 0.06
+# 平面连通簇最小点数。
+plane_polygon_cluster_min_size: 80
+# 贴边拟合模式（当前已回退为凸包主流程，此项默认关闭）。
+plane_polygon_tight_fit_enable: false
+# 自动 alpha 扫描（仅贴边拟合/凹包流程使用，凸包主流程下可忽略）。
+plane_polygon_auto_alpha_enable: false
+# 自动 alpha 扫描范围下限。
+plane_polygon_alpha_min: 0.03
+# 自动 alpha 扫描范围上限。
+plane_polygon_alpha_max: 0.14
+# 自动 alpha 扫描步数。
+plane_polygon_alpha_steps: 6
+# 平面点被多边形包住的最小覆盖率（仅贴边拟合/凹包流程使用，凸包主流程下可忽略）。
+plane_polygon_min_coverage_ratio: 0.96
+# 边界支撑检查半径（米）：在边界采样点附近这个半径内统计平面点数。
+plane_boundary_support_radius: 0.06
+# 边界采样点最少需要多少“附近平面点”才算被支撑。
+# 值越大，对“边界点云必须密集”要求越高。
+plane_boundary_min_support: 2
+# 沿边界采样步长（米）：越小采样越密、检查越严格、计算越慢。
+plane_boundary_sample_step: 0.03
+# 允许“无支撑边界采样点”最大比例。
+# 超过该值就判定平面边界不可靠并丢弃。
+# 例如 0.45 表示最多允许 45% 的边界采样点缺少支撑。
+plane_boundary_max_unsupported_ratio: 0.45
+# 边界支撑不达标时，是否自动向内收缩平面多边形后重试支撑检查。
+plane_boundary_auto_shrink_enable: false
+# 每次向内收缩的等效步长（米），越大收缩越快。
+plane_boundary_shrink_step: 0.03
+# 最多收缩重试次数。
+plane_boundary_shrink_max_iters: 6
+# 收缩后允许的最小面积比例（相对初始平面多边形面积）。
+# 低于这个比例就停止收缩，避免收得过小。
+plane_boundary_shrink_min_area_ratio: 0.3
+
+# Multi-frame accumulation (10Hz bag经验: 80~90帧较稳定)
+accumulate_frames: 60
+min_frames_to_process: 30
+
+# Point cloud frame relation:
+# /laserMapping/cloud_registered_body is treated as IMU/body frame.
+point_cloud_in_imu_frame: true
+
+# LiDAR-IMU extrinsic from FAST-LIO style (IMU <- LiDAR):
+# p_imu = extrinsic_R * p_lidar + extrinsic_T
+# If use_mid360_yaml=true in launch and these are omitted, node will fallback to /mapping/extrinsic_* from mid360.yaml
+imu_tx: -0.011
+imu_ty: -0.02329
+imu_tz: 0.04412
+extrinsic_R: [1.0, 0.0, 0.0,
+              0.0, 1.0, 0.0,
+              0.0, 0.0, 1.0]
+extrinsic_T: [-0.011, -0.02329, 0.04412]
+
+# Empty-hole extraction on plane (grid occupancy in aligned plane)
+hole_grid_resolution: 0.015 # 空洞栅格分辨率（米），越小越精细，但更敏感、更慢
+hole_occupancy_dilate_cells: 2 # 占用栅格膨胀半径（格），用于把边界附近的占用区扩粗
+hole_min_cluster_cells: 20 # 空洞连通域最小格子数，小于这个直接丢弃
+hole_reject_border_clusters: true # 是否丢弃接触到边界的空洞连通域
+hole_min_empty_area_ratio: 0.75 # 空洞内部“空白占比”下限，越大越严格
+hole_boundary_support_radius: 0.06 # 边界支撑检查半径（米），看边界附近多远范围内有平面点
+hole_boundary_min_support: 0 # 边界采样点最少需要的支撑点数
+hole_boundary_sample_step: 0.02 # 边界采样步长（米），越小检查越密
+hole_boundary_max_unsupported_ratio: 0.25 # 允许的最大无支撑边界比例，越小越严格

@@ -124,6 +124,13 @@ public:
   double missionGoalDistance(const Eigen::Vector3d &position) const;
   bool missionGoalReached(const Eigen::Vector3d &position) const;
   void updateGoalNode();
+  TargetRoutePrefix prepareTargetRoute(const Eigen::Vector3d &position);
+  void resetTargetRoute() { target_route_.reset(); target_route_selected_ = false; }
+  void failTargetRoute(const std::string &reason) {
+    target_route_.fail(ros::WallTime::now().toSec(), reason);
+    target_route_selected_ = false;
+  }
+  bool targetRouteSelected() const { return target_route_selected_; }
 
 private:
   struct DeferredGoal {
@@ -221,6 +228,8 @@ private:
   // Long-range target tasks query MapManager's immutable world topology here.
   // This state is task-local and never mutates the global graph.
   TargetTopologyGuidance target_topology_guidance_;
+  TargetRouteRuntime target_route_;
+  bool target_route_selected_{false};
   bool frontier_progress_watchdog_enable_{true};
   double frontier_progress_timeout_{12.0};
   double frontier_progress_min_cost_drop_{0.75};

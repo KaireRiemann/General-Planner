@@ -100,6 +100,11 @@ private:
   ros::Publisher stop_pub_, new_pub_, replan_pub_, poly_traj_pub_, heartbeat_pub_, time_cost_pub_, poly_yaw_traj_pub_, static_pub_, state_pub_,
   speed_pub_, land_pub_, task_status_pub_, execution_enabled_pub_;
   bool task_control_enable_{false};
+  bool task_command_started_{false};
+  bool last_plan_used_target_route_{false};
+  TargetRoutePrefix prepared_target_route_;
+  ros::WallTime target_last_motion_time_;
+  Eigen::Vector3f target_last_motion_pos_{Eigen::Vector3f::Zero()};
   bool pause_stop_issued_{false};
   bool completion_pending_{false};
   // Target arrival is two-stage: entering the requested radius starts a

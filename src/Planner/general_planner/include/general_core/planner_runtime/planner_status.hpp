@@ -365,7 +365,7 @@ inline ModeState modeStateFromExplorationString(const std::string &state) {
   if (state == "BLOCKED") {
     return ModeState::EXP_PAUSED;
   }
-  if (state == "PLAN_TRAJ" || state == "RUNNING") {
+  if (state == "PLAN_TRAJ" || state == "RUNNING" || state == "WAITING_LOCAL_PLAN") {
     return ModeState::EXP_PLAN_TRAJ;
   }
   if (state == "EXEC_TRAJ") {

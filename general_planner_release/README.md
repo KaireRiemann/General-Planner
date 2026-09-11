@@ -335,7 +335,7 @@ The controller should consume `quadrotor_msgs/PositionCommand` and, if needed, `
 
 感知运行文件与模型位于`src/tracking_detector`，生成消息位于`lib/python3/dist-packages/tracking_detector`。Python/PyTorch依赖沿用容器环境。感知管理器跟随 planner 已生效的任务模式，不主动切换任务。
 
-感知按模式启停：tracking 前端仅在 /planner/status 确认 tracking 模式后启动，离开后关闭。state2state 不运行 tracking 检测。重新进入 tracking 需要等待模型加载。release 当前未包含 gate detector 启动链路；源码 runtime 的 gate detector 仅在 gate 模式启动。
+感知按模式启停：tracking 前端仅在 /planner/status 确认 tracking 模式后启动，离开后关闭。state2state 不运行 tracking 检测。重新进入 tracking 需要等待模型加载。Gate 前端同样包含在 release 中，仅在 gate 模式启动。
 
 
 Tracking优化版使用CameraInfo和按观测时间更新的新估计器，支持地平面或已配准米制深度定位。
@@ -343,3 +343,42 @@ Tracking优化版使用CameraInfo和按观测时间更新的新估计器，支�
 通过tracking_range_method、tracking_depth_registered、tracking_ground_z、
 tracking_target_center_height配置；完整说明见src/tracking_detector/README.md。
 目标丢失后保持tracking模式，planner先制动再等待确认重捕获；预测器用空Path撤销旧输入。
+
+## Unity + Gate/Tracking 感知独立部署（2026-09-11）
+
+在 ROS Noetic / Ubuntu 20.04 x86_64 环境解压后，新终端只加载系统 ROS 和本包：
+
+```bash
+source /opt/ros/noetic/setup.bash
+source /absolute/path/to/general_planner_release/setup.bash
+roslaunch unity_planner_bridge unity_planner_release.launch
+```
+
+包内包含 Unity bridge、ROS-TCP endpoint、aperture_detector 和 tracking_detector。
+此入口不启动 Marsim，使用 /lidar_slam/odom 的实际反馈；tracking 按相机原始时间轴使用 /unity_odom。
+默认状态为 state2state，检测进程在对应模式被 /planner/status 确认后才启动。
+旧 tracking.launch 仍是仅规划器入口；需要自动感知时使用 planner_runtime.launch 或 Unity release 入口。
+
+Gate：polygon_hole_step_viz 二进制、ApertureObservation 消息、配置、VLM Python 客户端及 prompts 均已打包。
+默认 perceptor_vlm:=true，必须另行提供可用的模型服务，可用 perceptor_vlm_base_url 指定地址。
+纯点云模式设置 perceptor_vlm:=false；perceptor:=false 完全关闭内置 Gate 感知。
+旧 detection_planning_bridge 为可选兼容工具，不由内部 Gate 启动，不应与内部规划控制链同时使用。
+
+Tracking：YOLOE Python 检测、Python 状态估计、C++ 预测器、约 630 MiB 权重均在包内。
+Python/PyTorch/torchvision/timm/OpenCV 等依赖仍由运行环境提供，不随二进制自动安装；参见 tracking_detector 的运行说明。
+默认 tracking_device:=cpu；tracking_detector:=false 可关闭内置跟踪感知。
+相机配置默认采用 Unity MainScene 外参，实机或其他相机挂载必须显式覆盖 tracking_camera_config。
+
+两类感知由 planner_detector_release 包装器启动，子进程仅发现本 release 和 /opt/ros/noetic 下的 ROS 包，
+不继承源码 devel 的同名检测节点。配置默认相对 release 定位；用户仍可显式传入外部标定 YAML。
+gate_runtime.yaml 默认保留 corridor_and_map 验证；Unity 入口显式加载现有 gate_unity.yaml 的场景策略，勿将其当成实机默认配置。
+
+可在 Docker 中验证解压后的包（不启动 Planner/Unity 控制器、不调用真实 VLM 服务）：
+
+```bash
+python3 /absolute/path/to/general_planner_release/tests/test_release_perception.py --runtime
+```
+
+测试独占本地 ROS master 11329；端口占用时退出，不接管已有 master。覆盖包定位、动态依赖、
+launch 解析、Gate 合成几何、模拟 VLM 服务、真实 CPU Tracking 推理及按模式启停。
+这些检查不是 Unity/实机飞行动力学验收。

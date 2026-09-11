@@ -143,6 +143,10 @@ private:
   bool boot_complete_{false};
   bool hold_anchor_locked_for_transition_{false};
   bool exploration_start_pending_{false};
+  ros::WallTime exploration_plan_wait_started_;
+  std::string exploration_plan_wait_task_id_;
+  std::string failed_exploration_plan_task_id_;
+  double exploration_first_command_timeout_{15.0};
   bool navigation_enabled_{true};
   bool exploration_enabled_{true};
   // After exploration, kill exploration stack and start a standalone click-demo

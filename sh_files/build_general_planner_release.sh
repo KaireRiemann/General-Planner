@@ -40,6 +40,8 @@ What is synced:
   - traj_utils message interfaces used by exploration
   - devel/include/quadrotor_msgs
   - devel/lib/python3/dist-packages/quadrotor_msgs
+  - Gate and Tracking perception nodes, messages, scripts and Tracking weights
+  - Unity release bridge and ROS-TCP endpoint (no external VLM model service)
   - general_planner_release.tar.gz unless GP_SKIP_ARCHIVE=1
 EOF
 }
@@ -121,7 +123,7 @@ cd "${WORKSPACE_ROOT}"
 catkin_cmd=(
   catkin_make
   --force-cmake
-  "-DCATKIN_WHITELIST_PACKAGES=map_manager;general_planner;general_planner_rviz_plugins;tracking_detector"
+  "-DCATKIN_WHITELIST_PACKAGES=map_manager;general_planner;general_planner_rviz_plugins;tracking_detector;aperture_detector"
   -DCMAKE_BUILD_TYPE="${BUILD_TYPE}"
 )
 if [[ -n "${GP_CATKIN_ARGS:-}" ]]; then
@@ -217,6 +219,8 @@ for required in \
   "${PLANNER_MSG_DIR}/PlannerModeRequest.msg" \
   "${PLANNER_MSG_DIR}/TopologyExpansionPoint.msg" \
   "${PLANNER_MSG_DIR}/TopologyExpansionPointArray.msg" \
+  "${PLANNER_MSG_DIR}/ExplorationTaskRequest.msg" \
+  "${PLANNER_MSG_DIR}/TargetExplorationStatus.msg" \
   "${GP_CPP_MSG_SRC}" \
   "${GP_PY_MSG_SRC}" \
   "${RELEASE_PKG_DIR}/launch/planner_runtime.launch" \
@@ -314,6 +318,10 @@ cp "${PLANNER_MSG_DIR}/TopologyExpansionPoint.msg" \
   "${GP_MSG_PKG_DST}/msg/TopologyExpansionPoint.msg"
 cp "${PLANNER_MSG_DIR}/TopologyExpansionPointArray.msg" \
   "${GP_MSG_PKG_DST}/msg/TopologyExpansionPointArray.msg"
+cp "${PLANNER_MSG_DIR}/ExplorationTaskRequest.msg" \
+  "${GP_MSG_PKG_DST}/msg/ExplorationTaskRequest.msg"
+cp "${PLANNER_MSG_DIR}/TargetExplorationStatus.msg" \
+  "${GP_MSG_PKG_DST}/msg/TargetExplorationStatus.msg"
 cat >"${GP_MSG_PKG_DST}/package.xml" <<'EOF'
 <?xml version="1.0"?>
 <package format="2">
@@ -349,6 +357,8 @@ mkdir -p "$(dirname "${CPP_MSG_DST}")"
 cp -a "${CPP_MSG_SRC}" "${CPP_MSG_DST}"
 
 python3 "${SCRIPT_DIR}/sync_tracking_detector_release.py" --workspace "${WORKSPACE_ROOT}" --repo "${REPO_ROOT}"
+python3 "${SCRIPT_DIR}/sync_perception_release.py" --workspace "${WORKSPACE_ROOT}" --repo "${REPO_ROOT}"
+chmod +x "${RELEASE_PKG_DIR}/planner_detector_release"
 
 echo "[build_release] Sync generated Python message package"
 rm -rf "${PY_MSG_DST}"
@@ -417,6 +427,8 @@ from general_planner.msg import (
     PlannerModeRequest,
     TopologyExpansionPoint,
     TopologyExpansionPointArray,
+    ExplorationTaskRequest,
+    TargetExplorationStatus,
 )
 print("general_planner runtime msgs import ok")
 PY

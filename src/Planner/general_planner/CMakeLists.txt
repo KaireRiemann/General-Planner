@@ -151,6 +151,7 @@ target_link_libraries(general_planner_exploration_utils PUBLIC
 add_library(general_planner_exploration STATIC
         ${GENERAL_PLANNER_EXPLORATION_DIR}/fast_exploration_manager.cpp
         ${GENERAL_PLANNER_EXPLORATION_DIR}/target_topology_guidance.cpp
+        ${GENERAL_PLANNER_EXPLORATION_DIR}/target_route_runtime.cpp
         ${GENERAL_PLANNER_EXPLORATION_DIR}/general_planner_adapter.cpp
         ${GENERAL_PLANNER_EXPLORATION_DIR}/swarm_exploration_coordinator.cpp
 )
@@ -574,6 +575,18 @@ target_link_libraries(tracking_dynamics_cost_self_test general_planner_core ${TH
 
 # Real LIO/Region ownership regression across the former fixed workspace.
 add_executable(target_sparse_domain_self_test tests/target_sparse_domain_self_test.cpp)
+add_executable(target_route_runtime_self_test tests/target_route_runtime_self_test.cpp
+        ${GENERAL_PLANNER_EXPLORATION_DIR}/target_route_runtime.cpp)
+target_compile_options(target_route_runtime_self_test PRIVATE -UNDEBUG)
+target_link_libraries(target_route_runtime_self_test ${catkin_LIBRARIES})
+add_executable(target_route_handshake_integration_test tests/target_route_handshake_integration_test.cpp
+        src/general_core/planner_runtime/planner_supervisor.cpp
+        src/general_core/planner_runtime/planner_command_gateway.cpp)
+add_dependencies(target_route_handshake_integration_test ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
+target_link_libraries(target_route_handshake_integration_test general_planner_core ${THIRD_PARTY})
+if(CATKIN_ENABLE_TESTING)
+  add_test(NAME target_route_runtime_self_test COMMAND target_route_runtime_self_test)
+endif()
 target_compile_options(target_sparse_domain_self_test PRIVATE -UNDEBUG)
 target_link_libraries(target_sparse_domain_self_test general_planner_exploration ${THIRD_PARTY})
 if(CATKIN_ENABLE_TESTING)

@@ -22,6 +22,7 @@
 #include <traj_utils/PolyTraj.h>
 
 #include <general_core/exploration/highspeed/visualizer.hpp>
+#include <general_core/exploration/highspeed/target_route_runtime.h>
 
 namespace geometry_utils
 {
@@ -399,7 +400,8 @@ public:
   bool planExploreTraj(const std::vector<Eigen::Vector3f> &path,
                        bool is_static,
                        bool clearance_recovery = false,
-                       bool rolling_horizon = false);
+                       bool rolling_horizon = false,
+                       const TargetRouteExecutionContext &route = {});
   bool planControlledStopTrajectory();
   bool flyToSafeRegion(bool is_static, bool force_relocation = false);
   void polyTraj2ROSMsg(traj_utils::PolyTraj &poly_msg, const ros::Time &start_time);
@@ -416,6 +418,8 @@ public:
   std::shared_ptr<general_planner::MapManager> sharedMapManager() const {
     return map_manager_;
   }
+  bool hasInjectedWorldMap() const { return injected_world_map_; }
+  bool isObservedLocalKnownFree(const Eigen::Vector3d &pos) const;
 
   bool checkTrajCollision(double &collision_time);
   bool checkTrajVelocity();
@@ -535,6 +539,7 @@ private:
   std::shared_ptr<geometry_utils::Trajectory> latest_exp_yaw_traj_;
   std::vector<Eigen::Vector3f> last_frontend_path_;
   bool rog_map_updated_{false};
+  bool injected_world_map_{false};
   bool committed_stop_active_{false};
 };
 } // namespace fast_planner

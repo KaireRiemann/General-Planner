@@ -377,6 +377,8 @@ bool FastExplorationFSM::handleGoalReached() {
     beginTargetArrivalVerification("target exploration: mission target radius entered");
     return true;
   }
+  // A known-route prefix is not a frontier visit or coverage completion.
+  if (expl_manager_->targetRouteSelected()) return false;
   if (expl_manager_->ed_->global_tour_.size() < 2) {
     return false;
   }
@@ -509,21 +511,26 @@ void FastExplorationFSM::resumeTargetArrivalCorrection() {
 int FastExplorationFSM::callExplorationPlanner() {
   // if (planner_manager_->lidar_map_interface_->getDisToOcc(fd_->odom_pos_) < planner_manager_->gcopter_config_->dilateRadiusHard)
   //   return START_FAIL;
-  if (planner_manager_->topo_graph_->odom_node_->neighbors_.empty())
+  last_plan_used_target_route_ = prepared_target_route_.ready();
+  const bool known_route = last_plan_used_target_route_;
+  if (!known_route && (!planner_manager_->topo_graph_->odom_node_ ||
+      planner_manager_->topo_graph_->odom_node_->neighbors_.empty()))
     return START_FAIL;
-  if (expl_manager_->ed_->global_tour_.size() < 2)
+  if (!known_route && expl_manager_->ed_->global_tour_.size() < 2)
     return NO_FRONTIER;
   fd_->reorientation_required_ = false;
 
   // debug
-  if (planner_manager_->lidar_map_interface_->getDisToOcc(expl_manager_->ed_->next_goal_node_->center_) <
+  if (!known_route && planner_manager_->lidar_map_interface_->getDisToOcc(expl_manager_->ed_->next_goal_node_->center_) <
       planner_manager_->topo_graph_->bubble_min_radius_) { // TODO:
     cout << "410:  next goal in occ, update it" << endl;
     updateTopoAndGlobalPath();
     return FAIL;
   }
   vector<Eigen::Vector3f> path_next_goal;
-
+  if (known_route) {
+    path_next_goal = prepared_target_route_.path;
+  } else {
   int res = planner_manager_->fast_searcher_->search(planner_manager_->topo_graph_->odom_node_, fd_->odom_vel_, expl_manager_->ed_->next_goal_node_,
                                                      0.2, path_next_goal);
   if (res == ParallelBubbleAstar::NO_PATH) {
@@ -540,6 +547,8 @@ int FastExplorationFSM::callExplorationPlanner() {
     ROS_ERROR("ExplorationPlanner: Time out");
     return FAIL;
   }
+  }
+  if (path_next_goal.size() < 2) return FAIL;
 
   auto info = &planner_manager_->local_data_;
 
@@ -548,8 +557,8 @@ int FastExplorationFSM::callExplorationPlanner() {
   // state.  Prepending that future point here creates [future,current,goal]
   // and therefore a fake reverse segment at high speed.
   const std::size_t raw_path_size = path_next_goal.size();
-  conditionHighSpeedPath(path_next_goal);
-  if (path_next_goal.size() >= 2 &&
+  if (!known_route) conditionHighSpeedPath(path_next_goal);
+  if (!known_route && path_next_goal.size() >= 2 &&
       planner_manager_->gcopter_config_->corridorCruiseEnable) {
     const Eigen::Vector3d start = path_next_goal.front().cast<double>();
     const Eigen::Vector3d goal = path_next_goal.back().cast<double>();
@@ -636,7 +645,7 @@ int FastExplorationFSM::callExplorationPlanner() {
   // previous implementation always truncated at the spur tip; for a 2--3 m
   // spur that produced a two-point zero-duration MINCO trajectory and retried
   // the same goal forever.
-  for (std::size_t i = 1; i + 1 < path_d.size(); ++i) {
+  for (std::size_t i = 1; !known_route && i + 1 < path_d.size(); ++i) {
     const Eigen::Vector3d incoming = path_d[i] - path_d[i - 1];
     const Eigen::Vector3d outgoing = path_d[i + 1] - path_d[i];
     if (incoming.norm() < 0.20 || outgoing.norm() < 0.20) {
@@ -849,9 +858,12 @@ int FastExplorationFSM::callExplorationPlanner() {
                                     << " sched_v=" << limit.final_limit
                                     << " reason=" << limit.reason);
   }
+  if (known_route) rolling_horizon = false;
   if (planner_manager_->planExploreTraj(expl_manager_->ed_->path_next_goal_,
                                         fd_->static_state_, false,
-                                        rolling_horizon)) {
+                                        rolling_horizon,
+                                        known_route ? prepared_target_route_.context
+                                                    : TargetRouteExecutionContext{})) {
     traj_utils::PolyTraj poly_traj_msg;
     planner_manager_->polyTraj2ROSMsg(poly_traj_msg, info->start_time_);
     fd_->newest_traj_ = poly_traj_msg;
@@ -922,6 +934,15 @@ void FastExplorationFSM::taskRequestCallback(
   }
   if (msg->task_id.empty()) {
     ROS_WARN("[exploration task] ignore atomic request without task id");
+    return;
+  }
+  if (msg->start && msg->task_id == active_task_id_ && pending_target_task_id_.empty() &&
+      fd_->trigger_ && (state_ == INIT || state_ == WAIT_TRIGGER || state_ == PLAN_TRAJ ||
+                       state_ == EXEC_TRAJ || state_ == REORIENT || state_ == CAUTION)) {
+    // A retry is an acknowledgement request, not a new goal/world generation.
+    // In particular it must not reset route progress/cooldowns while START's
+    // initial status is still in transport.
+    publishTaskStatus();
     return;
   }
 
@@ -1068,6 +1089,12 @@ void FastExplorationFSM::startExplorationTask(const std::string &task_id,
   active_task_id_ = task_id;
   pending_target_task_id_.clear();
   completion_pending_ = false;
+  task_command_started_ = false;
+  last_plan_used_target_route_ = false;
+  prepared_target_route_ = {};
+  expl_manager_->resetTargetRoute();
+  target_last_motion_time_ = ros::WallTime::now();
+  target_last_motion_pos_ = fd_->odom_pos_;
   target_arrival_verification_pending_ = false;
   target_arrival_correction_count_ = 0;
   target_unreachable_pending_ = false;
@@ -1103,6 +1130,8 @@ void FastExplorationFSM::beginPause(const std::string &reason,
     return;
   }
   completion_pending_ = completion_pending_ || completed;
+  expl_manager_->resetTargetRoute();
+  prepared_target_route_ = {};
   pending_target_task_id_.clear();
   fd_->trigger_ = false;
   // A paused exploration task keeps its world map, but must not continue the
@@ -1150,6 +1179,8 @@ void FastExplorationFSM::publishTaskStatus() {
     state_name = "FAILED";
   } else if (state_ == INIT || state_ == WAIT_TRIGGER) {
     state_name = "IDLE";
+  } else if (expl_manager_->targetDirectedModeConfigured() && !task_command_started_) {
+    state_name = "WAITING_LOCAL_PLAN";
   } else {
     state_name = "RUNNING";
   }
@@ -1455,6 +1486,8 @@ void FastExplorationFSM::stopTraj(const string &reason) {
       fd_->newest_yaw_traj_ = stop_yaw_msg;
       poly_yaw_traj_pub_.publish(fd_->newest_yaw_traj_);
       poly_traj_pub_.publish(fd_->newest_traj_);
+      task_command_started_ = true;
+      publishTaskStatus();
       fd_->static_state_ = false;
       ROS_WARN_STREAM_THROTTLE(
           0.5, "[controlled stop] published braking trajectory id="
