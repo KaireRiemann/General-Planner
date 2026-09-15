@@ -85,6 +85,7 @@ struct CoverageTarget {
   // Recovery bookkeeping must not depend only on a center that moves whenever
   // a few voxels are observed.
   std::uint64_t stable_id{0};
+  std::uint64_t region_id{0};
   Eigen::Vector3d position{Eigen::Vector3d::Zero()};
   int zone_id{-1};
   int voxel_count{0};
@@ -98,6 +99,13 @@ struct CoverageTarget {
   // so the executable planner can reject an occluded/unsafe side without
   // exhausting the whole component.
   std::vector<Eigen::Vector3d> approach_candidates;
+};
+
+struct CoverageRegion {
+  std::uint64_t identity{0};
+  CoverageVoxelState state{CoverageVoxelState::UNKNOWN};
+  Eigen::Vector3d center{Eigen::Vector3d::Zero()};
+  std::vector<std::pair<int,double>> neighbors;
 };
 
 struct CoveragePlan {
@@ -119,6 +127,11 @@ struct CoveragePlan {
   int reachable_unknown_count{0};
   int active_free_count{0};
   std::vector<CoverageTarget> ordered_targets;
+  // Stable connected free-region identity, independent of scan-order zone IDs.
+  std::unordered_map<int, std::uint64_t> cluster_region;
+  // Coarse ROG-derived connectivity: unknown links remain hypotheses. These
+  // costs describe intention, never replace the executable bubble-topology test.
+  std::vector<CoverageRegion> regions;
   std::unordered_map<int, double> cluster_priority;
   std::unordered_set<int> preferred_cluster_ids;
 };

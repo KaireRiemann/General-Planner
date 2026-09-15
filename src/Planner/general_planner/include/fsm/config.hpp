@@ -33,6 +33,8 @@
 #include <vector>
 #include <cstring>
 #include <utils/header/yaml_loader.hpp>
+#include <utils/header/tracking_config.hpp>
+#include <cmath>
 
 namespace fsm {
     using namespace traj_opt;
@@ -224,10 +226,24 @@ namespace fsm {
         vector<string> swarm_traj_topics;
         vector<int> swarm_traj_ids;
 
+        std::string tracking_config_path;
+        double tracking_replan_rate{10.0};
+        double tracking_task_timeout{0.6};
+        bool tracking_use_snap{false};
+
+        double replanRate() const {
+            return task_mode == TaskMode::TRACKING || task_mode == TaskMode::TRACKING_PERCHING
+                ? tracking_replan_rate : replan_rate;
+        }
+
         Config() = default;
 
-        Config(const std::string & cfg_path) {
+        Config(const std::string & cfg_path, const std::string &tracking_override = "") {
             yaml_loader::YamlLoader loader(cfg_path);
+            tracking_config_path = general_planner::config_utils::resolveTrackingConfig(cfg_path, tracking_override);
+            yaml_loader::YamlLoader tracking_loader(
+                tracking_config_path.empty() ? cfg_path : tracking_config_path);
+            tracking_loader.LoadParam("general_planner/tracking/use_snap", tracking_use_snap, false);
             vector<double> tem_gain;
             loader.LoadParam("fsm/timer_en", timer_en, false);
             loader.LoadParam("fsm/auto_start", auto_start, false);
@@ -285,8 +301,6 @@ namespace fsm {
                     backend_type = general_planner::architecture::BackendType::CORRIDOR;
                 }
             } else if (task_type == general_planner::architecture::TaskType::TRACKING) {
-                bool tracking_use_snap{false};
-                loader.LoadParam("general_planner/tracking/use_snap", tracking_use_snap, false);
                 backend_type = tracking_use_snap
                                    ? general_planner::architecture::BackendType::SNAP_TRACKING
                                    : general_planner::architecture::BackendType::JERK_TRACKING;
@@ -296,43 +310,43 @@ namespace fsm {
             planning_backend_str = general_planner::architecture::toString(backend_type);
             loader.LoadParam("fsm/task_planner_en", task_planner_en, false);
             loader.LoadParam("fsm/task_mode_topic", task_mode_topic, string("/planning/task_mode"));
-            loader.LoadParam("fsm/tracking_target_odom_topic", tracking_target_odom_topic,
+            tracking_loader.LoadParam("fsm/tracking_target_odom_topic", tracking_target_odom_topic,
                              string("/tracking/target_odom"));
-            loader.LoadParam("fsm/tracking_target_prediction_topic", tracking_target_prediction_topic,
+            tracking_loader.LoadParam("fsm/tracking_target_prediction_topic", tracking_target_prediction_topic,
                              string("/tracking/target_prediction"));
-            loader.LoadParam("fsm/tracking_use_target_prediction_path", tracking_use_target_prediction_path, true);
+            tracking_loader.LoadParam("fsm/tracking_use_target_prediction_path", tracking_use_target_prediction_path, true);
             loader.LoadParam("fsm/perching_surface_odom_topic", perching_surface_odom_topic,
                              string("/perching/surface_odom"));
             loader.LoadParam("fsm/dynamic_takeoff_start_delay", dynamic_takeoff_start_delay, 0.0);
             loader.LoadParam("general_planner/tracking_perching/enable", tracking_perching_enable, false);
-            loader.LoadParam("fsm/tracking_prediction_horizon", tracking_prediction_horizon, 4.0);
-            loader.LoadParam("fsm/tracking_prediction_dt", tracking_prediction_dt, 0.25);
-            loader.LoadParam("fsm/tracking_prediction_use_kinodynamic", tracking_prediction_use_kinodynamic, true);
-            loader.LoadParam("fsm/tracking_prediction_accel", tracking_prediction_accel, 3.0);
-            loader.LoadParam("fsm/tracking_prediction_vmax", tracking_prediction_vmax, 4.0);
-            loader.LoadParam("fsm/tracking_prediction_rho_accel", tracking_prediction_rho_accel, 1.0);
-            loader.LoadParam("fsm/tracking_prediction_max_time", tracking_prediction_max_time, 0.03);
-            loader.LoadParam("fsm/tracking_static_position_epsilon", tracking_static_position_epsilon, 0.05);
-            loader.LoadParam("fsm/tracking_static_velocity_epsilon", tracking_static_velocity_epsilon, 0.05);
-            loader.LoadParam("fsm/tracking_static_yaw_epsilon", tracking_static_yaw_epsilon, 0.05);
-            loader.LoadParam("fsm/tracking_static_replan_remaining_time", tracking_static_replan_remaining_time, 0.8);
-            loader.LoadParam("fsm/tracking_static_task_position_epsilon", tracking_static_task_position_epsilon, 0.12);
-            loader.LoadParam("fsm/tracking_static_task_velocity_epsilon", tracking_static_task_velocity_epsilon, 0.10);
-            loader.LoadParam("fsm/tracking_static_prediction_filter_velocity_epsilon",
+            tracking_loader.LoadParam("fsm/tracking_prediction_horizon", tracking_prediction_horizon, 4.0);
+            tracking_loader.LoadParam("fsm/tracking_prediction_dt", tracking_prediction_dt, 0.25);
+            tracking_loader.LoadParam("fsm/tracking_prediction_use_kinodynamic", tracking_prediction_use_kinodynamic, true);
+            tracking_loader.LoadParam("fsm/tracking_prediction_accel", tracking_prediction_accel, 3.0);
+            tracking_loader.LoadParam("fsm/tracking_prediction_vmax", tracking_prediction_vmax, 4.0);
+            tracking_loader.LoadParam("fsm/tracking_prediction_rho_accel", tracking_prediction_rho_accel, 1.0);
+            tracking_loader.LoadParam("fsm/tracking_prediction_max_time", tracking_prediction_max_time, 0.03);
+            tracking_loader.LoadParam("fsm/tracking_static_position_epsilon", tracking_static_position_epsilon, 0.05);
+            tracking_loader.LoadParam("fsm/tracking_static_velocity_epsilon", tracking_static_velocity_epsilon, 0.05);
+            tracking_loader.LoadParam("fsm/tracking_static_yaw_epsilon", tracking_static_yaw_epsilon, 0.05);
+            tracking_loader.LoadParam("fsm/tracking_static_replan_remaining_time", tracking_static_replan_remaining_time, 0.8);
+            tracking_loader.LoadParam("fsm/tracking_static_task_position_epsilon", tracking_static_task_position_epsilon, 0.12);
+            tracking_loader.LoadParam("fsm/tracking_static_task_velocity_epsilon", tracking_static_task_velocity_epsilon, 0.10);
+            tracking_loader.LoadParam("fsm/tracking_static_prediction_filter_velocity_epsilon",
                              tracking_static_prediction_filter_velocity_epsilon, 0.08);
-            loader.LoadParam("fsm/tracking_static_safety_check_horizon", tracking_static_safety_check_horizon, 1.5);
-            loader.LoadParam("fsm/tracking_static_safety_check_dt", tracking_static_safety_check_dt, 0.12);
-            loader.LoadParam("fsm/tracking_static_replan_log_period", tracking_static_replan_log_period, 1.0);
-            loader.LoadParam("fsm/tracking_plan_from_rest_max_failures",
+            tracking_loader.LoadParam("fsm/tracking_static_safety_check_horizon", tracking_static_safety_check_horizon, 1.5);
+            tracking_loader.LoadParam("fsm/tracking_static_safety_check_dt", tracking_static_safety_check_dt, 0.12);
+            tracking_loader.LoadParam("fsm/tracking_static_replan_log_period", tracking_static_replan_log_period, 1.0);
+            tracking_loader.LoadParam("fsm/tracking_plan_from_rest_max_failures",
                              tracking_plan_from_rest_max_failures,
                              4);
-            loader.LoadParam("fsm/tracking_plan_from_rest_failure_backoff",
+            tracking_loader.LoadParam("fsm/tracking_plan_from_rest_failure_backoff",
                              tracking_plan_from_rest_failure_backoff,
                              0.5);
-            loader.LoadParam("fsm/tracking_plan_from_rest_limited_backoff",
+            tracking_loader.LoadParam("fsm/tracking_plan_from_rest_limited_backoff",
                              tracking_plan_from_rest_limited_backoff,
                              2.0);
-            loader.LoadParam("fsm/tracking_static_finish_on_plan_failure",
+            tracking_loader.LoadParam("fsm/tracking_static_finish_on_plan_failure",
                              tracking_static_finish_on_plan_failure,
                              false);
             loader.LoadParam("fsm/perception_replan_check_en", perception_replan_check_en, false);
@@ -353,6 +367,14 @@ namespace fsm {
             loader.LoadParam("general_planner/dynamic_obstacle_layer/odom_timeout",
                              dynamic_obstacle_layer_odom_timeout, 0.2);
             loader.LoadParam("fsm/task_timeout", task_timeout, 0.6);
+            tracking_loader.LoadParam("fsm/replan_rate", tracking_replan_rate,
+                tracking_config_path.empty() ? replan_rate : 10.0);
+            tracking_loader.LoadParam("fsm/task_timeout", tracking_task_timeout,
+                tracking_config_path.empty() ? task_timeout : 1.0);
+            if (!std::isfinite(tracking_replan_rate) || tracking_replan_rate <= 0.0 ||
+                !std::isfinite(tracking_task_timeout) || tracking_task_timeout <= 0.0) {
+                throw std::invalid_argument("Tracking replan_rate and task_timeout must be finite and positive");
+            }
             loader.LoadParam("fsm/state2state_plan_from_rest_max_failures",
                              state2state_plan_from_rest_max_failures,
                              5);

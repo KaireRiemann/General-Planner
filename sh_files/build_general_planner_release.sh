@@ -164,6 +164,7 @@ EXPLORATION_FOREST_OVERLAY_CONFIG_SRC="${PLANNER_CONFIG_DIR}/exploration_forest_
 EXPLORATION_SIM_CONFIG_SRC="${PLANNER_CONFIG_DIR}/exploration_sim.yaml"
 EXPLORATION_ROG_MAP_CONFIG_SRC="${PLANNER_CONFIG_DIR}/exploration_rog_map.yaml"
 M2_STATE2STATE_CONFIG_SRC="${PLANNER_CONFIG_DIR}/task_planner_runtime_state2state.yaml"
+M2_TRACKING_CONFIG_SRC="${PLANNER_CONFIG_DIR}/task_planner_runtime_tracking.yaml"
 GLOBAL_TOPOLOGY_CONFIG_SRC="${PLANNER_CONFIG_DIR}/global_topology.yaml"
 M2_CONVEX_HULL_CONFIG_SRC="${PLANNER_CONFIG_DIR}/traj_opt/convex_hull/click_real_highspeed.yaml"
 EXPLORATION_RVIZ_CONFIG_SRC="${PLANNER_CONFIG_DIR}/exploration/highspeed/traj.rviz"
@@ -208,6 +209,7 @@ for required in \
   "${EXPLORATION_SIM_CONFIG_SRC}" \
   "${EXPLORATION_ROG_MAP_CONFIG_SRC}" \
   "${M2_STATE2STATE_CONFIG_SRC}" \
+  "${M2_TRACKING_CONFIG_SRC}" \
   "${GLOBAL_TOPOLOGY_CONFIG_SRC}" \
   "${M2_CONVEX_HULL_CONFIG_SRC}" \
   "${EXPLORATION_RVIZ_CONFIG_SRC}" \
@@ -298,6 +300,8 @@ cp "${EXPLORATION_SIM_CONFIG_SRC}" "${RELEASE_CONFIG_DIR}/exploration_sim.yaml"
 cp "${EXPLORATION_ROG_MAP_CONFIG_SRC}" "${RELEASE_CONFIG_DIR}/exploration_rog_map.yaml"
 cp "${M2_STATE2STATE_CONFIG_SRC}" \
   "${RELEASE_CONFIG_DIR}/task_planner_runtime_state2state.yaml"
+cp "${M2_TRACKING_CONFIG_SRC}" \
+  "${RELEASE_CONFIG_DIR}/task_planner_runtime_tracking.yaml"
 cp "${GLOBAL_TOPOLOGY_CONFIG_SRC}" \
   "${RELEASE_CONFIG_DIR}/global_topology.yaml"
 mkdir -p "${RELEASE_CONFIG_DIR}/traj_opt/convex_hull"

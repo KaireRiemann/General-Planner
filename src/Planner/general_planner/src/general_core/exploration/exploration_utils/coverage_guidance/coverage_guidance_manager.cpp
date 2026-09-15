@@ -558,6 +558,9 @@ CoveragePlan CoverageGuidanceManager::buildPlan(const WorkItem &work) {
   }
 
   std::vector<std::unordered_map<int, double>> edge_maps(zones.size());
+  std::vector<int> component_states;
+  for (const auto &zone : zones) component_states.push_back(static_cast<int>(zone.state));
+  const auto component_ids = component_identity_.update(zone_of, component_states);
   const Eigen::Vector3i positive_directions[3] = {
       Eigen::Vector3i(1, 0, 0), Eigen::Vector3i(0, 1, 0),
       Eigen::Vector3i(0, 0, 1)};
@@ -601,6 +604,11 @@ CoveragePlan CoverageGuidanceManager::buildPlan(const WorkItem &work) {
   }
 
   int start_zone = -1;
+  for (int i=0;i<static_cast<int>(zones.size());++i) {
+    CoverageRegion region;region.identity=component_ids[i];region.state=zones[i].state;
+    region.center=zones[i].center;region.neighbors=zones[i].edges;
+    plan.regions.push_back(std::move(region));
+  }
   const Eigen::Vector3i robot_index =
       map_spec_.positionToIndex(work.robot_position);
   if (map_spec_.contains(robot_index)) {
@@ -663,6 +671,7 @@ CoveragePlan CoverageGuidanceManager::buildPlan(const WorkItem &work) {
     if (zone_id >= 0) {
       zone_frontiers[zone_id].push_back(frontier);
       frontier_zone[frontier.cluster_id] = zone_id;
+      plan.cluster_region[frontier.cluster_id] = component_ids[zone_id];
     }
   }
 
@@ -678,8 +687,8 @@ CoveragePlan CoverageGuidanceManager::buildPlan(const WorkItem &work) {
   for (const auto &entry : zone_frontiers) {
     CoverageTarget target;
     target.type = CoverageTargetType::ACTIVE_FREE;
-    target.stable_id =
-        stableGroupId("active:" + std::to_string(entry.first));
+    target.stable_id = component_ids[entry.first];
+    target.region_id = component_ids[entry.first];
     target.zone_id = entry.first;
     target.position = Eigen::Vector3d::Zero();
     for (const CoverageFrontier &frontier : entry.second) {
@@ -745,6 +754,7 @@ CoveragePlan CoverageGuidanceManager::buildPlan(const WorkItem &work) {
     target.stable_id = stableGroupId(entry.first);
     target.position = center;
     target.zone_id = representative;
+    target.region_id = component_ids[representative];
     target.voxel_count = group.voxel_count;
 
     // Select the cheapest known-free zone touching this unknown component.

@@ -533,7 +533,7 @@ namespace general_planner {
             const double prefix_end_wt =
                     fixed_head_time_valid
                         ? candidate_head_wt
-                        : commit_wt + std::max(0.0, cfg_.replan_forward_dt);
+                        : commit_wt + std::max(0.0, cfg_.tracking_replan_forward_dt);
             const double prefix_start_t = commit_wt - old_start_wt;
             const double prefix_end_t = prefix_end_wt - old_start_wt;
             const bool prefix_window_valid =

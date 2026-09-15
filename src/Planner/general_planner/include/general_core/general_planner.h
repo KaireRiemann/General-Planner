@@ -83,6 +83,7 @@ namespace general_planner {
         general_planner::Config cfg_;
         MapManager::Ptr map_manager_;
         CorridorGenerator::Ptr cg_ptr_;
+        CorridorGenerator::Ptr tracking_cg_ptr_;
         path_search::Astar::Ptr astar_ptr_;
         ros_interface::RosInterface::Ptr ros_ptr_;
         Vec3f shifted_sfc_start_pt_;
@@ -129,7 +130,8 @@ namespace general_planner {
         GeneralPlanner(const std::string &cfg_path,
                        const ros_interface::RosInterface::Ptr &ros_ptr,
                        const MapManager::Ptr &map_manager,
-                       bool configure_private_topology);
+                       bool configure_private_topology,
+                       const std::string &tracking_config);
 
 	        CmdTraj cmd_traj_info_;
 	        ExpTraj last_exp_traj_info_;
@@ -219,7 +221,8 @@ namespace general_planner {
 
         explicit GeneralPlanner(const std::string &cfg_path,
                               const ros_interface::RosInterface::Ptr &ros_ptr,
-                              const rog_map::ROGMapROS::Ptr &map_ptr);
+                              const rog_map::ROGMapROS::Ptr &map_ptr,
+                              const std::string &tracking_config = "");
 
         /**
          * M2 constructor: callers inject the world-lifetime MapManager.
@@ -228,7 +231,8 @@ namespace general_planner {
          */
         GeneralPlanner(const std::string &cfg_path,
                        const ros_interface::RosInterface::Ptr &ros_ptr,
-                       const MapManager::Ptr &shared_map_manager);
+                       const MapManager::Ptr &shared_map_manager,
+                       const std::string &tracking_config = "");
 
         ~GeneralPlanner();
 

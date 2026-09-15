@@ -666,6 +666,17 @@ bool buildRuntimeConfig(const std::string &interface_config_path,
     }
 
     if (isFullRuntimeConfig(interface_root)) {
+        // The generated YAML lives in ~/.ros, not next to its source profile.
+        // Resolve a relative task reference before relocating the navigation file.
+        if (interface_root["tracking_config"]) {
+            try {
+                interface_root["tracking_config"] =
+                    general_planner::config_utils::resolveTrackingConfig(interface_config_path);
+            } catch (const std::exception &e) {
+                error = e.what();
+                return false;
+            }
+        }
         selected_preset_name =
                 boost::filesystem::path(interface_config_path).filename().string();
         selected_backend = detectFullConfigBackend(interface_root);

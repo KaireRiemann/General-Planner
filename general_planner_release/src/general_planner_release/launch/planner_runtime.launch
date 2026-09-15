@@ -57,6 +57,7 @@
   <arg name="enable_exploration" default="true" />
   <arg name="gate_status_topic" default="/planner/gate/status" />
   <arg name="sim_config" default="$(find general_planner_release)/config/exploration_sim.yaml" />
+  <arg name="tracking_config" default="$(find general_planner_release)/config/task_planner_runtime_tracking.yaml" />
   <arg name="navigation_config" default="$(find general_planner_release)/config/task_planner_runtime_state2state.yaml" />
   <arg name="exploration_config" default="$(find general_planner_release)/config/exploration_house.yaml" />
   <arg name="target_exploration_config"
@@ -76,7 +77,7 @@
   <arg name="state2state_rviz_config" default="$(find general_planner_release)/config/planner_runtime_state2state.rviz" />
   <!-- Use the bridge output, not Unity's raw /unity_odom.  The bridge supplies
        ROS-time stamps and the commanded velocity needed by the planner. -->
-  <arg name="odom_topic" default="/lidar_slam/odom" />
+  <arg name="odom_topic" default="/unity_odom" />
   <arg name="cloud_topic" default="/cloud_registered" />
   <arg name="fsm_replan_time" default="0.25" />
   <arg name="fsm_replan_time_after_traj_start" default="0.35" />
@@ -156,6 +157,7 @@
     <param name="tracking_target_odom_topic" value="$(arg tracking_target_odom_topic)" />
     <param name="tracking_target_prediction_topic" value="$(arg tracking_target_prediction_topic)" />
     <param name="navigation_config" value="$(arg navigation_config)" type="string" />
+    <param name="tracking_config" value="$(arg tracking_config)" type="string" />
     <param name="odometry_topic" value="$(arg odom_topic)" type="string" />
     <param name="cloud_topic" value="$(arg cloud_topic)" type="string" />
     <param name="RogMapEnable" value="$(arg rog_map_enable)" type="bool" />

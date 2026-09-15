@@ -2952,7 +2952,7 @@ bool ExplorationTrajOpt::setupProblemAndCheck()
   return true;
 }
 
-bool ExplorationTrajOpt::loadCorridors(PolytopeVec &sfcs)
+bool ExplorationTrajOpt::loadCorridors(PolytopeVec &sfcs, bool preserve_order)
 {
   if (sfcs.empty())
   {
@@ -2960,7 +2960,7 @@ bool ExplorationTrajOpt::loadCorridors(PolytopeVec &sfcs)
     return false;
   }
 
-  if (!geometry_utils::SimplifySFC(opt_vars_.head_pvaj.col(0), opt_vars_.tail_pvaj.col(0), sfcs))
+  if (!preserve_order && !geometry_utils::SimplifySFC(opt_vars_.head_pvaj.col(0), opt_vars_.tail_pvaj.col(0), sfcs))
   {
     std::cout << YELLOW << " -- [ExplorationTrajOpt] Cannot simplify SFC." << RESET << std::endl;
     return false;
@@ -3179,7 +3179,8 @@ bool ExplorationTrajOpt::optimize(const StatePVAJ &headPVAJ,
                                   const std::vector<double> &guide_t,
                                   PolytopeVec &sfcs,
                                   const VecDf &piece_velocity_bounds,
-                                  Trajectory &out_traj)
+                                  Trajectory &out_traj,
+                                  bool preserve_corridor_order)
 {
   if (guide_path.size() != guide_t.size() || guide_path.empty())
   {
@@ -3192,7 +3193,7 @@ bool ExplorationTrajOpt::optimize(const StatePVAJ &headPVAJ,
   opt_vars_.guide_path = guide_path;
   opt_vars_.guide_t = guide_t;
   setPieceVelocityBounds(piece_velocity_bounds);
-  if (!loadCorridors(sfcs) || !setupProblemAndCheck())
+  if (!loadCorridors(sfcs, preserve_corridor_order) || !setupProblemAndCheck())
   {
     return false;
   }

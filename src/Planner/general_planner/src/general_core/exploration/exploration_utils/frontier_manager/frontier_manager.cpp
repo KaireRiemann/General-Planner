@@ -542,6 +542,7 @@ void FrontierManager::init(ros::NodeHandle &nh, LIOInterface::Ptr &lio_interface
     }
   }
   frtd_ = FrontierData(frtp_.idx_byte_size_);
+  observation_evidence_.clear();
   frtd_.label_map_.max_load_factor(1.5);
   frtd_.frt_map_.max_load_factor(1.5);
   ROS_INFO_STREAM("[frontier storage] signed world-cell key enabled, bits="
@@ -1181,7 +1182,8 @@ void FrontierManager::updateFrontierClusters(
   for (int i = 0; i < cells_2_update.size(); i++) {
     ByteArrayRaw bytes;
     idx2bytes(cells_2_update[i], bytes);
-    if (get_state(cells_2_update[i]) == DENSE) {
+    const bool already_dense=get_state(cells_2_update[i])==DENSE;
+    if (already_dense && (!high_speed_view_ctx_.route_enabled || observation_evidence_.count(bytes))) {
       continue;
     }
     PointType pt;
@@ -1191,14 +1193,18 @@ void FrontierManager::updateFrontierClusters(
         !is_fov_edge(pt)) {
       // if (view_distance < frtp_.good_observation_force_trust_length_) {
       frtd_.label_map_[bytes] = DENSE;
+      observation_evidence_.insert(bytes);
       continue;
     }
     bool bad_dir = is_gap_point(pt) || is_fov_edge(pt);
     bool bad_dis = view_distance > frtp_.good_observation_trust_length_;
     if (!bad_dir && !bad_dis) {
       frtd_.label_map_[bytes] = DENSE;
+      observation_evidence_.insert(bytes);
       continue;
-    } else if (bad_dis) {
+    }
+    if (already_dense) continue;
+    if (bad_dis) {
       bad_dis_set.insert(cells_2_update[i]);
     } else {
       bad_dir_set.insert(cells_2_update[i]);
@@ -1659,7 +1665,7 @@ void FrontierManager::selectBestViewpoint(ClusterInfo::Ptr &cluster) {
     }
 
     const float yaw_limit =
-        hard_gate_active
+        hard_gate_active && !ctx.route_enabled
             ? static_cast<float>(ctx.hard_gate_max_yaw_delta)
             : std::numeric_limits<float>::infinity();
     auto yaw_selection = viewpoint_yaw_selector::select(
@@ -1682,6 +1688,15 @@ void FrontierManager::selectBestViewpoint(ClusterInfo::Ptr &cluster) {
     // }
     yaw[i] = yaw_candidates[yaw_selection.index];
 
+    if (ctx.route_enabled && visible_gain[i] > 0) {
+      const double clearance = ctx.clearance ? ctx.clearance(vp.cast<double>()) : 0.0;
+      clearance_arr[i] = clearance;
+      hard_rejected[i] = !std::isfinite(clearance) ||
+          clearance < std::max(ctx.min_clearance, ctx.hard_gate_min_clearance);
+      // Visibility selects alternatives within a group. No straight-line
+      // travel/turn/backup reward is applied before topology has a route.
+      continue;
+    }
     if (use_high_speed_score && visible_gain[i] > 0) {
       Eigen::Vector3f to_vp = vp - ctx.curr_pos;
       const double dist = to_vp.norm();
@@ -1734,6 +1749,7 @@ void FrontierManager::selectBestViewpoint(ClusterInfo::Ptr &cluster) {
           hard_rejected[i] = known_free_rejected[i] ||
                              clearance_rejected[i] || turn_rejected[i] ||
                              yaw_rejected[i];
+          if (ctx.route_enabled) hard_rejected[i]=clearance_rejected[i];
         }
         score[i] = ctx.gain_weight * visible_gain[i] +
                    ctx.progress_weight * forward_progress +
@@ -1772,7 +1788,7 @@ void FrontierManager::selectBestViewpoint(ClusterInfo::Ptr &cluster) {
     if (visible_gain[i] == 0) {
       continue;
     }
-    if (hard_gate_active && hard_rejected[i]) {
+    if ((hard_gate_active || ctx.route_enabled) && hard_rejected[i]) {
       ++hard_rejected_count;
       known_free_rejected_count += known_free_rejected[i] ? 1 : 0;
       clearance_rejected_count += clearance_rejected[i] ? 1 : 0;
@@ -1789,6 +1805,8 @@ void FrontierManager::selectBestViewpoint(ClusterInfo::Ptr &cluster) {
     cluster->candidate_vps_.clear();
     cluster->candidate_yaws_.clear();
     cluster->candidate_scores_.clear();
+    cluster->candidate_visible_cells_.clear();
+    cluster->candidate_visible_indices_.clear();
     markClusterRetry(cluster, true);
     if (ctx.log && hard_gate_active && hard_rejected_count > 0) {
       ROS_WARN_STREAM_THROTTLE(
@@ -1851,14 +1869,41 @@ void FrontierManager::selectBestViewpoint(ClusterInfo::Ptr &cluster) {
     cluster->candidate_yaws_.clear();
     cluster->candidate_scores_.clear();
     const int top_k =
+        // Rebuilt on every selection; never mix sketches from older viewpoints.
         std::min(static_cast<int>(candidate_indices.size()),
                  std::max(1, std::min(vpp_.top_candidate_num_,
                                       std::max(1, ctx.top_viewpoint_num))));
+    cluster->candidate_visible_cells_.clear();
+    cluster->candidate_visible_indices_.clear();
     for (int k = 0; k < top_k; ++k) {
       const int idx = candidate_indices[k];
       cluster->candidate_vps_.push_back(vps[idx].getVector3fMap());
       cluster->candidate_yaws_.push_back(yaw[idx]);
       cluster->candidate_scores_.push_back(score[idx]);
+      vector<std::uint64_t> visible;
+      vector<Eigen::Vector3i> visible_indices;
+      if (ctx.route_enabled) {
+        Eigen::Isometry3f transform = Eigen::Isometry3f::Identity();
+        transform.rotate(Eigen::AngleAxisf(-vpp_.lidar_pitch_ * M_PI / 180.0, Eigen::Vector3f::UnitY()));
+        transform.rotate(Eigen::AngleAxisf(-yaw[idx], Eigen::Vector3f::UnitZ()));
+        for (const auto &point : occ_free_frts[idx]) {
+          const Eigen::Vector3f q = transform * (point.getVector3fMap()-vps[idx].getVector3fMap());
+          const float pitch = std::atan2(q.z(),q.head<2>().norm());
+          if (pitch > vpp_.fov_up_ || pitch < vpp_.fov_down_) continue;
+          const Eigen::Vector3i cell = ((point.getVector3fMap()-frtp_.map_min_)/frtp_.cell_size_).array().floor().cast<int>();
+          std::uint64_t id = 1469598103934665603ULL;
+          for (int axis=0;axis<3;++axis) {id ^= static_cast<std::uint32_t>(cell(axis)); id *= 1099511628211ULL;}
+          visible.push_back(id);
+          if (visible_indices.size()<128) visible_indices.push_back(cell);
+        }
+        std::sort(visible.begin(),visible.end());
+        visible.erase(std::unique(visible.begin(),visible.end()),visible.end());
+        // Deterministic bounded sketch: the same visible cell has the same
+        // sampling decision in every alternative, preserving overlap evidence.
+        if (visible.size()>128) visible.resize(128);
+      }
+      cluster->candidate_visible_cells_.push_back(std::move(visible));
+      cluster->candidate_visible_indices_.push_back(std::move(visible_indices));
     }
     if (ctx.log && use_high_speed_score) {
       ROS_INFO_STREAM_THROTTLE(

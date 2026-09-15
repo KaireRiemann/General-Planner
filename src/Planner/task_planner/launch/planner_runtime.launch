@@ -60,6 +60,7 @@
 
   <arg name="sim_config"
        default="$(find general_planner)/config/exploration_sim.yaml" />
+  <arg name="tracking_config" default="$(find general_planner)/config/task_planner_runtime_tracking.yaml" />
   <arg name="navigation_config"
        default="$(find general_planner)/config/task_planner_runtime_state2state.yaml" />
   <arg name="exploration_config"
@@ -176,6 +177,7 @@
     <param name="tracking_target_odom_topic" value="$(arg tracking_target_odom_topic)" />
     <param name="tracking_target_prediction_topic" value="$(arg tracking_target_prediction_topic)" />
     <param name="navigation_config" value="$(arg navigation_config)" type="string" />
+    <param name="tracking_config" value="$(arg tracking_config)" type="string" />
     <param name="odometry_topic" value="$(arg odom_topic)" type="string" />
     <param name="cloud_topic" value="$(arg cloud_topic)" type="string" />
     <param name="RogMapEnable" value="$(arg rog_map_enable)" type="bool" />

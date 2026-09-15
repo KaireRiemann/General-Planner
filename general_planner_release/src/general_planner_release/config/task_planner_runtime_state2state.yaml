@@ -1,3 +1,6 @@
+# Tracking parameters are loaded separately; relative to this file.
+tracking_config: task_planner_runtime_tracking.yaml
+
 # Runtime state2state profile: click-demo corridor + fast-LBFGS route with
 # conservative 5 m/s flight limits. GlobalMapRuntime owns the world map from
 # config/exploration_rog_map.yaml; the mirrored ROG section below therefore
@@ -19,17 +22,9 @@ fsm:
   click_goal_3d_topic: "/planning/click_goal_3d"
   click_height: 1.5
   click_yaw_en: true
-  tracking_target_odom_topic: "/tracking/target_odom"
   perching_surface_odom_topic: "/perching/surface_odom"
-  tracking_prediction_horizon: 4.0
-  tracking_prediction_dt: 0.25
-  tracking_prediction_use_kinodynamic: true
-  tracking_prediction_accel: 3.0
-  tracking_prediction_vmax: 4.0
-  tracking_prediction_rho_accel: 1.0
-  tracking_prediction_max_time: 0.03
   task_timeout: 1.0
-  replan_rate: 15.0
+  replan_rate: 5.0
   cmd_topic: "/planning/pos_cmd"
   mpc_cmd_topic: "/planning_cmd/poly_traj"
   timer_en: true
@@ -46,29 +41,6 @@ fsm:
   perception_replan_emergency_horizon: 0.45
 
 general_planner:
-  # Tracking-only limits: do not change the state2state optimizer.
-  tracking:
-    # false: minimum-jerk position trajectory; true: minimum-snap.
-    use_snap: false
-    max_vel: 3.0
-    max_acc: 3.0
-    max_jerk: 12.0
-    max_tilt: 0.45
-    max_omg: 1.2
-    yaw_rate_limit: 0.8
-    yaw_acceleration_limit: 1.6
-    keep_old_startup_grace: 1.0
-    # Match Unity CameraInfo and the estimator's camera_unity_main_scene.yaml.
-    fov_horizontal_deg: 75.178
-    fov_vertical_deg: 60.0
-    cam2body_R: [0, 0, 1, -1, 0, 0, 0, -1, 0]
-    cam2body_p: [0, 0, 0]
-    target_half_height: 0.7
-    target_half_width: 0.5
-    # Leave turning room and keep the ground contact away from image edges.
-    distance: 3.5
-    height_offset: 0.7
-    height_tolerance: 0.3
   backup_traj_en: true
   esdf_traj_en: false
   esdf_safe_distance: 0.3
@@ -162,7 +134,7 @@ general_planner:
     near_goal_radius: 2.0
     accept_exp_without_backup_near_goal: true
   unknown_goal_reveal_en: true
-  yaw_dot_max: 1.2
+  yaw_dot_max: 3
   # Yaw mode: 1 heading to velocity, 2 heading to goal
   yaw_mode: 1
   mpc_horizon: 15
@@ -176,12 +148,11 @@ traj_opt:
 
   boundary:
     # Runtime camera/attitude stability profile; tune against the real controller.
-    max_vel: 3.0
-    max_acc: 3.0
-    max_jerk: 12.0
-    max_omg: 1.2
-    max_tilt: 0.45
-    max_acc_thr: 22.0
+    max_vel: 4.0
+    max_acc: 2.0
+    max_jerk: 60.0
+    max_omg: 2.5
+    max_acc_thr: 20.0
     min_acc_thr: 6.0
     penna_margin: 0.05
 
@@ -365,7 +336,7 @@ rog_map:
   intensity_thresh: -10
   # The temporal downsample rate for input point cloud.
   #  e.g. if set to k, the point cloud will be downsampled to 1/k.
-  point_filt_num: 1
+  point_filt_num: 2
 
   # Probabilistc update
   raycasting:
@@ -375,9 +346,9 @@ rog_map:
     # OCCUPIED and UNKNOWN only and cannot supply observed KNOWN_FREE evidence.
     enable: true
     batch_update_size: 1
-    local_update_box: [ 70.0,70.0,6.0 ]
+    local_update_box: [ 40.0,40.0,6.0 ]
     # The range of raycasting [m].
-    ray_range: [0.50, 60.0 ]
+    ray_range: [0.50, 25.0 ]
 
     p_min: 0.12
     p_miss: 0.49

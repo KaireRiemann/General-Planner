@@ -16,6 +16,7 @@
 #include <general_core/exploration/exploration_utils/coverage_guidance/coverage_recovery_identity.h>
 #include <general_core/exploration/highspeed/target_directed_exploration.h>
 #include <general_core/exploration/highspeed/target_topology_guidance.h>
+#include <general_core/exploration/highspeed/coverage_route_policy.h>
 #include <geometry_msgs/PoseStamped.h>
 #include <limits>
 #include <memory>
@@ -53,6 +54,8 @@ struct CoverageFinishStatus {
   bool plan_valid{false};
   bool plateau_reached{false};
   bool targets_exhausted{false};
+  bool active_target_pending{false};
+  int unresolved_unknown_groups{0};
   int observed_voxels{0};
   int valid_voxels{0};
   int actionable_targets{0};
@@ -64,12 +67,17 @@ struct CoverageFinishStatus {
   double next_retry_duration{0.0};
 
   bool ready() const {
+    // This is the coverage layer of the finish gate. The FSM separately
+    // requires a current full frontier audit, no reachable viewpoints,
+    // repeated empty results and a settled vehicle. Unknown volume includes
+    // wall interiors and space outside enclosing walls; it is diagnostic.
     return !guard_enabled ||
-           (plan_valid && plateau_reached && targets_exhausted);
+           (plan_valid && plateau_reached && !active_target_pending);
   }
 };
 
 class FastExplorationManager {
+  friend struct CoverageRecoveryTestAccess;
 public:
   typedef shared_ptr<FastExplorationManager> Ptr;
   FastExplorationManager();
@@ -100,6 +108,8 @@ public:
   int planGlobalPath(const Vector3d &pos, const Vector3d &vel);
   void updateCoverageGuidance(const Vector3d &pos);
   CoverageFinishStatus coverageFinishStatus();
+  void updateCoverageProgress();
+  void resetCoverageRecovery();
   void deferCurrentGoalAfterPlanningFailure();
   bool completeActiveCoverageGoalIfReached(const Vector3d &pos);
   bool hasActiveCoverageRecoveryGoal() const {
@@ -121,6 +131,23 @@ public:
   std::string missionMode() const;
   bool targetDirectedModeConfigured() const;
   bool targetDirectedModeActive() const;
+  bool coverageMotionEnabled() const;
+  bool coverageRouteEnabled() const { return coverageMotionEnabled() && coverage_route_config_.enabled; }
+  double coverageStallTimeout() const { return coverage_route_config_.stall_timeout; }
+  // Planned observations, kept separate from symbolic coverage anchors.
+  struct RouteObservation {
+    Eigen::Vector3d position{Eigen::Vector3d::Zero()};
+    double yaw{0.0};
+    int cluster{-1};
+    std::uint64_t identity{0}, map_version{0};
+    // Concrete incoming topology geometry; revalidated against ROG at use.
+    std::vector<Eigen::Vector3d> path_from_previous;
+  };
+  const std::vector<RouteObservation> &coverageRouteObservations() const {return coverage_route_observations_;}
+  const coverage_motion::Path &coverageRouteExitPath() const { return coverage_route_exit_path_; }
+  void notifyCoverageRoutePassage(std::uint64_t identity);
+  bool coveragePreflightPath(const Eigen::Vector3f &goal,
+                            vector<Eigen::Vector3f> &path) const;
   double missionGoalDistance(const Eigen::Vector3d &position) const;
   bool missionGoalReached(const Eigen::Vector3d &position) const;
   void updateGoalNode();
@@ -133,6 +160,34 @@ public:
   bool targetRouteSelected() const { return target_route_selected_; }
 
 private:
+  coverage_route::Config coverage_route_config_;
+  struct RouteTaskState {
+    int deferred{0}, cluster{-1}; double last_seen{0.0}; bool verifying{false};
+    std::uint64_t evidence_version{0}, region{0};
+    Eigen::Vector3d position{Eigen::Vector3d::Zero()};
+    std::vector<std::uint64_t> visible;
+    std::vector<Eigen::Vector3i> cells;
+    coverage_route::ProgressMonitor progress;
+  };
+  std::uint64_t coverage_next_task_id_{1};
+  bool coverage_route_stalled_{false};
+  std::unordered_map<std::uint64_t, RouteTaskState> coverage_route_tasks_;
+  std::vector<RouteObservation> coverage_route_observations_;
+  coverage_motion::Path coverage_route_exit_path_;
+  std::vector<std::uint64_t> coverage_intention_ids_;
+  double coverage_intention_since_{0.0};
+  bool planCoverageRoute(const CoveragePlan::Ptr &snapshot,
+      const vector<TopoNode::Ptr> &candidates, const vector<EdgeSafetyCost> &start_edges,
+      const Eigen::Vector3d &pos, const Eigen::Vector3d &vel,
+      std::vector<int> &prefix);
+  struct CoveragePreflight {
+    Eigen::Vector3f goal;
+    vector<Eigen::Vector3f> path;
+    ros::Time stamp;
+  };
+  vector<CoveragePreflight> coverage_preflights_;
+  Eigen::Vector3d coverage_region_anchor_{Eigen::Vector3d::Zero()};
+  ros::Time coverage_region_since_;
   struct DeferredGoal {
     int cluster_id{-1};
     Eigen::Vector3f position{Eigen::Vector3f::Zero()};
@@ -159,7 +214,16 @@ private:
     int no_gain_attempts{0};
     int failure_attempts{0};
     bool exhausted{false};
+    bool component_failure{false};
+    bool directional_failure{false};
+    bool origin_sensitive{false};
+    Eigen::Vector3d failure_origin{Eigen::Vector3d::Zero()};
+    int observed_at_failure{-1};
   };
+  bool coverageFailureContextChanged(const DeferredCoverageGoal &goal,
+                                    const CoverageTarget &target) const;
+  bool coverageFailureMatches(const DeferredCoverageGoal &goal,
+                             const CoverageTarget &target) const;
 
   struct NormalGoalProgress {
     bool valid{false};

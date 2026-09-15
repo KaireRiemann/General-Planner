@@ -735,7 +735,8 @@ public:
                 const std::vector<double> &guide_t,
                 PolytopeVec &sfcs,
                 const VecDf &piece_velocity_bounds,
-                Trajectory &out_traj);
+                Trajectory &out_traj,
+                bool preserve_corridor_order = false);
 
   bool optimize(const StatePVAJ &headPVAJ,
                 const StatePVAJ &tailPVAJ,
@@ -818,7 +819,7 @@ private:
   void normalizePieceVelocityBounds();
   double optimize(Trajectory &traj, double rel_cost_tol);
   double evaluateMincoCost(const VecDf &x, VecDf &g);
-  bool loadCorridors(PolytopeVec &sfcs);
+  bool loadCorridors(PolytopeVec &sfcs, bool preserve_order = false);
 
   static Trajectory toGeometryTrajectory(const SnapTraj &traj);
   static SnapBoundaryState toSnapBoundary(const StatePVAJ &state);

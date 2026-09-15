@@ -118,6 +118,8 @@ public:
   double frontier_wait_age_ = 0.0;
   double frontier_pass_debt_ = 0.0;
   int frontier_pass_count_ = 0;
+  std::vector<std::uint64_t> coverage_visible_cells_;
+  std::vector<Eigen::Vector3i> coverage_visible_indices_;
   // Synthetic coverage observation targets share the same topological and
   // trajectory validation path as frontier viewpoints, but must retain their
   // own stable identity and unknown observation direction.

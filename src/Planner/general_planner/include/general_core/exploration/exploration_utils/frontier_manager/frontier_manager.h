@@ -141,6 +141,8 @@ struct ClusterInfo {
   vector<Eigen::Vector3f> candidate_vps_;
   vector<float> candidate_yaws_;
   vector<double> candidate_scores_;
+  vector<vector<std::uint64_t>> candidate_visible_cells_;
+  vector<vector<Eigen::Vector3i>> candidate_visible_indices_;
 
   bool is_dormant_;
   bool is_reachable_;
@@ -208,6 +210,9 @@ struct HighSpeedViewScoreContext {
   double hard_gate_max_yaw_delta = 1.60;
   double hard_gate_min_clearance = 0.45;
   int top_viewpoint_num = 1;
+  int route_alternatives = 1;  // coverage group routing only; legacy TSP remains one per cluster
+  bool route_enabled = false;
+  int route_task_limit = 8;
   bool corridor_cruise_enable = true;
   double corridor_known_free_len = 18.0;
   double corridor_min_alignment = 0.70;
@@ -220,11 +225,15 @@ struct HighSpeedViewScoreContext {
 };
 
 class FrontierManager {
+  friend struct FrontierObservationEvidenceTestAccess;
 private:
   // Mission lifecycle (visited/deferred/viewpoint caches) is not map evidence.
   // Keep it separate so target frontiers never become coverage objectives.
   std::list<ClusterInfo::Ptr> inactive_task_clusters_;
   bool target_task_domain_{false};
+  // Separate positive sensor evidence from DENSE labels assigned by noise or
+  // lifecycle heuristics. Only trusted cloud observations populate this set.
+  std::unordered_set<ByteArrayRaw,ByteArrayRawHasher> observation_evidence_;
   FrontierParam frtp_;
   FrontierData frtd_;
   ViewpointParam vpp_;
@@ -296,6 +305,13 @@ private:
   void refreshSemanticRevision();
 
 public:
+  double observedBoundaryFraction(const std::vector<Eigen::Vector3i> &cells) {
+    if (cells.empty()) return 0.0;
+    int observed=0;for (const auto &cell:cells) {
+      ByteArrayRaw key;idx2bytes(cell,key);observed+=observation_evidence_.count(key);
+    }
+    return static_cast<double>(observed)/cells.size();
+  }
   typedef std::shared_ptr<FrontierManager> Ptr;
   Eigen::Isometry3f transform_world2lidar;
 

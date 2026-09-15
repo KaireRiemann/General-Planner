@@ -23,6 +23,7 @@
 
 #include <general_core/exploration/highspeed/visualizer.hpp>
 #include <general_core/exploration/highspeed/target_route_runtime.h>
+#include <general_core/exploration/highspeed/coverage_motion_policy.h>
 
 namespace geometry_utils
 {
@@ -234,7 +235,13 @@ struct SegmentVelocityLimit
 
 struct EdgeSafetyCost
 {
+  std::vector<Eigen::Vector3f> path;
+  double speed_limit{std::numeric_limits<double>::infinity()};
+  Eigen::Vector3d first_tangent{Eigen::Vector3d::Zero()};
+  Eigen::Vector3d last_tangent{Eigen::Vector3d::Zero()};
   double total_cost{0.0};
+  // Advisory only; consumed by the opt-in coverage selector.
+  double moving_time_cost{std::numeric_limits<double>::quiet_NaN()};
   double time_cost{0.0};
   double turn_penalty{0.0};
   double known_free_penalty{0.0};
@@ -401,7 +408,13 @@ public:
                        bool is_static,
                        bool clearance_recovery = false,
                        bool rolling_horizon = false,
-                       const TargetRouteExecutionContext &route = {});
+                       const TargetRouteExecutionContext &route = {},
+                       const CoverageObservationContext &observation = {},
+                       const CoverageExecutionContext &coverage = {});
+  // Revalidate a rolling coverage prefix at the same future head used by MINCO.
+  bool prepareCoveragePath(std::vector<Eigen::Vector3f> &path, bool is_static,
+                           double horizon = 26.0);
+  CoveragePlanningFailure coverage_failure_;
   bool planControlledStopTrajectory();
   bool flyToSafeRegion(bool is_static, bool force_relocation = false);
   void polyTraj2ROSMsg(traj_utils::PolyTraj &poly_msg, const ros::Time &start_time);
@@ -421,9 +434,11 @@ public:
   bool hasInjectedWorldMap() const { return injected_world_map_; }
   bool isObservedLocalKnownFree(const Eigen::Vector3d &pos) const;
 
-  bool checkTrajCollision(double &collision_time);
+  bool checkTrajCollision(double &collision_time, bool coverage_checks = false);
   bool checkTrajVelocity();
   bool hasCommittedTrajectory() const;
+  // Only after command ownership has been released at a safe task handover.
+  void clearReleasedTrajectory();
   bool hasCommittedBackup() const;
   bool hasCommittedStopTrajectory() const;
   double timeToCommittedBackup() const;
@@ -433,7 +448,8 @@ public:
                                    Eigen::Vector3d &vel,
                                    double &yaw,
                                    double *traj_time = nullptr,
-                                   double *switch_delay = nullptr);
+                                   double *switch_delay = nullptr,
+                                   bool extend_terminal_hold = false);
   bool updateRogMap(const sensor_msgs::PointCloud2ConstPtr &cloud_msg,
                     const nav_msgs::Odometry::ConstPtr &odom_msg);
   /** M2: GlobalMapRuntime has already fused this frame into the shared map. */

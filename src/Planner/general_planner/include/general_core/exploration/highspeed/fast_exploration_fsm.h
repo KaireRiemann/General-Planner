@@ -23,6 +23,8 @@
 #include <general_core/exploration/exploration_utils/pointcloud_topo/graph_visualizer.hpp>
 #include <quadrotor_msgs/TakeoffLand.h>
 #include <ros/ros.h>
+#include <ros/callback_queue.h>
+#include <ros/spinner.h>
 #include <sensor_msgs/BatteryState.h>
 #include <std_msgs/Bool.h>
 #include <std_msgs/Empty.h>
@@ -76,6 +78,18 @@ private:
   shared_ptr<FSMData> fd_;
   EXPL_STATE state_;
   FinishGate finish_gate_;
+  coverage_motion::PlanningBudget coverage_planning_budget_;
+  coverage_motion::LivenessMonitor coverage_liveness_;
+  double coverageReplanLead() const;
+  coverage_motion::Path coverage_retained_path_;
+  Eigen::Vector3d coverage_retained_goal_{Eigen::Vector3d::Zero()};
+  ros::Time coverage_retained_time_;
+  coverage_motion::PassageMonitor coverage_passage_;
+  std::vector<CoverageObservationGate> coverage_sequence_;
+  std::size_t coverage_sequence_passed_{0};
+  ros::Time coverage_cloud_received_;
+  ros::Time coverage_caution_since_;
+  void resetCoverageMotion();
   ros::Time last_plan_traj_global_update_time_;
   ros::Time last_near_stationary_hold_time_;
   int last_near_stationary_hold_traj_id_{-1};
@@ -107,6 +121,12 @@ private:
   Eigen::Vector3f target_last_motion_pos_{Eigen::Vector3f::Zero()};
   bool pause_stop_issued_{false};
   bool completion_pending_{false};
+  bool coverage_blocked_pending_{false};
+  std::string coverage_result_;
+  double coverage_result_ratio_{0.0};
+  ros::Publisher coverage_result_pub_;
+  bool recordCoverageTermination(const std::string &source,
+                                 const std::string &blocked_reason = "");
   // Target arrival is two-stage: entering the requested radius starts a
   // controlled stop, but only the resulting stationary pose may complete the
   // task. A stop that carries the vehicle outside the radius resumes a local
@@ -140,7 +160,11 @@ private:
   shared_ptr<message_filters::Subscriber<nav_msgs::Odometry>> odom_sub_;
   nav_msgs::OdometryConstPtr latest_odom_msg_;
   ros::WallTime latest_odom_receive_wall_time_;
+  ros::Time latest_odom_receive_time_;
   std::mutex latest_odom_mutex_;
+  ros::CallbackQueue odom_callback_queue_;
+  std::unique_ptr<ros::AsyncSpinner> odom_spinner_;
+  ros::Time coverage_emergency_stop_until_;
   void CloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr &msg, const nav_msgs::Odometry::ConstPtr &odom_);
   void latestCloudCallback(const sensor_msgs::PointCloud2ConstPtr &msg);
 

@@ -1546,6 +1546,13 @@ namespace fsm {
                 cfg_.planning_backend_str = general_planner::architecture::toString(cfg_.backend_type);
                 return;
             }
+            if (cfg_.task_type == general_planner::architecture::TaskType::TRACKING) {
+                cfg_.backend_type = cfg_.tracking_use_snap
+                    ? general_planner::architecture::BackendType::SNAP_TRACKING
+                    : general_planner::architecture::BackendType::JERK_TRACKING;
+                cfg_.planning_backend_str = general_planner::architecture::toString(cfg_.backend_type);
+                return;
+            }
             const bool state2state_with_tracking_backend =
                     cfg_.task_type == general_planner::architecture::TaskType::STATE_TO_STATE &&
                     (cfg_.backend_type == general_planner::architecture::BackendType::JERK_TRACKING ||
@@ -1602,6 +1609,7 @@ namespace fsm {
             planner_ptr_->setTrackingPerchingRequest(new_mode == TaskMode::TRACKING_PERCHING);
         }
         perching_contact_reached_ = false;
+        onTaskModeChanged();
     }
 
     bool Fsm::trackingTaskReady() {
@@ -1609,7 +1617,7 @@ namespace fsm {
         if (tracking_target_prediction_.empty() || tracking_target_rcv_time_ < 0.0) {
             return false;
         }
-        return (ros_ptr_->getSimTime() - tracking_target_rcv_time_) <= cfg_.task_timeout;
+        return (ros_ptr_->getSimTime() - tracking_target_rcv_time_) <= cfg_.tracking_task_timeout;
     }
 
     bool Fsm::perchingTaskReady() {
@@ -2039,7 +2047,7 @@ namespace fsm {
                     !tracking_target_prediction_.empty() && tracking_target_rcv_time_ >= 0.0;
             stale_duration = had_previous_prediction ? now - tracking_target_rcv_time_ : 0.0;
             reacquired_after_timeout =
-                    had_previous_prediction && stale_duration > std::max(0.0, cfg_.task_timeout);
+                    had_previous_prediction && stale_duration > std::max(0.0, cfg_.tracking_task_timeout);
             changed = reacquired_after_timeout ||
                       trackingPredictionChanged(tracking_target_prediction_, filtered_prediction);
             tracking_target_prediction_ = filtered_prediction;
@@ -2066,7 +2074,7 @@ namespace fsm {
                                   "tracking_target_reacquired",
                                   fmt::format("stale_duration={:.3f};timeout={:.3f};prediction.size()={};force_task_new=1",
                                               stale_duration,
-                                              cfg_.task_timeout,
+                                              cfg_.tracking_task_timeout,
                                               filtered_prediction.size()));
         }
     }
@@ -2127,7 +2135,7 @@ namespace fsm {
     bool Fsm::getTrackingTargetPrediction(traj_opt::DynamicTargetStates &prediction) {
         std::lock_guard<std::mutex> lock(task_mutex_);
         if (tracking_target_prediction_.empty() || tracking_target_rcv_time_ < 0.0 ||
-            (ros_ptr_->getSimTime() - tracking_target_rcv_time_) > cfg_.task_timeout) {
+            (ros_ptr_->getSimTime() - tracking_target_rcv_time_) > cfg_.tracking_task_timeout) {
             return false;
         }
         prediction = tracking_target_prediction_;

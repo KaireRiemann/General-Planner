@@ -28,6 +28,8 @@
   <arg name="trigger_topic" default="/move_base_simple/goal" />
   <arg name="legacy_trigger_topic" default="" />
   <arg name="coverage_guidance_mode" default="full" />
+  <!-- Empty preserves the selected YAML. Opt in with true for route trials. -->
+  <arg name="coverage_route_enabled" default="" />
   <!-- planner_runtime serial handover: take START only from task command. -->
   <arg name="disable_local_trigger" default="false" />
   <arg name="pos_cmd_topic" default="/planning/pos_cmd" />
@@ -76,6 +78,9 @@
   <node pkg="general_planner" type="exploration_node" name="exploration_node"
         output="screen" clear_params="true">
     <rosparam file="$(arg exploration_config)" command="load" />
+    <param if="$(eval arg('coverage_route_enabled') != '')"
+           name="coverage_route/enabled" value="$(arg coverage_route_enabled)"
+           type="bool" />
 
     <param name="odometry_topic" value="$(arg odom_topic)" type="string" />
     <param name="cloud_topic" value="$(arg cloud_topic)" type="string" />

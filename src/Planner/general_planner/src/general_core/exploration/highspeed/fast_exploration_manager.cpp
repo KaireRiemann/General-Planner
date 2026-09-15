@@ -53,6 +53,57 @@ void FastExplorationManager::initialize(
 
   ed_.reset(new ExplorationData);
   ep_.reset(new ExplorationParam);
+  auto &route = coverage_route_config_;
+  nh.param("coverage_route/enabled", route.enabled, false);
+  nh.param("coverage_route/max_tasks", route.max_tasks, 8);
+  nh.param("coverage_route/alternatives", route.alternatives, 2);
+  nh.param("coverage_route/anchors", route.anchors, 1);
+  nh.param("coverage_route/beam_width", route.beam_width, 32);
+  nh.param("coverage_route/mandatory_after", route.mandatory_after, 6);
+  nh.param("coverage_route/solve_ms", route.solve_ms, 5.0);
+  nh.param("coverage_route/edge_budget_ms", route.edge_budget_ms, 35.0);
+  nh.param("coverage_route/switch_margin", route.switch_margin, 0.25);
+  nh.param("coverage_route/intention_hold", route.intention_hold, 6.0);
+  nh.param("coverage_route/max_prefix_time", route.max_prefix_time, 10.0);
+  nh.param("coverage_route/stall_timeout", route.stall_timeout, 60.0);
+  route.stall_timeout = std::clamp(route.stall_timeout, 20.0, 300.0);
+  route.max_tasks = std::clamp(route.max_tasks, 1, 8);
+  route.alternatives = std::clamp(route.alternatives, 1, 3);
+  route.anchors = std::clamp(route.anchors, 1, 3);
+  route.beam_width = std::clamp(route.beam_width, 8, 64);
+  route.mandatory_after = std::clamp(route.mandatory_after, 2, 30);
+  route.solve_ms = std::clamp(route.solve_ms, .5, 15.0);
+  route.edge_budget_ms = std::clamp(route.edge_budget_ms, 5.0, 80.0);
+  route.switch_margin = std::clamp(route.switch_margin, 0.0, 1.0);
+  route.intention_hold = std::clamp(route.intention_hold, 0.0, 15.0);
+  route.max_prefix_time = std::clamp(route.max_prefix_time, 2.0, 20.0);
+  auto &motion = ep_->coverage_motion_;
+  nh.param("coverage_motion/enabled", motion.enabled, false);
+  nh.param("coverage_motion/continuous_observation", motion.continuous_observation, true);
+  nh.param("coverage_motion/extension_min", motion.extension_min, 2.0);
+  nh.param("coverage_motion/extension_max", motion.extension_max, 6.0);
+  nh.param("coverage_motion/extension_max_turn", motion.extension_max_turn, 0.60);
+  nh.param("coverage_motion/path_match_radius", motion.path_match_radius, 0.75);
+  nh.param("coverage_motion/path_switch_improvement", motion.path_switch_improvement, 1.5);
+  nh.param("coverage_motion/path_switch_ratio", motion.path_switch_ratio, 0.20);
+  nh.param("coverage_motion/shortcut_distance", motion.shortcut_distance, 8.0);
+  nh.param("coverage_motion/region_radius", motion.region_radius, 6.0);
+  nh.param("coverage_motion/region_height", motion.region_height, 1.5);
+  nh.param("coverage_motion/region_duration", motion.region_duration, 10.0);
+  nh.param("coverage_motion/region_switch_cost", motion.region_switch_cost, 2.0);
+  nh.param("coverage_motion/caution_timeout", motion.caution_timeout, 20.0);
+  motion.caution_timeout = std::clamp(motion.caution_timeout, 3.0, 120.0);
+  motion.extension_min = std::clamp(motion.extension_min, 0.5, 8.0);
+  motion.extension_max = std::clamp(motion.extension_max, motion.extension_min, 12.0);
+  motion.extension_max_turn = std::clamp(motion.extension_max_turn, 0.0, 1.0);
+  motion.path_match_radius = std::clamp(motion.path_match_radius, 0.1, 1.5);
+  motion.path_switch_improvement = std::max(0.0, motion.path_switch_improvement);
+  motion.path_switch_ratio = std::clamp(motion.path_switch_ratio, 0.0, 0.5);
+  motion.shortcut_distance = std::clamp(motion.shortcut_distance, 0.5, 15.0);
+  motion.region_radius = std::clamp(motion.region_radius, 1.0, 15.0);
+  motion.region_height = std::clamp(motion.region_height, 0.1, 2.0);
+  motion.region_duration = std::clamp(motion.region_duration, 0.0, 30.0);
+  motion.region_switch_cost = std::clamp(motion.region_switch_cost, 0.0, 5.0);
   ed_->next_goal_node_ = make_shared<TopoNode>();
 
   ep_->a_avg_ = tan(planner_manager_->gcopter_config_->maxTiltAngle) *
@@ -557,6 +608,7 @@ void FastExplorationManager::updateCoverageGuidance(
   if (targetDirectedModeConfigured()) {
     return;
   }
+  updateCoverageProgress();
   if (!coverage_guidance_ || !coverage_guidance_->samplingDue() ||
       !frontier_manager_ptr_ || !planner_manager_) {
     return;
@@ -605,6 +657,39 @@ void FastExplorationManager::updateCoverageGuidance(
   coverage_guidance_->submit(std::move(delta), std::move(frontiers), pos);
 }
 
+void FastExplorationManager::updateCoverageProgress() {
+  if (!coverageMotionEnabled() || !coverage_guidance_) return;
+  const auto plan=coverage_guidance_->latestUsablePlan();
+  if (!plan || !plan->valid) return;
+  const ros::Time now = ros::Time::now();
+  if (coverage_finish_progress_observed_voxels_ < 0 ||
+      coverage_finish_last_progress_time_.isZero()) {
+    coverage_finish_progress_observed_voxels_ =
+        plan->observed_voxel_count;
+    coverage_finish_last_progress_time_ = now;
+  } else if (plan->observed_voxel_count >=
+             coverage_finish_progress_observed_voxels_ +
+                 coverage_finish_min_progress_voxels_) {
+    coverage_finish_progress_observed_voxels_ =
+        plan->observed_voxel_count;
+    coverage_finish_last_progress_time_ = now;
+  }
+}
+
+void FastExplorationManager::resetCoverageRecovery() {
+  coverage_route_tasks_.clear(); coverage_route_observations_.clear();
+  coverage_intention_ids_.clear(); coverage_intention_since_=0.0;
+  if (!coverageMotionEnabled()) return;
+  deferred_coverage_goals_.clear();
+  deferred_goals_.clear();
+  has_active_coverage_goal_=false;
+  active_coverage_target_={};
+  coverage_finish_progress_observed_voxels_=-1;
+  coverage_finish_last_progress_time_=ros::Time(0);
+  coverage_executable_empty_since_=ros::Time(0);
+  coverage_executable_empty_count_=0;
+}
+
 CoverageFinishStatus FastExplorationManager::coverageFinishStatus() {
   CoverageFinishStatus status;
   if (targetDirectedModeConfigured() || !coverage_guidance_ ||
@@ -621,10 +706,13 @@ CoverageFinishStatus FastExplorationManager::coverageFinishStatus() {
     return status;
   }
   status.plan_valid = true;
+  status.active_target_pending = has_active_coverage_goal_;
   status.observed_voxels = plan->observed_voxel_count;
   status.valid_voxels = plan->valid_voxel_count;
   status.coverage_ratio = plan->coverage_ratio;
 
+  if (coverageMotionEnabled()) updateCoverageProgress();
+  else {
   const ros::Time now = ros::Time::now();
   if (coverage_finish_progress_observed_voxels_ < 0 ||
       coverage_finish_last_progress_time_.isZero()) {
@@ -638,6 +726,9 @@ CoverageFinishStatus FastExplorationManager::coverageFinishStatus() {
         plan->observed_voxel_count;
     coverage_finish_last_progress_time_ = now;
   }
+  }
+  const ros::Time now = ros::Time::now();
+  status.unresolved_unknown_groups = plan->reachable_unknown_count;
   status.plateau_duration =
       std::max(0.0, (now - coverage_finish_last_progress_time_).toSec());
   status.plateau_reached =
@@ -705,7 +796,27 @@ EdgeSafetyCost FastExplorationManager::getPathEdgeCost(
     edge.backup_feasible = false;
     return edge;
   }
-  return planner_manager_->estimateHighSpeedEdgeCost(path, v1, yaw1, yaw2);
+  edge = planner_manager_->estimateHighSpeedEdgeCost(path, v1, yaw1, yaw2);
+  if (coverageRouteEnabled()) edge.path = path;
+  for (std::size_t i=1;i<path.size();++i) {
+    const Eigen::Vector3d d=(path[i]-path[i-1]).cast<double>();
+    if (d.norm()<1e-5) continue;
+    if (edge.first_tangent.norm()<1e-5) edge.first_tangent=d.normalized();
+    edge.last_tangent=d.normalized();
+  }
+
+  return edge;
+}
+
+bool FastExplorationManager::coveragePreflightPath(const Eigen::Vector3f &goal,
+                                                   vector<Eigen::Vector3f> &path) const {
+  if (!coverageMotionEnabled()) return false;
+  for (const auto &entry:coverage_preflights_) {
+    if ((entry.goal-goal).norm()<0.10 && (ros::Time::now()-entry.stamp).toSec()<0.65) {
+      path=entry.path; return true;
+    }
+  }
+  return false;
 }
 
 void FastExplorationManager::goalCallback(
@@ -725,6 +836,11 @@ void FastExplorationManager::goalCallback(
 
 bool FastExplorationManager::targetDirectedModeConfigured() const {
   return ep_ && ep_->target_directed_mode_;
+}
+
+bool FastExplorationManager::coverageMotionEnabled() const {
+  return ep_ && ep_->coverage_motion_.enabled && !targetDirectedModeConfigured() &&
+         (!swarm_coordinator_ || !swarm_coordinator_->enabled());
 }
 
 bool FastExplorationManager::targetDirectedModeActive() const {
@@ -829,6 +945,7 @@ bool FastExplorationManager::setMissionMode(const std::string &mode) {
   }
 
   ep_->target_directed_mode_ = target;
+  coverage_region_since_ = ros::Time(0);
   mission_goal_direct_retry_after_ = ros::Time(0);
   ed_->has_goal_lock_ = false;
   ed_->locked_goal_is_coverage_ = false;
@@ -1951,7 +2068,15 @@ int FastExplorationManager::selectStableGoalIndex(
   }
 
   int chosen_idx = candidate_idx;
-  if (locked_idx >= 0 && locked_idx != candidate_idx) {
+  const bool hold_coverage_action=coverageMotionEnabled() && has_active_coverage_goal_ &&
+      locked_idx>=0 && viewpoints[locked_idx]->is_coverage_target_ &&
+      viewpoints[locked_idx]->coverage_target_id_==active_coverage_target_.stable_id &&
+      (viewpoints[locked_idx]->center_.cast<double>()-active_coverage_target_.approach_position).norm()<0.60 &&
+      !active_coverage_goal_start_.isZero() &&
+      (now-active_coverage_goal_start_).toSec()<coverage_recovery_timeout_;
+  if (hold_coverage_action) {
+    chosen_idx=locked_idx;
+  } else if (locked_idx >= 0 && locked_idx != candidate_idx) {
     const double candidate_cost =
         candidate_idx < static_cast<int>(distance_odom2vp.size())
             ? distance_odom2vp[candidate_idx]
@@ -2046,6 +2171,9 @@ int FastExplorationManager::selectStableGoalIndex(
 }
 
 void FastExplorationManager::deferCurrentGoalAfterPlanningFailure() {
+  coverage_route_observations_.clear();
+  coverage_route_exit_path_.clear();
+  coverage_intention_ids_.clear();
   if (planner_manager_ && planner_manager_->fast_searcher_) {
     planner_manager_->fast_searcher_->clearPathCache();
   }
@@ -2081,7 +2209,7 @@ void FastExplorationManager::deferCurrentGoalAfterPlanningFailure() {
       deferred_goals_.end());
   DeferredGoal *matched = nullptr;
   for (auto &goal : deferred_goals_) {
-    if ((goal.cluster_id >= 0 &&
+    if ((!coverageRouteEnabled() && goal.cluster_id >= 0 &&
          goal.cluster_id == ed_->locked_goal_cluster_id_) ||
         (goal.position - ed_->locked_goal_).norm() <=
             std::max(0.2, ep_->goal_lock_match_radius_)) {
@@ -2099,11 +2227,17 @@ void FastExplorationManager::deferCurrentGoalAfterPlanningFailure() {
   }
   matched->cluster_id = ed_->locked_goal_cluster_id_;
   matched->position = ed_->locked_goal_;
-  matched->until = now + ros::Duration(ep_->failed_goal_cooldown_);
+  double cooldown=ep_->failed_goal_cooldown_;
+  if (coverageRouteEnabled() && planner_manager_) {
+    const auto kind=planner_manager_->coverage_failure_.kind;
+    if (kind==CoverageFailureKind::HEAD || kind==CoverageFailureKind::DYNAMICS) cooldown=std::min(cooldown,2.0);
+    else if (kind==CoverageFailureKind::PATH) cooldown=std::min(cooldown,5.0);
+  }
+  matched->until = now + ros::Duration(cooldown);
   ROS_WARN_STREAM("[plan recovery] temporarily defer failed goal cluster="
                   << matched->cluster_id << " goal=("
                   << matched->position.transpose() << ") cooldown="
-                  << ep_->failed_goal_cooldown_ << "s penalty="
+                  << cooldown << "s penalty="
                   << ep_->failed_goal_penalty_
                   << " active_deferred=" << deferred_goals_.size());
   resetNormalGoalProgress();
@@ -2212,6 +2346,27 @@ bool FastExplorationManager::updateNormalGoalProgress(
   return true;
 }
 
+bool FastExplorationManager::coverageFailureContextChanged(
+    const DeferredCoverageGoal &goal, const CoverageTarget &target) const {
+  if (!coverageMotionEnabled()) return false;
+  return (goal.origin_sensitive &&
+          (planner_manager_->local_data_.curr_pos_-goal.failure_origin).norm() >= 3.0) ||
+      (goal.observed_at_failure>=0 && latestCoverageObservedVoxels()>=goal.observed_at_failure+64) ||
+      (goal.voxel_count>0 && target.voxel_count<goal.voxel_count-std::max(12,goal.voxel_count/4));
+}
+
+bool FastExplorationManager::coverageFailureMatches(
+    const DeferredCoverageGoal &goal, const CoverageTarget &target) const {
+  if (!coverageMotionEnabled()) return coverageRecoveryIdentityMatches(
+      goal.identity,target,coverage_recovery_match_radius_);
+  if (coverageFailureContextChanged(goal,target)) return false;
+  if (goal.directional_failure && !coverageStableIdMatches(goal.identity,target.stable_id)) return false;
+  // A failed approach does not exhaust other entrances to the same region.
+  return goal.component_failure
+      ? coverageRecoveryIdentityMatches(goal.identity,target,coverage_recovery_match_radius_)
+      : coverageApproachMatches(goal.identity,target,std::min(0.60,coverage_recovery_match_radius_));
+}
+
 bool FastExplorationManager::selectSafeCoverageApproach(
     CoverageTarget &target, const bool record_terminal_failure) {
   std::vector<Eigen::Vector3d> candidates = target.approach_candidates;
@@ -2226,6 +2381,51 @@ bool FastExplorationManager::selectSafeCoverageApproach(
                    planner_manager_->gcopter_config_->dilateRadiusSoft +
                        planner_manager_->gcopter_config_
                            ->safetyClearanceTolerance));
+  if (coverageMotionEnabled()) {
+    const auto now=ros::Time::now();
+    const auto map=planner_manager_->sharedMapManager();
+    auto actionFor=[&](const Eigen::Vector3d &position) {
+      CoverageTarget action=target; action.approach_candidates.clear();
+      action.approach_position=position; action.has_approach=true; return action;
+    };
+    std::stable_sort(candidates.begin(),candidates.end(),[&](const auto &a,const auto &b) {
+      auto score=[&](const auto &p) {
+        const auto action=actionFor(p);
+        return (coverageRecoveryExhausted(action)?1e6:0.0)+
+            (coverageRecoveryCooling(action,now,nullptr)?1e3:0.0)+
+            (p-planner_manager_->local_data_.curr_pos_).norm();
+      };
+      return score(a)<score(b);
+    });
+    for (const auto &approach:candidates) {
+      const auto action=actionFor(approach);
+      if (coverageRecoveryExhausted(action)) continue;
+      if (!record_terminal_failure && coverageRecoveryCooling(action,now,nullptr)) continue;
+      if (!map || !approach.allFinite() || !planner_manager_->isObservedLocalKnownFree(approach) ||
+          planner_manager_->safetyDistanceToOcc(approach)<required_clearance) {
+        if (record_terminal_failure) deferCoverageRecovery(action,CoverageRecoveryOutcome::UNSAFE);
+        continue;
+      }
+      // Sight rays use raw occupancy, not the vehicle's inflated collision
+      // envelope. Unknown endpoints are precisely what this action observes.
+      const Eigen::Vector3d delta=target.position-approach;
+      const int n=std::max(1,static_cast<int>(std::ceil(delta.norm()/0.10)));
+      bool visible=true;
+      for (int i=1; i<=n; ++i) {
+        const Eigen::Vector3d q=approach+delta*(static_cast<double>(i)/n);
+        if (!planner_manager_->lidar_map_interface_->IsInBox(q.cast<float>()) ||
+            !map->insideLocalMap(q) || map->getGridType(q)==rog_map::GridType::OCCUPIED) {
+          visible=false; break;
+        }
+      }
+      if (!visible) {
+        if (record_terminal_failure) deferCoverageRecovery(action,CoverageRecoveryOutcome::OCCLUDED);
+        continue;
+      }
+      target.approach_position=approach; target.has_approach=true; return true;
+    }
+    return false;
+  }
   bool saw_occlusion = false;
   for (const Eigen::Vector3d &approach : candidates) {
     if (!approach.allFinite() ||
@@ -2256,31 +2456,59 @@ bool FastExplorationManager::selectSafeCoverageApproach(
 
 bool FastExplorationManager::coverageRecoveryDeferred(
     const CoverageTarget &target, const ros::Time &now) const {
+  if (coverageMotionEnabled() && !target.approach_candidates.empty()) {
+    return std::all_of(target.approach_candidates.begin(),target.approach_candidates.end(),
+        [&](const Eigen::Vector3d &position) {
+          CoverageTarget action=target; action.approach_position=position; action.has_approach=true;
+          action.approach_candidates.clear();
+          return coverageRecoveryDeferred(action,now);
+        });
+  }
   return std::any_of(
       deferred_coverage_goals_.begin(), deferred_coverage_goals_.end(),
       [&](const DeferredCoverageGoal &goal) {
         return (goal.exhausted || goal.until > now) &&
-               coverageRecoveryIdentityMatches(
-                   goal.identity, target, coverage_recovery_match_radius_);
+               coverageFailureMatches(goal, target);
       });
 }
 
 bool FastExplorationManager::coverageRecoveryExhausted(
     const CoverageTarget &target) const {
+  if (coverageMotionEnabled() && !target.approach_candidates.empty()) {
+    return std::all_of(target.approach_candidates.begin(),target.approach_candidates.end(),
+        [&](const Eigen::Vector3d &position) {
+          CoverageTarget action=target; action.approach_position=position; action.has_approach=true;
+          action.approach_candidates.clear();
+          return coverageRecoveryExhausted(action);
+        });
+  }
+  if (coverageMotionEnabled()) {
+    int failures=0;
+    const int observed=latestCoverageObservedVoxels();
+    for (const auto &goal:deferred_coverage_goals_) {
+      const bool changed=(goal.observed_at_failure>=0 && observed>=goal.observed_at_failure+64) ||
+          (goal.voxel_count>0 && target.voxel_count<goal.voxel_count-std::max(12,goal.voxel_count/4));
+      if (!changed && goal.origin_sensitive &&
+          coverageApproachMatches(goal.identity,target,std::min(0.60,coverage_recovery_match_radius_)))
+        failures+=goal.failure_attempts;
+    }
+    // Different origins are useful retries, but cannot provide an unlimited
+    // budget in an unchanged map. Exhaustion remains a BLOCKED search result,
+    // not evidence that the remaining region is physically unreachable.
+    if (failures>=std::max(2,2*coverage_recovery_max_failure_attempts_)) return true;
+  }
   return std::any_of(
       deferred_coverage_goals_.begin(), deferred_coverage_goals_.end(),
       [&](const DeferredCoverageGoal &goal) {
         return goal.exhausted &&
-               coverageRecoveryIdentityMatches(
-                   goal.identity, target, coverage_recovery_match_radius_);
+               coverageFailureMatches(goal, target);
       });
 }
 
 void FastExplorationManager::rememberCoverageRecoveryAlias(
     const CoverageTarget &target) {
   for (DeferredCoverageGoal &goal : deferred_coverage_goals_) {
-    if (!coverageRecoveryIdentityMatches(
-            goal.identity, target, coverage_recovery_match_radius_)) {
+    if (!coverageFailureMatches(goal, target)) {
       continue;
     }
     rememberCoverageStableId(goal.identity, target.stable_id);
@@ -2292,8 +2520,7 @@ bool FastExplorationManager::coverageRecoveryCooling(
     const CoverageTarget &target, const ros::Time &now,
     double *remaining) const {
   for (const DeferredCoverageGoal &goal : deferred_coverage_goals_) {
-    if (!coverageRecoveryIdentityMatches(
-            goal.identity, target, coverage_recovery_match_radius_) ||
+    if (!coverageFailureMatches(goal, target) ||
         goal.exhausted ||
         goal.until.isZero() || goal.until <= now) {
       continue;
@@ -2313,14 +2540,13 @@ bool FastExplorationManager::coverageTerminalRetryReady(
     const CoverageTarget &target, const ros::Time &now,
     double *retry_after) const {
   for (const DeferredCoverageGoal &goal : deferred_coverage_goals_) {
-    if (!coverageRecoveryIdentityMatches(
-            goal.identity, target, coverage_recovery_match_radius_) ||
+    if (!coverageFailureMatches(goal, target) ||
         goal.exhausted ||
         goal.until.isZero() || goal.until <= now) {
       continue;
     }
     const ros::Time normal_attempt_time =
-        goal.until - ros::Duration(coverage_recovery_cooldown_);
+        goal.until - ros::Duration(coverageMotionEnabled() ? coverage_terminal_retry_interval_ : coverage_recovery_cooldown_);
     const ros::Time terminal_retry_time =
         normal_attempt_time +
         ros::Duration(coverage_terminal_retry_interval_);
@@ -2391,18 +2617,26 @@ void FastExplorationManager::deferCoverageRecovery(
   pruneDeferredCoverageGoals(now);
   DeferredCoverageGoal *matched = nullptr;
   for (auto &goal : deferred_coverage_goals_) {
-    if (coverageRecoveryIdentityMatches(
-            goal.identity, target, coverage_recovery_match_radius_)) {
+    if ((coverageMotionEnabled()
+            ? (coverageApproachMatches(goal.identity,target,std::min(0.60,coverage_recovery_match_radius_)) &&
+               (!goal.origin_sensitive ||
+                (planner_manager_->local_data_.curr_pos_-goal.failure_origin).norm()<3.0) &&
+               (!(goal.directional_failure || outcome==CoverageRecoveryOutcome::OCCLUDED ||
+                  outcome==CoverageRecoveryOutcome::REACHED) || coverageStableIdMatches(goal.identity,target.stable_id)))
+            : coverageRecoveryIdentityMatches(goal.identity,target,coverage_recovery_match_radius_))) {
       matched = &goal;
       break;
     }
   }
   if (!matched) {
-    if (deferred_coverage_goals_.size() >= 256U) {
+    if (deferred_coverage_goals_.size() >= (coverageMotionEnabled() ? 1024U : 256U)) {
       const auto removable = std::find_if(
           deferred_coverage_goals_.begin(), deferred_coverage_goals_.end(),
-          [](const DeferredCoverageGoal &goal) {
-            return !goal.exhausted;
+          [&](const DeferredCoverageGoal &goal) {
+            // Keep old origin contexts: A->B->A must find A's previous budget.
+            // A sufficiently changed map can retire stale records.
+            return !goal.exhausted || (coverageMotionEnabled() &&
+                goal.observed_at_failure>=0 && latestCoverageObservedVoxels()>=goal.observed_at_failure+64);
           });
       if (removable != deferred_coverage_goals_.end()) {
         deferred_coverage_goals_.erase(removable);
@@ -2421,6 +2655,20 @@ void FastExplorationManager::deferCoverageRecovery(
     deferred_coverage_goals_.push_back(goal);
     matched = &deferred_coverage_goals_.back();
   }
+  if (coverageMotionEnabled()) {
+    if (coverageFailureContextChanged(*matched,target)) {
+      matched->failure_attempts=0; matched->no_gain_attempts=0; matched->exhausted=false;
+      matched->component_failure=false;
+    }
+    matched->failure_origin=planner_manager_->local_data_.curr_pos_;
+    matched->observed_at_failure=latestCoverageObservedVoxels();
+    matched->component_failure=!target.approach_candidates.empty() &&
+        (outcome==CoverageRecoveryOutcome::UNSAFE || outcome==CoverageRecoveryOutcome::OCCLUDED);
+    matched->directional_failure=outcome==CoverageRecoveryOutcome::OCCLUDED ||
+        outcome==CoverageRecoveryOutcome::REACHED;
+    matched->origin_sensitive=outcome==CoverageRecoveryOutcome::TRAJECTORY_FAILURE ||
+        outcome==CoverageRecoveryOutcome::DISCONNECTED || outcome==CoverageRecoveryOutcome::TIMEOUT;
+  }
   // A regenerated coverage component can carry a new stable id while
   // selecting the same canonical executable approach. Preserve the primary
   // id and remember the new id as an alias; overwriting the id here caused two
@@ -2438,9 +2686,12 @@ void FastExplorationManager::deferCoverageRecovery(
       active_coverage_target_.stable_id == target.stable_id;
   const bool matches_active =
       has_active_coverage_goal_ &&
+      (coverageMotionEnabled() ?
+       ((active_coverage_target_.approach_position-target.approach_position).norm()<=0.60 &&
+        (!(outcome==CoverageRecoveryOutcome::OCCLUDED || outcome==CoverageRecoveryOutcome::REACHED) || same_active_id)) :
       (same_active_id ||
        (active_coverage_target_.approach_position -
-        target.approach_position).norm() <= coverage_recovery_match_radius_);
+        target.approach_position).norm() <= coverage_recovery_match_radius_));
   const int observed_gain =
       matches_active && active_coverage_observed_voxels_ >= 0 &&
               current_observed >= active_coverage_observed_voxels_
@@ -2480,11 +2731,13 @@ void FastExplorationManager::deferCoverageRecovery(
   matched->until =
       matched->exhausted
           ? ros::TIME_MAX
-          : now + ros::Duration(coverage_recovery_cooldown_);
-  has_active_coverage_goal_ = false;
-  active_coverage_target_ = CoverageTarget();
-  active_coverage_goal_start_ = ros::Time(0);
-  active_coverage_observed_voxels_ = -1;
+          : now + ros::Duration(coverageMotionEnabled() ? coverage_terminal_retry_interval_ : coverage_recovery_cooldown_);
+  if (!coverageMotionEnabled() || matches_active) {
+    has_active_coverage_goal_ = false;
+    active_coverage_target_ = CoverageTarget();
+    active_coverage_goal_start_ = ros::Time(0);
+    active_coverage_observed_voxels_ = -1;
+  }
   ROS_WARN_STREAM("[coverage recovery] defer observation goal: id="
                   << target.stable_id << " approach=("
                   << target.approach_position.transpose() << ") reason="
@@ -2493,7 +2746,7 @@ void FastExplorationManager::deferCoverageRecovery(
                   << " no_gain_attempts=" << matched->no_gain_attempts
                   << " failure_attempts=" << matched->failure_attempts
                   << " exhausted=" << matched->exhausted
-                  << " cooldown=" << coverage_recovery_cooldown_
+                  << " cooldown=" << (coverageMotionEnabled() ? coverage_terminal_retry_interval_ : coverage_recovery_cooldown_)
                   << "s active_deferred="
                   << deferred_coverage_goals_.size());
 }
@@ -2529,7 +2782,7 @@ double FastExplorationManager::failedGoalPenalty(
     const bool same_position =
         (viewpoint->center_ - goal.position).norm() <=
         std::max(0.2, ep_->goal_lock_match_radius_);
-    if (same_cluster || same_position) {
+    if (same_position || (!coverageRouteEnabled() && same_cluster)) {
       return ep_->failed_goal_penalty_;
     }
   }
@@ -2544,6 +2797,7 @@ int FastExplorationManager::planGlobalPath(const Eigen::Vector3d &pos,
   last_plan_empty_frontier_ = false;
   last_plan_no_reachable_ = false;
   last_plan_requires_reorientation_ = false;
+  coverage_preflights_.clear();
   if (targetDirectedModeConfigured() && !targetDirectedModeActive()) {
     ROS_WARN_THROTTLE(
         1.0,
@@ -2552,6 +2806,10 @@ int FastExplorationManager::planGlobalPath(const Eigen::Vector3d &pos,
     return TARGET_UNREACHABLE;
   }
   const bool target_directed = targetDirectedModeActive();
+  const bool structural_coverage = coverageRouteEnabled();
+  const CoveragePlan::Ptr coverage_snapshot = !target_directed && coverage_guidance_
+      ? coverage_guidance_->latestUsablePlan() : CoveragePlan::Ptr{};
+  if (coverageMotionEnabled()) updateCoverageProgress();
   if (target_directed && ed_->mission_goal_needs_initialization_) {
     ed_->mission_start_ = pos.cast<float>();
     if (!ep_->target_goal_use_message_z_) {
@@ -2691,6 +2949,12 @@ int FastExplorationManager::planGlobalPath(const Eigen::Vector3d &pos,
   view_ctx.clearance = [pm = planner_manager_](const Eigen::Vector3d &p) {
     return pm->safetyDistanceToOcc(p);
   };
+  if (structural_coverage) {
+    view_ctx.route_enabled=true;
+    view_ctx.route_task_limit=coverage_route_config_.max_tasks;
+    view_ctx.route_alternatives = coverage_route_config_.alternatives;
+    view_ctx.top_viewpoint_num = std::max(view_ctx.top_viewpoint_num, view_ctx.route_alternatives);
+  }
   frontier_manager_ptr_->setHighSpeedViewScoreContext(view_ctx);
   frontier_manager_ptr_->updateExplorationDebt(
       pos.cast<float>(),
@@ -2707,9 +2971,12 @@ int FastExplorationManager::planGlobalPath(const Eigen::Vector3d &pos,
   std::unordered_set<int> preferred_clusters;
   if (target_directed) {
     preferred_clusters = preferredTargetClusterIds(pos);
-  } else if (coverage_guidance_) {
-    preferred_clusters = coverage_guidance_->preferredClusterIds();
+  } else if (coverage_snapshot) {
+    preferred_clusters = coverage_snapshot->preferred_cluster_ids;
   }
+  if (structural_coverage) for (const auto &task:coverage_route_tasks_)
+    if (task.second.deferred>=coverage_route_config_.mandatory_after && task.second.cluster>=0)
+      preferred_clusters.insert(task.second.cluster);
   frontier_manager_ptr_->generateTSPViewpoints(
       planner_manager_->topo_graph_->odom_node_->center_, viewpoints,
       preferred_clusters);
@@ -2850,22 +3117,40 @@ int FastExplorationManager::planGlobalPath(const Eigen::Vector3d &pos,
           : (coverage_now - coverage_executable_empty_since_).toSec();
   const bool executable_empty_stable =
       no_executable_frontier &&
-      coverage_executable_empty_count_ >=
+      ((coverageMotionEnabled() && viewpoint_count_before_defer > 0 &&
+        coverage_executable_empty_count_ >= 2 && executable_empty_duration >= 0.20) ||
+      (coverage_executable_empty_count_ >=
           coverage_executable_empty_min_count_ &&
       executable_empty_duration >=
-          coverage_executable_empty_min_duration_;
+          coverage_executable_empty_min_duration_));
   const bool moving_handoff_ready =
       coverage_moving_handoff_enable_ &&
       planner_manager_->hasCommittedTrajectory();
+  // End the fallback phase at an action boundary, not after exhausting every
+  // regenerated unknown-volume approach. The FSM will force/validate the full
+  // frontier audit and independently require repeated empty results and rest.
+  // Never interrupt an active observation or mistake cooldown for absence of
+  // reachable frontiers; renewed measured gain/frontiers reopen this gate.
+  const bool coverage_frontier_audit = coverageMotionEnabled() && coverage_guidance_ &&
+      coverage_guidance_->finishGuardEnabled() && coverage_snapshot && coverage_snapshot->valid &&
+      executable_empty_stable && reachable_clusters==0 && !has_active_coverage_goal_ &&
+      !coverage_finish_last_progress_time_.isZero() &&
+      (coverage_now-coverage_finish_last_progress_time_).toSec()>=coverage_finish_plateau_duration_;
+  if (coverage_frontier_audit) {
+    last_plan_empty_frontier_=active_clusters==0;
+    last_plan_no_reachable_=active_clusters>0;
+    ROS_INFO_STREAM_THROTTLE(1.0,"[coverage handoff] frontier audit takes precedence over new CP cleanup goals");
+    return NO_FRONTIER;
+  }
   const bool promote_coverage_candidates =
       !target_directed && coverage_guidance_ &&
       coverage_executable_candidate_enable_ &&
-      executable_empty_stable &&
+      (structural_coverage || executable_empty_stable) &&
       (moving_handoff_ready ||
        current_speed <= coverage_executable_candidate_max_speed_) &&
       no_executable_frontier;
   const bool coverage_handoff_pending =
-      !target_directed && coverage_guidance_ &&
+      !structural_coverage && !target_directed && coverage_guidance_ &&
       coverage_executable_candidate_enable_ &&
       no_executable_frontier && !has_active_coverage_goal_ &&
       (!executable_empty_stable ||
@@ -2892,12 +3177,21 @@ int FastExplorationManager::planGlobalPath(const Eigen::Vector3d &pos,
   bool ascending_to_priority_floor = false;
   int first_priority_floor_rank = std::numeric_limits<int>::max();
   auto isPriorityFloorTarget = [&](const CoverageTarget &target) {
-    return coverage_floor_priority_enable_ &&
+    return !structural_coverage && coverage_floor_priority_enable_ &&
            target.position.z() >= coverage_floor_priority_min_z_;
   };
   if (promote_coverage_candidates) {
-    auto coverage_targets =
-        coverage_guidance_->unknownApproachTargets(pos, 160, 0.8);
+    auto coverage_targets = coverage_guidance_->unknownApproachTargets(pos, 160, 0.8);
+    if (structural_coverage) {
+      coverage_targets.clear();
+      if (coverage_snapshot) for (const auto &target : coverage_snapshot->ordered_targets)
+        if (target.type == CoverageTargetType::REACHABLE_UNKNOWN && target.has_approach &&
+            (target.approach_position-pos).norm() >= .8) coverage_targets.push_back(target);
+      // The persistent component inventory remains the recovery authority,
+      // even when the current sparse CP has no usable approach.
+      if (coverage_targets.empty())
+        coverage_targets = coverage_guidance_->unknownApproachTargets(pos, 160, 0.8);
+    }
     // Canonicalize the executable approach before consulting recovery state.
     // The raw approach_position is only a component hint; the selected entry
     // from approach_candidates is the action that is actually inserted into
@@ -2978,6 +3272,7 @@ int FastExplorationManager::planGlobalPath(const Eigen::Vector3d &pos,
           std::min(40.0, static_cast<double>(std::max(0, target.route_rank)));
       const double bounded_gain =
           std::min(2.0, 0.35 * std::log1p(std::max(0, target.voxel_count)));
+      if (structural_coverage) return static_cast<double>(target.route_rank);
       return distance + coverage_route_rank_weight_ * bounded_rank -
              bounded_gain;
     };
@@ -3035,6 +3330,15 @@ int FastExplorationManager::planGlobalPath(const Eigen::Vector3d &pos,
                 accepted, target, coverage_recovery_match_radius_);
           });
     };
+    if (coverageMotionEnabled() && has_active_coverage_goal_) {
+      CoverageTarget held=active_coverage_target_;
+      held.approach_candidates={held.approach_position};
+      if (!coverageRecoveryExhausted(held) && selectSafeCoverageApproach(held,false) &&
+          appendCoverageViewpoint(held)) {
+        ++promoted;
+        promoted_identities.push_back(held);
+      }
+    }
     for (CoverageTarget target : coverage_targets) {
       if (promoted >= coverage_executable_candidate_max_count_) {
         break;
@@ -3073,7 +3377,7 @@ int FastExplorationManager::planGlobalPath(const Eigen::Vector3d &pos,
     int cooling_pending = 0;
     double next_terminal_retry =
         std::numeric_limits<double>::infinity();
-    if (promoted == 0) {
+    if (promoted == 0 && no_executable_frontier) {
       auto terminal_targets =
           coverage_guidance_->unknownApproachTargets(pos, 160, 0.0);
       std::stable_sort(
@@ -3341,6 +3645,44 @@ int FastExplorationManager::planGlobalPath(const Eigen::Vector3d &pos,
     viewpoint_reachable_distance.emplace_back(distance_odom2vp[i]);
     viewpoint_reachable_edges.emplace_back(edge_odom2vp[i]);
     viewpoint_reachable.emplace_back(viewpoints[i]);
+  }
+  if (coverageMotionEnabled() && moving && has_active_coverage_goal_ &&
+      std::all_of(viewpoints.begin(),viewpoints.end(),[](const auto &v){return v->is_coverage_target_;})) {
+    for (int i:reversal_indices) {
+      if (viewpoints[i]->coverage_target_id_==active_coverage_target_.stable_id &&
+          (viewpoints[i]->center_.cast<double>()-active_coverage_target_.approach_position).norm()<0.60) {
+        viewpoint_reachable.clear(); viewpoint_reachable_distance.clear(); viewpoint_reachable_edges.clear();
+        reversal_indices={i};
+        break;
+      }
+    }
+  }
+  if (coverageMotionEnabled() && moving && viewpoint_reachable.empty() &&
+      !reversal_indices.empty()) {
+    // A topological first edge can point backward while the dynamic local
+    // search has a forward connection. Inspect at most two actual routes
+    // before braking; do not perturb ordinary full-route candidate scores.
+    auto alternatives=reversal_indices;
+    std::stable_sort(alternatives.begin(),alternatives.end(),[&](int a,int b) {
+      return distance_odom2vp[a]<distance_odom2vp[b];
+    });
+    for (std::size_t attempt=0; attempt<std::min<std::size_t>(2,alternatives.size()); ++attempt) {
+      const int i=alternatives[attempt];
+      vector<Eigen::Vector3f> prefix;
+      const int result=planner_manager_->fast_searcher_->search(
+          planner_manager_->topo_graph_->odom_node_,vel.cast<float>(),viewpoints[i],0.025,prefix);
+      if (result!=BubbleAstar::REACH_END ||
+          !planner_manager_->prepareCoveragePath(prefix,false,12.0)) continue;
+      const auto execution=planner_manager_->estimateHighSpeedEdgeCost(prefix,vel,curr_yaw,viewpoints[i]->yaw_);
+      if (execution.initial_heading_delta>reversal_angle) continue;
+      coverage_preflights_.push_back({viewpoints[i]->center_,prefix,ros::Time::now()});
+      viewpoint_reachable.emplace_back(viewpoints[i]);
+      viewpoint_reachable_distance.emplace_back(distance_odom2vp[i]);
+      viewpoint_reachable_edges.emplace_back(edge_odom2vp[i]);
+      viewpoint_reachable_edges.back().initial_heading_delta=execution.initial_heading_delta;
+      ROS_INFO("[coverage prefix] dynamic preflight avoids a topological reversal");
+      break;
+    }
   }
   const bool odom_topology_connected =
       planner_manager_->topo_graph_ &&
@@ -3746,6 +4088,16 @@ int FastExplorationManager::planGlobalPath(const Eigen::Vector3d &pos,
         swarm_coordinator_->candidatePenalties(swarm_candidates);
   }
 
+  const auto &motion = ep_->coverage_motion_;
+  const bool region_hold = coverageMotionEnabled() &&
+      !coverage_region_since_.isZero() &&
+      (coverage_now - coverage_region_since_).toSec() < motion.region_duration &&
+      std::any_of(viewpoint_reachable.begin(), viewpoint_reachable.end(),
+          [&](const TopoNode::Ptr &candidate) {
+            return !candidate->is_coverage_target_ &&
+                coverage_motion::sameRegion(candidate->center_.cast<double>(),
+                                            coverage_region_anchor_, motion);
+          });
   auto activateSelectedGoal = [&](const TopoNode::Ptr &selected) {
     if (!selected) {
       return;
@@ -3755,6 +4107,12 @@ int FastExplorationManager::planGlobalPath(const Eigen::Vector3d &pos,
       return;
     }
     if (!selected->is_coverage_target_) {
+      if (coverageMotionEnabled() && (!region_hold ||
+          !coverage_motion::sameRegion(selected->center_.cast<double>(),
+                                       coverage_region_anchor_, motion))) {
+        coverage_region_anchor_ = selected->center_.cast<double>();
+        coverage_region_since_ = coverage_now;
+      }
       if (has_active_coverage_goal_) {
         deferCoverageRecovery(active_coverage_target_,
                               CoverageRecoveryOutcome::FRONTIER_RESUMED);
@@ -3783,7 +4141,8 @@ int FastExplorationManager::planGlobalPath(const Eigen::Vector3d &pos,
   };
   auto deferStalledNormalGoal =
       [&](const TopoNode::Ptr &selected, const double route_cost) {
-        if (!updateNormalGoalProgress(selected, route_cost, pos)) {
+        if (!(coverageRouteEnabled() ? coverage_route_stalled_ :
+              updateNormalGoalProgress(selected, route_cost, pos))) {
           return false;
         }
         // selectStableGoalIndex() has already populated the lock with this
@@ -3806,6 +4165,53 @@ int FastExplorationManager::planGlobalPath(const Eigen::Vector3d &pos,
         return true;
       };
 
+  if (structural_coverage) {
+    std::vector<int> prefix;
+    // Reverse-facing views can be useful after another observation. They are
+    // excluded only as immediate actions by the route's first-edge gate.
+    for (int index:reversal_indices) {
+      if (viewpoints[index]->is_coverage_target_) continue;
+      if (std::find(viewpoint_reachable.begin(),viewpoint_reachable.end(),viewpoints[index])!=viewpoint_reachable.end()) continue;
+      viewpoint_reachable.push_back(viewpoints[index]);
+      viewpoint_reachable_edges.push_back(edge_odom2vp[index]);
+      viewpoint_reachable_distance.push_back(distance_odom2vp[index]);
+    }
+    if (planCoverageRoute(coverage_snapshot, viewpoint_reachable,
+                          viewpoint_reachable_edges, pos, vel, prefix) && !prefix.empty()) {
+      const int first=prefix.front();
+      const auto &selected=viewpoint_reachable[first];
+      if (deferStalledNormalGoal(selected, viewpoint_reachable_distance[first])) {
+        planner_manager_->topo_graph_->removeNodes(viewpoints);
+        return FAIL;
+      }
+      activateSelectedGoal(selected);
+      // The route owns selection. Update bookkeeping without running another
+      // goal selector or forcing this point into an unrelated ATSP afterwards.
+      const bool changed=!ed_->has_goal_lock_ || (selected->center_-ed_->locked_goal_).norm()>.1;
+      ed_->has_goal_lock_=true; ed_->locked_goal_is_mission_=false;
+      ed_->locked_goal_is_coverage_=selected->is_coverage_target_;
+      ed_->locked_goal_cluster_id_=selected->frontier_cluster_id_;
+      ed_->locked_goal_coverage_id_=selected->coverage_target_id_;
+      ed_->locked_goal_=selected->center_; ed_->locked_goal_yaw_=selected->yaw_;
+      ed_->locked_goal_cost_=viewpoint_reachable_distance[first];
+      if (changed) {
+        ed_->locked_goal_time_=coverage_now;
+        if (!selected->is_coverage_target_) frontier_manager_ptr_->markClusterGoalSelected(
+            selected->frontier_cluster_id_,selected->center_,ep_->goal_lock_match_radius_);
+      }
+      ed_->global_tour_.clear();
+      ed_->global_tour_.push_back(planner_manager_->topo_graph_->odom_node_->center_);
+      for (int index:prefix) ed_->global_tour_.push_back(viewpoint_reachable[index]->center_);
+      planner_manager_->local_data_.end_yaw_=selected->yaw_;
+      planner_manager_->topo_graph_->removeNodes(viewpoints);
+      planner_manager_->graph_visualizer_->vizTour(ed_->global_tour_,VizColor::RED,"global");
+      updateGoalNode();
+      return SUCCEED;
+    }
+    planner_manager_->topo_graph_->removeNodes(viewpoints);
+    return FAIL;
+  }
+
   struct CandidateCostBreakdown {
     double travel{0.0};
     double turn_brake{0.0};
@@ -3820,6 +4226,7 @@ int FastExplorationManager::planGlobalPath(const Eigen::Vector3d &pos,
     double target_lateral{0.0};
     double failed_goal{0.0};
     double swarm{0.0};
+    double region{0.0};
     double total{0.0};
   };
   vector<CandidateCostBreakdown> candidate_terms(viewpoint_reachable.size());
@@ -3828,6 +4235,15 @@ int FastExplorationManager::planGlobalPath(const Eigen::Vector3d &pos,
     const auto &edge = viewpoint_reachable_edges[i];
     const auto &viewpoint = viewpoint_reachable[i];
     terms.travel = edge.time_cost;
+    if (coverageMotionEnabled() && std::isfinite(edge.moving_time_cost))
+      terms.travel = edge.moving_time_cost;
+    if (region_hold && !viewpoint->is_coverage_target_ &&
+        !coverage_motion::sameRegion(viewpoint->center_.cast<double>(),
+                                     coverage_region_anchor_, motion)) {
+      const double age = std::max(0.0, (coverage_now - coverage_region_since_).toSec());
+      terms.region = motion.region_switch_cost *
+          (1.0 - age / std::max(0.01, motion.region_duration));
+    }
     terms.turn_brake = edge.turn_penalty + edge.yaw_penalty +
                        edge.known_free_penalty + edge.backup_penalty;
     if (viewpoint->is_mission_goal_target_) {
@@ -3885,7 +4301,7 @@ int FastExplorationManager::planGlobalPath(const Eigen::Vector3d &pos,
     if (!ep_->composite_candidate_cost_enable_) {
       terms.total = viewpoint_reachable_distance[i] + terms.coverage +
                     terms.target_guidance +
-                    terms.failed_goal + terms.swarm;
+                    terms.failed_goal + terms.swarm + terms.region;
       return;
     }
     terms.total =
@@ -3896,7 +4312,7 @@ int FastExplorationManager::planGlobalPath(const Eigen::Vector3d &pos,
         ep_->candidate_wait_weight_ * terms.wait_norm -
         ep_->candidate_debt_weight_ * terms.debt_norm + terms.coverage +
         terms.target_guidance +
-        terms.failed_goal + terms.swarm;
+        terms.failed_goal + terms.swarm + terms.region;
   };
 
   for (int i = 0; i < static_cast<int>(candidate_terms.size()); ++i) {
@@ -3911,7 +4327,7 @@ int FastExplorationManager::planGlobalPath(const Eigen::Vector3d &pos,
                               0, vel);
     if (deferStalledNormalGoal(
             viewpoint_reachable[goal_idx],
-            candidate_terms[goal_idx].travel)) {
+            viewpoint_reachable_edges[goal_idx].time_cost)) {
       planner_manager_->topo_graph_->removeNodes(viewpoints);
       return planGlobalPath(pos, vel);
     }
@@ -4070,7 +4486,7 @@ int FastExplorationManager::planGlobalPath(const Eigen::Vector3d &pos,
       viewpoint_reachable, composite_costs, candidate_goal_idx, vel);
   if (deferStalledNormalGoal(
           viewpoint_reachable[stable_goal_idx],
-          candidate_terms[stable_goal_idx].travel)) {
+          viewpoint_reachable_edges[stable_goal_idx].time_cost)) {
     planner_manager_->topo_graph_->removeNodes(viewpoints);
     return planGlobalPath(pos, vel);
   }
@@ -4118,6 +4534,7 @@ int FastExplorationManager::planGlobalPath(const Eigen::Vector3d &pos,
              << " TB=" << term.turn_brake << " R=" << term.future_return
              << " G=" << term.gain_norm << " W=" << term.wait_norm
              << " D=" << term.debt_norm << " C=" << term.coverage
+             << " region=" << term.region
              << " M=" << term.target_guidance
              << " Mr=" << term.target_remaining
              << " Mp=" << term.target_progress;

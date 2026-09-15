@@ -169,22 +169,25 @@ namespace general_planner {
     GeneralPlanner::GeneralPlanner(
             const std::string &cfg_path,
             const ros_interface::RosInterface::Ptr &ros_ptr,
-            const rog_map::ROGMapROS::Ptr &map_ptr)
+            const rog_map::ROGMapROS::Ptr &map_ptr,
+            const std::string &tracking_config)
             : GeneralPlanner(cfg_path, ros_ptr,
-                             std::make_shared<MapManager>(map_ptr), true) {}
+                             std::make_shared<MapManager>(map_ptr), true, tracking_config) {}
 
     GeneralPlanner::GeneralPlanner(
             const std::string &cfg_path,
             const ros_interface::RosInterface::Ptr &ros_ptr,
-            const MapManager::Ptr &shared_map_manager)
-            : GeneralPlanner(cfg_path, ros_ptr, shared_map_manager, false) {}
+            const MapManager::Ptr &shared_map_manager,
+            const std::string &tracking_config)
+            : GeneralPlanner(cfg_path, ros_ptr, shared_map_manager, false, tracking_config) {}
 
     GeneralPlanner::GeneralPlanner(
             const std::string &cfg_path,
             const ros_interface::RosInterface::Ptr &ros_ptr,
             const MapManager::Ptr &map_manager,
-            const bool configure_private_topology)
-            : cfg_(Config(cfg_path)),
+            const bool configure_private_topology,
+            const std::string &tracking_config)
+            : cfg_(Config(cfg_path, tracking_config)),
                 map_manager_(map_manager),
                 ros_ptr_(ros_ptr) {
 
@@ -334,6 +337,18 @@ namespace general_planner {
                                                       cfg_.iris_iter_num,
                                                       ellipsoid_optimizer_config);
         cg_ptr_->SetLineNeighborList(cfg_.seed_line_neighbour);
+        tracking_cg_ptr_ = cg_ptr_;
+        if (!cfg_.tracking_config_path.empty()) {
+            tracking_cg_ptr_ = std::make_shared<CorridorGenerator>(
+                ros_ptr_, map_manager_, cfg_.tracking_corridor_bound_dis,
+                cfg_.tracking_corridor_line_max_length, cfg_.resolution,
+                rog_map_cfg.virtual_ground_height, rog_map_cfg.virtual_ceil_height,
+                cfg_.robot_r, cfg_.tracking_obs_skip_num, cfg_.tracking_iris_iter_num,
+                optimization_utils::EllipsoidOptimizer::makeConfig(
+                    cfg_.tracking_ellipsoid_optimizer,
+                    cfg_.tracking_ellipsoid_optimizer_fallback));
+            tracking_cg_ptr_->SetLineNeighborList(cfg_.seed_line_neighbour);
+        }
         se3_aggressive_manager_ =
                 std::make_unique<SE3AggressiveManager>(cfg_, ros_ptr_, map_manager_, astar_ptr_, cg_ptr_);
 

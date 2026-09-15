@@ -139,7 +139,7 @@ public:
                     "tracking_prediction_unavailable",
                     fmt::format("tracking_target_rcv_time={:.3f};timeout={:.3f}",
                                 fsm.tracking_target_rcv_time_,
-                                fsm.cfg_.task_timeout),
+                                fsm.cfg_.tracking_task_timeout),
                     FAILED);
             context.missing_input = true;
             return makeResult(fsm, request, FAILED, context, "tracking_prediction_unavailable");
@@ -163,7 +163,7 @@ public:
                     "tracking_prediction_unavailable",
                     fmt::format("tracking_target_rcv_time={:.3f};timeout={:.3f}",
                                 fsm.tracking_target_rcv_time_,
-                                fsm.cfg_.task_timeout),
+                                fsm.cfg_.tracking_task_timeout),
                     FAILED);
             context.missing_input = true;
             return makeResult(fsm, request, FAILED, context, "tracking_prediction_unavailable");
@@ -240,7 +240,7 @@ public:
                     "tracking_prediction_unavailable",
                     fmt::format("tracking_target_rcv_time={:.3f};timeout={:.3f}",
                                 fsm.tracking_target_rcv_time_,
-                                fsm.cfg_.task_timeout),
+                                fsm.cfg_.tracking_task_timeout),
                     FAILED);
             context.missing_input = true;
             return makeResult(fsm, request, FAILED, context, "tracking_prediction_unavailable");
@@ -280,7 +280,7 @@ public:
                     "tracking_prediction_unavailable",
                     fmt::format("tracking_target_rcv_time={:.3f};timeout={:.3f}",
                                 fsm.tracking_target_rcv_time_,
-                                fsm.cfg_.task_timeout),
+                                fsm.cfg_.tracking_task_timeout),
                     FAILED);
             context.missing_input = true;
             return makeResult(fsm, request, FAILED, context, "tracking_prediction_unavailable");

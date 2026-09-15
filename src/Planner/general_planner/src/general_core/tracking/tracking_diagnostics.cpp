@@ -250,8 +250,8 @@ namespace general_planner {
                            cfg_.tracking_detour_grace_horizon,
                            static_cast<int>(cfg_.tracking_frontend_astar),
                            static_cast<int>(cfg_.tracking_use_visible_region),
-                           cfg_.exp_traj_cfg.max_vel,
-                           cfg_.exp_traj_cfg.max_acc);
+                           cfg_.tracking_traj_cfg.max_vel,
+                           cfg_.tracking_traj_cfg.max_acc);
     }
 
 }

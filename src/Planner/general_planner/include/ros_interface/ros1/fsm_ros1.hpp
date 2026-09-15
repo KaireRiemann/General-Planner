@@ -1094,7 +1094,7 @@ namespace fsm {
                 return;
             }
             const double age = (ros::Time::now()-msg->header.stamp).toSec();
-            if (!msg->header.stamp.isZero() && (age > cfg_.task_timeout || age < -0.1)) return;
+            if (!msg->header.stamp.isZero() && (age > cfg_.tracking_task_timeout || age < -0.1)) return;
             const Vec3f p(msg->pose.pose.position.x,
                           msg->pose.pose.position.y,
                           msg->pose.pose.position.z);
@@ -1120,7 +1120,7 @@ namespace fsm {
                 return;
             }
             if (!msg->header.stamp.isZero() &&
-                (ros::Time::now()-msg->header.stamp).toSec() > cfg_.task_timeout) return;
+                (ros::Time::now()-msg->header.stamp).toSec() > cfg_.tracking_task_timeout) return;
             const bool activate_tracking_task = trackingMode() || trackingPerchingMode();
             setTrackingTargetPrediction(prediction, activate_tracking_task);
             if (!activate_tracking_task) {
@@ -1168,7 +1168,7 @@ namespace fsm {
 
             const double source_age = (ros::Time::now()-msg->header.stamp).toSec();
             if (!msg->header.stamp.isZero() &&
-                (source_age > cfg_.task_timeout || source_age < -0.1)) return;
+                (source_age > cfg_.tracking_task_timeout || source_age < -0.1)) return;
             const double dt = std::max(0.05, cfg_.tracking_prediction_dt);
             const double horizon = std::max(dt, cfg_.tracking_prediction_horizon);
             const std::size_t max_samples =
@@ -1226,7 +1226,7 @@ namespace fsm {
             std::lock_guard<std::mutex> lock(fsm_tick_mutex_);
             last_tracking_prediction_path_time_ = ros::Time::now();
             if (!msg->header.stamp.isZero() &&
-                (ros::Time::now()-msg->header.stamp).toSec() > cfg_.task_timeout) return;
+                (ros::Time::now()-msg->header.stamp).toSec() > cfg_.tracking_task_timeout) return;
             const bool activate_tracking_task = trackingMode() || trackingPerchingMode();
             setTrackingTargetPrediction(prediction, activate_tracking_task);
             if (!activate_tracking_task) {
@@ -1405,6 +1405,14 @@ namespace fsm {
             navigation_status_pub_.publish(status);
         }
 
+        void onTaskModeChanged() override {
+            if (replan_timer_.isValid()) {
+                replan_timer_.setPeriod(ros::Duration(1.0 / cfg_.replanRate()), true);
+            }
+            ROS_INFO_STREAM("[Fsm] mode=" << cfg_.task_mode_str
+                << " replan_rate=" << cfg_.replanRate());
+        }
+
         void applyLaunchOverrides() {
             nh_.getParam("tracking_target_odom_topic", cfg_.tracking_target_odom_topic);
             nh_.getParam("tracking_target_prediction_topic", cfg_.tracking_target_prediction_topic);
@@ -1441,8 +1449,15 @@ namespace fsm {
             nh_ = nh;
             command_nh_ = command_nh;
             replan_nh_ = replan_nh;
-            cfg_ = Config(cfg_path);
+            std::string tracking_config;
+            nh_.param<std::string>("tracking_config", tracking_config, "");
+            cfg_ = Config(cfg_path, tracking_config);
             applyLaunchOverrides();
+            if (!cfg_.tracking_config_path.empty()) {
+                nh_.setParam("tracking_config_resolved", cfg_.tracking_config_path);
+                ROS_INFO_STREAM("[Fsm] tracking config=" << cfg_.tracking_config_path
+                    << " replan_rate=" << cfg_.tracking_replan_rate);
+            }
             if (!command_topic_override.empty()) {
                 cfg_.cmd_topic = command_topic_override;
             }
@@ -1466,8 +1481,8 @@ namespace fsm {
             ros_ptr_ = ros1_ptr;
             planner_ptr_ = shared_map_manager
                 ? std::make_shared<GeneralPlanner>(cfg_path, ros_ptr_,
-                                                    shared_map_manager)
-                : std::make_shared<GeneralPlanner>(cfg_path, ros_ptr_, map_ptr_);
+                                                    shared_map_manager, cfg_.tracking_config_path)
+                : std::make_shared<GeneralPlanner>(cfg_path, ros_ptr_, map_ptr_, cfg_.tracking_config_path);
             planner_ptr_->setSwarmDroneId(cfg_.swarm_drone_id);
             if (!shared_map_manager) {
                 topology_graph_ros1_ =
@@ -1672,7 +1687,7 @@ namespace fsm {
                 // rolling replans, not on the navigation goal/status queue.
                 execution_timer_ = replan_nh_.createTimer(ros::Duration(0.01), &FsmRos1::mainFsmTimerCallback, this); // 100Hz
                 cmd_timer_ = command_nh_.createTimer(ros::Duration(0.01), &FsmRos1::pubCmdTimerCallback, this); // 100Hz
-                replan_timer_ = replan_nh_.createTimer(ros::Duration(1.0 / cfg_.replan_rate), &FsmRos1::replanTimerCallback,
+                replan_timer_ = replan_nh_.createTimer(ros::Duration(1.0 / cfg_.replanRate()), &FsmRos1::replanTimerCallback,
                                                         this);
                 if ((cfg_.perception_replan_check_en || cfg_.dynamic_obstacle_layer_enable) &&
                     cfg_.perception_replan_check_rate > 1.0e-3) {
@@ -1760,7 +1775,7 @@ namespace fsm {
                                               general_planner::architecture::toString(cfg_.task_type),
                                               general_planner::architecture::toString(cfg_.backend_type),
                                               ros_adapter_contract_.adapter_name,
-                                              cfg_.replan_rate,
+                                              cfg_.replanRate(),
                                               static_cast<int>(cfg_.perception_replan_check_en),
                                               cfg_.perception_replan_check_rate,
                                               static_cast<int>(cfg_.dynamic_obstacle_layer_enable),
@@ -1785,7 +1800,7 @@ namespace fsm {
                                                   cfg_.tracking_prediction_horizon,
                                                   cfg_.tracking_prediction_dt,
                                                   static_cast<int>(cfg_.tracking_prediction_use_kinodynamic),
-                                                  cfg_.task_timeout,
+                                                  cfg_.tracking_task_timeout,
                                                   cfg_.cmd_topic,
                                                   cfg_.mpc_cmd_topic,
                                                   planner_ptr_ ? planner_ptr_->getTrackingConfigSummary()

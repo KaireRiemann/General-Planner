@@ -126,11 +126,11 @@ namespace general_planner {
             return false;
         }
 
-        double max_step = 0.8 * cfg_.corridor_line_max_length;
+        double max_step = 0.8 * cfg_.tracking_corridor_line_max_length;
         if (!std::isfinite(max_step) || max_step <= 1.0e-3) {
             max_step = map_manager_ != nullptr ? 4.0 * std::max(0.05, map_manager_->getResolution()) : 0.5;
         }
-        max_step = std::clamp(max_step, 0.2, std::max(0.2, cfg_.corridor_line_max_length));
+        max_step = std::clamp(max_step, 0.2, std::max(0.2, cfg_.tracking_corridor_line_max_length));
 
         if (!trackingGuidePointSafe(guide_path.front())) {
             return false;
@@ -291,7 +291,7 @@ namespace general_planner {
                                                      PolytopeVec &sfcs,
                                                      std::string *failure_reason) {
         sfcs.clear();
-        if (cg_ptr_ == nullptr) {
+        if (tracking_cg_ptr_ == nullptr) {
             setFailureReason(failure_reason, "corridor_generator_null");
             return false;
         }
@@ -313,7 +313,7 @@ namespace general_planner {
         Vec3f shifted_start_pt = Vec3f(9999, 9999, 9999);
         bool ok = false;
         try {
-            ok = cg_ptr_->SearchPolytopeOnPath(guide_path, sfcs, shifted_start_pt, false);
+            ok = tracking_cg_ptr_->SearchPolytopeOnPath(guide_path, sfcs, shifted_start_pt, false);
         } catch (const std::exception &e) {
             ros_ptr_->warn(" -- [GeneralPlanner] Tracking SFC generation threw exception: {}", e.what());
             setFailureReason(failure_reason, fmt::format("SearchPolytopeOnPath_exception({})", e.what()));
@@ -423,7 +423,7 @@ namespace general_planner {
             const RET_CODE ret_code = astar_ptr_->pointToPointPathSearch(start,
                                                                          goal,
                                                                          astar_flag,
-                                                                         cfg_.planning_horizon,
+                                                                         cfg_.tracking_planning_horizon,
                                                                          astar_path,
                                                                          0.08);
             if ((ret_code != SUCCESS && ret_code != REACH_GOAL) || astar_path.empty()) {
@@ -664,7 +664,7 @@ namespace general_planner {
 
         const double match_tol = std::max({0.05,
                                            1.5 * std::max(1.0e-3, cfg_.resolution),
-                                           0.25 * std::max(0.2, cfg_.corridor_line_max_length)});
+                                           0.25 * std::max(0.2, cfg_.tracking_corridor_line_max_length)});
         std::string last_prefix_reason;
         for (int view_id = static_cast<int>(problem.viewpoints.size()) - 1; view_id >= 0; --view_id) {
             const Vec3f &viewpoint = problem.viewpoints[static_cast<std::size_t>(view_id)];
@@ -750,7 +750,7 @@ namespace general_planner {
         problem.sfcs.clear();
         problem.use_corridor = false;
 
-        if (cg_ptr_ != nullptr && !problem.guide_path.empty()) {
+        if (tracking_cg_ptr_ != nullptr && !problem.guide_path.empty()) {
             double guide_length = 0.0;
             for (int i = 1; i < static_cast<int>(problem.guide_path.size()); ++i) {
                 guide_length += (problem.guide_path[static_cast<std::size_t>(i)] -
@@ -765,7 +765,7 @@ namespace general_planner {
                     return false;
                 }
                 Polytope hover_sfc;
-                if (!cg_ptr_->GeneratePolytopeFromPoint(hover_point, hover_sfc)) {
+                if (!tracking_cg_ptr_->GeneratePolytopeFromPoint(hover_point, hover_sfc)) {
                     setFailureReason(failure_reason,
                                      fmt::format("hover_GeneratePolytopeFromPoint_failed(p=[{:.3f},{:.3f},{:.3f}])",
                                                  hover_point.x(), hover_point.y(), hover_point.z()));

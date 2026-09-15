@@ -303,7 +303,7 @@ namespace general_planner {
 
                 const double prefix_start_t = commit_wt - old_start_wt;
                 const double prefix_end_t =
-                        prefix_start_t + std::max(0.0, cfg_.replan_forward_dt);
+                        prefix_start_t + std::max(0.0, cfg_.tracking_replan_forward_dt);
                 const bool prefix_window_valid =
                         !old_pos_traj.empty() &&
                         prefix_start_t >= 0.0 &&
@@ -377,7 +377,7 @@ namespace general_planner {
                 return base_h;
             }
             const double speed_cap =
-                    std::max(0.8, cfg_.esdf_traj_cfg.max_vel);
+                    std::max(0.8, cfg_.tracking_traj_cfg.max_vel);
             const double scaled_h =
                     gap * std::max(0.1, cfg_.tracking_reacquire_transit_horizon_scale) / speed_cap;
             return std::clamp(std::max(base_h, scaled_h),
@@ -839,7 +839,7 @@ namespace general_planner {
         frontend_cfg.reacquire_distance = cfg_.tracking_reacquire_distance;
         frontend_cfg.soft_recovery_enable = cfg_.tracking_soft_recovery_enable;
         frontend_cfg.soft_recovery_margin = cfg_.tracking_soft_recovery_margin;
-        frontend_cfg.searching_horizon = cfg_.planning_horizon;
+        frontend_cfg.searching_horizon = cfg_.tracking_planning_horizon;
         frontend_cfg.low_speed_velocity_threshold = cfg_.tracking_low_speed_velocity_threshold;
         frontend_cfg.angular_hysteresis = cfg_.tracking_angular_hysteresis;
         frontend_cfg.candidate_angle_step = cfg_.tracking_candidate_angle_step;
@@ -885,7 +885,7 @@ namespace general_planner {
         TimeConsuming t_frontend("tracking_frontend", false);
         const double tracking_plan_start_wt = ros_ptr_->getSimTime();
         const double tracking_candidate_head_wt =
-                tracking_plan_start_wt + std::max(0.0, cfg_.replan_forward_dt);
+                tracking_plan_start_wt + std::max(0.0, cfg_.tracking_replan_forward_dt);
         const StatePVAJ head_state = makeTaskHeadState(from_rest, tracking_candidate_head_wt);
         const bool has_committed_tracking_for_frontend =
                 cfg_.tracking_runtime_manager_enable && tracking_runtime_manager_

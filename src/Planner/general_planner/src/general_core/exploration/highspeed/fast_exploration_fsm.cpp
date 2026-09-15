@@ -24,6 +24,7 @@ typedef visualization_msgs::Marker Marker;
 typedef visualization_msgs::MarkerArray MarkerArray;
 
 FastExplorationFSM::~FastExplorationFSM() {
+  if (odom_spinner_) odom_spinner_->stop();
   exec_timer_.stop();
   global_path_update_timer_.stop();
 
@@ -49,6 +50,7 @@ FastExplorationFSM::~FastExplorationFSM() {
 
 void FastExplorationFSM::FSMCallback(const ros::TimerEvent &e) {
   refreshRuntimeOdometry();
+  if (state_ != CAUTION) coverage_caution_since_ = ros::Time(0);
   pubState();
   if (fd_->trigger_ && fd_->have_odom_ && expl_manager_->targetDirectedModeActive() &&
       (state_ == PLAN_TRAJ || state_ == EXEC_TRAJ || state_ == CAUTION || state_ == REORIENT)) {
@@ -64,6 +66,25 @@ void FastExplorationFSM::FSMCallback(const ros::TimerEvent &e) {
       // planGlobalPath watchdog. No Euclidean-to-goal progress assumption.
       target_unreachable_pending_ = true;
       beginPause("target exploration: no measured motion within deadline", false);
+      return;
+    }
+  }
+  const bool active_coverage=expl_manager_->coverageMotionEnabled() && fd_->trigger_ && fd_->have_odom_ &&
+      (state_==PLAN_TRAJ || state_==EXEC_TRAJ || state_==REORIENT || state_==CAUTION);
+  if (!active_coverage) coverage_liveness_={};
+  else {
+    const auto now=ros::Time::now();
+    const auto snapshot=expl_manager_->coverage_guidance_ ?
+        expl_manager_->coverage_guidance_->latestUsablePlan() : CoveragePlan::Ptr{};
+    const bool fresh=!coverage_cloud_received_.isZero() && (now-coverage_cloud_received_).toSec()<1.0 &&
+        !fd_->last_odom_receive_time_.isZero() && (now-fd_->last_odom_receive_time_).toSec()<fp_->max_odom_age_;
+    if (!fresh) coverage_liveness_={};
+    else if (snapshot && snapshot->valid && coverage_liveness_.stalled(now.toSec(),
+        fd_->odom_pos_.cast<double>(),snapshot->observed_voxel_count,expl_manager_->coverageStallTimeout()) &&
+        fd_->odom_vel_.norm()<=fp_->reorient_exit_speed_) {
+      // Planning success and changing candidate IDs are not measured progress.
+      // A bounded pause reports unresolved coverage; it never fabricates FINISH.
+      recordCoverageTermination("coverage liveness audit","no_execution_or_coverage_progress");
       return;
     }
   }
@@ -145,7 +166,7 @@ void FastExplorationFSM::FSMCallback(const ros::TimerEvent &e) {
     }
     // stopTraj();
     double collision_time = 0.0;
-    bool safe = planner_manager_->checkTrajCollision(collision_time);
+    bool safe = planner_manager_->checkTrajCollision(collision_time, expl_manager_->coverageMotionEnabled());
     if (!safe) {
       stopTraj("FINISH collision guard");
     }
@@ -264,8 +285,11 @@ void FastExplorationFSM::FSMCallback(const ros::TimerEvent &e) {
       return;
     }
     ros::Time tplan = ros::Time::now();
+    const auto planning_wall_start=ros::WallTime::now();
     exec_timer_.stop();
     int res = callExplorationPlanner();
+    if (expl_manager_->coverageMotionEnabled())
+      coverage_planning_budget_.observe((ros::WallTime::now()-planning_wall_start).toSec());
     exec_timer_.start();
     ROS_INFO("\033[31m call planner \033[0m: %.3f",
              (ros::Time::now() - tplan).toSec() * 1000.0);
@@ -321,7 +345,7 @@ void FastExplorationFSM::FSMCallback(const ros::TimerEvent &e) {
       double collision_time = 0.0;
       const bool safe = planner_manager_->hasCommittedTrajectory() &&
           planner_manager_->committedTrajectoryRemainingTime() > 0.08 &&
-          planner_manager_->checkTrajCollision(collision_time);
+          planner_manager_->checkTrajCollision(collision_time, expl_manager_->coverageMotionEnabled());
       if (safe) transitState(EXEC_TRAJ, "target route failed; retain safe command", true);
       else {
         if (fd_->odom_vel_.norm() > fp_->reorient_exit_speed_)
@@ -330,7 +354,27 @@ void FastExplorationFSM::FSMCallback(const ros::TimerEvent &e) {
       }
     } else if (res == NO_FRONTIER) {
       handleNoFrontierResult("PLAN_TRAJ: no frontier");
-    } else if (res == FAIL) {
+    } else if (res == FAIL || (res == START_FAIL && expl_manager_->coverageMotionEnabled())) {
+      if (expl_manager_->coverageMotionEnabled() && fd_->reorientation_required_) {
+        // Braking is an execution phase, not a failed observation attempt.
+        fd_->reorientation_start_time_=ros::Time::now();
+        fd_->reorientation_stop_requested_=false;
+        fd_->reorientation_last_stop_request_time_=ros::Time(0);
+        transitState(REORIENT,"coverage: preserve goal while braking",true);
+        break;
+      }
+      if (expl_manager_->coverageMotionEnabled() &&
+          planner_manager_->coverage_failure_.kind==CoverageFailureKind::HEAD) {
+        fd_->next_plan_retry_time_=ros::Time::now()+ros::Duration(expl_manager_->coverageRouteEnabled() ? .02 : fp_->plan_failure_retry_delay_);
+        double collision_time=0.0;
+        if (planner_manager_->hasCommittedTrajectory() &&
+            planner_manager_->committedTrajectoryRemainingTime()>0.08 &&
+            planner_manager_->checkTrajCollision(collision_time, expl_manager_->coverageMotionEnabled()))
+          transitState(EXEC_TRAJ,"coverage: refresh transient switch-state mismatch",true);
+        else if (fd_->odom_vel_.norm()>fp_->reorient_exit_speed_)
+          stopTraj("coverage: switch state unavailable");
+        break;
+      }
       ++fd_->consecutive_plan_failures_;
       // Coverage recovery goals are synthesized outside the normal frontier
       // goal-lock path. A successful global-path refresh used to reset the
@@ -338,7 +382,8 @@ void FastExplorationFSM::FSMCallback(const ros::TimerEvent &e) {
       // reach its threshold, so an unreachable observation goal was selected
       // forever and targets_exhausted could never become true. Record each
       // failed local trajectory directly against the active coverage target.
-      if (expl_manager_->hasActiveCoverageRecoveryGoal()) {
+      const bool failed_recovery=expl_manager_->hasActiveCoverageRecoveryGoal();
+      if (failed_recovery) {
         expl_manager_->deferCurrentGoalAfterPlanningFailure();
         expl_manager_->ed_->global_tour_.clear();
         expl_manager_->ed_->path_next_goal_.clear();
@@ -347,8 +392,16 @@ void FastExplorationFSM::FSMCallback(const ros::TimerEvent &e) {
             "[coverage recovery] local trajectory failed; account target "
             "failure immediately and select another observation target");
       }
-      const double retry_delay = fp_->plan_failure_retry_delay_ *
-          std::min(3, fd_->consecutive_plan_failures_);
+      const double command_remaining = planner_manager_->committedTrajectoryRemainingTime();
+      // While moving, leave enough time to replace the command. Once stopped,
+      // wait one normal retry interval; exponential backoff prolonged recovery,
+      // while a 20 ms retry would starve the map/frontier callbacks.
+      const double retry_delay = expl_manager_->coverageMotionEnabled() ?
+          (command_remaining > 0.08 ?
+           coverage_planning_budget_.retry(fp_->plan_failure_retry_delay_, command_remaining,
+                                          planner_manager_->gcopter_config_->controlLatency) :
+           fp_->plan_failure_retry_delay_) :
+          fp_->plan_failure_retry_delay_ * std::min(3, fd_->consecutive_plan_failures_);
       fd_->next_plan_retry_time_ = ros::Time::now() +
           ros::Duration(retry_delay);
       if (fp_->controlled_reorientation_enable_ &&
@@ -360,14 +413,18 @@ void FastExplorationFSM::FSMCallback(const ros::TimerEvent &e) {
         break;
       }
       double collision_time = 0.0;
-      const bool safe = planner_manager_->checkTrajCollision(collision_time);
+      const bool safe = planner_manager_->checkTrajCollision(collision_time, expl_manager_->coverageMotionEnabled());
       const double remaining = planner_manager_->committedTrajectoryRemainingTime();
       const bool have_safe_committed =
           safe && planner_manager_->hasCommittedTrajectory() && remaining > 0.08;
-      const bool may_refresh_goal =
-          !have_safe_committed &&
-          fd_->consecutive_plan_failures_ >= fp_->plan_failure_refresh_count_ &&
-          fd_->odom_vel_.norm() <= fp_->reorient_exit_speed_;
+      const bool route_failure_refresh=expl_manager_->coverageRouteEnabled() &&
+          !failed_recovery &&
+          (planner_manager_->coverage_failure_.kind==CoverageFailureKind::PATH ||
+           planner_manager_->coverage_failure_.kind==CoverageFailureKind::SPATIAL ||
+           fd_->consecutive_plan_failures_>=fp_->plan_failure_refresh_count_);
+      const bool may_refresh_goal = route_failure_refresh ||
+          (!have_safe_committed && fd_->consecutive_plan_failures_>=fp_->plan_failure_refresh_count_ &&
+           fd_->odom_vel_.norm()<=fp_->reorient_exit_speed_);
       const double current_clearance =
           planner_manager_->lidar_map_interface_->getDisToOcc(fd_->odom_pos_);
       // Use exactly the same boundary as CAUTION's "safe clearance restored"
@@ -387,10 +444,10 @@ void FastExplorationFSM::FSMCallback(const ros::TimerEvent &e) {
           std::max(0.0, planner_manager_->gcopter_config_
                             ->safetyClearanceTolerance);
       const bool needs_clearance_recovery =
-          may_refresh_goal && std::isfinite(current_clearance) &&
+          may_refresh_goal && fd_->odom_vel_.norm()<=fp_->reorient_exit_speed_ && std::isfinite(current_clearance) &&
           current_clearance <= recovery_trigger_clearance;
       const bool needs_spatial_relocation =
-          may_refresh_goal &&
+          may_refresh_goal && fd_->odom_vel_.norm()<=fp_->reorient_exit_speed_ &&
           fd_->stationary_failure_refreshes_ + 1 >=
               fp_->stationary_relocation_refresh_count_;
       if (needs_clearance_recovery || needs_spatial_relocation) {
@@ -416,7 +473,7 @@ void FastExplorationFSM::FSMCallback(const ros::TimerEvent &e) {
         break;
       }
       if (may_refresh_goal) {
-        ++fd_->stationary_failure_refreshes_;
+        if (fd_->odom_vel_.norm()<=fp_->reorient_exit_speed_) ++fd_->stationary_failure_refreshes_;
         expl_manager_->deferCurrentGoalAfterPlanningFailure();
         expl_manager_->ed_->has_goal_lock_ = false;
         expl_manager_->ed_->locked_goal_cluster_id_ = -1;
@@ -432,6 +489,7 @@ void FastExplorationFSM::FSMCallback(const ros::TimerEvent &e) {
                         << " safe_committed=" << have_safe_committed);
       }
       if (have_safe_committed) {
+        if (expl_manager_->coverageMotionEnabled()) fd_->static_state_=false;
         transitState(EXEC_TRAJ,
                      planner_manager_->hasCommittedBackup()
                          ? "PLAN_TRAJ: plan failed, keep committed backup"
@@ -455,7 +513,7 @@ void FastExplorationFSM::FSMCallback(const ros::TimerEvent &e) {
   case EXEC_TRAJ: {
     // collision check
     double collision_time;
-    bool safe = planner_manager_->checkTrajCollision(collision_time);
+    bool safe = planner_manager_->checkTrajCollision(collision_time, expl_manager_->coverageMotionEnabled());
     if (!safe) {
       transitState(
           PLAN_TRAJ,
@@ -464,8 +522,12 @@ void FastExplorationFSM::FSMCallback(const ros::TimerEvent &e) {
         stopTraj("EXEC_TRAJ imminent collision");
     } else if (!planner_manager_->checkTrajVelocity()) {
       transitState(PLAN_TRAJ, "velocity too fast", true);
+    } else if (expl_manager_->coverageMotionEnabled() &&
+               (coverage_passage_.active || expl_manager_->hasActiveCoverageRecoveryGoal()) &&
+               handleGoalReached()) {
+      break;
     } else if (planner_manager_->committedTrajectoryRemainingTime() <=
-               fp_->replan_time_before_traj_end_) {
+               coverageReplanLead()) {
       transitState(PLAN_TRAJ, "EXEC_TRAJ: plan before committed trajectory end");
     }
 
@@ -492,10 +554,11 @@ void FastExplorationFSM::FSMCallback(const ros::TimerEvent &e) {
                                 : (now - fd_->last_odom_receive_time_).toSec();
     const bool odom_fresh = odom_age <= fp_->max_odom_age_;
     double collision_time = 0.0;
-    const bool safe = planner_manager_->checkTrajCollision(collision_time);
+    const bool safe = planner_manager_->checkTrajCollision(collision_time, expl_manager_->coverageMotionEnabled());
     const bool backup_braking =
         safe &&
-        (planner_manager_->hasCommittedBackup() ||
+        ((planner_manager_->hasCommittedBackup() &&
+          (!expl_manager_->coverageMotionEnabled() || planner_manager_->timeToCommittedBackup()<=0.0)) ||
          planner_manager_->hasCommittedStopTrajectory()) &&
         planner_manager_->committedTrajectoryRemainingTime() > 0.05;
 
@@ -503,8 +566,16 @@ void FastExplorationFSM::FSMCallback(const ros::TimerEvent &e) {
     // a stale zero must not be treated as proof that the vehicle has stopped.
     // Only a fresh, independently received odometry sample may release the
     // controlled-stop gate.
-    if (odom_fresh && speed <= fp_->reorient_exit_speed_) {
-      fd_->static_state_ = true;
+    // Low instantaneous speed does not mean that an ordinary command has
+    // stopped: its still-active prefix may immediately accelerate again.
+    // Cancel that acceleration with an explicit brake before releasing the
+    // turn gate. Merely owning a future backup is not executing that backup.
+    const bool coverage_stop_committed = !expl_manager_->coverageMotionEnabled() ||
+        !planner_manager_->hasCommittedTrajectory() ||
+        planner_manager_->committedTrajectoryRemainingTime()<=0.05 || backup_braking;
+    if (odom_fresh && speed <= fp_->reorient_exit_speed_ && coverage_stop_committed) {
+      fd_->static_state_ = !expl_manager_->coverageMotionEnabled() ||
+          (trajectoryEnded() && speed<=fp_->controlled_stop_min_speed_);
       fd_->reorientation_required_ = false;
       fd_->reorientation_stop_requested_ = false;
       fd_->reorientation_last_stop_request_time_ = ros::Time(0);
@@ -581,6 +652,8 @@ void FastExplorationFSM::FSMCallback(const ros::TimerEvent &e) {
     }
 
     fd_->static_state_ = true;
+    if (expl_manager_->coverageMotionEnabled() && coverage_caution_since_.isZero())
+      coverage_caution_since_ = now;
     const double dis2occ =
         planner_manager_->lidar_map_interface_->getDisToOcc(fd_->odom_pos_);
     const double target_clearance =
@@ -618,7 +691,7 @@ void FastExplorationFSM::FSMCallback(const ros::TimerEvent &e) {
       poly_traj_pub_.publish(fd_->newest_traj_);
       task_command_started_ = true;
       publishTaskStatus();
-      ros::Duration(0.2).sleep();
+      if (!expl_manager_->coverageMotionEnabled()) ros::Duration(0.2).sleep();
       fd_->static_state_ = false;
       fd_->consecutive_plan_failures_ = 0;
       fd_->stationary_failure_refreshes_ = 0;
@@ -629,6 +702,12 @@ void FastExplorationFSM::FSMCallback(const ros::TimerEvent &e) {
       break;
     }
     exec_timer_.start();
+    if (expl_manager_->coverageMotionEnabled() &&
+        (now-coverage_caution_since_).toSec() >= expl_manager_->ep_->coverage_motion_.caution_timeout) {
+      recordCoverageTermination("CAUTION: stationary escape deadline",
+                                "local_clearance_recovery_exhausted");
+      break;
+    }
     ROS_WARN_STREAM_THROTTLE(
         1.0, "[safe-region recovery] no valid escape trajectory; remain in "
                  "CAUTION and retry after "
@@ -888,6 +967,7 @@ void FastExplorationFSM::init(ros::NodeHandle &nh,
   time_cost_pub_ = nh.advertise<std_msgs::Float32>("/time_cost", 10);
   static_pub_ = nh.advertise<std_msgs::Bool>("/planning/static", 10);
   state_pub_ = nh.advertise<visualization_msgs::Marker>("/planning/state", 10);
+  coverage_result_pub_=nh.advertise<std_msgs::String>("/planning/coverage_result",1,true);
   speed_pub_ = nh.advertise<visualization_msgs::Marker>("/planning/speed", 10);
   if (!execution_enabled_topic_.empty()) {
     execution_enabled_pub_ = nh.advertise<std_msgs::Bool>(
@@ -909,10 +989,16 @@ void FastExplorationFSM::init(ros::NodeHandle &nh,
   // The synchronized callback can legitimately pause while pairing or while a
   // stale cloud is dropped; braking and FSM transitions must still see every
   // new odometry message.
-  raw_odom_sub_ = nh.subscribe(
+  ros::NodeHandle odom_nh(nh);
+  if (expl_manager_->coverageMotionEnabled()) {
+    odom_nh.setCallbackQueue(&odom_callback_queue_);
+    odom_spinner_.reset(new ros::AsyncSpinner(1,&odom_callback_queue_));
+  }
+  raw_odom_sub_ = odom_nh.subscribe(
       odom_topic, fp_->odom_subscriber_queue_,
       &FastExplorationFSM::odometryCallback, this,
       ros::TransportHints().tcpNoDelay());
+  if (odom_spinner_) odom_spinner_->start();
   if (fp_->cloud_odom_mode_ == "latest_odom") {
     latest_cloud_sub_ = nh.subscribe(
         cloud_topic, fp_->cloud_subscriber_queue_,
@@ -953,6 +1039,17 @@ void FastExplorationFSM::battaryCallback(
 }
 
 void FastExplorationFSM::updateTopoAndGlobalPath() {
+  refreshRuntimeOdometry();
+  const auto frontend_started=ros::WallTime::now();
+  const auto account_frontend=[&](int *) {
+    if (expl_manager_->coverageMotionEnabled())
+      coverage_planning_budget_.observe((ros::WallTime::now()-frontend_started).toSec(),true);
+  };
+  int frontend_scope=0;
+  const std::unique_ptr<int,decltype(account_frontend)> frontend_timer(&frontend_scope,account_frontend);
+  // Consume measured passage before the global selector can replace its goal.
+  if (state_ == EXEC_TRAJ && expl_manager_->coverageMotionEnabled() &&
+      (coverage_passage_.active || expl_manager_->hasActiveCoverageRecoveryGoal())) handleGoalReached();
   if (!(state_ == WAIT_TRIGGER || state_ == PLAN_TRAJ || state_ == EXEC_TRAJ ||
         state_ == REORIENT)) {
     // FINISH is terminal after the debounced frontier, coverage-plateau and
@@ -1035,7 +1132,7 @@ void FastExplorationFSM::updateTopoAndGlobalPath() {
       planner_manager_->topo_graph_->odom_node_->neighbors_.empty())) {
     double time;
     if (planner_manager_->hasCommittedTrajectory()) {
-      bool safe = planner_manager_->checkTrajCollision(time);
+      bool safe = planner_manager_->checkTrajCollision(time, expl_manager_->coverageMotionEnabled());
       if (!safe) {
         transitState(CAUTION, "odom_node no nbrs");
       } else {
@@ -1053,12 +1150,29 @@ void FastExplorationFSM::updateTopoAndGlobalPath() {
     double curr_time =
         (ros::Time::now() - planner_manager_->local_data_.start_time_).toSec();
     double time;
-    bool safe = planner_manager_->checkTrajCollision(time);
+    bool safe = planner_manager_->checkTrajCollision(time, expl_manager_->coverageMotionEnabled());
     double total_time = planner_manager_->local_data_.duration_;
     double time2end = total_time - curr_time;
 
+    // A transit observation is an execution commitment. Periodic global
+    // selection used to move/remove the frontier after 0.5 s, before the
+    // vehicle could enter the required ball, then repeatedly plan a new one.
+    // Keep only this already certified trajectory until measured passage.
+    // EXEC_TRAJ still checks collision/velocity every tick; an unsafe path or
+    // the normal end-of-trajectory deadline releases the hold immediately.
+    const bool pending_observation = state_ == EXEC_TRAJ &&
+        expl_manager_->coverageMotionEnabled() && coverage_passage_.active &&
+        !coverage_passage_.passed && expl_manager_->ed_->global_tour_.size() >= 2 &&
+        (expl_manager_->ed_->global_tour_[1].cast<double>() - coverage_passage_.goal).norm()
+            <= coverage_passage_.radius;
+    if (safe && pending_observation &&
+        time2end > coverageReplanLead()) {
+      global_path_update_timer_.start();
+      return;
+    }
+
     if (safe && curr_time < fp_->replan_time_after_traj_start_ &&
-        time2end > fp_->replan_time_before_traj_end_) {
+        time2end > coverageReplanLead()) {
       global_path_update_timer_.start();
       return;
     }
@@ -1129,6 +1243,20 @@ void FastExplorationFSM::updateTopoAndGlobalPath() {
   } else if (res == SUCCEED && state_ != WAIT_TRIGGER && state_ != REORIENT) {
     resetFinishGate("planGlobalPath succeed");
     transitState(PLAN_TRAJ, "planGlobalPath: succeed");
+  } else if (res == FAIL && expl_manager_->coverageMotionEnabled() &&
+             (state_==PLAN_TRAJ || state_==EXEC_TRAJ) &&
+             fd_->odom_vel_.norm()<=fp_->controlled_stop_min_speed_ &&
+             planner_manager_->committedTrajectoryRemainingTime()<=0.05 &&
+             coverage_liveness_.since>0.0 &&
+             ros::Time::now().toSec()-coverage_liveness_.since>=3.0) {
+    // Global FAIL (e.g. every entrance in cooldown) never reaches the local
+    // failure counter. Waiting out each 30 s cooldown at the same bad origin
+    // cannot restore connectivity. Reuse the bounded known-free relocation;
+    // NO_FRONTIER continues through the independent full finish audit above.
+    fd_->caution_force_relocation_=true;
+    fd_->next_plan_retry_time_=ros::Time(0);
+    coverage_liveness_.since=ros::Time::now().toSec();
+    transitState(CAUTION,"coverage: global failure without measured progress; relocate",true);
   } else if (res == FAIL && state_ == FINISH &&
              expl_manager_->frontier_manager_ptr_ &&
              expl_manager_->frontier_manager_ptr_->activeClusterCount() > 0) {

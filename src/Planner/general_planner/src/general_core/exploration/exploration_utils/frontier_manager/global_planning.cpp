@@ -8,6 +8,7 @@
  */
 #include <general_core/exploration/exploration_utils/frontier_manager/frontier_manager.h>
 #include <cmath>
+#include <general_core/exploration/exploration_utils/coverage_guidance/coverage_candidate_window.h>
 
 namespace {
 enum class PlanningRejectReason {
@@ -274,18 +275,28 @@ void FrontierManager::generateTSPViewpoints(
       return first.z() < second.z();
     return tsp_clusters[a]->id_ < tsp_clusters[b]->id_;
   });
+  if (high_speed_view_ctx_.route_enabled) {
+    std::vector<bool> preferred(tsp_clusters.size(),false);
+    for (int i=0;i<static_cast<int>(tsp_clusters.size());++i)
+      preferred[i]=preferred_cluster_ids.count(tsp_clusters[i]->id_);
+    idx2=fast_planner::coverageCandidateWindow(idx2,preferred,
+        std::min(vpp_.global_recluster_size_,high_speed_view_ctx_.route_task_limit));
+  }
   viewpoints.clear();
   for (int i = 0; i < (int)idx2.size(); i++) {
     // 剔除异常值
     // if (i > (int)(idx2.size() / 2.0) && distance2odom2[idx2[i]] > mean_distance * 5.0)
     //   break;
     const auto &cluster = tsp_clusters[idx2[i]];
+    const int alternatives = std::min(std::max(1, high_speed_view_ctx_.route_alternatives),
+        std::max(1, static_cast<int>(cluster->candidate_vps_.size())));
     // A frontier cluster is a generalized-TSP choice: its alternative
     // viewpoints are mutually exclusive.  Treating every alternative as a
     // mandatory ATSP node duplicated frontiers and made the first goal jump
     // between two poses of the same room.  Keep the remaining alternatives in
     // ClusterInfo for local fallback, and expose only the best representative
     // to global routing.
+    for (int alternative=0;alternative<alternatives;++alternative) {
     TopoNode::Ptr vp_node = make_shared<TopoNode>();
     vp_node->is_viewpoint_ = true;
     vp_node->frontier_cluster_id_ = cluster->id_;
@@ -293,10 +304,10 @@ void FrontierManager::generateTSPViewpoints(
       vp_node->center_ = cluster->best_vp_;
       vp_node->yaw_ = cluster->best_vp_yaw_;
     } else {
-      vp_node->center_ = cluster->candidate_vps_.front();
+      vp_node->center_ = cluster->candidate_vps_[alternative];
       vp_node->yaw_ = cluster->candidate_yaws_.empty()
                           ? cluster->best_vp_yaw_
-                          : cluster->candidate_yaws_.front();
+                          : cluster->candidate_yaws_[alternative];
     }
     const ros::Time now = ros::Time::now();
     vp_node->frontier_information_gain_ =
@@ -307,8 +318,14 @@ void FrontierManager::generateTSPViewpoints(
             : std::max(0.0, (now - cluster->first_reachable_time_).toSec());
     vp_node->frontier_pass_debt_ = std::max(0.0, cluster->pass_debt_);
     vp_node->frontier_pass_count_ = std::max(0, cluster->pass_count_);
+    if (alternative < static_cast<int>(cluster->candidate_visible_cells_.size()))
+      vp_node->coverage_visible_cells_ = cluster->candidate_visible_cells_[alternative];
+    if (alternative < static_cast<int>(cluster->candidate_visible_indices_.size()))
+      vp_node->coverage_visible_indices_ = cluster->candidate_visible_indices_[alternative];
     viewpoints.push_back(vp_node);
-    if (static_cast<int>(viewpoints.size()) >= vpp_.global_recluster_size_) {
+    }
+    if (i+1 >= (high_speed_view_ctx_.route_enabled ?
+        std::min(vpp_.global_recluster_size_,high_speed_view_ctx_.route_task_limit) : vpp_.global_recluster_size_)) {
       break;
     }
   }

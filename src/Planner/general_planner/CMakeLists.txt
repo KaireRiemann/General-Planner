@@ -149,6 +149,7 @@ target_link_libraries(general_planner_exploration_utils PUBLIC
 )
 
 add_library(general_planner_exploration STATIC
+        ${GENERAL_PLANNER_EXPLORATION_DIR}/coverage_local_route.cpp
         ${GENERAL_PLANNER_EXPLORATION_DIR}/fast_exploration_manager.cpp
         ${GENERAL_PLANNER_EXPLORATION_DIR}/target_topology_guidance.cpp
         ${GENERAL_PLANNER_EXPLORATION_DIR}/target_route_runtime.cpp
@@ -316,6 +317,21 @@ add_executable(coverage_recovery_identity_self_test
         tests/coverage_recovery_identity_self_test.cpp
 )
 target_include_directories(coverage_recovery_identity_self_test PRIVATE include)
+
+add_executable(coverage_motion_policy_self_test tests/coverage_motion_policy_self_test.cpp)
+add_executable(coverage_route_policy_self_test tests/coverage_route_policy_self_test.cpp)
+target_include_directories(coverage_route_policy_self_test PRIVATE include)
+if(CATKIN_ENABLE_TESTING)
+  add_test(NAME coverage_route_policy_self_test COMMAND coverage_route_policy_self_test)
+endif()
+target_include_directories(coverage_motion_policy_self_test PRIVATE include)
+if(CATKIN_ENABLE_TESTING)
+  add_test(NAME coverage_motion_policy_self_test COMMAND coverage_motion_policy_self_test)
+endif()
+
+add_executable(coverage_observation_integration_test tests/coverage_observation_integration_test.cpp)
+add_dependencies(coverage_observation_integration_test ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
+target_link_libraries(coverage_observation_integration_test general_planner_exploration ${THIRD_PARTY})
 
 add_executable(yaw_candidate_selector_self_test
         ${GENERAL_PLANNER_EXPLORATION_UTILS_DIR}/frontier_manager/yaw_candidate_selector_self_test.cpp
@@ -591,4 +607,14 @@ target_compile_options(target_sparse_domain_self_test PRIVATE -UNDEBUG)
 target_link_libraries(target_sparse_domain_self_test general_planner_exploration ${THIRD_PARTY})
 if(CATKIN_ENABLE_TESTING)
   add_test(NAME target_sparse_domain_self_test COMMAND target_sparse_domain_self_test)
+endif()
+
+# Independent task profile loading, including legacy fallback and mode rates.
+add_executable(tracking_config_self_test tests/tracking_config_self_test.cpp)
+add_dependencies(tracking_config_self_test ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
+target_link_libraries(tracking_config_self_test ${THIRD_PARTY})
+if(CATKIN_ENABLE_TESTING)
+  add_test(NAME tracking_config_self_test COMMAND tracking_config_self_test
+      ${CMAKE_CURRENT_SOURCE_DIR}/config/task_planner_runtime_state2state.yaml
+      ${CMAKE_CURRENT_SOURCE_DIR}/config/task_planner_runtime_tracking.yaml)
 endif()

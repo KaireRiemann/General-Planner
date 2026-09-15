@@ -25,6 +25,31 @@ public:
         started_ = active_goal;
         finish_plan = true;
     }
+    void checkModeConfiguration() {
+        cfg_.task_mode = fsm::TaskMode::STATE_TO_STATE;
+        cfg_.task_mode_str = "state2state";
+        cfg_.backend_type = general_planner::architecture::BackendType::CORRIDOR;
+        cfg_.replan_rate = 3.0;
+        cfg_.tracking_replan_rate = 7.0;
+        cfg_.tracking_use_snap = true;
+        setTaskModeFromString("tracking");
+        check(cfg_.backend_type == general_planner::architecture::BackendType::SNAP_TRACKING,
+              "runtime mode switch ignored tracking use_snap");
+        check(std::abs(last_mode_rate_ - 7.0) < 1.e-9,
+              "mode-change hook did not receive tracking frequency");
+        setTaskModeFromString("state2state");
+        check(std::abs(last_mode_rate_ - 3.0) < 1.e-9,
+              "mode-change hook did not restore state2state frequency");
+        cfg_.tracking_use_snap = false;
+        setTaskModeFromString("tracking");
+        check(cfg_.backend_type == general_planner::architecture::BackendType::JERK_TRACKING,
+              "runtime mode switch ignored minimum-jerk selection");
+    }
+    void onTaskModeChanged() override {
+        last_mode_rate_ = cfg_.replanRate();
+        FsmRos1::onTaskModeChanged();
+    }
+    double last_mode_rate_{0.0};
     void checkCommandLifecycle() {
         for (auto state : {FOLLOW_TRAJ, STATIC_TRACKING,
                            HOLD_TRACKING, EMER_STOP}) {
@@ -60,6 +85,8 @@ public:
 }
 int main(int argc, char **argv) {
     ros::init(argc, argv, "tracking_input_isolation_self_test");
+    TestFsm mode_configuration;
+    mode_configuration.checkModeConfiguration();
     TestFsm command_lifecycle;
     command_lifecycle.checkCommandLifecycle();
     auto odom = boost::make_shared<nav_msgs::Odometry>();

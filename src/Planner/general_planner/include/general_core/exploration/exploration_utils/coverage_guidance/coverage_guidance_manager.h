@@ -1,4 +1,5 @@
 #pragma once
+#include <general_core/exploration/exploration_utils/coverage_guidance/coverage_component_identity.h>
 
 #include <condition_variable>
 #include <deque>
@@ -78,6 +79,7 @@ private:
   Config config_;
   CoverageMapSpec map_spec_;
   std::vector<CoverageVoxelState> persistent_map_;
+  CoverageComponentIdentity component_identity_;
   ros::Publisher marker_pub_;
 
   mutable std::mutex mutex_;

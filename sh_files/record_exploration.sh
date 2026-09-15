@@ -94,6 +94,9 @@ add_topic /drone_0_pcl_render_node/cloud
 # High-speed exploration FSM, generated trajectories, execution, and timing.
 add_topic /planning/replan
 add_topic /planning/heartbeat
+add_topic /planning/coverage_result
+add_topic /planning/exploration/status
+add_topic /planning/exploration/command_enabled
 add_topic /planning/trajectory
 add_topic /planning/yaw_trajectory
 add_topic /planning/pos_cmd

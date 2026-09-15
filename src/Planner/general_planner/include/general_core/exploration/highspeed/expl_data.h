@@ -1,6 +1,7 @@
 #pragma once
 
 #include <Eigen/Eigen>
+#include <general_core/exploration/highspeed/coverage_motion_policy.h>
 #include <general_core/exploration/exploration_utils/pointcloud_topo/graph.h>
 #include <ros/ros.h>
 #include <traj_utils/PolyTraj.h>
@@ -125,6 +126,7 @@ struct ExplorationData {
 };
 
 struct ExplorationParam {
+  CoverageMotionConfig coverage_motion_;
   // params
   int local_viewpoint_num_, global_viewpoint_num_;
   int viewpoint_connection_num_;

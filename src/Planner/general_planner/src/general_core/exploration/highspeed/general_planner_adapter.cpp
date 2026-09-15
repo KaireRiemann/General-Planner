@@ -505,6 +505,29 @@ geometry_utils::Trajectory makeHoldYawTrajectory(double yaw, double duration)
   return out;
 }
 
+// traj_server holds a stopped command's endpoint after expiry. Represent
+// that same hold when a coverage replan switches beyond a short brake tail,
+// so optimization can keep its full compute window without using stale odom.
+bool extendStoppedCommand(geometry_utils::Trajectory &traj, double until,
+                          bool require_zero_acceleration=true)
+{
+  if (traj.empty() || !std::isfinite(until)) return false;
+  const double duration = traj.getTotalDuration();
+  if (until <= duration) return true;
+  const auto position = traj.getPos(duration);
+  const auto velocity=traj.getVel(duration);
+  const auto acceleration=traj.getAcc(duration);
+  // Position commands include acceleration. Yaw commands contain only angle
+  // and rate: the yaw optimizer leaves terminal acceleration unconstrained,
+  // and traj_server holds angle/zero rate after expiry.
+  if (!position.allFinite() || !velocity.allFinite() || !acceleration.allFinite() ||
+      velocity.norm()>1e-3 || (require_zero_acceleration && acceleration.norm()>1e-2)) return false;
+  Eigen::MatrixXd coefficients = Eigen::MatrixXd::Zero(3, 8);
+  coefficients.col(7) = position;
+  traj.emplace_back(until-duration, coefficients);
+  return true;
+}
+
 void fillPolyTrajMsg(const geometry_utils::Trajectory &traj,
                      int order,
                      int coeff_num,
@@ -1168,6 +1191,22 @@ FastPlannerManager::FastPlannerManager()
 
 FastPlannerManager::~FastPlannerManager() = default;
 
+void FastPlannerManager::clearReleasedTrajectory()
+{
+  commit_store_ = std::make_unique<GeneralCommitStore>();
+  committed_pos_traj_->clear();
+  committed_yaw_traj_->clear();
+  latest_exp_pos_traj_->clear();
+  latest_exp_yaw_traj_->clear();
+  committed_stop_active_=false;
+  local_data_.duration_=0.0;
+  local_data_.backup_available_=false;
+  local_data_.backup_start_t_=std::numeric_limits<double>::infinity();
+  local_data_.minco_traj_.clear(); local_data_.minco_yaw_traj_.clear();
+  local_data_.exp_traj_.clear(); local_data_.exp_yaw_traj_.clear();
+  local_data_.backup_traj_.clear(); local_data_.backup_yaw_traj_.clear();
+}
+
 void FastPlannerManager::printTimeCost(double time_threshold, double time_cost, std::string print_info)
 {
   if (time_cost >= time_threshold)
@@ -1285,7 +1324,8 @@ bool FastPlannerManager::getCommittedReplanHeadState(Eigen::Vector3d &pos,
                                                      Eigen::Vector3d &vel,
                                                      double &yaw,
                                                      double *traj_time,
-                                                     double *switch_delay)
+                                                     double *switch_delay,
+                                                     bool extend_terminal_hold)
 {
   if (!commit_store_ || !gcopter_config_)
   {
@@ -1307,7 +1347,7 @@ bool FastPlannerManager::getCommittedReplanHeadState(Eigen::Vector3d &pos,
     return false;
   }
 
-  const double duration = pos_traj.getTotalDuration();
+  double duration = pos_traj.getTotalDuration();
   if (!std::isfinite(duration) || duration <= 1.0e-4 ||
       !std::isfinite(pos_traj.start_WT))
   {
@@ -1315,6 +1355,12 @@ bool FastPlannerManager::getCommittedReplanHeadState(Eigen::Vector3d &pos,
   }
 
   const double delay = std::clamp(gcopter_config_->replanCommitDelay, 0.05, 1.50);
+  if (extend_terminal_hold) {
+    const double until=std::max(0.0,ros::Time::now().toSec()-pos_traj.start_WT)+delay+1e-3;
+    if (!extendStoppedCommand(pos_traj,until) ||
+        (!yaw_traj.empty() && !extendStoppedCommand(yaw_traj,until,false))) return false;
+    duration=pos_traj.getTotalDuration();
+  }
   const double now_tt = std::clamp(ros::Time::now().toSec() - pos_traj.start_WT,
                                   0.0,
                                   duration);
@@ -1362,14 +1408,81 @@ bool FastPlannerManager::getCommittedReplanHeadState(Eigen::Vector3d &pos,
   return true;
 }
 
+bool FastPlannerManager::prepareCoveragePath(std::vector<Eigen::Vector3f> &path,
+                                            bool is_static, double horizon)
+{
+  if (!lidar_map_interface_ || lidar_map_interface_->targetNavigation() || path.size() < 2) return false;
+  Eigen::Vector3d head = local_data_.curr_pos_, velocity = local_data_.curr_vel_;
+  double yaw = local_data_.curr_yaw_, delay = 0.0;
+  if (hasCommittedTrajectory()) {
+    if (!getCommittedReplanHeadState(head, velocity, yaw, nullptr, &delay, true)) {
+      coverage_failure_.kind=CoverageFailureKind::HEAD;
+      return false;
+    }
+  } else if (is_static) velocity.setZero();
+  coverage_motion::Path candidate;
+  for (const auto &p : path) candidate.push_back(p.cast<double>());
+  if (!alignPathStart(candidate, head, true, std::max(1.125, velocity.norm() * delay + 0.75),
+                      std::max(3.0, 2.0 * velocity.norm() * delay + 1.0))) return false;
+  const auto free = [this](const Eigen::Vector3d &a, const Eigen::Vector3d &b) {
+    const int samples = std::max(1, static_cast<int>(std::ceil((b-a).norm() / 0.075)));
+    for (int i=0; i<=samples; ++i)
+      if (!isObservedLocalKnownFree(a+(b-a)*(static_cast<double>(i)/samples))) return false;
+    return true;
+  };
+  candidate = coverage_motion::prefix(candidate, std::max(0.5, horizon));
+  candidate = coverage_motion::observedPrefix(candidate, free);
+  if (candidate.size()<2) return false;
+  coverage_motion::Path dense;
+  const double step = std::max(0.1, 0.9 * gcopter_config_->corridorLineMaxLength);
+  dense.push_back(candidate.front().cast<float>().cast<double>());
+  for (std::size_t i=1; i<candidate.size(); ++i) {
+    const int n = std::max(1, static_cast<int>(std::ceil((candidate[i]-candidate[i-1]).norm()/step)));
+    for (int j=1; j<=n; ++j) dense.push_back((candidate[i-1]+(candidate[i]-candidate[i-1])*
+        (static_cast<double>(j)/n)).cast<float>().cast<double>());
+  }
+  candidate.swap(dense);
+  // Match the downstream ray-sampling phase as well as dense raw-free
+  // evidence. Near voxel boundaries, different sample lattices can otherwise
+  // accept a prefix here and reject it as a whole in the stationary FSM gate.
+  const double legacy_known = estimatePathKnownFreeLength(candidate,
+      std::max(0.05,gcopter_config_->commitKnownFreeSafeDistance),
+      std::max(0.05,gcopter_config_->safetyMapQueryStep));
+  if (legacy_known + 0.01 < coverage_motion::length(candidate))
+    candidate=coverage_motion::prefix(candidate,std::max(0.0,legacy_known-0.30));
+  const double brake_length = velocity.norm() <= 0.20 ? 0.35 :
+      velocity.norm() * (gcopter_config_->plannerLatency + gcopter_config_->controlLatency) +
+      velocity.squaredNorm() / (2.0 * std::max(1.0, gcopter_config_->brakeAccel)) +
+      gcopter_config_->safetyBrakeMargin;
+  if (candidate.size() < 2 || coverage_motion::length(candidate) < brake_length) return false;
+  path.clear();
+  for (const auto &p:candidate) path.push_back(p.cast<float>());
+  return true;
+}
+
 bool FastPlannerManager::planExploreTraj(
     const std::vector<Eigen::Vector3f> &path,
     bool is_static,
     bool clearance_recovery,
     bool rolling_horizon,
-    const TargetRouteExecutionContext &route)
+    const TargetRouteExecutionContext &route,
+    const CoverageObservationContext &observation,
+    const CoverageExecutionContext &coverage)
 {
+  coverage_failure_ = {};
+  if (coverage.enabled && (route.enabled() || clearance_recovery ||
+      !lidar_map_interface_ || lidar_map_interface_->targetNavigation())) return false;
   const ros::Time plan_process_start = ros::Time::now();
+  if (coverage.enabled && hasCommittedTrajectory()) is_static=false;
+  const auto observation_gates=observation.orderedGates();
+  if (observation_gates.size()>3) return false;
+  for (const auto &gate:observation_gates)
+    if (!gate.goal.allFinite() || !std::isfinite(gate.radius) || gate.radius<.05 ||
+        !std::isfinite(gate.yaw) || !std::isfinite(gate.yaw_tolerance) || gate.yaw_tolerance<0) return false;
+  if (observation.enabled && (route.enabled() || clearance_recovery ||
+      !lidar_map_interface_ || lidar_map_interface_->targetNavigation() ||
+      !observation.goal.allFinite() || !std::isfinite(observation.radius) ||
+      observation.radius < 0.05)) return false;
   if (route.enabled() && (!injected_world_map_ || !map_manager_ ||
                           route.world != map_manager_->worldEpoch())) return false;
   if (route.enabled() && route.stop_at_boundary) rolling_horizon = false;
@@ -1410,7 +1523,7 @@ bool FastPlannerManager::planExploreTraj(
   };
 
   if (!is_static && !commit_store_->cmd_traj_info.empty() &&
-      !commit_store_->last_exp_traj_info.empty())
+      (coverage.enabled || !commit_store_->last_exp_traj_info.empty()))
   {
     commit_store_->cmd_traj_info.lock();
     guide_pos_traj = commit_store_->cmd_traj_info.posTraj();
@@ -1420,11 +1533,20 @@ bool FastPlannerManager::planExploreTraj(
     if (!guide_pos_traj.empty() && std::isfinite(committed_duration) &&
         committed_duration > 1.0e-4 && std::isfinite(guide_pos_traj.start_WT))
     {
+      switch_delay = std::clamp(gcopter_config_->replanCommitDelay, 0.05, 1.50);
+      if (coverage.enabled) {
+        const double until=std::max(0.0,replan_process_start_wt-guide_pos_traj.start_WT)+switch_delay+1e-3;
+        if (!extendStoppedCommand(guide_pos_traj,until) ||
+            (!guide_yaw_traj.empty() && !extendStoppedCommand(guide_yaw_traj,until,false))) {
+          coverage_failure_.kind=CoverageFailureKind::HEAD;
+          return false;
+        }
+        committed_duration=guide_pos_traj.getTotalDuration();
+      }
       replan_process_start_tt =
           std::clamp(replan_process_start_wt - guide_pos_traj.start_WT,
                      0.0,
                      committed_duration);
-      switch_delay = std::clamp(gcopter_config_->replanCommitDelay, 0.05, 1.50);
       replan_state_tt = replan_process_start_tt + switch_delay;
       use_committed_replan_state =
           replan_state_tt <= committed_duration + 1.0e-6 &&
@@ -1462,6 +1584,10 @@ bool FastPlannerManager::planExploreTraj(
 
   if (!use_committed_replan_state)
   {
+    if (coverage.enabled && hasCommittedTrajectory()) {
+      coverage_failure_.kind=CoverageFailureKind::HEAD;
+      return false;
+    }
     useCurrentOdomHead();
     if (clearance_recovery)
     {
@@ -1496,6 +1622,7 @@ bool FastPlannerManager::planExploreTraj(
                       use_committed_replan_state,
                       max_head_projection_dist, max_head_arc))
   {
+    coverage_failure_.kind = CoverageFailureKind::HEAD;
     ROS_WARN_STREAM("[highspeed_exp adapter] reject frontend path: failed to align optimization head."
                     << " head_path_dist=" << committed_head_path_dist
                     << " max_allowed=" << max_head_projection_dist
@@ -1584,7 +1711,7 @@ bool FastPlannerManager::planExploreTraj(
       return false;
   }
   const std::size_t raw_sfc_count = sfcs.size();
-  if (!geometry_utils::SimplifySFC(local_path.front(), local_path.back(), sfcs) ||
+  if ((!(coverage.enabled && coverage.spatial_repair) && !geometry_utils::SimplifySFC(local_path.front(), local_path.back(), sfcs)) ||
       sfcs.empty())
   {
     ROS_WARN("[highspeed_exp adapter] General corridor simplification failed.");
@@ -1610,6 +1737,78 @@ bool FastPlannerManager::planExploreTraj(
         "[highspeed_exp adapter] could not clip the complete corridor to one "
         "connected sequence of exploration boxes; keep the original SFC and "
         "retain the sampled commit boundary check");
+  }
+  if (coverage.enabled && coverage.spatial_repair) {
+    // Retain the seed geometry on a spatial retry. Large simplified rooms
+    // otherwise let every speed retry cut the same unsafe corner.
+    geometry_utils::PolytopeVec tubes;
+    for (std::size_t i = 1; i < local_path.size(); ++i) {
+      const auto &a = local_path[i-1]; const auto &b = local_path[i];
+      if ((b-a).norm() < 1.0e-5) continue;
+      const auto it = std::find_if(sfcs.begin(), sfcs.end(), [&](const auto &sfc) {
+        return pointInsideHPoly(sfc.GetPlanes(), a) && pointInsideHPoly(sfc.GetPlanes(), b);
+      });
+      if (it == sfcs.end()) { coverage_failure_.kind = CoverageFailureKind::PATH; return false; }
+      auto tube = *it;
+      const auto source = tube.GetPlanes();
+      Eigen::MatrixX4d planes(source.rows()+6,4); planes.topRows(source.rows())=source;
+      Eigen::Matrix3d basis;
+      basis.col(0)=(b-a).normalized();
+      basis.col(1)=basis.col(0).unitOrthogonal();
+      basis.col(2)=basis.col(0).cross(basis.col(1));
+      for (int axis=0; axis<3; ++axis) {
+        const Eigen::Vector3d normal=basis.col(axis);
+        const double lo=std::min(normal.dot(a),normal.dot(b))-0.20;
+        const double hi=std::max(normal.dot(a),normal.dot(b))+0.20;
+        planes.row(source.rows()+2*axis).head<3>()=normal.transpose();
+        planes(source.rows()+2*axis,3)=-hi;
+        planes.row(source.rows()+2*axis+1).head<3>()=-normal.transpose();
+        planes(source.rows()+2*axis+1,3)=lo;
+      }
+      tube.SetPlanes(planes); tubes.push_back(tube);
+    }
+    sfcs.swap(tubes);
+  }
+  std::size_t observation_sfc_begin=0;
+  std::size_t observation_path_begin=1;
+  bool has_interior_observation=false;
+  for (const auto &gate_observation:observation_gates) {
+    const auto &observation=gate_observation;
+    if ((head.col(0)-observation.goal).norm()<=observation.radius && observation_sfc_begin==0) continue;
+    double guide_distance = std::numeric_limits<double>::infinity();
+    for (std::size_t i=observation_path_begin; i<local_path.size(); ++i) {
+      const double d=coverage_motion::pointSegmentDistance(observation.goal,local_path[i-1],local_path[i]);
+      if (d<guide_distance) {guide_distance=d;observation_path_begin=i;}
+    }
+    // An observation constraint may preserve an existing guide waypoint;
+    // it may not invent an excursion to an unrelated observation.
+    if (guide_distance>observation.radius) return false;
+    // The terminal position is already a hard MINCO boundary. A second tiny
+    // corridor at that same endpoint would add a needless near-zero piece.
+    if ((local_path.back()-observation.goal).norm()<=observation.radius) continue;
+    const auto it=std::find_if(sfcs.begin()+observation_sfc_begin,sfcs.end(),[&](const auto &sfc) {
+      return pointInsideHPoly(sfc.GetPlanes(),observation.goal);
+    });
+    if (it==sfcs.end()) return false;
+    const std::size_t index=std::distance(sfcs.begin(),it);
+    auto gate=*it;
+    const auto source=gate.GetPlanes();
+    Eigen::MatrixX4d planes(source.rows()+6,4); planes.topRows(source.rows())=source;
+    const double half=0.85*observation.radius/std::sqrt(3.0);
+    for (int axis=0; axis<3; ++axis) {
+      planes.row(source.rows()+2*axis).setZero(); planes.row(source.rows()+2*axis+1).setZero();
+      planes(source.rows()+2*axis,axis)=1; planes(source.rows()+2*axis,3)=-observation.goal(axis)-half;
+      planes(source.rows()+2*axis+1,axis)=-1; planes(source.rows()+2*axis+1,3)=observation.goal(axis)-half;
+    }
+    gate.SetPlanes(planes);
+    const auto after=*it;
+    sfcs.insert(sfcs.begin()+index+1,gate);
+    sfcs.insert(sfcs.begin()+index+2,after);
+    observation_sfc_begin=index+2;
+    has_interior_observation=true;
+    // Ordered overlap waypoints are constrained to this box by the existing
+    // spatial mapping. No shared MINCO boundary or objective is modified.
+    ROS_INFO_STREAM("[coverage motion] constrain observation region radius=" << observation.radius);
   }
   h_polys = hPolysFromSfcs(sfcs);
   std::string sfc_reject_reason;
@@ -1647,6 +1846,7 @@ bool FastPlannerManager::planExploreTraj(
       end_yaw = std::atan2(dir.y(), dir.x());
     }
   }
+  if (!observation.gates.empty()) end_yaw=observation.gates.back().yaw;
 
   const SegmentSafetyInfo segment_safety =
       evaluatePathSegmentSafety(local_path, local_data_.curr_yaw_, end_yaw);
@@ -1747,6 +1947,8 @@ bool FastPlannerManager::planExploreTraj(
   double accepted_max_speed = 0.0;
   double accepted_max_acc = 0.0;
   int opt_attempt = 0;
+  bool have_spatial_block=false;
+  Eigen::Vector3d previous_spatial_block=Eigen::Vector3d::Zero();
   const double check_dt = std::max(0.03, gcopter_config_->commitSampleDt);
   auto trajectoryPassesSafetyCheck =
       [&](const geometry_utils::Trajectory &candidate,
@@ -1799,19 +2001,30 @@ bool FastPlannerManager::planExploreTraj(
       const bool left_exploration_boxes =
           safety.first_blocked_state == MapVoxelState::OUT_OF_MAP ||
           !lidar_map_interface_->IsInBox(p.cast<float>());
+      bool coverage_observed=true;
+      Eigen::Vector3d coverage_blocked=p;
+      if (coverage.enabled && (coverage.spatial_repair || observation.enabled)) {
+        const int count=std::max(1,static_cast<int>(std::ceil((p-last_p).norm()/0.075)));
+        for (int i=0; i<=count; ++i) {
+          const Eigen::Vector3d q=last_p+(p-last_p)*(static_cast<double>(i)/count);
+          if (!isObservedLocalKnownFree(q)) {coverage_observed=false;coverage_blocked=q;break;}
+        }
+      }
       if (safety.blocked_by_occupied ||
           ((clearance_recovery ||
             (lidar_map_interface_->targetNavigation() ||
                !gcopter_config_->safetyMapUnknownAllowedForExplore)) &&
            safety.blocked_by_unknown) ||
           recovery_clearance_regressed ||
-          left_exploration_boxes)
+          left_exploration_boxes || !coverage_observed)
       {
+        coverage_failure_.kind = CoverageFailureKind::SPATIAL;
+        coverage_failure_.position = coverage_observed ? safety.first_blocked_pos : coverage_blocked;
         const double blocked_clearance =
             safetyDistanceToOcc(safety.first_blocked_pos);
         ROS_WARN_STREAM(
             "[highspeed_exp adapter] optimized trajectory safety check "
-            "failed; retry slower: attempt="
+            "failed; " << (coverage.enabled && coverage.spatial_repair ? "constrained geometry rejected" : "retry slower") << ": attempt="
             << attempt << " guide_speed=" << guide_speed << " t=" << tt
             << " state=" << safetyStateName(safety.first_blocked_state)
             << " sample_pos=(" << p.transpose() << ")"
@@ -1823,6 +2036,7 @@ bool FastPlannerManager::planExploreTraj(
             << " blocked_clearance=" << blocked_clearance
             << " recovery=" << clearance_recovery
             << " clearance_regressed=" << recovery_clearance_regressed
+            << " coverage_observed=" << coverage_observed
             << " left_exploration_boxes=" << left_exploration_boxes);
         return false;
       }
@@ -1874,7 +2088,8 @@ bool FastPlannerManager::planExploreTraj(
                                          guide_t,
                                          attempt_sfcs,
                                          piece_velocity_bounds,
-                                         pos_traj);
+                                         pos_traj,
+                                         has_interior_observation || (coverage.enabled && coverage.spatial_repair));
     if (ok && !pos_traj.empty())
     {
       const double candidate_max_speed = pos_traj.getMaxVelRate();
@@ -1888,6 +2103,7 @@ bool FastPlannerManager::planExploreTraj(
           candidate_max_speed > velocity_commit_limit + 1.0e-6 ||
           candidate_max_acc > acceleration_commit_limit + 1.0e-6)
       {
+        if (coverage.enabled) coverage_failure_.kind = CoverageFailureKind::DYNAMICS;
         ROS_WARN_STREAM(
             "[highspeed_exp adapter] optimized candidate violates commit "
             "dynamics; retry slower: attempt="
@@ -1903,7 +2119,34 @@ bool FastPlannerManager::planExploreTraj(
       {
         ok = false;
         pos_traj.clear();
+        if (coverage.enabled) {
+          const bool repeats=have_spatial_block &&
+              (coverage_failure_.position-previous_spatial_block).norm()<0.30;
+          previous_spatial_block=coverage_failure_.position;
+          have_spatial_block=true;
+          if (repeats) break;
+        }
         continue;
+      }
+      if (observation.enabled) {
+        // A corridor optimizer may cut the corner at an intermediate guide
+        // point. Require an actual sampled position inside the observation
+        // ball; do not count an interpolated chord as proof of passage.
+        double after=0.0;
+        for (const auto &gate:observation_gates) {
+          bool observes=false;
+          const double dt=std::min(.02,.25*gate.radius/std::max(.5,candidate_max_speed));
+          for (double t=after;t<=pos_traj.getTotalDuration()+dt;t+=dt) {
+            const double sample=std::min(t,pos_traj.getTotalDuration());
+            if ((pos_traj.getPos(sample)-gate.goal).norm()<=gate.radius) {
+              observes=true;after=sample;break;
+            }
+          }
+          if (!observes) {
+            ROS_INFO("[coverage motion] continuation misses ordered observation; use stopped goal");
+            return false;
+          }
+        }
       }
       accepted_opt_speed = opt_speed;
       accepted_velocity_bound = piece_velocity_bounds.maxCoeff();
@@ -1938,6 +2181,21 @@ bool FastPlannerManager::planExploreTraj(
     }
   }
 
+  // Check joint position/yaw in sequence after both optimizers, before any
+  // command is committed. A positional fly-through alone is insufficient.
+  double observation_after=0.0;
+  for (const auto &gate:observation_gates) {
+    bool observes=false;
+    const double dt=std::min(.02,.25*gate.radius/std::max(.5,gcopter_config_->maxVelMag));
+    for (double t=observation_after;t<=pos_traj.getTotalDuration()+dt;t+=dt) {
+      const double sample=std::min(t,pos_traj.getTotalDuration());
+      if ((pos_traj.getPos(sample)-gate.goal).norm()<=gate.radius &&
+          std::abs(std::remainder(yaw_traj.getPos(sample).x()-gate.yaw,2*M_PI))<=gate.yaw_tolerance) {
+        observes=true;observation_after=sample;break;
+      }
+    }
+    if (!observes) {ROS_INFO("[coverage route] reject observation yaw/order mismatch");return false;}
+  }
   geometry_utils::Trajectory committed_pos = pos_traj;
   geometry_utils::Trajectory committed_yaw = yaw_traj;
   ros::Time commit_start_time = ros::Time::now();
@@ -1949,6 +2207,7 @@ bool FastPlannerManager::planExploreTraj(
     const double replan_total_t = (ros::Time::now() - plan_process_start).toSec();
     if (replan_total_t > switch_delay)
     {
+      if (coverage.enabled) coverage_failure_.kind = CoverageFailureKind::HEAD;
       ROS_WARN_STREAM("[highspeed_exp adapter] General commit rejected overtime replan:"
                       << " replan_total_t=" << replan_total_t
                       << " replan_forward_dt=" << switch_delay);
@@ -1961,6 +2220,7 @@ bool FastPlannerManager::planExploreTraj(
         committed_duration);
     if (replan_state_tt <= prefix_start_tt + 1.0e-4)
     {
+      if (coverage.enabled) coverage_failure_.kind = CoverageFailureKind::HEAD;
       ROS_WARN_STREAM("[highspeed_exp adapter] missed replan switch point; keep committed trajectory: "
                       << "prefix_start=" << prefix_start_tt
                       << " switch=" << replan_state_tt);
@@ -3195,7 +3455,7 @@ void FastPlannerManager::polyYawTraj2ROSMsg(traj_utils::PolyTraj &poly_msg, cons
   fillPolyTrajMsg(yaw_traj, 5, 6, poly_msg, cmd_start_time, local_data_.traj_id_);
 }
 
-bool FastPlannerManager::checkTrajCollision(double &collision_time)
+bool FastPlannerManager::checkTrajCollision(double &collision_time, bool coverage_checks)
 {
   collision_time = committedTrajectoryRemainingTime();
   if (!lidar_map_interface_ || !gcopter_config_ ||
@@ -3229,9 +3489,14 @@ bool FastPlannerManager::checkTrajCollision(double &collision_time)
   // sphere are accepted without another map query.  The old adapter raycasted
   // every 30--50 ms segment over the complete remaining horizon and this
   // function is called both by the 100 Hz FSM and every cloud callback.
-  constexpr double kTrajectorySampleDt = 0.05;
+  coverage_checks = coverage_checks && !lidar_map_interface_->targetNavigation();
+  const double sample_dt = coverage_checks && map_manager_
+      ? std::min(0.05, 0.5*map_manager_->getResolution()/std::max(0.5,gcopter_config_->maxVelMag))
+      : 0.05;
   const double collision_clearance =
-      std::max(0.05, gcopter_config_->dilateRadiusHard -
+      std::max(0.05, (coverage_checks ? std::max(gcopter_config_->dilateRadiusHard,
+                                                gcopter_config_->commitKnownFreeSafeDistance)
+                                     : gcopter_config_->dilateRadiusHard) -
                          gcopter_config_->safetyClearanceTolerance);
   double probe_t = now_t;
   Eigen::Vector3d sphere_center = committed_pos.getPos(probe_t);
@@ -3252,9 +3517,26 @@ bool FastPlannerManager::checkTrajCollision(double &collision_time)
   while (probe_t < horizon)
   {
     const Eigen::Vector3d pos = committed_pos.getPos(probe_t);
+    // A LIO free sphere cannot certify the separately inflated ROG map.
+    // Newly occupied voxels used to invalidate all new trajectories while the
+    // old command was still called safe and ran to an unrecoverable endpoint.
+    // Keep inexpensive occupancy queries outside the sphere shortcut. Other
+    // modes retain the previous checker; unknown remains allowed as before.
+    if (coverage_checks && map_manager_ && rog_map_updated_) {
+      const auto raw = map_manager_->getGridType(pos);
+      const auto inflated = map_manager_->getInfGridType(pos);
+      if (!lidar_map_interface_->IsInBox(pos.cast<float>()) || !map_manager_->insideLocalMap(pos) ||
+          raw == rog_map::GridType::OCCUPIED || raw == rog_map::GridType::OUT_OF_MAP ||
+          (raw == rog_map::GridType::KNOWN_FREE && inflated == rog_map::GridType::OCCUPIED)) {
+        collision_time = std::max(0.0, probe_t-now_t);
+        ROS_WARN_STREAM_THROTTLE(0.5,"[coverage collision] committed command invalidated by updated occupancy at t="
+                                << collision_time << " pos=(" << pos.transpose() << ")");
+        return false;
+      }
+    }
     if ((pos - sphere_center).norm() < sphere_radius)
     {
-      probe_t += kTrajectorySampleDt;
+      probe_t += sample_dt;
       continue;
     }
 
@@ -4173,6 +4455,7 @@ EdgeSafetyCost FastPlannerManager::estimateHighSpeedEdgeCost(const std::vector<E
           std::max(gcopter_config_->knownFreeShortLength, stop_distance);
   const SegmentVelocityLimit limit = computeSegmentVelocityLimit(safety);
 
+  cost.speed_limit = limit.final_limit;
   cost.path_length = safety.path_length;
   cost.known_free_length = safety.known_free_length;
   cost.min_clearance = safety.min_clearance;
@@ -4182,6 +4465,9 @@ EdgeSafetyCost FastPlannerManager::estimateHighSpeedEdgeCost(const std::vector<E
 
   const double acc = std::max(1.0, gcopter_config_->maxAccMag);
   const double vmax = std::max(0.5, limit.final_limit);
+  cost.moving_time_cost = coverage_motion::executionTime(
+      cost.path_length, start_vel.norm(), safety.initial_heading_delta,
+      vmax, acc, gcopter_config_->brakeAccel);
   const double accel_dist = vmax * vmax / acc;
   if (cost.path_length <= accel_dist)
   {

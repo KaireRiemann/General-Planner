@@ -406,6 +406,8 @@ namespace fsm {
 
         bool se3AggressiveMode() const;
 
+        virtual void onTaskModeChanged() {}
+
         void setTaskModeFromString(const std::string &mode);
 
         // Supervisor-facing navigation handover API. PAUSE/CLEAR disable
