@@ -2981,6 +2981,8 @@ bool ExplorationTrajOpt::loadCorridors(PolytopeVec &sfcs, bool preserve_order)
 
 double ExplorationTrajOpt::costFunctional(void *ptr, const VecDf &x, VecDf &g)
 {
+  if (std::chrono::steady_clock::now()>=static_cast<ExplorationTrajOpt *>(ptr)->deadline_)
+    throw BudgetExceeded{};
   return static_cast<ExplorationTrajOpt *>(ptr)->evaluateMincoCost(x, g);
 }
 
@@ -2998,8 +3000,11 @@ double ExplorationTrajOpt::evaluateMincoCost(const VecDf &x, VecDf &g)
   return cost;
 }
 
-double ExplorationTrajOpt::optimize(Trajectory &traj, double rel_cost_tol)
+double ExplorationTrajOpt::optimize(Trajectory &traj, double rel_cost_tol, double time_budget)
 {
+  deadline_=time_budget>0.0 ? std::chrono::steady_clock::now()+
+      std::chrono::duration_cast<std::chrono::steady_clock::duration>(std::chrono::duration<double>(time_budget)) :
+      std::chrono::steady_clock::time_point::max();
   opt_vars_.penalty_log.resize(8);
   opt_vars_.penalty_log.setZero();
 
@@ -3073,7 +3078,13 @@ double ExplorationTrajOpt::optimize(Trajectory &traj, double rel_cost_tol)
   params.g_epsilon = 0.0;
   params.delta = rel_cost_tol;
 
-  const int ret = lbfgs::lbfgs_optimize(x, min_cost, &ExplorationTrajOpt::costFunctional, nullptr, nullptr, this, params);
+  int ret=0;
+  try {
+    ret=lbfgs::lbfgs_optimize(x,min_cost,&ExplorationTrajOpt::costFunctional,nullptr,nullptr,this,params);
+  } catch (const BudgetExceeded &) {
+    traj.clear();
+    return INFINITY;
+  }
 
   if (cfg_.print_optimizer_log)
   {
@@ -3180,7 +3191,7 @@ bool ExplorationTrajOpt::optimize(const StatePVAJ &headPVAJ,
                                   PolytopeVec &sfcs,
                                   const VecDf &piece_velocity_bounds,
                                   Trajectory &out_traj,
-                                  bool preserve_corridor_order)
+                                  bool preserve_corridor_order, double time_budget)
 {
   if (guide_path.size() != guide_t.size() || guide_path.empty())
   {
@@ -3199,7 +3210,7 @@ bool ExplorationTrajOpt::optimize(const StatePVAJ &headPVAJ,
   }
   normalizePieceVelocityBounds();
   out_traj.clear();
-  const bool success = !std::isinf(optimize(out_traj, cfg_.opt_accuracy));
+  const bool success = !std::isinf(optimize(out_traj, cfg_.opt_accuracy, time_budget));
   if (success)
   {
     out_traj.start_WT = ros_ptr_->getSimTime();

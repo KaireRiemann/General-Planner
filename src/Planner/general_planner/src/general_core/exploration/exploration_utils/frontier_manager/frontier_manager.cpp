@@ -140,17 +140,14 @@ void FrontierManager::requestGlobalRecluster() {
   force_recluster_.clear();
   global_audit_pending_ = true;
   for (auto &cluster : cluster_list_) {
-    if (cluster->state_ == FrontierState::BLACKLISTED) {
+    if (!cluster || cluster->state_ == FrontierState::BLACKLISTED) {
       continue;
     }
     force_recluster_.insert(cluster->id_);
     if (cluster->state_ == FrontierState::SUSPENDED) {
       cluster->state_ = FrontierState::PENDING_RETRY;
     }
-    if (!cluster->is_dormant_) {
-      cluster->is_reachable_ = true;
-      cluster->needs_revalidation_ = true;
-    }
+    if (cluster->canGenerateViewpoint()) cluster->needs_revalidation_ = true;
   }
 }
 
@@ -317,12 +314,7 @@ void FrontierManager::markClusterGoalSelected(
 int FrontierManager::activeClusterCount() const {
   int count = 0;
   for (const auto &cluster : cluster_list_) {
-    if (cluster->is_dormant_ ||
-        cluster->state_ == FrontierState::VISITED ||
-        cluster->state_ == FrontierState::BLACKLISTED) {
-      continue;
-    }
-    count++;
+    if (cluster && cluster->canGenerateViewpoint()) ++count;
   }
   return count;
 }
@@ -330,9 +322,7 @@ int FrontierManager::activeClusterCount() const {
 int FrontierManager::reachableClusterCount() const {
   int count = 0;
   for (const auto &cluster : cluster_list_) {
-    if (!cluster->is_dormant_ && cluster->is_reachable_ &&
-        cluster->state_ != FrontierState::VISITED &&
-        cluster->state_ != FrontierState::BLACKLISTED) {
+    if (cluster && cluster->hasValidatedViewpoint()) {
       count++;
     }
   }
@@ -341,7 +331,10 @@ int FrontierManager::reachableClusterCount() const {
 
 bool FrontierManager::frontierAuditReady() const {
   return !global_audit_pending_ &&
-         audited_frontier_revision_ == frontier_revision_;
+         audited_frontier_revision_ == frontier_revision_ &&
+         std::none_of(cluster_list_.begin(), cluster_list_.end(), [](const ClusterInfo::Ptr &cluster) {
+           return cluster && cluster->canGenerateViewpoint() && cluster->needs_revalidation_;
+         });
 }
 
 uint64_t FrontierManager::computeSemanticSignature() const {
@@ -425,8 +418,7 @@ void FrontierManager::finishGlobalAuditIfComplete() {
     return;
   }
   for (const auto &cluster : cluster_list_) {
-    if (!cluster || cluster->is_dormant_ ||
-        isTerminalFrontierState(cluster->state_)) {
+    if (!cluster || !cluster->canGenerateViewpoint()) {
       continue;
     }
     if (cluster->needs_revalidation_) {
@@ -1460,7 +1452,7 @@ void FrontierManager::compute_cluster_info(
                       : static_cast<double>(fov_edge_count) / frt_pts.size();
   cluster->gap_ratio_ =
       frt_pts.empty() ? 0.0 : static_cast<double>(gap_count) / frt_pts.size();
-  cluster->needs_revalidation_ = global_audit_pending_;
+  cluster->needs_revalidation_ = true;
   cluster->best_vp_ = Eigen::Vector3f::Zero();
   cluster->best_vp_yaw_ = 0.0f;
   cluster->candidate_vps_.clear();

@@ -57,7 +57,7 @@ struct CoverageExecutionContext {
   bool spatial_repair{false};
 };
 
-enum class CoverageFailureKind { NONE, PATH, SPATIAL, DYNAMICS, HEAD };
+enum class CoverageFailureKind { NONE, PATH, SPATIAL, DYNAMICS, HEAD, BUDGET };
 struct CoveragePlanningFailure {
   CoverageFailureKind kind{CoverageFailureKind::NONE};
   Eigen::Vector3d position{Eigen::Vector3d::Zero()};

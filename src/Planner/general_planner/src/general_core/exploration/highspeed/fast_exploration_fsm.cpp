@@ -383,6 +383,14 @@ void FastExplorationFSM::FSMCallback(const ros::TimerEvent &e) {
       // forever and targets_exhausted could never become true. Record each
       // failed local trajectory directly against the active coverage target.
       const bool failed_recovery=expl_manager_->hasActiveCoverageRecoveryGoal();
+      if (failed_recovery && expl_manager_->retryActiveCoverageGoal()) {
+        coverage_retained_path_.clear();
+        planner_manager_->fast_searcher_->clearPathCache();
+        expl_manager_->ed_->path_next_goal_.clear();
+        fd_->next_plan_retry_time_=ros::Time::now()+ros::Duration(fp_->plan_failure_retry_delay_);
+        transitState(EXEC_TRAJ,"coverage: repair active action while retaining safe command",true);
+        break;
+      }
       if (failed_recovery) {
         expl_manager_->deferCurrentGoalAfterPlanningFailure();
         expl_manager_->ed_->global_tour_.clear();

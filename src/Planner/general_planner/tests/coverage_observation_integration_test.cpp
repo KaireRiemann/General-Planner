@@ -40,7 +40,7 @@ void verifyCommittedContinuity(fast_planner::FastPlannerManager &planner) {
   ros::Time::setNow(planner.local_data_.start_time_+ros::Duration(.25));
   planner.local_data_.curr_pos_=planner.local_data_.minco_traj_.getPos(.25);
   planner.local_data_.curr_vel_=planner.local_data_.minco_traj_.getVel(.25);
-  require(planner.planControlledStopTrajectory(), "continuity fixture could not brake");
+  require(planner.planControlledStopTrajectory(true), "coverage fixture could not commit a validated shorter brake");
   old=planner.local_data_.minco_traj_;
   const double stop_duration=planner.local_data_.duration_;
   old_time=stop_duration-.30;
@@ -53,8 +53,8 @@ void verifyCommittedContinuity(fast_planner::FastPlannerManager &planner) {
   require(planner.planExploreTraj(path,true,false,false,{}, {},{true,false}),
           "short brake tail could not replan through its terminal hold");
   check_prefix(0,old_time); check_prefix(.20,old_time+.20);
-  require((planner.local_data_.minco_traj_.getPos(.36)-old.getPos(stop_duration)).norm()<1e-5 &&
-          planner.local_data_.minco_traj_.getVel(.36).norm()<1e-5,
+  require((planner.local_data_.minco_traj_.getPos(.305)-old.getPos(stop_duration)).norm()<1e-5 &&
+          planner.local_data_.minco_traj_.getVel(.305).norm()<1e-5,
           "short brake tail was extrapolated instead of holding its stopped endpoint");
   const int committed=planner.local_data_.traj_id_;
   require(!planner.planExploreTraj({},true,false,false,{}, {},{true,false}) &&
@@ -109,6 +109,34 @@ struct FrontierObservationEvidenceTestAccess {
     frontier.observation_evidence_.insert(key);
     require(frontier.observedBoundaryFraction({cell,Eigen::Vector3i(2,2,3)})==.5,
             "measured boundary evidence did not stay separate from task labels");
+    // Reproduce the full-launch failure: a small dormant cluster can still
+    // supply a valid viewpoint, so the finish inventory must count it too.
+    auto dormant=std::make_shared<ClusterInfo>();
+    dormant->id_=1;
+    dormant->state_=FrontierState::SUSPENDED;
+    dormant->is_dormant_=true;
+    dormant->is_reachable_=true;
+    dormant->needs_revalidation_=false;
+    frontier.cluster_list_.push_back(dormant);
+    require(dormant->canGenerateViewpoint() && frontier.activeClusterCount()==1 &&
+            frontier.reachableClusterCount()==1,
+            "executable dormant frontier disappeared from the finish inventory");
+    frontier.requestGlobalRecluster();
+    require(dormant->needs_revalidation_ && frontier.reachableClusterCount()==0,
+            "cached reachability survived the start of a full audit");
+    frontier.finishGlobalAuditIfComplete();
+    require(!frontier.frontierAuditReady(),"full audit skipped an unvalidated dormant frontier");
+    dormant->needs_revalidation_=false;
+    frontier.finishGlobalAuditIfComplete();
+    require(frontier.frontierAuditReady() && frontier.reachableClusterCount()==1,
+            "validated dormant viewpoint did not veto completion");
+    dormant->needs_revalidation_=true;
+    require(!frontier.frontierAuditReady(),
+            "a rebuilt cluster reused an old audit with the same semantic revision");
+    dormant->needs_revalidation_=false;
+    dormant->state_=FrontierState::VISITED;
+    require(!dormant->canGenerateViewpoint() && frontier.activeClusterCount()==0 &&
+            frontier.reachableClusterCount()==0,"visited frontier returned to the executable inventory");
   }
 };
 
@@ -131,14 +159,67 @@ struct CoverageRecoveryTestAccess {
     require(manager.coverageRecoveryExhausted(region),"all failed entrances not recognized as search exhausted");
     const auto old=planner.local_data_.curr_pos_;
     planner.local_data_.curr_pos_.x()+=3.5;
-    require(!manager.coverageRecoveryExhausted(region),"new execution origin could not retry stale local failure");
+    require(manager.coverageRecoveryExhausted(region),"moving the execution origin reset an unchanged action budget");
     for (int i=0; i<2; ++i) manager.deferCoverageRecovery(action,
         FastExplorationManager::CoverageRecoveryOutcome::TRAJECTORY_FAILURE);
     planner.local_data_.curr_pos_=old;
     require(manager.coverageRecoveryExhausted(region),"A->B->A overwrote the previous origin's failed attempts");
     planner.local_data_.curr_pos_.x()+=7.0;
     require(manager.coverageRecoveryExhausted(action),"unchanged map allowed an unlimited sequence of new origin retries");
+    auto observed_region=action;observed_region.voxel_count=40;
+    require(!manager.coverageRecoveryExhausted(observed_region),"new evidence in the actual target did not reopen its action");
     planner.local_data_.curr_pos_=old;
+    manager.resetCoverageRecovery();
+    // Two differently sized unknown components may share one approach. A
+    // component switch is not measured shrinkage and cannot replenish the
+    // trajectory-failure budget of that unchanged executable approach.
+    action=region; action.approach_candidates.clear();
+    manager.deferCoverageRecovery(action,
+        FastExplorationManager::CoverageRecoveryOutcome::TRAJECTORY_FAILURE);
+    auto smaller_neighbor=action;
+    smaller_neighbor.stable_id=43; smaller_neighbor.voxel_count=30;
+    require(manager.coverageRecoveryCooling(smaller_neighbor,ros::Time::now(),nullptr),
+            "a smaller neighboring component bypassed the failed approach cooldown");
+    manager.deferCoverageRecovery(smaller_neighbor,
+        FastExplorationManager::CoverageRecoveryOutcome::TRAJECTORY_FAILURE);
+    require(manager.coverageRecoveryExhausted(action) &&
+            manager.coverageRecoveryExhausted(smaller_neighbor),
+            "alternating component sizes reset the same approach failure budget");
+    for (int i=0; i<3; ++i) {
+      manager.deferCoverageRecovery(action,
+          FastExplorationManager::CoverageRecoveryOutcome::TRAJECTORY_FAILURE);
+      require(manager.coverageRecoveryExhausted(smaller_neighbor),
+              "an aliased component was compared with another component's voxel count");
+    }
+    observed_region=action; observed_region.voxel_count=40;
+    require(!manager.coverageRecoveryExhausted(observed_region),
+            "same-component measured shrinkage no longer reopened its approach");
+    manager.resetCoverageRecovery();
+    // Reproduce the tail: no frontend for 20 s, an active bounded CP action,
+    // and successive valid CP snapshots. New CP snapshots must not postpone
+    // audit, while a reachable frontier (even cooling) must reopen exploration.
+    manager.coverage_finish_last_progress_time_=ros::Time::now()-ros::Duration(25);
+    manager.coverage_finish_progress_observed_voxels_=20000;
+    manager.has_active_coverage_goal_=true;
+    manager.updateCoverageCompletion(0,true,false,20060);
+    require(!manager.coverage_terminal_audit_pending_,"stale plan started completion audit");
+    manager.updateCoverageCompletion(0,true,true,20060);
+    require(manager.coverage_terminal_audit_pending_ && manager.has_active_coverage_goal_,
+            "completion failed to drain the active action or canceled it early");
+    manager.updateCoverageCompletion(0,true,true,20072);
+    require(manager.coverage_terminal_audit_pending_,"CP snapshot churn canceled completion audit");
+    manager.updateCoverageProgress(20072,35519);
+    require(manager.coverage_terminal_audit_pending_ &&
+            manager.coverage_terminal_audit_observed_voxels_==20060,
+            "old boundary gains crossed the previous credit threshold and reopened the audit");
+    manager.updateCoverageProgress(21000,35519);
+    require(!manager.coverage_terminal_audit_pending_,"large CP observation gain was ignored by completion");
+    manager.coverage_finish_last_progress_time_=ros::Time::now()-ros::Duration(25);
+    manager.updateCoverageCompletion(0,true,true,21000);
+    manager.updateCoverageCompletion(1,true,true,21000);
+    require(!manager.coverage_terminal_audit_pending_ &&
+            (ros::Time::now()-manager.coverage_finish_last_progress_time_).toSec()<.1,
+            "reachable frontier in cooldown was treated as coverage completion");
     manager.resetCoverageRecovery();
     manager.coverage_route_config_.enabled=true;
     manager.coverage_route_tasks_[71].deferred=6;

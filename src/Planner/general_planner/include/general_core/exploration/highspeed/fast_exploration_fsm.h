@@ -174,7 +174,8 @@ private:
   void battaryCallback(const sensor_msgs::BatteryStateConstPtr &msg);
   void resetFinishGate(const string &reason);
   void requestFrontierRecheck(const string &reason);
-  bool finishGateSatisfied(const string &reason) const;
+  // Before terminal braking, require all finish evidence except vehicle rest.
+  bool finishGateSatisfied(const string &reason, bool require_stopped = true) const;
   void handleNoFrontierResult(const string &source);
   bool handleGoalReached();
   void beginTargetArrivalVerification(const string &source);

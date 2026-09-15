@@ -127,7 +127,7 @@ void FastExplorationFSM::pubState() {
   state_marker.text = fd_->state_str_[int(state_)];
   if ((state_ == PAUSED || state_ == PAUSING || state_ == FINISH) && !coverage_result_.empty()) {
     std::ostringstream result;
-    result << "COVERAGE_" << coverage_result_ << " " << std::fixed << std::setprecision(1)
+    result << (coverage_result_=="CONVERGED" ? "FINISH / COVERAGE_" : "COVERAGE_") << coverage_result_ << " " << std::fixed << std::setprecision(1)
            << 100.0*coverage_result_ratio_ << "%";
     state_marker.text=result.str();
   }
@@ -189,7 +189,7 @@ bool FastExplorationFSM::trajectoryEnded() const {
   return remaining <= std::max(0.05, fp_->replan_time_before_traj_end_);
 }
 
-bool FastExplorationFSM::finishGateSatisfied(const string &reason) const {
+bool FastExplorationFSM::finishGateSatisfied(const string &reason, bool require_stopped) const {
   if (!fd_->have_odom_ || fd_->last_odom_receive_time_.isZero() ||
       (ros::Time::now()-fd_->last_odom_receive_time_).toSec()>fp_->max_odom_age_ ||
       !expl_manager_->frontier_manager_ptr_) return false;
@@ -208,15 +208,6 @@ bool FastExplorationFSM::finishGateSatisfied(const string &reason) const {
   const double no_frontier_duration =
       (ros::Time::now() - finish_gate_.first_no_frontier_time).toSec();
   if (no_frontier_duration < fp_->finish_no_frontier_min_duration_) {
-    return false;
-  }
-  const bool vehicle_slow =
-      fd_->odom_vel_.norm() <= fp_->finish_slow_speed_;
-  const bool traj_ended = trajectoryEnded();
-  if (fp_->finish_require_vehicle_slow_ && !vehicle_slow) {
-    return false;
-  }
-  if (!traj_ended) {
     return false;
   }
   if (expl_manager_->frontier_manager_ptr_) {
@@ -274,7 +265,10 @@ bool FastExplorationFSM::finishGateSatisfied(const string &reason) const {
                  << coverage_finish.next_retry_duration << "s");
     return false;
   }
-  if (coverage_finish.guard_enabled) {
+  if (require_stopped &&
+      ((fp_->finish_require_vehicle_slow_ && fd_->odom_vel_.norm() > fp_->finish_slow_speed_) ||
+       !trajectoryEnded())) return false;
+  if (require_stopped && coverage_finish.guard_enabled) {
     ROS_WARN_STREAM("[finish gate] " << "frontier and coverage audit converged after "
                     << reason << ": coverage=" << std::fixed
                     << std::setprecision(4)
@@ -382,6 +376,16 @@ void FastExplorationFSM::handleNoFrontierResult(const string &source) {
     requestFrontierRecheck(source);
   }
 
+  if (expl_manager_->coverageTerminalAuditPending() &&
+      !expl_manager_->hasActiveCoverageRecoveryGoal() &&
+      !planner_manager_->hasCommittedStopTrajectory() &&
+      fd_->odom_vel_.norm()>fp_->controlled_stop_min_speed_ &&
+      finishGateSatisfied(source, false)) {
+    // Full audit and repeated empty results must precede the stop command.
+    // A request to refresh frontiers is not itself proof of completion.
+    stopTraj("coverage terminal audit: settle before completion");
+  }
+
   if (finishGateSatisfied(source)) {
     if (recordCoverageTermination(source)) return;
     if (expl_manager_->swarm_coordinator_ &&
@@ -485,7 +489,10 @@ bool FastExplorationFSM::handleGoalReached() {
     marked = expl_manager_->frontier_manager_ptr_->markClusterVisitedNear(
         goal, visited_radius);
   }
-  if (observed_passage) ROS_INFO("[coverage motion] measured observation passage; hand off while moving");
+  if (observed_passage) {
+    expl_manager_->retainCoverageContinuation(planner_manager_->committedTrajectoryRemainingTime()-0.8);
+    ROS_INFO("[coverage motion] measured observation passage; hand off while moving");
+  }
   resetCoverageMotion();
   expl_manager_->ed_->has_goal_lock_ = false;
   expl_manager_->ed_->locked_goal_cluster_id_ = -1;
@@ -1133,6 +1140,13 @@ int FastExplorationFSM::callExplorationPlanner() {
       (safety_rejected || reorientation_required ||
        (high_speed && geometry_rejected));
   if (reject_path) {
+    if (reorientation_required && !safety_rejected && expl_manager_->coverageContinuationActive()) {
+      double collision_time=0.0;
+      if (planner_manager_->checkTrajCollision(collision_time,true)) {
+        planner_manager_->coverage_failure_.kind=CoverageFailureKind::HEAD;
+        return FAIL;
+      }
+    }
     if (coverage_motion_enabled) planner_manager_->coverage_failure_.kind =
         safety.min_clearance+.05<required_clearance ? CoverageFailureKind::SPATIAL :
         (!safety.backup_feasible ? CoverageFailureKind::PATH : CoverageFailureKind::DYNAMICS);
@@ -1192,9 +1206,11 @@ int FastExplorationFSM::callExplorationPlanner() {
                                         known_route ? prepared_target_route_.context
                                                     : TargetRouteExecutionContext{}, observation,
                                         CoverageExecutionContext{coverage_motion_enabled,false});
+  const double backend_elapsed=(ros::WallTime::now()-optimization_started).toSec();
   const bool route_retry_budget = !coverage_motion_enabled ||
-      fd_->odom_vel_.norm()<=.20 || planner_manager_->committedTrajectoryRemainingTime()>
-          (ros::WallTime::now()-optimization_started).toSec()+planner_manager_->gcopter_config_->controlLatency+.1;
+      (backend_elapsed<0.18 && planner_manager_->coverage_failure_.kind!=CoverageFailureKind::BUDGET &&
+       (fd_->odom_vel_.norm()<=.20 || planner_manager_->committedTrajectoryRemainingTime()>
+          backend_elapsed+planner_manager_->gcopter_config_->controlLatency+.1));
   bool backend_retried=false;
   if (!planned && observation.enabled && route_retry_budget &&
       (!coverage_motion_enabled ||
@@ -1213,10 +1229,9 @@ int FastExplorationFSM::callExplorationPlanner() {
         CoverageExecutionContext{coverage_motion_enabled,false});
     ROS_INFO_STREAM("[coverage motion] continuation fallback success=" << planned);
   }
-  const bool stationary_recovery = coverage_motion_enabled && fd_->odom_vel_.norm() <= 0.20 &&
-      (expl_manager_->coverageRouteEnabled() || expl_manager_->hasActiveCoverageRecoveryGoal() ||
-       expl_manager_->ed_->global_tour_.size() <= 2);
-  if (!planned && stationary_recovery && !backend_retried &&
+  const bool stationary_recovery = coverage_motion_enabled && fd_->odom_vel_.norm() <= 0.20;
+  if (!planned && coverage_motion_enabled && !backend_retried && route_retry_budget &&
+      (stationary_recovery || planner_manager_->coverage_failure_.kind==CoverageFailureKind::SPATIAL) &&
       !fd_->reorientation_required_ &&
       planner_manager_->coverage_failure_.kind != CoverageFailureKind::HEAD) {
     // One geometric retry at the same remote goal, rather than four speeds
@@ -1939,7 +1954,7 @@ void FastExplorationFSM::stopTraj(const string &reason) {
   // mathematical endpoint can still carry several m/s of velocity, after which
   // traj_server switches directly to position HOLD.  Commit and publish an
   // actual dynamically feasible braking polynomial first.
-  if (planner_manager_->planControlledStopTrajectory()) {
+  if (planner_manager_->planControlledStopTrajectory(expl_manager_->coverageMotionEnabled())) {
     traj_utils::PolyTraj stop_pos_msg;
     traj_utils::PolyTraj stop_yaw_msg;
     auto *info = &planner_manager_->local_data_;

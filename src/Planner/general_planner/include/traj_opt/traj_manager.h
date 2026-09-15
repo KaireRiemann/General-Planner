@@ -1,5 +1,7 @@
 #pragma once
 
+#include <chrono>
+
 #include <cstdint>
 #include <fstream>
 #include <limits>
@@ -736,7 +738,8 @@ public:
                 PolytopeVec &sfcs,
                 const VecDf &piece_velocity_bounds,
                 Trajectory &out_traj,
-                bool preserve_corridor_order = false);
+                bool preserve_corridor_order = false,
+                double time_budget = 0.0);
 
   bool optimize(const StatePVAJ &headPVAJ,
                 const StatePVAJ &tailPVAJ,
@@ -817,7 +820,7 @@ private:
   void clearPieceVelocityBounds();
   void setPieceVelocityBounds(const VecDf &piece_velocity_bounds);
   void normalizePieceVelocityBounds();
-  double optimize(Trajectory &traj, double rel_cost_tol);
+  double optimize(Trajectory &traj, double rel_cost_tol, double time_budget = 0.0);
   double evaluateMincoCost(const VecDf &x, VecDf &g);
   bool loadCorridors(PolytopeVec &sfcs, bool preserve_order = false);
 
@@ -825,6 +828,8 @@ private:
   static SnapBoundaryState toSnapBoundary(const StatePVAJ &state);
 
 private:
+  struct BudgetExceeded {};
+  std::chrono::steady_clock::time_point deadline_{std::chrono::steady_clock::time_point::max()};
   traj_opt::Config cfg_;
   std::ofstream failed_traj_log_;
   std::ofstream penalty_log_;

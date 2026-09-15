@@ -415,7 +415,7 @@ public:
   bool prepareCoveragePath(std::vector<Eigen::Vector3f> &path, bool is_static,
                            double horizon = 26.0);
   CoveragePlanningFailure coverage_failure_;
-  bool planControlledStopTrajectory();
+  bool planControlledStopTrajectory(bool coverage = false);
   bool flyToSafeRegion(bool is_static, bool force_relocation = false);
   void polyTraj2ROSMsg(traj_utils::PolyTraj &poly_msg, const ros::Time &start_time);
   void polyYawTraj2ROSMsg(traj_utils::PolyTraj &poly_msg, const ros::Time &start_time);

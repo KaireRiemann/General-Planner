@@ -1473,6 +1473,7 @@ bool FastPlannerManager::planExploreTraj(
   if (coverage.enabled && (route.enabled() || clearance_recovery ||
       !lidar_map_interface_ || lidar_map_interface_->targetNavigation())) return false;
   const ros::Time plan_process_start = ros::Time::now();
+  const auto planning_wall_start=std::chrono::steady_clock::now();
   if (coverage.enabled && hasCommittedTrajectory()) is_static=false;
   const auto observation_gates=observation.orderedGates();
   if (observation_gates.size()>3) return false;
@@ -1504,6 +1505,7 @@ bool FastPlannerManager::planExploreTraj(
   double replan_process_start_tt = 0.0;
   double replan_state_tt = 0.0;
   double committed_duration = 0.0;
+  double original_command_duration = 0.0;
   double switch_delay = 0.0;
   bool use_committed_replan_state = false;
 
@@ -1534,6 +1536,7 @@ bool FastPlannerManager::planExploreTraj(
         committed_duration > 1.0e-4 && std::isfinite(guide_pos_traj.start_WT))
     {
       switch_delay = std::clamp(gcopter_config_->replanCommitDelay, 0.05, 1.50);
+      original_command_duration=committed_duration;
       if (coverage.enabled) {
         const double until=std::max(0.0,replan_process_start_wt-guide_pos_traj.start_WT)+switch_delay+1e-3;
         if (!extendStoppedCommand(guide_pos_traj,until) ||
@@ -1947,8 +1950,6 @@ bool FastPlannerManager::planExploreTraj(
   double accepted_max_speed = 0.0;
   double accepted_max_acc = 0.0;
   int opt_attempt = 0;
-  bool have_spatial_block=false;
-  Eigen::Vector3d previous_spatial_block=Eigen::Vector3d::Zero();
   const double check_dt = std::max(0.03, gcopter_config_->commitSampleDt);
   auto trajectoryPassesSafetyCheck =
       [&](const geometry_utils::Trajectory &candidate,
@@ -2059,6 +2060,13 @@ bool FastPlannerManager::planExploreTraj(
   };
   for (const double opt_speed : opt_speed_attempts)
   {
+    const double elapsed=std::chrono::duration<double>(std::chrono::steady_clock::now()-planning_wall_start).count();
+    const double remaining_budget=0.32-elapsed;
+    if (coverage.enabled && remaining_budget<0.01) {
+      coverage_failure_.kind=CoverageFailureKind::BUDGET;
+      ROS_WARN_THROTTLE(0.5,"[coverage budget] stop optimization before the commit deadline");
+      return false;
+    }
     ++opt_attempt;
     geometry_utils::PolytopeVec attempt_sfcs = sfcs;
     const double attempt_scale =
@@ -2089,7 +2097,8 @@ bool FastPlannerManager::planExploreTraj(
                                          attempt_sfcs,
                                          piece_velocity_bounds,
                                          pos_traj,
-                                         has_interior_observation || (coverage.enabled && coverage.spatial_repair));
+                                         has_interior_observation || (coverage.enabled && coverage.spatial_repair),
+                                         coverage.enabled ? remaining_budget : 0.0);
     if (ok && !pos_traj.empty())
     {
       const double candidate_max_speed = pos_traj.getMaxVelRate();
@@ -2120,11 +2129,9 @@ bool FastPlannerManager::planExploreTraj(
         ok = false;
         pos_traj.clear();
         if (coverage.enabled) {
-          const bool repeats=have_spatial_block &&
-              (coverage_failure_.position-previous_spatial_block).norm()<0.30;
-          previous_spatial_block=coverage_failure_.position;
-          have_spatial_block=true;
-          if (repeats) break;
+          // Retiming cannot certify occupied geometry. Let the caller rebuild
+          // an observed-free constrained corridor instead of lowering speed.
+          break;
         }
         continue;
       }
@@ -2154,6 +2161,11 @@ bool FastPlannerManager::planExploreTraj(
       accepted_max_acc = candidate_max_acc;
       sfcs.swap(attempt_sfcs);
       break;
+    }
+    if (coverage.enabled && std::chrono::duration<double>(std::chrono::steady_clock::now()-planning_wall_start).count()>=0.31) {
+      coverage_failure_.kind=CoverageFailureKind::BUDGET;
+      ROS_WARN_THROTTLE(0.5,"[coverage budget] MINCO deadline reached; retain executable command");
+      return false;
     }
     ROS_WARN_STREAM("[highspeed_exp adapter] MINCO optimization attempt "
                     << opt_attempt << " failed:"
@@ -2204,6 +2216,27 @@ bool FastPlannerManager::planExploreTraj(
 
   if (use_committed_replan_state)
   {
+    // A verified terminal hold has a time-invariant state. Move its switch
+    // time to the earliest safe command handoff; preserving a fixed 450 ms
+    // delay after every brake creates a deliberate pause with no safety gain.
+    if (coverage.enabled && original_command_duration>0.0 &&
+        replan_state_tt>original_command_duration && head.rightCols<3>().norm()<1e-4) {
+      const double new_tt=std::max(original_command_duration+0.01,
+          ros::Time::now().toSec()-guide_pos_traj.start_WT+std::max(0.03,gcopter_config_->controlLatency));
+      general_utils::StatePVAJ held;
+      if (extendStoppedCommand(guide_pos_traj,new_tt+0.02) &&
+          (guide_yaw_traj.empty() || extendStoppedCommand(guide_yaw_traj,new_tt+0.02,false)) &&
+          guide_pos_traj.getState(new_tt,held) && (held-head).norm()<1e-4) {
+        const bool yaw_matches=guide_yaw_traj.empty() ||
+            (std::abs(std::remainder(guide_yaw_traj.getPos(new_tt).x()-yaw_init(0),2*M_PI))<1e-5 &&
+             std::abs(yaw_init(1))+std::abs(yaw_init(2))+std::abs(yaw_init(3))<1e-4);
+        if (yaw_matches) {
+          replan_state_tt=new_tt;
+          switch_delay=new_tt-replan_process_start_tt;
+          committed_duration=guide_pos_traj.getTotalDuration();
+        }
+      }
+    }
     const double replan_total_t = (ros::Time::now() - plan_process_start).toSec();
     if (replan_total_t > switch_delay)
     {
@@ -3036,7 +3069,7 @@ bool FastPlannerManager::planExploreTraj(
   return true;
 }
 
-bool FastPlannerManager::planControlledStopTrajectory()
+bool FastPlannerManager::planControlledStopTrajectory(bool coverage)
 {
   if (!gcopter_config_ || !commit_store_)
   {
@@ -3136,7 +3169,12 @@ bool FastPlannerManager::planControlledStopTrajectory()
   geometry_utils::Trajectory accepted_yaw;
   std::string last_reject_reason = "no_candidate";
 
-  for (const double duration_scale : {1.0, 1.25, 1.60, 2.10, 2.80})
+  // Shorter feasible brakes can stay inside newly reduced free space. Every
+  // candidate still passes exactly the same dynamics and known-free checks.
+  const std::vector<double> stop_scales=coverage ?
+      std::vector<double>{0.70,0.85,1.0,1.25,1.60,2.10,2.80} :
+      std::vector<double>{1.0,1.25,1.60,2.10,2.80};
+  for (const double duration_scale : stop_scales)
   {
     const double stop_duration =
         already_stopped ? 0.50 : duration_scale * base_duration;

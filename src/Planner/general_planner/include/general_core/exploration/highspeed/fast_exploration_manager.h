@@ -110,6 +110,10 @@ public:
   CoverageFinishStatus coverageFinishStatus();
   void updateCoverageProgress();
   void resetCoverageRecovery();
+  void retainCoverageContinuation(double seconds);
+  bool coverageContinuationActive() const;
+  bool retryActiveCoverageGoal();
+  bool coverageTerminalAuditPending() const { return coverageMotionEnabled() && coverage_terminal_audit_pending_; }
   void deferCurrentGoalAfterPlanningFailure();
   bool completeActiveCoverageGoalIfReached(const Vector3d &pos);
   bool hasActiveCoverageRecoveryGoal() const {
@@ -210,6 +214,7 @@ private:
     CoverageRecoveryIdentity identity;
     Eigen::Vector3d unknown_position{Eigen::Vector3d::Zero()};
     int voxel_count{0};
+    uint64_t voxel_count_stable_id{0};
     ros::Time until;
     int no_gain_attempts{0};
     int failure_attempts{0};
@@ -219,7 +224,12 @@ private:
     bool origin_sensitive{false};
     Eigen::Vector3d failure_origin{Eigen::Vector3d::Zero()};
     int observed_at_failure{-1};
+    Eigen::Vector3d blocked_position{Eigen::Vector3d::Zero()};
+    bool blocked_was_untraversable{false};
   };
+  void updateCoverageCompletion(int reachable, bool empty_stable, bool plan_valid,
+                                int observed);
+  void updateCoverageProgress(int observed, int valid);
   bool coverageFailureContextChanged(const DeferredCoverageGoal &goal,
                                     const CoverageTarget &target) const;
   bool coverageFailureMatches(const DeferredCoverageGoal &goal,
@@ -256,6 +266,10 @@ private:
   CoverageTarget active_coverage_target_;
   ros::Time active_coverage_goal_start_;
   int active_coverage_observed_voxels_{-1};
+  int active_coverage_local_failures_{0};
+  bool coverage_terminal_audit_pending_{false};
+  int coverage_terminal_audit_observed_voxels_{-1};
+  ros::Time coverage_continuation_until_;
   int coverage_finish_progress_observed_voxels_{-1};
   ros::Time coverage_finish_last_progress_time_;
   double coverage_recovery_cooldown_{45.0};

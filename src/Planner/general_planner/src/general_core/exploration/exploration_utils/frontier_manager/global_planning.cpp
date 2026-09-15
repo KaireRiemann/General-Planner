@@ -10,27 +10,6 @@
 #include <cmath>
 #include <general_core/exploration/exploration_utils/coverage_guidance/coverage_candidate_window.h>
 
-namespace {
-enum class PlanningRejectReason {
-  NONE,
-  STATE
-};
-
-PlanningRejectReason clusterPlanningRejectReason(
-    const ClusterInfo::Ptr &cluster, const FrontierParam &param) {
-  (void)param;
-  if (!cluster) {
-    return PlanningRejectReason::STATE;
-  }
-  if (cluster->state_ == FrontierState::VISITED ||
-      cluster->state_ == FrontierState::BLACKLISTED) {
-    return PlanningRejectReason::STATE;
-  }
-  return PlanningRejectReason::NONE;
-}
-
-}  // namespace
-
 class UF {
 public:
   UF(int size) {
@@ -130,7 +109,7 @@ void FrontierManager::generateTSPViewpoints(
   for (auto &cluster : cluster_list_) {
     if (revp_clusters_set.count(cluster))
       continue;
-    if (clusterPlanningRejectReason(cluster, frtp_) != PlanningRejectReason::NONE) {
+    if (!cluster || !cluster->canGenerateViewpoint()) {
       continue;
     }
     candidate_clusters.push_back({cluster, computeCandidateDistance(cluster)});
@@ -210,13 +189,15 @@ void FrontierManager::generateTSPViewpoints(
   for (int i = 0; i < static_cast<int>(clusters_can_be_searched_.size()); i++) {
     auto cluster = clusters_can_be_searched_[i];
     selectBestViewpoint(cluster);
-    if (!cluster->is_reachable_)
+    if (cluster->state_ == FrontierState::BLACKLISTED) {
+      std::lock_guard<mutex> lock(mtx);
+      cluster2remove.insert(cluster->id_);
+      continue;
+    }
+    if (!cluster->is_reachable_ || !cluster->canGenerateViewpoint())
       continue;
     mtx.lock();
     tsp_clusters.push_back(cluster);
-    if (cluster->state_ == FrontierState::BLACKLISTED) {
-      cluster2remove.insert(cluster->id_);
-    }
     mtx.unlock();
   }
   for (auto &cluster : revp_clusters_vec) {

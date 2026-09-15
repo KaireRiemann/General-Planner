@@ -174,6 +174,15 @@ struct ClusterInfo {
   double gap_ratio_;
   bool needs_revalidation_;
 
+  // Dormancy is a size heuristic, not evidence that a viewpoint cannot be
+  // executed. Candidate generation and the full audit share this inventory.
+  bool canGenerateViewpoint() const {
+    return state_ != FrontierState::VISITED && state_ != FrontierState::BLACKLISTED;
+  }
+  bool hasValidatedViewpoint() const {
+    return canGenerateViewpoint() && !needs_revalidation_ && is_reachable_;
+  }
+
   // bbox
   Eigen::Vector3f box_max_;
   Eigen::Vector3f box_min_;

@@ -661,19 +661,76 @@ void FastExplorationManager::updateCoverageProgress() {
   if (!coverageMotionEnabled() || !coverage_guidance_) return;
   const auto plan=coverage_guidance_->latestUsablePlan();
   if (!plan || !plan->valid) return;
-  const ros::Time now = ros::Time::now();
-  if (coverage_finish_progress_observed_voxels_ < 0 ||
-      coverage_finish_last_progress_time_.isZero()) {
-    coverage_finish_progress_observed_voxels_ =
-        plan->observed_voxel_count;
-    coverage_finish_last_progress_time_ = now;
-  } else if (plan->observed_voxel_count >=
-             coverage_finish_progress_observed_voxels_ +
-                 coverage_finish_min_progress_voxels_) {
-    coverage_finish_progress_observed_voxels_ =
-        plan->observed_voxel_count;
-    coverage_finish_last_progress_time_ = now;
+  updateCoverageProgress(plan->observed_voxel_count,plan->valid_voxel_count);
+}
+
+void FastExplorationManager::updateCoverageProgress(int observed, int valid) {
+  if (observed < 0 || valid <= 0) return;
+  // Full frontier audits can be empty while CP is still exposing a new room.
+  // Retain that progress guard, but do not renew a 20-second epoch for every
+  // handful of boundary voxels. Use a small scene-normalized gain alongside
+  // the configured absolute minimum (0.2% is about 72 voxels in house).
+  const int meaningful_gain=std::max(coverage_finish_min_progress_voxels_,
+      static_cast<int>(std::ceil(0.002*std::max(0,valid))));
+  // A pending audit owns a fresh observation baseline. A handful of new
+  // boundary voxels must not complete an old, accumulated gain credit and
+  // reopen CP immediately after the vehicle was asked to settle.
+  if (coverage_terminal_audit_pending_) {
+    if (coverage_terminal_audit_observed_voxels_ < 0 ||
+        observed < coverage_terminal_audit_observed_voxels_ + meaningful_gain) return;
+    ROS_INFO_STREAM("[coverage completion] reopen audit on fresh observation gain="
+                    << observed-coverage_terminal_audit_observed_voxels_);
+    coverage_finish_progress_observed_voxels_=observed;
+    coverage_finish_last_progress_time_=ros::Time::now();
+    coverage_terminal_audit_pending_=false;
+    coverage_terminal_audit_observed_voxels_=-1;
+    return;
   }
+  if (coverage_finish_progress_observed_voxels_<0 || coverage_finish_last_progress_time_.isZero() ||
+      observed>=coverage_finish_progress_observed_voxels_+meaningful_gain) {
+    coverage_finish_progress_observed_voxels_=observed;
+    coverage_finish_last_progress_time_=ros::Time::now();
+    coverage_terminal_audit_pending_=false;
+  }
+}
+
+void FastExplorationManager::updateCoverageCompletion(int reachable, bool empty_stable,
+                                                     bool plan_valid, int observed) {
+  if (!coverageMotionEnabled()) return;
+  const auto now=ros::Time::now();
+  if (reachable>0) {
+    if (coverage_terminal_audit_pending_)
+      ROS_INFO_STREAM("[coverage completion] reopen audit on reachable frontiers=" << reachable);
+    coverage_terminal_audit_pending_=false;
+    coverage_terminal_audit_observed_voxels_=-1;
+    coverage_finish_last_progress_time_=now;
+    if (observed >= 0) coverage_finish_progress_observed_voxels_=observed;
+  } else if (!coverage_terminal_audit_pending_ && plan_valid && observed >= 0 &&
+      empty_stable && !coverage_finish_last_progress_time_.isZero() &&
+      (now-coverage_finish_last_progress_time_).toSec()>=coverage_finish_plateau_duration_) {
+    coverage_terminal_audit_pending_=true;
+    coverage_terminal_audit_observed_voxels_=observed;
+    ROS_INFO_STREAM("[coverage completion] begin audit; fresh observation baseline=" << observed);
+  }
+}
+
+void FastExplorationManager::retainCoverageContinuation(double seconds) {
+  if (coverageMotionEnabled()) coverage_continuation_until_=ros::Time::now()+ros::Duration(std::clamp(seconds,0.0,3.0));
+}
+
+bool FastExplorationManager::coverageContinuationActive() const {
+  return coverageMotionEnabled() && ros::Time::now()<coverage_continuation_until_ &&
+      planner_manager_->hasCommittedTrajectory() && !planner_manager_->hasCommittedStopTrajectory() &&
+      planner_manager_->committedTrajectoryRemainingTime()>0.8;
+}
+
+bool FastExplorationManager::retryActiveCoverageGoal() {
+  if (!coverageMotionEnabled() || !has_active_coverage_goal_) return false;
+  ++active_coverage_local_failures_;
+  double collision_time=0.0;
+  return active_coverage_local_failures_<2 &&
+      planner_manager_->committedTrajectoryRemainingTime()>0.5 &&
+      planner_manager_->checkTrajCollision(collision_time,true);
 }
 
 void FastExplorationManager::resetCoverageRecovery() {
@@ -682,6 +739,10 @@ void FastExplorationManager::resetCoverageRecovery() {
   if (!coverageMotionEnabled()) return;
   deferred_coverage_goals_.clear();
   deferred_goals_.clear();
+  active_coverage_local_failures_=0;
+  coverage_terminal_audit_pending_=false;
+  coverage_terminal_audit_observed_voxels_=-1;
+  coverage_continuation_until_=ros::Time(0);
   has_active_coverage_goal_=false;
   active_coverage_target_={};
   coverage_finish_progress_observed_voxels_=-1;
@@ -711,7 +772,8 @@ CoverageFinishStatus FastExplorationManager::coverageFinishStatus() {
   status.valid_voxels = plan->valid_voxel_count;
   status.coverage_ratio = plan->coverage_ratio;
 
-  if (coverageMotionEnabled()) updateCoverageProgress();
+  if (coverageMotionEnabled())
+    updateCoverageProgress(plan->observed_voxel_count, plan->valid_voxel_count);
   else {
   const ros::Time now = ros::Time::now();
   if (coverage_finish_progress_observed_voxels_ < 0 ||
@@ -2230,7 +2292,7 @@ void FastExplorationManager::deferCurrentGoalAfterPlanningFailure() {
   double cooldown=ep_->failed_goal_cooldown_;
   if (coverageRouteEnabled() && planner_manager_) {
     const auto kind=planner_manager_->coverage_failure_.kind;
-    if (kind==CoverageFailureKind::HEAD || kind==CoverageFailureKind::DYNAMICS) cooldown=std::min(cooldown,2.0);
+    if (kind==CoverageFailureKind::HEAD || kind==CoverageFailureKind::DYNAMICS || kind==CoverageFailureKind::BUDGET) cooldown=std::min(cooldown,2.0);
     else if (kind==CoverageFailureKind::PATH) cooldown=std::min(cooldown,5.0);
   }
   matched->until = now + ros::Duration(cooldown);
@@ -2349,10 +2411,19 @@ bool FastExplorationManager::updateNormalGoalProgress(
 bool FastExplorationManager::coverageFailureContextChanged(
     const DeferredCoverageGoal &goal, const CoverageTarget &target) const {
   if (!coverageMotionEnabled()) return false;
-  return (goal.origin_sensitive &&
-          (planner_manager_->local_data_.curr_pos_-goal.failure_origin).norm() >= 3.0) ||
-      (goal.observed_at_failure>=0 && latestCoverageObservedVoxels()>=goal.observed_at_failure+64) ||
-      (goal.voxel_count>0 && target.voxel_count<goal.voxel_count-std::max(12,goal.voxel_count/4));
+  // Moving the robot or observing an unrelated room does not repair this
+  // action. Reopen only after evidence in the target or its blocked segment.
+  const bool cleared_obstacle=goal.blocked_was_untraversable && planner_manager_ &&
+      planner_manager_->isObservedLocalKnownFree(goal.blocked_position);
+  // Several unknown components can share an executable approach. Their
+  // sizes are not comparable: switching from a large component to a small
+  // one must not masquerade as observation progress and reset this budget.
+  // Use the owner of the recorded count, not the approach's alias cache.
+  const bool same_component=target.stable_id!=0 &&
+      target.stable_id==goal.voxel_count_stable_id;
+  return cleared_obstacle ||
+      (same_component && goal.voxel_count>0 && target.voxel_count>=0 &&
+       target.voxel_count<goal.voxel_count-std::max(12,goal.voxel_count/4));
 }
 
 bool FastExplorationManager::coverageFailureMatches(
@@ -2484,17 +2555,14 @@ bool FastExplorationManager::coverageRecoveryExhausted(
   }
   if (coverageMotionEnabled()) {
     int failures=0;
-    const int observed=latestCoverageObservedVoxels();
     for (const auto &goal:deferred_coverage_goals_) {
-      const bool changed=(goal.observed_at_failure>=0 && observed>=goal.observed_at_failure+64) ||
-          (goal.voxel_count>0 && target.voxel_count<goal.voxel_count-std::max(12,goal.voxel_count/4));
+      const bool changed=coverageFailureContextChanged(goal,target);
       if (!changed && goal.origin_sensitive &&
           coverageApproachMatches(goal.identity,target,std::min(0.60,coverage_recovery_match_radius_)))
         failures+=goal.failure_attempts;
     }
-    // Different origins are useful retries, but cannot provide an unlimited
-    // budget in an unchanged map. Exhaustion remains a BLOCKED search result,
-    // not evidence that the remaining region is physically unreachable.
+    // An action budget survives changes in execution origin. Exhaustion is
+    // search evidence only; the independent frontier audit decides completion.
     if (failures>=std::max(2,2*coverage_recovery_max_failure_attempts_)) return true;
   }
   return std::any_of(
@@ -2619,8 +2687,6 @@ void FastExplorationManager::deferCoverageRecovery(
   for (auto &goal : deferred_coverage_goals_) {
     if ((coverageMotionEnabled()
             ? (coverageApproachMatches(goal.identity,target,std::min(0.60,coverage_recovery_match_radius_)) &&
-               (!goal.origin_sensitive ||
-                (planner_manager_->local_data_.curr_pos_-goal.failure_origin).norm()<3.0) &&
                (!(goal.directional_failure || outcome==CoverageRecoveryOutcome::OCCLUDED ||
                   outcome==CoverageRecoveryOutcome::REACHED) || coverageStableIdMatches(goal.identity,target.stable_id)))
             : coverageRecoveryIdentityMatches(goal.identity,target,coverage_recovery_match_radius_))) {
@@ -2633,10 +2699,8 @@ void FastExplorationManager::deferCoverageRecovery(
       const auto removable = std::find_if(
           deferred_coverage_goals_.begin(), deferred_coverage_goals_.end(),
           [&](const DeferredCoverageGoal &goal) {
-            // Keep old origin contexts: A->B->A must find A's previous budget.
-            // A sufficiently changed map can retire stale records.
-            return !goal.exhausted || (coverageMotionEnabled() &&
-                goal.observed_at_failure>=0 && latestCoverageObservedVoxels()>=goal.observed_at_failure+64);
+            // Never evict spent action budgets because another room changed.
+            return !goal.exhausted && goal.failure_attempts==0 && goal.no_gain_attempts==0;
           });
       if (removable != deferred_coverage_goals_.end()) {
         deferred_coverage_goals_.erase(removable);
@@ -2657,10 +2721,21 @@ void FastExplorationManager::deferCoverageRecovery(
   }
   if (coverageMotionEnabled()) {
     if (coverageFailureContextChanged(*matched,target)) {
+      ROS_INFO_STREAM("[coverage recovery] reopen approach on local evidence: id="
+                      << target.stable_id << " previous_count_id=" << matched->voxel_count_stable_id
+                      << " voxels=" << matched->voxel_count << "->" << target.voxel_count);
       matched->failure_attempts=0; matched->no_gain_attempts=0; matched->exhausted=false;
       matched->component_failure=false;
     }
     matched->failure_origin=planner_manager_->local_data_.curr_pos_;
+    matched->blocked_was_untraversable=false;
+    if (outcome==CoverageRecoveryOutcome::TRAJECTORY_FAILURE &&
+        planner_manager_->coverage_failure_.kind==CoverageFailureKind::SPATIAL) {
+      matched->blocked_position=planner_manager_->coverage_failure_.position;
+      matched->blocked_was_untraversable=
+          planner_manager_->querySafetyState(matched->blocked_position)!=MapVoxelState::OUT_OF_MAP &&
+          !planner_manager_->isObservedLocalKnownFree(matched->blocked_position);
+    }
     matched->observed_at_failure=latestCoverageObservedVoxels();
     matched->component_failure=!target.approach_candidates.empty() &&
         (outcome==CoverageRecoveryOutcome::UNSAFE || outcome==CoverageRecoveryOutcome::OCCLUDED);
@@ -2680,6 +2755,7 @@ void FastExplorationManager::deferCoverageRecovery(
   }
   matched->unknown_position = target.position;
   matched->voxel_count = target.voxel_count;
+  matched->voxel_count_stable_id = target.stable_id;
   const int current_observed = latestCoverageObservedVoxels();
   const bool same_active_id =
       target.stable_id != 0 &&
@@ -2700,6 +2776,9 @@ void FastExplorationManager::deferCoverageRecovery(
 
   switch (outcome) {
     case CoverageRecoveryOutcome::REACHED:
+      // Arrival and its action gain still settle the recovery budget below.
+      // Completion uses the same fresh-evidence guard as ordinary map updates.
+      updateCoverageProgress();
       if (observed_gain < coverage_recovery_min_gain_voxels_) {
         ++matched->no_gain_attempts;
       } else {
@@ -2737,6 +2816,7 @@ void FastExplorationManager::deferCoverageRecovery(
     active_coverage_target_ = CoverageTarget();
     active_coverage_goal_start_ = ros::Time(0);
     active_coverage_observed_voxels_ = -1;
+    active_coverage_local_failures_=0;
   }
   ROS_WARN_STREAM("[coverage recovery] defer observation goal: id="
                   << target.stable_id << " approach=("
@@ -2809,7 +2889,9 @@ int FastExplorationManager::planGlobalPath(const Eigen::Vector3d &pos,
   const bool structural_coverage = coverageRouteEnabled();
   const CoveragePlan::Ptr coverage_snapshot = !target_directed && coverage_guidance_
       ? coverage_guidance_->latestUsablePlan() : CoveragePlan::Ptr{};
-  if (coverageMotionEnabled()) updateCoverageProgress();
+  if (coverageMotionEnabled() && coverage_snapshot && coverage_snapshot->valid)
+    updateCoverageProgress(coverage_snapshot->observed_voxel_count,
+                           coverage_snapshot->valid_voxel_count);
   if (target_directed && ed_->mission_goal_needs_initialization_) {
     ed_->mission_start_ = pos.cast<float>();
     if (!ep_->target_goal_use_message_z_) {
@@ -3131,12 +3213,13 @@ int FastExplorationManager::planGlobalPath(const Eigen::Vector3d &pos,
   // frontier audit and independently require repeated empty results and rest.
   // Never interrupt an active observation or mistake cooldown for absence of
   // reachable frontiers; renewed measured gain/frontiers reopen this gate.
-  const bool coverage_frontier_audit = coverageMotionEnabled() && coverage_guidance_ &&
-      coverage_guidance_->finishGuardEnabled() && coverage_snapshot && coverage_snapshot->valid &&
-      executable_empty_stable && reachable_clusters==0 && !has_active_coverage_goal_ &&
-      !coverage_finish_last_progress_time_.isZero() &&
-      (coverage_now-coverage_finish_last_progress_time_).toSec()>=coverage_finish_plateau_duration_;
-  if (coverage_frontier_audit) {
+  // The pre-cooldown pool is an independent veto: a validated viewpoint must
+  // not disappear from completion merely because it is temporarily deferred.
+  updateCoverageCompletion(std::max(reachable_clusters, static_cast<int>(viewpoint_count_before_defer)),
+      executable_empty_stable,
+      coverage_guidance_ && coverage_guidance_->finishGuardEnabled() && coverage_snapshot && coverage_snapshot->valid,
+      coverage_snapshot ? coverage_snapshot->observed_voxel_count : -1);
+  if (coverageMotionEnabled() && coverage_terminal_audit_pending_ && !has_active_coverage_goal_) {
     last_plan_empty_frontier_=active_clusters==0;
     last_plan_no_reachable_=active_clusters>0;
     ROS_INFO_STREAM_THROTTLE(1.0,"[coverage handoff] frontier audit takes precedence over new CP cleanup goals");
@@ -3319,6 +3402,9 @@ int FastExplorationManager::planGlobalPath(const Eigen::Vector3d &pos,
       return true;
     };
 
+    // Drain the current bounded action before the full FSM audit. Do not
+    // let a newly generated speculative CP node start another cleanup tour.
+    if (coverage_terminal_audit_pending_) coverage_targets.clear();
     int promoted = 0;
     std::vector<CoverageTarget> promoted_identities;
     promoted_identities.reserve(coverage_executable_candidate_max_count_);
@@ -3646,17 +3732,6 @@ int FastExplorationManager::planGlobalPath(const Eigen::Vector3d &pos,
     viewpoint_reachable_edges.emplace_back(edge_odom2vp[i]);
     viewpoint_reachable.emplace_back(viewpoints[i]);
   }
-  if (coverageMotionEnabled() && moving && has_active_coverage_goal_ &&
-      std::all_of(viewpoints.begin(),viewpoints.end(),[](const auto &v){return v->is_coverage_target_;})) {
-    for (int i:reversal_indices) {
-      if (viewpoints[i]->coverage_target_id_==active_coverage_target_.stable_id &&
-          (viewpoints[i]->center_.cast<double>()-active_coverage_target_.approach_position).norm()<0.60) {
-        viewpoint_reachable.clear(); viewpoint_reachable_distance.clear(); viewpoint_reachable_edges.clear();
-        reversal_indices={i};
-        break;
-      }
-    }
-  }
   if (coverageMotionEnabled() && moving && viewpoint_reachable.empty() &&
       !reversal_indices.empty()) {
     // A topological first edge can point backward while the dynamic local
@@ -3705,6 +3780,16 @@ int FastExplorationManager::planGlobalPath(const Eigen::Vector3d &pos,
                "candidates="
                    << viewpoints.size());
       return FAIL;
+    }
+    if (moving && !reversal_indices.empty() && coverageContinuationActive()) {
+      double collision_time=0.0;
+      if (planner_manager_->checkTrajCollision(collision_time,true)) {
+        last_plan_no_reachable_=false;
+        last_plan_requires_reorientation_=false;
+        planner_manager_->topo_graph_->removeNodes(viewpoints);
+        ROS_INFO_THROTTLE(0.5,"[coverage handoff] execute verified observation continuation before reversing");
+        return FAIL;
+      }
     }
     if (moving && !reversal_indices.empty()) {
       last_plan_requires_reorientation_ = true;
@@ -4135,6 +4220,7 @@ int FastExplorationManager::planGlobalPath(const Eigen::Vector3d &pos,
     active_coverage_target_ = target;
     has_active_coverage_goal_ = true;
     if (!same_active) {
+      active_coverage_local_failures_=0;
       active_coverage_goal_start_ = coverage_now;
       active_coverage_observed_voxels_ = latestCoverageObservedVoxels();
     }
