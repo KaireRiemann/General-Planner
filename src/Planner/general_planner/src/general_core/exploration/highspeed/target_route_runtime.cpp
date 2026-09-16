@@ -81,6 +81,9 @@ void TargetRouteRuntime::configure(TargetRouteConfig c) {
 void TargetRouteRuntime::reset() {
   ++task_;
   route_ = TargetRoute{};
+  pending_route_ = TargetRoute{};
+  validation_segment_ = 1;
+  validation_sample_ = 0;
   cooldowns_.clear();
   goal_.setConstant(std::numeric_limits<double>::quiet_NaN());
   last_query_ = -std::numeric_limits<double>::infinity();
@@ -109,6 +112,7 @@ void TargetRouteRuntime::cool(Id a, Id b, double now) {
 }
 
 void TargetRouteRuntime::fail(double now, const std::string &reason) {
+  pending_route_ = TargetRoute{};
   if (route_.valid()) {
     if (route_.source == TargetRouteSource::LOCAL_GOAL)
       local_goal_retry_after_ = now + config_.cooldown;
@@ -164,6 +168,47 @@ TargetRoute TargetRouteRuntime::query(const Graph::SearchSnapshotPtr &snapshot,
     ++checks;
     return map.local_free(p);
   };
+  auto validate_pending = [&]() -> TargetRoute {
+    query_stage_ = "route_validation";
+    if (!map.global || now - validation_started_ > config_.progress_timeout) {
+      pending_route_ = {};
+      status_ = "ROUTE_VALIDATION_TIMEOUT";
+      return {};
+    }
+    while (validation_segment_ < pending_route_.points.size()) {
+      const V &a = pending_route_.points[validation_segment_ - 1];
+      const V &b = pending_route_.points[validation_segment_];
+      const double length = (b - a).norm();
+      if (!std::isfinite(length) || length / config_.sample_step > 20000.0) {
+        pending_route_ = {};
+        status_ = "INVALID_ROUTE_SEGMENT";
+        return {};
+      }
+      const int samples = std::max(1, static_cast<int>(std::ceil(length / config_.sample_step)));
+      for (; validation_sample_ <= samples; ++validation_sample_) {
+        if (!budget()) {
+          status_ = "ROUTE_VALIDATION_PENDING";
+          return {};
+        }
+        ++checks;
+        const V p = a + (b - a) * (static_cast<double>(validation_sample_) / samples);
+        if (map.global(p) != TargetRouteEvidence::FREE) {
+          cool(pending_route_.nodes[validation_segment_ - 1],
+               pending_route_.nodes[validation_segment_], now);
+          pending_route_ = {};
+          status_ = "ROUTE_VALIDATION_BLOCKED";
+          return {};
+        }
+      }
+      ++validation_segment_;
+      validation_sample_ = 0;
+    }
+    TargetRoute validated = std::move(pending_route_);
+    pending_route_ = {};
+    status_ = validated.source == TargetRouteSource::KNOWN_GOAL ? "KNOWN_GOAL" : "KNOWN_ANCHOR";
+    return validated;
+  };
+  if (pending_route_.valid()) return validate_pending();
   // A near final goal does not need a graph if its ENTIRE straight connector
   // has current raw-known-free evidence. This is local terminal handoff, not
   // a claim of global-topology reuse, nor an UNKNOWN/LIO-only fallback.
@@ -290,20 +335,12 @@ TargetRoute TargetRouteRuntime::query(const Graph::SearchSnapshotPtr &snapshot,
     for (Id id = goal_node; id && chain.size() <= parent.size(); id = parent.at(id)) chain.push_back(id);
     std::reverse(chain.begin(), chain.end());
     result.points = {start}; result.nodes = {0};
-    query_stage_ = "route_validation";
-    bool valid = true;
     for (Id id : chain) {
       const V &p = snapshot->graph.at(id).node.position;
-      if (!lineFree(result.points.back(), p, config_.sample_step, global_free)) {
-        if (!exhausted) cool(result.nodes.back(), id, now);
-        valid = false; break;
-      }
       // Keep coincident graph nodes too: attachment/edge identities must not
       // disappear merely because the vehicle is exactly on a graph vertex.
       result.points.push_back(p); result.nodes.push_back(id);
     }
-    if (!valid) { result = TargetRoute{}; continue; }
-    if (!budget()) break;
     if (reaches_goal) { result.points.push_back(goal); result.nodes.push_back(0); }
     result.arc = {0.0};
     for (std::size_t i = 1; i < result.points.size(); ++i)
@@ -311,8 +348,12 @@ TargetRoute TargetRouteRuntime::query(const Graph::SearchSnapshotPtr &snapshot,
     result.source = reaches_goal ? TargetRouteSource::KNOWN_GOAL : TargetRouteSource::KNOWN_ANCHOR;
     result.topology_revision = snapshot->revision;
     result.goal = goal;
-    status_ = reaches_goal ? "KNOWN_GOAL" : "KNOWN_ANCHOR";
-    return result;
+    pending_route_ = std::move(result);
+    validation_segment_ = 1;
+    validation_sample_ = 0;
+    validation_started_ = now;
+    result = validate_pending();
+    if (result.valid() || pending_route_.valid()) return result;
   }
   status_ = exhausted ? "QUERY_BUDGET" : "NO_ROUTE";
   return TargetRoute{};
@@ -321,7 +362,10 @@ TargetRoute TargetRouteRuntime::query(const Graph::SearchSnapshotPtr &snapshot,
 TargetRoutePrefix TargetRouteRuntime::prefix(const V &position, double now,
                                              const TargetRouteMapView &map) {
   TargetRoutePrefix out;
-  if (!route_.valid()) { out.reason = "NO_ACTIVE_ROUTE"; return out; }
+  if (!route_.valid()) {
+    out.reason = pending_route_.valid() ? "ROUTE_VALIDATION_PENDING" : "NO_ACTIVE_ROUTE";
+    return out;
+  }
   if (!map.local_free || !map.local_free(position)) {
     out.reason = "LOCAL_START_UNOBSERVED"; return out;
   }
@@ -421,7 +465,15 @@ TargetRoutePrefix TargetRouteRuntime::prepare(const Graph::SearchSnapshotPtr &sn
   }
   cooldowns_.erase(std::remove_if(cooldowns_.begin(), cooldowns_.end(),
       [now](const Cooldown &c) { return c.until <= now; }), cooldowns_.end());
-  if (!route_.valid() && now - last_query_ >= config_.query_interval) {
+  if (pending_route_.valid() &&
+      (position - pending_route_.points.front()).norm() > config_.projection_radius) {
+    // A route validated while an older command was finishing needs a fresh
+    // start attachment if odometry has moved away from its original root.
+    pending_route_ = {};
+    last_query_ = -std::numeric_limits<double>::infinity();
+  }
+  if (!route_.valid() &&
+      (pending_route_.valid() || now - last_query_ >= config_.query_interval)) {
     last_query_ = now;
     auto candidate = query(snapshot, position, goal, now, map);
     if (candidate.valid()) {

@@ -1082,6 +1082,7 @@ TargetRoutePrefix FastExplorationManager::prepareTargetRoute(const Eigen::Vector
       << " status=" << target_route_.status() << " route=" << target_route_.route().id
       << " progress=" << target_route_.route().progress << " remaining=" << prefix.remaining
       << " points=" << prefix.path.size() << " selected=" << prefix.ready()
+      << " pending=" << target_route_.knownGoalRoutePending()
       << " local=" << prefix.reason << " cooldowns=" << target_route_.cooldownSize()
       << " query_ms=" << target_route_.lastQueryMs() << " checks=" << target_route_.lastMapChecks()
       << " expanded=" << target_route_.lastExpansions() << " stage=" << target_route_.queryStage());

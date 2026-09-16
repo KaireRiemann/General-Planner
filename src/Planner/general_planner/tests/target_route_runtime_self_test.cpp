@@ -2,6 +2,7 @@
 #include <cassert>
 #include <chrono>
 #include <iostream>
+#include <thread>
 
 using namespace fast_planner;
 using V = Eigen::Vector3d;
@@ -119,7 +120,7 @@ int main() {
   assert(!runtime.prepare(graph, 1, start, goal, 71, map).ready() && !runtime.route().valid());
   config.mode = "prefer_known"; config.max_map_checks = 64; runtime.configure(config);
   assert(!runtime.prepare(graph, 1, start, goal, 72, map).ready());
-  assert(runtime.status() == "QUERY_BUDGET");
+  assert(runtime.status() == "ROUTE_VALIDATION_PENDING" && runtime.knownGoalRoutePending());
   config.max_nodes = 32; config.max_map_checks = 16000; runtime.configure(config);
   std::vector<V> many;
   for (int i=0; i<100; ++i) many.emplace_back(i,0,1);
@@ -155,5 +156,79 @@ int main() {
   assert(runtime.prepare({}, 1, start, goal, 86, local_only).ready());
   runtime.reset();
   assert(!runtime.prepare({}, 1, start, V(100,0,1), 90, local_only).ready());
+
+  // A long known return route can exceed one validation slice even though
+  // graph search succeeds. Keep its validation cursor instead of restarting
+  // the same graph search and returning to frontier selection indefinitely.
+  std::vector<V> long_points;
+  for (int i = 0; i <= 12; ++i) long_points.emplace_back(10.0 * i, 0, 1);
+  const auto long_graph = makeGraph(long_points);
+  TargetRouteMapView return_map;
+  return_map.local_free = [](const V &p) { return p.allFinite() && p.x() < 5.0; };
+  return_map.global = [](const V &) { return TargetRouteEvidence::FREE; };
+  config = TargetRouteConfig{};
+  config.query_budget_ms = 50.0;
+  config.max_map_checks = 64;
+  runtime.configure(config);
+  prefix = runtime.prepare(long_graph, 1, start, long_points.back(), 100, return_map);
+  assert(!prefix.ready() && runtime.status() == "ROUTE_VALIDATION_PENDING");
+  assert(!runtime.route().valid());  // unvalidated global routes are not executable
+  int slices = 0;
+  while (!prefix.ready() && ++slices < 100) {
+    prefix = runtime.prepare(long_graph, 1, start, long_points.back(),
+                             100 + .02 * slices, return_map);
+    assert(runtime.lastExpansions() == 0);  // resume validation, not graph search
+    assert(runtime.lastMapChecks() <= config.max_map_checks);
+  }
+  assert(slices > 1 && slices < 100 && prefix.ready());
+  assert(prefix.context.source == TargetRouteSource::KNOWN_GOAL);
+  assert(prefix.reason == "OBSERVED_PREFIX_STOP" && prefix.path.back().x() < 5.0);
+  assert(std::abs(runtime.route().arc.back() - 120.0) < 1e-6);
+
+  // Exercise wall-time exhaustion as well as the deterministic sample cap.
+  // Delay only interior route checks, after the endpoint attachments/search.
+  config.query_budget_ms = 1.0;
+  config.max_map_checks = 16000;
+  runtime.configure(config);
+  auto slow_map = return_map;
+  slow_map.global = [](const V &p) {
+    if (p.x() > 2.0 && p.x() < 118.0)
+      std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    return TargetRouteEvidence::FREE;
+  };
+  prefix = runtime.prepare(long_graph, 1, start, long_points.back(), 105, slow_map);
+  assert(!prefix.ready() && runtime.knownGoalRoutePending());
+  assert(runtime.queryStage() == "route_validation");
+  for (int i = 1; !prefix.ready() && i < 100; ++i) {
+    prefix = runtime.prepare(long_graph, 1, start, long_points.back(),
+                             105 + .02 * i, return_map);
+    assert(runtime.lastExpansions() == 0);
+  }
+  assert(prefix.ready() && runtime.cooldownSize() == 0);
+  config.query_budget_ms = 50.0;
+  config.max_map_checks = 64;
+  runtime.configure(config);
+
+  // New obstacles still invalidate the pending route, and changing task/world
+  // must not activate a candidate left over from an earlier return request.
+  runtime.reset();
+  runtime.prepare(long_graph, 1, start, long_points.back(), 110, return_map);
+  auto changed_map = return_map;
+  changed_map.global = [](const V &p) {
+    return p.x() > 8.0 ? TargetRouteEvidence::OCCUPIED : TargetRouteEvidence::FREE;
+  };
+  for (int i = 1; i < 10 && runtime.status() == "ROUTE_VALIDATION_PENDING"; ++i)
+    assert(!runtime.prepare(long_graph, 1, start, long_points.back(),
+                            110 + .02 * i, changed_map).ready());
+  assert(!runtime.route().valid() && runtime.cooldownSize() > 0);
+  runtime.reset();
+  runtime.prepare(long_graph, 1, start, long_points.back(), 120, return_map);
+  prefix = runtime.prepare({}, 1, start, goal, 120.02, local_only);
+  assert(prefix.ready() && prefix.context.source == TargetRouteSource::LOCAL_GOAL);
+  assert((runtime.route().goal - goal).norm() < 1e-6);
+  runtime.reset();
+  runtime.prepare(long_graph, 1, start, long_points.back(), 130, return_map);
+  assert(!runtime.prepare({}, 2, start, long_points.back(), 130.02, return_map).ready());
+  assert(runtime.status() == "NO_TOPOLOGY");
   std::cout << "target route full polyline / U-detour / prefix / lifecycle / cooldown / budget / commit endpoints: PASS\n";
 }

@@ -66,8 +66,6 @@ coverage_guidance/full_rank_weight: 12.0
 coverage_guidance/rank_penalty_cap: 0.0
 coverage_guidance/finish_guard_enable: true
 coverage_guidance/visualization_enable: true
-global_planning/w_vdir: 0.3
-global_planning/w_yawdir: 0.0
 global_planning/w_firstnode: 0.2
 # Composite next-frontier objective.  All cost-like terms are positive and all
 # exploration rewards are subtracted in FastExplorationManager.

@@ -2,8 +2,43 @@
 # Launch arguments can override both input topics for real-robot deployment.
 odometry_topic: /lidar_slam/odom
 cloud_topic: /cloud_registered
+# Coverage-only motion policy; target exploration and swarm bypass it.
+# Set enabled=false for an A/B run with the previous behavior.
+coverage_motion/enabled: true
+# Coverage-only joint order of frontier groups and a topology-connected CP entry.
+# The joint selector remains opt-in: short A/B trials have not established a
+# coverage-efficiency improvement. Adaptive execution/retry changes stay with
+# that experiment. Only measured stall detection/reporting applies to both
+# selectors under coverage_motion/enabled. Enable the complete experiment with
+# coverage_route_enabled:=true in exploration.launch.
+coverage_route/enabled: false
+coverage_route/max_tasks: 8
+coverage_route/alternatives: 2
+coverage_route/anchors: 3  # maximum CP entry alternatives examined; one exit is selected
+coverage_route/beam_width: 32
+coverage_route/mandatory_after: 6
+coverage_route/solve_ms: 5.0
+coverage_route/edge_budget_ms: 35.0
+coverage_route/switch_margin: 0.25
+coverage_route/stall_timeout: 60.0
+coverage_route/intention_hold: 6.0
+coverage_route/max_prefix_time: 10.0
+coverage_motion/continuous_observation: true
+coverage_motion/extension_min: 2.0
+coverage_motion/extension_max: 6.0
+coverage_motion/extension_max_turn: 0.60
+coverage_motion/path_match_radius: 0.75
+coverage_motion/path_switch_improvement: 1.5
+coverage_motion/path_switch_ratio: 0.20
+coverage_motion/shortcut_distance: 8.0
+coverage_motion/region_radius: 6.0
+coverage_motion/region_height: 1.5
+coverage_motion/region_duration: 10.0
+coverage_motion/region_switch_cost: 2.0
+# Report a blocked coverage task when stationary local escape keeps failing.
+coverage_motion/caution_timeout: 20.0
 # Persistent long-horizon coverage guidance. It ranks HighSpeedExp frontiers
-# and, when the frontend becomes sparse/slow, contributes a bounded number of
+# and, when the executable frontier pool is empty, contributes a bounded number of
 # known-free observation candidates to the same topology/cost pipeline.
 # Corridor/MINCO/backup/traj_server remain unchanged.
 # Modes: off (legacy), shadow (compute/log only), soft (cost bias), full
@@ -83,8 +118,6 @@ coverage_guidance/floor_priority_min_z: 3.80
 # instead of trying to connect directly to a high endpoint.
 coverage_guidance/floor_transition_rank_window: 4
 coverage_guidance/executable_candidate_bonus: 3.0
-global_planning/w_vdir: 0.3
-global_planning/w_yawdir: 0.0
 global_planning/w_firstnode: 0.2
 # Composite next-frontier objective.  All cost-like terms are positive and all
 # exploration rewards are subtracted in FastExplorationManager.

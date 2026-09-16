@@ -255,6 +255,9 @@ void FastExplorationFSM::FSMCallback(const ros::TimerEvent &e) {
     }
     prepared_target_route_ = expl_manager_->prepareTargetRoute(fd_->odom_pos_.cast<double>());
     if (expl_manager_->targetDirectedModeActive() && handleGoalReached()) return;
+    // A known goal route is already found. Let its bounded validation finish
+    // before selecting a different frontier or charging a local-plan failure.
+    if (expl_manager_->targetGoalRoutePending()) return;
     if (!prepared_target_route_.ready() &&
         (!planner_manager_->topo_graph_->odom_node_ ||
          planner_manager_->topo_graph_->odom_node_->neighbors_.empty())) return;
@@ -272,6 +275,7 @@ void FastExplorationFSM::FSMCallback(const ros::TimerEvent &e) {
         return;
       }
       prepared_target_route_ = expl_manager_->prepareTargetRoute(fd_->odom_pos_.cast<double>());
+      if (expl_manager_->targetGoalRoutePending()) return;
       if (!prepared_target_route_.ready() && expl_manager_->ed_->global_tour_.size() < 2) {
         return;
       }
@@ -1136,6 +1140,10 @@ void FastExplorationFSM::updateTopoAndGlobalPath() {
   }
 
   const auto target_prefix = expl_manager_->prepareTargetRoute(fd_->odom_pos_.cast<double>());
+  if (expl_manager_->targetGoalRoutePending()) {
+    global_path_update_timer_.start();
+    return;
+  }
   if (!target_prefix.ready() && (!planner_manager_->topo_graph_->odom_node_ ||
       planner_manager_->topo_graph_->odom_node_->neighbors_.empty())) {
     double time;

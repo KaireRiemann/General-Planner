@@ -3112,7 +3112,8 @@ bool FastPlannerManager::planExploreTraj(
                       << "/" << simplified_sfc_count << "/" << sfcs.size()
 		                  << ", corridor=" << (used_general_corridor ? "general" : "box")
                       << ", box_bounded="
-                      << (bounded_to_exploration_boxes ? "yes" : "fallback")
+                      << (lidar_map_interface_->targetNavigation() ? "disabled_target" :
+                          (bounded_to_exploration_boxes ? "yes" : "fallback"))
                       << ", prefix=" << (stitched_prefix ? "yes" : "no")
                       << ", prefix_dur=" << stitched_prefix_duration
                       << ", switch_delay=" << switch_delay

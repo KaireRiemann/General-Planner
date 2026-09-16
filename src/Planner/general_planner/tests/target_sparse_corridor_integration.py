@@ -85,8 +85,13 @@ try:
    tick+=1;time.sleep(.01)
  sensor=threading.Thread(target=sensor_loop,daemon=True);sensor.start()
  launch_args=['roslaunch',os.environ.get('TEST_LAUNCH_PACKAGE','task_planner'),'planner_runtime.launch','initial_mode:='+os.environ.get('TEST_INITIAL_MODE','target_exploration'),'marsim:=false','rviz:=false','auto_rviz_switch:=false','tracking_detector:=false','perceptor:=false','cloud_odom_mode:=latest_odom','target_exploration_auto_workspace:=false', 'exploration_mission_mode:='+('coverage' if os.environ.get('TEST_COVERAGE_SECONDS') else 'target')]
+ # Release/Unity and source launch files have different odometry defaults.
+ # Always connect the isolated fixture's own sensor topics explicitly.
+ launch_args.extend(['odom_topic:=/lidar_slam/odom','cloud_topic:=/cloud_registered'])
  if os.environ.get('TEST_NO_TOPOLOGY'):
   launch_args.append('global_topology_config:='+str(Path(__file__).resolve().parent/'config/target_route_no_topology.yaml'))
+ if os.environ.get('TEST_TARGET_ROUTE_CONFIG'):
+  launch_args.append('target_exploration_config:='+os.environ['TEST_TARGET_ROUTE_CONFIG'])
  launch=start(launch_args,'synthetic_runtime.log')
  deadline=time.monotonic()+60
  while time.monotonic()<deadline:
@@ -109,6 +114,7 @@ try:
   assert status.active_mode_str == 'target_exploration','mode switch failed'
  goal=PoseStamped();goal.header.frame_id='world';goal.header.stamp=rospy.Time.now();goal.pose.position.x=float(os.environ.get('TEST_GOAL_X','4' if u_shape else '145'));goal.pose.position.z=1.5;goal.pose.orientation.w=1;goal_pub.publish(goal)
  began=time.monotonic();success=False
+ return_trip=bool(os.environ.get('TEST_RETURN_TRIP'));return_sent=False;return_log_start=0
  coverage_seconds=float(os.environ.get("TEST_COVERAGE_SECONDS","0"))
  coverage_moved=False
  while time.monotonic()-began<180:
@@ -122,17 +128,26 @@ try:
    coverage_moved=coverage_moved or np.linalg.norm(pos-np.array([0.,0.,1.5]))>1.
    if time.monotonic()-began>=coverage_seconds:
     success=coverage_moved and status.active_mode_str=='exploration';break
-  elif status.task_result_str=='succeeded' and pos[0]>goal.pose.position.x-1.:success=True;break
+  elif status.task_result_str=='succeeded' and np.linalg.norm(pos[:2]-np.array([goal.pose.position.x,0.]))<1.:
+   if return_trip and not return_sent:
+    if status.ready_for_new_task:
+     return_sent=True;return_log_start=len(logs)
+     goal.pose.position.x=float(os.environ.get('TEST_START_X','0'))
+     goal.header.stamp=rospy.Time.now();goal_pub.publish(goal)
+   else:success=True;break
   if status.task_result_str in ['blocked','failed'] and time.monotonic()-began>3:break
   if launch.poll() is not None:raise RuntimeError('runtime exited')
   time.sleep(.5)
  route_commits=sum('[target route commit] accepted' in x and 'source=KNOWN_' in x for x in logs)
  local_goal_commits=sum('[target route commit] accepted' in x and 'source=LOCAL_GOAL' in x for x in logs)
- result={'success':success,'final':pos.tolist(),'elapsed':time.monotonic()-began,'result':status.task_result_str,'reason':status.reason,'known_route_commits':route_commits,'local_goal_commits':local_goal_commits,'history':history}
+ return_commits=sum('[target route commit] accepted' in x and 'source=KNOWN_' in x for x in logs[return_log_start:]) if return_sent else 0
+ validation_pending=sum('[target route]' in x and 'ROUTE_VALIDATION_PENDING' in x for x in logs)
+ result={'success':success,'final':pos.tolist(),'elapsed':time.monotonic()-began,'result':status.task_result_str,'reason':status.reason,'known_route_commits':route_commits,'local_goal_commits':local_goal_commits,'return_route_commits':return_commits,'validation_pending':validation_pending,'history':history}
  (base/'synthetic_result.json').write_text(json.dumps(result,indent=2))
  print(json.dumps({k:v for k,v in result.items() if k!='history'}),flush=True)
  assert success,'synthetic corridor not completed; inspect runtime log'
  if os.environ.get('TEST_REQUIRE_ROUTE'):assert route_commits>0,'task finished without executing a known route'
+ if return_trip:assert return_sent and return_commits>0,'return task did not execute the existing topology route'
  if os.environ.get('TEST_NO_TOPOLOGY'):assert route_commits==0,'disabled topology unexpectedly executed a known route'
  if u_shape:
   assert route_commits>0,'known U-route was not used'

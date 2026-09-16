@@ -94,6 +94,10 @@ public:
   int lastMapChecks() const { return last_map_checks_; }
   int lastExpansions() const { return last_expansions_; }
   const std::string &queryStage() const { return query_stage_; }
+  bool knownGoalRoutePending() const {
+    return config_.mode == "prefer_known" && pending_route_.valid() &&
+        pending_route_.source == TargetRouteSource::KNOWN_GOAL;
+  }
 
 private:
   struct Cooldown { std::uint64_t a{0}, b{0}; double until{0.0}; };
@@ -106,6 +110,12 @@ private:
   void cool(std::uint64_t a, std::uint64_t b, double now);
   TargetRouteConfig config_;
   TargetRoute route_;
+  // A query budget is a per-callback work limit, not proof that a known
+  // route is unusable. Keep the unvalidated candidate separate from route_.
+  TargetRoute pending_route_;
+  std::size_t validation_segment_{1};
+  int validation_sample_{0};
+  double validation_started_{0.0};
   std::vector<Cooldown> cooldowns_;
   std::uint64_t task_{0}, world_{0}, next_id_{0};
   Eigen::Vector3d goal_{Eigen::Vector3d::Constant(std::numeric_limits<double>::quiet_NaN())};

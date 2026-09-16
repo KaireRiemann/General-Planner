@@ -336,7 +336,7 @@ rog_map:
   intensity_thresh: -10
   # The temporal downsample rate for input point cloud.
   #  e.g. if set to k, the point cloud will be downsampled to 1/k.
-  point_filt_num: 2
+  point_filt_num: 1
 
   # Probabilistc update
   raycasting:
@@ -346,9 +346,9 @@ rog_map:
     # OCCUPIED and UNKNOWN only and cannot supply observed KNOWN_FREE evidence.
     enable: true
     batch_update_size: 1
-    local_update_box: [ 40.0,40.0,6.0 ]
+    local_update_box: [ 70.0,70.0,6.0 ]
     # The range of raycasting [m].
-    ray_range: [0.50, 25.0 ]
+    ray_range: [0.50, 60.0 ]
 
     p_min: 0.12
     p_miss: 0.49

@@ -154,6 +154,9 @@ public:
   bool missionGoalReached(const Eigen::Vector3d &position) const;
   void updateGoalNode();
   TargetRoutePrefix prepareTargetRoute(const Eigen::Vector3d &position);
+  bool targetGoalRoutePending() const {
+    return targetDirectedModeActive() && target_route_.knownGoalRoutePending();
+  }
   void resetTargetRoute() { target_route_.reset(); target_route_selected_ = false; }
   void failTargetRoute(const std::string &reason) {
     target_route_.fail(ros::WallTime::now().toSec(), reason);
