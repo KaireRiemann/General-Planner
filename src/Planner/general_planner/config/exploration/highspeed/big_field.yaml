@@ -2,8 +2,6 @@
 # Launch arguments can override both input topics for real-robot deployment.
 odometry_topic: /lidar_slam/odom
 cloud_topic: /cloud_registered
-global_planning/w_vdir: 0.0
-global_planning/w_yawdir: 0.0
 global_planning/w_firstnode: 0.2
 viewpoint_param/global_viewpoint_num: 16
 viewpoint_param/local_viewpoint_num: 8

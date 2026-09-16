@@ -131,7 +131,6 @@ struct ExplorationParam {
   int local_viewpoint_num_, global_viewpoint_num_;
   int viewpoint_connection_num_;
   double a_avg_, v_max_, yaw_v_max_, viewpoint_gian_lambda_;
-  double w_vdir_, w_yawdir_;
   bool goal_lock_enable_;
   double goal_switch_min_interval_;
   double goal_switch_min_improvement_;

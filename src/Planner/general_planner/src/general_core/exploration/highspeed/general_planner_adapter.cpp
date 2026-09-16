@@ -132,6 +132,75 @@ bool pointInsideHPoly(const Eigen::MatrixX4d &hpoly, const Eigen::Vector3d &pt)
   return (hpoly * hp).maxCoeff() <= 1.0e-5;
 }
 
+bool constrainCoverageCorridor(
+    const coverage_motion::Path &path, geometry_utils::PolytopeVec &sfcs,
+    const coverage_motion::SegmentFree &free,
+    const std::function<double(const Eigen::Vector3d &)> &clearance,
+    const CoverageExecutionContext &coverage) {
+  const auto containing = [&](const Eigen::Vector3d &a, const Eigen::Vector3d &b) {
+    return std::find_if(sfcs.begin(), sfcs.end(), [&](const auto &sfc) {
+      return pointInsideHPoly(sfc.GetPlanes(), a) && pointInsideHPoly(sfc.GetPlanes(), b);
+    });
+  };
+  const auto seed = coverage_motion::compact(path, [&](const auto &a, const auto &b) {
+    return containing(a,b)!=sfcs.end() && free(a,b);
+  });
+  geometry_utils::PolytopeVec ordered;
+  for (std::size_t i=1; i<seed.size(); ++i) {
+    const Eigen::Vector3d a=seed[i-1], b=seed[i], delta=b-a;
+    if (delta.norm()<1e-5) continue;
+    const auto source=containing(a,b);
+    if (source==sfcs.end()) return false;
+    // The original SFC retains obstacle clearance. These extra planes retain
+    // route shape; their width is not a replacement for robot inflation.
+    const double available=std::min({clearance(a),clearance(b),clearance((a+b)*.5)});
+    const bool local_repair=coverage.spatial_repair &&
+        (!coverage.repair_position.allFinite() ||
+         coverage_motion::pointSegmentDistance(coverage.repair_position,a,b)<3.0);
+    const double width=local_repair ? std::clamp(.9*available,.60,1.20)
+                                    : std::clamp(1.25*available,1.0,2.50);
+    if (!std::isfinite(width)) return false;
+    auto poly=*source;
+    const auto old=poly.GetPlanes();
+    Eigen::MatrixX4d planes(old.rows()+6,4); planes.topRows(old.rows())=old;
+    Eigen::Matrix3d basis;
+    basis.col(0)=delta.normalized(); basis.col(1)=basis.col(0).unitOrthogonal();
+    basis.col(2)=basis.col(0).cross(basis.col(1));
+    for (int axis=0; axis<3; ++axis) {
+      const Eigen::Vector3d normal=basis.col(axis);
+      const double margin=axis==0 ? std::min(width,.75) : width;
+      planes.row(old.rows()+2*axis).head<3>()=normal.transpose();
+      planes(old.rows()+2*axis,3)=-std::max(normal.dot(a),normal.dot(b))-margin;
+      planes.row(old.rows()+2*axis+1).head<3>()=-normal.transpose();
+      planes(old.rows()+2*axis+1,3)=std::min(normal.dot(a),normal.dot(b))-margin;
+    }
+    poly.SetPlanes(planes); ordered.push_back(poly);
+  }
+  if (ordered.empty()) return false;
+  sfcs.swap(ordered);
+  return true;
+}
+
+// The shared simplifier skips two corridors. Remove an unnecessary overlap
+// waypoint when a single convex SFC already contains both boundaries. Apply
+// before observation transitions, which are mandatory waypoints.
+bool simplifyCoverageCorridor(const Eigen::Vector3d &head,
+                              const Eigen::Vector3d &tail,
+                              geometry_utils::PolytopeVec &sfcs) {
+  if (!geometry_utils::SimplifySFC(head, tail, sfcs) || sfcs.empty()) return false;
+  if (sfcs.size() == 2) {
+    for (std::size_t i = 0; i < sfcs.size(); ++i) {
+      if (pointInsideHPoly(sfcs[i].GetPlanes(), head) &&
+          pointInsideHPoly(sfcs[i].GetPlanes(), tail)) {
+        const auto only = sfcs[i];
+        sfcs.assign(1, only);
+        break;
+      }
+    }
+  }
+  return true;
+}
+
 traj_opt::Config makeGeneralExpConfig(const GcopterConfig &cfg)
 {
   traj_opt::Config out;
@@ -1613,10 +1682,10 @@ bool FastPlannerManager::planExploreTraj(
                                                 : std::numeric_limits<double>::infinity();
   }
   const double max_head_projection_dist =
-      std::max({0.75,
+      std::max({coverage.enabled ? local_data_.curr_vel_.norm()*switch_delay+.75 : .75,
                 2.5 * std::max(0.05, gcopter_config_->corridorMaxStartShift),
                 0.25 * local_data_.curr_vel_.norm() * std::max(0.05, switch_delay) + 0.50});
-  const double max_head_arc = route.enabled()
+  const double max_head_arc = (route.enabled() || coverage.enabled)
       ? std::max(1.0, local_data_.curr_vel_.norm() * switch_delay +
                      0.5 * gcopter_config_->maxAccMag * switch_delay * switch_delay + 0.5)
       : std::numeric_limits<double>::infinity();
@@ -1714,7 +1783,11 @@ bool FastPlannerManager::planExploreTraj(
       return false;
   }
   const std::size_t raw_sfc_count = sfcs.size();
-  if ((!(coverage.enabled && coverage.spatial_repair) && !geometry_utils::SimplifySFC(local_path.front(), local_path.back(), sfcs)) ||
+  // Keep the ordinary solver's freedom. Add route-shape constraints only
+  // after a spatial/shape failure, rather than tightening every successful
+  // exploration trajectory and changing its observation footprint.
+  const bool retain_coverage_shape=coverage.enabled && coverage.spatial_repair;
+  if ((!retain_coverage_shape && !geometry_utils::SimplifySFC(local_path.front(), local_path.back(), sfcs)) ||
       sfcs.empty())
   {
     ROS_WARN("[highspeed_exp adapter] General corridor simplification failed.");
@@ -1741,40 +1814,23 @@ bool FastPlannerManager::planExploreTraj(
         "connected sequence of exploration boxes; keep the original SFC and "
         "retain the sampled commit boundary check");
   }
-  if (coverage.enabled && coverage.spatial_repair) {
-    // Retain the seed geometry on a spatial retry. Large simplified rooms
-    // otherwise let every speed retry cut the same unsafe corner.
-    geometry_utils::PolytopeVec tubes;
-    for (std::size_t i = 1; i < local_path.size(); ++i) {
-      const auto &a = local_path[i-1]; const auto &b = local_path[i];
-      if ((b-a).norm() < 1.0e-5) continue;
-      const auto it = std::find_if(sfcs.begin(), sfcs.end(), [&](const auto &sfc) {
-        return pointInsideHPoly(sfc.GetPlanes(), a) && pointInsideHPoly(sfc.GetPlanes(), b);
-      });
-      if (it == sfcs.end()) { coverage_failure_.kind = CoverageFailureKind::PATH; return false; }
-      auto tube = *it;
-      const auto source = tube.GetPlanes();
-      Eigen::MatrixX4d planes(source.rows()+6,4); planes.topRows(source.rows())=source;
-      Eigen::Matrix3d basis;
-      basis.col(0)=(b-a).normalized();
-      basis.col(1)=basis.col(0).unitOrthogonal();
-      basis.col(2)=basis.col(0).cross(basis.col(1));
-      for (int axis=0; axis<3; ++axis) {
-        const Eigen::Vector3d normal=basis.col(axis);
-        const double lo=std::min(normal.dot(a),normal.dot(b))-0.20;
-        const double hi=std::max(normal.dot(a),normal.dot(b))+0.20;
-        planes.row(source.rows()+2*axis).head<3>()=normal.transpose();
-        planes(source.rows()+2*axis,3)=-hi;
-        planes.row(source.rows()+2*axis+1).head<3>()=-normal.transpose();
-        planes(source.rows()+2*axis+1,3)=lo;
-      }
-      tube.SetPlanes(planes); tubes.push_back(tube);
-    }
-    sfcs.swap(tubes);
+  if (retain_coverage_shape && !constrainCoverageCorridor(local_path, sfcs,
+      [&](const auto &a, const auto &b) {
+        return raycastSafety(a,b,true,gcopter_config_->commitKnownFreeSafeDistance,.10).all_known_free;
+      }, [&](const auto &p) { return safetyDistanceToOcc(p); }, coverage)) {
+    // A raw guide vertex can be bypassed by the certified corridor generator.
+    // Failure to express this optional shape preference is not evidence that
+    // the observation is unreachable. Keep the original safe corridor and
+    // retain the independent trajectory safety checks.
+    ROS_INFO_THROTTLE(.5,"[coverage geometry] seed does not fit ordered SFC; retain certified corridor");
+  }
+  if (coverage.enabled &&
+      !simplifyCoverageCorridor(local_path.front(), local_path.back(), sfcs)) {
+    coverage_failure_.kind = CoverageFailureKind::PATH;
+    return false;
   }
   std::size_t observation_sfc_begin=0;
   std::size_t observation_path_begin=1;
-  bool has_interior_observation=false;
   for (const auto &gate_observation:observation_gates) {
     const auto &observation=gate_observation;
     if ((head.col(0)-observation.goal).norm()<=observation.radius && observation_sfc_begin==0) continue;
@@ -1794,26 +1850,36 @@ bool FastPlannerManager::planExploreTraj(
     });
     if (it==sfcs.end()) return false;
     const std::size_t index=std::distance(sfcs.begin(),it);
-    auto gate=*it;
-    const auto source=gate.GetPlanes();
-    Eigen::MatrixX4d planes(source.rows()+6,4); planes.topRows(source.rows())=source;
-    const double half=0.85*observation.radius/std::sqrt(3.0);
-    for (int axis=0; axis<3; ++axis) {
-      planes.row(source.rows()+2*axis).setZero(); planes.row(source.rows()+2*axis+1).setZero();
-      planes(source.rows()+2*axis,axis)=1; planes(source.rows()+2*axis,3)=-observation.goal(axis)-half;
-      planes(source.rows()+2*axis+1,axis)=-1; planes(source.rows()+2*axis+1,3)=observation.goal(axis)-half;
-    }
-    gate.SetPlanes(planes);
-    const auto after=*it;
-    sfcs.insert(sfcs.begin()+index+1,gate);
-    sfcs.insert(sfcs.begin()+index+2,after);
-    observation_sfc_begin=index+2;
-    has_interior_observation=true;
-    // Ordered overlap waypoints are constrained to this box by the existing
-    // spatial mapping. No shared MINCO boundary or objective is modified.
+    const auto source=it->GetPlanes();
+    const Eigen::Vector3d incoming=local_path[observation_path_begin]-local_path[observation_path_begin-1];
+    if (incoming.norm()<1e-5) return false;
+    Eigen::Matrix3d basis;
+    basis.col(0)=incoming.normalized();basis.col(1)=basis.col(0).unitOrthogonal();
+    basis.col(2)=basis.col(0).cross(basis.col(1));
+    const double half=.85*observation.radius/std::sqrt(3.0);
+    auto before=*it, after=*it;
+    // Two broad funnels overlap inside the observation ball. Unlike
+    // [room, tiny cube, room], the observation is a transition waypoint,
+    // not a separate near-zero-duration flight segment.
+    auto funnel=[&](double direction) {
+      Eigen::MatrixX4d planes(source.rows()+5,4);planes.topRows(source.rows())=source;
+      Eigen::Vector3d normal=direction*basis.col(0);
+      planes.row(source.rows()).head<3>()=normal.transpose();
+      planes(source.rows(),3)=-normal.dot(observation.goal)-half;
+      for (int axis=1;axis<3;++axis) for (int sign=0;sign<2;++sign) {
+        normal=direction*basis.col(0)+(sign ? -1.0 : 1.0)*basis.col(axis);
+        const int row=source.rows()+1+2*(axis-1)+sign;
+        planes.row(row).head<3>()=normal.transpose();
+        planes(row,3)=-normal.dot(observation.goal)-half;
+      }
+      return planes;
+    };
+    before.SetPlanes(funnel(1.0));after.SetPlanes(funnel(-1.0));
+    sfcs[index]=before;
+    sfcs.insert(sfcs.begin()+index+1,after);
+    observation_sfc_begin=index+1;
     ROS_INFO_STREAM("[coverage motion] constrain observation region radius=" << observation.radius);
   }
-  h_polys = hPolysFromSfcs(sfcs);
   std::string sfc_reject_reason;
   if (!validateSfcSequence(local_path.front(),
                            local_path.back(),
@@ -1825,21 +1891,6 @@ bool FastPlannerManager::planExploreTraj(
                     << sfc_reject_reason);
     return false;
   }
-  h_polys = hPolysFromSfcs(sfcs);
-  if (gcopter_viz_)
-  {
-    try
-    {
-      gcopter_viz_->visualizePolytope(h_polys);
-      gcopter_viz_->visualizeRoute(path);
-    }
-    catch (const std::exception &e)
-    {
-      ROS_WARN_STREAM_THROTTLE(1.0, "[highspeed_exp adapter] local planner visualization failed: "
-                                        << e.what());
-    }
-  }
-
   double end_yaw = local_data_.end_yaw_;
   if (local_path.size() >= 2)
   {
@@ -2022,14 +2073,14 @@ bool FastPlannerManager::planExploreTraj(
         coverage_failure_.kind = CoverageFailureKind::SPATIAL;
         coverage_failure_.position = coverage_observed ? safety.first_blocked_pos : coverage_blocked;
         const double blocked_clearance =
-            safetyDistanceToOcc(safety.first_blocked_pos);
+            safetyDistanceToOcc(coverage_failure_.position);
         ROS_WARN_STREAM(
             "[highspeed_exp adapter] optimized trajectory safety check "
             "failed; " << (coverage.enabled && coverage.spatial_repair ? "constrained geometry rejected" : "retry slower") << ": attempt="
             << attempt << " guide_speed=" << guide_speed << " t=" << tt
             << " state=" << safetyStateName(safety.first_blocked_state)
             << " sample_pos=(" << p.transpose() << ")"
-            << " blocked_pos=(" << safety.first_blocked_pos.transpose()
+            << " blocked_pos=(" << coverage_failure_.position.transpose()
             << ")"
             << " start_clearance="
             << safetyDistanceToOcc(candidate.getPos(0.0))
@@ -2097,7 +2148,7 @@ bool FastPlannerManager::planExploreTraj(
                                          attempt_sfcs,
                                          piece_velocity_bounds,
                                          pos_traj,
-                                         has_interior_observation || (coverage.enabled && coverage.spatial_repair),
+                                         coverage.enabled || observation_sfc_begin>0,
                                          coverage.enabled ? remaining_budget : 0.0);
     if (ok && !pos_traj.empty())
     {
@@ -3034,6 +3085,18 @@ bool FastPlannerManager::planExploreTraj(
   if (!viz_path.empty() && (viz_path.front() - committed_pos_traj_->getPos(0.0)).norm() > 0.05)
   {
     viz_path.insert(viz_path.begin(), committed_pos_traj_->getPos(0.0));
+  }
+  if (gcopter_viz_) {
+    try {
+      // Publish only the corridor associated with this committed trajectory.
+      gcopter_viz_->setPlanningRevision(local_data_.traj_id_,local_data_.start_time_);
+      gcopter_viz_->visualizePolytope(hPolysFromSfcs(sfcs));
+      std::vector<Eigen::Vector3f> committed_guide;
+      for (const auto &p:viz_path) committed_guide.push_back(p.cast<float>());
+      gcopter_viz_->visualizeRoute(committed_guide);
+    } catch (const std::exception &e) {
+      ROS_WARN_STREAM("[highspeed_exp adapter] committed corridor visualization: " << e.what());
+    }
   }
   publishHighspeedTrajectoryViz(gcopter_viz_.get(),
                                 *committed_pos_traj_,

@@ -85,6 +85,15 @@ int main() {
     require(appendPathContinuation(bounded,Path{{1,0,1},{8,0,1}},26,cfg,observed) &&
         bounded.back().x()<4.5 && pathFree(bounded,observed),
         "partially observed continuation was discarded or crossed unknown boundary");
+    Path dense;
+    for (int i=0;i<=100;++i) dense.emplace_back(.05*i,0,1);
+    const auto sparse=compact(dense,open);
+    require(sparse.size()==2 && sparse.front()==dense.front() && sparse.back()==dense.back(),
+            "sampling density created unnecessary corridor segments");
+    const Path corner{{0,0,1},{1,0,1},{1,1,1},{2,1,1}};
+    require(compact(corner,open).size()==corner.size(),"compact erased a real corner");
+    const auto wall_path=compact(around,wall);
+    require(pathFree(wall_path,wall),"compact crossed a wall");
     PlanningBudget budget;
     const double initial_lead=budget.lead(.5,.08);budget.observe(.8);
     require(budget.lead(.5,.08)>initial_lead,"measured planning latency ignored");

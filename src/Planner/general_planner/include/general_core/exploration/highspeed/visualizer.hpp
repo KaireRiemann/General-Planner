@@ -29,6 +29,8 @@ class Visualizer {
 private:
   // config contains the scale for some markers
   ros::NodeHandle nh;
+  uint32_t planning_revision_{0};
+  ros::Time planning_stamp_;
 
   // These are publishers for path, waypoints on the trajectory,
   // the entire trajectory, the mesh of free-space polytopes,
@@ -54,6 +56,10 @@ public:
 
 public:
   Visualizer() {};
+
+  void setPlanningRevision(uint32_t revision, const ros::Time &stamp) {
+    planning_revision_=revision; planning_stamp_=stamp;
+  }
 
   void init(ros::NodeHandle &nh_) {
     nh = nh_;
@@ -108,7 +114,8 @@ public:
     visualization_msgs::Marker routeMarker;
     routeMarker.id = 0;
     routeMarker.type = visualization_msgs::Marker::LINE_LIST;
-    routeMarker.header.stamp = ros::Time::now();
+    routeMarker.header.stamp = planning_stamp_.isZero() ? ros::Time::now() : planning_stamp_;
+    routeMarker.text = "trajectory_id=" + std::to_string(planning_revision_);
     routeMarker.header.frame_id = "world";
     routeMarker.pose.orientation.w = 1.00;
     routeMarker.action = visualization_msgs::Marker::ADD;
@@ -150,7 +157,8 @@ public:
     visualization_msgs::Marker routeMarker;
     routeMarker.id = 0;
     routeMarker.type = visualization_msgs::Marker::LINE_LIST;
-    routeMarker.header.stamp = ros::Time::now();
+    routeMarker.header.stamp = planning_stamp_.isZero() ? ros::Time::now() : planning_stamp_;
+    routeMarker.text = "trajectory_id=" + std::to_string(planning_revision_);
     routeMarker.header.frame_id = "world";
     routeMarker.pose.orientation.w = 1.00;
     routeMarker.action = visualization_msgs::Marker::ADD;
@@ -226,7 +234,8 @@ public:
     visualization_msgs::Marker wayPointsMarker, trajMarker;
     wayPointsMarker.id = 0;
     wayPointsMarker.type = visualization_msgs::Marker::SPHERE_LIST;
-    wayPointsMarker.header.stamp = ros::Time::now();
+    wayPointsMarker.header.stamp = planning_stamp_.isZero() ? ros::Time::now() : planning_stamp_;
+    wayPointsMarker.text = "trajectory_id=" + std::to_string(planning_revision_);
     wayPointsMarker.header.frame_id = "world";
     wayPointsMarker.pose.orientation.w = 1.00;
     wayPointsMarker.action = visualization_msgs::Marker::ADD;
@@ -252,7 +261,8 @@ public:
 
     trajMarker = wayPointsMarker;
     trajMarker.type = visualization_msgs::Marker::SPHERE_LIST;
-    trajMarker.header.stamp = ros::Time::now();
+    trajMarker.header.stamp = planning_stamp_.isZero() ? ros::Time::now() : planning_stamp_;
+    trajMarker.text = "trajectory_id=" + std::to_string(planning_revision_);
     trajMarker.id = 0;
     trajMarker.ns = "trajectory";
     trajMarker.color.r = 0.00;
@@ -312,7 +322,8 @@ public:
     visualization_msgs::Marker meshMarker, edgeMarker;
 
     meshMarker.id = 0;
-    meshMarker.header.stamp = ros::Time::now();
+    meshMarker.header.stamp = planning_stamp_.isZero() ? ros::Time::now() : planning_stamp_;
+    meshMarker.text = "trajectory_id=" + std::to_string(planning_revision_);
     meshMarker.header.frame_id = "world";
     meshMarker.pose.orientation.w = 1.00;
     meshMarker.action = visualization_msgs::Marker::ADD;

@@ -118,8 +118,6 @@ coverage_guidance/floor_priority_min_z: 3.80
 # instead of trying to connect directly to a high endpoint.
 coverage_guidance/floor_transition_rank_window: 4
 coverage_guidance/executable_candidate_bonus: 3.0
-global_planning/w_vdir: 0.3
-global_planning/w_yawdir: 0.0
 global_planning/w_firstnode: 0.2
 # Composite next-frontier objective.  All cost-like terms are positive and all
 # exploration rewards are subtracted in FastExplorationManager.

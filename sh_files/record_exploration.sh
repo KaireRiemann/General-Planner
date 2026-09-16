@@ -97,6 +97,11 @@ add_topic /planning/heartbeat
 add_topic /planning/coverage_result
 add_topic /planning/exploration/status
 add_topic /planning/exploration/command_enabled
+# Committed corridor/guide carry the trajectory ID in Marker.text and commit time in the header.
+add_topic /visualizer/mesh
+add_topic /visualizer/edge
+add_topic /visualizer/route
+add_topic /visualizer/trajectory
 add_topic /planning/trajectory
 add_topic /planning/yaw_trajectory
 add_topic /planning/pos_cmd

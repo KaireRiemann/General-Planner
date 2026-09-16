@@ -114,8 +114,6 @@ void FastExplorationManager::initialize(
            ep_->global_viewpoint_num_, 16);
   nh.getParam("view_graph", ep_->view_graph_);
   nh.param("viewpoint_param/local_viewpoint_num", ep_->local_viewpoint_num_, 8);
-  nh.getParam("global_planning/w_vdir", ep_->w_vdir_);
-  nh.getParam("global_planning/w_yawdir", ep_->w_yawdir_);
   nh.param("GoalLockEnable", ep_->goal_lock_enable_, true);
   nh.param("TaskManager/GoalLockEnable", ep_->goal_lock_enable_,
            ep_->goal_lock_enable_);
@@ -1985,83 +1983,6 @@ int FastExplorationManager::commitTargetDirectedTour(
   return SUCCEED;
 }
 
-double FastExplorationManager::getPathCost(TopoNode::Ptr &n1,
-                                           Eigen::Vector3d v1, float &yaw1,
-                                           TopoNode::Ptr &n2, float &yaw2) {
-  auto estimateCost = [&](TopoNode::Ptr &n1, Eigen::Vector3d v1, float &yaw1,
-                          TopoNode::Ptr &n2, float &yaw2, int res,
-                          vector<Eigen::Vector3f> &path) -> double {
-    double len_cost, yaw_cost, dir_cost;
-    len_cost = yaw_cost = dir_cost = 0.0;
-    if (res == BubbleAstar::NO_PATH)
-      return 2e3 + (n1->center_ - n2->center_)
-                       .norm(); // 使用一个大的时间值表示无法到达
-    if (res == BubbleAstar::START_FAIL || res == BubbleAstar::END_FAIL)
-      return 2e3 +
-             (n1->center_ - n2->center_).norm(); // 同上，用于不同的错误情况
-
-    if (ep_->epic_simple_global_cost_) {
-      // Match EPIC's global routing objective: use only estimated travel time.
-      // Direction changes are handled by the local reorientation/safety layer;
-      // charging them again here systematically postpones nearby side rooms.
-      for (std::size_t i = 0; i + 1 < path.size(); ++i) {
-        const Eigen::Vector3f delta = path[i + 1] - path[i];
-        len_cost += delta.norm() + 0.5 * std::fabs(delta.z());
-      }
-      len_cost /= std::max(0.1, ep_->v_max_ / 2.0);
-    } else {
-      const EdgeSafetyCost edge_cost =
-          planner_manager_->estimateHighSpeedEdgeCost(path, v1, yaw1, yaw2);
-      len_cost = edge_cost.total_cost;
-    }
-
-    // if (v1.norm() > 1e-3) {
-    //   Eigen::Vector3f dir = n2->center_ - n1->center_;
-    //   dir.normalize();
-    //   Eigen::Vector3f v_dir = v1.normalized().cast<float>();
-    //   float yaw1 = atan2(dir.y(), dir.x());
-    //   float yaw2 = atan2(v_dir.y(), v_dir.x());
-    //   float diff = yaw1 - yaw2;
-    //   while (diff > M_PI)
-    //     diff -= 2.0 * M_PI;
-    //   while (diff < -M_PI)
-    //     diff += 2.0 * M_PI;
-    //   dir_cost = ep_->w_vdir_ * (fabs(diff) /
-    //   planner_manager_->gcopter_config_->yaw_max_vel);
-    // }
-
-    // if (path.size() >= 2) {
-    //   planner_manager_->calculateTimelb(path, yaw1, yaw2, yaw_cost);
-    //   yaw_cost *= ep_->w_yawdir_;
-    // }
-
-    return len_cost + dir_cost;
-    // return len_cost + dir_cost;
-  };
-  vector<Eigen::Vector3f> path;
-  int res = planner_manager_->fast_searcher_->topoSearch(n1, n2, 1e-2, path);
-  return estimateCost(n1, v1, yaw1, n2, yaw2, res, path);
-}
-
-double FastExplorationManager::getPathCostWithoutTopo(TopoNode::Ptr &n1,
-                                                      Eigen::Vector3d v1,
-                                                      float &yaw1,
-                                                      TopoNode::Ptr &n2,
-                                                      float &yaw2) {
-  vector<Eigen::Vector3f> path;
-  int res = planner_manager_->parallel_path_finder_->search(
-      n1->center_, n2->center_, path, 1.0, false);
-  if (res != ParallelBubbleAstar::REACH_END)
-    return 2e3;
-  if (ep_->epic_simple_global_cost_) {
-    double path_cost = 0.0;
-    planner_manager_->parallel_path_finder_->calculatePathCost(path, path_cost);
-    return path_cost;
-  }
-  return planner_manager_->estimateHighSpeedEdgeCost(path, v1, yaw1, yaw2)
-      .total_cost;
-}
-
 int FastExplorationManager::selectStableGoalIndex(
     const vector<TopoNode::Ptr> &viewpoints,
     const vector<double> &distance_odom2vp, const int candidate_idx,
@@ -2934,24 +2855,6 @@ int FastExplorationManager::planGlobalPath(const Eigen::Vector3d &pos,
     high_speed_mode_active_ = true;
   }
   const bool moving = current_speed > 0.5;
-  bool bm_without_topo = false;
-  auto estimiateVdirCost = [&](const TopoNode::Ptr &n1,
-                               const Eigen::Vector3d &v1,
-                               const TopoNode::Ptr &n2) -> double {
-    Eigen::Vector3f dir = n2->center_ - n1->center_;
-    dir.normalize();
-    Eigen::Vector3f v_dir = v1.normalized().cast<float>();
-    float yaw1 = atan2(dir.y(), dir.x());
-    float yaw2 = atan2(v_dir.y(), v_dir.x());
-    float diff = yaw1 - yaw2;
-    while (diff > M_PI)
-      diff -= 2.0 * M_PI;
-    while (diff < -M_PI)
-      diff += 2.0 * M_PI;
-    return ep_->w_vdir_ *
-           (fabs(diff) / planner_manager_->gcopter_config_->yaw_max_vel);
-  };
-  ros::Time start = ros::Time::now();
   vector<TopoNode::Ptr> viewpoints;
   float curr_yaw = (float)planner_manager_->local_data_.curr_yaw_;
   HighSpeedViewScoreContext view_ctx;
@@ -3685,41 +3588,21 @@ int FastExplorationManager::planGlobalPath(const Eigen::Vector3d &pos,
        << " ms" << endl;
   vector<double> distance_odom2vp(viewpoints.size(), 2e3);
   vector<EdgeSafetyCost> edge_odom2vp(viewpoints.size());
-  ros::Time t_start_cvp_1 = ros::Time::now();
   omp_set_num_threads(4);
   // clang-format off
   #pragma omp parallel for
   // clang-format on
-  for (int i = 0; i < viewpoints.size(); ++i) {
+  for (int i = 0; i < static_cast<int>(viewpoints.size()); ++i) {
     edge_odom2vp[i] = getPathEdgeCost(
         planner_manager_->topo_graph_->odom_node_, vel, curr_yaw,
         viewpoints[i], viewpoints[i]->yaw_);
     distance_odom2vp[i] = edge_odom2vp[i].total_cost;
   }
-  ros::Time t_end_cvp_1 = ros::Time::now();
-  if (bm_without_topo) {
-    omp_set_num_threads(4);
-    // clang-format off
-    #pragma omp parallel for
-    // clang-format on
-    for (int i = 0; i < viewpoints.size(); ++i) {
-      distance_odom2vp[i] = getPathCostWithoutTopo(
-          planner_manager_->topo_graph_->odom_node_, vel, curr_yaw,
-          viewpoints[i], viewpoints[i]->yaw_);
-    }
-    ros::Time t_end_cvp_2 = ros::Time::now();
-    double cost_mat_with_topo = (t_end_cvp_1 - t_start_cvp_1).toSec() * 1000;
-    double cost_mat_without_topo = (t_end_cvp_2 - t_end_cvp_1).toSec() * 1000;
-    cout << "cost mat topo: " << cost_mat_with_topo << "ms" << endl;
-    cout << "cost mat point cloud: " << cost_mat_without_topo << "ms" << endl;
-  }
-
   vector<TopoNode::Ptr> viewpoint_reachable;
   vector<double> viewpoint_reachable_distance;
   vector<EdgeSafetyCost> viewpoint_reachable_edges;
   vector<int> reversal_indices;
-  const double reversal_angle =
-      planner_manager_->gcopter_config_->reorientationHeadingAngle;
+  const double reversal_angle = planner_manager_->gcopter_config_->reorientationHeadingAngle;
   for (int i = 0; i < static_cast<int>(distance_odom2vp.size()); ++i) {
     if (distance_odom2vp[i] > 2e3)
       continue;
@@ -4306,10 +4189,6 @@ int FastExplorationManager::planGlobalPath(const Eigen::Vector3d &pos,
     double wait_norm{0.0};
     double debt_norm{0.0};
     double coverage{0.0};
-    double target_guidance{0.0};
-    double target_remaining{0.0};
-    double target_progress{0.0};
-    double target_lateral{0.0};
     double failed_goal{0.0};
     double swarm{0.0};
     double region{0.0};
@@ -4386,7 +4265,6 @@ int FastExplorationManager::planGlobalPath(const Eigen::Vector3d &pos,
     CandidateCostBreakdown &terms = candidate_terms[i];
     if (!ep_->composite_candidate_cost_enable_) {
       terms.total = viewpoint_reachable_distance[i] + terms.coverage +
-                    terms.target_guidance +
                     terms.failed_goal + terms.swarm + terms.region;
       return;
     }
@@ -4397,7 +4275,6 @@ int FastExplorationManager::planGlobalPath(const Eigen::Vector3d &pos,
         ep_->candidate_information_gain_weight_ * terms.gain_norm -
         ep_->candidate_wait_weight_ * terms.wait_norm -
         ep_->candidate_debt_weight_ * terms.debt_norm + terms.coverage +
-        terms.target_guidance +
         terms.failed_goal + terms.swarm + terms.region;
   };
 
@@ -4443,11 +4320,6 @@ int FastExplorationManager::planGlobalPath(const Eigen::Vector3d &pos,
                  << " wait=" << candidate_terms[goal_idx].wait_norm
                  << " debt=" << candidate_terms[goal_idx].debt_norm
                  << " coverage=" << candidate_terms[goal_idx].coverage
-                 << " target=" << candidate_terms[goal_idx].target_guidance
-                 << " target_remaining="
-                 << candidate_terms[goal_idx].target_remaining
-                 << " target_progress="
-                 << candidate_terms[goal_idx].target_progress
                  << " failed_goal="
                  << candidate_terms[goal_idx].failed_goal
                  << " swarm=" << candidate_terms[goal_idx].swarm);
@@ -4620,10 +4492,7 @@ int FastExplorationManager::planGlobalPath(const Eigen::Vector3d &pos,
              << " TB=" << term.turn_brake << " R=" << term.future_return
              << " G=" << term.gain_norm << " W=" << term.wait_norm
              << " D=" << term.debt_norm << " C=" << term.coverage
-             << " region=" << term.region
-             << " M=" << term.target_guidance
-             << " Mr=" << term.target_remaining
-             << " Mp=" << term.target_progress;
+             << " region=" << term.region;
     if (std::fabs(term.swarm) > 1.0e-9) {
       cost_log << " S=" << term.swarm;
     }
@@ -4693,7 +4562,6 @@ int FastExplorationManager::planGlobalPath(const Eigen::Vector3d &pos,
       ed_->global_tour_.emplace_back(viewpoint_reachable[viewpoint_idx]->center_);
     }
   }
-  ros::Time end = ros::Time::now();
   planner_manager_->topo_graph_->removeNodes(viewpoints);
   planner_manager_->graph_visualizer_->vizTour(ed_->global_tour_, VizColor::RED,
                                                "global");

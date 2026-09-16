@@ -55,6 +55,7 @@ struct CoverageObservationContext {
 struct CoverageExecutionContext {
   bool enabled{false};
   bool spatial_repair{false};
+  Eigen::Vector3d repair_position{Eigen::Vector3d::Constant(std::numeric_limits<double>::quiet_NaN())};
 };
 
 enum class CoverageFailureKind { NONE, PATH, SPATIAL, DYNAMICS, HEAD, BUDGET };
@@ -86,6 +87,29 @@ inline double pointSegmentDistance(const Eigen::Vector3d &p,
   const double u = d.squaredNorm() > 1e-10
       ? std::clamp((p - a).dot(d) / d.squaredNorm(), 0.0, 1.0) : 0.0;
   return (p - (a + u * d)).norm();
+}
+
+// Sampling density must not determine the number of MINCO pieces. Remove a
+// vertex only when the replacement chord stays close to the original route
+// AND has current free-space evidence. Keep genuine doorway corners.
+inline Path compact(const Path &path, const SegmentFree &free,
+                    double deviation = 0.20, double max_length = 6.0) {
+  if (path.size() < 3) return path;
+  Path out{path.front()};
+  for (std::size_t i = 0; i + 1 < path.size();) {
+    std::size_t next = i + 1;
+    for (std::size_t j = i + 2; j < path.size(); ++j) {
+      if ((path[j] - path[i]).norm() > max_length) break;
+      bool close = true;
+      for (std::size_t k = i + 1; k < j && close; ++k)
+        close = pointSegmentDistance(path[k], path[i], path[j]) <= deviation;
+      if (!close) break;
+      if (free(path[i], path[j])) next = j;
+    }
+    if ((path[next] - out.back()).norm() > 1e-5) out.push_back(path[next]);
+    i = next;
+  }
+  return out;
 }
 
 // Acceleration-limited estimate with the actual initial forward velocity.

@@ -96,13 +96,11 @@ public:
   CoverageGuidanceManager::Ptr coverage_guidance_;
   SwarmExplorationCoordinator::Ptr swarm_coordinator_;
   // ViewpointForest::Ptr vps_forest_;
-  double getPathCost(TopoNode::Ptr &n1, Eigen::Vector3d v1, float &yaw1, TopoNode::Ptr &n2, float &yaw2);
   EdgeSafetyCost getPathEdgeCost(TopoNode::Ptr &n1,
                                  const Eigen::Vector3d &v1,
                                  float yaw1,
                                  TopoNode::Ptr &n2,
                                  float yaw2);
-  double getPathCostWithoutTopo(TopoNode::Ptr &n1, Eigen::Vector3d v1, float &yaw1, TopoNode::Ptr &n2, float &yaw2);
   void initialize(ros::NodeHandle &nh, FrontierManager::Ptr frt_manager,
                   FastPlannerManager::Ptr planner_manager);
   int planGlobalPath(const Vector3d &pos, const Vector3d &vel);

@@ -1236,12 +1236,15 @@ int FastExplorationFSM::callExplorationPlanner() {
       planner_manager_->coverage_failure_.kind != CoverageFailureKind::HEAD) {
     // One geometric retry at the same remote goal, rather than four speeds
     // through the same blocked corner or immediately cooling the whole task.
+    const Eigen::Vector3d repair_position=planner_manager_->coverage_failure_.kind==CoverageFailureKind::SPATIAL
+        ? planner_manager_->coverage_failure_.position
+        : Eigen::Vector3d::Constant(std::numeric_limits<double>::quiet_NaN());
     auto repair_path = stopped_goal_path;
     if (planner_manager_->prepareCoveragePath(repair_path, fd_->static_state_, 8.0)) {
       observation = {};
       const bool repair_rolling = (repair_path.back().cast<double>() - requested_goal).norm() > 0.10;
       planned=planner_manager_->planExploreTraj(repair_path,fd_->static_state_,false,repair_rolling,{}, {},
-                                               CoverageExecutionContext{true,true});
+                                               CoverageExecutionContext{true,true,repair_position});
       if (planned) expl_manager_->ed_->path_next_goal_=repair_path;
       ROS_INFO_STREAM("[coverage repair] constrained seed corridor success=" << planned);
     }

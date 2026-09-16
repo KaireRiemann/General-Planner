@@ -403,13 +403,17 @@ int main(int argc, char **argv) {
     // Independent stopped-endpoint case; an active replacement deliberately
     // contains the preceding command prefix (covered by --continuity).
     planner.clearReleasedTrajectory();
+    require(planner.planExploreTraj(path,true,false,false,{}, {},CoverageExecutionContext{true,false}),
+            "coverage shape fixture did not commit");
+    const int coverage_pieces=planner.local_data_.minco_traj_.getPieceNum();
+    planner.clearReleasedTrajectory();
     observation.goal=path.back().cast<double>();
     CoverageObservationGate endpoint;endpoint.goal=observation.goal;endpoint.yaw=.8;endpoint.yaw_tolerance=.1;
     observation.gates={endpoint};
     require(planner.planExploreTraj(path,true,false,false,{},observation,CoverageExecutionContext{true,false}),
             "terminal observation yaw did not commit");
-    require(planner.local_data_.minco_traj_.getPieceNum()==1,
-            "endpoint-only observation unnecessarily disabled corridor simplification");
+    require(planner.local_data_.minco_traj_.getPieceNum()==coverage_pieces,
+            "endpoint-only observation inserted an unnecessary corridor segment");
     observation.gates.clear();
     require(planner.prepareCoveragePath(path,true),"observed repair seed was not executable");
     require(planner.planExploreTraj(path,true,false,false,{}, {},CoverageExecutionContext{true,true}),
@@ -426,6 +430,17 @@ int main(int argc, char **argv) {
     require(planner.checkTrajCollision(collision_time),"coverage-only live check changed default mode behavior");
     require(lio->setSingleExplorationBox(Eigen::Vector3f(-12,-6,-.2),Eigen::Vector3f(12,6,4.2)),
             "could not restore room bounds");
+
+    // Reproduce the screenshot's short seed edge in an observed open room.
+    // A 12 cm sampling edge must not become its own constrained flight piece.
+    planner.clearReleasedTrajectory();
+    planner.local_data_.curr_pos_=Eigen::Vector3d(0,0,1.5);
+    planner.local_data_.curr_vel_.setZero();
+    path={{0,0,1.5},{1.8f,0,1.5},{1.92f,0,1.5},{3.7f,0,1.5},{5.5f,0,1.5}};
+    require(planner.planExploreTraj(path,true,false,false,{}, {},CoverageExecutionContext{true,true}),
+            "dense open-room repair could not commit");
+    require(planner.local_data_.minco_traj_.getPieceNum()==1,
+            "short collinear seed edge became a separate repair corridor");
 
     CoverageFinishStatus finish;
     finish.guard_enabled=finish.plan_valid=finish.plateau_reached=finish.targets_exhausted=true;
