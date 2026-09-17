@@ -215,7 +215,9 @@ namespace fsm {
                 cmd_traj.coef_yaw.resize(cmd_traj.piece_num_yaw * col_size);
                 cmd_traj.time_yaw.resize(cmd_traj.piece_num_yaw);
                 for (int i = 0; i < cmd_traj.piece_num_yaw; i++) {
-                    Eigen::VectorXd yaw_coef = yaw_traj[i].getCoeffMat().row(0);
+                    const auto raw_coef = yaw_traj[i].getCoeffMat();
+                    Eigen::VectorXd yaw_coef = Eigen::VectorXd::Zero(8);
+                    yaw_coef.tail(raw_coef.cols()) = raw_coef.row(0).transpose();
                     Eigen::Map<Eigen::VectorXd>(&cmd_traj.coef_yaw[col_size * i], col_size) = yaw_coef;
                     cmd_traj.time_yaw[i] = yaw_traj[i].getDuration();
                 }
@@ -223,7 +225,9 @@ namespace fsm {
             }
 
             for (int i = 0; i < cmd_traj.piece_num_pos; i++) {
-                Eigen::Matrix<double, 3, 8> coef = pos_traj[i].getCoeffMat();
+                const auto raw_coef = pos_traj[i].getCoeffMat();
+                Eigen::Matrix<double, 3, 8> coef = Eigen::Matrix<double, 3, 8>::Zero();
+                coef.rightCols(raw_coef.cols()) = raw_coef;
                 Eigen::Map<Eigen::VectorXd>(&cmd_traj.coef_pos_x[8 * i], 8) = coef.row(0);
                 Eigen::Map<Eigen::VectorXd>(&cmd_traj.coef_pos_y[8 * i], 8) = coef.row(1);
                 Eigen::Map<Eigen::VectorXd>(&cmd_traj.coef_pos_z[8 * i], 8) = coef.row(2);
@@ -1122,6 +1126,9 @@ namespace fsm {
             if (!msg->header.stamp.isZero() &&
                 (ros::Time::now()-msg->header.stamp).toSec() > cfg_.tracking_task_timeout) return;
             const bool activate_tracking_task = trackingMode() || trackingPerchingMode();
+            const double prediction_epoch = msg->header.stamp.isZero()
+                ? ros::Time::now().toSec() : msg->header.stamp.toSec();
+            for (auto &state : prediction) state.reference_time = prediction_epoch;
             setTrackingTargetPrediction(prediction, activate_tracking_task);
             if (!activate_tracking_task) {
                 return;
@@ -1212,6 +1219,8 @@ namespace fsm {
 
                 traj_opt::DynamicTargetState target;
                 target.t = sample_times[i];
+                target.reference_time = stamped ? msg->poses.front().header.stamp.toSec()
+                    : (msg->header.stamp.isZero() ? ros::Time::now().toSec() : msg->header.stamp.toSec());
                 target.position = positions[i];
                 target.velocity = velocity;
                 target.acceleration = acceleration;

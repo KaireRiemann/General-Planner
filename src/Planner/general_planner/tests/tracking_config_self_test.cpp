@@ -54,6 +54,9 @@ int main(int argc, char **argv) {
         tracking["general_planner"]["tracking"]["yaw_rate_limit"] = 1.2;
         tracking["general_planner"]["tracking"]["planning_horizon"] = 8.0;
         tracking["general_planner"]["tracking"]["use_snap"] = true;
+        tracking["general_planner"]["tracking"]["nominal_horizon"] = 2.5;
+        tracking["general_planner"]["tracking"]["max_extrapolation"] = 1.5;
+        tracking["general_planner"]["tracking"]["solver_budget"] = 0.04;
         tracking["traj_opt"]["tracking_traj"]["penna_t"] = 123.0;
         const auto nav_path = dir / "navigation.yaml";
         const auto tracking_path = dir / "profiles/tracking.yaml";
@@ -68,6 +71,9 @@ int main(int argc, char **argv) {
         check(near(planner.tracking_traj_cfg.penna_t, 123.0), "tracking inherited navigation weight");
         check(near(planner.tracking_yaw_rate_limit, 1.2), "tracking yaw clamped by navigation");
         check(near(planner.tracking_planning_horizon, 8.0), "tracking frontend inherited navigation horizon");
+        check(near(planner.tracking_nominal_horizon, 2.5) &&
+              near(planner.tracking_max_extrapolation, 1.5) &&
+              near(planner.tracking_solver_budget, .04), "elastic tracking budget ignored profile");
         check(near(state.tracking_prediction_horizon, 2.0), "tracking prediction inherited navigation");
         check(near(state.tracking_task_timeout, 1.3), "tracking timeout inherited navigation");
         check(near(state.task_timeout, 9.0), "non-tracking timeout changed");
@@ -111,6 +117,11 @@ int main(int argc, char **argv) {
         check(near(legacy_state.tracking_replan_rate, 3.0), "legacy replan frequency changed");
         check(near(legacy_state.tracking_task_timeout, 9.0), "legacy timeout changed");
 
+        tracking["general_planner"]["tracking"]["solver_budget"] = 0.0;
+        save(tracking_path, tracking);
+        mustThrow([&] { general_planner::Config bad(nav_path.string(), tracking_path.string()); },
+                  "zero tracking solver budget accepted");
+        tracking["general_planner"]["tracking"]["solver_budget"] = 0.04;
         tracking["fsm"]["replan_rate"] = 0.0;
         save(tracking_path, tracking);
         mustThrow([&] { fsm::Config bad(nav_path.string(), tracking_path.string()); },

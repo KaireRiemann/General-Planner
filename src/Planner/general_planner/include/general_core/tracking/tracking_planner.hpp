@@ -31,9 +31,7 @@ public:
                               std::move(mission_node));
         }
         auto services = context_.planner().makeTrackingTaskServices();
-        auto backend_services = context_.planner().makeTrackingBackendServices();
         const int ret = tracking_task::planFromRest(services,
-                                                    backend_services,
                                                     request.target_prediction,
                                                     request.new_task);
         return makeResult(request.plan_request,
@@ -52,9 +50,7 @@ public:
                               std::move(mission_node));
         }
         auto services = context_.planner().makeTrackingTaskServices();
-        auto backend_services = context_.planner().makeTrackingBackendServices();
         const int ret = tracking_task::replanOnce(services,
-                                                  backend_services,
                                                   request.target_prediction,
                                                   request.new_task);
         return makeResult(request.plan_request,
@@ -74,9 +70,7 @@ public:
                               std::move(mission_node));
         }
         auto services = context_.planner().makeTrackingTaskServices();
-        auto backend_services = context_.planner().makeTrackingBackendServices();
         const int ret = tracking_task::replanWithPerchingSurface(services,
-                                                                 backend_services,
                                                                  request.target_prediction,
                                                                  surface,
                                                                  request.new_task);

@@ -62,30 +62,25 @@ general_planner:
   yaw_mode: 1
   mpc_horizon: 15
   tracking:
+    nominal_horizon: 3.0
+    max_extrapolation: 2.0
+    frontend_budget: 0.025
+    solver_budget: 0.06
+    solver_iterations: 100
     distance: 2.2
     distance_tolerance: 0.8
     height_offset: 0.7
     height_tolerance: 0.6
     safe_distance: 0.35
     hard_safe_distance: 0.22
-    narrow_passage_enable: true
-    narrow_passage_clearance_threshold: 0.38
-    narrow_passage_soft_safe_distance_scale: 0.65
-    visibility_safe_distance: 0.25
-    visibility_cone_ratio: 0.12
     visibility_angle_clearance: 0.0872664626
     adaptive_occlusion_enable: true
     adaptive_occlusion_activation_distance: 0.25
     adaptive_occlusion_max_weight_scale: 12.0
-    adaptive_occlusion_recovery_oe_scale: 8.0
     adaptive_occlusion_od_far_weight_scale: 4.0
     adaptive_occlusion_distance_upper_scale: 0.65
     adaptive_occlusion_min_horizontal_upper: 0.85
-    adaptive_occlusion_postcheck_enable: true
-    reacquire_distance: 6.0
     min_commit_duration: 0.8
-    low_speed_velocity_threshold: 0.25
-    angular_hysteresis: 0.35
     anti_rollback_enable: true
     anti_rollback_horizon: 1.0
     anti_rollback_dt: 0.25
@@ -111,41 +106,8 @@ general_planner:
     detour_grace_enable: true
     detour_grace_horizon: 1.2
     detour_max_tracking_error_scale: 2.5
-    anti_rollback_eval_after_prefix: true
-    recovery_enable: true
-    recovery_horizon: 1.5
-    recovery_distance_tolerance_scale: 1.8
-    recovery_height_tolerance_scale: 1.8
-    recovery_time_scale: 1.4
-    recovery_reduce_visible_region_weight: 0.3
-    recovery_reduce_target_forward_weight: 0.5
-    soft_recovery_enable: true
-    soft_recovery_margin: 0.2
-    soft_recovery_hold_duration: 0.8
-    reacquire_recovery_enable: true
-    reacquire_recovery_horizon: 0.8
-    reacquire_transit_enable: true
-    reacquire_transit_horizon_scale: 0.6
-    reacquire_transit_max_horizon: 2.5
-    reacquire_visible_region_weight_scale: 0.0
     reacquire_fov_relax_enable: true
-    reacquire_fov_deferred_strict_enable: true
-    reacquire_fov_entry_distance: 6.0
-    reacquire_min_progress_distance: 0.5
-    reacquire_min_progress_ratio: 0.10
-    reacquire_fov_range_grace: 8.0
     reacquire_fov_angular_grace_deg: 8.0
-    optimizer_commit_safety_precheck_enable: true
-    retry_without_corridor_enable: true
-    candidate_angle_step: 0.3926990817
-    candidate_radius_num: 3
-    visibility_samples: 5
-    fallback_relax_enable: true
-    fallback_distance_tolerance_scale: 1.6
-    fallback_height_tolerance_scale: 1.5
-    fallback_candidate_radius_extra: 2
-    fallback_candidate_angle_step_scale: 0.5
-    fallback_search_horizon_scale: 1.3
     weight_od_near: 35.0
     weight_od_far: 5.0
     weight_od_vertical: 8.0
@@ -153,42 +115,23 @@ general_planner:
     weight_oe: 1.0
     weight_relative_velocity: 1.0
     weight_tangent_velocity: 5.0
-    weight_viewpoint_attractor: 25.0
     weight_visible_region: 3.0
     weight_fov: 80.0
-    weight_target_forward: 60.0
-    static_distance_tolerance_scale: 0.35
-    static_height_tolerance_scale: 0.5
-    static_tangent_weight_scale: 3.0
-    static_tail_speed_epsilon: 0.08
     fov_horizontal_deg: 90.0
     fov_vertical_deg: 60.0
     fov_range: 4.0
-    target_front_margin: 0.05
     fov_commit_check_enable: true
-    # true: FOV violation hard-rejects frontend/commit candidates.
+    # true: FOV violations reject candidates during commit validation.
     # false: keep FOV as an optimization cost only.
     fov_check_strict: false
     fov_check_dt: 0.03
     fov_range_grace_enable: true
     fov_range_grace: 0.9
     fov_keep_old_angular_grace_deg: 5.0
-    fov_keep_old_violation_ratio_grace: 0.25
     fov_range_margin: 0.05
     fov_front_margin: 0.05
     fov_check_first_commit: true
     keep_old_requires_fov: true
-    frontend_fov_feasibility_enable: true
-    frontend_yaw_rate_feasibility_enable: true
-    frontend_fov_range_margin: 0.05
-    frontend_yaw_rate_margin: 0.10
-    frontend_obstacle_recovery_enable: true
-    frontend_grid_neighbor_mode: 26
-    frontend_over_wall_enable: true
-    frontend_over_wall_max_climb: 2.0
-    frontend_side_pass_enable: true
-    frontend_side_pass_width: 1.5
-    frontend_reacquire_relax_yaw_rate: true
     joint_sample_dt: 0.05
     dense_joint_sample_enable: true
     unknown_as_occupied: false

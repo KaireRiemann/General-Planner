@@ -7,6 +7,7 @@
 */
 
 #include <general_core/general_planner.h>
+#include <utils/geometry/tracking_attitude.hpp>
 #include <general_core/tracking/tracking_internal_utils.hpp>
 
 #include <algorithm>
@@ -21,11 +22,12 @@ namespace general_planner {
 
     bool GeneralPlanner::commitTrackingTrajectory(const Trajectory &pos_traj,
                                                 const Trajectory &optimized_yaw_traj,
-                                                const traj_opt::DynamicTargetStates &target_prediction,
+                                                const traj_opt::DynamicTargetStates &input_prediction,
                                                 const std::string &traj_ns,
                                                 const double candidate_head_wt,
                                                 const bool allow_reacquire_fov_relax,
-                                                const bool allow_old_prefix) {
+                                                const bool allow_old_prefix,
+                                                const vec_Vec3f &approach_guide) {
         if (trackingPerchingPerchingActive()) {
             latest_replan.setRetCode(GENERAL_SUCCESS_NO_BACKUP);
             setTrackingCommitRejectInfo("perching owns committed trajectory",
@@ -61,14 +63,24 @@ namespace general_planner {
             commit_wt-old_start_wt >= old_total_dur &&
             old_pos_traj.getState(old_total_dur).col(1).norm() < 1.0e-2 &&
             old_pos_traj.getState(old_total_dur).col(2).norm() < 1.0e-1;
-        if (!has_old_cmd || old_stationary_endpoint) {
-            commit_wt += 0.15; // stationary start handover; rolling replans keep their fixed head time
+        if (!std::isfinite(candidate_head_wt) || candidate_head_wt <= commit_wt + 1.e-4) {
+            setTrackingCommitRejectInfo("candidate head time stale",
+                fmt::format("HEAD_TIME: candidate={:.6f}|now={:.6f}", candidate_head_wt, commit_wt));
+            return false;
+        }
+        if (!allow_old_prefix || !has_old_cmd || old_stationary_endpoint) {
+            // The exact same head epoch was used by the optimizer and prediction.
+            commit_wt = candidate_head_wt;
+        }
+        const auto target_prediction = trackingPredictionAtTime(input_prediction, commit_wt);
+        const auto candidate_prediction = trackingPredictionAtTime(input_prediction, candidate_head_wt);
+        if (target_prediction.empty() || candidate_prediction.empty()) {
+            setTrackingCommitRejectInfo("NO_PREDICTION", "trusted prediction expired before commit");
+            return false;
         }
 
         const bool runtime_has_committed_tracking =
-                cfg_.tracking_runtime_manager_enable && tracking_runtime_manager_
-                    ? tracking_runtime_manager_->hasCommittedTracking()
-                    : has_old_cmd;
+                tracking_runtime_manager_->hasCommittedTracking();
         const double old_local_t_raw = has_old_cmd
                                            ? commit_wt - old_start_wt
                                            : std::numeric_limits<double>::quiet_NaN();
@@ -83,7 +95,6 @@ namespace general_planner {
                 old_local_t_raw < old_total_dur - 1.0e-3;
         const bool old_tracking_active_for_prefix =
                 has_old_cmd &&
-                runtime_has_committed_tracking &&
                 old_currently_active &&
                 !old_pos_traj.empty() &&
                 !old_yaw_traj.empty();
@@ -161,6 +172,9 @@ namespace general_planner {
             latest_replan.setExpTraj(old_pos_traj);
             latest_replan.setExpYawTraj(old_yaw_traj);
             latest_replan.setRetCode(GENERAL_SUCCESS_NO_BACKUP);
+            setTrackingDiagnostic("keep_old", reason, last_tracking_diag_guide_path_size_,
+                                  last_tracking_diag_sfc_size_, target_prediction.size(),
+                                  old_pos_traj.getTotalDuration());
             if (cfg_.print_log) {
                 ros_ptr_->info(" -- [Tracking] TRACKING_KEEP_OLD_ACTIVE reason={}, old_remaining={:.3f}, old_speed0={:.3f}, old_displacement={:.3f}, old_progress={:.3f}, old_expected_progress={:.3f}, old_avg_tracking_error={:.3f}, keep_old_count={}, reject_count={}",
                                reason,
@@ -170,8 +184,8 @@ namespace general_planner {
                                activity.progress,
                                activity.expected_progress,
                                activity.avg_tracking_error,
-                               tracking_runtime_manager_ ? tracking_runtime_manager_->consecutiveKeepOld() : tracking_consecutive_keep_old_,
-                               tracking_runtime_manager_ ? tracking_runtime_manager_->consecutiveReject() : tracking_consecutive_reject_);
+                               tracking_runtime_manager_->consecutiveKeepOld(),
+                               tracking_runtime_manager_->consecutiveReject());
             }
             return true;
         };
@@ -267,8 +281,8 @@ namespace general_planner {
                            decision.old_activity.progress_3d,
                            decision.old_activity.expected_progress,
                            decision.old_activity.avg_tracking_error,
-                           tracking_runtime_manager_ ? tracking_runtime_manager_->consecutiveKeepOld() : tracking_consecutive_keep_old_,
-                           tracking_runtime_manager_ ? tracking_runtime_manager_->consecutiveReject() : tracking_consecutive_reject_);
+                           tracking_runtime_manager_->consecutiveKeepOld(),
+                           tracking_runtime_manager_->consecutiveReject());
             if (decision.candidate_safe && !decision.candidate_commandable) {
                 ros_ptr_->warn(" -- [Tracking] TRACKING_CANDIDATE_REJECTED_NO_MOTION reason={}, guide_path.size()={}, problem.sfcs.size()={}, problem.target_prediction.size()={}, out_traj_duration={:.3f}, candidate_duration={:.3f}, prefix_duration={:.3f}, runtime_eval_start={:.3f}, candidate_disp_xy={:.3f}, candidate_disp_z={:.3f}, candidate_disp_3d={:.3f}, candidate_speed_xy={:.3f}, candidate_speed_z={:.3f}, candidate_speed_3d={:.3f}, target_speed_z={:.3f}, old_remaining={:.3f}, old_activity_reason={}, old_speed_3d={:.3f}, old_disp_3d={:.3f}, old_progress_3d={:.3f}, old_expected_progress={:.3f}, old_avg_tracking_error={:.3f}",
                                decision.reason,
@@ -342,39 +356,9 @@ namespace general_planner {
                     const double candidate_eval_start_t,
                     const double target_eval_start_t,
                     const bool candidate_fov_ok) -> TrackingRuntimeManager::DecisionType {
-            if (!cfg_.tracking_runtime_manager_enable || !tracking_runtime_manager_) {
-                int worse_count = 0;
-                double max_regression = 0.0;
-                std::string anti_reason;
-                const bool pass =
-                        trackingCommitPassesAntiRollback(candidate,
-                                                         target_prediction,
-                                                         commit_wt,
-                                                         candidate_eval_start_t,
-                                                         target_eval_start_t,
-                                                         true,
-                                                         candidate_fov_ok,
-                                                         &worse_count,
-                                                         &max_regression,
-                                                         &anti_reason);
-                if (!pass) {
-                    setTrackingCommitRejectInfo(
-                            anti_reason.empty() ? "anti-rollback rejected candidate" : anti_reason,
-                            fmt::format(
-                                    "decision=REJECT_AND_FAIL|failure=anti_rollback|anti_rollback_pass=0|anti_rollback_reason={}|worse_count={}|max_regression={:.3f}|candidate_eval_start_t={:.3f}|target_eval_start_t={:.3f}|candidate_duration={:.3f}",
-                                    anti_reason.empty() ? "none" : anti_reason,
-                                    worse_count,
-                                    max_regression,
-                                    candidate_eval_start_t,
-                                    target_eval_start_t,
-                                    candidate.getTotalDuration()));
-                }
-                return pass ? TrackingRuntimeManager::DecisionType::COMMIT_CANDIDATE
-                            : TrackingRuntimeManager::DecisionType::REJECT_AND_FAIL;
-            }
-
             const bool has_old_tracking =
                     allow_old_prefix &&
+                    runtime_has_committed_tracking &&
                     old_tracking_active_for_prefix;
             const double old_local_t =
                     has_old_tracking
@@ -383,11 +367,8 @@ namespace general_planner {
             std::string candidate_safe_reason;
             std::string candidate_safe_detail;
             const double candidate_total = candidate.getTotalDuration();
-            const double candidate_safety_start =
-                    std::clamp(candidate_eval_start_t, 0.0, candidate_total);
-            const double candidate_safety_horizon =
-                    std::min(cfg_.tracking_keep_old_horizon,
-                             std::max(0.0, candidate_total - candidate_safety_start));
+            const double candidate_safety_start = 0.0;
+            const double candidate_safety_horizon = candidate_total;
             const bool candidate_safe =
                     trackingTrajectorySafeForHorizonDetailed(
                             candidate,
@@ -496,12 +477,6 @@ namespace general_planner {
         };
 
         Trajectory yaw_traj = optimized_yaw_traj;
-        Trajectory facing_yaw;
-        Trajectory yaw_reference_pos = pos_traj;
-        yaw_reference_pos.start_WT = candidate_head_wt > 0.0 ? candidate_head_wt : commit_wt;
-        if (buildTrackingTargetYawTrajectory(yaw_reference_pos, target_prediction, facing_yaw)) {
-            yaw_traj = facing_yaw;
-        }
         if (yaw_traj.empty()) {
             setTrackingCommitRejectInfo(
                     "yaw generation failed",
@@ -510,12 +485,12 @@ namespace general_planner {
                                 target_prediction.size()));
             ros_ptr_->warn(" -- [Tracking] TRACKING_CANDIDATE_REJECTED_FOV reason=yaw_generation_failed");
             if (keepOldFromSnapshot("tracking yaw generation failed")) {
-                if (cfg_.tracking_runtime_manager_enable && tracking_runtime_manager_) {
+                if (tracking_runtime_manager_) {
                     tracking_runtime_manager_->onKeepOld();
                 }
                 return true;
             }
-            if (cfg_.tracking_runtime_manager_enable && tracking_runtime_manager_) {
+            if (tracking_runtime_manager_) {
                 tracking_runtime_manager_->onRejected();
             }
             return false;
@@ -598,7 +573,7 @@ namespace general_planner {
                                        commit_wt);
                     }
                     if (keepOldFromSnapshot("tracking replan prefix extraction failed")) {
-                        if (cfg_.tracking_runtime_manager_enable && tracking_runtime_manager_) {
+                        if (tracking_runtime_manager_) {
                             tracking_runtime_manager_->onKeepOld();
                         }
                         return true;
@@ -627,7 +602,7 @@ namespace general_planner {
                 if (keepOldFromSnapshot(fixed_head_time_valid
                                             ? "tracking replan prefix unavailable"
                                             : "tracking replan head time stale")) {
-                    if (cfg_.tracking_runtime_manager_enable && tracking_runtime_manager_) {
+                    if (tracking_runtime_manager_) {
                         tracking_runtime_manager_->onKeepOld();
                     }
                     return true;
@@ -655,123 +630,52 @@ namespace general_planner {
                 (cfg_.tracking_fov_check_first_commit || runtime_has_committed_tracking);
         bool candidate_fov_ok_for_commit = true;
         if (should_check_fov) {
-            std::string fov_reject_reason;
-            const double fov_start_t = 0.0;
-            const double fov_horizon =
-                    std::min({std::max(0.0, cfg_.tracking_keep_old_horizon),
-                              committed_pos_traj.getTotalDuration(),
-                              target_prediction.empty() ? 0.0
-                                                        : std::max(0.0, target_prediction.back().t)});
-            if (!trackingTrajectorySatisfiesFov(committed_pos_traj,
-                                                committed_yaw_traj,
-                                                target_prediction,
-                                                fov_start_t,
-                                                fov_horizon,
-                                                cfg_.tracking_fov_check_dt,
-                                                0.0,
-                                                &fov_reject_reason,
-                                                false,
-                                                allow_reacquire_fov_relax)) {
-                Trajectory target_yaw_traj;
-                std::string rebuilt_yaw_fov_reason;
-                const bool rebuilt_yaw_generated =
-                        buildTrackingTargetYawTrajectory(committed_pos_traj,
-                                                         target_prediction,
-                                                         target_yaw_traj);
-                const bool rebuilt_yaw_ok =
-                        rebuilt_yaw_generated &&
-                        trackingTrajectorySatisfiesFov(committed_pos_traj,
-                                                       target_yaw_traj,
-                                                       target_prediction,
-                                                       fov_start_t,
-                                                       fov_horizon,
-                                                       cfg_.tracking_fov_check_dt,
-                                                       0.0,
-                                                       &rebuilt_yaw_fov_reason,
-                                                       false,
-                                                       allow_reacquire_fov_relax);
-                if (rebuilt_yaw_ok) {
-                    committed_yaw_traj = target_yaw_traj;
-                    committed_yaw_traj.start_WT = commit_wt;
-                    if (cfg_.print_log) {
-                        ros_ptr_->warn(" -- [Tracking] TRACKING_CANDIDATE_YAW_REBUILT_FOR_FOV reason={}, horizon={:.3f}, reacquire_fov_relax={}",
-                                       fov_reject_reason,
-                                       fov_horizon,
-                                       allow_reacquire_fov_relax);
-                    }
-                } else if (allow_reacquire_fov_relax) {
-                    candidate_fov_ok_for_commit = false;
-                    if (rebuilt_yaw_generated && !target_yaw_traj.empty()) {
-                        committed_yaw_traj = target_yaw_traj;
-                        committed_yaw_traj.start_WT = commit_wt;
-                    }
-                    if (cfg_.print_log) {
-                        ros_ptr_->warn(" -- [Tracking] TRACKING_CANDIDATE_FOV_DEGRADED_ACCEPT reason={}, target_yaw_fallback={}, start_t={:.3f}, horizon={:.3f}, prefix_duration={:.3f}, runtime_eval_start={:.3f}, guide_path.size()={}, problem.sfcs.size()={}, problem.target_prediction.size()={}, out_traj_duration={:.3f}",
-                                       fov_reject_reason,
-                                       rebuilt_yaw_generated
-                                           ? (rebuilt_yaw_fov_reason.empty()
-                                                  ? "failed_without_reason"
-                                                  : rebuilt_yaw_fov_reason)
-                                           : "generation_failed",
-                                       fov_start_t,
-                                       fov_horizon,
-                                       stitched_prefix_duration,
-                                       stitched_prefix_duration,
-                                       last_tracking_diag_guide_path_size_,
-                                       last_tracking_diag_sfc_size_,
-                                       last_tracking_diag_target_prediction_size_,
-                                       last_tracking_diag_out_traj_duration_);
-                    }
-                } else {
-                    if (cfg_.print_log) {
-                        ros_ptr_->warn(" -- [Tracking] TRACKING_CANDIDATE_REJECTED_FOV reason={}, start_t={:.3f}, horizon={:.3f}, prefix_duration={:.3f}, runtime_eval_start={:.3f}, reacquire_fov_relax={}, guide_path.size()={}, problem.sfcs.size()={}, problem.target_prediction.size()={}, out_traj_duration={:.3f}",
-                                       fov_reject_reason,
-                                       fov_start_t,
-                                       fov_horizon,
-                                       stitched_prefix_duration,
-                                       stitched_prefix_duration,
-                                       allow_reacquire_fov_relax,
-                                       last_tracking_diag_guide_path_size_,
-                                       last_tracking_diag_sfc_size_,
-                                       last_tracking_diag_target_prediction_size_,
-                                       last_tracking_diag_out_traj_duration_);
-                    }
-                    setTrackingCommitRejectInfo(
-                            "candidate FOV rejected: " + fov_reject_reason +
-                            "; target_yaw_fallback=" +
-                            (rebuilt_yaw_fov_reason.empty() ? "failed" : rebuilt_yaw_fov_reason),
-                            fmt::format(
-                                    "failure=fov_rejected|fov_start_t={:.3f}|fov_horizon={:.3f}|prefix_duration={:.3f}|reacquire_fov_relax={}|candidate_duration={:.3f}|target_prediction_size={}|target_yaw_fallback_reason={}",
-                                    fov_start_t,
-                                    fov_horizon,
-                                    stitched_prefix_duration,
-                                    static_cast<int>(allow_reacquire_fov_relax),
-                                    committed_pos_traj.getTotalDuration(),
-                                    target_prediction.size(),
-                                    rebuilt_yaw_fov_reason.empty() ? "failed" : rebuilt_yaw_fov_reason));
-                    if (keepOldFromSnapshot("tracking candidate rejected by FOV: " + fov_reject_reason)) {
-                        if (cfg_.tracking_runtime_manager_enable && tracking_runtime_manager_) {
-                            tracking_runtime_manager_->onKeepOld();
-                        }
-                        return true;
-                    }
-                    if (cfg_.tracking_runtime_manager_enable && tracking_runtime_manager_) {
-                        tracking_runtime_manager_->onRejected();
-                    }
-                    return false;
+            std::string fov_reason;
+            const double horizon = std::min({cfg_.tracking_keep_old_horizon,
+                committed_pos_traj.getTotalDuration(), target_prediction.back().t});
+            candidate_fov_ok_for_commit = trackingTrajectorySatisfiesFov(
+                committed_pos_traj, committed_yaw_traj, target_prediction,
+                0.0, horizon, cfg_.tracking_fov_check_dt, 0.0, &fov_reason,
+                false, allow_reacquire_fov_relax);
+            if (!candidate_fov_ok_for_commit) {
+                setTrackingCommitRejectInfo(fov_reason, fmt::format(
+                    "failure=fov_rejected|prefix={:.3f}|prediction_epoch={:.6f}|candidate_head={:.6f}|horizon={:.3f}",
+                    stitched_prefix_duration, commit_wt, candidate_head_wt, horizon));
+                ros_ptr_->warn(" -- [Tracking] TRACKING_CANDIDATE_REJECTED_FOV reason={}, prefix={:.3f}, horizon={:.3f}",
+                               fov_reason, stitched_prefix_duration, horizon);
+                if (keepOldFromSnapshot(fov_reason)) {
+                    if (tracking_runtime_manager_) tracking_runtime_manager_->onKeepOld();
+                    return true;
                 }
+                if (tracking_runtime_manager_) tracking_runtime_manager_->onRejected();
+                return false;
+            }
+        }
+        if (!approach_guide.empty()) {
+            // This interval is identical to the pure-candidate postcheck: both
+            // end at the original observation expiry, not prefix + 0.75 s.
+            const auto approach = trackingApproachMotion(committed_pos_traj, target_prediction,
+                cfg_, stitched_prefix_duration, stitched_prefix_duration,
+                cfg_.tracking_no_motion_check_horizon, &approach_guide);
+            if (!approach.valid) {
+                const std::string reason = fmt::format(
+                    "APPROACH_PROGRESS: progress={:.4f}, required={:.4f}, end_speed={:.4f}, prefix={:.3f}, new_horizon={:.3f}",
+                    approach.progress, approach.required_progress, approach.end_speed,
+                    stitched_prefix_duration, candidate_prediction.back().t);
+                setTrackingCommitRejectInfo(reason, reason);
+                if (keepOldFromSnapshot(reason)) {
+                    if (tracking_runtime_manager_) tracking_runtime_manager_->onKeepOld();
+                    return true;
+                }
+                return false;
             }
         }
 
         const auto runtime_decision =
                 applyRuntimeDecision(committed_pos_traj,
                                      "final_commit",
-                                     cfg_.tracking_anti_rollback_eval_after_prefix
-                                         ? stitched_prefix_duration
-                                         : 0.0,
-                                     cfg_.tracking_anti_rollback_eval_after_prefix
-                                         ? stitched_prefix_duration
-                                         : 0.0,
+                                     stitched_prefix_duration,
+                                     stitched_prefix_duration,
                                      candidate_fov_ok_for_commit);
         if (runtime_decision == TrackingRuntimeManager::DecisionType::KEEP_OLD) {
             return true;
@@ -780,53 +684,14 @@ namespace general_planner {
             return false;
         }
 
-        const auto yaw_head = committed_yaw_traj.getState(0.0);
-        if (committed_yaw_traj.getMaxVelRate() >
-                std::max(cfg_.tracking_yaw_rate_limit,std::abs(yaw_head(0,1)))+0.02 ||
-            committed_yaw_traj.getMaxAccRate() >
-                std::max(cfg_.tracking_yaw_acceleration_limit,std::abs(yaw_head(0,2)))+0.02) {
-            setTrackingCommitRejectInfo("yaw dynamic limits exceeded",
-                fmt::format("yaw_rate={:.6f}|rate_limit={:.6f}|yaw_acc={:.6f}|acc_limit={:.6f}",
-                    committed_yaw_traj.getMaxVelRate(),
-                    std::max(cfg_.tracking_yaw_rate_limit,std::abs(yaw_head(0,1)))+0.02,
-                    committed_yaw_traj.getMaxAccRate(),
-                    std::max(cfg_.tracking_yaw_acceleration_limit,std::abs(yaw_head(0,2)))+0.02));
-            return keepOldFromSnapshot("yaw dynamic limits exceeded");
+        const auto dynamics = checkTrackingDynamics(committed_pos_traj, committed_yaw_traj, cfg_);
+        if (!dynamics.valid) {
+            setTrackingCommitRejectInfo("tracking dynamics exceeded", dynamics.reason);
+            return keepOldFromSnapshot(dynamics.reason);
         }
-        // The optimizer uses soft penalties; validate the issued trajectory
-        // as well. Preserve a pre-existing boundary that is already moving.
-        StatePVAJ head = StatePVAJ::Zero();
-        if (has_old_cmd && !old_pos_traj.empty()) {
-            head = old_pos_traj.getState(std::clamp(commit_wt-old_start_wt,0.0,old_total_dur));
-        } else {
-            head.col(1)=robot_state_.v;
-            head.col(2)=robot_state_.a;
-        }
-        const double speed_cap = std::max(cfg_.tracking_traj_cfg.max_vel, head.col(1).norm())*1.05;
-        const double acc_cap = std::max(cfg_.tracking_traj_cfg.max_acc, head.col(2).norm())*1.05;
-        const double jerk_cap = std::max(cfg_.tracking_traj_cfg.max_jerk, head.col(3).norm())*1.05;
-        const double head_tilt = std::atan2(head.col(2).head<2>().norm(), 9.81+head(2,2));
-        const double tilt_cap = std::max(cfg_.tracking_traj_cfg.max_tilt, head_tilt)+0.01;
-        const double peak_speed = committed_pos_traj.getMaxVelRate();
-        const double peak_acc = committed_pos_traj.getMaxAccRate();
-        double peak_jerk = 0.0, peak_tilt = 0.0;
-        bool dynamics_ok = std::isfinite(peak_speed) && std::isfinite(peak_acc) &&
-                           peak_speed <= speed_cap && peak_acc <= acc_cap;
-        const double duration = committed_pos_traj.getTotalDuration();
-        const int samples = std::max(1, static_cast<int>(std::ceil(duration/0.02)));
-        for (int i=0; i<=samples; ++i) {
-            const auto state = committed_pos_traj.getState(duration*i/samples);
-            peak_jerk = std::max(peak_jerk, state.col(3).norm());
-            peak_tilt = std::max(peak_tilt,
-                std::atan2(state.col(2).head<2>().norm(),9.81+state(2,2)));
-            dynamics_ok = dynamics_ok && state.allFinite() &&
-                          peak_jerk <= jerk_cap && peak_tilt <= tilt_cap;
-        }
-        if (!dynamics_ok) {
-            setTrackingCommitRejectInfo("tracking dynamics exceeded",
-                fmt::format("velocity={:.6f}|velocity_limit={:.6f}|acceleration={:.6f}|acceleration_limit={:.6f}|jerk={:.6f}|jerk_limit={:.6f}|tilt={:.6f}|tilt_limit={:.6f}",
-                    peak_speed,speed_cap,peak_acc,acc_cap,peak_jerk,jerk_cap,peak_tilt,tilt_cap));
-            return keepOldFromSnapshot("tracking dynamics exceeded");
+        if (ros_ptr_->getSimTime() >= candidate_head_wt - 1.e-4) {
+            setTrackingCommitRejectInfo("HEAD_TIME: commit checks exceeded candidate deadline");
+            return keepOldFromSnapshot("candidate deadline reached during final checks");
         }
         ExpTraj task_exp_traj;
         task_exp_traj.setGoalConnectedFlag(true);
@@ -849,10 +714,10 @@ namespace general_planner {
         latest_replan.setExpTraj(committed_pos_traj);
         latest_replan.setExpYawTraj(committed_yaw_traj);
         latest_replan.setRetCode(GENERAL_SUCCESS_NO_BACKUP);
-        if (cfg_.tracking_runtime_manager_enable && tracking_runtime_manager_) {
-            tracking_runtime_manager_->onCommitted();
+        if (tracking_runtime_manager_) {
+            tracking_runtime_manager_->onCommitted(candidate_head_wt, pos_traj.getPos(0.0), approach_guide);
         }
-        resetTrackingCommitCounters();
+        last_tracking_commit_wt_ = ros_ptr_->getSimTime();
 
         if (cfg_.print_log) {
             const double guard_h =
@@ -884,7 +749,8 @@ namespace general_planner {
                            now_minus_start_wt,
                            committed_pos_traj.getTotalDuration());
 
-            const double short_h = std::min(0.15, committed_pos_traj.getTotalDuration());
+            const double short_h = std::min(cfg_.tracking_no_motion_check_horizon,
+                                            committed_pos_traj.getTotalDuration());
             const TrackingMotionMetrics short_metrics =
                     computeTrackingMotionMetrics(committed_pos_traj,
                                                  target_prediction,
@@ -893,9 +759,8 @@ namespace general_planner {
                                                  stitched_prefix_duration,
                                                  short_h);
             if (short_metrics.target_moving &&
-                short_metrics.displacement_3d < cfg_.tracking_no_motion_min_displacement &&
-                short_metrics.displacement_z < cfg_.tracking_no_motion_min_displacement_z &&
-                short_metrics.speed_3d < cfg_.tracking_keep_old_min_speed) {
+                !trackingCandidateHasMotion(committed_pos_traj, target_prediction, cfg_,
+                                            stitched_prefix_duration, stitched_prefix_duration)) {
                 ros_ptr_->warn(" -- [Tracking] TRACKING_COMMITTED_BUT_NO_MOTION start_WT={:.3f}, now={:.3f}, duration={:.3f}, prefix_duration={:.3f}, runtime_eval_start={:.3f}, now_minus_start_WT={:.3f}, speed_3d={:.3f}, displacement_3d={:.3f}, displacement_z={:.3f}",
                                committed_pos_traj.start_WT,
                                ros_ptr_->getSimTime(),

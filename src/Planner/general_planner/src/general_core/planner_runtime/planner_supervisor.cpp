@@ -1,3 +1,4 @@
+#include <general_core/planner_runtime/planner_command_gateway_policy.hpp>
 #include <general_core/planner_runtime/planner_supervisor.hpp>
 #include <general_core/gate/gate_runtime.hpp>
 
@@ -1217,11 +1218,19 @@ void PlannerSupervisor::navigationStatusCallback(
       if (status_.active_mode == PlannerMode::TRACKING &&
           gateway_.authorizedOwner() == CommandOwner::STATE2STATE &&
           !gateway_.authorizeHoldAtNavigationEndpoint(status_.task_epoch)) {
-        status_.phase = PlannerPhase::BRAKING;
-        status_.ready_for_new_task = false;
-        status_.stable_hover = false;
-        status_.reason = "tracking waiting for stationary command endpoint";
-        return;
+        const auto health = gateway_.commandSourceHealth();
+        const bool stopped_after_timeout = canFinishTrackingTimeoutHold(
+            health.timeout_hold_active, health.source_fresh,
+            adapter_status.has_lifecycle && adapter_status.quiescent,
+            hoverConditionMetLocked());
+        if (!stopped_after_timeout ||
+            !authorizeHoldAtCurrentOdomLocked("tracking timeout hold completed")) {
+          status_.phase = PlannerPhase::BRAKING;
+          status_.ready_for_new_task = false;
+          status_.stable_hover = false;
+          status_.reason = "tracking waiting for stationary command endpoint";
+          return;
+        }
       }
       status_.phase = PlannerPhase::WAITING_INPUT;
       status_.ready_for_new_task = true;

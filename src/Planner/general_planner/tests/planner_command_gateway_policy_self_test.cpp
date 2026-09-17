@@ -23,6 +23,17 @@ void expect(const bool ok, const char *message) {
 } // namespace
 
 int main() {
+  using general_planner::planner_runtime::canFinishTrackingTimeoutHold;
+  expect(canFinishTrackingTimeoutHold(true, false, true, true),
+         "retired tracking source at measured rest must finish timeout hold");
+  expect(!canFinishTrackingTimeoutHold(true, false, true, false),
+         "moving vehicle must not finish timeout hold");
+  expect(!canFinishTrackingTimeoutHold(true, true, true, true),
+         "fresh navigation must retain endpoint handoff");
+  expect(!canFinishTrackingTimeoutHold(true, false, false, true),
+         "active navigation must not hand off using old odometry");
+  expect(!canFinishTrackingTimeoutHold(false, false, true, true),
+         "missing command alone is not evidence of a completed hold");
   expect(selectGatewayOutputMode(CommandOwner::STATE2STATE, true, false) ==
              GatewayOutputMode::NAVIGATION,
          "fresh navigation must pass through");

@@ -52,7 +52,6 @@
 #include "general_core/takeoff/takeoff_runtime_manager.hpp"
 #include "general_core/tracking/tracking_perching_transition_manager.hpp"
 #include "general_core/tracking/tracking_to_perching_initializer.hpp"
-#include "general_core/tracking/tracking_backend.hpp"
 #include "general_core/tracking/tracking_plan_operations.hpp"
 #include "general_core/runtime_trajectory_safety.hpp"
 #include "general_core/state2state/state2state_exp_backup_backend.hpp"
@@ -77,7 +76,6 @@ namespace general_planner {
     class GeneralPlanner {
         class StateToStateBackendContextAdapter;
         class StateToStateSE3BackendRuntimeAdapter;
-        class TrackingBackendRuntimeAdapter;
 
         LogOneReplan latest_replan;
         general_planner::Config cfg_;
@@ -93,7 +91,6 @@ namespace general_planner {
         traj_opt::SwarmTrajectoriesConstPtr swarm_trajs_;
         std::unique_ptr<state2state_task::StateToStateBackendContext> state2state_backend_context_;
         std::unique_ptr<state2state_task::StateToStateSE3BackendRuntime> state2state_se3_runtime_;
-        std::unique_ptr<tracking_task::TrackingBackendRuntime> tracking_backend_runtime_;
 
         CIRI::Ptr ciri_;
 
@@ -148,8 +145,6 @@ namespace general_planner {
 	        std::unique_ptr<SE3AggressiveManager> se3_aggressive_manager_;
         vector<double> time_consuming_;
 
-        int tracking_consecutive_keep_old_{0};
-        int tracking_consecutive_reject_{0};
         double last_tracking_commit_wt_{-1.0};
         std::string last_tracking_commit_reject_reason_;
         std::string last_tracking_commit_reject_detail_;
@@ -165,34 +160,7 @@ namespace general_planner {
         traj_opt::DynamicTargetStates last_tracking_frontend_prediction_;
         vec_E<Vec3f> last_tracking_frontend_viewpoints_;
 
-        struct TrackingTrajectoryActivity {
-            bool valid{false};
-            bool safe{false};
-            bool active{false};
-            bool target_moving{false};
-            bool target_vertical_moving{false};
-
-            double remaining{0.0};
-            double speed0{0.0};
-            double speed_xy{0.0};
-            double speed_z{0.0};
-            double speed_3d{0.0};
-            double displacement{0.0};
-            double displacement_xy{0.0};
-            double displacement_z{0.0};
-            double displacement_3d{0.0};
-            double progress{0.0};
-            double progress_xy{0.0};
-            double progress_3d{0.0};
-            double expected_progress{0.0};
-            double target_speed_xy{0.0};
-            double target_speed_z{0.0};
-            double target_speed_3d{0.0};
-            double tracking_error{0.0};
-            double avg_tracking_error{0.0};
-
-            std::string reason;
-        };
+        using TrackingTrajectoryActivity = TrackingRuntimeManager::Activity;
 
     public:
         using CommittedTrajectorySafetyReport = general_planner::CommittedTrajectorySafetyReport;
@@ -404,7 +372,6 @@ namespace general_planner {
         void setTrackingPerchingRequest(bool request);
 
         tracking_task::TrackingTaskServices makeTrackingTaskServices();
-        tracking_task::TrackingBackendServices makeTrackingBackendServices();
 
         RET_CODE TryCommitPerchingFromTracking(
             const traj_opt::DynamicTargetStates &target_prediction,
@@ -454,27 +421,15 @@ namespace general_planner {
                                          PolytopeVec &sfcs,
                                          std::string *failure_reason = nullptr);
 
-        bool repairTrackingGuideWithAstar(const vec_Vec3f &guide_path,
-                                          const std::vector<double> &guide_t,
-                                          vec_Vec3f &repaired_path,
-                                          std::vector<double> &repaired_t,
-                                          std::string *failure_reason = nullptr);
 
         bool densifyTrackingGuideForCorridor(const vec_Vec3f &guide_path,
                                              const std::vector<double> &guide_t,
                                              vec_Vec3f &dense_path,
                                              std::vector<double> &dense_t) const;
 
-        bool truncateTrackingProblemForCorridor(traj_opt::TrackingProblem &problem,
-                                                const vec_Vec3f &candidate_guide,
-                                                const std::vector<double> &candidate_guide_t,
-                                                PolytopeVec &sfcs,
-                                                std::string *failure_reason = nullptr);
 
         bool trackingGuidePointSafe(const Vec3f &point) const;
 
-        void refreshTrackingGuideTiming(traj_opt::TrackingProblem &problem) const;
-        void refreshTrackingGuideEndpoint(traj_opt::TrackingProblem &problem) const;
         bool findTrackingViewpointReference(
             const traj_opt::DynamicTargetStates &target_prediction,
             Vec3f &reference_viewpoint,
@@ -489,17 +444,14 @@ namespace general_planner {
                                   const bool &fix_terminal_yaw,
                                   const std::string &traj_ns);
 
-        bool buildTrackingTargetYawTrajectory(const Trajectory &pos_traj,
-                                              const traj_opt::DynamicTargetStates &target_prediction,
-                                              Trajectory &yaw_traj);
-
         bool commitTrackingTrajectory(const Trajectory &pos_traj,
                                       const Trajectory &yaw_traj,
                                       const traj_opt::DynamicTargetStates &target_prediction,
                                       const std::string &traj_ns,
                                       double candidate_head_wt = std::numeric_limits<double>::quiet_NaN(),
                                       bool allow_reacquire_fov_relax = false,
-                                      bool allow_old_prefix = true);
+                                      bool allow_old_prefix = true,
+                                      const vec_Vec3f &approach_guide = {});
 
         bool buildPerchingYawTrajectory(const Trajectory &pos_traj,
                                         const traj_opt::PerchingSurfaceState &surface,
@@ -530,10 +482,6 @@ namespace general_planner {
                                               double horizon,
                                               double dt) const;
 
-        bool currentTrackingTrajectorySafeForHorizon(double horizon);
-
-        bool keepOldTrackingTrajectory(const std::string &reason);
-
         TrackingTrajectoryActivity evaluateTrackingTrajectoryActivity(
             const Trajectory &traj,
             double local_start_t,
@@ -545,20 +493,9 @@ namespace general_planner {
             const traj_opt::DynamicTargetStates &target_prediction,
             TrackingTrajectoryActivity *activity = nullptr) const;
 
-        bool candidateTrackingTrajectoryCommandable(
-            const Trajectory &candidate_pos_traj,
-            const traj_opt::DynamicTargetStates &target_prediction,
-            double candidate_eval_start_t = 0.0,
-            double target_eval_start_t = 0.0,
-            std::string *reason = nullptr) const;
-
         bool keepOldTrackingTrajectoryIfActive(
             const traj_opt::DynamicTargetStates &target_prediction,
             const std::string &reason);
-
-        bool trackingCandidateSafeForCommit(const Trajectory &candidate_pos_traj,
-                                            std::string *reason = nullptr,
-                                            std::string *detail = nullptr) const;
 
         bool trackingTrajectorySafeForHorizonDetailed(const Trajectory &traj,
                                                       double start_t,
@@ -585,7 +522,6 @@ namespace general_planner {
                                             bool allow_keep_old_grace = false,
                                             bool allow_reacquire_range_grace = false) const;
 
-        void resetTrackingCommitCounters();
 
         void resetTrackingRuntimeDecision(const std::string &reason = "none");
 
@@ -623,17 +559,8 @@ namespace general_planner {
                                               double *max_regression_out = nullptr,
                                               std::string *reason = nullptr);
 
-        bool optimizeTrackingProblemWithRetries(
-            const traj_opt::TrackingProblem &normal_problem,
-            const traj_opt::DynamicTargetStates &active_target_prediction,
-            Trajectory &out_traj,
-            Trajectory &out_yaw_traj,
-            traj_opt::DynamicTargetStates *accepted_target_prediction,
-            bool *accepted_reacquire_fov_relax,
-            std::string *failure_reason);
 
-        bool applyTrackingNarrowPassageSoftDistance(traj_opt::TrackingProblem &problem,
-                                                    std::string *reason = nullptr) const;
+
 
         RET_CODE optimizeTrackingTask(const traj_opt::DynamicTargetStates &target_prediction,
                                       const bool &from_rest);

@@ -82,7 +82,6 @@ general_planner:
     adaptive_occlusion_distance_upper_scale: 0.65
     adaptive_occlusion_min_horizontal_upper: 0.85
     adaptive_occlusion_postcheck_enable: true
-    reacquire_distance: 6.0
     min_commit_duration: 0.8
     low_speed_velocity_threshold: 0.25
     angular_hysteresis: 0.35
@@ -119,8 +118,6 @@ general_planner:
     recovery_time_scale: 1.4
     recovery_reduce_visible_region_weight: 0.3
     recovery_reduce_target_forward_weight: 0.5
-    soft_recovery_enable: true
-    soft_recovery_margin: 0.2
     soft_recovery_hold_duration: 0.8
     reacquire_recovery_enable: true
     reacquire_recovery_horizon: 0.8
@@ -129,13 +126,9 @@ general_planner:
     reacquire_transit_max_horizon: 2.5
     reacquire_visible_region_weight_scale: 0.0
     reacquire_fov_relax_enable: true
-    reacquire_fov_deferred_strict_enable: true
     reacquire_fov_entry_distance: 6.0
-    reacquire_min_progress_distance: 0.5
-    reacquire_min_progress_ratio: 0.10
     reacquire_fov_range_grace: 8.0
     reacquire_fov_angular_grace_deg: 8.0
-    optimizer_commit_safety_precheck_enable: true
     retry_without_corridor_enable: true
     candidate_angle_step: 0.3926990817
     candidate_radius_num: 3

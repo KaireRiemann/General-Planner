@@ -126,21 +126,6 @@ namespace general_planner {
         GeneralPlanner &planner_;
     };
 
-    class GeneralPlanner::TrackingBackendRuntimeAdapter final
-            : public tracking_task::TrackingBackendRuntime {
-    public:
-        explicit TrackingBackendRuntimeAdapter(GeneralPlanner &planner)
-            : planner_(planner) {}
-
-        RET_CODE optimizeTrackingTask(const traj_opt::DynamicTargetStates &target_prediction,
-                                      const bool from_rest) override {
-            return planner_.optimizeTrackingTask(target_prediction, from_rest);
-        }
-
-    private:
-        GeneralPlanner &planner_;
-    };
-
     GeneralPlanner::~GeneralPlanner() = default;
 
     void GeneralPlanner::setGoalInfo(const Vec3f &goal,
@@ -200,8 +185,6 @@ namespace general_planner {
                 std::make_unique<StateToStateBackendContextAdapter>(*this);
         state2state_se3_runtime_ =
                 std::make_unique<StateToStateSE3BackendRuntimeAdapter>(*this);
-        tracking_backend_runtime_ =
-                std::make_unique<TrackingBackendRuntimeAdapter>(*this);
 
         const auto config_check = checker::checkState2StateConfig(cfg_);
         logCheckResult(ros_ptr_, "state2state config", config_check);

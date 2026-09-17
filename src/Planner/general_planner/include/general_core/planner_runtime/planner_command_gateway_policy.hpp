@@ -4,6 +4,15 @@
 
 namespace general_planner::planner_runtime {
 
+// A failed tracking brake can end through the gateway's timeout hold without
+// a stationary navigation endpoint. Require source retirement and fresh
+// stationary odometry before completing that handoff.
+constexpr bool canFinishTrackingTimeoutHold(bool timeout_hold, bool source_fresh,
+                                             bool navigation_quiescent,
+                                             bool stationary_odometry) {
+  return timeout_hold && !source_fresh && navigation_quiescent && stationary_odometry;
+}
+
 // Keep source-selection policy independent from ROS plumbing so the safety
 // behavior can be regression-tested without a running ROS master.
 enum class GatewayOutputMode {

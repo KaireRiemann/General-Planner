@@ -39,6 +39,7 @@ namespace general_planner {
                 {},
                 {},
                 {},
+                {},
                 {}
         };
         services.set_tracking_diagnostic =
@@ -65,6 +66,10 @@ namespace general_planner {
                 [this](const bool new_task, const std::string &context) {
                     maybeResetTrackingRuntimeForReplan(new_task, context);
                 };
+        services.optimize_tracking_task =
+                [this](const traj_opt::DynamicTargetStates &prediction, const bool from_rest) {
+                    return optimizeTrackingTask(prediction, from_rest);
+                };
         services.optimize_perching_task =
                 [this](const traj_opt::PerchingSurfaceState &surface,
                        const bool from_rest) {
@@ -81,18 +86,9 @@ namespace general_planner {
         return services;
     }
 
-    tracking_task::TrackingBackendServices GeneralPlanner::makeTrackingBackendServices() {
-        tracking_task::TrackingBackendServices services{
-                tracking_task::resolveTrackingBackend(cfg_),
-                *tracking_backend_runtime_
-        };
-        return services;
-    }
-
     namespace tracking_task {
 
         RET_CODE planFromRest(TrackingTaskServices &services,
-                              TrackingBackendServices &backend_services,
                               const traj_opt::DynamicTargetStates &target_prediction,
                               const bool new_task) {
             TimeConsuming total_t("PlanTrackingFromRest", false);
@@ -130,13 +126,12 @@ namespace general_planner {
                 services.tracking_perching_manager->reset();
             }
 
-            const RET_CODE ret = runTrackingBackend(backend_services, target_prediction, true);
+            const RET_CODE ret = services.optimize_tracking_task(target_prediction, true);
             services.time_consuming[TOTAL_REPLAN] = total_t.stop();
             return ret;
         }
 
         RET_CODE replanOnce(TrackingTaskServices &services,
-                            TrackingBackendServices &backend_services,
                             const traj_opt::DynamicTargetStates &target_prediction,
                             const bool new_task) {
             TimeConsuming total_t("ReplanTrackingOnce", false);
@@ -184,14 +179,13 @@ namespace general_planner {
             services.set_goal_info(goal, yaw, new_task);
             services.maybe_reset_tracking_runtime(new_task, "tracking_replan");
 
-            const RET_CODE ret = runTrackingBackend(backend_services, target_prediction, false);
+            const RET_CODE ret = services.optimize_tracking_task(target_prediction, false);
             services.time_consuming[TOTAL_REPLAN] = total_t.stop();
             return ret;
         }
 
         RET_CODE replanWithPerchingSurface(
                 TrackingTaskServices &services,
-                TrackingBackendServices &backend_services,
                 const traj_opt::DynamicTargetStates &target_prediction,
                 const traj_opt::PerchingSurfaceState &surface,
                 const bool new_task) {
@@ -237,7 +231,7 @@ namespace general_planner {
 
             services.maybe_reset_tracking_runtime(new_task, "tracking_perching_replan");
 
-            const RET_CODE tracking_ret = runTrackingBackend(backend_services, target_prediction, false);
+            const RET_CODE tracking_ret = services.optimize_tracking_task(target_prediction, false);
             const RET_CODE ret = services.commit_perching_from_tracking(target_prediction,
                                                                         surface,
                                                                         tracking_ret);
@@ -251,16 +245,14 @@ namespace general_planner {
             const traj_opt::DynamicTargetStates &target_prediction,
             const bool &new_task) {
         auto services = makeTrackingTaskServices();
-        auto backend_services = makeTrackingBackendServices();
-        return tracking_task::planFromRest(services, backend_services, target_prediction, new_task);
+        return tracking_task::planFromRest(services, target_prediction, new_task);
     }
 
     RET_CODE GeneralPlanner::ReplanTrackingOnce(
             const traj_opt::DynamicTargetStates &target_prediction,
             const bool &new_task) {
         auto services = makeTrackingTaskServices();
-        auto backend_services = makeTrackingBackendServices();
-        return tracking_task::replanOnce(services, backend_services, target_prediction, new_task);
+        return tracking_task::replanOnce(services, target_prediction, new_task);
     }
 
     RET_CODE GeneralPlanner::ReplanTrackingOnce(
@@ -268,9 +260,7 @@ namespace general_planner {
             const traj_opt::PerchingSurfaceState &surface,
             const bool &new_task) {
         auto services = makeTrackingTaskServices();
-        auto backend_services = makeTrackingBackendServices();
         return tracking_task::replanWithPerchingSurface(services,
-                                                        backend_services,
                                                         target_prediction,
                                                         surface,
                                                         new_task);

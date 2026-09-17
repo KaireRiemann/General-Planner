@@ -298,10 +298,9 @@ int main(int argc, char **argv)
         frontend_cfg.tracking_distance = 2.2;
         frontend_cfg.height_offset = 0.7;
         frontend_cfg.safe_distance = use_map ? 0.35 : 0.0;
-        frontend_cfg.visibility_safe_distance = use_map ? 0.25 : 0.0;
         frontend_cfg.unknown_as_occupied = false;
         frontend_cfg.use_astar = tracker_frontend_astar;
-        general_planner::TrackingFrontend frontend(frontend_cfg, map_manager, astar);
+        general_planner::TrackingFrontend frontend(frontend_cfg, map_manager);
 
         traj_opt::TrackingProblem problem;
         const StatePVAJ head = makeHeadState(Vec3f(0.0, -1.8, 1.5));

@@ -27,8 +27,10 @@
   <arg name="tracking_confidence" default="0.6" />
   <arg name="tracking_camera_config" default="$(find general_planner_release)/../tracking_detector/config/camera_unity_main_scene.yaml" />
   <arg name="tracking_estimator_config" default="$(find general_planner_release)/../tracking_detector/config/estimator.yaml" />
-  <arg name="tracking_target_odom_topic" default="/target_ekf_node/target_odom" />
-  <arg name="tracking_target_prediction_topic" default="/tracking/target_prediction" />
+  <arg name="tracking_ground_truth" default="false" />
+  <arg name="tracking_ground_truth_topic" default="/unity/car_ground_truth/odom" />
+  <arg name="tracking_target_odom_topic" default="$(eval '/tracking/ground_truth/target_odom' if arg('tracking_ground_truth') else '/target_ekf_node/target_odom')" />
+  <arg name="tracking_target_prediction_topic" default="$(eval '/tracking/ground_truth/target_prediction' if arg('tracking_ground_truth') else '/tracking/target_prediction')" />
   <!-- Full Unity + deployed release-runtime stack.  This is intentionally a
        separate entry point: unity_planner_sim.launch remains the source-tree
        planner test path.  Marsim is forcibly disabled here; Unity is the
@@ -96,6 +98,8 @@
     <arg name="tracking_confidence" value="$(arg tracking_confidence)" />
     <arg name="tracking_camera_config" value="$(arg tracking_camera_config)" />
     <arg name="tracking_estimator_config" value="$(arg tracking_estimator_config)" />
+    <arg name="tracking_ground_truth" value="$(arg tracking_ground_truth)" />
+    <arg name="tracking_ground_truth_topic" value="$(arg tracking_ground_truth_topic)" />
     <arg name="tracking_target_odom_topic" value="$(arg tracking_target_odom_topic)" />
     <arg name="tracking_target_prediction_topic" value="$(arg tracking_target_prediction_topic)" />
     <!-- Do not expose this as an outer argument: this Unity entry point must

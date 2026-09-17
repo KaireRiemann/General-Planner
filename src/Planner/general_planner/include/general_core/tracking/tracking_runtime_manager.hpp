@@ -8,7 +8,7 @@
 #include "data_structure/base/trajectory.h"
 #include "general_core/config.hpp"
 #include <map_manager/map_manager.hpp>
-#include "traj_opt/tracking_perching_traj_opt.hpp"
+#include "traj_opt/tracking_problem.hpp"
 
 namespace general_planner {
 
@@ -127,7 +127,12 @@ public:
                                        double target_eval_start_t,
                                        double horizon) const;
 
-    void onCommitted();
+    void onCommitted(double execution_start = -1.0,
+                     const general_utils::Vec3f &start_position = general_utils::Vec3f::Zero(),
+                     const general_utils::vec_Vec3f &guide = {});
+    void observeExecution(double now, const general_utils::Vec3f &position);
+    bool hasExecutionHistory() const { return execution_start_ >= 0.0; }
+    void onHold();
     void onKeepOld();
     void onRejected();
 
@@ -144,6 +149,12 @@ private:
     int consecutive_reject_{0};
     Status status_{Status::IDLE};
     bool has_committed_tracking_{false};
+    double execution_start_{-1.0};
+    double observation_time_{-1.0};
+    general_utils::Vec3f execution_origin_{general_utils::Vec3f::Zero()};
+    general_utils::Vec3f execution_direction_{general_utils::Vec3f::Zero()};
+    bool execution_progress_observed_{false};
+    general_utils::vec_Vec3f committed_guide_;
 
     general_utils::Vec3f targetDirection(const traj_opt::DynamicTargetStates &prediction) const;
     double trackingDistanceError(const general_utils::Vec3f &tracker,

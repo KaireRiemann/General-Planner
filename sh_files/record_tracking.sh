@@ -75,6 +75,12 @@ add_topic "${BBOX_TOPIC:-/tracking/bboxes}"
 add_topic /tracking/status
 add_topic /tracking/target_valid
 add_topic /tracking/observation_age
+add_topic /unity/car_ground_truth/odom
+add_topic /tracking/ground_truth/target_odom
+add_topic /tracking/ground_truth/target_prediction
+add_topic /tracking/ground_truth/target_valid
+add_topic /tracking/ground_truth/observation_age
+add_topic /tracking/ground_truth/status
 
 # Keep explicit subscriptions even if detectors have not started yet.
 # CameraInfo and original sensor-clock odometry are needed for ranging replay.

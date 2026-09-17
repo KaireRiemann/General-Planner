@@ -8,7 +8,6 @@
 
 #include <data_structure/exp_traj.h>
 #include <general_core/log_utils.hpp>
-#include <general_core/tracking/tracking_backend.hpp>
 #include <general_core/tracking/tracking_perching_transition_manager.hpp>
 #include <ros_interface/ros_interface.hpp>
 #include <utils/header/type_utils.hpp>
@@ -35,6 +34,8 @@ struct TrackingTaskServices {
                        double distance_to_target)> set_tracking_diagnostic;
     std::function<void(const general_utils::Vec3f &goal, double yaw, bool new_task)> set_goal_info;
     std::function<void(bool new_task, const std::string &context)> maybe_reset_tracking_runtime;
+    std::function<general_utils::RET_CODE(const traj_opt::DynamicTargetStates &target_prediction,
+                                        bool from_rest)> optimize_tracking_task;
     std::function<general_utils::RET_CODE(const traj_opt::PerchingSurfaceState &surface,
                                         bool from_rest)> optimize_perching_task;
     std::function<general_utils::RET_CODE(const traj_opt::DynamicTargetStates &target_prediction,
@@ -43,18 +44,15 @@ struct TrackingTaskServices {
 };
 
 general_utils::RET_CODE planFromRest(TrackingTaskServices &services,
-                                   TrackingBackendServices &backend_services,
                                    const traj_opt::DynamicTargetStates &target_prediction,
                                    bool new_task);
 
 general_utils::RET_CODE replanOnce(TrackingTaskServices &services,
-                                 TrackingBackendServices &backend_services,
                                  const traj_opt::DynamicTargetStates &target_prediction,
                                  bool new_task);
 
 general_utils::RET_CODE replanWithPerchingSurface(
         TrackingTaskServices &services,
-        TrackingBackendServices &backend_services,
         const traj_opt::DynamicTargetStates &target_prediction,
         const traj_opt::PerchingSurfaceState &surface,
         bool new_task);

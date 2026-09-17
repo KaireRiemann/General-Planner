@@ -1,15 +1,19 @@
 #pragma once
 
 #include <algorithm>
+#include <array>
+#include "utils/geometry/tracking_attitude.hpp"
 #include <cmath>
 #include <utility>
+#include "traj_opt/config.hpp"
 
 #include "traj_opt/costfunctional/spatialcosts/acceleration_bound_penalty.hpp"
 #include "traj_opt/costfunctional/spatialcosts/esdf_distance_penalty.hpp"
 #include "traj_opt/costfunctional/spatialcosts/tracking_observation_penalty.hpp"
 #include "traj_opt/costfunctional/spatialcosts/tracking_visibility_penalty.hpp"
 #include "traj_opt/costfunctional/spatialcosts/velocity_bound_penalty.hpp"
-#include "traj_opt/tracking_perching_traj_opt.hpp"
+#include "traj_opt/costfunctional/spatialcosts/thrust_band_penalty.hpp"
+#include "traj_opt/tracking_problem.hpp"
 
 namespace cost_functional_manager
 {
@@ -19,42 +23,49 @@ class TrackingCostManager
 public:
     void reset(const traj_opt::Config &cfg,
                const general_planner::MapManager::Ptr &map_manager,
-	               traj_opt::TrackingProblem problem,
-	               flatness::FlatnessMap *flatness)
-	    {
-	        (void)flatness;
-	        cfg_ = &cfg;
-	        map_manager_ = map_manager;
-	        problem_ = std::move(problem);
+                   traj_opt::TrackingProblem problem)
+        {
+            cfg_ = &cfg;
+            map_manager_ = map_manager;
+            problem_ = std::move(problem);
             rebuildJointSampleTimes();
-	    }
+        }
 
-	    const std::vector<double> &discreteSampleTimes() const
-	    {
-	        return joint_sample_times_;
-	    }
+        const std::vector<double> &discreteSampleTimes() const
+        {
+            return joint_sample_times_;
+        }
 
     double evaluateIntegral(int,
                             double,
                             double t_global,
                             int,
                             int,
-	                            const Eigen::Vector3d &position,
-	                            const Eigen::Vector3d &velocity,
-	                            const Eigen::Vector3d &acceleration,
-	                            const Eigen::Vector3d &jerk,
-	                            Eigen::Vector3d &grad_position,
-	                            Eigen::Vector3d &grad_velocity,
-	                            Eigen::Vector3d &grad_acceleration,
-	                            Eigen::Vector3d &grad_jerk,
-	                            double &) const
-	    {
-	        (void)t_global;
-	        double cost = 0.0;
-	        cost += addObstacleAvoidanceCost(position, grad_position);
-	        cost += addVelocityBoundCost(velocity, grad_velocity);
-	        cost += addAccelerationBoundCost(acceleration, grad_acceleration);
+                                const Eigen::Vector3d &position,
+                                const Eigen::Vector3d &velocity,
+                                const Eigen::Vector3d &acceleration,
+                                const Eigen::Vector3d &jerk,
+                                Eigen::Vector3d &grad_position,
+                                Eigen::Vector3d &grad_velocity,
+                                Eigen::Vector3d &grad_acceleration,
+                                Eigen::Vector3d &grad_jerk,
+                                double &) const
+        {
+            (void)t_global;
+            double cost = 0.0;
+            cost += addObstacleAvoidanceCost(position, grad_position);
+            cost += addVelocityBoundCost(velocity, grad_velocity);
+            cost += addAccelerationBoundCost(acceleration, grad_acceleration);
             if (cfg_ != nullptr) {
+                if (cfg_->penna_thr > 0.0 && cfg_->max_acc_thr > 0.0) {
+                    const Eigen::Vector3d force = acceleration + Eigen::Vector3d(0, 0, 9.81);
+                    const double thrust = force.norm();
+                    double gradient = 0.0;
+                    cost += cost_functional::accumulateThrustBandPenalty(
+                        thrust, cfg_->min_acc_thr, cfg_->max_acc_thr,
+                        cfg_->smooth_eps, cfg_->penna_thr, gradient);
+                    if (thrust > 1.e-9) grad_acceleration += gradient * force / thrust;
+                }
                 cost += cost_functional::accumulateSquaredNormBoundPenalty(
                     jerk, cfg_->max_jerk * cfg_->max_jerk,
                     cfg_->smooth_eps, cfg_->penna_jerk, grad_jerk);
@@ -71,22 +82,22 @@ public:
                     grad_acceleration.z() -= 2.0 * weight * violation * tangent;
                 }
             }
-	        return cost;
-	    }
+            return cost;
+        }
 
-	    double evaluateJointSample(double t_global,
-	                               const Eigen::Vector3d &position,
-	                               const Eigen::Vector3d &velocity,
-	                               double yaw,
-	                               double,
-	                               Eigen::Vector3d &grad_position,
-	                               Eigen::Vector3d &grad_velocity,
-	                               double &grad_yaw,
-	                               double &,
-	                               double &grad_time) const
-	    {
-	        if (cfg_ == nullptr || problem_.target_prediction.empty())
-	        {
+        double evaluateJointSample(double t_global,
+                                   const Eigen::Vector3d &position,
+                                   const Eigen::Vector3d &velocity,
+                                   double yaw,
+                                   double,
+                                   Eigen::Vector3d &grad_position,
+                                   Eigen::Vector3d &grad_velocity,
+                                   double &grad_yaw,
+                                   double &,
+                                   double &grad_time) const
+        {
+            if (cfg_ == nullptr || problem_.target_prediction.empty())
+            {
             return 0.0;
             }
 
@@ -98,133 +109,103 @@ public:
                                            target,
                                            grad_position,
                                            grad_target);
-	        cost += addObservationAngleCost(position,
-	                                        yaw,
-	                                        target,
-	                                        grad_position,
-	                                        grad_target,
-	                                        grad_yaw);
-            cost += addCameraFovCost(position,
-                                     yaw,
-                                     target,
-                                     grad_position,
-                                     grad_target,
-                                     grad_yaw);
-	        cost += addESDFVisibilityCost(position,
-	                                      target,
-	                                      grad_position,
-	                                      grad_target);
-            cost += addTargetForwardCost(position,
-                                         target,
-                                         grad_position,
-                                         grad_target);
+            cost += addObservationAngleCost(position,
+                                            yaw,
+                                            target,
+                                            grad_position,
+                                            grad_target,
+                                            grad_yaw);
+            cost += addESDFVisibilityCost(position,
+                                          target,
+                                          grad_position,
+                                          grad_target);
             cost += addTrackingVelocityCost(position,
                                             velocity,
                                             target,
+                                            grad_position,
                                             grad_velocity,
                                             grad_time);
-            cost += addViewpointAttractorCost(t_global,
-                                              position,
-                                              grad_position,
-                                              grad_time);
             cost += addVisibleRegionCost(t_global,
                                          position,
                                          target,
                                          grad_position,
                                          grad_time);
 
-	        return cost;
-	    }
-
-    double evaluateCameraFovSample(double t_global,
-                                   const Eigen::Vector3d &position,
-                                   double yaw,
-                                   Eigen::Vector3d &grad_position,
-                                   double &grad_yaw) const
-    {
-        if (cfg_ == nullptr || problem_.target_prediction.empty())
-        {
-            return 0.0;
+            return cost;
         }
 
+    double evaluateAttitudeIntegral(double t_global,
+                                    const Eigen::Vector3d &position,
+                                    const Eigen::Vector3d &acceleration,
+                                    const Eigen::Vector3d &jerk, double yaw, double yaw_rate,
+                                    Eigen::Vector3d &grad_position,
+                                    Eigen::Vector3d &grad_acceleration,
+                                    Eigen::Vector3d &grad_jerk,
+                                    double &grad_yaw, double &grad_yaw_rate,
+                                    double &grad_time) const {
+        if (cfg_ == nullptr) return 0.0;
+        const geometry_utils::TrackingAttitude frame(acceleration, yaw);
+        if (!frame.valid) return std::numeric_limits<double>::infinity();
+        double cost = 0.0;
+        if (cfg_->max_omg > 0.0 && cfg_->penna_omg > 0.0) {
+            Eigen::Vector3d ga = Eigen::Vector3d::Zero(), gj = Eigen::Vector3d::Zero();
+            double gy = 0.0, gyr = 0.0;
+            const double rate2 = frame.bodyRateSquared(jerk, yaw_rate, &ga, &gj, &gy, &gyr);
+            const double violation = rate2 - cfg_->max_omg * cfg_->max_omg;
+            if (violation > 0.0) {
+                cost += cfg_->penna_omg * violation * violation;
+                const double scale = 2.0 * cfg_->penna_omg * violation;
+                grad_acceleration += scale * ga;
+                grad_jerk += scale * gj;
+                grad_yaw += scale * gy;
+                grad_yaw_rate += scale * gyr;
+            }
+        }
+        if (problem_.target_prediction.empty() || problem_.weight_fov <= 0.0) return cost;
         const auto target = interpolateTarget(t_global);
+        const double half_h = std::clamp(0.5 * problem_.fov_horizontal -
+            problem_.visibility_angle_clearance, 0.01, 1.56);
+        const double half_v = std::clamp(0.5 * problem_.fov_vertical -
+            problem_.visibility_angle_clearance, 0.01, 1.56);
+        const double tan_h = std::tan(half_h), tan_v = std::tan(half_v);
+        const double hh = problem_.target_half_height, hw = problem_.target_half_width;
+        const std::array<Eigen::Vector3d,7> offsets{{
+            {0,0,0}, {0,0,-hh}, {0,0,hh}, {hw,0,0}, {-hw,0,0}, {0,hw,0}, {0,-hw,0}}};
+        Eigen::Matrix3d grad_rotation = Eigen::Matrix3d::Zero();
         Eigen::Vector3d grad_target = Eigen::Vector3d::Zero();
-        return addCameraFovCost(position,
-                                yaw,
-                                target,
-                                grad_position,
-                                grad_target,
-                                grad_yaw);
-    }
-
-    template <typename SampleBuffer>
-    double evaluateSample(const SampleBuffer &samples,
-                          Eigen::Matrix<double, 3, Eigen::Dynamic> &grad_p,
-                          Eigen::VectorXd &grad_t_global) const
-    {
-        if (cfg_ == nullptr || problem_.target_prediction.empty())
-        {
-            return 0.0;
+        for (const auto &offset : offsets) {
+            const Eigen::Vector3d delta = target.position + offset - position;
+            const Eigen::Vector3d optical = problem_.camera_rotation.transpose() *
+                (frame.rotation.transpose() * delta - problem_.camera_translation);
+            Eigen::Vector3d go = Eigen::Vector3d::Zero();
+            const auto plane = [&](double violation, const Eigen::Vector3d &normal) {
+                if (violation > 0.0) {
+                    cost += problem_.weight_fov * violation * violation;
+                    go += (2.0 * problem_.weight_fov * violation) * normal;
+                }
+            };
+            // Both sides rather than abs(): a point behind the camera must
+            // still receive a useful lateral and forward gradient.
+            plane(optical.x() - tan_h * optical.z(), {1,0,-tan_h});
+            plane(-optical.x() - tan_h * optical.z(), {-1,0,-tan_h});
+            plane(optical.y() - tan_v * optical.z(), {0,1,-tan_v});
+            plane(-optical.y() - tan_v * optical.z(), {0,-1,-tan_v});
+            plane(problem_.fov_front_margin - optical.z(), {0,0,-1});
+            // Range is handled by the observation-distance objective and
+            // commit's explicit range grace; it must not block reacquisition.
+            const Eigen::Vector3d gb = problem_.camera_rotation * go;
+            const Eigen::Vector3d gw = frame.rotation * gb;
+            grad_target += gw;
+            grad_position -= gw;
+            grad_rotation.noalias() += delta * gb.transpose();
         }
-
-        double cost = 0.0;
-        for (Eigen::Index i = 0; i < static_cast<Eigen::Index>(samples.size()); ++i)
-        {
-	            const auto &sample = samples[static_cast<std::size_t>(i)];
-	            Eigen::Vector3d grad_position = Eigen::Vector3d::Zero();
-                double grad_time = 0.0;
-	            cost += evaluateDiscretePositionSample(sample.t_global,
-	                                                   sample.p,
-	                                                   grad_position,
-                                                       grad_time);
-	            grad_p.col(i) += grad_position;
-                grad_t_global(i) += grad_time;
-	        }
-	        return cost;
-	    }
-
-    template <typename SampleBuffer>
-    double evaluateSample(const SampleBuffer &samples,
-                          Eigen::Matrix<double, 3, Eigen::Dynamic> &grad_p,
-                          Eigen::Matrix<double, 3, Eigen::Dynamic> &grad_v,
-                          Eigen::VectorXd &grad_yaw,
-                          Eigen::VectorXd &grad_yaw_dot,
-                          Eigen::VectorXd &grad_t_global) const
-    {
-        if (cfg_ == nullptr || problem_.target_prediction.empty())
-        {
-            return 0.0;
-        }
-
-        double cost = 0.0;
-        for (Eigen::Index i = 0; i < static_cast<Eigen::Index>(samples.size()); ++i)
-        {
-            const auto &sample = samples[static_cast<std::size_t>(i)];
-            Eigen::Vector3d grad_position = Eigen::Vector3d::Zero();
-            Eigen::Vector3d grad_velocity = Eigen::Vector3d::Zero();
-            double gyaw = 0.0;
-            double gyaw_dot = 0.0;
-            double gt = 0.0;
-            cost += evaluateJointSample(sample.t_global,
-                                        sample.p,
-                                        sample.v,
-                                        sample.yaw,
-                                        sample.yaw_dot,
-                                        grad_position,
-                                        grad_velocity,
-                                        gyaw,
-                                        gyaw_dot,
-                                        gt);
-            grad_p.col(i) += grad_position;
-            grad_v.col(i) += grad_velocity;
-            grad_yaw(i) += gyaw;
-            grad_yaw_dot(i) += gyaw_dot;
-            grad_t_global(i) += gt;
-        }
+        frame.rotationGradient(grad_rotation, grad_acceleration, grad_yaw);
+        grad_time += grad_target.dot(traj_opt::trackingTargetPositionDerivative(
+            problem_.target_prediction, t_global));
         return cost;
     }
 
-	private:
+private:
         void rebuildJointSampleTimes()
         {
             joint_sample_times_.clear();
@@ -261,88 +242,52 @@ public:
             joint_sample_times_ = std::move(unique_times);
         }
 
-	    double addObstacleAvoidanceCost(const Eigen::Vector3d &position,
-	                                    Eigen::Vector3d &grad_position) const
-	    {
-	        if (cfg_ == nullptr)
-	        {
-	            return 0.0;
-	        }
-	        return cost_functional::accumulateESDFDistancePenalty(map_manager_.get(),
-	                                                              position,
-	                                                              problem_.safe_distance,
-	                                                              cfg_->smooth_eps,
-	                                                              cfg_->penna_pos,
-	                                                              grad_position);
-	    }
-
-	    double addVelocityBoundCost(const Eigen::Vector3d &velocity,
-	                                Eigen::Vector3d &grad_velocity) const
-	    {
-	        if (cfg_ == nullptr)
-	        {
-	            return 0.0;
-	        }
-	        const double max_vel = clampPositive(cfg_->max_vel, 2.0);
-	        return cost_functional::accumulateVelocityBoundPenalty(velocity,
-	                                                               max_vel * max_vel,
-	                                                               cfg_->smooth_eps,
-	                                                               cfg_->penna_vel,
-	                                                               grad_velocity);
-	    }
-
-	    double addAccelerationBoundCost(const Eigen::Vector3d &acceleration,
-	                                    Eigen::Vector3d &grad_acceleration) const
-	    {
-	        if (cfg_ == nullptr)
-	        {
-	            return 0.0;
-	        }
-	        const double max_acc = clampPositive(cfg_->max_acc, 2.0);
-	        return cost_functional::accumulateAccelerationBoundPenalty(acceleration,
-	                                                                   max_acc * max_acc,
-	                                                                   cfg_->smooth_eps,
-	                                                                   cfg_->penna_acc,
-	                                                                   grad_acceleration);
-	    }
-
-	    double evaluateDiscretePositionSample(double t_global,
-	                                          const Eigen::Vector3d &position,
-	                                          Eigen::Vector3d &grad_position,
-                                              double &grad_time) const
-	    {
-	        if (cfg_ == nullptr || problem_.target_prediction.empty())
-	        {
-            return 0.0;
+        double addObstacleAvoidanceCost(const Eigen::Vector3d &position,
+                                        Eigen::Vector3d &grad_position) const
+        {
+            if (cfg_ == nullptr)
+            {
+                return 0.0;
+            }
+            return cost_functional::accumulateESDFDistancePenalty(map_manager_.get(),
+                                                                  position,
+                                                                  problem_.safe_distance,
+                                                                  cfg_->smooth_eps,
+                                                                  cfg_->penna_pos,
+                                                                  grad_position);
         }
 
-	        const auto target = interpolateTarget(t_global);
-	        Eigen::Vector3d grad_target = Eigen::Vector3d::Zero();
-	        double cost = 0.0;
+        double addVelocityBoundCost(const Eigen::Vector3d &velocity,
+                                    Eigen::Vector3d &grad_velocity) const
+        {
+            if (cfg_ == nullptr)
+            {
+                return 0.0;
+            }
+            const double max_vel = clampPositive(cfg_->max_vel, 2.0);
+            return cost_functional::accumulateVelocityBoundPenalty(velocity,
+                                                                   max_vel * max_vel,
+                                                                   cfg_->smooth_eps,
+                                                                   cfg_->penna_vel,
+                                                                   grad_velocity);
+        }
 
-        cost += addObservationDistanceCost(position,
-	                                           target,
-	                                           grad_position,
-	                                           grad_target);
-	        cost += addESDFVisibilityCost(position,
-	                                      target,
-	                                      grad_position,
-	                                      grad_target);
-            cost += addTargetForwardCost(position,
-                                         target,
-                                         grad_position,
-                                         grad_target);
-            cost += addViewpointAttractorCost(t_global,
-                                              position,
-                                              grad_position,
-                                              grad_time);
-            cost += addVisibleRegionCost(t_global,
-                                         position,
-                                         target,
-                                         grad_position,
-                                         grad_time);
-	        return cost;
-	    }
+        double addAccelerationBoundCost(const Eigen::Vector3d &acceleration,
+                                        Eigen::Vector3d &grad_acceleration) const
+        {
+            if (cfg_ == nullptr)
+            {
+                return 0.0;
+            }
+            const double max_acc = clampPositive(cfg_->max_acc, 2.0);
+            return cost_functional::accumulateAccelerationBoundPenalty(acceleration,
+                                                                       max_acc * max_acc,
+                                                                       cfg_->smooth_eps,
+                                                                       cfg_->penna_acc,
+                                                                       grad_acceleration);
+        }
+
+
 
     double addObservationDistanceCost(const Eigen::Vector3d &position,
                                       const traj_opt::DynamicTargetState &target,
@@ -406,59 +351,6 @@ public:
                                                                           grad_position,
                                                                           grad_yaw,
                                                                           &grad_target);
-    }
-
-    double adaptiveFovRange() const
-    {
-        constexpr double kPi = 3.14159265358979323846;
-        const double horizontal_upper =
-            std::max(0.05,
-                     problem_.od_h_upper > 0.0
-                         ? problem_.od_h_upper
-                         : problem_.tracking_distance + problem_.distance_tolerance);
-        const double vertical_upper =
-            std::max({0.0,
-                      std::abs(problem_.od_v_lower),
-                      std::abs(problem_.od_v_upper),
-                      std::abs(problem_.height_offset) + std::max(0.0, problem_.height_tolerance)});
-        const double base_range = problem_.fov_range > 0.0 ? problem_.fov_range : horizontal_upper;
-        const double half_h = std::clamp(0.5 * std::max(kPi / 180.0, problem_.fov_horizontal),
-                                         kPi / 180.0,
-                                         0.5 * kPi - 1.0e-3);
-        const double half_v = std::clamp(0.5 * std::max(kPi / 180.0, problem_.fov_vertical),
-                                         kPi / 180.0,
-                                         0.5 * kPi - 1.0e-3);
-        const double footprint_scale = std::hypot(std::tan(half_h), std::tan(half_v));
-        const double geometry_range = std::hypot(horizontal_upper, vertical_upper);
-        const double footprint_range = horizontal_upper + vertical_upper * footprint_scale;
-        return std::max({0.05, base_range, geometry_range, footprint_range});
-    }
-
-    double addCameraFovCost(const Eigen::Vector3d &position,
-                            double yaw,
-                            const traj_opt::DynamicTargetState &target,
-                            Eigen::Vector3d &grad_position,
-                            Eigen::Vector3d &grad_target,
-                            double &grad_yaw) const
-    {
-        cost_functional::TrackingCameraFovConfig config;
-        config.weight = problem_.weight_fov;
-        config.horizontal_fov = problem_.fov_horizontal;
-        config.vertical_fov = problem_.fov_vertical;
-        const double fov_range = adaptiveFovRange();
-        config.range = fov_range > 0.0
-                           ? std::max(0.05, fov_range - std::max(0.0, problem_.fov_range_margin))
-                           : fov_range;
-        config.angle_clearance = problem_.visibility_angle_clearance;
-        config.min_forward = problem_.fov_front_margin;
-        config.smooth_eps = cfg_->smooth_eps;
-        return cost_functional::accumulateTrackingCameraFovPenalty(position,
-                                                                   yaw,
-                                                                   target.position,
-                                                                   config,
-                                                                   grad_position,
-                                                                   grad_yaw,
-                                                                   &grad_target);
     }
 
     double addESDFVisibilityCost(const Eigen::Vector3d &position,
@@ -525,129 +417,53 @@ public:
             problem_.visibility_samples);
     }
 
-    double addTargetForwardCost(const Eigen::Vector3d &position,
-                                const traj_opt::DynamicTargetState &target,
-                                Eigen::Vector3d &grad_position,
-                                Eigen::Vector3d &grad_target) const
-    {
-        cost_functional::TrackingTargetForwardConfig config;
-        config.weight = problem_.weight_target_forward;
-        config.margin = problem_.target_front_margin;
-        config.speed_threshold = problem_.target_motion_speed_threshold;
-        config.smooth_eps = cfg_->smooth_eps;
-        return cost_functional::accumulateTrackingTargetForwardPenalty(position,
-                                                                       target.position,
-                                                                       target.velocity,
-                                                                       config,
-                                                                       grad_position,
-                                                                       &grad_target);
-    }
+
 
     double addTrackingVelocityCost(const Eigen::Vector3d &position,
                                    const Eigen::Vector3d &velocity,
                                    const traj_opt::DynamicTargetState &target,
+                                   Eigen::Vector3d &grad_position,
                                    Eigen::Vector3d &grad_velocity,
                                    double &grad_time) const
     {
-        cost_functional::TrackingVelocityConfig config;
-        config.weight_relative = problem_.weight_relative_velocity;
-        config.weight_tangent = problem_.weight_tangent_velocity;
-        return cost_functional::accumulateTrackingVelocityPenalty(position,
-                                                                  velocity,
-                                                                  target.position,
-                                                                  target.velocity,
-                                                                  target.acceleration,
-                                                                  config,
-                                                                  grad_velocity,
-                                                                  grad_time);
-    }
-
-    struct TimedPointReference
-    {
-        Eigen::Vector3d position{Eigen::Vector3d::Zero()};
-        Eigen::Vector3d velocity{Eigen::Vector3d::Zero()};
-        bool valid{false};
-    };
-
-    TimedPointReference interpolateViewpoint(double t) const
-    {
-        TimedPointReference out;
-        if (problem_.viewpoints.empty() ||
-            problem_.target_sample_times.size() != problem_.viewpoints.size())
-        {
-            return out;
+        const Eigen::Vector2d delta = target.position.head<2>() - position.head<2>();
+        const double distance = delta.norm();
+        Eigen::Vector3d reference = target.velocity;
+        Eigen::Matrix2d derivative = Eigen::Matrix2d::Zero();
+        Eigen::Vector2d direction = Eigen::Vector2d::UnitX();
+        if (distance > 1.e-6) {
+            direction = delta / distance;
+            const double cap = std::max(0.01, problem_.max_closing_speed);
+            const double gain = std::max(0.0, problem_.closing_gain);
+            const double u = std::tanh(gain * (distance - problem_.tracking_distance) / cap);
+            const double closing = cap * u;
+            reference.head<2>() += closing * direction;
+            derivative = (closing / distance) * (Eigen::Matrix2d::Identity() - direction * direction.transpose())
+                       + gain * (1.0 - u * u) * direction * direction.transpose();
         }
-
-        if (problem_.viewpoints.size() == 1 || t <= problem_.target_sample_times.front())
-        {
-            out.position = problem_.viewpoints.front();
-            if (problem_.viewpoints.size() >= 2)
-            {
-                const double dt = std::max(1.0e-9,
-                                           problem_.target_sample_times[1] -
-                                               problem_.target_sample_times[0]);
-                out.velocity = (problem_.viewpoints[1] - problem_.viewpoints[0]) / dt;
-            }
-            out.valid = true;
-            return out;
+        const Eigen::Vector3d error = velocity - reference;
+        const double weight = std::max(0.0, problem_.weight_relative_velocity);
+        double cost = 0.5 * weight * error.squaredNorm();
+        Eigen::Vector3d gv = weight * error;
+        Eigen::Vector3d gp = Eigen::Vector3d::Zero();
+        gp.head<2>() = derivative.transpose() * gv.head<2>();
+        // The tangential direction also depends on position. Its derivative
+        // must participate in the shared-time objective's coefficient adjoint.
+        if (distance > 1.e-6 && problem_.weight_tangent_velocity > 0.0) {
+            const Eigen::Vector2d tangent(-direction.y(), direction.x());
+            const Eigen::Vector2d relative = (velocity - target.velocity).head<2>();
+            const double lateral = relative.dot(tangent);
+            const double scale = problem_.weight_tangent_velocity * lateral;
+            cost += 0.5 * problem_.weight_tangent_velocity * lateral * lateral;
+            gv.head<2>() += scale * tangent;
+            Eigen::Matrix2d rotate; rotate << 0, -1, 1, 0;
+            gp.head<2>() -= scale / distance *
+                (Eigen::Matrix2d::Identity() - direction * direction.transpose()) * rotate.transpose() * relative;
         }
-        if (t >= problem_.target_sample_times.back())
-        {
-            const std::size_t last = problem_.viewpoints.size() - 1;
-            out.position = problem_.viewpoints[last];
-            if (problem_.viewpoints.size() >= 2)
-            {
-                const std::size_t prev = last - 1;
-                const double dt = std::max(1.0e-9,
-                                           problem_.target_sample_times[last] -
-                                               problem_.target_sample_times[prev]);
-                out.velocity = (problem_.viewpoints[last] - problem_.viewpoints[prev]) / dt;
-            }
-            out.valid = true;
-            return out;
-        }
-
-        const auto it = std::lower_bound(problem_.target_sample_times.begin(),
-                                         problem_.target_sample_times.end(),
-                                         t);
-        const std::size_t idx = static_cast<std::size_t>(
-            std::distance(problem_.target_sample_times.begin(), it));
-        const std::size_t left = idx - 1;
-        const std::size_t right = idx;
-        const double dt = std::max(1.0e-9,
-                                   problem_.target_sample_times[right] -
-                                       problem_.target_sample_times[left]);
-        const double alpha = (t - problem_.target_sample_times[left]) / dt;
-        out.position = problem_.viewpoints[left] +
-                       alpha * (problem_.viewpoints[right] - problem_.viewpoints[left]);
-        out.velocity = (problem_.viewpoints[right] - problem_.viewpoints[left]) / dt;
-        out.valid = true;
-        return out;
-    }
-
-    double addViewpointAttractorCost(double t_global,
-                                     const Eigen::Vector3d &position,
-                                     Eigen::Vector3d &grad_position,
-                                     double &grad_time) const
-    {
-        if (problem_.weight_viewpoint_attractor <= 0.0)
-        {
-            return 0.0;
-        }
-        const TimedPointReference ref = interpolateViewpoint(t_global);
-        if (!ref.valid)
-        {
-            return 0.0;
-        }
-
-        cost_functional::TrackingPointAttractorConfig config;
-        config.weight = problem_.weight_viewpoint_attractor;
-        return cost_functional::accumulateTrackingPointAttractorPenalty(position,
-                                                                        ref.position,
-                                                                        ref.velocity,
-                                                                        config,
-                                                                        grad_position,
-                                                                        grad_time);
+        grad_position += gp;
+        grad_velocity += gv;
+        grad_time -= gp.dot(target.velocity) + gv.dot(target.acceleration);
+        return cost;
     }
 
     bool interpolateVisibleRegion(double t,
@@ -752,52 +568,21 @@ public:
                                                                        grad_time);
     }
 
-	    traj_opt::DynamicTargetState interpolateTarget(double t) const
+        traj_opt::DynamicTargetState interpolateTarget(double t) const
     {
-        if (problem_.target_prediction.empty())
-        {
-            return {};
-        }
-        if (problem_.target_prediction.size() == 1 || t <= problem_.target_prediction.front().t)
-        {
-            return problem_.target_prediction.front();
-        }
-        if (t >= problem_.target_prediction.back().t)
-        {
-            return problem_.target_prediction.back();
+        return traj_opt::sampleTrackingTarget(problem_.target_prediction, t);
         }
 
-        const auto it = std::lower_bound(problem_.target_prediction.begin(),
-                                         problem_.target_prediction.end(),
-                                         t,
-                                         [](const traj_opt::DynamicTargetState &state, double query_t) {
-                                             return state.t < query_t;
-                                         });
-        const int idx = static_cast<int>(std::distance(problem_.target_prediction.begin(), it));
-        const auto &right = problem_.target_prediction[static_cast<std::size_t>(idx)];
-        const auto &left = problem_.target_prediction[static_cast<std::size_t>(idx - 1)];
-        const double alpha = (t - left.t) / std::max(1.0e-9, right.t - left.t);
+        static double clampPositive(double value, double fallback)
+        {
+            if (!std::isfinite(value) || value <= 0.0)
+            {
+                return fallback;
+            }
+            return value;
+        }
 
-        traj_opt::DynamicTargetState out;
-        out.t = t;
-        out.position = left.position + alpha * (right.position - left.position);
-        out.velocity = left.velocity + alpha * (right.velocity - left.velocity);
-        out.acceleration = left.acceleration + alpha * (right.acceleration - left.acceleration);
-        out.yaw = left.yaw + alpha * (right.yaw - left.yaw);
-        out.yaw_rate = left.yaw_rate + alpha * (right.yaw_rate - left.yaw_rate);
-        return out;
-	    }
-
-	    static double clampPositive(double value, double fallback)
-	    {
-	        if (!std::isfinite(value) || value <= 0.0)
-	        {
-	            return fallback;
-	        }
-	        return value;
-	    }
-
-	private:
+    private:
     const traj_opt::Config *cfg_{nullptr};
     general_planner::MapManager::Ptr map_manager_;
     traj_opt::TrackingProblem problem_;

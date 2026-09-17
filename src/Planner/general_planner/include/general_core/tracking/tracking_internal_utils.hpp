@@ -8,45 +8,158 @@
 
 #include <data_structure/base/trajectory.h>
 #include <general_core/config.hpp>
-#include <traj_opt/tracking_perching_traj_opt.hpp>
+#include <traj_opt/tracking_problem.hpp>
 #include <utils/geometry/geometry_utils.h>
+#include <utils/geometry/tracking_attitude.hpp>
+#include <fmt/format.h>
 #include <utils/header/eigen_alias.hpp>
 #include <utils/optimization/polynomial_interpolation.h>
 
 namespace general_planner {
 
+inline double trackingAdaptiveFovRange(const double configured_range,
+                                const double tracking_distance,
+                                const double distance_upper_tolerance,
+                                const double distance_tolerance,
+                                const double height_offset,
+                                const double height_tolerance,
+                                const double horizontal_fov_deg,
+                                const double vertical_fov_deg) {
+    constexpr double kPi = 3.14159265358979323846;
+    constexpr double kDegToRad = kPi / 180.0;
+    const double horizontal_upper =
+            std::max(0.05,
+                     tracking_distance +
+                             std::max({0.0,
+                                       distance_upper_tolerance,
+                                       distance_tolerance}));
+    const double vertical_upper =
+            std::max(0.0, std::abs(height_offset) + std::max(0.0, height_tolerance));
+    const double base_range = configured_range > 0.0 ? configured_range : horizontal_upper;
+    const double half_h =
+            std::clamp(0.5 * std::max(1.0, horizontal_fov_deg) * kDegToRad,
+                       kPi / 180.0,
+                       0.5 * kPi - 1.0e-3);
+    const double half_v =
+            std::clamp(0.5 * std::max(1.0, vertical_fov_deg) * kDegToRad,
+                       kPi / 180.0,
+                       0.5 * kPi - 1.0e-3);
+    const double footprint_scale = std::hypot(std::tan(half_h), std::tan(half_v));
+    const double geometry_range = std::hypot(horizontal_upper, vertical_upper);
+    const double footprint_range = horizontal_upper + vertical_upper * footprint_scale;
+    return std::max({0.05, base_range, geometry_range, footprint_range});
+}
+
+inline double trackingAdaptiveFovRange(const Config &cfg) {
+    return trackingAdaptiveFovRange(cfg.tracking_fov_range,
+                                    cfg.tracking_distance,
+                                    cfg.tracking_distance_upper_tolerance,
+                                    cfg.tracking_distance_tolerance,
+                                    cfg.tracking_height_offset,
+                                    cfg.tracking_height_tolerance,
+                                    cfg.tracking_fov_horizontal_deg,
+                                    cfg.tracking_fov_vertical_deg);
+}
+
+// Rebase only the observed interval. Never turn extrapolation into a trusted
+// prediction or restart its lifetime on each planner call.
+inline traj_opt::DynamicTargetStates trackingPredictionAtTime(
+        const traj_opt::DynamicTargetStates &prediction, double reference_time) {
+    traj_opt::DynamicTargetStates out;
+    if (prediction.empty() || !std::isfinite(reference_time)) return out;
+    for (std::size_t i = 0; i < prediction.size(); ++i) {
+        if (!std::isfinite(prediction[i].t) || !prediction[i].position.allFinite() ||
+            !prediction[i].velocity.allFinite() ||
+            (i > 0 && prediction[i].t <= prediction[i-1].t)) return out;
+    }
+    const double epoch = std::isfinite(prediction.front().reference_time)
+        ? prediction.front().reference_time : reference_time;
+    const double offset = reference_time - epoch;
+    if (offset < prediction.front().t - 1.e-6 ||
+        offset >= prediction.back().t - 1.e-3) return out;
+    out.emplace_back(traj_opt::sampleTrackingTarget(prediction, offset));
+    out.back().t = 0.0;
+    out.back().reference_time = reference_time;
+    for (const auto &sample : prediction) {
+        if (sample.t <= offset + 1.e-6) continue;
+        out.emplace_back(sample);
+        out.back().t -= offset;
+        out.back().reference_time = reference_time;
+    }
+    return out;
+}
+
+struct TrackingDynamicsCheck {
+    bool valid{false};
+    std::string reason;
+};
+
+// Shared by candidate and final stitched-command validation.
+inline TrackingDynamicsCheck checkTrackingDynamics(
+        const geometry_utils::Trajectory &pos,
+        const geometry_utils::Trajectory &yaw, const Config &cfg) {
+    TrackingDynamicsCheck out;
+    if (pos.empty() || yaw.empty() ||
+        std::abs(pos.getTotalDuration() - yaw.getTotalDuration()) > 1.e-3) {
+        out.reason = "DYNAMIC_LIMIT: empty or mismatched position/yaw duration";
+        return out;
+    }
+    const auto head = pos.getState(0.0);
+    const auto head_yaw = yaw.getState(0.0);
+    const geometry_utils::TrackingAttitude head_frame(head.col(2), head_yaw(0,0));
+    const double initial_rate = std::sqrt(head_frame.bodyRateSquared(head.col(3), head_yaw(0,1)));
+    const double vcap = std::max(cfg.tracking_traj_cfg.max_vel, head.col(1).norm()) * 1.05;
+    const double acap = std::max(cfg.tracking_traj_cfg.max_acc, head.col(2).norm()) * 1.05;
+    const double jcap = std::max(cfg.tracking_traj_cfg.max_jerk, head.col(3).norm()) * 1.05;
+    const double tiltcap = std::max(cfg.tracking_traj_cfg.max_tilt,
+        std::atan2(head.col(2).head<2>().norm(), 9.81 + head(2,2))) + 0.01;
+    const double ratecap = std::max(cfg.tracking_traj_cfg.max_omg, initial_rate) + 0.02;
+    const double yvcap = std::max(cfg.tracking_yaw_rate_limit, std::abs(head_yaw(0,1))) + 0.02;
+    const double yacap = std::max(cfg.tracking_yaw_acceleration_limit, std::abs(head_yaw(0,2))) + 0.02;
+    const double v = pos.getMaxVelRate(), a = pos.getMaxAccRate();
+    const double yv = yaw.getMaxVelRate(), ya = yaw.getMaxAccRate();
+    double j = 0.0, tilt = 0.0, rate = 0.0;
+    double min_thrust = std::numeric_limits<double>::infinity(), max_thrust = 0.0;
+    bool finite = head.allFinite() && head_yaw.allFinite() && head_frame.valid &&
+        std::isfinite(initial_rate) && std::isfinite(v) && std::isfinite(a) &&
+        std::isfinite(yv) && std::isfinite(ya);
+    // Include every piece boundary as well as regular interior samples.
+    double begin = 0.0;
+    for (const auto &piece : pos) {
+        const double duration = piece.getDuration();
+        if (!std::isfinite(duration) || duration <= 0.0) { finite = false; break; }
+        const int count = std::max(1, static_cast<int>(std::ceil(duration / 0.02)));
+        for (int i = 0; i <= count; ++i) {
+            const double t = begin + duration * i / count;
+            const auto state = pos.getState(t);
+            const auto ys = yaw.getState(t);
+            const geometry_utils::TrackingAttitude frame(state.col(2), ys(0,0));
+            const double omega = std::sqrt(frame.bodyRateSquared(state.col(3), ys(0,1)));
+            finite = finite && state.allFinite() && ys.allFinite() && frame.valid && std::isfinite(omega);
+            const double thrust = (state.col(2) + Eigen::Vector3d(0,0,9.81)).norm();
+            min_thrust = std::min(min_thrust, thrust);
+            max_thrust = std::max(max_thrust, thrust);
+            j = std::max(j, state.col(3).norm());
+            tilt = std::max(tilt, std::atan2(state.col(2).head<2>().norm(), 9.81 + state(2,2)));
+            rate = std::max(rate, omega);
+        }
+        begin += duration;
+    }
+    const bool thrust_valid = cfg.tracking_traj_cfg.max_acc_thr <= 0.0 ||
+        (min_thrust >= 0.95 * cfg.tracking_traj_cfg.min_acc_thr &&
+         max_thrust <= 1.05 * cfg.tracking_traj_cfg.max_acc_thr);
+    out.valid = finite && thrust_valid && v <= vcap && a <= acap && j <= jcap &&
+        tilt <= tiltcap && rate <= ratecap && yv <= yvcap && ya <= yacap;
+    out.reason = fmt::format("DYNAMIC_LIMIT: finite={}|velocity={:.4f}/{:.4f}|acceleration={:.4f}/{:.4f}|jerk={:.4f}/{:.4f}|tilt={:.4f}/{:.4f}|body_rate={:.4f}/{:.4f}|yaw_rate={:.4f}/{:.4f}|yaw_acc={:.4f}/{:.4f}",
+        finite, v, vcap, a, acap, j, jcap, tilt, tiltcap, rate, ratecap, yv, yvcap, ya, yacap);
+    if (!thrust_valid) out.reason += fmt::format("|thrust=[{:.3f},{:.3f}]", min_thrust, max_thrust);
+    return out;
+}
+
 inline traj_opt::DynamicTargetState interpolateTargetPrediction(
         const traj_opt::DynamicTargetStates &prediction,
         const double &t) {
-    if (prediction.empty()) {
-        return {};
-    }
-    if (prediction.size() == 1 || t <= prediction.front().t) {
-        return prediction.front();
-    }
-    if (t >= prediction.back().t) {
-        return prediction.back();
-    }
-
-    const auto it = std::lower_bound(prediction.begin(),
-                                     prediction.end(),
-                                     t,
-                                     [](const traj_opt::DynamicTargetState &state, double query_t) {
-                                         return state.t < query_t;
-                                     });
-    const int idx = static_cast<int>(std::distance(prediction.begin(), it));
-    const auto &left = prediction[static_cast<std::size_t>(idx - 1)];
-    const auto &right = prediction[static_cast<std::size_t>(idx)];
-    const double alpha = (t - left.t) / std::max(1.0e-9, right.t - left.t);
-
-    traj_opt::DynamicTargetState out;
-    out.t = t;
-    out.position = left.position + alpha * (right.position - left.position);
-    out.velocity = left.velocity + alpha * (right.velocity - left.velocity);
-    out.acceleration = left.acceleration + alpha * (right.acceleration - left.acceleration);
-    out.yaw = left.yaw + alpha * (right.yaw - left.yaw);
-    out.yaw_rate = left.yaw_rate + alpha * (right.yaw_rate - left.yaw_rate);
-    return out;
+    return traj_opt::sampleTrackingTarget(prediction, t);
 }
 
 inline double trackingHardSafeDistance(const Config &cfg) {
@@ -181,6 +294,113 @@ inline TrackingMotionMetrics computeTrackingMotionMetrics(
     return metrics;
 }
 
+// Positive progress over a finite, trusted prediction window. Range may grow
+// while a vehicle accelerates toward a faster receding target; angular FOV,
+// collision and dynamic feasibility remain independent mandatory checks.
+struct TrackingApproachMotion {
+    bool valid{false};
+    double progress{0.0};
+    double required_progress{0.0};
+    double end_speed{0.0};
+};
+
+inline TrackingApproachMotion trackingApproachMotion(
+        const geometry_utils::Trajectory &traj,
+        const traj_opt::DynamicTargetStates &prediction,
+        const Config &cfg, double start_t, double target_start_t, double horizon,
+        const general_utils::vec_Vec3f *guide = nullptr) {
+    TrackingApproachMotion out;
+    if (traj.empty() || prediction.empty()) return out;
+    start_t = std::clamp(start_t, 0.0, traj.getTotalDuration());
+    const double h = std::min({horizon, traj.getTotalDuration() - start_t,
+                              prediction.back().t - target_start_t});
+    if (!std::isfinite(h) || h < 0.15) return out;
+    const auto target = interpolateTargetPrediction(prediction, target_start_t);
+    auto dir = (target.position - traj.getPos(start_t)).eval();
+    // Use the beginning of the verified local route, including a side-pass.
+    // A distant terminal chord can point opposite to the required first turn.
+    if (guide && guide->size() >= 2) {
+        std::size_t segment_id = 1;
+        general_utils::Vec3f route_start = guide->front();
+        double nearest = std::numeric_limits<double>::infinity();
+        const auto current = traj.getPos(start_t);
+        for (std::size_t i = 1; i < guide->size(); ++i) {
+            const auto delta = ((*guide)[i] - (*guide)[i-1]).eval();
+            if (delta.squaredNorm() < 1.e-10) continue;
+            const double alpha = std::clamp((current-(*guide)[i-1]).dot(delta)/delta.squaredNorm(), 0.0, 1.0);
+            const auto point = ((*guide)[i-1] + alpha*delta).eval();
+            const double distance = (point-current).squaredNorm();
+            if (distance < nearest) { nearest = distance; route_start = point; segment_id = i; }
+        }
+        double arc = 0.0;
+        general_utils::Vec3f previous = route_start;
+        for (std::size_t i = segment_id; i < guide->size(); ++i) {
+            const auto segment = ((*guide)[i] - previous).eval();
+            const double length = segment.norm();
+            if (length < 1.e-5) continue;
+            const double step = std::min(length, 0.5 - arc);
+            dir = previous + segment * (step / length) - route_start;
+            arc += step;
+            previous = (*guide)[i];
+            if (arc >= 0.5 - 1.e-5) break;
+        }
+    }
+    if (!cfg.tracking_motion_3d_enable) dir.z() = 0.0;
+    if (!dir.allFinite() || dir.norm() < 1.e-4) return out;
+    dir.normalize();
+    const auto dp = (traj.getPos(start_t + h) - traj.getPos(start_t)).eval();
+    const auto v0 = traj.getVel(start_t);
+    const auto v1 = traj.getVel(start_t + h);
+    if (!dp.allFinite() || !v0.allFinite() || !v1.allFinite()) return out;
+    out.progress = dp.dot(dir);
+    out.end_speed = v1.dot(dir);
+    const double speed0 = std::max(0.0, v0.dot(dir));
+    const double a = std::max(0.1, cfg.tracking_traj_cfg.max_acc);
+    const double j = std::max(0.1, cfg.tracking_traj_cfg.max_jerk);
+    const double ramp = std::min(h, a / j);
+    const double cruise = h - ramp;
+    const double reachable = speed0 * h + j * ramp * ramp * ramp / 6.0 +
+        0.5 * j * ramp * ramp * cruise + 0.5 * a * cruise * cruise;
+    const double requested = std::max({0.15, cfg.tracking_no_motion_min_displacement,
+        std::max(0.0, cfg.tracking_keep_old_min_progress_3d_ratio) * target.velocity.norm() * h});
+    const double reachable_speed = speed0 + 0.5 * j * ramp * ramp + a * cruise;
+    out.required_progress = std::max(0.001, std::min(requested, 0.1 * reachable));
+    out.valid = out.progress >= out.required_progress &&
+        out.end_speed >= std::min(std::max(0.05, cfg.tracking_keep_old_min_speed),
+                                  0.1 * reachable_speed) &&
+        out.progress / h >= std::min(0.02, 0.1 * reachable / h);
+    return out;
+}
+
+inline bool trackingCandidateHasMotion(
+        const geometry_utils::Trajectory &traj,
+        const traj_opt::DynamicTargetStates &prediction,
+        const Config &cfg, double start_t, double target_start_t) {
+    if (traj.empty() || prediction.empty()) return false;
+    start_t = std::clamp(start_t, 0.0, traj.getTotalDuration());
+    const double h = std::min({std::max(0.0, cfg.tracking_no_motion_check_horizon),
+                              traj.getTotalDuration() - start_t,
+                              prediction.back().t - target_start_t});
+    if (!std::isfinite(h) || h < 1.e-3 ||
+        !traj.getPos(start_t).allFinite() || !traj.getPos(start_t + h).allFinite() ||
+        !traj.getVel(start_t).allFinite()) return false;
+    const auto metrics = computeTrackingMotionMetrics(traj, prediction, cfg, start_t, target_start_t, h);
+    if (!metrics.target_moving) return true;
+    const bool three_d = cfg.tracking_motion_3d_enable || metrics.target_vertical_moving;
+    const double displacement = three_d ? metrics.displacement_3d : metrics.displacement_xy;
+    const double speed = three_d ? metrics.speed_3d : metrics.speed_xy;
+    const auto end_v = traj.getVel(start_t + h);
+    if (!end_v.allFinite()) return false;
+    const double end_speed = three_d ? end_v.norm() : end_v.head<2>().norm();
+    // The same reachable-progress rule is used before and after stitching.
+    general_utils::vec_Vec3f motion_guide{traj.getPos(start_t), traj.getPos(start_t + h)};
+    return trackingApproachMotion(traj, prediction, cfg, start_t, target_start_t, h, &motion_guide).valid ||
+        displacement >= std::max(0.01, cfg.tracking_no_motion_min_displacement) ||
+        (displacement >= 0.01 && speed >= cfg.tracking_keep_old_min_speed) ||
+        (displacement >= std::max(0.01, 0.5 * cfg.tracking_no_motion_min_displacement) &&
+         end_speed >= cfg.tracking_keep_old_min_speed);
+}
+
 inline bool buildYawPrefixFromSamples(const geometry_utils::Trajectory &yaw_traj,
                                       const double sample_start_t,
                                       const double sample_end_t,
@@ -216,7 +436,7 @@ inline bool buildYawPrefixFromSamples(const geometry_utils::Trajectory &yaw_traj
     Eigen::Matrix<double, 1, -1> waypoints(1, 0);
     general_utils::VecDf times(1);
     times(0) = prefix_duration;
-    prefix_yaw = poly_interpo::minimumAccInterpolation<1>(init_state,
+    prefix_yaw = geometry_utils::poly_interpo::minimumAccInterpolation<1>(init_state,
                                                           goal_state,
                                                           waypoints,
                                                           times);
@@ -264,23 +484,6 @@ inline bool extractYawPrefixForStitching(const geometry_utils::Trajectory &track
                                      sample_end,
                                      prefix_duration,
                                      prefix_yaw);
-}
-
-inline double yawFacingTarget(const geometry_utils::Trajectory &pos_traj,
-                              const traj_opt::DynamicTargetStates &target_prediction,
-                              const double &t,
-                              const double &last_yaw) {
-    const double eval_t = std::clamp(t, 0.0, pos_traj.getTotalDuration());
-    const general_utils::Vec3f tracker_p = pos_traj.getPos(eval_t);
-    const general_utils::Vec3f target_p =
-            interpolateTargetPrediction(target_prediction, eval_t).position;
-    const general_utils::Vec3f face_dir = target_p - tracker_p;
-    double yaw = last_yaw;
-    if (face_dir.head<2>().norm() > 1.0e-4) {
-        yaw = std::atan2(face_dir.y(), face_dir.x());
-        geometry_utils::normalizeNextYaw(last_yaw, yaw);
-    }
-    return yaw;
 }
 
 } // namespace general_planner

@@ -618,3 +618,22 @@ if(CATKIN_ENABLE_TESTING)
       ${CMAKE_CURRENT_SOURCE_DIR}/config/task_planner_runtime_state2state.yaml
       ${CMAKE_CURRENT_SOURCE_DIR}/config/task_planner_runtime_tracking.yaml)
 endif()
+
+add_executable(tracking_elastic_self_test tests/tracking_elastic_self_test.cpp)
+add_dependencies(tracking_elastic_self_test ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
+target_link_libraries(tracking_elastic_self_test general_planner_core ${THIRD_PARTY})
+target_compile_options(tracking_elastic_self_test PRIVATE -O1 -g0)
+if(CATKIN_ENABLE_TESTING)
+  add_test(NAME tracking_elastic_self_test COMMAND tracking_elastic_self_test)
+endif()
+
+add_executable(tracking_frontend_map_self_test tests/tracking_frontend_map_self_test.cpp)
+add_dependencies(tracking_frontend_map_self_test ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
+target_link_libraries(tracking_frontend_map_self_test general_planner_core ${THIRD_PARTY})
+
+add_executable(tracking_runtime_self_test tests/tracking_runtime_self_test.cpp)
+add_dependencies(tracking_runtime_self_test ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
+target_link_libraries(tracking_runtime_self_test general_planner_core ${THIRD_PARTY})
+if(CATKIN_ENABLE_TESTING)
+  add_test(NAME tracking_runtime_self_test COMMAND tracking_runtime_self_test)
+endif()

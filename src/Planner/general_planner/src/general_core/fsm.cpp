@@ -1029,12 +1029,22 @@ namespace fsm {
             if (tracking_lost_braking_) {
                 // Wait until the command queue has actually sampled the zero-
                 // derivative endpoint, not merely until it is 50 ms away.
+                if (trackingTaskReady()) {
+                    // Replan from the live braking trajectory PVAJ. Reacquisition
+                    // does not require destroying velocity or waiting for rest.
+                    tracking_lost_braking_ = false;
+                    tracking_target_lost_ = false;
+                    plan_from_rest_ = false;
+                    task_new_ = false;
+                    ChangeState("tracking reacquired during braking", FOLLOW_TRAJ);
+                    return;
+                }
                 if (planner_ptr_->getCommittedTrajectoryRemainingDuration() > 1.0e-6 ||
                     !traj_finish_) return;
                 tracking_lost_braking_ = false;
                 plan_from_rest_ = true;
                 task_new_ = true;
-                ChangeState("tracking stop complete", trackingTaskReady() ? GENERATE_TRAJ : WAIT_GOAL);
+                ChangeState("tracking stop complete", WAIT_GOAL);
             }
             if (!trackingTaskReady() &&
                 (trackingExecutionState() || machine_state_ == GENERATE_TRAJ)) {
@@ -1699,8 +1709,10 @@ namespace fsm {
         const bool static_no_committed_limit =
                 prediction_static && no_committed_tracking && failure_limit_reached;
 
-        const double backoff = 0.0;
-        tracking_plan_from_rest_backoff_until_ = -1.0;
+        const double backoff = std::max(0.0, failure_limit_reached
+            ? cfg_.tracking_plan_from_rest_limited_backoff
+            : cfg_.tracking_plan_from_rest_failure_backoff);
+        tracking_plan_from_rest_backoff_until_ = ros_ptr_->getSimTime() + backoff;
         last_tracking_plan_from_rest_backoff_log_time_ = -1.0;
 
         cout << YELLOW << " -- [Fsm] Tracking PlanFromRest failed, retry from GENERATE_TRAJ. consecutive_failures="
@@ -2051,6 +2063,9 @@ namespace fsm {
             changed = reacquired_after_timeout ||
                       trackingPredictionChanged(tracking_target_prediction_, filtered_prediction);
             tracking_target_prediction_ = filtered_prediction;
+            const double epoch = std::isfinite(filtered_prediction.front().reference_time)
+                ? filtered_prediction.front().reference_time : now;
+            for (auto &state : tracking_target_prediction_) state.reference_time = epoch;
             tracking_target_rcv_time_ = now;
             // Keep observations warm without arming an unrelated navigation task.
             if (activate_tracking_task) {
