@@ -86,7 +86,11 @@ namespace rog_map {
         void boxSearchInflate(const Vec3f &box_min, const Vec3f &box_max,
                               const GridType &gt, vec_E<Vec3f> &out_points) const;
 
-        void boundBoxByLocalMap(Vec3f &box_min, Vec3f &box_max) const;
+        void boundBoxByLocalMap(Vec3f &box_min, Vec3f &box_max, bool inflated = false) const;
+
+        void getInflatedVirtualHeightBounds(double &floor, double &ceiling) const {
+            inf_map_->getVirtualHeightBounds(floor, ceiling);
+        }
 
         bool getUpdatedBox(Vec3f &box_min, Vec3f &box_max) const;
 

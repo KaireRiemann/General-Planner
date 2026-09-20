@@ -40,6 +40,13 @@ namespace rog_map {
             return sc_.resolution;
         }
 
+        // These are the configuration-space limits used by occupancy queries.
+        // ProbMap's voxel-snapped raw-map limits are not interchangeable.
+        void getVirtualHeightBounds(double &floor, double &ceiling) const {
+            floor = cfg_.virtual_ground_height;
+            ceiling = cfg_.virtual_ceil_height;
+        }
+
         bool isOccupiedInflate(const Vec3f &pos) const;
 
         bool isUnknownInflate(const Vec3f &pos) const;

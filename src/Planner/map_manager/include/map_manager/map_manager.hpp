@@ -338,6 +338,10 @@ public:
         return map_->getResolution();
     }
 
+    void getInflatedVirtualHeightBounds(double &floor, double &ceiling) const {
+        map_->getInflatedVirtualHeightBounds(floor, ceiling);
+    }
+
     double getInfResolution() const
     {
         return map_->getInfResolution();
@@ -508,9 +512,10 @@ public:
         map_->infMapGlobalIndexToPos(id_g, pos);
     }
 
-    void boundBoxByLocalMap(rog_map::Vec3f &box_min, rog_map::Vec3f &box_max) const
+    void boundBoxByLocalMap(rog_map::Vec3f &box_min, rog_map::Vec3f &box_max,
+                            bool inflated = false) const
     {
-        map_->boundBoxByLocalMap(box_min, box_max);
+        map_->boundBoxByLocalMap(box_min, box_max, inflated);
     }
 
     bool getUpdatedBox(rog_map::Vec3f &box_min, rog_map::Vec3f &box_max) const

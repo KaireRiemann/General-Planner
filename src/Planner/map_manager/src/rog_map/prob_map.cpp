@@ -531,7 +531,7 @@ void ProbMap::boxSearchInflate(const Vec3f& box_min, const Vec3f& box_max, const
     inf_map_->boxSearch(box_min, box_max, gt, out_points);
 }
 
-void ProbMap::boundBoxByLocalMap(Vec3f& box_min, Vec3f& box_max) const {
+void ProbMap::boundBoxByLocalMap(Vec3f& box_min, Vec3f& box_max, bool inflated) const {
     if ((box_max - box_min).minCoeff() <= 0) {
         box_min = box_max;
         std::cout << YELLOW << "-- [ROG] Bound box is invalid." << RESET << std::endl;
@@ -540,8 +540,10 @@ void ProbMap::boundBoxByLocalMap(Vec3f& box_min, Vec3f& box_max) const {
 
     box_min = box_min.cwiseMax(local_map_bound_min_d_);
     box_max = box_max.cwiseMin(local_map_bound_max_d_);
-    box_max.z() = std::min(box_max.z(), cfg_.virtual_ceil_height);
-    box_min.z() = std::max(box_min.z(), cfg_.virtual_ground_height);
+    double floor = cfg_.virtual_ground_height, ceiling = cfg_.virtual_ceil_height;
+    if (inflated) inf_map_->getVirtualHeightBounds(floor, ceiling);
+    box_max.z() = std::min(box_max.z(), ceiling);
+    box_min.z() = std::max(box_min.z(), floor);
 }
 
 bool ProbMap::getUpdatedBox(Vec3f& box_min, Vec3f& box_max) const {

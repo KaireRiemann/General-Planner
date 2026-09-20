@@ -36,8 +36,9 @@ namespace rog_map {
 
     bool InfMap::isOccupiedInflate(const Vec3i& id_g) const {
         if (!insideLocalMap(id_g)) return false;
-        if (id_g.z() > cfg_.inf_virtual_ceil_height_id_g) return true;
-        if (id_g.z() < cfg_.inf_virtual_ground_height_id_g) return true;
+        Vec3f center;
+        globalIndexToPos(id_g,center);
+        if (center.z() > cfg_.virtual_ceil_height || center.z() < cfg_.virtual_ground_height) return true;
         return imd_.occ_inflate_cnt[getHashIndexFromGlobalIndex(id_g)] > 0;
     }
 
@@ -281,6 +282,11 @@ namespace rog_map {
         if (!insideLocalMap(id_g)) {
             return OUT_OF_MAP;
         }
+        Vec3f center;
+        globalIndexToPos(id_g,center);
+        if (center.z() < cfg_.virtual_ground_height || center.z() > cfg_.virtual_ceil_height) {
+            return OCCUPIED;
+        }
         Vec3i id_l;
         globalIndexToLocalIndex(id_g, id_l);
         int addr = getLocalIndexHash(id_l);
@@ -299,8 +305,11 @@ namespace rog_map {
     GridType InfMap::getGridType(const Vec3f& pos) const {
         Vec3i id_g, id_l;
         // 1. check virtual ceil and ground
-        if (pos.z() >= cfg_.virtual_ceil_height - cfg_.inflation_resolution * (1 + cfg_.inflation_step) ||
-            pos.z() <= cfg_.virtual_ground_height + cfg_.inflation_resolution * (1 + cfg_.inflation_step)) {
+        // Config already inflates these bounds. Match isOccupiedInflate()
+        // instead of creating a second floor for trajectory validation.
+        if (!insideLocalMap(pos)) return OUT_OF_MAP;
+        if (pos.z() > cfg_.virtual_ceil_height ||
+            pos.z() < cfg_.virtual_ground_height) {
             return OCCUPIED;
         }
         posToGlobalIndex(pos, id_g);
