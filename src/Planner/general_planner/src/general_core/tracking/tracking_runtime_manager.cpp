@@ -1,19 +1,12 @@
 #include "general_core/tracking/tracking_runtime_manager.hpp"
 #include "general_core/tracking/tracking_internal_utils.hpp"
+#include "general_core/tracking/tracking_map_query.hpp"
 
 #include <algorithm>
 #include <cmath>
 #include <limits>
 
 namespace general_planner {
-namespace {
-
-double effectiveTrackingHardSafeDistance(const Config &cfg)
-{
-    return std::max(cfg.tracking_hard_safe_distance, cfg.robot_r + 0.02);
-}
-
-} // namespace
 
 TrackingRuntimeManager::TrackingRuntimeManager(const Config &cfg,
                                                const MapManager::Ptr &map_manager)
@@ -27,6 +20,8 @@ void TrackingRuntimeManager::reset()
     consecutive_keep_old_ = 0;
     consecutive_reject_ = 0;
     status_ = Status::IDLE;
+    has_recovery_command_ = false;
+    outcome_ = architecture::TrackingPlanOutcome::UNSPECIFIED;
     has_committed_tracking_ = false;
     execution_start_ = observation_time_ = -1.0;
     execution_progress_observed_ = false;
@@ -41,22 +36,13 @@ general_utils::Vec3f TrackingRuntimeManager::targetDirection(
     }
 
     general_utils::Vec3f dir = prediction.front().velocity;
-    if (!cfg_.tracking_motion_3d_enable) {
-        dir.z() = 0.0;
-    }
-    const double speed_threshold =
-            cfg_.tracking_motion_3d_enable
-                ? std::max(0.0, cfg_.tracking_vertical_motion_threshold)
-                : std::max(0.0, cfg_.tracking_no_motion_target_speed_threshold);
+    constexpr double speed_threshold = 0.1;
     if (dir.norm() > speed_threshold) {
         return dir.normalized();
     }
 
     if (prediction.size() >= 2) {
         dir = prediction.back().position - prediction.front().position;
-        if (!cfg_.tracking_motion_3d_enable) {
-            dir.z() = 0.0;
-        }
         if (dir.norm() > 1.0e-4) {
             return dir.normalized();
         }
@@ -106,6 +92,10 @@ bool TrackingRuntimeManager::trajectorySafe(const geometry_utils::Trajectory &tr
         }
         return false;
     }
+    if (map_manager_ && !map_manager_->ready()) {
+        if (reason) *reason = "map not ready";
+        return false;
+    }
     if (horizon <= 1.0e-6) {
         return true;
     }
@@ -134,46 +124,15 @@ bool TrackingRuntimeManager::trajectorySafe(const geometry_utils::Trajectory &tr
         }
 
         if (map_manager_ != nullptr && map_manager_->ready()) {
-            if (!map_manager_->insideLocalMap(pos)) {
+            if (trackingInflatedOccupied(map_manager_, pos, cfg_.tracking_unknown_as_occupied)) {
                 if (reason) {
-                    *reason = "outside local map";
+                    *reason = "occupied inflated cell";
                 }
                 return false;
             }
 
-            const auto grid_type = map_manager_->getInfGridType(pos);
-            if (grid_type == rog_map::GridType::OCCUPIED ||
-                grid_type == rog_map::GridType::OUT_OF_MAP) {
-                if (reason) {
-                    *reason = "occupied or out-of-map";
-                }
-                return false;
-            }
-
-            if (cfg_.tracking_unknown_as_occupied &&
-                (grid_type == rog_map::GridType::UNKNOWN ||
-                 grid_type == rog_map::GridType::UNDEFINED ||
-                 grid_type == rog_map::GridType::FRONTIER)) {
-                if (reason) {
-                    *reason = "unknown treated as occupied";
-                }
-                return false;
-            }
-
-            if (map_manager_->hasESDF()) {
-                double dist = 0.0;
-                general_utils::Vec3f grad = general_utils::Vec3f::Zero();
-                if (map_manager_->evaluateESDF(pos, dist, grad) &&
-                    dist < effectiveTrackingHardSafeDistance(cfg_)) {
-                    if (reason) {
-                        *reason = "inside tracking hard safe distance";
-                    }
-                    return false;
-                }
-            }
-
-            if ((pos - last).norm() > 1.0e-4 &&
-                !map_manager_->isLineFree(last, pos, true, cfg_.tracking_unknown_as_occupied)) {
+            if (!trackingSeedLineFree(map_manager_, last, pos,
+                                      cfg_.tracking_unknown_as_occupied)) {
                 if (reason) {
                     *reason = "segment not line-free";
                 }
@@ -238,13 +197,13 @@ TrackingRuntimeManager::MotionMetrics TrackingRuntimeManager::computeMotionMetri
         target_span_z = std::abs(target_dp.z());
     }
     metrics.target_vertical_moving =
-            metrics.target_speed_z > cfg_.tracking_vertical_motion_threshold ||
-            target_span_z > cfg_.tracking_no_motion_min_displacement_z;
+            metrics.target_speed_z > 0.1 ||
+            target_span_z > 0.04;
     metrics.target_moving =
-            metrics.target_speed_xy > cfg_.tracking_no_motion_target_speed_threshold ||
+            metrics.target_speed_xy > 0.2 ||
             metrics.target_vertical_moving ||
-            target_span_3d > std::max(cfg_.tracking_no_motion_min_displacement,
-                                      cfg_.tracking_no_motion_min_displacement_z);
+            target_span_3d > std::max(0.04,
+                                      0.04);
 
     const general_utils::Vec3f target_dir = targetDirection(target_prediction);
     general_utils::Vec3f dp = general_utils::Vec3f::Zero();
@@ -349,223 +308,43 @@ TrackingRuntimeManager::Activity TrackingRuntimeManager::evaluateActivity(
         return out;
     }
 
-    if (out.target_moving && execution_start_ >= 0.0 &&
-        observation_time_ > execution_start_ + cfg_.tracking_keep_old_startup_grace &&
-        !execution_progress_observed_) {
-        out.reason = "EXECUTION_STALLED: no measured route progress after startup grace";
+    const double keep_old_error =
+            std::max(1.5, 2.0 * std::max(0.0, cfg_.tracking_distance_tolerance));
+    if (out.tracking_error > keep_old_error || out.avg_tracking_error > keep_old_error) {
+        out.reason = "tracking error exceeds keep-old observation ring";
         return out;
-    }
-    const auto approach = trackingApproachMotion(traj, target_prediction, cfg_, start_t,
-        0.0, eval_horizon, committed_guide_.empty() ? nullptr : &committed_guide_);
-    if (out.target_moving && approach.valid) {
-        out.active = out.safe;
-        out.reason = "safe route progress in trusted prediction window";
-        return out;
-    }
-    const bool startup_grace = execution_start_ >= 0.0 &&
-        observation_time_ <= execution_start_ + cfg_.tracking_keep_old_startup_grace;
-    if (out.target_moving && startup_grace &&
-        trackingCandidateHasMotion(traj, target_prediction, cfg_, start_t, 0.0)) {
-        out.active = out.safe;
-        out.reason = "bounded startup grace with predicted motion";
-        return out;
-    }
-
-    if (out.target_moving) {
-        const bool use_3d_motion =
-                cfg_.tracking_motion_3d_enable || out.target_vertical_moving;
-        const double active_speed =
-                use_3d_motion ? out.speed_3d : out.speed_xy;
-        const double active_displacement =
-                use_3d_motion ? out.displacement_3d : out.displacement_xy;
-        const double active_progress =
-                use_3d_motion ? out.progress_3d : out.progress_xy;
-        const double target_speed =
-                use_3d_motion ? out.target_speed_3d : out.target_speed_xy;
-        const double progress_ratio =
-                use_3d_motion ? cfg_.tracking_keep_old_min_progress_3d_ratio
-                              : cfg_.tracking_keep_old_min_progress_ratio;
-
-        if (active_speed < cfg_.tracking_keep_old_min_speed &&
-            !trackingCandidateHasMotion(traj, target_prediction, cfg_, start_t, 0.0)) {
-            out.reason = "speed too small";
-            return out;
-        }
-
-        if (active_displacement < cfg_.tracking_keep_old_min_displacement &&
-            (!out.target_vertical_moving ||
-             out.displacement_z < cfg_.tracking_no_motion_min_displacement_z)) {
-            out.reason = "displacement too small";
-            return out;
-        }
-
-        out.expected_progress =
-                target_speed *
-                eval_horizon *
-                progress_ratio;
-        if (active_progress < out.expected_progress) {
-            out.reason = "insufficient target-direction progress";
-            return out;
-        }
-
-        const double max_err =
-                cfg_.tracking_keep_old_max_tracking_error_scale *
-                std::max(0.1, cfg_.tracking_distance_tolerance);
-        if (out.avg_tracking_error > max_err) {
-            out.reason = "tracking error too large";
-            return out;
-        }
     }
 
     out.active = out.safe;
-    out.reason = out.active ? "safe and active" : "unsafe trajectory";
+    out.reason = out.active ? "safe command with remaining execution time" : "unsafe trajectory";
     return out;
-}
-
-bool TrackingRuntimeManager::candidateCommandable(
-        const geometry_utils::Trajectory &candidate,
-        const traj_opt::DynamicTargetStates &target_prediction,
-        const double candidate_eval_start_t,
-        const double target_eval_start_t,
-        std::string *reason) const
-{
-    if (!cfg_.tracking_no_motion_guard_enable) {
-        return true;
-    }
-    if (candidate.empty() || target_prediction.empty()) {
-        if (reason) {
-            *reason = "empty candidate or target prediction";
-        }
-        return false;
-    }
-
-    const bool commandable = trackingCandidateHasMotion(
-        candidate, target_prediction, cfg_, candidate_eval_start_t, target_eval_start_t);
-    if (!commandable && reason) *reason = "candidate no-motion in trusted prediction window";
-    return commandable;
-}
-
-TrackingRuntimeManager::Decision TrackingRuntimeManager::decide(
-        const geometry_utils::Trajectory *old_committed,
-        const double old_local_t,
-        const geometry_utils::Trajectory &candidate,
-        const traj_opt::DynamicTargetStates &target_prediction,
-        const bool candidate_safe,
-        const bool anti_rollback_pass,
-        const double candidate_eval_start_t,
-        const double target_eval_start_t)
-{
-    Decision decision;
-    decision.candidate_safe = candidate_safe;
-    decision.candidate_commandable =
-            candidateCommandable(candidate,
-                                 target_prediction,
-                                 candidate_eval_start_t,
-                                 target_eval_start_t,
-                                 &decision.reason);
-
-    if (old_committed == nullptr) {
-        if (candidate_safe && decision.candidate_commandable) {
-            decision.type = DecisionType::COMMIT_CANDIDATE;
-            decision.status = Status::CANDIDATE_ACCEPTED;
-            decision.reason = "commandable candidate without old tracking trajectory";
-            return decision;
-        }
-        decision.type = DecisionType::REJECT_AND_FAIL;
-        decision.status = Status::LOST;
-        if (decision.reason.empty()) {
-            decision.reason = "candidate unsafe and no old tracking trajectory";
-        }
-        return decision;
-    }
-
-    decision.old_activity =
-            evaluateActivity(*old_committed,
-                             old_local_t,
-                             target_prediction,
-                             cfg_.tracking_keep_old_horizon,
-                             cfg_.tracking_keep_old_safety_dt);
-
-    if (!candidate_safe) {
-        if (decision.old_activity.active) {
-            decision.type = DecisionType::KEEP_OLD;
-            decision.status = Status::KEEP_OLD_ACTIVE;
-            decision.reason = "candidate unsafe";
-            return decision;
-        }
-        decision.type = DecisionType::REJECT_AND_FAIL;
-        decision.status = Status::LOST;
-        decision.reason = "candidate unsafe and old inactive";
-        return decision;
-    }
-
-    if (!decision.candidate_commandable) {
-        if (decision.old_activity.active) {
-            decision.type = DecisionType::KEEP_OLD;
-            decision.status = Status::CANDIDATE_REJECTED_NO_MOTION;
-            if (decision.reason.empty()) {
-                decision.reason = "candidate no-motion";
-            }
-            return decision;
-        }
-        decision.type = DecisionType::REJECT_AND_FAIL;
-        decision.status = Status::CANDIDATE_REJECTED_NO_MOTION;
-        if (decision.reason.empty()) {
-            decision.reason = "candidate no-motion and old inactive";
-        }
-        return decision;
-    }
-
-    if (!decision.old_activity.active) {
-        decision.type = DecisionType::FORCE_COMMIT_CANDIDATE;
-        decision.status = Status::FORCE_COMMIT_SAFE_CANDIDATE;
-        decision.bypass_anti_rollback = true;
-        decision.reason = "old tracking trajectory inactive";
-        return decision;
-    }
-
-    if (consecutive_keep_old_ >= cfg_.tracking_max_consecutive_keep_old) {
-        decision.type = DecisionType::FORCE_COMMIT_CANDIDATE;
-        decision.status = Status::FORCE_COMMIT_SAFE_CANDIDATE;
-        decision.bypass_anti_rollback = true;
-        decision.reason = "consecutive keep-old limit reached";
-        return decision;
-    }
-
-    if (!anti_rollback_pass) {
-        decision.type = DecisionType::KEEP_OLD;
-        decision.status = Status::CANDIDATE_REJECTED_ANTI_ROLLBACK;
-        decision.reason = "candidate rejected by anti-rollback";
-        return decision;
-    }
-
-    decision.type = DecisionType::COMMIT_CANDIDATE;
-    decision.status = Status::CANDIDATE_ACCEPTED;
-    decision.reason = "candidate accepted";
-    return decision;
 }
 
 void TrackingRuntimeManager::onHold()
 {
+    has_recovery_command_ = true;
+    outcome_ = architecture::TrackingPlanOutcome::COMMITTED_RECOVERY;
     has_committed_tracking_ = false;
     consecutive_keep_old_ = 0;
     ++consecutive_reject_;
     status_ = Status::ACQUIRE;
 }
 
+void TrackingRuntimeManager::onRecoveryKept()
+{
+    ++consecutive_reject_;
+    outcome_ = architecture::TrackingPlanOutcome::KEPT_RECOVERY;
+}
+
 void TrackingRuntimeManager::observeExecution(double now, const general_utils::Vec3f &position)
 {
-    // A gap between tracking sessions can start a new acquisition; normal
-    // prediction updates and recovery HOLDs continue to observe every cycle.
-    if (observation_time_ >= 0.0 && (now < observation_time_ ||
-        now - observation_time_ > std::max(2.0, 4.0 * cfg_.tracking_keep_old_startup_grace))) reset();
     observation_time_ = now;
     if (execution_start_ < 0.0 || now < execution_start_ || !position.allFinite()) return;
     const auto displacement = (position - execution_origin_).eval();
     const double progress = execution_direction_.squaredNorm() > 0.5
         ? displacement.dot(execution_direction_) : displacement.norm();
     execution_progress_observed_ = execution_progress_observed_ ||
-        progress >= std::max(0.01, 0.5 * cfg_.tracking_no_motion_min_displacement);
+        progress >= std::max(0.01, 0.5 * 0.04);
 }
 
 void TrackingRuntimeManager::onCommitted(double execution_start,
@@ -591,16 +370,20 @@ void TrackingRuntimeManager::onCommitted(double execution_start,
     consecutive_reject_ = 0;
     status_ = Status::ACTIVE_COMMITTED;
     has_committed_tracking_ = true;
+    has_recovery_command_ = false;
+    outcome_ = architecture::TrackingPlanOutcome::COMMITTED;
 }
 
 void TrackingRuntimeManager::onKeepOld()
 {
+    outcome_ = architecture::TrackingPlanOutcome::KEPT_TRACKING;
     ++consecutive_keep_old_;
     status_ = Status::KEEP_OLD_ACTIVE;
 }
 
 void TrackingRuntimeManager::onRejected()
 {
+    outcome_ = architecture::TrackingPlanOutcome::UNAVAILABLE;
     ++consecutive_reject_;
     status_ = Status::LOST;
 }

@@ -1,0 +1,22 @@
+# Indoor coverage frontier granularity. Loaded on every planner_runtime boot
+# under the indoor_frontier/ prefix so it does not overwrite the house
+# FrontierManager/ViewpointManager keys.  GlobalMapRuntime still owns one
+# shared ROG + topology for every mode.
+#
+# MODE exploration (coverage) applies these numbers at runtime and reclusters
+# when the source binary is used. The installed Unity release overlay also
+# writes the same numbers onto the live FrontierManager keys because that
+# binary does not hot-switch.
+
+indoor_frontier/update_length: 22.0
+indoor_frontier/cluster_min_size: 2.0
+indoor_frontier/cluster_min_radius: 1.2
+indoor_frontier/cluster_minmum_point_num: 6
+indoor_frontier/cluster_match_radius: 1.8
+indoor_frontier/sample_pillar_min_height: -0.6
+indoor_frontier/sample_pillar_max_height: 2.4
+indoor_frontier/sample_pillar_height_layer_num: 5
+indoor_frontier/sample_pillar_min_radius: 0.8
+indoor_frontier/sample_pillar_max_radius: 3.5
+indoor_frontier/consider_range: 16
+indoor_frontier/view_score_hard_gate_min_known_free_ratio: 0.80

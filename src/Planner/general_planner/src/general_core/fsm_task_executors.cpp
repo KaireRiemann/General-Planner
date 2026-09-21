@@ -127,7 +127,7 @@ public:
     }
 
     bool replanAllowed(const Fsm &fsm) const override {
-        return fsm.trackingExecutionState();
+        return fsm.trackingExecutionState() && !fsm.tracking_lost_braking_;
     }
 
     PlanResult plan(Fsm &fsm, const PlanRequest &request) override {

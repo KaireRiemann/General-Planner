@@ -70,14 +70,13 @@ int main(int argc, char **argv) {
         check(near(planner.tracking_traj_cfg.max_vel, 5.0), "tracking inherited navigation limit");
         check(near(planner.tracking_traj_cfg.penna_t, 123.0), "tracking inherited navigation weight");
         check(near(planner.tracking_yaw_rate_limit, 1.2), "tracking yaw clamped by navigation");
-        check(near(planner.tracking_planning_horizon, 8.0), "tracking frontend inherited navigation horizon");
         check(near(planner.tracking_nominal_horizon, 2.5) &&
-              near(planner.tracking_max_extrapolation, 1.5) &&
+              near(planner.tracking_sample_dt, .2) &&
               near(planner.tracking_solver_budget, .04), "elastic tracking budget ignored profile");
         check(near(state.tracking_prediction_horizon, 2.0), "tracking prediction inherited navigation");
         check(near(state.tracking_task_timeout, 1.3), "tracking timeout inherited navigation");
         check(near(state.task_timeout, 9.0), "non-tracking timeout changed");
-        check(state.tracking_use_snap, "tracking backend selection ignored profile");
+        check(!state.tracking_use_snap && !planner.tracking_use_snap, "legacy snap flag must not select a removed backend");
         check(near(state.replanRate(), 3.0), "state2state frequency changed");
         state.task_mode = fsm::TaskMode::TRACKING;
         check(near(state.replanRate(), 7.0), "tracking frequency not selected");

@@ -581,6 +581,7 @@ target_link_libraries(gate_snapshot_replay general_planner_core ${THIRD_PARTY})
 
 if(CATKIN_ENABLE_TESTING)
   add_executable(tracking_brake_self_test tests/tracking_brake_self_test.cpp)
+  target_link_libraries(tracking_brake_self_test general_planner_core ${THIRD_PARTY})
   add_test(NAME tracking_brake_self_test COMMAND tracking_brake_self_test)
 endif()
 
@@ -588,6 +589,9 @@ add_executable(tracking_dynamics_cost_self_test tests/tracking_dynamics_cost_sel
 add_dependencies(tracking_dynamics_cost_self_test ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
 target_include_directories(tracking_dynamics_cost_self_test PRIVATE include)
 target_link_libraries(tracking_dynamics_cost_self_test general_planner_core ${THIRD_PARTY})
+if(CATKIN_ENABLE_TESTING)
+  add_test(NAME tracking_dynamics_cost_self_test COMMAND tracking_dynamics_cost_self_test)
+endif()
 
 # Real LIO/Region ownership regression across the former fixed workspace.
 add_executable(target_sparse_domain_self_test tests/target_sparse_domain_self_test.cpp)
@@ -617,6 +621,13 @@ if(CATKIN_ENABLE_TESTING)
   add_test(NAME tracking_config_self_test COMMAND tracking_config_self_test
       ${CMAKE_CURRENT_SOURCE_DIR}/config/task_planner_runtime_state2state.yaml
       ${CMAKE_CURRENT_SOURCE_DIR}/config/task_planner_runtime_tracking.yaml)
+endif()
+
+add_executable(tracking_exclusion_self_test tests/tracking_exclusion_self_test.cpp)
+add_dependencies(tracking_exclusion_self_test ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
+target_link_libraries(tracking_exclusion_self_test general_planner_core ${THIRD_PARTY})
+if(CATKIN_ENABLE_TESTING)
+  add_test(NAME tracking_exclusion_self_test COMMAND tracking_exclusion_self_test)
 endif()
 
 add_executable(tracking_elastic_self_test tests/tracking_elastic_self_test.cpp)

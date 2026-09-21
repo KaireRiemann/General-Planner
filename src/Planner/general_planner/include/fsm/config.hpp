@@ -160,17 +160,20 @@ namespace fsm {
         string task_mode_topic{"/planning/task_mode"};
         string tracking_target_odom_topic{"/tracking/target_odom"};
         string tracking_target_prediction_topic{"/tracking/target_prediction"};
-        bool tracking_use_target_prediction_path{true};
+        bool tracking_use_target_prediction_path{false};
         string perching_surface_odom_topic{"/perching/surface_odom"};
         double dynamic_takeoff_start_delay{0.0};
         bool tracking_perching_enable{false};
-        double tracking_prediction_horizon{4.0};
-        double tracking_prediction_dt{0.25};
+        double tracking_prediction_horizon{3.0};
+        double tracking_prediction_dt{0.2};
         bool tracking_prediction_use_kinodynamic{true};
         double tracking_prediction_accel{3.0};
         double tracking_prediction_vmax{4.0};
         double tracking_prediction_rho_accel{1.0};
-        double tracking_prediction_max_time{0.03};
+        double tracking_prediction_max_time{0.1};
+        double tracking_height_offset{1.0};
+        double tracking_target_exclusion_xy_radius{0.8};
+        double tracking_target_exclusion_z_radius{0.8};
         double tracking_static_position_epsilon{0.05};
         double tracking_static_velocity_epsilon{0.05};
         double tracking_static_yaw_epsilon{0.05};
@@ -243,7 +246,7 @@ namespace fsm {
             tracking_config_path = general_planner::config_utils::resolveTrackingConfig(cfg_path, tracking_override);
             yaml_loader::YamlLoader tracking_loader(
                 tracking_config_path.empty() ? cfg_path : tracking_config_path);
-            tracking_loader.LoadParam("general_planner/tracking/use_snap", tracking_use_snap, false);
+            tracking_use_snap = false; // Elastic-Tracker uses minimum jerk.
             vector<double> tem_gain;
             loader.LoadParam("fsm/timer_en", timer_en, false);
             loader.LoadParam("fsm/auto_start", auto_start, false);
@@ -301,12 +304,12 @@ namespace fsm {
                     backend_type = general_planner::architecture::BackendType::CORRIDOR;
                 }
             } else if (task_type == general_planner::architecture::TaskType::TRACKING) {
-                backend_type = tracking_use_snap
-                                   ? general_planner::architecture::BackendType::SNAP_TRACKING
-                                   : general_planner::architecture::BackendType::JERK_TRACKING;
+                backend_type = general_planner::architecture::BackendType::JERK_TRACKING;
             } else {
                 backend_type = general_planner::architecture::defaultBackendForTask(task_type);
             }
+            if (task_type == general_planner::architecture::TaskType::TRACKING)
+                backend_type = general_planner::architecture::BackendType::JERK_TRACKING;
             planning_backend_str = general_planner::architecture::toString(backend_type);
             loader.LoadParam("fsm/task_planner_en", task_planner_en, false);
             loader.LoadParam("fsm/task_mode_topic", task_mode_topic, string("/planning/task_mode"));
@@ -314,18 +317,23 @@ namespace fsm {
                              string("/tracking/target_odom"));
             tracking_loader.LoadParam("fsm/tracking_target_prediction_topic", tracking_target_prediction_topic,
                              string("/tracking/target_prediction"));
-            tracking_loader.LoadParam("fsm/tracking_use_target_prediction_path", tracking_use_target_prediction_path, true);
+            tracking_loader.LoadParam("fsm/tracking_use_target_prediction_path", tracking_use_target_prediction_path, false);
             loader.LoadParam("fsm/perching_surface_odom_topic", perching_surface_odom_topic,
                              string("/perching/surface_odom"));
             loader.LoadParam("fsm/dynamic_takeoff_start_delay", dynamic_takeoff_start_delay, 0.0);
             loader.LoadParam("general_planner/tracking_perching/enable", tracking_perching_enable, false);
-            tracking_loader.LoadParam("fsm/tracking_prediction_horizon", tracking_prediction_horizon, 4.0);
-            tracking_loader.LoadParam("fsm/tracking_prediction_dt", tracking_prediction_dt, 0.25);
+            tracking_loader.LoadParam("fsm/tracking_prediction_horizon", tracking_prediction_horizon, 3.0);
+            tracking_loader.LoadParam("fsm/tracking_prediction_dt", tracking_prediction_dt, 0.2);
             tracking_loader.LoadParam("fsm/tracking_prediction_use_kinodynamic", tracking_prediction_use_kinodynamic, true);
             tracking_loader.LoadParam("fsm/tracking_prediction_accel", tracking_prediction_accel, 3.0);
             tracking_loader.LoadParam("fsm/tracking_prediction_vmax", tracking_prediction_vmax, 4.0);
             tracking_loader.LoadParam("fsm/tracking_prediction_rho_accel", tracking_prediction_rho_accel, 1.0);
-            tracking_loader.LoadParam("fsm/tracking_prediction_max_time", tracking_prediction_max_time, 0.03);
+            tracking_loader.LoadParam("fsm/tracking_prediction_max_time", tracking_prediction_max_time, 0.1);
+            tracking_loader.LoadParam("general_planner/tracking/height_offset", tracking_height_offset, 1.0);
+            tracking_loader.LoadParam("fsm/tracking_target_exclusion_xy_radius",
+                             tracking_target_exclusion_xy_radius, 0.8);
+            tracking_loader.LoadParam("fsm/tracking_target_exclusion_z_radius",
+                             tracking_target_exclusion_z_radius, 0.8);
             tracking_loader.LoadParam("fsm/tracking_static_position_epsilon", tracking_static_position_epsilon, 0.05);
             tracking_loader.LoadParam("fsm/tracking_static_velocity_epsilon", tracking_static_velocity_epsilon, 0.05);
             tracking_loader.LoadParam("fsm/tracking_static_yaw_epsilon", tracking_static_yaw_epsilon, 0.05);

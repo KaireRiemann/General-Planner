@@ -2,37 +2,48 @@
   <arg name="namespace" default="tracking_detector" />
   <arg name="rgb_topic" default="/camera0/color/image/compressed" />
   <arg name="rgb_compressed" default="true" />
-  <!-- Must share the camera acquisition clock, not a restamped command odometry. -->
+  <!-- YOLO / camera pose share the camera acquisition clock. -->
   <arg name="odom_topic" default="/unity_odom" />
+  <!-- LiDAR clustering pose must share /cloud_registered (ROS time). -->
+  <arg name="lidar_odom_topic" default="/lidar_slam/odom" />
   <arg name="bbox_topic" default="/tracking/bboxes" />
   <arg name="visualization_topic" default="/tracking/detections/image" />
-  <arg name="target_odom_topic" default="/target_ekf_node/target_odom" />
+  <arg name="target_odom_topic" default="/tracking/target_odom" />
   <arg name="raw_target_odom_topic" default="/target_ekf_node/yolo_odom" />
   <arg name="prediction_topic" default="/tracking/target_prediction" />
   <arg name="camera_config" default="$(find tracking_detector)/config/camera.yaml" />
   <arg name="estimator_config" default="$(find tracking_detector)/config/estimator.yaml" />
+  <arg name="tracker_config" default="$(find person_tracker)/config/unity_car.yaml" />
   <arg name="yoloe_root" default="$(find tracking_detector)/vendor/yoloe" />
   <arg name="model_path" default="$(arg yoloe_root)/prompt/yoloe_pretrain/yoloe-11m-seg.pt" />
   <arg name="prompt_path" default="$(find tracking_detector)/config/prompts.txt" />
   <arg name="device" default="cpu" />
   <arg name="confidence" default="0.6" />
+  <arg name="tracking_confidence" default="0.4" />
   <arg name="target_label" default="car" />
   <arg name="publish_visualization" default="true" />
   <arg name="start_detector" default="true" />
-  <arg name="start_predictor" default="true" />
-  <arg name="prediction_horizon" default="1.5" />
-  <arg name="minimum_prediction_horizon" default="0.75" />
+  <arg name="start_person_tracker" default="true" />
+  <arg name="start_ekf" default="false" />
+  <arg name="start_predictor" default="false" />
+  <arg name="prediction_horizon" default="3.0" />
+  <arg name="minimum_prediction_horizon" default="1.0" />
+  <arg name="enable_turn_prediction" default="true" />
   <arg name="camera_info_topic" default="/camera0/color/info" />
   <arg name="depth_topic" default="/camera0/depth/image/compressed" />
-  <!-- Ground-plane ranging for the level Unity road; registered metric depth is opt-in. -->
-  <arg name="range_method" default="ground_plane" />
+  <arg name="range_method" default="auto" />
   <arg name="depth_registered" default="false" />
   <arg name="ground_z" default="0.0" />
   <arg name="target_center_height" default="0.7" />
   <arg name="valid_topic" default="/tracking/target_valid" />
   <arg name="status_topic" default="/tracking/status" />
   <arg name="observation_age_topic" default="/tracking/observation_age" />
-  <arg name="prediction_dt" default="0.25" />
+  <arg name="prediction_dt" default="0.2" />
+  <arg name="start_lidar_cluster" default="false" />
+  <arg name="start_cloud_filter" default="true" />
+  <arg name="cloud_in_topic" default="/cloud_registered" />
+  <arg name="cloud_out_topic" default="/mapping/cloud_without_target" />
+  <arg name="dynamic_points_topic" default="/tracking/dynamic_points" />
   <group ns="$(arg namespace)">
     <node if="$(arg start_detector)" pkg="tracking_detector" type="yoloe_bbox_node.py" name="yoloe" output="screen" clear_params="true" required="true">
       <param name="rgb_topic" value="$(arg rgb_topic)" />
@@ -45,16 +56,43 @@
       <param name="prompt_path" value="$(arg prompt_path)" />
       <param name="device" value="$(arg device)" />
       <param name="confidence" value="$(arg confidence)" />
+      <param name="tracking_confidence" value="$(arg tracking_confidence)" />
+      <param name="target_label" value="$(arg target_label)" />
       <param name="publish_visualization" value="$(arg publish_visualization)" />
       <param name="tracking_status_topic" value="$(arg status_topic)" />
       <param name="output_width" value="640" />
       <param name="output_height" value="480" />
     </node>
-    <node pkg="tracking_detector" type="target_state_estimator.py" name="target_ekf" output="screen" clear_params="true" required="true">
+    <node if="$(arg start_person_tracker)" pkg="person_tracker" type="person_tracker_node"
+          name="person_tracker" output="screen" clear_params="true" required="true">
+      <rosparam command="load" file="$(find person_tracker)/config/tracking.yaml" />
+      <rosparam command="load" file="$(arg tracker_config)" />
+      <rosparam command="load" file="$(arg camera_config)" />
+      <param name="fusion/policy" value="lidar_evidence" />
+      <param name="prediction/backend" value="imm" />
+      <param name="prediction/path_horizon" value="1.0" />
+      <param name="prediction/path_step" value="0.25" />
+      <param name="input_cloud_topic" value="$(arg cloud_in_topic)" />
+      <param name="odom_topic" value="$(arg lidar_odom_topic)" />
+      <param name="yolo/camera_odom_topic" value="$(arg odom_topic)" />
+      <param name="yolo/topic" value="$(arg bbox_topic)" />
+      <param name="yolo/enabled" value="true" />
+      <param name="target_label" value="$(arg target_label)" />
+      <param name="world_frame" value="world" />
+      <remap from="~target_odom" to="$(arg target_odom_topic)" />
+      <remap from="~target_prediction" to="$(arg prediction_topic)" />
+      <remap from="~target_valid" to="$(arg valid_topic)" />
+      <remap from="~observation_age" to="$(arg observation_age_topic)" />
+      <remap from="~dynamic_points" to="$(arg dynamic_points_topic)" />
+    </node>
+    <node if="$(arg start_ekf)"
+          pkg="tracking_detector" type="target_state_estimator.py" name="target_ekf"
+          output="screen" clear_params="true" required="true">
       <rosparam command="load" file="$(arg camera_config)" />
       <rosparam command="load" file="$(arg estimator_config)" />
       <param name="target_label" value="$(arg target_label)" />
       <param name="range_method" value="$(arg range_method)" />
+      <param name="acquisition_confidence" value="$(arg confidence)" />
       <param name="depth_registered" value="$(arg depth_registered)" />
       <param name="depth_compressed" value="$(eval arg('depth_topic').endswith('/compressed') or arg('depth_topic').endswith('/compressedDepth'))" />
       <param name="ground_z" value="$(arg ground_z)" />
@@ -69,18 +107,45 @@
       <remap from="~target_odom" to="$(arg target_odom_topic)" />
       <remap from="~yolo_odom" to="$(arg raw_target_odom_topic)" />
     </node>
-    <node if="$(arg start_predictor)" pkg="tracking_detector" type="target_path_predictor_node" name="predictor" output="screen" clear_params="true" required="true">
+    <node if="$(arg start_predictor)"
+          pkg="tracking_detector" type="target_path_predictor_node" name="predictor"
+          output="screen" clear_params="true" required="true">
       <param name="prediction_horizon" value="$(arg prediction_horizon)" />
       <param name="minimum_prediction_horizon" value="$(arg minimum_prediction_horizon)" />
       <param name="prediction_dt" value="$(arg prediction_dt)" />
       <param name="publish_rate" value="20.0" />
       <param name="input_timeout" value="0.25" />
       <param name="require_target_valid" value="true" />
-      <param name="enable_turn_prediction" value="false" />
+      <param name="enable_turn_prediction" value="$(arg enable_turn_prediction)" />
+      <param name="input_is_cv_extrapolated" value="true" />
       <remap from="~target_valid" to="$(arg valid_topic)" />
       <remap from="~observation_age" to="$(arg observation_age_topic)" />
       <remap from="~target_odom" to="$(arg target_odom_topic)" />
       <remap from="~prediction" to="$(arg prediction_topic)" />
+    </node>
+    <node if="$(arg start_lidar_cluster)"
+          pkg="tracking_detector" type="target_lidar_cluster"
+          name="target_lidar_cluster" output="screen" clear_params="true">
+      <rosparam command="load" file="$(arg camera_config)" />
+      <param name="target_label" value="$(arg target_label)" />
+      <param name="ground_z" value="$(arg ground_z)" />
+      <param name="bbox_width" value="640" />
+      <param name="bbox_height" value="480" />
+      <remap from="~cloud_in" to="$(arg cloud_in_topic)" />
+      <remap from="~yolo" to="$(arg bbox_topic)" />
+      <remap from="~odom" to="$(arg lidar_odom_topic)" />
+      <remap from="~camera_info" to="$(arg camera_info_topic)" />
+      <remap from="~target_odom" to="$(arg target_odom_topic)" />
+      <remap from="~cluster_out" to="$(arg dynamic_points_topic)" />
+    </node>
+    <node if="$(arg start_cloud_filter)" pkg="tracking_detector" type="target_cloud_filter"
+          name="target_cloud_filter" output="screen" clear_params="true">
+      <param name="frontend_voxel_resolution" value="0.10" />
+      <param name="cluster_wait_seconds" value="0.50" />
+      <param name="cluster_hold_seconds" value="1.00" />
+      <remap from="~cloud_in" to="$(arg cloud_in_topic)" />
+      <remap from="~target_cluster" to="$(arg dynamic_points_topic)" />
+      <remap from="~cloud_out" to="$(arg cloud_out_topic)" />
     </node>
   </group>
 </launch>

@@ -4,7 +4,7 @@
   <arg name="tracking_camera_info_topic" default="/camera0/color/info" />
   <arg name="tracking_rgb_compressed" default="true" />
   <arg name="tracking_depth_topic" default="/camera0/depth/image/compressed" />
-  <arg name="tracking_range_method" default="ground_plane" />
+  <arg name="tracking_range_method" default="auto" />
   <arg name="tracking_depth_registered" default="false" />
   <arg name="tracking_ground_z" default="0.0" />
   <arg name="tracking_target_center_height" default="0.7" />
@@ -78,10 +78,19 @@
        house profile.  A manual Marsim run overrides this with an empty path. -->
   <arg name="exploration_overlay_config"
        default="$(find general_planner)/config/exploration_unity_overlay.yaml" />
+  <!-- Coverage-only frontier granularity. Applied at MODE exploration; does
+       not replace the shared ROG or global topology. -->
+  <arg name="indoor_frontier_config"
+       default="$(find general_planner)/config/exploration_indoor_frontier.yaml" />
   <!-- Must keep rog_map/ros_callback/enable=false: GlobalMapRuntime is the
        only cloud/odom fusion owner. -->
   <arg name="rog_map_config"
        default="$(find general_planner)/config/exploration_rog_map.yaml" />
+  <!-- Tracking-dedicated occupancy map (Elastic-aligned thin inflation).
+       GlobalMapRuntime fuses it from the same cloud/odom stream; set empty
+       to let tracking share the world map. -->
+  <arg name="tracking_rog_map_config"
+       default="$(find general_planner)/config/tracking_rog_map.yaml" />
   <arg name="global_topology_config"
        default="$(find general_planner)/config/global_topology.yaml" />
 
@@ -95,6 +104,11 @@
   <arg name="tracking_target_prediction_topic" default="/tracking/target_prediction" />
   <arg name="odom_topic" default="/lidar_slam/odom" />
   <arg name="cloud_topic" default="/cloud_registered" />
+  <!-- Filter is always on: without a selected cluster the cloud is forwarded
+       unchanged, so exploration / state2state / gate keep the original map. -->
+  <arg name="map_cloud_topic" default="/mapping/cloud_without_target" />
+  <arg name="tracking_dynamic_points_topic" default="/tracking/dynamic_points" />
+  <arg name="filter_mapping_cloud" default="true" />
 
   <arg name="fsm_replan_time" default="0.25" />
   <arg name="fsm_replan_time_after_traj_start" default="0.35" />
@@ -142,6 +156,16 @@
            value="/planning/exploration/command_enabled" type="string" />
   </node>
 
+  <node if="$(arg filter_mapping_cloud)" pkg="tracking_detector" type="target_cloud_filter"
+        name="target_cloud_filter" output="screen" clear_params="true">
+    <param name="frontend_voxel_resolution" value="0.10" />
+    <param name="cluster_wait_seconds" value="0.50" />
+    <param name="cluster_hold_seconds" value="1.00" />
+    <remap from="~cloud_in" to="$(arg cloud_topic)" />
+    <remap from="~target_cluster" to="$(arg tracking_dynamic_points_topic)" />
+    <remap from="~cloud_out" to="$(arg map_cloud_topic)" />
+  </node>
+
   <node pkg="general_planner" type="planner_runtime_node" name="planner_runtime_node"
         output="screen" clear_params="true"
         launch-prefix="$(arg planner_runtime_launch_prefix)">
@@ -151,6 +175,8 @@
     <rosparam file="$(arg target_exploration_config)" command="load" />
     <rosparam if="$(eval arg('exploration_overlay_config') != '')"
               file="$(arg exploration_overlay_config)" command="load" />
+    <rosparam if="$(eval arg('indoor_frontier_config') != '')"
+              file="$(arg indoor_frontier_config)" command="load" />
     <rosparam file="$(arg global_topology_config)" command="load" />
 
     <param name="initial_mode" value="$(arg initial_mode)" type="string" />
@@ -174,12 +200,13 @@
          be another uncontrolled writer on /planning/pos_cmd. -->
     <param name="gate_status_topic" value="$(arg gate_status_topic)" type="string" />
     <param name="global_map_config" value="$(arg rog_map_config)" type="string" />
+    <param name="tracking_map_config" value="$(arg tracking_rog_map_config)" type="string" />
     <param name="tracking_target_odom_topic" value="$(arg tracking_target_odom_topic)" />
     <param name="tracking_target_prediction_topic" value="$(arg tracking_target_prediction_topic)" />
     <param name="navigation_config" value="$(arg navigation_config)" type="string" />
     <param name="tracking_config" value="$(arg tracking_config)" type="string" />
     <param name="odometry_topic" value="$(arg odom_topic)" type="string" />
-    <param name="cloud_topic" value="$(arg cloud_topic)" type="string" />
+    <param name="cloud_topic" value="$(eval arg('map_cloud_topic') if arg('filter_mapping_cloud') else arg('cloud_topic'))" type="string" />
     <param name="RogMapEnable" value="$(arg rog_map_enable)" type="bool" />
     <param name="RogMapConfigPath" value="$(arg rog_map_config)" type="string" />
     <param name="navigation_cmd_topic" value="/planning/navigation/pos_cmd" type="string" />
@@ -291,6 +318,7 @@
     <param name="launch_file" value="$(find tracking_detector)/launch/tracking_detector.launch" />
     <param name="launch_args/rgb_topic" value="$(arg tracking_image_topic)" type="str" />
     <param name="launch_args/odom_topic" value="$(arg tracking_odom_topic)" type="str" />
+    <param name="launch_args/lidar_odom_topic" value="$(arg odom_topic)" type="str" />
     <param name="launch_args/device" value="$(arg tracking_device)" type="str" />
     <param name="launch_args/target_label" value="$(arg tracking_target_label)" type="str" />
     <param name="launch_args/confidence" value="$(arg tracking_confidence)" type="str" />
@@ -298,6 +326,13 @@
     <param name="launch_args/estimator_config" value="$(arg tracking_estimator_config)" type="str" />
     <param name="launch_args/target_odom_topic" value="$(arg tracking_target_odom_topic)" type="str" />
     <param name="launch_args/prediction_topic" value="$(arg tracking_target_prediction_topic)" type="str" />
+    <param name="launch_args/start_cloud_filter" value="false" type="str" />
+    <param name="launch_args/start_person_tracker" value="true" type="str" />
+    <param name="launch_args/start_lidar_cluster" value="false" type="str" />
+    <param name="launch_args/start_predictor" value="false" type="str" />
+    <param name="launch_args/start_ekf" value="false" type="str" />
+    <param name="launch_args/cloud_in_topic" value="$(arg cloud_topic)" type="str" />
+    <param name="launch_args/dynamic_points_topic" value="$(arg tracking_dynamic_points_topic)" type="str" />
   </node>
 
 </launch>

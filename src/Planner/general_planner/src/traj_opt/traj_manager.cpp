@@ -6112,13 +6112,8 @@ TrajManager::TrajManager(const traj_opt::Config &exp_cfg,
   backup_traj_opt_ = std::make_shared<BackupTrajOpt>(backup_cfg, ros_ptr);
   yaw_traj_opt_ = std::make_shared<YawTrajOpt>(yaw_dot_max);
   tracking_jerk_traj_opt_ = std::make_shared<TrackingJerkTrajOpt>(tracking_cfg ? *tracking_cfg : esdf_cfg, ros_ptr);
-  tracking_snap_traj_opt_ = std::make_shared<TrackingSnapTrajOpt>(tracking_cfg ? *tracking_cfg : esdf_cfg, ros_ptr);
   perching_snap_traj_opt_ = std::make_shared<PerchingSnapTrajOpt>(esdf_cfg, ros_ptr);
-  tracking_jerk_traj_opt_->setMapManager(map_manager);
-  tracking_snap_traj_opt_->setMapManager(map_manager);
   perching_snap_traj_opt_->setMapManager(map_manager);
-  tracking_jerk_traj_opt_->setSafeDistance(esdf_safe_distance);
-  tracking_snap_traj_opt_->setSafeDistance(esdf_safe_distance);
   perching_snap_traj_opt_->setSafeDistance(esdf_safe_distance);
 }
 
@@ -6131,14 +6126,6 @@ void TrajManager::setMapManager(const general_planner::MapManager::Ptr &map_mana
   if (plain_traj_opt_)
   {
     plain_traj_opt_->setMapManager(map_manager);
-  }
-  if (tracking_jerk_traj_opt_)
-  {
-    tracking_jerk_traj_opt_->setMapManager(map_manager);
-  }
-  if (tracking_snap_traj_opt_)
-  {
-    tracking_snap_traj_opt_->setMapManager(map_manager);
   }
   if (perching_snap_traj_opt_)
   {
@@ -6155,14 +6142,6 @@ void TrajManager::setESDFSafeDistance(double safe_distance)
   if (plain_traj_opt_)
   {
     plain_traj_opt_->setSafeDistance(safe_distance);
-  }
-  if (tracking_jerk_traj_opt_)
-  {
-    tracking_jerk_traj_opt_->setSafeDistance(safe_distance);
-  }
-  if (tracking_snap_traj_opt_)
-  {
-    tracking_snap_traj_opt_->setSafeDistance(safe_distance);
   }
   if (perching_snap_traj_opt_)
   {

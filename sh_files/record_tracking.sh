@@ -85,6 +85,7 @@ add_topic /tracking/ground_truth/status
 # Keep explicit subscriptions even if detectors have not started yet.
 # CameraInfo and original sensor-clock odometry are needed for ranging replay.
 add_topic "${RGB_INFO_TOPIC:-/camera0/color/info}"
+add_topic "${RGB_CAPTURE_POSE_TOPIC:-/camera0/capture_pose}"
 add_topic "${DEPTH_INFO_TOPIC:-/camera0/depth/info}"
 if [[ "${RECORD_IMAGES:-1}" == "1" ]]; then
   add_topic "${RGB_TOPIC:-/camera0/color/image/compressed}"

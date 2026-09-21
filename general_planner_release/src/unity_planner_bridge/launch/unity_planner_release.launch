@@ -16,7 +16,7 @@
   <arg name="tracking_camera_info_topic" default="/camera0/color/info" />
   <arg name="tracking_rgb_compressed" default="true" />
   <arg name="tracking_depth_topic" default="/camera0/depth/image/compressed" />
-  <arg name="tracking_range_method" default="ground_plane" />
+  <arg name="tracking_range_method" default="auto" />
   <arg name="tracking_depth_registered" default="false" />
   <arg name="tracking_ground_z" default="0.0" />
   <arg name="tracking_target_center_height" default="0.7" />
@@ -29,7 +29,7 @@
   <arg name="tracking_estimator_config" default="$(find general_planner_release)/../tracking_detector/config/estimator.yaml" />
   <arg name="tracking_ground_truth" default="false" />
   <arg name="tracking_ground_truth_topic" default="/unity/car_ground_truth/odom" />
-  <arg name="tracking_target_odom_topic" default="$(eval '/tracking/ground_truth/target_odom' if arg('tracking_ground_truth') else '/target_ekf_node/target_odom')" />
+  <arg name="tracking_target_odom_topic" default="$(eval '/tracking/ground_truth/target_odom' if arg('tracking_ground_truth') else '/tracking/target_odom')" />
   <arg name="tracking_target_prediction_topic" default="$(eval '/tracking/ground_truth/target_prediction' if arg('tracking_ground_truth') else '/tracking/target_prediction')" />
   <!-- Full Unity + deployed release-runtime stack.  This is intentionally a
        separate entry point: unity_planner_sim.launch remains the source-tree
@@ -40,9 +40,15 @@
   <arg name="traj_server" default="true" />
   <arg name="initial_mode" default="state2state" />
   <arg name="exploration_mission_mode" default="target" />
+  <!-- Indoor first coverage plan is slower than outdoor; 2 s grace HOLDs
+       before pos_cmd. Unity-only override, does not change occupancy. -->
+  <arg name="source_startup_grace_duration" default="8.0" />
   <arg name="enable_exploration" default="true" />
   <arg name="gate_status_topic" default="/planner/gate/status" />
   <arg name="tcp_port" default="10000" />
+  <!-- <arg name="init_x" default="34.0" />
+  <arg name="init_y" default="1.5" />
+  <arg name="init_z" default="1.5" /> -->
   <arg name="init_x" default="0.0" />
   <arg name="init_y" default="0.0" />
   <arg name="init_z" default="1.5" />
@@ -110,6 +116,8 @@
     <arg name="traj_server" value="$(arg traj_server)" />
     <arg name="initial_mode" value="$(arg initial_mode)" />
     <arg name="exploration_mission_mode" value="$(arg exploration_mission_mode)" />
+    <arg name="source_startup_grace_duration"
+         value="$(arg source_startup_grace_duration)" />
     <arg name="enable_exploration" value="$(arg enable_exploration)" />
     <arg name="gate_status_topic" value="$(arg gate_status_topic)" />
     <arg name="navigation_config" value="$(arg navigation_config)" />

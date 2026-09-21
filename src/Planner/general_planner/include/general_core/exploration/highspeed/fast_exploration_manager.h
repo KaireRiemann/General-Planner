@@ -302,6 +302,8 @@ private:
   bool coverage_floor_priority_enable_{false};
   double coverage_floor_priority_min_z_{3.8};
   int coverage_floor_transition_rank_window_{4};
+  double view_score_hard_gate_default_{1.0};
+  double view_score_hard_gate_indoor_{0.85};
   double coverage_executable_candidate_bonus_{3.0};
   NormalGoalProgress normal_goal_progress_;
   // Long-range target tasks query MapManager's immutable world topology here.
@@ -315,6 +317,7 @@ private:
   double frontier_progress_min_distance_drop_{0.75};
 
   double failedGoalPenalty(const TopoNode::Ptr &viewpoint) const;
+  void applyViewScoreHardGate(bool indoor);
   TargetDirectedExplorationConfig targetGuidanceConfig() const;
   TargetTopologyGuidanceConfig targetTopologyGuidanceConfig() const;
   const TargetTopologyGuide &updateTargetTopologyGuide(

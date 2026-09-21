@@ -43,6 +43,8 @@
 #include "std_msgs/Bool.h"
 #include "std_msgs/UInt64.h"
 #include "utils/geometry/quadrotor_flatness.hpp"
+#include <general_core/tracking/tracking_map_query.hpp>
+#include <general_core/tracking/tracking_prediction.hpp>
 
 #include <pcl_conversions/pcl_conversions.h>
 
@@ -89,6 +91,9 @@ namespace fsm {
         ros::Timer navigation_status_timer_;
         quadrotor_msgs::PositionCommand pid_cmd_;
         rog_map::ROGMapROS::Ptr map_ptr_;
+        // Tracking-dedicated occupancy map (Elastic-aligned thin inflation).
+        // Falls back to map_ptr_ when the runtime provides no separate map.
+        rog_map::ROGMapROS::Ptr tracking_map_ptr_;
         general_planner::TopologyGraphROS1::Ptr topology_graph_ros1_;
         quadrotor_msgs::PositionCommand latest_cmd;
         nav_msgs::Path path;
@@ -672,6 +677,7 @@ namespace fsm {
             topology_graph_ros1_.reset();
             planner_ptr_.reset();
             map_ptr_.reset();
+            tracking_map_ptr_.reset();
         };
 
         typedef std::shared_ptr<FsmRos1> Ptr;
@@ -944,159 +950,66 @@ namespace fsm {
                 v.norm() > cfg_.tracking_prediction_vmax) {
                 return false;
             }
-            if (map_ptr_ == nullptr) {
+            Vec3f query = p;
+            query.z() += cfg_.tracking_height_offset;
+            if (general_planner::trackingOccupancyExclusion().contains(p) ||
+                general_planner::trackingOccupancyExclusion().contains(query)) {
                 return true;
             }
-            if (!map_ptr_->insideLocalMap(p)) {
+            // Elastic predicts against its own local occupancy grid; GP uses
+            // the tracking-dedicated map so prediction clearance matches the
+            // corridor/safety queries exactly.
+            if (tracking_map_ptr_ == nullptr) {
                 return true;
             }
-            const auto inf_grid_type = map_ptr_->getInfGridType(p);
+            if (!tracking_map_ptr_->insideLocalMap(query)) {
+                return true;
+            }
+            const auto inf_grid_type = tracking_map_ptr_->getInfGridType(query);
             return inf_grid_type != general_utils::GridType::OCCUPIED &&
                    inf_grid_type != general_utils::GridType::OUT_OF_MAP;
+        }
+
+        general_planner::TrackingPredictionSettings trackingPredictionSettings() const {
+            general_planner::TrackingPredictionSettings settings;
+            settings.dt = cfg_.tracking_prediction_dt;
+            settings.horizon = cfg_.tracking_prediction_horizon;
+            settings.accel = cfg_.tracking_prediction_accel;
+            settings.vmax = cfg_.tracking_prediction_vmax;
+            settings.rho_accel = cfg_.tracking_prediction_rho_accel;
+            settings.max_time = cfg_.tracking_prediction_max_time;
+            return settings;
         }
 
         void buildConstantVelocityTrackingPrediction(const Vec3f &p,
                                                      const Vec3f &v,
                                                      const double pose_yaw,
                                                      traj_opt::DynamicTargetStates &prediction) const {
-            const Vec3f a = Vec3f::Zero();
-            const double base_yaw = v.head<2>().norm() > 1.0e-3 ? std::atan2(v.y(), v.x()) : pose_yaw;
-            const double dt = std::max(0.05, cfg_.tracking_prediction_dt);
-            const double horizon = std::max(dt, cfg_.tracking_prediction_horizon);
-            const int sample_num = std::max(2, static_cast<int>(std::ceil(horizon / dt)) + 1);
-
-            prediction.clear();
-            prediction.reserve(sample_num);
-            for (int i = 0; i < sample_num; ++i) {
-                const double t = static_cast<double>(i) * dt;
-                traj_opt::DynamicTargetState target;
-                target.t = t;
-                target.position = p + v * t + 0.5 * a * t * t;
-                target.velocity = v + a * t;
-                target.acceleration = a;
-                target.yaw = base_yaw;
-                target.yaw_rate = 0.0;
-                prediction.emplace_back(target);
-            }
+            general_planner::buildConstantVelocityTrackingPrediction(
+                p, v, pose_yaw, trackingPredictionSettings(), prediction);
         }
 
         bool buildKinodynamicTrackingPrediction(const Vec3f &p,
                                                 const Vec3f &v,
                                                 const double pose_yaw,
                                                 traj_opt::DynamicTargetStates &prediction) const {
-            const double dt = std::max(0.05, cfg_.tracking_prediction_dt);
-            const double horizon = std::max(dt, cfg_.tracking_prediction_horizon);
-            const double acc = std::max(0.0, cfg_.tracking_prediction_accel);
-            if (acc <= 1.0e-6) {
-                return false;
-            }
-
-            struct PredictNode {
-                Vec3f p{Vec3f::Zero()};
-                Vec3f v{Vec3f::Zero()};
-                Vec3f a{Vec3f::Zero()};
-                double t{0.0};
-                double score{0.0};
-                int parent{-1};
-            };
-
-            std::vector<PredictNode> nodes;
-            nodes.reserve(512);
-            nodes.push_back(PredictNode{p, v, Vec3f::Zero(), 0.0, 0.0, -1});
-
-            const Vec3f nominal_end = p + v * horizon;
-            auto heuristic = [&](const PredictNode &node) {
-                return 0.001 * (node.p - nominal_end).norm();
-            };
-            using QueueEntry = std::pair<double, int>;
-            std::priority_queue<QueueEntry, std::vector<QueueEntry>, std::greater<QueueEntry>> open_set;
-
-            int cur = 0;
-            const double dt2_2 = 0.5 * dt * dt;
-            const double max_wall_time = std::max(0.001, cfg_.tracking_prediction_max_time);
-            const ros::WallTime start_wall = ros::WallTime::now();
-            const int max_nodes = 1 << 16;
-            const std::array<double, 3> acc_samples{-acc, 0.0, acc};
-
-            while (nodes[static_cast<std::size_t>(cur)].t + 0.5 * dt < horizon) {
-                const PredictNode &cur_node = nodes[static_cast<std::size_t>(cur)];
-                for (const double ax : acc_samples) {
-                    for (const double ay : acc_samples) {
-                        Vec3f input(ax, ay, 0.0);
-                        const Vec3f next_p = cur_node.p + cur_node.v * dt + input * dt2_2;
-                        const Vec3f next_v = cur_node.v + input * dt;
-                        if (!trackingPredictionStateValid(next_p, next_v)) {
-                            continue;
-                        }
-                        if (static_cast<int>(nodes.size()) >= max_nodes) {
-                            return false;
-                        }
-                        if ((ros::WallTime::now() - start_wall).toSec() > max_wall_time) {
-                            return false;
-                        }
-                        PredictNode next;
-                        next.p = next_p;
-                        next.v = next_v;
-                        next.a = input;
-                        next.t = cur_node.t + dt;
-                        next.score = cur_node.score + cfg_.tracking_prediction_rho_accel * input.norm();
-                        next.parent = cur;
-                        nodes.emplace_back(next);
-                        const int next_id = static_cast<int>(nodes.size()) - 1;
-                        open_set.emplace(next.score + heuristic(next), next_id);
-                    }
-                }
-                if (open_set.empty()) {
-                    return false;
-                }
-                cur = open_set.top().second;
-                open_set.pop();
-            }
-
-            std::vector<int> ids;
-            for (int id = cur; id >= 0; id = nodes[static_cast<std::size_t>(id)].parent) {
-                ids.emplace_back(id);
-            }
-            std::reverse(ids.begin(), ids.end());
-            if (ids.size() < 2) {
-                return false;
-            }
-
-            prediction.clear();
-            prediction.reserve(ids.size());
-            double last_yaw = pose_yaw;
-            for (const int id : ids) {
-                const PredictNode &node = nodes[static_cast<std::size_t>(id)];
-                traj_opt::DynamicTargetState target;
-                target.t = node.t;
-                target.position = node.p;
-                target.velocity = node.v;
-                target.acceleration = node.a;
-                if (node.v.head<2>().norm() > 1.0e-3) {
-                    target.yaw = std::atan2(node.v.y(), node.v.x());
-                    target.yaw = last_yaw + std::atan2(std::sin(target.yaw - last_yaw),
-                                                       std::cos(target.yaw - last_yaw));
-                } else {
-                    target.yaw = last_yaw;
-                }
-                target.yaw_rate = 0.0;
-                last_yaw = target.yaw;
-                prediction.emplace_back(target);
-            }
-            for (std::size_t i = 1; i < prediction.size(); ++i) {
-                const double local_dt = std::max(0.05, prediction[i].t - prediction[i - 1].t);
-                prediction[i - 1].yaw_rate = (prediction[i].yaw - prediction[i - 1].yaw) / local_dt;
-            }
-            prediction.back().yaw_rate = prediction.size() > 1
-                                             ? prediction[prediction.size() - 2].yaw_rate
-                                             : 0.0;
-            return true;
+            return general_planner::buildKinodynamicTrackingPrediction(
+                p, v, pose_yaw, trackingPredictionSettings(),
+                [this](const Vec3f &next_p, const Vec3f &next_v) {
+                    return trackingPredictionStateValid(next_p, next_v);
+                },
+                prediction);
         }
 
         void trackingTargetCallback(const nav_msgs::OdometryConstPtr &msg) {
             if (!msg) {
                 return;
             }
+            // The external predictor owns validity and prediction lifetime in
+            // Path mode. Do not build a second prediction from the same odom
+            // or replace an explicitly cleared/lost prediction with it.
+            if (cfg_.tracking_use_target_prediction_path &&
+                !cfg_.tracking_target_prediction_topic.empty()) return;
             const double age = (ros::Time::now()-msg->header.stamp).toSec();
             if (!msg->header.stamp.isZero() && (age > cfg_.tracking_task_timeout || age < -0.1)) return;
             const Vec3f p(msg->pose.pose.position.x,
@@ -1117,12 +1030,6 @@ namespace fsm {
             }
             // Serialize mode selection and goal mutation with task-mode changes.
             std::lock_guard<std::mutex> lock(fsm_tick_mutex_);
-            if (cfg_.tracking_use_target_prediction_path &&
-                !cfg_.tracking_target_prediction_topic.empty() &&
-                !last_tracking_prediction_path_time_.isZero() &&
-                (ros::Time::now() - last_tracking_prediction_path_time_).toSec() < 0.5) {
-                return;
-            }
             if (!msg->header.stamp.isZero() &&
                 (ros::Time::now()-msg->header.stamp).toSec() > cfg_.tracking_task_timeout) return;
             const bool activate_tracking_task = trackingMode() || trackingPerchingMode();
@@ -1228,7 +1135,17 @@ namespace fsm {
                 target.yaw = velocity.head<2>().norm() > 1.0e-3
                                  ? std::atan2(velocity.y(), velocity.x())
                                  : pose_yaw;
-                target.yaw_rate = 0.0;
+                if (sample_num >= 3) {
+                    const std::size_t center = std::clamp<std::size_t>(i, 1, sample_num-2);
+                    const Vec3f next = (positions[center+1]-positions[center])/(sample_times[center+1]-sample_times[center]);
+                    const Vec3f prev = (positions[center]-positions[center-1])/(sample_times[center]-sample_times[center-1]);
+                    const double step = 0.5*(sample_times[center+1]-sample_times[center-1]);
+                    target.yaw_rate = next.head<2>().norm() > 0.2 && prev.head<2>().norm() > 0.2
+                        ? std::clamp(std::remainder(std::atan2(next.y(),next.x())-
+                            std::atan2(prev.y(),prev.x()),2.0*M_PI)/step,-1.2,1.2) : 0.0;
+                    if (i == 0 || i+1 == sample_num)
+                        target.acceleration = (next-prev)/step;
+                }
                 prediction.emplace_back(target);
             }
 
@@ -1445,7 +1362,7 @@ namespace fsm {
             // Preserve the standalone FSM API: without explicit queues, all
             // timers retain the caller's original NodeHandle semantics.
             init(nh, cfg_path, shared_map_manager, command_topic_override,
-                 nh, nh);
+                 nh, nh, general_planner::MapManager::Ptr{});
         }
 
         void init(const ros::NodeHandle &nh,
@@ -1453,7 +1370,9 @@ namespace fsm {
                   const general_planner::MapManager::Ptr &shared_map_manager,
                   const std::string &command_topic_override,
                   const ros::NodeHandle &command_nh,
-                  const ros::NodeHandle &replan_nh) {
+                  const ros::NodeHandle &replan_nh,
+                  const general_planner::MapManager::Ptr &tracking_map_manager =
+                      general_planner::MapManager::Ptr{}) {
             // 初始化参数读取
             nh_ = nh;
             command_nh_ = command_nh;
@@ -1485,12 +1404,22 @@ namespace fsm {
             } else {
                 map_ptr_ = std::make_shared<rog_map::ROGMapROS>(nh, cfg_path);
             }
+            tracking_map_ptr_ = map_ptr_;
+            if (tracking_map_manager) {
+                tracking_map_ptr_ = tracking_map_manager->rawRosMap();
+                if (!tracking_map_ptr_) {
+                    throw std::invalid_argument(
+                        "FsmRos1 received a tracking MapManager without ROGMapROS");
+                }
+                ROS_INFO_STREAM("[Fsm] tracking prediction queries use the dedicated tracking occupancy map");
+            }
             // 初始化Planner
             auto ros1_ptr = std::make_shared<ros_interface::Ros1Interface>(nh_);
             ros_ptr_ = ros1_ptr;
             planner_ptr_ = shared_map_manager
                 ? std::make_shared<GeneralPlanner>(cfg_path, ros_ptr_,
-                                                    shared_map_manager, cfg_.tracking_config_path)
+                                                    shared_map_manager, cfg_.tracking_config_path,
+                                                    tracking_map_manager)
                 : std::make_shared<GeneralPlanner>(cfg_path, ros_ptr_, map_ptr_, cfg_.tracking_config_path);
             planner_ptr_->setSwarmDroneId(cfg_.swarm_drone_id);
             if (!shared_map_manager) {

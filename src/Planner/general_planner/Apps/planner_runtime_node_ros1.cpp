@@ -130,9 +130,11 @@ int main(int argc, char **argv) {
 
   std::string global_map_config;
   std::string navigation_config;
+  std::string tracking_map_config;
   std::string navigation_command_topic{"/planning/navigation/pos_cmd"};
   nh.param<std::string>("global_map_config", global_map_config, "");
   nh.param<std::string>("navigation_config", navigation_config, "");
+  nh.param<std::string>("tracking_map_config", tracking_map_config, "");
   nh.param<std::string>("navigation_cmd_topic", navigation_command_topic,
                         navigation_command_topic);
   if (global_map_config.empty() || navigation_config.empty()) {
@@ -172,7 +174,8 @@ int main(int argc, char **argv) {
     gateway_nh.setCallbackQueue(&gateway_callback_queue);
 
     auto global_map_runtime = std::make_shared<GlobalMapRuntime>();
-    global_map_runtime->init(world_nh, global_map_config, odometry_nh);
+    global_map_runtime->init(world_nh, global_map_config, odometry_nh,
+                             tracking_map_config);
 
     // Keep LIO/Bubble/frontier task structures local to exploration, but make
     // the LIO evidence and ROG safety map world-lifetime resources.
@@ -256,7 +259,8 @@ int main(int argc, char **argv) {
                          global_map_runtime->mapManager(),
                          navigation_command_topic,
                          navigation_command_nh,
-                         navigation_replan_nh);
+                         navigation_replan_nh,
+                         global_map_runtime->trackingMapManager());
 
     // The gateway is the last safety boundary and the supervisor owns task
     // handover.  Neither is allowed to share the map/exploration queue.

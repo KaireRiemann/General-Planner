@@ -1,4 +1,5 @@
 #include <ros_interface/ros1/fsm_ros1.hpp>
+#include <general_core/tracking/tracking_map_query.hpp>
 #include <stdexcept>
 #include <iostream>
 
@@ -10,10 +11,10 @@ void check(bool ok, const char *message) {
 class TestFsm : public fsm::FsmRos1 {
 public:
     using fsm::Fsm::trackingTaskReady;
-    TestFsm() {
+    explicit TestFsm(bool path_mode = true) {
         ros_ptr_ = std::make_shared<ros_interface::Ros1Interface>(ros::NodeHandle("~"));
         cfg_.diagnostic_log_en = false;
-        cfg_.tracking_use_target_prediction_path = true;
+        cfg_.tracking_use_target_prediction_path = path_mode;
         cfg_.tracking_target_prediction_topic = "/test/prediction";
     }
     void prepare(fsm::TaskMode mode, bool active_goal) {
@@ -33,8 +34,8 @@ public:
         cfg_.tracking_replan_rate = 7.0;
         cfg_.tracking_use_snap = true;
         setTaskModeFromString("tracking");
-        check(cfg_.backend_type == general_planner::architecture::BackendType::SNAP_TRACKING,
-              "runtime mode switch ignored tracking use_snap");
+        check(cfg_.backend_type == general_planner::architecture::BackendType::JERK_TRACKING,
+              "legacy snap flag selected a removed tracking backend");
         check(std::abs(last_mode_rate_ - 7.0) < 1.e-9,
               "mode-change hook did not receive tracking frequency");
         setTaskModeFromString("state2state");
@@ -49,8 +50,16 @@ public:
         last_mode_rate_ = cfg_.replanRate();
         FsmRos1::onTaskModeChanged();
     }
+    void switchMode(const std::string &mode) { setTaskModeFromString(mode); }
     double last_mode_rate_{0.0};
     void checkCommandLifecycle() {
+        cfg_.task_mode = fsm::TaskMode::TRACKING;
+        machine_state_ = HOLD_TRACKING;
+        check(trackingExecutionState(), "target avoidance hold must allow rolling replans");
+        plan_from_rest_ = false; finish_plan = false; task_new_ = false;
+        handleExecutedTrajectoryFinished("PubCmdCallback",1,1,false,true,true);
+        check(!plan_from_rest_ && !finish_plan && !task_new_,
+              "command completion must not mutate tracking planning lifecycle");
         for (auto state : {FOLLOW_TRAJ, STATIC_TRACKING,
                            HOLD_TRACKING, EMER_STOP}) {
             machine_state_ = state;
@@ -81,6 +90,9 @@ public:
     void cached() {
         check(!tracking_target_prediction_.empty(), "inactive mode should cache observations");
     }
+    void expirePathPreference() {
+        ros::WallDuration(.6).sleep(); // Exceed the old 0.5 s odom fallback grace.
+    }
 };
 }
 int main(int argc, char **argv) {
@@ -98,11 +110,13 @@ int main(int argc, char **argv) {
     path->poses.resize(2);
     for (auto &pose : path->poses) pose.pose = odom->pose.pose;
     for (bool active_goal : {false, true}) {
-        TestFsm fsm;
+        TestFsm fsm(false);
         fsm.prepare(fsm::TaskMode::STATE_TO_STATE, active_goal);
         fsm.trackingTargetCallback(odom);
         fsm.unchanged(active_goal);
         fsm.cached();
+        check(!general_planner::trackingOccupancyExclusion().valid(),
+              "cached odom in another mode must not mask occupancy");
         fsm.trackingPredictionPathCallback(path);
         fsm.unchanged(active_goal);
         fsm.trackingTargetCallback(odom); // fresh prediction takes precedence
@@ -110,12 +124,26 @@ int main(int argc, char **argv) {
         fsm.trackingTargetCallback({});
         fsm.trackingPredictionPathCallback({});
         fsm.unchanged(active_goal);
+        TestFsm path_fsm;
+        path_fsm.prepare(fsm::TaskMode::STATE_TO_STATE,active_goal);
+        path_fsm.trackingTargetCallback(odom);
+        path_fsm.unchanged(active_goal);
+        check(!path_fsm.trackingTaskReady(), "Path mode must not synthesize an odom prediction");
+        path_fsm.trackingPredictionPathCallback(path);
+        path_fsm.unchanged(active_goal);
+        path_fsm.cached();
     }
     for (auto mode : {fsm::TaskMode::TRACKING, fsm::TaskMode::TRACKING_PERCHING}) {
-        TestFsm odom_fsm;
+        TestFsm odom_fsm(false);
         odom_fsm.prepare(mode, false);
         odom_fsm.trackingTargetCallback(odom);
         odom_fsm.trackingActivated();
+        check(general_planner::trackingOccupancyExclusion().valid(),
+              "tracking odom must install the occupancy mask");
+        odom_fsm.switchMode("state2state");
+        check(!general_planner::trackingOccupancyExclusion().valid(),
+              "leaving tracking must restore the shared occupancy model");
+        odom_fsm.switchMode(mode == fsm::TaskMode::TRACKING ? "tracking" : "tracking_perching");
         TestFsm path_fsm;
         path_fsm.prepare(mode, false);
         path_fsm.trackingPredictionPathCallback(path);
@@ -123,6 +151,7 @@ int main(int argc, char **argv) {
         auto lost = boost::make_shared<nav_msgs::Path>();
         path_fsm.trackingPredictionPathCallback(lost);
         check(!path_fsm.trackingTaskReady(), "empty path must retire cached target");
+        path_fsm.expirePathPreference();
         path_fsm.trackingTargetCallback(odom);
         check(!path_fsm.trackingTaskReady(), "late odom must not override explicit path invalidation");
         path_fsm.trackingPredictionPathCallback(path);

@@ -71,6 +71,22 @@ struct ViewpointParam {
   int consider_range_, global_recluster_size_, local_tsp_size_;
   int top_candidate_num_;
 };
+
+// Coverage (MODE exploration) uses a tighter cluster/viewpoint lattice than
+// target exploration. Occupancy and topology stay on the shared world map.
+struct FrontierGranularityProfile {
+  float update_length{36.0f};
+  float cluster_min_size{4.0f};
+  float cluster_min_radius{2.0f};
+  int cluster_minmum_point_num{10};
+  float cluster_match_radius{3.0f};
+  float sample_pillar_min_height{-1.2f};
+  float sample_pillar_max_height{1.8f};
+  int sample_pillar_height_layer_num{5};
+  float sample_pillar_min_radius{1.2f};
+  float sample_pillar_max_radius{5.2f};
+  int consider_range{20};
+};
 // Signed, dimension-independent keys: changing mission mode or travelling past
 // the original coverage box cannot alias old frontier cells.
 struct ByteArrayRaw {
@@ -240,6 +256,9 @@ private:
   // Keep it separate so target frontiers never become coverage objectives.
   std::list<ClusterInfo::Ptr> inactive_task_clusters_;
   bool target_task_domain_{false};
+  bool indoor_granularity_{false};
+  FrontierGranularityProfile default_granularity_;
+  FrontierGranularityProfile indoor_granularity_profile_;
   // Separate positive sensor evidence from DENSE labels assigned by noise or
   // lifecycle heuristics. Only trusted cloud observations populate this set.
   std::unordered_set<ByteArrayRaw,ByteArrayRawHasher> observation_evidence_;
@@ -299,6 +318,10 @@ private:
                           vector<Eigen::Vector3i> &cells_2_update);
   void get_pts_in_cells(const vector<Eigen::Vector3i> &cells_2_update,
                         vector<PointVector> &pts_inside);
+  FrontierGranularityProfile captureCurrentProfile() const;
+  void applyProfile(const FrontierGranularityProfile &profile);
+  void rebuildOriginViewpoints();
+  void loadIndoorProfile(ros::NodeHandle &nh);
   void updateHalfSpaces(vector<ClusterInfo::Ptr> &clusters);
   //                                const vector<float> &bubble_radius);
   void selectBestViewpoint(ClusterInfo::Ptr &cluster);
@@ -341,6 +364,9 @@ public:
                               vector<int> &cluster_removed);
   void requestGlobalRecluster();
   void setTaskDomain(bool target);
+  // true = indoor/coverage lattice; false = house.yaml / target lattice.
+  void applyFrontierGranularity(bool indoor);
+  bool indoorFrontierGranularity() const { return indoor_granularity_; }
   void forceGlobalRefresh(vector<ClusterInfo::Ptr> &cluster_updated,
                           vector<int> &cluster_removed);
   bool markClusterVisitedNear(const Eigen::Vector3f &goal, float radius);

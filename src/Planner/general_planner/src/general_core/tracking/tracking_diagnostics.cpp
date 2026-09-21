@@ -14,6 +14,17 @@
 #include <fmt/format.h>
 
 namespace general_planner {
+    void GeneralPlanner::invalidateTrackingCommand(const std::string &reason) {
+        cmd_traj_info_.lock();
+        cmd_traj_info_.setEmpty();
+        cmd_traj_info_.unlock();
+        last_exp_traj_info_.setEmpty();
+        robot_on_backup_traj_.store(false);
+        if (tracking_runtime_manager_) tracking_runtime_manager_->reset();
+        resetTrackingRuntimeDecision(reason);
+        last_tracking_runtime_reset_ = true;
+    }
+
     void GeneralPlanner::resetTrackingRuntimeDecision(const std::string &reason) {
         last_tracking_runtime_reset_ = false;
         last_tracking_runtime_preserved_ = false;
@@ -125,47 +136,11 @@ namespace general_planner {
     }
 
     std::string GeneralPlanner::getTrackingConfigSummary() const {
-        return fmt::format("tracking_distance={:.3f};distance_tolerance={:.3f};"
-                           "distance_lower_tolerance={:.3f};distance_upper_tolerance={:.3f};"
-                           "height_offset={:.3f};height_tolerance={:.3f};safe_distance={:.3f};"
-                           "hard_safe_distance={:.3f};fov_h_deg={:.3f};fov_v_deg={:.3f};"
-                           "fov_range={:.3f};fov_range_effective={:.3f};"
-                           "fov_check_strict={};fov_commit_check_enable={};"
-                           "runtime_manager_enable={};"
-                           "keep_old_horizon={:.3f};keep_old_safety_dt={:.3f};"
-                           "keep_old_requires_fov={};short_safety_grace_enable={};"
-                           "anti_rollback_enable={};"
-                           "reacquire_fov_relax_enable={};"
-                           "detour_grace_enable={};detour_grace_horizon={:.3f};"
-                           "frontend_astar={};use_visible_region={};max_vel={:.3f};max_acc={:.3f}",
-                           cfg_.tracking_distance,
-                           cfg_.tracking_distance_tolerance,
-                           cfg_.tracking_distance_lower_tolerance,
-                           cfg_.tracking_distance_upper_tolerance,
-                           cfg_.tracking_height_offset,
-                           cfg_.tracking_height_tolerance,
-                           cfg_.tracking_safe_distance,
-                           cfg_.tracking_hard_safe_distance,
-                           cfg_.tracking_fov_horizontal_deg,
-                           cfg_.tracking_fov_vertical_deg,
-                           cfg_.tracking_fov_range,
-                           trackingAdaptiveFovRange(cfg_),
-                           static_cast<int>(cfg_.tracking_fov_check_strict),
-                           static_cast<int>(cfg_.tracking_fov_commit_check_enable),
-                           static_cast<int>(static_cast<bool>(tracking_runtime_manager_)),
-                           cfg_.tracking_keep_old_horizon,
-                           cfg_.tracking_keep_old_safety_dt,
-                           static_cast<int>(cfg_.tracking_keep_old_requires_fov &&
-                                            cfg_.tracking_fov_check_strict),
-                           static_cast<int>(cfg_.tracking_keep_old_short_safety_grace_enable),
-                           static_cast<int>(cfg_.tracking_anti_rollback_enable),
-                           static_cast<int>(cfg_.tracking_reacquire_fov_relax_enable),
-                           static_cast<int>(cfg_.tracking_detour_grace_enable),
-                           cfg_.tracking_detour_grace_horizon,
-                           static_cast<int>(cfg_.tracking_frontend_astar),
-                           static_cast<int>(cfg_.tracking_use_visible_region),
-                           cfg_.tracking_traj_cfg.max_vel,
-                           cfg_.tracking_traj_cfg.max_acc);
+        return fmt::format("backend=elastic_tracker;corridor=CIRI;distance={:.3f};tolerance={:.3f};"
+            "height_offset={:.3f};horizon={:.3f};sample_dt={:.3f};rho_tracking={:.1f};rho_visibility={:.1f};"
+            "max_vel={:.3f};max_acc={:.3f}",cfg_.tracking_distance,cfg_.tracking_distance_tolerance,
+            cfg_.tracking_height_offset,cfg_.tracking_nominal_horizon,cfg_.tracking_sample_dt,
+            cfg_.tracking_weight_tracking,cfg_.tracking_weight_visible_region,
+            cfg_.tracking_traj_cfg.max_vel,cfg_.tracking_traj_cfg.max_acc);
     }
-
-}
+} // namespace general_planner

@@ -12,13 +12,13 @@
   <arg name="perceptor_vlm_period" default="3.0" />
   <arg name="perceptor_vlm_base_url" default="http://127.0.0.1:18000/v1" />
   <!-- Start perception with runtime so tracking can be selected without another launch. -->
-  <arg name="tracking_target_odom_topic" default="/target_ekf_node/target_odom" />
+  <arg name="tracking_target_odom_topic" default="/tracking/target_odom" />
   <arg name="tracking_target_prediction_topic" default="/tracking/target_prediction" />
   <arg name="tracking_detector" default="true" />
   <arg name="tracking_camera_info_topic" default="/camera0/color/info" />
   <arg name="tracking_rgb_compressed" default="true" />
   <arg name="tracking_depth_topic" default="/camera0/depth/image/compressed" />
-  <arg name="tracking_range_method" default="ground_plane" />
+  <arg name="tracking_range_method" default="auto" />
   <arg name="tracking_depth_registered" default="false" />
   <arg name="tracking_ground_z" default="0.0" />
   <arg name="tracking_target_center_height" default="0.7" />

@@ -26,7 +26,8 @@ GlobalMapRuntime::~GlobalMapRuntime() {
 
 void GlobalMapRuntime::init(ros::NodeHandle nh,
                             const std::string &map_config_path,
-                            ros::NodeHandle odometry_nh) {
+                            ros::NodeHandle odometry_nh,
+                            const std::string &tracking_map_config_path) {
   if (initialized_) {
     throw std::logic_error("GlobalMapRuntime::init called twice");
   }
@@ -55,6 +56,27 @@ void GlobalMapRuntime::init(ros::NodeHandle nh,
   context_->map_manager->enableIndependentOdometry();
   context_->map_manager->setWorldEpoch(
       context_->world_epoch.load(std::memory_order_acquire));
+
+  if (!tracking_map_config_path.empty()) {
+    context_->tracking_rog_map =
+        std::make_shared<rog_map::ROGMapROS>(nh_, tracking_map_config_path);
+    if (context_->tracking_rog_map->getMapConfig().ros_callback_en) {
+      throw std::invalid_argument(
+          "GlobalMapRuntime tracking map requires rog_map/ros_callback/enable=false; "
+          "otherwise it would fuse cloud frames a second time");
+    }
+    context_->tracking_map_manager =
+        std::make_shared<MapManager>(context_->tracking_rog_map);
+    context_->tracking_map_manager->enableIndependentOdometry();
+    context_->tracking_map_manager->setWorldEpoch(
+        context_->world_epoch.load(std::memory_order_acquire));
+    const auto tracking_cfg = context_->tracking_rog_map->getMapConfig();
+    ROS_INFO_STREAM(
+        "[global_map_runtime] tracking-dedicated ROG ready: resolution="
+        << tracking_cfg.resolution << " inflation_step=" << tracking_cfg.inflation_step
+        << " inflation_resolution=" << tracking_cfg.inflation_resolution
+        << " map_config=" << tracking_map_config_path);
+  }
 
   // No task-mode callback: topology remains active in exploration, navigation,
   // WAIT and stable hold for the complete world lifetime.
@@ -185,6 +207,9 @@ void GlobalMapRuntime::odomCallback(const nav_msgs::OdometryConstPtr &msg) {
     return;
   }
   context_->rog_map->ingestOdometry(msg);
+  if (context_->tracking_rog_map) {
+    context_->tracking_rog_map->ingestOdometry(msg);
+  }
   // Topology is a world-lifetime resource, but its maintenance budget is
   // local to the vehicle.  Refreshing this inexpensive focus on every odom
   // makes a stale planner query unable to pull the worker into remote dirty
@@ -251,6 +276,12 @@ void GlobalMapRuntime::cloudOdomCallback(
   }
   const MapManager::UpdateSnapshot update =
       context_->map_manager->updateMap(rog_cloud, pose);
+  // The tracking map fuses the same accepted pair exactly once. It is a
+  // separate occupancy world: query-time target exclusion and thin inflation
+  // never leak into exploration/state2state queries.
+  if (context_->tracking_map_manager) {
+    context_->tracking_map_manager->updateMap(rog_cloud, pose);
+  }
   // World topology is maintained through task transitions as well. Its
   // worker consumes only the odometry-local dirty-region window, while map
   // fusion continues to record remote evidence for a future visit.

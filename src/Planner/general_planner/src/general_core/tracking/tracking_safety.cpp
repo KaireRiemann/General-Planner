@@ -28,8 +28,9 @@ namespace general_planner {
             const traj_opt::DynamicTargetStates &target_prediction,
             const double horizon,
             const double dt) const {
-        return tracking_runtime_manager_->evaluateActivity(
+        auto activity = tracking_runtime_manager_->evaluateActivity(
                 traj, local_start_t, target_prediction, horizon, dt);
+        return activity;
     }
 
     bool GeneralPlanner::currentTrackingTrajectorySafeAndActive(

@@ -54,6 +54,7 @@ namespace general_planner {
         double seed_line_max_length_;
         double min_overlap_threshold_;
         double robot_r_;
+        bool inflated_obstacles_{false};
         int box_search_skip_num_;
         int iris_iter_num_;
         double virtual_groud_height_ = 0.0;
@@ -86,7 +87,8 @@ namespace general_planner {
                           const int box_search_skip_num,
                           const int iris_iter_num,
                           const optimization_utils::EllipsoidOptimizerConfig &ellipsoid_optimizer_config =
-                                  optimization_utils::EllipsoidOptimizerConfig());
+                                  optimization_utils::EllipsoidOptimizerConfig(),
+                          bool inflated_obstacles = false);
 
         ~CorridorGenerator() = default;
 
@@ -96,7 +98,7 @@ namespace general_planner {
 
         bool SearchPolytopeOnPath(const vec_Vec3f &path, PolytopeVec &sfcs,
                                   Vec3f & shifted_start_pt,
-                                  bool cut_first_poly = false);
+                                  bool cut_first_poly = false, bool preserve_path = false);
 
         void getSeedBBox(const Vec3f &p1, const Vec3f &p2,
                          Vec3f &box_min, Vec3f &box_max);

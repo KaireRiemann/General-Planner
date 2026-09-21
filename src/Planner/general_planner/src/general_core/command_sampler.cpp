@@ -30,6 +30,54 @@ namespace general_planner {
         }
     }
 
+    void GeneralPlanner::setTrackingYawServo(const bool active) {
+        const bool was = tracking_yaw_servo_active_.exchange(active);
+        if (active && !was) {
+            std::lock_guard<std::mutex> lock(tracking_yaw_servo_mutex_);
+            // Enabling must never jump: start from the measured heading and
+            // let the slew walk toward the committed setpoint.
+            tracking_yaw_servo_last_ = std::isfinite(robot_state_.yaw) ? robot_state_.yaw : 0.0;
+            tracking_yaw_servo_last_wt_ = -1.0;
+        }
+    }
+
+    double GeneralPlanner::trackingYawServoYaw() const {
+        std::lock_guard<std::mutex> lock(tracking_yaw_servo_mutex_);
+        if (tracking_yaw_servo_last_wt_ < 0.0 || !std::isfinite(tracking_yaw_servo_last_)) {
+            return std::isfinite(robot_state_.yaw) ? robot_state_.yaw : 0.0;
+        }
+        return tracking_yaw_servo_last_;
+    }
+
+    void GeneralPlanner::applyTrackingYawServo(double &yaw, double &yaw_dot) {
+        if (!std::isfinite(yaw)) {
+            yaw = trackingYawServoYaw();
+            yaw_dot = 0.0;
+            return;
+        }
+        const double now = ros_ptr_->getSimTime();
+        std::lock_guard<std::mutex> lock(tracking_yaw_servo_mutex_);
+        if (tracking_yaw_servo_last_wt_ < 0.0 || !std::isfinite(tracking_yaw_servo_last_) ||
+            !std::isfinite(now)) {
+            tracking_yaw_servo_last_ = std::isfinite(robot_state_.yaw) ? robot_state_.yaw : yaw;
+            tracking_yaw_servo_last_wt_ = now;
+            yaw = tracking_yaw_servo_last_;
+            yaw_dot = 0.0;
+            return;
+        }
+        // Elastic traj_server: at most 0.02 rad per 10 ms control tick toward
+        // the scalar setpoint, wrap-aware, with yaw_dot reporting the applied
+        // rate instead of a polynomial derivative.
+        const double dt = std::clamp(now - tracking_yaw_servo_last_wt_, 1.0e-3, 0.05);
+        const double max_step = std::max(0.1, cfg_.tracking_yaw_rate_limit) * dt;
+        const double delta = std::remainder(yaw - tracking_yaw_servo_last_, 2.0 * M_PI);
+        const double step = std::clamp(delta, -max_step, max_step);
+        tracking_yaw_servo_last_ += step;
+        tracking_yaw_servo_last_wt_ = now;
+        yaw = tracking_yaw_servo_last_;
+        yaw_dot = step / dt;
+    }
+
     bool GeneralPlanner::sampleCommittedCommand(StatePVAJ &pvaj, double &yaw,
                                                  double &yaw_dot, bool &on_backup,
                                                  double &start_wt) {
@@ -52,6 +100,7 @@ namespace general_planner {
         yaw_dot = cmd_traj_info_.getYawRate(t)[0];
         on_backup = cmd_traj_info_.isTTOnBackupTraj(t);
         cmd_traj_info_.unlock();
+        if (tracking_yaw_servo_active_.load()) applyTrackingYawServo(yaw, yaw_dot);
         // An exhausted moving endpoint is not a fresh executable command.
         // Leave it to the gateway watchdog instead of advertising it forever.
         if (now-start_wt > duration &&
@@ -110,6 +159,7 @@ namespace general_planner {
         if (isnan(yaw_dot)) {
             yaw_dot = 0;
         }
+        if (tracking_yaw_servo_active_.load()) applyTrackingYawServo(yaw, yaw_dot);
         if (checker::checkStateFinite(pvaj, "cmd_pvaj").rejected() ||
             !std::isfinite(yaw) || !std::isfinite(yaw_dot)) {
             cmd_traj_info_.unlock();

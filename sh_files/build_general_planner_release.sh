@@ -24,6 +24,7 @@ Environment overrides:
   GP_CATKIN_ARGS        Extra args appended to catkin_make.
 
 Runtime smoke tests are intentionally not run by this packaging script.
+The general_planner package is rebuilt from clean objects before packaging.
 
 What is synced:
   - devel/lib/general_planner/general_planner_runtime_node
@@ -119,11 +120,27 @@ echo "[build_release] Repo: ${REPO_ROOT}"
 echo "[build_release] Release: ${RELEASE_ROOT}"
 echo "[build_release] Build type: ${BUILD_TYPE}"
 
+# A header edited while a compiler is running can leave an object newer than
+# that header but compiled with its old layout. --force-cmake does not discard
+# such objects; mixing them caused the tracking Config/GeneralPlanner ABI crash.
+planner_build_dir="${WORKSPACE_ROOT}/build/${REPO_ROOT#"${WORKSPACE_ROOT}/src/"}/src/Planner/general_planner"
+source_digest() {
+  find "${REPO_ROOT}/src" -type f \( \
+    -name '*.h' -o -name '*.hpp' -o -name '*.cpp' -o -name '*.cc' -o \
+    -name '*.c' -o -name '*.cmake' -o -name CMakeLists.txt -o -name '*.yaml' \
+    \) -print0 | LC_ALL=C sort -z | xargs -0 -r sha256sum | sha256sum
+}
+build_source_digest="$(source_digest)"
+if [[ -f "${planner_build_dir}/Makefile" ]]; then
+  echo "[build_release] Clean general_planner objects and their consumers"
+  make -C "${planner_build_dir}" clean
+fi
+
 cd "${WORKSPACE_ROOT}"
 catkin_cmd=(
   catkin_make
   --force-cmake
-  "-DCATKIN_WHITELIST_PACKAGES=map_manager;general_planner;general_planner_rviz_plugins;tracking_detector;aperture_detector"
+  "-DCATKIN_WHITELIST_PACKAGES=map_manager;general_planner;general_planner_rviz_plugins;tracking_detector;aperture_detector;person_tracker"
   -DCMAKE_BUILD_TYPE="${BUILD_TYPE}"
 )
 if [[ -n "${GP_CATKIN_ARGS:-}" ]]; then
@@ -134,6 +151,10 @@ fi
 
 echo "[build_release] Build command: ${catkin_cmd[*]}"
 "${catkin_cmd[@]}"
+if [[ "$(source_digest)" != "${build_source_digest}" ]]; then
+  echo "[build_release] Sources changed during compilation; release was not updated. Run the build again." >&2
+  exit 1
+fi
 
 RUNTIME_BINARY_SRC="${WORKSPACE_ROOT}/devel/lib/general_planner/general_planner_runtime_node"
 RUNTIME_BINARY_DST="${RELEASE_ROOT}/src/general_planner_release/bin/general_planner_runtime_node.bin"

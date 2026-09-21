@@ -109,6 +109,15 @@ private:
                           TaskPlanContext context,
                           std::string mission_node) const {
         context.mission_node = std::move(mission_node);
+        if (context_.valid() && request.identity.task == TaskType::TRACKING &&
+            !context_.planner().trackingPerchingPerchingActive()) {
+            // Elastic from-rest failure stays hovering; do not map FAILED to
+            // UNAVAILABLE (that forces an emergency stop). Replan FAILED falls
+            // through to keep-old. Hover/keep-old already set the manager outcome.
+            context.tracking_outcome = ret_code == general_utils::FAILED
+                ? TrackingPlanOutcome::UNSPECIFIED
+                : context_.planner().trackingPlanOutcome();
+        }
 
         PlanResult result;
         result.request = request;

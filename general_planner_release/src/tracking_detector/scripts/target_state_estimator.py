@@ -13,6 +13,7 @@ import numpy as np
 import rospy
 from cv_bridge import CvBridge
 from nav_msgs.msg import Odometry
+from geometry_msgs.msg import PoseStamped
 from sensor_msgs.msg import CameraInfo, CompressedImage, Image
 from std_msgs.msg import Bool, String, Float64
 from tracking_detector.msg import BoundingBoxes
@@ -34,17 +35,18 @@ class ConstantVelocityFilter:
 
     def update(self, position, variance, stamp):
         z = np.asarray(position)
-        if not np.isfinite(z).all() or not np.isfinite(variance) or variance <= 0:
+        R = measurement_covariance(variance)
+        if not np.isfinite(z).all() or R is None:
             return False
         if self.x is None:
             self.x = np.r_[z, np.zeros(3)]
-            self.P = np.diag([variance] * 3 + [4.0] * 3)
+            self.P = np.diag([1.0] * 3 + [4.0] * 3)
+            self.P[:3,:3] = R
             self.stamp = stamp
             return True
         if stamp <= self.stamp:
             return False
         x, P = self.predicted(stamp - self.stamp)
-        R = np.eye(3) * variance
         innovation = z - x[:3]
         S = P[:3, :3] + R
         if innovation @ np.linalg.solve(S, innovation) > self.gate:
@@ -57,6 +59,22 @@ class ConstantVelocityFilter:
         self.P = IKH @ P @ IKH.T + K @ R @ K.T
         self.stamp = stamp
         return True
+
+
+def measurement_covariance(value):
+    R = np.eye(3)*value if np.ndim(value) == 0 else np.asarray(value, dtype=float)
+    if R.shape != (3,3) or not np.isfinite(R).all():
+        return None
+    R = .5*(R+R.T)
+    return R if np.linalg.eigvalsh(R).min() > 0 else None
+
+
+def range_covariance(point, camera, range_std, bearing_std=.015):
+    delta = point-camera
+    distance = np.linalg.norm(delta)
+    direction = delta/max(1.e-6,distance)
+    lateral = max(.05, bearing_std*distance)**2
+    return lateral*np.eye(3)+(max(lateral,range_std**2)-lateral)*np.outer(direction,direction)
 
 
 def rotation(q):
@@ -113,11 +131,13 @@ class TargetEstimator:
         self.lock = threading.RLock()
         self.bridge = CvBridge()
         self.odom = deque(maxlen=600)
+        self.camera_poses = deque(maxlen=200)
+        self.pose_source = "odometry_interpolation"
         self.depth = deque(maxlen=20)
         self.pending = deque(maxlen=3)
         self.info = None
         self.last_odom_receipt = 0.0
-        self.filter = ConstantVelocityFilter()
+        self.filter = ConstantVelocityFilter(float(param("acceleration_noise", 2.0)))
         self.last_bbox_stamp = None
         self.last_accept_wall = 0.0
         self.count = 0
@@ -125,6 +145,7 @@ class TargetEstimator:
         self.reason = "waiting_for_observation"
         self.method = "none"
         self.label = param("target_label", "car")
+        self.acquisition_confidence = float(param("acquisition_confidence", .6))
         self.output_frame = param("output_frame", "world")
         self.width, self.height = param("bbox_width", 640), param("bbox_height", 480)
         self.Rcb = np.array(param("cam2body_R", [0,0,1,-1,0,0,0,-1,0])).reshape(3,3)
@@ -133,7 +154,7 @@ class TargetEstimator:
             raise ValueError("cam2body_R must be a proper rotation")
         self.ground_z = float(param("ground_z", 0.0))
         self.center_height = float(param("target_center_height", 0.7))
-        self.range_method = param("range_method", "ground_plane")
+        self.range_method = param("range_method", "auto")
         if self.range_method not in ("ground_plane", "depth", "auto", "known_height"):
             raise ValueError("invalid range_method")
         self.depth_registered = bool(param("depth_registered", False))
@@ -146,12 +167,19 @@ class TargetEstimator:
         self.sync_tolerance = float(param("sync_tolerance", 0.15))
         self.depth_tolerance = float(param("depth_tolerance", 0.08))
         self.max_age = float(param("max_observation_age", 1.0))
-        self.max_receipt_gap = float(param("max_detection_gap", 0.45))
+        self.max_receipt_gap = float(param("max_detection_gap", 0.65))
         self.was_valid = False
         self.fresh_age = float(param("fresh_observation_age", 0.25))
         self.confirmations = max(2, int(param("confirmations", 3)))
         self.max_range = float(param("max_range", 30.0))
         self.max_position_std = float(param("max_position_std", 2.0))
+        self.loss_position_std = max(self.max_position_std,
+                                     float(param("loss_position_std", 2.5)))
+        self.height_relative_std = max(.05, float(param("height_relative_std", .10)))
+        self.last_measurement_std = None
+        self.height_scale = 1.0
+        self.scale_pose = None
+        self.scale_stable_since = None
         self.odom_pub = rospy.Publisher("~target_odom", Odometry, queue_size=1)
         self.raw_pub = rospy.Publisher("~yolo_odom", Odometry, queue_size=1)
         self.valid_pub = rospy.Publisher("~valid", Bool, queue_size=1, latch=True)
@@ -159,6 +187,8 @@ class TargetEstimator:
         self.age_pub = rospy.Publisher("~observation_age", Float64, queue_size=1)
         self.valid_pub.publish(False)
         rospy.Subscriber("~odom", Odometry, self.on_odom, queue_size=100)
+        rospy.Subscriber(param("capture_pose_topic", "/camera0/capture_pose"),
+                         PoseStamped, self.on_capture_pose, queue_size=50)
         rospy.Subscriber("~camera_info", CameraInfo, self.on_info, queue_size=1)
         rospy.Subscriber("~yolo", BoundingBoxes, self.on_bbox, queue_size=2)
         if self.depth_registered and self.range_method in ("depth", "auto"):
@@ -169,9 +199,13 @@ class TargetEstimator:
         rospy.Timer(rospy.Duration(0.05), self.tick)
 
     def reset(self, reason):
-        self.filter = ConstantVelocityFilter()
+        self.filter = type(self.filter)(self.filter.noise, self.filter.gate)
+        self.was_valid = False
         self.count = 0
         self.reason = reason
+        self.height_scale = 1.0
+        self.scale_pose = None
+        self.scale_stable_since = None
 
     def on_info(self, msg):
         if msg.width and msg.height and msg.K[0] > 0 and msg.K[4] > 0:
@@ -197,6 +231,7 @@ class TargetEstimator:
         with self.lock:
             if self.odom and stamp < self.odom[-1][0] - 0.5:
                 self.odom.clear()
+                self.camera_poses.clear()
                 self.pending.clear()
                 self.depth.clear()
                 self.last_bbox_stamp = None
@@ -241,6 +276,24 @@ class TargetEstimator:
         with self.lock:
             self.pending.append(msg)
 
+    def on_capture_pose(self, msg):
+        if msg.header.frame_id != self.output_frame or msg.header.stamp.to_sec() <= 0:
+            return
+        p, q = msg.pose.position, msg.pose.orientation
+        position = np.array([p.x,p.y,p.z])
+        quaternion = np.array([q.x,q.y,q.z,q.w])
+        try:
+            rotation(quaternion)
+            if not np.isfinite(position).all(): return
+        except ValueError:
+            return
+        with self.lock:
+            stamp = msg.header.stamp.to_sec()
+            if self.camera_poses and stamp < self.camera_poses[-1][0]-.5:
+                self.camera_poses.clear()
+            if not self.camera_poses or stamp > self.camera_poses[-1][0]:
+                self.camera_poses.append((stamp,position,quaternion))
+
     def sensor_now(self):
         return self.odom[-1][0] + max(0.0, time.monotonic()-self.last_odom_receipt)
 
@@ -253,6 +306,8 @@ class TargetEstimator:
         K = [info.K[0]*self.width/info.width, info.K[4]*self.height/info.height,
              info.K[2]*self.width/info.width, info.K[5]*self.height/info.height]
         u, v = (box.xmin+box.xmax)*0.5, (box.ymin+box.ymax)*0.5
+        if box.xmin <= 2 or box.xmax >= self.width-2:
+            raise ValueError("horizontal_bbox_clipped")
         cp, cR = p+R@self.pcb, R@self.Rcb
         method = self.range_method
         if method in ("depth", "auto") and self.depth_registered and self.depth:
@@ -273,17 +328,75 @@ class TargetEstimator:
                         return point, max(0.05, 0.01*d)**2, "depth"
         if method == "depth":
             raise ValueError("no_valid_registered_depth")
+        # At a shallow viewing angle, a few pixels or a small attitude error
+        # cause metres of ground-intersection error. A complete box provides
+        # an independent scale cue; prefer it in auto mode when depth is absent.
+        height_point = None
+        if box.ymin > 2 and box.ymax < self.height-2 and box.ymax-box.ymin >= 8:
+            pixels = float(box.ymax-box.ymin)
+            # Perspective of a vertical extent changes with camera pitch/roll.
+            vertical = cR.T@np.array([0.,0.,1.])
+            projection = (abs(vertical[1]-(v-K[3])/K[1]*vertical[2])
+                          if self.pose_source == "capture_pose" else 1.0)
+            d = self.object_height*self.height_scale*K[1]*projection/pixels
+            height_point = cp+cR@np.array([(u-K[2])*d/K[0],(v-K[3])*d/K[1],d])
+            relative_std = math.hypot(self.height_relative_std, 2.0/pixels)
+            height_cov = range_covariance(height_point,cp,max(.15,relative_std*d))
+        if method in ("auto", "known_height") and height_point is not None:
+            if method == "auto":
+                # This fallback models a ground vehicle, like ground_plane.
+                # Do not feed pitch-induced vertical motion into its CV state.
+                height_point[2] = self.ground_z+self.center_height
+                height_cov[2,:] = height_cov[:,2] = 0.
+                height_cov[2,2] = .05**2
+            return height_point, height_cov, "known_height"
         if method in ("auto", "ground_plane"):
             if box.ymax >= self.height-3:
                 raise ValueError("ground_contact_clipped")
             point = ground_point(u, box.ymax, K, cp, cR, self.ground_z)
             distance = np.linalg.norm(point-cp)
             point[2] += self.center_height
-            return point, (0.08+0.015*distance*distance)**2, "ground_plane"
-        if box.ymin <= 2 or box.ymax >= self.height-2 or box.ymax-box.ymin < 5:
-            raise ValueError("height_bbox_clipped")
-        d = self.object_height*K[1]/(box.ymax-box.ymin)
-        return cp+cR@np.array([(u-K[2])*d/K[0],(v-K[3])*d/K[1],d]), (0.15+0.15*d)**2, "known_height"
+            return point, range_covariance(point,cp,.08+.015*distance*distance), "ground_plane"
+        raise ValueError("height_bbox_clipped")
+
+    def update_height_scale(self, box, stamp, p, R):
+        # Calibrate the apparent box height only while the camera orientation
+        # is steady. Dynamic ground intersections are never trusted for scale.
+        previous = self.scale_pose
+        self.scale_pose = (stamp,R.copy())
+        if previous is None:
+            self.scale_stable_since = stamp
+            return
+        dt = stamp-previous[0]
+        angle = math.acos(np.clip((np.trace(previous[1].T@R)-1)*.5,-1.,1.))
+        if dt <= 0 or dt > .35 or (angle/dt > .10 and self.pose_source != "capture_pose"):
+            self.scale_stable_since = stamp
+            return
+        if (stamp-self.scale_stable_since < .3 and self.pose_source != "capture_pose") or self.range_method != "auto":
+            return
+        if box.ymin <= 2 or box.ymax >= self.height-3:
+            return
+        K = [self.info.K[0]*self.width/self.info.width,self.info.K[4]*self.height/self.info.height,
+             self.info.K[2]*self.width/self.info.width,self.info.K[5]*self.height/self.info.height]
+        cp,cR = p+R@self.pcb,R@self.Rcb
+        try:
+            ground = ground_point((box.xmin+box.xmax)*.5,box.ymax,K,cp,cR,self.ground_z)
+        except ValueError:
+            return
+        optical = cR.T@(ground-cp)
+        vertical = cR.T@np.array([0.,0.,1.])
+        v = (box.ymin-K[3])/K[1]
+        denominator = vertical[1]-v*vertical[2]
+        if abs(denominator) < .2 or optical[2] < 2 or optical[2] > self.max_range:
+            return
+        height = (v*optical[2]-optical[1])/denominator
+        ratio = height/self.object_height
+        bounds = (.75,1.6) if self.pose_source == "capture_pose" else (.8,1.25)
+        if bounds[0] <= ratio <= bounds[1]:
+            # Widen calibration only with a pose tied to this exact exposure.
+            # Old Unity timer stamps cannot safely support attitude corrections.
+            tau = 1.5 if self.pose_source == "capture_pose" else 1.0
+            self.height_scale += (1.-math.exp(-dt/tau))*(ratio-self.height_scale)
 
     def process(self, msg):
         stamp = msg.header.stamp.to_sec()
@@ -296,7 +409,18 @@ class TargetEstimator:
             return
         stale_filter = self.filter.x is not None and stamp-self.filter.stamp > self.max_age
         try:
-            p, R = interpolate_pose(self.odom, stamp, self.sync_tolerance)
+            if self.camera_poses:
+                capture = min(self.camera_poses,key=lambda sample:abs(sample[0]-stamp))
+                if abs(capture[0]-stamp) > .002:
+                    raise ValueError("capture_pose_timestamp_mismatch")
+                # Capture messages contain the optical frame pose. Convert to
+                # the body argument expected by measure(), without restamping.
+                R = rotation(capture[2])@self.Rcb.T
+                p = capture[1]-R@self.pcb
+                self.pose_source = "capture_pose"
+            else:
+                p, R = interpolate_pose(self.odom, stamp, self.sync_tolerance)
+                self.pose_source = "odometry_interpolation"
         except ValueError as e:
             self.reason = str(e)
             return
@@ -305,6 +429,12 @@ class TargetEstimator:
         for box in msg.bounding_boxes:
             if box.Class != self.label or box.xmax <= box.xmin or box.ymax <= box.ymin:
                 continue
+            # A low-confidence proposal may sustain an associated track, but
+            # cannot initialize a filter or count toward reacquisition.
+            weak = box.probability < getattr(self,"acquisition_confidence",.6)
+            if weak and (not self.was_valid or stale_filter):
+                self.reason = "weak_detection_requires_confirmed_track"
+                continue
             try:
                 z, variance, method = self.measure(box, stamp, p, R)
                 if not np.isfinite(z).all() or np.linalg.norm(z-p) > self.max_range:
@@ -312,13 +442,13 @@ class TargetEstimator:
                 if self.filter.x is not None and not stale_filter:
                     x, P = self.filter.predicted(max(0, stamp-self.filter.stamp))
                     delta = z-x[:3]
-                    score = delta@np.linalg.solve(P[:3,:3]+np.eye(3)*variance,delta)
-                    if score > self.filter.gate:
+                    score = delta@np.linalg.solve(P[:3,:3]+measurement_covariance(variance),delta)
+                    if score > self.filter.gate * (0.5 if weak else 1.0):
                         self.reason = "association_gate_rejected"
                         continue
                 else:
                     score = -box.probability
-                candidates.append((score, z, variance, method))
+                candidates.append((score, z, variance, method, box))
             except ValueError as e:
                 self.reason = str(e)
         if not candidates:
@@ -327,16 +457,21 @@ class TargetEstimator:
             if not msg.bounding_boxes:
                 self.reason = "no_detection"
             return
-        _, z, variance, method = min(candidates, key=lambda c:c[0])
+        _, z, variance, method, box = min(candidates, key=lambda c:c[0])
         if stale_filter:
             self.reset("reacquiring")
         if self.filter.update(z, variance, stamp):
+            self.update_height_scale(box,stamp,p,R)
             self.count += 1
             if self.count == self.confirmations:
                 self.track_id += 1
             self.last_accept_wall = time.monotonic()
             self.reason, self.method = "accepted", method
-            raw = self.make_odom(z, np.zeros(3), np.eye(6)*variance, rospy.Time.now())
+            covariance = np.zeros((6,6))
+            covariance[:3,:3] = measurement_covariance(variance)
+            covariance[3:,3:] = np.eye(3)*1.e3
+            self.last_measurement_std = float(np.sqrt(np.linalg.eigvalsh(covariance[:3,:3]).max()))
+            raw = self.make_odom(z, np.zeros(3), covariance, rospy.Time.now())
             self.raw_pub.publish(raw)
         else:
             self.reason = "innovation_rejected"
@@ -377,7 +512,10 @@ class TargetEstimator:
                     validity_reason = "confirming_observations"
                 else:
                     x,P = self.filter.predicted(age)
-                    valid = bool(np.max(np.linalg.eigvalsh(P[:3,:3])) <= self.max_position_std**2)
+                    # Schmitt trigger: acquiring remains strict, but a tracked
+                    # target does not toggle every timer tick near that limit.
+                    limit = self.loss_position_std if self.was_valid else self.max_position_std
+                    valid = bool(np.max(np.linalg.eigvalsh(P[:3,:3])) <= limit**2)
                     state = ("tracking" if receipt_age<=self.fresh_age else "coasting") if valid else "lost"
                     validity_reason = "valid" if valid else "position_uncertainty"
             # A declared loss requires fresh confirmation before flight resumes.
@@ -390,11 +528,15 @@ class TargetEstimator:
                 observation_age=age if math.isfinite(age) else None,
                 observation_stamp=self.filter.stamp, clock="sensor", output_clock="ros",
                 range_method=self.method, reason=self.reason,
+                pose_source=self.pose_source,
+                height_scale=self.height_scale,
+                measurement_std=self.last_measurement_std,
                 validity_reason=validity_reason,
                 detection_gap=receipt_age if self.last_accept_wall else None,
                 position_std=float(np.sqrt(np.max(np.linalg.eigvalsh(P[:3,:3])))) if P is not None else None)))
             if valid:
-                self.odom_pub.publish(self.make_odom(x[:3],x[3:],P,now))
+                output = self.make_odom(x[:3],x[3:6],P,now)
+                self.odom_pub.publish(output)
 
 
 if __name__ == "__main__":

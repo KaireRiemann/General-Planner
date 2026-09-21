@@ -47,6 +47,8 @@ def main():
                ('tracking_detector', 'yoloe_bbox_node.py'),
                ('tracking_detector', 'target_state_estimator.py'),
                ('tracking_detector', 'target_path_predictor_node'),
+               ('tracking_detector', 'target_lidar_cluster'),
+               ('tracking_detector', 'target_cloud_filter'),
                ('general_planner_release', 'planner_detector_release'),
                ('unity_planner_bridge', 'unity_cmd_odom_bridge.py'),
                ('ros_tcp_endpoint', 'default_server_endpoint.py')]
@@ -55,6 +57,8 @@ def main():
         assert paths and all(release in Path(p).resolve().parents for p in paths), (name, paths)
     for path in (release / 'src/aperture_detector/polygon_hole_step_viz',
                  release / 'src/tracking_detector/target_path_predictor_node',
+                 release / 'src/tracking_detector/target_lidar_cluster',
+                 release / 'src/tracking_detector/target_cloud_filter',
                  release / 'src/general_planner_release/bin/planner_runtime_node.bin'):
         output = subprocess.check_output(['ldd', str(path)], env=env, text=True)
         assert 'not found' not in output, output

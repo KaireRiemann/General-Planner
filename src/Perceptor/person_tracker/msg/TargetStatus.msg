@@ -1,0 +1,11 @@
+uint8 WAITING=0
+uint8 TRACKING=1
+uint8 PREDICTING=2
+uint8 LOST=3
+std_msgs/Header header
+uint8 state
+int32 target_id
+string label
+time last_observation_stamp
+float64 observation_age
+bool odom_publishable

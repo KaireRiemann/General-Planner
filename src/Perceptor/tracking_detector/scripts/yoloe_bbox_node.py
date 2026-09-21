@@ -4,6 +4,7 @@ import os
 import json
 import sys
 import threading
+import time
 from pathlib import Path
 from queue import Empty, Full, Queue
 
@@ -26,6 +27,9 @@ class YoloeSemanticPublisher:
         self.output_width = int(rospy.get_param("~output_width", 640))
         self.output_height = int(rospy.get_param("~output_height", 480))
         self.confidence = float(rospy.get_param("~confidence", 0.6))
+        self.tracking_confidence = min(self.confidence,max(.05,float(rospy.get_param("~tracking_confidence",.4))))
+        self.target_label = str(rospy.get_param("~target_label","car"))
+        self.status_receipt = 0.0
         self.debug = bool(rospy.get_param("~debug", False))
         self.publish_visualization = bool(rospy.get_param("~publish_visualization", True))
         self.odom_sync_slop = max(1e-9, float(rospy.get_param("~odom_sync_slop", 0.05)))
@@ -57,6 +61,7 @@ class YoloeSemanticPublisher:
     def _status_callback(self, message):
         try:
             self.tracking_status = json.loads(message.data)
+            self.status_receipt = time.monotonic()
         except (ValueError, TypeError):
             pass
 
@@ -190,10 +195,15 @@ class YoloeSemanticPublisher:
 
     def _process_frame(self, rgb_msg, odom_msg):
         rgb, compressed_rgb = self._prepare_frame(rgb_msg)
+        # Use lower-score proposals only to maintain an already confirmed
+        # target. The estimator still requires spatial association and strong
+        # observations for acquisition/reacquisition.
+        maintaining = bool(self.tracking_status.get("valid")) and time.monotonic()-self.status_receipt < 1.0
+        threshold = self.tracking_confidence if maintaining else self.confidence
         with self.torch.no_grad():
             results = self.model.predict(
                 rgb,
-                conf=self.confidence,
+                conf=threshold,
                 imgsz=(self.output_height, self.output_width),
                 device=self.device,
                 retina_masks=False,
@@ -241,6 +251,8 @@ class YoloeSemanticPublisher:
             class_id = class_ids[index]
             if class_id < 0 or class_id >= len(self.class_names):
                 rospy.logwarn_throttle(1.0, "YOLOE returned invalid class id %d.", class_id)
+                continue
+            if confidences[index] < self.confidence and self.class_names[class_id] != self.target_label:
                 continue
             x_min, y_min, x_max, y_max = boxes[index]
             detection_box = BoundingBox()

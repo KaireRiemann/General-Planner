@@ -136,6 +136,125 @@ void FrontierManager::setTaskDomain(bool target) {
   requestGlobalRecluster();
 }
 
+FrontierGranularityProfile FrontierManager::captureCurrentProfile() const {
+  FrontierGranularityProfile profile;
+  profile.update_length = frtp_.update_length_;
+  profile.cluster_min_size = frtp_.cluster_min_size_;
+  profile.cluster_min_radius = frtp_.cluster_min_radius_;
+  profile.cluster_minmum_point_num = frtp_.cluster_minmum_point_num_;
+  profile.cluster_match_radius = frtp_.cluster_match_radius_;
+  profile.sample_pillar_min_height = vpp_.sample_pillar_min_height_;
+  profile.sample_pillar_max_height = vpp_.sample_pillar_max_height_;
+  profile.sample_pillar_height_layer_num = vpp_.sample_pillar_height_layer_num_;
+  profile.sample_pillar_min_radius = vpp_.sample_pillar_min_radius_;
+  profile.sample_pillar_max_radius = vpp_.sample_pillar_max_radius_;
+  profile.consider_range = vpp_.consider_range_;
+  return profile;
+}
+
+void FrontierManager::applyProfile(const FrontierGranularityProfile &profile) {
+  frtp_.update_length_ = profile.update_length;
+  frtp_.cluster_min_size_ = profile.cluster_min_size;
+  frtp_.cluster_min_radius_ = profile.cluster_min_radius;
+  frtp_.cluster_minmum_point_num_ = profile.cluster_minmum_point_num;
+  frtp_.cluster_match_radius_ = profile.cluster_match_radius;
+  vpp_.sample_pillar_min_height_ = profile.sample_pillar_min_height;
+  vpp_.sample_pillar_max_height_ = profile.sample_pillar_max_height;
+  vpp_.sample_pillar_height_layer_num_ =
+      std::max(1, profile.sample_pillar_height_layer_num);
+  vpp_.sample_pillar_min_radius_ = profile.sample_pillar_min_radius;
+  vpp_.sample_pillar_max_radius_ = profile.sample_pillar_max_radius;
+  vpp_.consider_range_ = std::max(1, profile.consider_range);
+}
+
+void FrontierManager::rebuildOriginViewpoints() {
+  origin_viewpoints_.clear();
+  const int height_layers = std::max(1, vpp_.sample_pillar_height_layer_num_);
+  const int radius_layers = std::max(1, vpp_.sample_pillar_radius_layer_num_);
+  const int circle_samples =
+      std::max(1, vpp_.sample_pillar_circle_sample_num_);
+  float start_degree = 0;
+  const float degree_step = 2 * M_PI / static_cast<float>(circle_samples);
+  const float start_degree_step =
+      degree_step / static_cast<float>(height_layers);
+  const float height_step =
+      (vpp_.sample_pillar_max_height_ - vpp_.sample_pillar_min_height_) /
+      static_cast<float>(height_layers);
+  const float radius_step =
+      (vpp_.sample_pillar_max_radius_ - vpp_.sample_pillar_min_radius_) /
+      static_cast<float>(radius_layers);
+  for (float height = vpp_.sample_pillar_min_height_;
+       height <= vpp_.sample_pillar_max_height_ - 1e-3; height += height_step) {
+    for (float radius = vpp_.sample_pillar_min_radius_;
+         radius <= vpp_.sample_pillar_max_radius_ - 1e-3;
+         radius += radius_step) {
+      start_degree += start_degree_step;
+      for (float degree = start_degree;
+           degree <= start_degree + 2 * M_PI - 1e-6; degree += degree_step) {
+        origin_viewpoints_.emplace_back(radius * cos(degree),
+                                        radius * sin(degree), height);
+      }
+    }
+  }
+}
+
+void FrontierManager::loadIndoorProfile(ros::NodeHandle &nh) {
+  indoor_granularity_profile_ = default_granularity_;
+  nh.param("indoor_frontier/update_length",
+           indoor_granularity_profile_.update_length,
+           indoor_granularity_profile_.update_length);
+  nh.param("indoor_frontier/cluster_min_size",
+           indoor_granularity_profile_.cluster_min_size,
+           indoor_granularity_profile_.cluster_min_size);
+  nh.param("indoor_frontier/cluster_min_radius",
+           indoor_granularity_profile_.cluster_min_radius,
+           indoor_granularity_profile_.cluster_min_radius);
+  nh.param("indoor_frontier/cluster_minmum_point_num",
+           indoor_granularity_profile_.cluster_minmum_point_num,
+           indoor_granularity_profile_.cluster_minmum_point_num);
+  nh.param("indoor_frontier/cluster_match_radius",
+           indoor_granularity_profile_.cluster_match_radius,
+           indoor_granularity_profile_.cluster_match_radius);
+  nh.param("indoor_frontier/sample_pillar_min_height",
+           indoor_granularity_profile_.sample_pillar_min_height,
+           indoor_granularity_profile_.sample_pillar_min_height);
+  nh.param("indoor_frontier/sample_pillar_max_height",
+           indoor_granularity_profile_.sample_pillar_max_height,
+           indoor_granularity_profile_.sample_pillar_max_height);
+  nh.param("indoor_frontier/sample_pillar_height_layer_num",
+           indoor_granularity_profile_.sample_pillar_height_layer_num,
+           indoor_granularity_profile_.sample_pillar_height_layer_num);
+  nh.param("indoor_frontier/sample_pillar_min_radius",
+           indoor_granularity_profile_.sample_pillar_min_radius,
+           indoor_granularity_profile_.sample_pillar_min_radius);
+  nh.param("indoor_frontier/sample_pillar_max_radius",
+           indoor_granularity_profile_.sample_pillar_max_radius,
+           indoor_granularity_profile_.sample_pillar_max_radius);
+  nh.param("indoor_frontier/consider_range",
+           indoor_granularity_profile_.consider_range,
+           indoor_granularity_profile_.consider_range);
+}
+
+void FrontierManager::applyFrontierGranularity(bool indoor) {
+  if (indoor_granularity_ == indoor) {
+    return;
+  }
+  indoor_granularity_ = indoor;
+  applyProfile(indoor ? indoor_granularity_profile_ : default_granularity_);
+  rebuildOriginViewpoints();
+  ++frontier_revision_;
+  audited_frontier_revision_ = std::numeric_limits<uint64_t>::max();
+  frontier_signature_initialized_ = false;
+  releaseDerivedViewpointCache();
+  requestGlobalRecluster();
+  ROS_INFO_STREAM("[frontier] granularity="
+                  << (indoor ? "indoor" : "default")
+                  << " update_length=" << frtp_.update_length_
+                  << " cluster_min_size=" << frtp_.cluster_min_size_
+                  << " cluster_min_radius=" << frtp_.cluster_min_radius_
+                  << " viewpoints=" << origin_viewpoints_.size());
+}
+
 void FrontierManager::requestGlobalRecluster() {
   force_recluster_.clear();
   global_audit_pending_ = true;
@@ -510,29 +629,9 @@ void FrontierManager::init(ros::NodeHandle &nh, LIOInterface::Ptr &lio_interface
       Eigen::Vector3i::Ones();
   frtp_.bits_need_.setConstant(32);
   frtp_.idx_byte_size_ = 3 * sizeof(int32_t);
-  float start_degree = 0;
-  float degree_step = 2 * M_PI / vpp_.sample_pillar_circle_sample_num_;
-  float start_degree_step =
-      degree_step / (float)vpp_.sample_pillar_height_layer_num_;
-  float height_step =
-      (vpp_.sample_pillar_max_height_ - vpp_.sample_pillar_min_height_) /
-      vpp_.sample_pillar_height_layer_num_;
-  float radius_step =
-      (vpp_.sample_pillar_max_radius_ - vpp_.sample_pillar_min_radius_) /
-      vpp_.sample_pillar_radius_layer_num_;
-  for (float height = vpp_.sample_pillar_min_height_;
-       height <= vpp_.sample_pillar_max_height_ - 1e-3; height += height_step) {
-    for (float radius = vpp_.sample_pillar_min_radius_;
-         radius <= vpp_.sample_pillar_max_radius_ - 1e-3;
-         radius += radius_step) {
-      start_degree += start_degree_step;
-      for (float degree = start_degree;
-           degree <= start_degree + 2 * M_PI - 1e-6; degree += degree_step) {
-        Eigen::Vector3f vp(radius * cos(degree), radius * sin(degree), height);
-        origin_viewpoints_.push_back(vp);
-      }
-    }
-  }
+  rebuildOriginViewpoints();
+  default_granularity_ = captureCurrentProfile();
+  loadIndoorProfile(nh);
   frtd_ = FrontierData(frtp_.idx_byte_size_);
   observation_evidence_.clear();
   frtd_.label_map_.max_load_factor(1.5);

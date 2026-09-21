@@ -1,261 +1,261 @@
-#include "general_core/tracking/tracking_frontend.hpp"
-
+// Adapted 2026-09-20 from Elastic-Tracker env/env.hpp (GPL-3.0).
+// Jialin Ji, Neng Pan, Fei Gao / ZJU FAST Lab.
+// https://github.com/KaireRiemann/Elastic-Tracker/tree/0a302a2a9cc8b733e74941fdd4af3fb449447bea
+#include <general_core/tracking/tracking_frontend.hpp>
+#include <general_core/tracking/tracking_map_query.hpp>
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <queue>
 #include <unordered_map>
 
 namespace general_planner {
-using general_utils::Vec3f;
-using general_utils::vec_E;
-
+namespace {
+constexpr double pi = 3.14159265358979323846;
+using Key = std::array<int, 3>;
+struct KeyHash {
+    std::size_t operator()(const Key &k) const {
+        std::size_t h = 0;
+        for (int v : k) h ^= std::hash<int>{}(v) + 0x9e3779b9 + (h << 6) + (h >> 2);
+        return h;
+    }
+};
+struct Node { Key key; double g; int parent; bool closed{false}; };
+struct Entry {
+    double f, g;
+    int id;
+    bool operator<(const Entry &rhs) const { return f > rhs.f; }
+};
+}
 TrackingFrontend::TrackingFrontend(const Config &cfg, const MapManager::Ptr &map)
     : cfg_(cfg), map_manager_(map) {}
 
-bool TrackingFrontend::safe(const Vec3f &p) const {
+bool TrackingFrontend::safe(const Vec &p) const {
     if (!p.allFinite()) return false;
-    if (!map_manager_ || !map_manager_->ready()) return true;
-    const auto type = map_manager_->getInfGridType(p);
-    if (type == general_utils::OCCUPIED || type == general_utils::OUT_OF_MAP) return false;
-    if (cfg_.unknown_as_occupied && type != general_utils::KNOWN_FREE) return false;
-    if (!map_manager_->hasESDF()) return true;
-    double distance=0.0; Vec3f gradient;
-    return map_manager_->evaluateESDF(p,distance,gradient) && distance>=cfg_.safe_distance;
+    if (!map_manager_) return true;
+    return !trackingInflatedOccupied(map_manager_, p, cfg_.unknown_as_occupied);
 }
-
-bool TrackingFrontend::visible(const Vec3f &p, const Vec3f &target) const {
-    if (!safe(p)) return false;
-    if (!map_manager_ || !map_manager_->ready()) return true;
-    // Visibility uses raw occupancy; vehicle clearance belongs to the flight
-    // corridor. End at the target's physical surface: its occupied body is
-    // not an occluder between the camera and the observed target.
-    const Vec3f ray = target - p;
-    const double distance = ray.norm();
-    if (distance < 1.e-6) return false;
-    const Vec3f direction = ray / distance;
-    const Vec3f half_size(std::max(0.01, cfg_.target_half_width),
-                         std::max(0.01, cfg_.target_half_width),
-                         std::max(0.01, cfg_.target_half_height));
-    double surface_distance = distance;
-    for (int axis = 0; axis < 3; ++axis)
-        if (std::abs(direction(axis)) > 1.e-6)
-            surface_distance = std::min(surface_distance, half_size(axis) / std::abs(direction(axis)));
-    const Vec3f end = target - direction * std::min(0.9 * distance,
-        surface_distance + map_manager_->getResolution());
-    return map_manager_->isLineFree(p, end, false, cfg_.unknown_as_occupied);
+bool TrackingFrontend::lineFree(const Vec &a, const Vec &b) const {
+    return trackingSeedLineFree(map_manager_, a, b, cfg_.unknown_as_occupied);
 }
-
-bool TrackingFrontend::connectRegion(const Vec3f &start,
-                                     const traj_opt::DynamicTargetState &target,
-                                     const Vec3f &preferred, vec_E<Vec3f> &path,
-                                     const std::chrono::steady_clock::time_point &deadline) const {
+bool TrackingFrontend::visible(const Vec &p, const Vec &center) const {
+    return safe(p) && trackingVisibilityRayFree(map_manager_, p, center, cfg_.unknown_as_occupied);
+}
+bool TrackingFrontend::search(const Vec &start, const Vec &goal, bool ring,
+                              Path &path, const Deadline &deadline) const {
     path.clear();
-    const auto line = [&](const Vec3f &a, const Vec3f &b) {
-        return !map_manager_ || !map_manager_->ready() ||
-            map_manager_->isLineFree(a, b, true, cfg_.unknown_as_occupied);
+    if (!safe(start)) return false;
+    const double resolution = map_manager_ ? map_manager_->getInfResolution() : 0.15;
+    const auto reached = [&](const Vec &p) {
+        if (!ring) return (p-goal).norm() < 1.8*resolution && lineFree(p, goal);
+        const Eigen::Vector2d radial=(p-goal).head<2>();
+        if (std::abs(radial.norm()-cfg_.tracking_distance) > std::max(cfg_.distance_tolerance,resolution) ||
+            std::abs(p.z()-goal.z()) > std::max(cfg_.height_tolerance,resolution) ||
+            radial.norm()<1.e-6 || !visible(p,goal)) return false;
+        Vec projected=goal;
+        projected.head<2>()+=cfg_.tracking_distance*radial.normalized();
+        // Visibility regions are swept on the nominal ring. A point within
+        // the distance tolerance can see around a wall while its projection
+        // cannot; keep searching instead of creating an invalid fan seed.
+        return visible(projected,goal);
     };
-    if (visible(preferred, target.position) && line(start, preferred)) {
-        path = {start, preferred}; return true;
+    if (reached(start)) { path = {start}; if (!ring) path.push_back(goal); return true; }
+    Vec direct = goal;
+    if (ring) {
+        Eigen::Vector2d direction = (start-goal).head<2>();
+        if (direction.norm() < 1.e-6) direction = Eigen::Vector2d(-1, 0);
+        direct.head<2>() += cfg_.tracking_distance*direction.normalized();
     }
-    if (!cfg_.use_astar || !safe(start)) return false;
-    const double step = map_manager_ && map_manager_->ready()
-        ? std::max(0.15, map_manager_->getInfResolution()) : 0.25;
-    const double lower = std::max(0.2, cfg_.tracking_distance - cfg_.distance_lower_tolerance);
-    const double upper = cfg_.tracking_distance + cfg_.distance_upper_tolerance;
-    const double height = target.position.z() + cfg_.height_offset;
-    const auto heuristic = [&](const Vec3f &p) {
-        const double d = (p - target.position).head<2>().norm();
-        return std::hypot(std::max({0.0, lower - d, d - upper}),
-                          std::max(0.0, std::abs(p.z() - height) - cfg_.height_tolerance));
+    if (lineFree(start, direct) && (!ring || visible(direct, goal))) {
+        path = {start, direct}; return true;
+    }
+    const auto key = [&](const Vec &p) {
+        const auto index = (p/resolution).array().floor().cast<int>().eval();
+        return Key{index.x(), index.y(), index.z()};
     };
-    struct Key { int x, y, z; bool operator==(const Key &b) const { return x==b.x && y==b.y && z==b.z; } };
-    struct Hash { std::size_t operator()(const Key &k) const {
-        return std::hash<int>{}(k.x) ^ (std::hash<int>{}(k.y) << 1) ^ (std::hash<int>{}(k.z) << 2);
-    }};
-    struct Node { Key key; double g; int parent; };
-    struct Entry { double f, g; int id; bool operator<(const Entry &b) const { return f > b.f; } };
+    const auto position = [&](const Key &k) {
+        return Vec((k[0]+0.5)*resolution, (k[1]+0.5)*resolution, (k[2]+0.5)*resolution);
+    };
+    const auto heuristic = [&](const Vec &p) {
+        Vec delta = goal-p;
+        if (ring) {
+            const double distance = delta.head<2>().norm();
+            if (distance > 1.e-9) delta.head<2>() *= 1.0-cfg_.tracking_distance/distance;
+            else delta.x() = cfg_.tracking_distance;
+        }
+        return delta.cwiseAbs().sum();
+    };
+    std::unordered_map<Key, int, KeyHash> ids;
     std::vector<Node> nodes;
     nodes.reserve(4096);
-    std::unordered_map<Key, int, Hash> visited;
-    std::priority_queue<Entry> queue;
-    const auto point = [&](const Key &k) { return Vec3f(start + step * Vec3f(k.x, k.y, k.z)); };
-    nodes.push_back({{0,0,0}, 0.0, -1}); visited.emplace(nodes[0].key, 0);
-    queue.push({heuristic(start), 0.0, 0});
-    while (!queue.empty() && nodes.size() < 8192) {
+    std::priority_queue<Entry> open;
+    const Key first = key(start);
+    nodes.push_back({first, 0., -1}); ids.emplace(first, 0);
+    open.push({heuristic(start), 0., 0});
+    int found = -1;
+    while (!open.empty() && nodes.size() < (1U << 18)) {
         if (std::chrono::steady_clock::now() >= deadline) return false;
-        const Entry entry = queue.top(); queue.pop();
-        const Node node = nodes[entry.id];
-        if (entry.g > node.g + 1.e-9) continue;
-        const Vec3f p = point(node.key);
-        if (heuristic(p) < 1.e-6 && visible(p, target.position)) {
-            for (int id = entry.id; id >= 0; id = nodes[id].parent) path.push_back(point(nodes[id].key));
-            std::reverse(path.begin(), path.end()); return true;
-        }
-        for (int dx=-1; dx<=1; ++dx) for (int dy=-1; dy<=1; ++dy) for (int dz=-1; dz<=1; ++dz) {
-            if (dx==0 && dy==0 && dz==0) continue;
-            Key key{node.key.x+dx, node.key.y+dy, node.key.z+dz};
-            const Vec3f q = point(key);
-            if ((q-start).norm() > cfg_.searching_horizon || !safe(q) || !line(p,q)) continue;
-            const double g = node.g + step * std::sqrt(dx*dx+dy*dy+dz*dz);
-            auto found = visited.find(key);
+        const Entry entry = open.top(); open.pop();
+        if (nodes[entry.id].closed || entry.g != nodes[entry.id].g) continue;
+        nodes[entry.id].closed = true;
+        // Copy before expanding: insertion can reallocate the vector.
+        const Node current = nodes[entry.id];
+        const Vec p = entry.id == 0 ? start : position(current.key);
+        if (reached(p)) { found = entry.id; break; }
+        for (int axis = 0; axis < 3; ++axis) for (int sign : {-1, 1}) {
+            Key neighbor = current.key; neighbor[axis] += sign;
+            const Vec next = position(neighbor);
+            if (!safe(next)) continue;
+            const double g = current.g+(next-p).norm();
+            auto it = ids.find(neighbor);
             int id;
-            if (found == visited.end()) {
-                id = nodes.size(); visited.emplace(key,id); nodes.push_back({key,g,entry.id});
+            if (it == ids.end()) {
+                id = static_cast<int>(nodes.size());
+                ids.emplace(neighbor, id); nodes.push_back({neighbor, g, entry.id});
             } else {
-                id = found->second;
+                id = it->second;
                 if (g >= nodes[id].g) continue;
-                nodes[id].g=g; nodes[id].parent=entry.id;
+                nodes[id].g = g; nodes[id].parent = entry.id; nodes[id].closed = false;
             }
-            queue.push({g + heuristic(q) + 0.02*(q-preferred).norm(), g, id});
+            // Immutable entries preserve heap ordering when g decreases.
+            open.push({g+heuristic(next), g, id});
         }
     }
-    return false;
-}
-
-traj_opt::TrackingVisibleRegion TrackingFrontend::visibleRegion(
-        const traj_opt::DynamicTargetState &target, const Vec3f &seed) const {
-    traj_opt::TrackingVisibleRegion region;
-    region.t = target.t; region.target_position = target.position;
-    region.visible_point = seed;
-    const Vec3f delta = seed - target.position;
-    const double radius = delta.head<2>().norm();
-    if (radius < 0.1 || !visible(seed, target.position)) return region;
-    const double angle = std::atan2(delta.y(), delta.x());
-    constexpr int rays = 32;
-    constexpr double pi = 3.14159265358979323846;
-    const double step = pi / rays;
-    double left = angle, right = angle;
-    const auto point = [&](double a) { return Vec3f(target.position + Vec3f(radius*std::cos(a), radius*std::sin(a),delta.z())); };
-    for (int i=1; i<=rays && visible(point(angle-i*step),target.position); ++i) left=angle-i*step;
-    for (int i=1; i<=rays && visible(point(angle+i*step),target.position); ++i) right=angle+i*step;
-    region.visible_point = point(0.5*(left+right));
-    region.theta = 0.5*(right-left);
-    region.confidence = std::min(1.0,region.theta/std::max(0.05,cfg_.visibility_angle_clearance));
-    region.valid = region.theta > 0.01;
-    return region;
-}
-
-bool TrackingFrontend::buildProblem(const general_utils::StatePVAJ &head,
-                                    const traj_opt::DynamicTargetStates &prediction,
-                                    traj_opt::TrackingProblem &problem,
-                                    const Vec3f *reference_viewpoint,
-                                    const traj_opt::DynamicTargetState *reference_target) const {
-    problem = traj_opt::TrackingProblem{};
-    if (!head.allFinite() || prediction.size()<2 || !safe(head.col(0))) return false;
-    for (std::size_t i=0;i<prediction.size();++i)
-        if (!prediction[i].position.allFinite() || !prediction[i].velocity.allFinite() ||
-            !std::isfinite(prediction[i].t) || (i && prediction[i].t<=prediction[i-1].t)) return false;
-    const double trusted = prediction.back().t;
-    if (trusted < 0.15) return false;
-    const double horizon = std::min(std::max(0.8,cfg_.nominal_horizon), trusted+std::max(0.0,cfg_.max_extrapolation));
-    problem.head_pvaj=head; problem.trusted_horizon=trusted;
-    problem.safe_distance=cfg_.safe_distance;
-    problem.tracking_distance=cfg_.tracking_distance;
-    problem.distance_tolerance=cfg_.distance_tolerance;
-    problem.height_offset=cfg_.height_offset; problem.height_tolerance=cfg_.height_tolerance;
-    problem.target_half_width=cfg_.target_half_width; problem.target_half_height=cfg_.target_half_height;
-    problem.od_h_lower=std::max(0.1,cfg_.tracking_distance-cfg_.distance_lower_tolerance);
-    problem.od_h_upper=cfg_.tracking_distance+cfg_.distance_upper_tolerance;
-    problem.od_v_lower=cfg_.height_offset-cfg_.height_tolerance;
-    problem.od_v_upper=cfg_.height_offset+cfg_.height_tolerance;
-    problem.use_visible_region=cfg_.use_visible_region;
-    problem.reacquire_mode=(head.col(0)-prediction.front().position).head<2>().norm()>problem.od_h_upper;
-    problem.closing_gain=cfg_.closing_gain; problem.max_closing_speed=cfg_.max_closing_speed;
-    // Extrapolation is explicit, bounded and downweighted by the cost manager.
-    const int count=std::max(2,static_cast<int>(std::ceil(horizon/std::max(0.1,cfg_.sample_dt))));
-    for (int i=0;i<=count;++i) problem.target_prediction.push_back(traj_opt::sampleTrackingTarget(prediction,horizon*i/count));
-    problem.guide_path.push_back(head.col(0));
-    problem.guide_t.push_back(0.0);
-    Vec3f seed=head.col(0);
-    if (head.col(1).norm() > 0.1) {
-        const double dt = std::min(0.2, horizon / count);
-        const Vec3f forward = seed + dt * head.col(1) + 0.5 * dt * dt * head.col(2);
-        if (!safe(forward) || (map_manager_ && map_manager_->ready() &&
-            !map_manager_->isLineFree(seed, forward, true, cfg_.unknown_as_occupied))) return false;
-        problem.guide_path.push_back(forward);
-        seed = forward;
-    }
-    Vec3f bearing=seed-prediction.front().position;
-    if (reference_viewpoint && reference_target && reference_viewpoint->allFinite())
-        bearing=*reference_viewpoint-reference_target->position;
-    bearing.z()=0.0;
-    if (bearing.norm()<1.e-4) bearing=Vec3f(-1,0,0);
-    bearing.normalize();
-    const auto deadline=std::chrono::steady_clock::now()+std::chrono::duration_cast<std::chrono::steady_clock::duration>(
-        std::chrono::duration<double>(std::max(0.001,cfg_.search_budget_seconds)));
-    for (int i=1;i<=count;++i) {
-        const auto &target=problem.target_prediction[i];
-        Vec3f preferred=target.position+cfg_.tracking_distance*bearing;
-        preferred.z()=target.position.z()+cfg_.height_offset;
-        vec_E<Vec3f> segment;
-        if (!connectRegion(seed,target,preferred,segment,deadline)) return false;
-        for (std::size_t j=1;j<segment.size();++j)
-            if ((segment[j]-problem.guide_path.back()).norm()>1.e-4) problem.guide_path.push_back(segment[j]);
-        seed=segment.back();
-        problem.viewpoints.push_back(seed); problem.target_sample_times.push_back(target.t);
-        if (cfg_.use_visible_region) problem.visible_regions.push_back(visibleRegion(target,seed));
-        bearing=seed-target.position; bearing.z()=0.0;
-        if (bearing.norm()>1.e-4) bearing.normalize(); else bearing=Vec3f(-1,0,0);
-        if (std::chrono::steady_clock::now()>=deadline) return false;
-    }
-    // A distant target need not be reached in this horizon. Bound the geometric
-    // prefix while preserving the original observation horizon and moving tail.
-    const double budget=std::min(cfg_.max_speed*horizon,
-        head.col(1).norm()*horizon+0.35*cfg_.max_acc*horizon*horizon);
-    vec_E<Vec3f> path{head.col(0)};
-    double length=0.0;
-    for (std::size_t i=1;i<problem.guide_path.size() && length<budget;++i) {
-        const Vec3f d=problem.guide_path[i]-path.back();
-        const double distance=d.norm(); if (distance<1.e-6) continue;
-        const double travel=std::min(distance,budget-length);
-        path.push_back(path.back()+d*(travel/distance)); length+=travel;
-    }
-    if (path.size()==1) path.push_back(path.front());
-    problem.guide_path=std::move(path); problem.guide_t.assign(problem.guide_path.size(),0.0);
-    double arc=0.0;
-    for (std::size_t i=1;i<problem.guide_path.size();++i) {
-        arc+=(problem.guide_path[i]-problem.guide_path[i-1]).norm();
-        problem.guide_t[i]=length>1.e-6 ? horizon*arc/length : horizon*i/(problem.guide_path.size()-1);
-    }
-    problem.tail_pvaj.setZero(); problem.tail_pvaj.col(0)=problem.guide_path.back();
-    Vec3f velocity=problem.target_prediction.back().velocity;
-    const double distance=(problem.tail_pvaj.col(0)-problem.target_prediction.back().position).head<2>().norm();
-    if (distance>problem.od_h_upper && length>1.e-6) {
-        const Vec3f direction=(problem.guide_path.back()-problem.guide_path[problem.guide_path.size()-2]).normalized();
-        velocity=direction*std::min(cfg_.max_speed,velocity.norm()+std::min(cfg_.max_closing_speed,
-                     cfg_.closing_gain*(distance-cfg_.tracking_distance)));
-    }
-    // A velocity reachable under acceleration alone can still require more
-    // distance than this prefix once jerk and a zero-acceleration tail matter.
-    // Use the symmetric jerk-limited speed transition, reserving 10% for the
-    // smooth polynomial joins. This only seeds the terminal boundary; the
-    // optimizer and commit still enforce the complete dynamic constraints.
-    const double initial_speed = velocity.norm() > 1.e-6
-        ? std::max(0.0, head.col(1).dot(velocity.normalized())) : head.col(1).norm();
-    const double acceleration = std::max(0.1, 0.9 * cfg_.max_acc);
-    const double jerk = std::max(0.1, 0.9 * cfg_.max_jerk);
-    // A bang-bang transition alone is too aggressive for the fixed PVAJ
-    // polynomial boundary. A quintic velocity ramp has derivative maxima
-    // 1.875 * dv / T and (10/sqrt(3)) * dv / T^2.
-    double lower = std::min(initial_speed, cfg_.max_speed);
-    double upper = std::min({cfg_.max_speed,
-        initial_speed + acceleration * horizon / 1.875,
-        initial_speed + jerk * horizon * horizon / (10.0 / std::sqrt(3.0))});
-    for (int i = 0; i < 24; ++i) {
-        const double speed = 0.5 * (lower + upper);
-        const double change = std::max(0.0, speed - initial_speed);
-        const double transition = change < acceleration * acceleration / jerk
-            ? 2.0 * std::sqrt(change / jerk) : change / acceleration + acceleration / jerk;
-        if (transition <= horizon && 0.5 * (initial_speed + speed) * transition <= length)
-            lower = speed;
-        else upper = speed;
-    }
-    const double reachable=lower;
-    if (velocity.norm()>reachable && velocity.norm()>1.e-6) velocity*=reachable/velocity.norm();
-    problem.tail_pvaj.col(1)=velocity;
-    problem.min_total_duration=horizon;
-    problem.max_total_duration=horizon+0.8;
+    if (found < 0) return false;
+    for (int id = found; id >= 0; id = nodes[id].parent)
+        path.push_back(id == 0 ? start : position(nodes[id].key));
+    std::reverse(path.begin(), path.end());
+    if (!ring) path.push_back(goal);
     return true;
 }
-
+bool TrackingFrontend::visibleRegion(const Vec &center, Vec &seed,
+                                     traj_opt::TrackingVisibleRegion &region,
+                                     const Deadline &deadline) const {
+    const double theta0 = std::atan2(seed.y()-center.y(), seed.x()-center.x());
+    const double resolution = map_manager_ ? map_manager_->getResolution() : 0.15;
+    const double step = std::clamp(resolution/(2.0*cfg_.tracking_distance), 0.005, 0.1);
+    const auto point = [&](double angle) {
+        return Vec(center+Vec(cfg_.tracking_distance*std::cos(angle),
+                              cfg_.tracking_distance*std::sin(angle), 0.0));
+    };
+    if (!visible(point(theta0), center)) return false;
+    double left = theta0, right = theta0;
+    for (int sign : {-1, 1}) {
+        double &edge = sign < 0 ? left : right;
+        for (double offset = step; offset <= pi; offset += step) {
+            if (std::chrono::steady_clock::now() >= deadline) return false;
+            const double candidate = theta0+sign*offset;
+            if (!visible(point(candidate), center)) break;
+            edge = candidate;
+        }
+    }
+    region.target_position = center;
+    region.visible_point = point(0.5*(left+right));
+    region.theta = 0.5*(right-left);
+    region.valid = true; region.confidence = 1.0;
+    const double clearance = std::min(region.theta, cfg_.visibility_angle_clearance);
+    const double angle = std::clamp(theta0, left+clearance, right-clearance);
+    const Vec adjusted = point(angle);
+    if (safe(adjusted) && visible(adjusted, center)) seed = adjusted;
+    return true;
+}
+void TrackingFrontend::pts2path(const Path &way_pts, Path &path,
+                                const Deadline &deadline) const {
+    path.clear();
+    if (way_pts.empty()) return;
+    path.push_back(way_pts.front());
+    for (std::size_t i = 0; i + 1 < way_pts.size(); ++i) {
+        const Vec &p0 = path.back();
+        const Vec &p1 = way_pts[i + 1];
+        if ((p1 - p0).norm() < 1.e-5) continue;
+        if (!trackingSeedLineFree(map_manager_, p0, p1, cfg_.unknown_as_occupied, 1.5)) {
+            Path short_path;
+            if (search(p0, p1, false, short_path, deadline)) {
+                for (std::size_t k = 1; k < short_path.size(); ++k) {
+                    if ((short_path[k] - path.back()).norm() < 1.e-5) continue;
+                    path.push_back(short_path[k]);
+                }
+                continue;
+            }
+        }
+        path.push_back(p1);
+    }
+    if (path.size() < 2) {
+        path.push_back(path.front());
+    }
+}
+bool TrackingFrontend::buildProblem(const general_utils::StatePVAJ &head,
+                                    const traj_opt::DynamicTargetStates &prediction,
+                                    traj_opt::TrackingProblem &problem) const {
+    problem = {};
+    if (!head.allFinite() || prediction.size() < 2 || !safe(head.col(0)) ||
+        !(cfg_.tracking_distance > 0.0) || !(cfg_.sample_dt > 0.0)) return false;
+    for (std::size_t i = 0; i < prediction.size(); ++i) {
+        const auto &state = prediction[i];
+        if (!std::isfinite(state.t) || !state.position.allFinite() ||
+            !state.velocity.allFinite() || (i && state.t <= prediction[i-1].t)) return false;
+    }
+    if (std::abs(prediction.front().t) > 1.e-6) return false;
+    const double horizon = std::min(cfg_.nominal_horizon, prediction.back().t);
+    if (horizon < cfg_.sample_dt) return false;
+    const int count = std::max(1, static_cast<int>(std::ceil(horizon/cfg_.sample_dt)));
+    const auto deadline = std::chrono::steady_clock::now()+
+        std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+            std::chrono::duration<double>(std::max(0.001, cfg_.search_budget_seconds)));
+    Path seeds;
+    Vec cursor = head.col(0);
+    for (int i = 0; i <= count; ++i) {
+        const double t = horizon*i/count;
+        auto target = traj_opt::sampleTrackingTarget(prediction, t);
+        target.t = t;
+        const Vec center = target.position+Vec(0, 0, cfg_.height_offset);
+        Path segment;
+        if (!search(cursor, center, true, segment, deadline)) return false;
+        cursor = segment.back();
+        seeds.push_back(cursor);
+        problem.target_prediction.push_back(target);
+        problem.target_sample_times.push_back(t);
+    }
+    // Elastic drops the last visible seed/target before corridor generation.
+    if (seeds.size() > 2) {
+        seeds.pop_back();
+        problem.target_prediction.pop_back();
+        problem.target_sample_times.pop_back();
+    }
+    for (std::size_t i = 0; i < seeds.size(); ++i) {
+        traj_opt::TrackingVisibleRegion region;
+        region.t = problem.target_sample_times[i];
+        const Vec center = problem.target_prediction[i].position+Vec(0, 0, cfg_.height_offset);
+        // Elastic generate_visible_regions never aborts planning. A missing
+        // fan only drops the visibility cost for that sample.
+        if (cfg_.use_visible_region)
+            visibleRegion(center, seeds[i], region, deadline);
+        problem.visible_regions.push_back(region);
+    }
+    Path way_pts = seeds;
+    way_pts.insert(way_pts.begin(), head.col(0));
+    pts2path(way_pts, problem.guide_path, deadline);
+    problem.guide_t.clear();
+    problem.guide_t.reserve(problem.guide_path.size());
+    const double path_horizon = std::max(horizon, cfg_.nominal_horizon);
+    for (std::size_t i = 0; i < problem.guide_path.size(); ++i)
+        problem.guide_t.push_back(path_horizon * static_cast<double>(i) /
+                                  std::max<std::size_t>(1, problem.guide_path.size() - 1));
+    problem.head_pvaj = head;
+    problem.tail_pvaj.col(0) = problem.guide_path.back();
+    // Elastic pins the terminal velocity to the current target velocity.
+    problem.tail_pvaj.col(1) = prediction.front().velocity;
+    if (problem.tail_pvaj.col(1).norm() > cfg_.max_speed)
+        problem.tail_pvaj.col(1) *= cfg_.max_speed/problem.tail_pvaj.col(1).norm();
+    problem.viewpoints = seeds;
+    problem.tracking_distance = cfg_.tracking_distance;
+    problem.distance_tolerance = cfg_.distance_tolerance;
+    problem.height_offset = cfg_.height_offset;
+    problem.height_tolerance = cfg_.height_tolerance;
+    problem.visibility_angle_clearance = cfg_.visibility_angle_clearance;
+    problem.min_total_duration = cfg_.nominal_horizon;
+    problem.trusted_horizon = horizon;
+    problem.use_visible_region = cfg_.use_visible_region;
+    return true;
+}
 } // namespace general_planner

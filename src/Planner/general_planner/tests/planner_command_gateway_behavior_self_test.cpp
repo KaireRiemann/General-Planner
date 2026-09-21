@@ -157,15 +157,23 @@ int main(int argc, char **argv) {
     PositionCommand navigation;
     navigation.header.frame_id = "world";
     navigation.trajectory_flag = PositionCommand::TRAJECTORY_STATUS_READY;
-    navigation.trajectory_id = 1001;
-    navigation.position.x = 10.5;
+    navigation.trajectory_id = 999;
+    navigation.position.x = 14.1;
     navigation.position.y = 2.0;
     navigation.position.z = 3.0;
+    navigation_publisher.publish(navigation);
+    expect(!output_capture.waitFor([](const PositionCommand &command) {
+      return command.trajectory_id == 999;
+    }, .10), "timeout recovery replayed a trajectory 4.1 metres ahead");
+    expect(gateway.commandSourceHealth().timeout_hold_active,
+           "rejected recovery command released HOLD");
+    navigation.trajectory_id = 1001;
+    navigation.position.x = 10.1;
     navigation_publisher.publish(navigation);
     expect(output_capture.waitFor(
                [](const PositionCommand &command) {
                  return command.trajectory_id == 1001 &&
-                        positionNear(command.position, 10.5, 2.0, 3.0);
+                        positionNear(command.position, 10.1, 2.0, 3.0);
                },
                2.0),
            "fresh state2state command did not resume after timeout hold");

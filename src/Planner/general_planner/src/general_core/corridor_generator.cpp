@@ -1,3 +1,4 @@
+#include <general_core/tracking/tracking_map_query.hpp>
 /**
 * This file is part of SUPER
 *
@@ -33,8 +34,10 @@ namespace general_planner {
                                          const double seed_line_max_dis, const double min_overlap_threshold,
                                          const double virtual_groud_height, const double virtual_ceil_height,
                                          const double robot_r, const int box_search_skip_num, const int iris_iter_num,
-                                         const optimization_utils::EllipsoidOptimizerConfig &ellipsoid_optimizer_config)
+                                         const optimization_utils::EllipsoidOptimizerConfig &ellipsoid_optimizer_config,
+                                         bool inflated_obstacles)
             : ros_ptr_(ros_ptr), map_manager_(map_manager) {
+        inflated_obstacles_ = inflated_obstacles;
         ciri_ = std::make_shared<CIRI>(ros_ptr_);
         ciri_->setupParams(robot_r, iris_iter_num, ellipsoid_optimizer_config);
         bound_dis_ = bound_dis;
@@ -56,7 +59,7 @@ namespace general_planner {
     bool
     CorridorGenerator::SearchPolytopeOnPath(const vec_Vec3f &path, PolytopeVec &sfcs,
                                             Vec3f &shifted_start_pt,
-                                            bool cut_first_poly) {
+                                            bool cut_first_poly, bool preserve_path) {
         // https://whimsical.com/flow-3TASJFwe1dASYYY2xHEmze
         // password: wtr
         //	TimeConsuming t___("SearchPolytopeOnPath");
@@ -77,6 +80,11 @@ namespace general_planner {
         const int path_size = static_cast<int>(path.size());
 
         while(first_id < path_size && map_manager_->isOccupiedInflate(path[first_id])) {
+            // Tracking CIRI may seed on the target body. Other modes keep the
+            // original skip of every inflated occupied vertex.
+            if (inflated_obstacles_ && trackingOccupancyExclusion().contains(path[first_id])) {
+                break;
+            }
             first_id++;
         }
 
@@ -96,8 +104,11 @@ namespace general_planner {
             second_id = first_id;
             for (int j = first_id + 1; j < path_size; j++) {
                 bool reach_segment = false;
-                if (!map_manager_->isLineFree(path[first_id], path[j], seed_line_max_length_,
-                                          line_seed_neighbor_list)) {
+                const bool seed_free = inflated_obstacles_
+                    ? (path[j]-path[first_id]).norm() <= seed_line_max_length_ &&
+                      trackingSeedLineFree(map_manager_,path[first_id],path[j])
+                    : map_manager_->isLineFree(path[first_id],path[j],seed_line_max_length_,line_seed_neighbor_list);
+                if (!seed_free) {
                     reach_segment = true;
                 }
                 if (reach_segment) {
@@ -125,6 +136,19 @@ namespace general_planner {
                 return false;
             }
 
+            if (preserve_path) {
+                // Collision-free shortcuts can still exclude the curved guide.
+                while (true) {
+                    bool covered = true;
+                    for (int k = first_id; k <= second_id; ++k)
+                        covered = covered && temp_poly.PointIsInside(path[k], 1.e-4);
+                    if (covered) break;
+                    if (second_id <= first_id + 1) return false;
+                    second_id = first_id + std::max(1, (second_id-first_id)/2);
+                    seed_lines.back() = Line{path[first_id], path[second_id]};
+                    if (!GeneratePolytopeFromLine(seed_lines.back(), temp_poly)) return false;
+                }
+            }
 // viz for debug
 //            ros_ptr_->vizCiriPolytope(temp_poly, "debug");
 //            usleep(10000);
@@ -168,7 +192,7 @@ namespace general_planner {
                     }
                 } else {
                     int temp_id = sfcs.size() - 2;
-                    if (temp_id > 0) {
+                    if (temp_id > 0 && !preserve_path) {
                         overlap = sfcs[temp_id].CrossWith(temp_poly);
                         interior_depth = geometry_utils::findInteriorDist(overlap.GetPlanes(), interior_pt);
                         if (interior_depth > sfcs[temp_id + 1].overlap_depth_with_last_one * 0.25) {
@@ -216,10 +240,16 @@ namespace general_planner {
         vec_E<Vec3f> pc;
         getSeedBBox(pt, pt, box_min, box_max);
         // TODO the box did not consider the robot_r
-        map_manager_->boundBoxByLocalMap(box_min, box_max);
-        map_manager_->boxSearch(box_min, box_max, OCCUPIED, pc);
-        box_min.z() += robot_r_;
-        box_max.z() -= robot_r_;
+        map_manager_->boundBoxByLocalMap(box_min, box_max, inflated_obstacles_);
+        if (inflated_obstacles_) {
+            // The map already accounts for aircraft clearance at its virtual
+            // bounds. CIRI's radius only encloses actual obstacle voxel corners.
+            trackingOccupiedVoxels(map_manager_,box_min,box_max,pc);
+        } else {
+            map_manager_->boxSearch(box_min, box_max, OCCUPIED, pc);
+            box_min.z() += robot_r_;
+            box_max.z() -= robot_r_;
+        }
         MatD4f planes;
         Eigen::Vector3d a = pt, b = pt;
         Eigen::Matrix<double, 6, 4> bd = Eigen::Matrix<double, 6, 4>::Zero();
@@ -313,10 +343,16 @@ namespace general_planner {
         Eigen::Vector3d box_max, box_min;
         vec_E<Vec3f> pc, pts{line.first, line.second};
         getSeedBBox(line.first, line.second, box_min, box_max);
-        map_manager_->boundBoxByLocalMap(box_min, box_max);
-        map_manager_->boxSearch(box_min, box_max, OCCUPIED, pc);
-        box_min.z() += robot_r_;
-        box_max.z() -= robot_r_;
+        map_manager_->boundBoxByLocalMap(box_min, box_max, inflated_obstacles_);
+        if (inflated_obstacles_) {
+            // The map already accounts for aircraft clearance at its virtual
+            // bounds. CIRI's radius only encloses actual obstacle voxel corners.
+            trackingOccupiedVoxels(map_manager_,box_min,box_max,pc);
+        } else {
+            map_manager_->boxSearch(box_min, box_max, OCCUPIED, pc);
+            box_min.z() += robot_r_;
+            box_max.z() -= robot_r_;
+        }
         MatD4f planes;
         Eigen::Vector3d a = line.first, b = line.second;
         Eigen::Matrix<double, 6, 4> bd = Eigen::Matrix<double, 6, 4>::Zero();

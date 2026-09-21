@@ -9,8 +9,10 @@
 #include <algorithm>
 #include <cmath>
 #include <deque>
+#include <complex>
 #include <mutex>
 #include <string>
+#include <vector>
 
 namespace {
 
@@ -43,6 +45,11 @@ geometry_msgs::Quaternion quaternionFromYaw(double yaw) {
 struct TargetStateSample {
   ros::Time stamp;
   Eigen::Vector2d velocity;
+  double heading_variance{0.0};
+  Eigen::Vector2d position{Eigen::Vector2d::Zero()};
+  double position_variance{0.01};
+  double velocity_variance{0.01};
+  double observation_age{0.0};
 };
 
 class TargetPathPredictor {
@@ -52,16 +59,17 @@ class TargetPathPredictor {
     nh_.param("minimum_prediction_horizon", minimum_prediction_horizon_, 0.75);
     nh_.param("require_target_valid", require_target_valid_, false);
     nh_.param("enable_turn_prediction", enable_turn_prediction_, false);
+    nh_.param("input_is_cv_extrapolated", input_is_cv_extrapolated_, false);
     nh_.param("prediction_dt", prediction_dt_, 0.25);
     nh_.param("publish_rate", publish_rate_, 20.0);
     nh_.param("input_timeout", input_timeout_, 0.4);
-    nh_.param("heading_window", heading_window_, 0.5);
+    nh_.param("heading_window", heading_window_, 1.0);
     nh_.param("turn_rate_filter", turn_rate_filter_, 0.35);
     nh_.param("turn_rate_decay", turn_rate_decay_, 0.8);
     nh_.param("maximum_speed", maximum_speed_, 4.0);
     nh_.param("maximum_turn_rate", maximum_turn_rate_, 1.2);
     nh_.param("minimum_speed", minimum_speed_, 0.15);
-    nh_.param("turn_rate_deadband", turn_rate_deadband_, 0.04);
+    nh_.param("turn_rate_deadband", turn_rate_deadband_, 0.12);
     nh_.param<std::string>("frame_id", fallback_frame_id_, "world");
 
     prediction_horizon_ = std::max(prediction_horizon_, 0.05);
@@ -120,7 +128,19 @@ class TargetPathPredictor {
     if (!history_.empty() && stamp <= history_.back().stamp) {
       return;
     }
-    history_.push_back({stamp, velocity});
+    // Heading uncertainty comes from velocity covariance, not position age.
+    const Eigen::Vector2d tangent(-velocity.y(), velocity.x());
+    Eigen::Matrix2d covariance;
+    covariance << message->twist.covariance[0], message->twist.covariance[1],
+                  message->twist.covariance[6], message->twist.covariance[7];
+    const double variance = covariance.allFinite()
+        ? std::max(0.0, tangent.dot(covariance*tangent)) /
+          std::max(1.e-6, velocity.squaredNorm()*velocity.squaredNorm()) : 1.e3;
+    history_.push_back({stamp, velocity, variance,
+        Eigen::Vector2d(message->pose.pose.position.x, message->pose.pose.position.y),
+        std::max({.01, message->pose.covariance[0], message->pose.covariance[7]}),
+        std::max({.01, message->twist.covariance[0], message->twist.covariance[7]}),
+        clampValue(observation_age_, 0., .8)});
     while (history_.size() > 2 &&
            (history_.back().stamp - history_.front().stamp).toSec() > 2.0 * heading_window_) {
       history_.pop_front();
@@ -129,42 +149,137 @@ class TargetPathPredictor {
   }
 
   void updateTurnRateLocked() {
-    if (history_.size() < 2) {
-      return;
+    if (history_.size() < 6) { turn_rate_ = 0.0; return; }
+    const auto &newest = history_.back();
+    const double dt = (newest.stamp-history_[history_.size()-2].stamp).toSec();
+    // A sustained heading trend is required. Differencing two noisy EKF
+    // velocities fabricated alternating turns in the straight-car bag.
+    std::vector<double> times, headings;
+    double previous = 0.0, variance = 0.0;
+    for (const auto &sample : history_) {
+      const double t = (sample.stamp-newest.stamp).toSec();
+      if (t < -heading_window_ || sample.velocity.norm() < minimum_speed_) continue;
+      const double raw = std::atan2(sample.velocity.y(),sample.velocity.x());
+      const double heading = headings.empty() ? raw : previous+wrapAngle(raw-previous);
+      previous = heading;
+      times.push_back(t); headings.push_back(heading); variance += sample.heading_variance;
     }
-
-    const TargetStateSample& newest = history_.back();
-    if (newest.velocity.norm() < minimum_speed_) {
-      return;
-    }
-
-    int reference_index = -1;
-    for (int index = static_cast<int>(history_.size()) - 2; index >= 0; --index) {
-      if (history_[index].velocity.norm() < minimum_speed_) {
-        continue;
+    double rate = 0.0;
+    if (times.size() >= 6 && times.back()-times.front() >= .75*heading_window_) {
+      const double n = times.size();
+      double mt=0.0, mh=0.0;
+      for (std::size_t i=0;i<times.size();++i) { mt+=times[i]/n; mh+=headings[i]/n; }
+      double tt=0.0, th=0.0, hh=0.0;
+      for (std::size_t i=0;i<times.size();++i) {
+        tt+=(times[i]-mt)*(times[i]-mt);
+        th+=(times[i]-mt)*(headings[i]-mh);
+        hh+=(headings[i]-mh)*(headings[i]-mh);
       }
-      const double dt = (newest.stamp - history_[index].stamp).toSec();
-      if (dt >= heading_window_) {
-        reference_index = index;
-        break;
-      }
+      const double slope=th/std::max(1.e-9,tt);
+      const double explained=th*th/std::max(1.e-12,tt*hh);
+      const double span=times.back()-times.front();
+      // Correlated filtered observations must not gain artificial confidence
+      // from a high publication rate: do not divide covariance by sample count twice.
+      const double heading_sigma=std::sqrt(variance/n);
+      if (explained >= .80 && std::abs(slope)*span > std::max(.12,3.0*heading_sigma) &&
+          std::abs(slope) > turn_rate_deadband_ && observation_age_ < .8)
+        rate=clampValue(slope,-maximum_turn_rate_,maximum_turn_rate_);
     }
-    if (reference_index < 0) {
-      return;
-    }
-
-    const TargetStateSample& reference = history_[reference_index];
-    const double dt = (newest.stamp - reference.stamp).toSec();
-    if (dt <= 1e-3) {
-      return;
-    }
-    const double current_heading = std::atan2(newest.velocity.y(), newest.velocity.x());
-    const double reference_heading = std::atan2(reference.velocity.y(), reference.velocity.x());
-    const double raw_turn_rate = wrapAngle(current_heading - reference_heading) / dt;
-    const double bounded_turn_rate =
-        clampValue(raw_turn_rate, -maximum_turn_rate_, maximum_turn_rate_);
-    turn_rate_ = (1.0 - turn_rate_filter_) * turn_rate_ + turn_rate_filter_ * bounded_turn_rate;
+    const double alpha=1.0-std::exp(-std::max(0.0,dt)/std::max(.05,turn_rate_filter_));
+    turn_rate_ += alpha*(rate-turn_rate_);
     last_turn_rate_update_stamp_ = newest.stamp;
+  }
+
+  // Fit a single, time-aligned motion model to BOTH position and velocity.
+  // A CV estimator publishes p_obs + age*v_obs at its current stamp, while
+  // velocity still belongs to the observation epoch. Fitting heading alone
+  // cannot distinguish a real turn from correlated velocity jitter.
+  bool fitVisualMotionLocked(nav_msgs::Odometry &target, double &rate) const {
+    if (history_.size() < 6) return false;
+    using Complex = std::complex<double>;
+    struct Sample { double t, age, wp, wv; Complex p, v; };
+    std::vector<Sample> samples;
+    const auto newest = history_.back().stamp;
+    const double window = 2.0*heading_window_;
+    for (const auto &s : history_) {
+      const double t = (s.stamp-newest).toSec();
+      if (t < -window) continue;
+      samples.push_back({t, s.observation_age, 1./s.position_variance,
+          1./s.velocity_variance, {s.position.x(),s.position.y()},
+          {s.velocity.x(),s.velocity.y()}});
+    }
+    if (samples.size()<6 || -samples.front().t<.75*heading_window_) return false;
+    struct Fit { double cost; Complex p, v; };
+    const auto evaluate = [&](double w) {
+      double pp=0., vv=0.;
+      Complex pv=0., bp=0., bv=0.;
+      const auto basis = [&](const Sample &s) {
+        const double t=s.t-s.age;
+        const Complex e=std::polar(1.,w*t);
+        const Complex f=(std::abs(w)>1.e-8 ? (e-Complex(1.))/Complex(0.,w)
+                                                          : Complex(t))+s.age*e;
+        return std::make_pair(e,f);
+      };
+      for (const auto &s : samples) {
+        const auto ef=basis(s); const auto &e=ef.first; const auto &f=ef.second;
+        pp+=s.wp; pv+=s.wp*f; vv+=s.wp*std::norm(f)+s.wv;
+        bp+=s.wp*s.p; bv+=s.wp*std::conj(f)*s.p+s.wv*std::conj(e)*s.v;
+      }
+      Fit fit;
+      fit.v=(bv-std::conj(pv)*bp/pp)/std::max(1.e-9,vv-std::norm(pv)/pp);
+      fit.p=(bp-pv*fit.v)/pp; fit.cost=0.;
+      for (const auto &s : samples) {
+        const auto ef=basis(s);
+        fit.cost+=s.wp*std::norm(fit.p+ef.second*fit.v-s.p)+
+                  s.wv*std::norm(ef.first*fit.v-s.v);
+      }
+      return fit;
+    };
+    const Fit cv=evaluate(0.);
+    Fit best=cv;
+    double best_rate=0.;
+    constexpr int half_steps=30;
+    const double step=maximum_turn_rate_/half_steps;
+    for(int i=-half_steps;i<=half_steps;++i) {
+      const double w=i*step;
+      const Fit candidate=evaluate(w);
+      if(candidate.cost<best.cost) { best=candidate; best_rate=w; }
+    }
+    // Sub-grid refinement retains accurate constant-turn propagation without
+    // an unbounded nonlinear optimizer in the prediction callback.
+    if(std::abs(best_rate)<maximum_turn_rate_) {
+      const double left=evaluate(best_rate-step).cost;
+      const double right=evaluate(best_rate+step).cost;
+      const double curvature=left+right-2.*best.cost;
+      if(curvature>1.e-9) {
+        const double w=best_rate+clampValue(.5*(left-right)/curvature,-1.,1.)*step;
+        const Fit refined=evaluate(w);
+        if(refined.cost<best.cost) { best=refined; best_rate=w; }
+      }
+    }
+    // Filtered observations are correlated: cap the effective sample rate at
+    // 10 Hz. One extra turn-rate parameter needs a 99% chi-square improvement.
+    const double independent_fraction=std::min(1.,-samples.front().t/(.1*samples.size()));
+    if((cv.cost-best.cost)*independent_fraction<6.635 ||
+        std::abs(best_rate)<turn_rate_deadband_ || std::abs(best.v)<minimum_speed_) {
+      best=cv; best_rate=0.;
+    }
+    rate=enable_turn_prediction_ ? best_rate : 0.;
+    if(!enable_turn_prediction_) best=cv;
+    target.twist.twist.linear.x=best.v.real();
+    target.twist.twist.linear.y=best.v.imag();
+    // Keep the newest measured position as anchor; correct only its known CV
+    // propagation error. The fit's intercept is used for model selection, so
+    // the history window does not delay a newly observed position.
+    if(std::abs(rate)>1.e-8) {
+      const double age=samples.back().age;
+      const Complex observed_velocity=std::polar(1.,-rate*age)*best.v;
+      const Complex delta=((std::polar(1.,rate*age)-Complex(1.))/Complex(0.,rate)-age)*
+          observed_velocity;
+      target.pose.pose.position.x+=delta.real();
+      target.pose.pose.position.y+=delta.imag();
+    }
+    return true;
   }
 
   void publishTimerCallback(const ros::TimerEvent&) {
@@ -191,10 +306,59 @@ class TargetPathPredictor {
                                    latest_target_.pose.covariance[7],
                                    latest_target_.pose.covariance[14], 0.0});
         horizon = std::max(std::min(prediction_horizon_, std::max(prediction_dt_, minimum_prediction_horizon_)),
-            prediction_horizon_ / (1.0 + 2.0*observation_age_ + std::sqrt(variance)));
+            prediction_horizon_ / (1.0 + observation_age_ + 0.5*std::sqrt(variance)));
       }
       target = latest_target_;
       turn_rate = enable_turn_prediction_ ? turn_rate_ : 0.0;
+      // A straight prediction can still sweep sideways if its initial velocity
+      // follows each noisy EKF update. Average uncertain velocities in the same
+      // heading frame; rotate historical samples forward only for a confirmed
+      // turn. Reliable instantaneous velocities keep their original response.
+      const bool fitted = input_is_cv_extrapolated_ && require_target_valid_ &&
+          fitVisualMotionLocked(target, turn_rate);
+      if (!fitted && history_.size() >= 6) {
+        Eigen::Vector2d mean=Eigen::Vector2d::Zero();
+        double count=0.0;
+        for (const auto &sample : history_) {
+          const double age=(history_.back().stamp-sample.stamp).toSec();
+          if (age > heading_window_) continue;
+          const double angle=std::abs(turn_rate)>=turn_rate_deadband_ ? turn_rate*age : 0.0;
+          mean += Eigen::Rotation2Dd(angle)*sample.velocity;
+          count += 1.0;
+        }
+        const double variance=history_.back().heading_variance;
+        const double weight=clampValue(variance/(variance+.01),0.,.95);
+        if (count >= 6.) {
+          const Eigen::Vector2d velocity=(1.-weight)*history_.back().velocity+weight*mean/count;
+          target.twist.twist.linear.x=velocity.x();
+          target.twist.twist.linear.y=velocity.y();
+        }
+      }
+      // The visual EKF publishes p_obs + age*v_obs at the current header
+      // stamp, but its CV model leaves velocity at the observation heading.
+      // Replace that CV displacement with CTRV propagation; rotating velocity
+      // alone would leave position and heading at different epochs.
+      if (!fitted && input_is_cv_extrapolated_ && require_target_valid_ &&
+          std::abs(turn_rate) >= turn_rate_deadband_) {
+        // Saturate continuously during coasting; dropping the correction at an
+        // age threshold would suddenly restore the stale velocity direction.
+        const double age=clampValue(observation_age_,0.0,.8);
+        const Eigen::Vector2d filtered_velocity(target.twist.twist.linear.x,
+                                               target.twist.twist.linear.y);
+        const double angle=turn_rate*age, c=std::cos(angle), s=std::sin(angle);
+        const Eigen::Vector2d displacement(
+            (s*filtered_velocity.x()-(1.-c)*filtered_velocity.y())/turn_rate,
+            ((1.-c)*filtered_velocity.x()+s*filtered_velocity.y())/turn_rate);
+        // Apply the curved-versus-straight model difference to the current
+        // position estimate. Using raw velocity here would inject its noise
+        // back into position after explicitly smoothing that velocity above.
+        const Eigen::Vector2d correction=displacement-age*filtered_velocity;
+        target.pose.pose.position.x+=correction.x();
+        target.pose.pose.position.y+=correction.y();
+        const Eigen::Vector2d current_velocity=Eigen::Rotation2Dd(angle)*filtered_velocity;
+        target.twist.twist.linear.x=current_velocity.x();
+        target.twist.twist.linear.y=current_velocity.y();
+      }
       if (!last_turn_rate_update_stamp_.isZero()) {
         const double time_without_turn_update =
             std::max(0.0, (target.header.stamp - last_turn_rate_update_stamp_).toSec());
@@ -225,17 +389,19 @@ class TargetPathPredictor {
     prediction.poses.reserve(sample_count + 1);
     for (int index = 0; index <= sample_count; ++index) {
       const double time_from_start = index * prediction_dt_;
+      const double propagation_time = time_from_start +
+          std::max(0.0, (prediction.header.stamp-target.header.stamp).toSec());
       Eigen::Vector3d position = start_position;
       double yaw = heading;
       if (turn_rate == 0.0) {
-        position.x() += velocity.x() * time_from_start;
-        position.y() += velocity.y() * time_from_start;
+        position.x() += velocity.x() * propagation_time;
+        position.y() += velocity.y() * propagation_time;
       } else {
-        yaw = heading + turn_rate * time_from_start;
+        yaw = heading + turn_rate * propagation_time;
         position.x() += speed / turn_rate * (std::sin(yaw) - std::sin(heading));
         position.y() -= speed / turn_rate * (std::cos(yaw) - std::cos(heading));
       }
-      position.z() += velocity.z() * time_from_start;
+      position.z() += velocity.z() * propagation_time;
 
       geometry_msgs::PoseStamped pose;
       pose.header.frame_id = prediction.header.frame_id;
@@ -251,6 +417,7 @@ class TargetPathPredictor {
 
   ros::Subscriber valid_sub_, age_sub_;
   bool require_target_valid_{false}, target_valid_{false}, enable_turn_prediction_{false};
+  bool input_is_cv_extrapolated_{false};
   ros::Time validity_receipt_;
   double observation_age_{0.0};
   ros::NodeHandle nh_;

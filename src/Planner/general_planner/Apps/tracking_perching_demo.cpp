@@ -13,6 +13,7 @@
 #include "path_search/astar.h"
 #include "ros_interface/ros1/ros1_interface.hpp"
 #include "general_core/tracking/tracking_perching_frontend.hpp"
+#include "general_core/corridor_generator.h"
 #include "traj_opt/config.hpp"
 #include "traj_opt/traj_manager.h"
 #include "traj_opt/tracking_perching_traj_opt.hpp"
@@ -297,9 +298,7 @@ int main(int argc, char **argv)
         general_planner::TrackingFrontend::Config frontend_cfg;
         frontend_cfg.tracking_distance = 2.2;
         frontend_cfg.height_offset = 0.7;
-        frontend_cfg.safe_distance = use_map ? 0.35 : 0.0;
         frontend_cfg.unknown_as_occupied = false;
-        frontend_cfg.use_astar = tracker_frontend_astar;
         general_planner::TrackingFrontend frontend(frontend_cfg, map_manager);
 
         traj_opt::TrackingProblem problem;
@@ -327,9 +326,31 @@ int main(int argc, char **argv)
         }
         else
         {
+            if (map_manager) {
+                const double voxel_radius=.5*std::sqrt(3.)*map_manager->getInfResolution()+.001;
+                general_planner::CorridorGenerator corridor(ros_ptr,map_manager,2.,2.,.02,
+                    -10.,20.,voxel_radius,1,2,optimization_utils::EllipsoidOptimizerConfig(),true);
+                Vec3f shifted;
+                if (!corridor.SearchPolytopeOnPath(problem.guide_path,problem.sfcs,shifted,false,true)) {
+                    ROS_ERROR("Tracking CIRI corridor generation failed.");
+                    return 1;
+                }
+            } else {
+                // Explicit free-space demo: a bounded obstacle-free domain.
+                Vec3f lower=head.col(0),upper=lower;
+                for(const auto &point:problem.guide_path) {
+                    lower=lower.cwiseMin(point); upper=upper.cwiseMax(point);
+                }
+                lower.array()-=5.;upper.array()+=5.;
+                general_utils::MatD4f planes=general_utils::MatD4f::Zero(6,4);
+                for(int axis=0;axis<3;++axis) {
+                    planes(2*axis,axis)=1.;planes(2*axis,3)=-upper(axis);
+                    planes(2*axis+1,axis)=-1.;planes(2*axis+1,3)=lower(axis);
+                }
+                problem.sfcs.emplace_back(planes);
+            }
+            problem.use_corridor=true;
             traj_opt::TrackingJerkTrajOpt optimizer(cfg, ros_ptr);
-            optimizer.setMapManager(map_manager);
-            optimizer.setSafeDistance(frontend_cfg.safe_distance);
             Trajectory traj;
             if (!optimizer.optimize(problem, traj))
             {
@@ -352,7 +373,6 @@ int main(int argc, char **argv)
         frontend_cfg.robot_l = 0.28;
         frontend_cfg.v_plus = 0.8;
         frontend_cfg.pre_contact_distance = 0.55;
-        frontend_cfg.safe_distance = 0.0;
         general_planner::PerchingFrontend frontend(frontend_cfg, map_manager, astar);
 
         traj_opt::PerchingProblem problem;

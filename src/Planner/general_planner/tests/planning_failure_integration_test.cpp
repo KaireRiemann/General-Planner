@@ -60,6 +60,15 @@ int main(int argc, char **argv) {
       nav_msgs::Odometry odom;
       odom.header.stamp = ros::Time::now(); odom.header.frame_id = "world";
       odom.pose.pose.orientation.w = 1; odom.pose.pose.position.z = 1;
+      if (tracking_test) {
+        // The command gateway requires continuity on source activation.
+        // Keep a small odometry offset so the hold assertions still detect
+        // an incorrect return from the command endpoint to measured pose.
+        odom.pose.pose.position = endpoint.position;
+        odom.pose.pose.position.x -= .1;
+        odom.pose.pose.orientation.w = std::cos(endpoint.yaw/2.);
+        odom.pose.pose.orientation.z = std::sin(endpoint.yaw/2.);
+      }
       odom_pub.publish(odom);
       if (send_endpoint) cmd_pub.publish(endpoint);
       ros::spinOnce();

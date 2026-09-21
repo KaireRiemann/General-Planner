@@ -69,7 +69,12 @@ struct TaskIdentity {
     bool tracking_like{false};
 };
 
+enum class TrackingPlanOutcome {
+    UNSPECIFIED, COMMITTED, KEPT_TRACKING, COMMITTED_RECOVERY, KEPT_RECOVERY, UNAVAILABLE
+};
+
 struct TaskPlanContext {
+    TrackingPlanOutcome tracking_outcome{TrackingPlanOutcome::UNSPECIFIED};
     bool handled{false};
     bool missing_input{false};
     bool tracking_context{false};

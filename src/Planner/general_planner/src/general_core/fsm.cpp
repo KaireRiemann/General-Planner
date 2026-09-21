@@ -23,6 +23,7 @@
 
 #include <fsm/fsm.h>
 #include <general_core/planning_retry_policy.hpp>
+#include <general_core/tracking/tracking_map_query.hpp>
 #include <checker/common_checker.hpp>
 #include <algorithm>
 #include <boost/filesystem.hpp>
@@ -620,6 +621,7 @@ namespace fsm {
             return;
         }
 
+        if (trackingMode() && !trackingTaskReady()) return;
         TaskExecutor &executor = taskExecutor();
         if (!executor.replanAllowed(*this)) {
             return;
@@ -792,6 +794,8 @@ namespace fsm {
                 }
                 if (commit_decision.publish_trajectory) {
                     publishPolyTraj();
+                }
+                if (executor.trackingLike()) {
                     if (replan_tracking_static) {
                         ChangeState("ReplanTimerCallback", STATIC_TRACKING);
                     } else if (machine_state_ != FOLLOW_TRAJ) {
@@ -828,9 +832,12 @@ namespace fsm {
                 }
                 break;
             case general_planner::architecture::CommitAction::HOLD:
+            case general_planner::architecture::CommitAction::BRAKE:
+                if (commit_decision.publish_trajectory) publishPolyTraj();
+                task_new_ = false;
+                finish_plan = false;
                 ChangeState("ReplanTimerCallback", HOLD_TRACKING);
                 break;
-            case general_planner::architecture::CommitAction::BRAKE:
             case general_planner::architecture::CommitAction::REQUEST_NEW_INPUT:
             case general_planner::architecture::CommitAction::NOOP:
             default:
@@ -851,7 +858,7 @@ namespace fsm {
                               static_cast<int>(log_id.first));
         if (executor.trackingLike()) {
             recordTrackingReplanContext("tracking_replan_context",
-                                        log_id.second,
+                                        ret_code,
                                         replan_tracking_static,
                                         replan_tracking_input_prediction_size,
                                         static_cast<int>(log_id.first));
@@ -978,13 +985,10 @@ namespace fsm {
     }
 
     void Fsm::callMainFsmOnce() {
-        std::unique_lock<std::mutex> tick_lock;
-        if (!trackingMode() && !trackingPerchingMode()) {
-            tick_lock = std::unique_lock<std::mutex>(fsm_tick_mutex_, std::try_to_lock);
-            if (!tick_lock.owns_lock()) {
-                return;
-            }
-        }
+        // Tracking mutates the same robot snapshot and command lifecycle as
+        // replanning. Command publication has its own lock and keeps running.
+        std::unique_lock<std::mutex> tick_lock(fsm_tick_mutex_, std::try_to_lock);
+        if (!tick_lock.owns_lock()) return;
         if (stop) {
             return;
         }
@@ -1025,44 +1029,17 @@ namespace fsm {
         }
 
         // Loss is an input state inside tracking, not a task/mode cancellation.
+        // Elastic keeps the last trajectory when the target is briefly missing.
         if (trackingMode()) {
-            if (tracking_lost_braking_) {
-                // Wait until the command queue has actually sampled the zero-
-                // derivative endpoint, not merely until it is 50 ms away.
-                if (trackingTaskReady()) {
-                    // Replan from the live braking trajectory PVAJ. Reacquisition
-                    // does not require destroying velocity or waiting for rest.
-                    tracking_lost_braking_ = false;
-                    tracking_target_lost_ = false;
-                    plan_from_rest_ = false;
-                    task_new_ = false;
-                    ChangeState("tracking reacquired during braking", FOLLOW_TRAJ);
-                    return;
-                }
-                if (planner_ptr_->getCommittedTrajectoryRemainingDuration() > 1.0e-6 ||
-                    !traj_finish_) return;
-                tracking_lost_braking_ = false;
-                plan_from_rest_ = true;
-                task_new_ = true;
-                ChangeState("tracking stop complete", WAIT_GOAL);
-            }
             if (!trackingTaskReady() &&
                 (trackingExecutionState() || machine_state_ == GENERATE_TRAJ)) {
                 tracking_target_lost_ = true;
-                const bool stopped = planner_ptr_->commitTrackingHoldTrajectory(
-                    "tracking observation lost: controlled braking", 0.0, true);
-                recordDiagnosticEvent(stopped ? "WARN" : "ERROR", "tracking_target_lost",
-                                      stopped ? "controlled_braking" : "brake_unsafe_emergency");
-                if (stopped) {
-                    tracking_lost_braking_ = true;
-                    publishPolyTraj();
-                    ChangeState("tracking target lost", HOLD_TRACKING);
-                } else {
-                    ChangeState("tracking brake unsafe", EMER_STOP);
-                }
-                return;
+                tracking_lost_braking_ = false;
             }
-            if (trackingTaskReady()) tracking_target_lost_ = false;
+            if (trackingTaskReady()) {
+                tracking_target_lost_ = false;
+                tracking_lost_braking_ = false;
+            }
         } else {
             tracking_lost_braking_ = false;
             tracking_target_lost_ = false;
@@ -1262,6 +1239,14 @@ namespace fsm {
                                       retcode);
 
                 switch (commit_decision.action) {
+                    case general_planner::architecture::CommitAction::HOLD:
+                    case general_planner::architecture::CommitAction::BRAKE:
+                        if (commit_decision.publish_trajectory) publishPolyTraj();
+                        task_new_ = false;
+                        plan_from_rest_ = false;
+                        finish_plan = false;
+                        ChangeState("MainFsmCallback", HOLD_TRACKING);
+                        break;
                     case general_planner::architecture::CommitAction::KEEP_OLD_TRAJECTORY:
                         if (executor.trackingLike()) {
                             resetTrackingPlanFromRestFailureState();
@@ -1410,7 +1395,7 @@ namespace fsm {
                                       static_cast<int>(log_id.first));
                 if (executor.trackingLike()) {
                     recordTrackingReplanContext("tracking_plan_from_rest_context",
-                                                log_id.second,
+                                                retcode,
                                                 planned_tracking_static,
                                                 plan_tracking_input_prediction_size,
                                                 static_cast<int>(log_id.first));
@@ -1474,7 +1459,8 @@ namespace fsm {
 
     bool Fsm::trackingExecutionState() const {
         return machine_state_ == FOLLOW_TRAJ ||
-               machine_state_ == STATIC_TRACKING;
+               machine_state_ == STATIC_TRACKING ||
+               machine_state_ == HOLD_TRACKING;
     }
 
     bool Fsm::trackingPerchingPerchingActive() const {
@@ -1551,15 +1537,13 @@ namespace fsm {
         const auto refresh_task_semantics = [this, &requested_backend]() {
             cfg_.task_type = taskTypeFromTaskMode(cfg_.task_mode);
             cfg_.mission_mode = missionModeFromTaskMode(cfg_.task_mode);
-            if (requested_backend.has_value()) {
-                cfg_.backend_type = *requested_backend;
+            if (cfg_.task_type == general_planner::architecture::TaskType::TRACKING) {
+                cfg_.backend_type = general_planner::architecture::BackendType::JERK_TRACKING;
                 cfg_.planning_backend_str = general_planner::architecture::toString(cfg_.backend_type);
                 return;
             }
-            if (cfg_.task_type == general_planner::architecture::TaskType::TRACKING) {
-                cfg_.backend_type = cfg_.tracking_use_snap
-                    ? general_planner::architecture::BackendType::SNAP_TRACKING
-                    : general_planner::architecture::BackendType::JERK_TRACKING;
+            if (requested_backend.has_value()) {
+                cfg_.backend_type = *requested_backend;
                 cfg_.planning_backend_str = general_planner::architecture::toString(cfg_.backend_type);
                 return;
             }
@@ -1617,6 +1601,9 @@ namespace fsm {
         }
         if (planner_ptr_) {
             planner_ptr_->setTrackingPerchingRequest(new_mode == TaskMode::TRACKING_PERCHING);
+        }
+        if (new_mode != TaskMode::TRACKING && new_mode != TaskMode::TRACKING_PERCHING) {
+            general_planner::trackingOccupancyExclusion().clear();
         }
         perching_contact_reached_ = false;
         onTaskModeChanged();
@@ -1795,6 +1782,24 @@ namespace fsm {
             const bool record_regular_finish,
             const bool mark_static_target_finished) {
         ExecutedTrajectoryFinishResult result;
+        // Elastic keeps flying the last polynomial. When it ends, replan from
+        // the measured state if the target is still valid; otherwise hover.
+        if (trackingMode()) {
+            if (trackingTaskReady()) {
+                task_new_ = true;
+                plan_from_rest_ = true;
+                finish_plan = false;
+                ChangeState(source, GENERATE_TRAJ);
+                result.state_changed = true;
+            } else if (planner_ptr_ && planner_ptr_->commitTrackingHoldTrajectory(
+                           "tracking trajectory finished without a target", 1.0, false)) {
+                tracking_target_lost_ = true;
+                publishPolyTraj();
+                ChangeState(source, HOLD_TRACKING);
+                result.state_changed = true;
+            }
+            return result;
+        }
         if (tracking_lost_braking_) return result;
         const bool close_to_goal = closeToGoal(0.1);
         const bool tracking_unfinished =
@@ -1893,7 +1898,9 @@ namespace fsm {
             return false;
         }
 
+        planner_ptr_->lockCommittedTraj();
         const Trajectory traj = planner_ptr_->getCommittedPositionTrajectory();
+        planner_ptr_->unlockCommittedTraj();
         if (traj.empty()) {
             return true;
         }
@@ -2043,12 +2050,27 @@ namespace fsm {
     void Fsm::setTrackingTargetPrediction(const traj_opt::DynamicTargetStates &prediction,
                                          const bool activate_tracking_task) {
         if (prediction.empty()) {
+            general_planner::trackingOccupancyExclusion().clear();
             std::lock_guard<std::mutex> lock(task_mutex_);
             tracking_target_prediction_.clear();
             tracking_target_rcv_time_ = -1.0;
             return;
         }
         const traj_opt::DynamicTargetStates filtered_prediction = filterStaticTrackingPrediction(prediction);
+        if (activate_tracking_task && !filtered_prediction.empty()) {
+            // Prediction stays in raw target coordinates while every tracking
+            // occupancy query runs at target + height_offset (Elastic lifts
+            // the target before predicting). Center the exclusion cylinder at
+            // that query height or the target's own cloud is masked at the
+            // wrong altitude.
+            general_planner::setTrackingOccupancyExclusion(
+                filtered_prediction.front().position +
+                    Vec3f(0.0, 0.0, cfg_.tracking_height_offset),
+                cfg_.tracking_target_exclusion_xy_radius,
+                cfg_.tracking_target_exclusion_z_radius);
+        } else {
+            general_planner::trackingOccupancyExclusion().clear();
+        }
         bool changed = true;
         bool reacquired_after_timeout = false;
         double stale_duration = 0.0;
@@ -2323,6 +2345,12 @@ namespace fsm {
     }
 
     void Fsm::ChangeState(const string &call_func, const MACHINE_STATE &new_state) {
+        if (new_state == EMER_STOP && trackingMode() && planner_ptr_) {
+            planner_ptr_->invalidateTrackingCommand("tracking_emergency_stop:" + call_func);
+            plan_from_rest_ = true;
+            task_new_ = true;
+            tracking_lost_braking_ = false;
+        }
         fmt::print(fg(fmt::color::green), " -- [Fsm]: [{}] change state from [{}] to [{}].\n", call_func,
                    MACHINE_STATE_STR[int(machine_state_)], MACHINE_STATE_STR[int(new_state)]);
         recordDiagnosticEvent("INFO",

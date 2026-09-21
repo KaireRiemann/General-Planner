@@ -7,6 +7,7 @@
 
 #include "data_structure/base/trajectory.h"
 #include "general_core/config.hpp"
+#include "general_core/planning_semantics.hpp"
 #include <map_manager/map_manager.hpp>
 #include "traj_opt/tracking_problem.hpp"
 
@@ -72,23 +73,6 @@ public:
         LOST
     };
 
-    enum class DecisionType {
-        COMMIT_CANDIDATE,
-        KEEP_OLD,
-        FORCE_COMMIT_CANDIDATE,
-        REJECT_AND_FAIL
-    };
-
-    struct Decision {
-        DecisionType type{DecisionType::REJECT_AND_FAIL};
-        Status status{Status::LOST};
-        Activity old_activity;
-        bool candidate_commandable{false};
-        bool candidate_safe{false};
-        bool bypass_anti_rollback{false};
-        std::string reason;
-    };
-
     TrackingRuntimeManager(const Config &cfg,
                            const MapManager::Ptr &map_manager);
 
@@ -100,26 +84,11 @@ public:
                               double horizon,
                               double dt) const;
 
-    bool candidateCommandable(const geometry_utils::Trajectory &candidate,
-                              const traj_opt::DynamicTargetStates &target_prediction,
-                              double candidate_eval_start_t = 0.0,
-                              double target_eval_start_t = 0.0,
-                              std::string *reason = nullptr) const;
-
     bool trajectorySafe(const geometry_utils::Trajectory &traj,
                         double start_t,
                         double horizon,
                         double dt,
                         std::string *reason = nullptr) const;
-
-    Decision decide(const geometry_utils::Trajectory *old_committed,
-                    double old_local_t,
-                    const geometry_utils::Trajectory &candidate,
-                    const traj_opt::DynamicTargetStates &target_prediction,
-                    bool candidate_safe,
-                    bool anti_rollback_pass,
-                    double candidate_eval_start_t = 0.0,
-                    double target_eval_start_t = 0.0);
 
     MotionMetrics computeMotionMetrics(const geometry_utils::Trajectory &candidate,
                                        const traj_opt::DynamicTargetStates &target_prediction,
@@ -133,6 +102,10 @@ public:
     void observeExecution(double now, const general_utils::Vec3f &position);
     bool hasExecutionHistory() const { return execution_start_ >= 0.0; }
     void onHold();
+    void onRecoveryKept();
+    bool hasRecoveryCommand() const { return has_recovery_command_; }
+    architecture::TrackingPlanOutcome outcome() const { return outcome_; }
+    void beginAttempt() { outcome_ = architecture::TrackingPlanOutcome::UNAVAILABLE; }
     void onKeepOld();
     void onRejected();
 
@@ -149,6 +122,8 @@ private:
     int consecutive_reject_{0};
     Status status_{Status::IDLE};
     bool has_committed_tracking_{false};
+    bool has_recovery_command_{false};
+    architecture::TrackingPlanOutcome outcome_{architecture::TrackingPlanOutcome::UNSPECIFIED};
     double execution_start_{-1.0};
     double observation_time_{-1.0};
     general_utils::Vec3f execution_origin_{general_utils::Vec3f::Zero()};

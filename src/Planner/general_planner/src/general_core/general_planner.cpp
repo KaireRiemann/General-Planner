@@ -163,22 +163,30 @@ namespace general_planner {
             const std::string &cfg_path,
             const ros_interface::RosInterface::Ptr &ros_ptr,
             const MapManager::Ptr &shared_map_manager,
-            const std::string &tracking_config)
-            : GeneralPlanner(cfg_path, ros_ptr, shared_map_manager, false, tracking_config) {}
+            const std::string &tracking_config,
+            const MapManager::Ptr &tracking_map_manager)
+            : GeneralPlanner(cfg_path, ros_ptr, shared_map_manager, false, tracking_config,
+                             tracking_map_manager) {}
 
     GeneralPlanner::GeneralPlanner(
             const std::string &cfg_path,
             const ros_interface::RosInterface::Ptr &ros_ptr,
             const MapManager::Ptr &map_manager,
             const bool configure_private_topology,
-            const std::string &tracking_config)
+            const std::string &tracking_config,
+            const MapManager::Ptr &tracking_map_manager)
             : cfg_(Config(cfg_path, tracking_config)),
                 map_manager_(map_manager),
+                tracking_map_manager_(tracking_map_manager ? tracking_map_manager : map_manager),
                 ros_ptr_(ros_ptr) {
 
         if (!map_manager_ || !map_manager_->ready()) {
             throw std::invalid_argument(
                 "GeneralPlanner requires a ready MapManager");
+        }
+        if (!tracking_map_manager_ || !tracking_map_manager_->ready()) {
+            throw std::invalid_argument(
+                "GeneralPlanner requires a ready tracking MapManager");
         }
 
         state2state_backend_context_ =
@@ -261,7 +269,15 @@ namespace general_planner {
         }
         ros_ptr_->setResolution(cfg_.resolution);
         ros_ptr_->setVisualizationEn(cfg_.visualization_en);
-        tracking_runtime_manager_ = std::make_unique<TrackingRuntimeManager>(cfg_, map_manager_);
+        if (tracking_map_manager_ != map_manager_) {
+            const auto tracking_rog_cfg = tracking_map_manager_->getMapConfig();
+            ros_ptr_->info(
+                " -- [GeneralPlanner] Tracking uses a dedicated occupancy map: resolution={:.3f}m, inflation_step={}, inflation_resolution={:.3f}m.",
+                tracking_rog_cfg.resolution,
+                tracking_rog_cfg.inflation_step,
+                tracking_rog_cfg.inflation_resolution);
+        }
+        tracking_runtime_manager_ = std::make_unique<TrackingRuntimeManager>(cfg_, tracking_map_manager_);
         perching_runtime_manager_ = std::make_unique<PerchingRuntimeManager>(cfg_, map_manager_);
         takeoff_runtime_manager_ = std::make_unique<TakeoffRuntimeManager>(cfg_, map_manager_);
         tracking_perching_manager_ = std::make_unique<TrackingPerchingTransitionManager>();
@@ -322,14 +338,21 @@ namespace general_planner {
         cg_ptr_->SetLineNeighborList(cfg_.seed_line_neighbour);
         tracking_cg_ptr_ = cg_ptr_;
         if (!cfg_.tracking_config_path.empty()) {
+            // CIRI for tracking grows corridors on the dedicated tracking map.
+            // Its inflation/virtual bounds therefore come from that map, not
+            // from the shared world map.
+            const auto tracking_rog_cfg = tracking_map_manager_->getMapConfig();
             tracking_cg_ptr_ = std::make_shared<CorridorGenerator>(
-                ros_ptr_, map_manager_, cfg_.tracking_corridor_bound_dis,
-                cfg_.tracking_corridor_line_max_length, cfg_.resolution,
-                rog_map_cfg.virtual_ground_height, rog_map_cfg.virtual_ceil_height,
-                cfg_.robot_r, cfg_.tracking_obs_skip_num, cfg_.tracking_iris_iter_num,
+                ros_ptr_, tracking_map_manager_, cfg_.tracking_corridor_bound_dis,
+                cfg_.tracking_corridor_line_max_length, tracking_rog_cfg.resolution,
+                tracking_rog_cfg.virtual_ground_height, tracking_rog_cfg.virtual_ceil_height,
+                // Inflated voxels already include vehicle clearance. Cover each
+                // voxel's corners once; do not add robot_r again.
+                0.5*std::sqrt(3.0)*tracking_map_manager_->getInfResolution()+1.e-3,
+                cfg_.tracking_obs_skip_num, cfg_.tracking_iris_iter_num,
                 optimization_utils::EllipsoidOptimizer::makeConfig(
                     cfg_.tracking_ellipsoid_optimizer,
-                    cfg_.tracking_ellipsoid_optimizer_fallback));
+                    cfg_.tracking_ellipsoid_optimizer_fallback), true);
             tracking_cg_ptr_->SetLineNeighborList(cfg_.seed_line_neighbour);
         }
         se3_aggressive_manager_ =

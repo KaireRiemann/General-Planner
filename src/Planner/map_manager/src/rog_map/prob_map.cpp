@@ -27,11 +27,9 @@ using namespace rog_map;
 using namespace general_utils;
 
 void ProbMap::initProbMap() {
-    static bool init_once{false};
-    if (init_once) {
-        throw std::runtime_error(" -- [ROGMap] ProbMap can only init once.");
-    }
-    init_once = true;
+    // Multi-instance is supported: all map state is per-instance (the only
+    // function-local statics in rog_map are scratch vars rewritten before use,
+    // and both maps are fed sequentially from the same callback thread).
     initSlidingMap(cfg_.half_map_size_i, cfg_.resolution,
                    cfg_.map_sliding_en, cfg_.map_sliding_thresh,
                    cfg_.fix_map_origin);

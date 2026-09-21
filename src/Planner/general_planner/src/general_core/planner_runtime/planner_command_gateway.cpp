@@ -16,6 +16,8 @@ PlannerCommandGateway::PlannerCommandGateway(ros::NodeHandle &nh) : nh_(nh) {
                          "/lidar_slam/odom");
   nh_.param("command_timeout", command_timeout_, 0.30);
   nh_.param("publish_rate", publish_rate_, 100.0);
+  nh_.param("navigation_resume_max_position_error", navigation_resume_max_position_error_, 0.30);
+  navigation_resume_max_position_error_ = std::clamp(navigation_resume_max_position_error_, 0.05, 1.0);
   command_timeout_ = std::clamp(command_timeout_, 0.05, 2.0);
   publish_rate_ = std::clamp(publish_rate_, 20.0, 200.0);
 
@@ -52,6 +54,7 @@ void PlannerCommandGateway::setAuthorizedOwner(const CommandOwner owner,
   }
   authorized_owner_ = owner;
   authorized_epoch_ = task_epoch;
+  if (owner == CommandOwner::STATE2STATE) navigation_resume_pending_ = true;
   authorization_time_ = ros::WallTime::now();
   clearSourceTimeoutHoldLocked();
   if (owner == CommandOwner::HOLD) {
@@ -233,6 +236,24 @@ void PlannerCommandGateway::navigationCallback(
     return;
   }
   std::lock_guard<std::mutex> lock(mutex_);
+  if (authorized_owner_ == CommandOwner::STATE2STATE &&
+      (navigation_resume_pending_ || source_timeout_hold_active_)) {
+    if (!have_odom_ && !hold_anchor_valid_) return;
+    geometry_msgs::Point anchor = odom_.pose.pose.position;
+    if (source_timeout_hold_active_) anchor = source_timeout_hold_.position;
+    else if (!have_odom_) {
+      anchor.x = hold_x_; anchor.y = hold_y_; anchor.z = hold_z_;
+    }
+    const double distance = std::hypot(std::hypot(msg->position.x - anchor.x,
+                                                msg->position.y - anchor.y),
+                                       msg->position.z - anchor.z);
+    if (!std::isfinite(distance) || distance > navigation_resume_max_position_error_) {
+      // Rejected packets must not refresh source health or release HOLD.
+      ROS_ERROR_THROTTLE(1.0, "[planner_command_gateway] rejected discontinuous navigation resume: position_error=%.3fm", distance);
+      return;
+    }
+    navigation_resume_pending_ = false;
+  }
   navigation_cmd_ = *msg;
   navigation_rx_time_ = ros::WallTime::now();
   have_navigation_cmd_ = true;

@@ -18,6 +18,13 @@ int main(){
       if(derivative(c,T,d).norm()>1e-7)return 2;
     auto end=start.col(0)+start.col(1)*T/2+start.col(2)*T*T/12;
     if((derivative(c,T,0)-end).norm()>1e-7)return 3;
+    Eigen::Vector3d level=end;level.z()=start(2,0);
+    c=general_planner::trackingBrakeCoefficients(start,T,level);
+    for(int d=0;d<4;++d)
+      if((derivative(c,0,d)-start.col(d)).norm()>1.e-8)return 4;
+    for(int d=1;d<4;++d)
+      if(derivative(c,T,d).norm()>1.e-7)return 5;
+    if((derivative(c,T,0)-level).norm()>1.e-7)return 6;
   }
   std::cout<<"tracking brake C3 boundaries passed\n";
 }

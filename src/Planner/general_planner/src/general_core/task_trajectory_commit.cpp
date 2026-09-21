@@ -91,6 +91,8 @@ namespace general_planner {
         last_exp_traj_info_ = task_exp_traj;
         robot_on_backup_traj_.store(false);
         gi_.new_goal = false;
+        // Non-tracking tasks fly their optimized yaw polynomial exactly.
+        setTrackingYawServo(false);
 
         {
             TimeConsuming t_viz("task_viz", false);

@@ -14,6 +14,7 @@ namespace UnitySensors.ROS.Publisher
 
         [SerializeField]
         private string _topicName;
+        protected string TopicName => _topicName;
 
         [SerializeField]
         protected TT _serializer;
@@ -38,8 +39,12 @@ namespace UnitySensors.ROS.Publisher
 
         protected void PublishMessage()
         {
-            _ros.Publish(_topicName, _serializer.Serialize());
+            TTT message = _serializer.Serialize();
+            BeforePublish(message);
+            _ros.Publish(_topicName, message);
         }
+
+        protected virtual void BeforePublish(Message message) { }
 
         protected virtual void Update()
         {

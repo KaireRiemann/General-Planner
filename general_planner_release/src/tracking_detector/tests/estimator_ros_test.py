@@ -22,6 +22,8 @@ try:
         except Exception:time.sleep(.1)
     import rospy
     from nav_msgs.msg import Odometry,Path as Prediction
+    from geometry_msgs.msg import PoseStamped
+    from tf.transformations import quaternion_from_matrix
     from sensor_msgs.msg import CameraInfo
     from tracking_detector.msg import BoundingBoxes,BoundingBox
     from std_msgs.msg import Bool,String
@@ -43,6 +45,7 @@ try:
     odom=rospy.Publisher("/input/odom",Odometry,queue_size=30)
     boxes=rospy.Publisher("/input/boxes",BoundingBoxes,queue_size=2)
     info=rospy.Publisher("/input/info",CameraInfo,queue_size=1,latch=True)
+    capture=rospy.Publisher("/camera0/capture_pose",PoseStamped,queue_size=10)
     K=np.array([[415.6922,0,320],[0,415.6922,240],[0,0,1]])
     camera=CameraInfo();camera.width=640;camera.height=480;camera.K=K.reshape(-1).tolist()
     start=time.monotonic()
@@ -57,15 +60,27 @@ try:
         optical=(R@Rcb).T@(np.array([8.,0,0])-body-np.array([0,0,.1]))
         u=K[0,0]*optical[0]/optical[2]+320
         bottom=K[1,1]*optical[1]/optical[2]+240
+        top_optical=(R@Rcb).T@(np.array([8.,0,1.4])-body-np.array([0,0,.1]))
+        top=K[1,1]*top_optical[1]/top_optical[2]+240
         m=Odometry();m.header.stamp=rospy.Time.from_sec(stamp);m.header.frame_id="world"
         m.pose.pose.position.x,m.pose.pose.position.y,m.pose.pose.position.z=body
         m.pose.pose.orientation.z=math.sin(yaw/2);m.pose.pose.orientation.w=math.cos(yaw/2)
+        if "--capture-pose" in sys.argv:
+            optical_pose=PoseStamped();optical_pose.header=m.header
+            optical_pose.pose.position.x,optical_pose.pose.position.y,optical_pose.pose.position.z=body+np.array([0,0,.1])
+            matrix=np.eye(4);matrix[:3,:3]=R@Rcb
+            q=quaternion_from_matrix(matrix)
+            optical_pose.pose.orientation.x,optical_pose.pose.orientation.y,optical_pose.pose.orientation.z,optical_pose.pose.orientation.w=q
+            capture.publish(optical_pose)
+            # A wrong odometry orientation must not override the matching capture.
+            m.pose.pose.orientation.z=math.sin((yaw+.12)/2)
+            m.pose.pose.orientation.w=math.cos((yaw+.12)/2)
         odom.publish(m)
         if calibrate:info.publish(camera)
         b=BoundingBoxes();b.header=m.header;b.image_header=m.header
         if detect:
             box=BoundingBox();box.Class="car";box.probability=.9
-            box.xmin=int(u-30);box.xmax=int(u+30);box.ymin=int(bottom-45);box.ymax=int(bottom)
+            box.xmin=int(u-30);box.xmax=int(u+30);box.ymin=int(top);box.ymax=int(bottom)
             b.bounding_boxes=[box]
         history.append((time.monotonic(),b))
         # Delayed detector output matches historical, not current, ego pose.

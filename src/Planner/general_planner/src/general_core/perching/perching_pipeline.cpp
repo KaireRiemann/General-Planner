@@ -235,6 +235,9 @@ namespace general_planner {
         last_exp_traj_info_ = perching_exp_traj;
         robot_on_backup_traj_.store(false);
         gi_.new_goal = false;
+        // Perching needs its exact yaw polynomial; the tracking yaw servo is
+        // a tracking-only command filter.
+        setTrackingYawServo(false);
 
         {
             TimeConsuming t_viz("perching_task_viz", false);

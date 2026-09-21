@@ -1,0 +1,74 @@
+# Single-person profile. Loaded after tracking.yaml.
+
+# YOLO provides identity evidence; all XYZ measurements still come from LiDAR
+# and the local ground surface.
+yolo/confirmation_frames: 2
+yolo/confirmation_distance: 0.50
+yolo/min_probability: 0.45
+yolo/max_detection_age: 0.80
+yolo/cloud_sync_slop: 0.12
+yolo/history_duration: 2.0
+yolo/continuous_validation_enabled: true
+yolo/continuous_validation_max_age: 0.30
+yolo/continuous_validation_distance: 0.60
+yolo/reacquisition_enabled: true
+yolo/reacquisition_max_distance: 2.50
+yolo/reacquisition_max_z_difference: 0.80
+yolo/box_inset: 0.08
+yolo/cluster_tolerance: 0.30
+yolo/min_points: 5
+yolo/min_cluster_extent: 0.15
+yolo/max_cluster_extent: 2.40
+yolo/min_box_coverage: 0.02
+
+fusion/enabled: true
+fusion/camera_margin_pixels: 8.0
+fusion/consistent_distance: 0.45
+fusion/conflict_distance: 0.70
+fusion/conflict_frames: 3
+fusion/relock_confirmation_frames: 2
+fusion/relock_confirmation_radius: 0.45
+fusion/reselection_max_distance: 2.50
+
+# Keep the ground in the tracking cloud. The separate ground-height estimator
+# uses local surface normals; ground/remove only deletes a plane and must stay
+# false for this profile.
+ground/remove: false
+
+# Unified floor/ramp/stair height model. Person position is the body centre:
+# target_z = local_ground_z + person_center_height.
+ground_height/enabled: true
+ground_height/person_center_height: 0.85
+ground_height/search_radius: 0.80
+ground_height/normal_radius: 0.22
+ground_height/vertical_search_range: 0.55
+ground_height/radial_sigma: 0.40
+ground_height/height_sigma: 0.30
+ground_height/minimum_normal_z: 0.75
+ground_height/maximum_curvature: 0.18
+ground_height/minimum_neighbors: 6
+ground_height/minimum_support_points: 8
+ground_height/minimum_confidence: 0.25
+ground_height/smoothing: 0.35
+ground_height/max_step: 0.25
+
+# The observed LiDAR box may adapt to range/view angle. Its height is not used
+# as the person's z reference.
+selection/fixed_body_size_enabled: false
+selection/fixed_body_size: [0.60, 0.60, 1.70]
+selection/adaptive_size_enabled: true
+selection/roi_min_points: 5
+selection/measurement_velocity_blend: 0.30
+selection/velocity_min_displacement: 0.15
+selection/size_compatibility_min_ratio: 0.40
+selection/size_compatibility_max_ratio: 1.75
+selection/reacquisition_max_z_difference: 0.60
+
+tracking/acceleration_noise: 2.50
+tracking/measurement_noise: 0.16
+tracking/acceleration_smoothing: 0.25
+tracking/turn_rate_smoothing: 0.25
+
+output/max_prediction_age: 0.80
+output/identity_timeout: 4.0
+

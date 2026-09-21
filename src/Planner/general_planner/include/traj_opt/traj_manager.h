@@ -975,7 +975,6 @@ public:
   BackupTrajOpt::Ptr backup() const { return backup_traj_opt_; }
   YawTrajOpt::Ptr yaw() const { return yaw_traj_opt_; }
   TrackingJerkTrajOpt::Ptr trackingJerk() const { return tracking_jerk_traj_opt_; }
-  TrackingSnapTrajOpt::Ptr trackingSnap() const { return tracking_snap_traj_opt_; }
   PerchingSnapTrajOpt::Ptr perchingSnap() const { return perching_snap_traj_opt_; }
 
   void setMapManager(const general_planner::MapManager::Ptr &map_manager);
@@ -991,7 +990,6 @@ private:
   BackupTrajOpt::Ptr backup_traj_opt_;
   YawTrajOpt::Ptr yaw_traj_opt_;
   TrackingJerkTrajOpt::Ptr tracking_jerk_traj_opt_;
-  TrackingSnapTrajOpt::Ptr tracking_snap_traj_opt_;
   PerchingSnapTrajOpt::Ptr perching_snap_traj_opt_;
 };
 } // namespace traj_opt

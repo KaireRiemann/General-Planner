@@ -1,0 +1,12 @@
+# Zip-aligned Unity car overlay.
+# Keep tracking.yaml observation window, DBSCAN, reacquisition, crossing and
+# merge. Those gates are what keep identity on the selected target instead of
+# nearby walls. Do not load person.yaml: the person height model is wrong for a
+# vehicle.
+ground_height/enabled: false
+# Vehicle body is wider than a person. Only enlarge the ROI fallback; the
+# 0.45 m association gate and 1.20 m reacquisition in tracking.yaml stay zip.
+selection/roi_radius_xy: 0.80
+selection/roi_half_height: 0.80
+# A passenger car can exceed the 4 m person-cluster extent in tracking.yaml.
+yolo/max_cluster_extent: 6.0

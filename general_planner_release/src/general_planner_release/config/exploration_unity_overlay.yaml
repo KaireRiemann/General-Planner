@@ -1,4 +1,4 @@
-# Unity UAV-Diff / ROS-TCP sensor contract.
+# Unity UAV-Diff / ROS-TCP sensor contract + Neighborhood house coverage AABB.
 #
 # The Unity bridge republishes command-derived, ROS-time odometry on
 # /lidar_slam/odom and rewrites Unity cloud stamps before publishing
@@ -19,3 +19,69 @@ lidar_perception/lidar_pitch: 0.0
 lidar_perception/fov_viewpoint_up: 28.0
 lidar_perception/fov_viewpoint_down: -28.0
 lidar_perception/max_ray_length: 60.0
+
+# Coverage workspace for the Neighborhood house currently in MainScene.
+# Unity Y-up → ROS z. Measured PrefabInstance envelope (ROS):
+#   XY           x[28, 40]  y[-16, 14]
+#   basement     z ~ -2.50   (shared occupancy still blocks it)
+#   1st floor    z ~  0.50   Wall_1st / Floor / Door_exterior_paneled (32.0, 0.5, 0.5)
+#   2nd floor    z ~  3.50
+#   roof         z ~  6.50–7.00
+#   stairs 1F→2F Stairs_main_L at (40.0, 0.0, 0.50)
+#
+# 1 m XY pad so viewpoints sit inside rooms. Z stays inside the shared
+# occupancy envelope (virtual_ground -0.10 / virtual_ceil 6.40). Two
+# overlapping boxes keep 1F and 2F connected through the stair well.
+# These keys override exploration_house.yaml villa boxes; they do not change
+# ROG or global topology.
+box_num: 2
+box_0/down: [27.0, -17.0, -0.2]
+box_0/up:   [41.0,  15.0,  3.8]
+box_1/down: [27.0, -17.0,  2.8]
+box_1/up:   [41.0,  15.0,  6.4]
+dead_area_num: 0
+
+# 2nd-floor slabs sit at z=3.50; villa 3.80 would treat them as still "lower".
+coverage_guidance/floor_priority_enable: true
+coverage_guidance/floor_priority_min_z: 3.20
+
+# Indoor coverage granularity. The installed release binary reads these
+# FrontierManager / ViewpointManager / HardGate keys at boot and does not
+# apply indoor_frontier/* hot-switch. Overlay loads after house.yaml, so
+# this Unity session uses the indoor lattice. house.yaml outdoor defaults
+# (4.0 / HardGate 1.0) stay unchanged for non-Unity launches. Shared ROG
+# occupancy / z-window are not touched; only bubble clearance for the
+# ~1.0 m Neighborhood exterior door is narrowed below.
+FrontierManager/update_length: 22.0
+FrontierManager/cluster_min_size: 2.0
+FrontierManager/cluster_min_radius: 1.2
+FrontierManager/cluster_max_size: 8.0
+FrontierManager/cluster_minmum_point_num: 6
+FrontierManager/cluster_match_radius: 1.8
+ViewpointManager/sample_pillar_min_height: -0.6
+ViewpointManager/sample_pillar_max_height: 2.4
+ViewpointManager/sample_pillar_min_radius: 0.8
+ViewpointManager/sample_pillar_max_radius: 3.5
+ViewpointManager/consider_range: 16
+ViewpointManager/global_recluster_size: 22
+ViewScoreHardGateMinKnownFreeRatio: 0.80
+ViewScoreHardGateMinClearance: 0.30
+
+# Topology door passage (bag 075911): ParallelBubbleAstar accepts a cell
+# only when getDisToOcc > safe_distance + 0.1. house.yaml 0.45 therefore
+# needs 0.55 m centerline clearance (>= 1.1 m door). Door_exterior_paneled
+# leaf width is ~1.02 m, so odom→indoor edges stay NO_PATH and coverage
+# approaches are deferred as "topology disconnected". Drop clearance so a
+# 1.0 m opening stays traversable; keep hard dilate above the bubble floor
+# so MINCO still clears jambs. Does not change ROG occupancy.
+bubble_astar/safe_distance: 0.28
+bubble_topo/bubble_min_radius: 0.32
+bubble_topo/frontier_bubble_min_radius: 0.32
+DilateRadiusSoft: 0.50
+DilateRadiusHard: 0.35
+CorridorRobotRadius: 0.35
+
+# Give disconnected indoor approaches more retries while the doorway
+# skeleton reconnects after the clearance change (was 5 in 022444/075911).
+coverage_guidance/recovery_max_failure_attempts: 8
+coverage_guidance/recovery_max_no_gain_attempts: 3

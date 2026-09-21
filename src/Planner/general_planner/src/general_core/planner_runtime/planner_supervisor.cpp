@@ -1161,13 +1161,14 @@ void PlannerSupervisor::navigationStatusCallback(
       return;
     }
     status_.mode_state = modeStateFromNavigationString(state);
-    if (state == "TRACKING_BRAKING" && status_.active_mode == PlannerMode::TRACKING) {
+    if ((state == "TRACKING_BRAKING" || state == "HOLD_TRACKING") && status_.active_mode == PlannerMode::TRACKING) {
       status_.phase = PlannerPhase::BRAKING;
       status_.ready_for_new_task = false;
       status_.stable_hover = false;
       status_.command_owner = CommandOwner::STATE2STATE;
       gateway_.setAuthorizedOwner(CommandOwner::STATE2STATE, status_.task_epoch);
-      status_.reason = "tracking target lost; controlled braking";
+      status_.reason = state == "TRACKING_BRAKING" ? "tracking target lost; controlled braking"
+          : "tracking recovery command; replanning continues";
     } else if (state == "FOLLOW_TRAJ" || state == "STATIC_TRACKING" ||
         state == "HOLD_TRACKING" || state == "YAWING") {
       status_.phase = PlannerPhase::EXECUTING;

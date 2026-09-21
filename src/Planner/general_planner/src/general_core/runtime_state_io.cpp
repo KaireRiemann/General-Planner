@@ -62,11 +62,13 @@ namespace general_planner {
     }
 
     Trajectory GeneralPlanner::getCommittedPositionTrajectory() {
-        return cmd_traj_info_.posTraj();
+        // ROS trajectory publication holds lockCommittedTraj() across both
+        // getters so position and yaw belong to the same commit.
+        return cmd_traj_info_.empty() ? Trajectory{} : cmd_traj_info_.posTraj();
     }
 
     Trajectory GeneralPlanner::getCommittedYawTrajectory() {
-        return cmd_traj_info_.yawTraj();
+        return cmd_traj_info_.empty() ? Trajectory{} : cmd_traj_info_.yawTraj();
     }
 
     double GeneralPlanner::getCommittedTrajectoryRemainingDuration() {

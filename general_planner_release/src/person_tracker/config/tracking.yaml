@@ -1,0 +1,348 @@
+# FAST-LIO2 normally publishes one registered scan in camera_init.
+input_cloud_topic: /cloud_registered
+odom_topic: /lidar_slam/odom
+world_frame: world
+cloud_is_registered: true
+max_odom_age: 0.15
+
+# Local observation grid used for tracker diagnostics. FAST-LIO points are quantized to
+# fixed 0.1 m world voxels before processing. Tracking consumes only the
+# current observation, so vanished moving points disappear next scan.
+grid_map/local_update_range: [15.0, 15.0, 8.0]
+grid_map/resolution: 0.10
+grid_map/p_hit: 0.85
+grid_map/p_miss: 0.30
+grid_map/p_min: 0.12
+grid_map/p_max: 0.98
+grid_map/p_occ: 0.80
+grid_map/inflation_xy: 0.10
+grid_map/inflation_z_up: 0.10
+grid_map/inflation_z_down: 0.10
+# Publish the actual newest voxel scan. With false, /grid_map/occupancy uses
+# the optional log-odds fading parameters above and will visibly trail.
+grid_map/current_frame_only: true
+min_range: 0.3
+max_range: 20.0
+
+# Constrained horizontal-plane removal. Disable this for aerial scenes
+# without a visible ground plane.
+# Mid360 on a table often has no stable ground plane; per-frame RANSAC was
+# intermittently deleting the whole local cloud. FAPP background handles
+# static floor/table points, so current-cloud tracking mode leaves it on.
+ground/remove: false
+ground/distance_threshold: 0.12
+ground/eps_angle_deg: 15.0
+ground/min_inliers: 80
+
+# This now controls only visualization-map fading. Detection uses the
+# current scan. XY clustering joins vertically disconnected human returns.
+detection/recent_voxel_frames: 5
+dbscan/cluster_in_xy: true
+dbscan/core_points: 3
+dbscan/tolerance: 0.30
+dbscan/min_cluster_size: 5
+dbscan/max_cluster_size: 2500
+# Preserve the robust 0.30 m coarse clusters for sparse Mid360 returns.
+# When a coarse cluster is supported by both the selected target and a
+# confirmed moving auxiliary track, re-cluster just that interaction at
+# 0.20 m. This breaks arm/leg point chains without fragmenting every person
+# in the scene.
+dbscan/interaction_refinement/enabled: true
+dbscan/interaction_refinement/tolerance: 0.20
+dbscan/interaction_refinement/core_points: 2
+dbscan/interaction_refinement/min_cluster_size: 4
+dbscan/interaction_refinement/min_coverage: 0.45
+
+# FAPP-style point-wise foreground segmentation compares current voxel
+# centres with a sliding ikd-tree background before clustering. Stable wall
+# and furniture points are removed even if they touch a moving person.
+detection/dynamic_only: false
+detection/distance_threshold: 0.06
+detection/variance_threshold: 0.8
+detection/max_background_distance: 2.0
+detection/track_keep_distance: 0.8
+detection/track_keep_min_speed: 0.1
+detection/background_history_frames: 25
+# Keep original FAPP-style immediate background insertion. Target points
+# matched in the current frame are protected separately.
+detection/background_confirm_frames: 1
+
+# Generic-target mode: do not reject a selected or auxiliary cluster just
+# because it is not person-sized. Re-enable this only for human-only use.
+human_filter/enabled: false
+human_filter/min_height: 0.4
+human_filter/max_height: 1.7
+human_filter/min_width: 0.15
+human_filter/max_width: 0.4
+# The voxel AABB is larger than the physical body because of arm returns,
+# registration noise and the five-frame detection window.
+human_filter/measurement_tolerance: 0.45
+
+# Manual single-target mode. In RViz choose "Publish Point" and click a
+# colored point in /cluster_cloud. The clicked cluster becomes the target,
+# so the human_filter above is intentionally bypassed in this mode.
+# Set selection.enabled=false to restore automatic multi-person detection.
+selection/enabled: true
+selection/clicked_point_topic: /clicked_point
+# RViz 2D Goal Pose fallback: click the grid near the person's XY position;
+# unlike Publish Point, this does not require hitting a rendered lidar point.
+selection/target_pose_topic: /target_select
+selection/max_click_distance: 0.60
+selection/association_max_distance: 0.45
+selection/max_size_change: 0.60
+# Keep the selected identity alive through long same-direction/head-on
+# overlap. At roughly 10 Hz this preserves prediction for about 6 seconds
+# after the crossing state releases, while reacquisition remains gated and
+# position corrections remain bounded below.
+selection/max_missed_frames: 60
+# Once selected, use only FAPP foreground voxels around the EKF prediction
+# when sparse returns no longer satisfy DBSCAN. Static background voxels
+# are never allowed to update the target.
+selection/roi_fallback_enabled: true
+selection/roi_radius_xy: 0.35
+selection/roi_half_height: 1.00
+# Two isolated noise voxels were enough to drag the target previously.
+# Five still works with sparse Mid360 human returns but rejects most speckle.
+selection/roi_min_points: 5
+# A background voxel fixed for this many scans is treated as wall/furniture
+# and is not erased merely because the selected person touches it.
+selection/background_static_min_age_frames: 20
+# Do not hard-delete wall-adjacent body returns. Their contribution to the
+# target centre is reduced continuously by background-distance weighting.
+selection/tracking_background_distance: 0.06
+# Two-stage lock: use the small ROI above normally; if a fast movement
+# crosses it in one scan, reacquire only a validated FAPP foreground cluster.
+# Static background never enters this larger gate.
+selection/reacquisition_enabled: true
+selection/reacquisition_max_distance: 1.20
+# A cluster farther than the normal body gate must persist for two frames.
+# Even after confirmation, move the published filter by at most 0.35 m per
+# scan instead of teleporting 1.0--1.2 m to a transient fragment/person.
+selection/reacquisition_immediate_distance: 0.45
+selection/reacquisition_confirm_frames: 2
+selection/reacquisition_confirmation_radius: 0.45
+selection/reacquisition_max_position_correction: 0.35
+# A bounded catch-up correction is not a real 0.1-second human motion
+# sample. Give it only a small influence on velocity to prevent the EKF
+# from accelerating away after an occlusion.
+selection/reacquisition_velocity_blend: 0.10
+selection/reacquisition_direction_weight: 0.35
+selection/reacquisition_max_z_difference: 1.00
+# Soft penalty only: a human close to a wall remains eligible, but a wall
+# edge candidate loses to a body cluster farther from the static surface.
+selection/reacquisition_preferred_center_clearance: 0.30
+selection/reacquisition_clearance_weight: 4.0
+# This is only an outlier guard, not the expected walking speed. It still
+# permits fast human motion seen in the bags, but rejects 4--6 m/s identity
+# switches from teaching the prediction model.
+selection/max_speed: 4.0
+# For fast validated motion, blend finite-difference velocity from two real
+# lidar measurements into the EKF instead of waiting for it to converge.
+selection/measurement_velocity_blend: 0.70
+selection/velocity_min_displacement: 0.12
+selection/velocity_max_dt: 0.50
+# EKF uses constant velocity. During an abrupt stop, also score a candidate
+# against the previous real measurement instead of only the forward
+# prediction, then suppress the stale velocity if that stop model wins.
+selection/stop_hypothesis_enabled: false
+selection/stop_min_speed: 0.40
+selection/stop_max_last_distance: 0.35
+selection/stop_hypothesis_penalty: 0.10
+selection/stop_velocity_damping: 0.10
+# Disable the old unrestricted global-cluster fallback. The validated
+# foreground-only fast-motion reacquisition above remains available.
+selection/prediction_gate_only: true
+# Initialize the target model from the clicked DBSCAN cluster. Horizontal
+# size is measured in a PCA frame, so rotating the same object does not
+# swap/inflate its world X/Y dimensions. Then adapt slowly to partial views;
+# a single accepted frame can change each stored dimension by at most 3%
+# with smoothing=0.12 and max_relative_step=0.25.
+selection/fixed_body_size_enabled: false
+selection/fixed_body_size: [0.60, 0.60, 1.70]
+selection/adaptive_size_enabled: true
+selection/size_smoothing: 0.12
+selection/size_max_relative_step: 0.25
+# Global reacquisition and private distractor tracks must remain in roughly
+# the same size class as the clicked target. This is target-relative, not a
+# human-size rule, and rejects small dynamic fragments or whole mixed blobs.
+selection/size_compatibility_min_ratio: 0.45
+selection/size_compatibility_max_ratio: 1.80
+
+# v0 crossing guard. Only the clicked target is published, while nearby
+# person-like foreground clusters are maintained as private auxiliary
+# tracks. If target and a confirmed moving auxiliary remain in one DBSCAN
+# cluster, its points are split by their CV/CA/CT prediction seeds. Only a
+# small, gated correction from each private partition is permitted; the
+# mixed whole-cluster centre is never used. Once two clusters reappear,
+# both possible identities are retained before one is committed.
+crossing/enabled: true
+crossing/shadow_spawn_radius: 2.0
+crossing/shadow_association_distance: 0.65
+crossing/shadow_max_missed_frames: 12
+# The two-object crossing model needs one private distractor. A second
+# shadow track only let foreground fragments trigger false merge states.
+crossing/max_shadow_tracks: 1
+# Static foreground fragments must not become a second "person" after one
+# scan. The private track must be dynamic, persistent and actually moving
+# before it is allowed to trigger crossing logic.
+crossing/shadow_dynamic_only: true
+crossing/shadow_min_confirmed_hits: 4
+crossing/shadow_min_speed: 0.12
+crossing/interaction_distance: 1.10
+crossing/seed_support_radius: 0.34
+crossing/seed_min_points: 3
+crossing/seed_assignment_margin: 0.05
+crossing/merged_min_extent_xy: 0.65
+crossing/min_track_separation: 0.25
+crossing/merge_confirm_frames: 2
+crossing/occlusion_max_frames: 40
+crossing/split_min_separation: 0.30
+# During a prolonged same-direction merge, only each seed's own point
+# partition may gently correct its track. The whole-cluster centre remains
+# forbidden, so a nearby person cannot drag the selected identity midway.
+crossing/split_update_enabled: true
+crossing/split_update_max_correction: 0.30
+crossing/split_velocity_blend: 0.15
+# Hypothesis/filter updates are already bounded per scan, so 1.20 m allows
+# a real U-turn branch to reconnect without permitting a position jump.
+crossing/recovery_gate: 1.20
+crossing/hypothesis_confirm_frames: 5
+crossing/hypothesis_max_frames: 10
+crossing/hypothesis_score_margin: 0.30
+# Reaching the frame limit is not evidence by itself. If the two identity
+# paths are still nearly tied, keep the central identity and reacquire.
+crossing/hypothesis_timeout_min_margin: 0.15
+# CA/turn seeds help explain manoeuvres, while this direct posterior term
+# prevents one speculative model from pulling an identity branch away.
+crossing/position_continuity_weight: 0.35
+crossing/signature_size_weight: 0.35
+crossing/signature_points_weight: 0.08
+
+# V1 merge-only persistent geometric support. Setting enable=false leaves
+# the complete v0 prediction-seed merge path in place for direct A/B tests.
+# Templates are person-centred clean observations; they are never inserted
+# into /cloud_registered, the background tree or either DBSCAN input.
+merge_v1/enable: true
+# Keep expensive debug-cloud reconstruction off during normal tracking.
+merge_v1/debug/enable: false
+merge_v1/support_memory/max_templates: 8
+merge_v1/support_memory/min_templates: 1
+merge_v1/support_memory/selected_templates: 3
+merge_v1/support_memory/min_points: 5
+merge_v1/support_memory/min_quality: 0.55
+merge_v1/support_memory/max_size_ratio: 1.80
+merge_v1/support_memory/min_template_interval: 0.20
+merge_v1/support_memory/resume_delay_frames: 2
+
+# Soft geometric support S=exp(-d^2/(2*sigma^2)) plus a deliberately weak
+# motion prior. range_sigma_scale reserves a conservative sparse-range
+# adaptation of 5 mm per metre.
+merge_v1/matching/support_sigma: 0.15
+merge_v1/matching/range_sigma_scale: 0.005
+merge_v1/matching/max_support_distance: 0.35
+merge_v1/matching/support_weight: 1.00
+merge_v1/matching/motion_weight: 0.25
+merge_v1/matching/motion_sigma: 0.45
+merge_v1/matching/unknown_threshold: 0.18
+merge_v1/matching/ambiguity_margin: 0.08
+merge_v1/matching/view_range_scale: 2.00
+merge_v1/matching/view_bearing_scale: 0.80
+
+# Weighted kNN iterative Potts refinement. It is isolated behind the
+# matcher interface so a graph-cut implementation can replace it later.
+merge_v1/spatial/enable: true
+merge_v1/spatial/knn: 8
+merge_v1/spatial/neighbor_sigma: 0.22
+merge_v1/spatial/smooth_weight: 0.30
+merge_v1/spatial/iterations: 2
+merge_v1/spatial/unknown_cost: 0.55
+
+# A track can receive no real points during a merge. Only VISIBLE support
+# updates its EKF; PARTIAL and OCCLUDED tracks remain prediction-only.
+merge_v1/visibility/min_visible_points: 5
+merge_v1/visibility/min_partial_points: 3
+merge_v1/visibility/min_mean_support: 0.30
+merge_v1/visibility/min_partial_mean_support: 0.20
+merge_v1/visibility/high_support_threshold: 0.55
+merge_v1/visibility/min_high_confidence_points: 2
+merge_v1/visibility/visible_expected_ratio: 0.30
+merge_v1/visibility/partial_expected_ratio: 0.12
+
+# Extra evidence in the existing 5-10 frame split hypotheses. Motion,
+# size and point-count continuity remain unchanged.
+merge_v1/split_identity_support_weight: 0.25
+
+tracking/association_max_distance: 1.0
+tracking/min_confirmed_hits: 2
+tracking/max_missed_frames: 5
+# Faster motion model and stronger position correction for abrupt movement.
+tracking/acceleration_noise: 4.0
+tracking/measurement_noise: 0.10
+# Adaptive multi-model prediction learns acceleration and horizontal turn
+# rate from validated lidar measurements. Limits prevent a wrong crossing
+# association from creating an unbounded manoeuvre model.
+tracking/acceleration_smoothing: 0.45
+tracking/turn_rate_smoothing: 0.45
+tracking/maximum_acceleration: 8.0
+tracking/maximum_turn_rate: 4.0
+tracking/publish_unconfirmed: true
+
+# ROS1 semantic/lidar fusion. LiDAR/FAPP owns normal tracking. YOLO continuously
+# audits identity only when the predicted target centre projects into the image.
+# It may select a different LiDAR cluster only after LOCKED -> SUSPECT.
+yolo/enabled: true
+yolo/topic: /yoloe/plot
+target_label: car
+yolo/min_probability: 0.4
+yolo/continuous_validation_enabled: true
+# An empty detector frame releases the gate immediately. This timeout covers a
+# stopped/delayed detector that cannot publish that empty frame.
+yolo/continuous_validation_max_age: 0.30
+yolo/continuous_validation_distance: 0.60
+fusion/enabled: true
+# Geometric centre-in-frustum test; this is not an occlusion/raycast test.
+fusion/camera_margin_pixels: 8.0
+# Hysteresis: <= consistent is agreement, >= conflict is conflict, between the
+# two is UNKNOWN. UNKNOWN/OUT_OF_VIEW never blocks LiDAR.
+fusion/consistent_distance: 0.45
+fusion/conflict_distance: 0.70
+fusion/conflict_frames: 3
+# Once SUSPECT, the same YOLO-supported LiDAR component must repeat before EKF
+# is re-anchored. The selected target ID is preserved.
+fusion/relock_confirmation_frames: 2
+fusion/relock_confirmation_radius: 0.45
+# Hard identity-safety bound. Beyond this distance automatic same-person
+# recovery is refused even if the detector class is still "person".
+fusion/reselection_max_distance: 2.5
+yolo/reacquisition_enabled: true
+# Keep the semantic reset near the last trusted lidar track. This prevents a
+# second object with the same class from stealing the selected identity.
+yolo/reacquisition_max_distance: 2.5
+yolo/reacquisition_max_z_difference: 0.8
+yolo/max_detection_age: 0.8
+yolo/cloud_sync_slop: 0.12
+yolo/history_duration: 2.0
+yolo/confirmation_frames: 2
+yolo/confirmation_distance: 0.5
+yolo/box_inset: 0.05
+yolo/min_depth: 0.3
+yolo/max_depth: 20.0
+yolo/cluster_tolerance: 0.30
+yolo/min_points: 5
+yolo/min_cluster_extent: 0.10
+yolo/max_cluster_extent: 4.0
+yolo/min_box_coverage: 0.02
+max_cloud_age: 0.5
+# Retain identity longer than the odometry output's bounded blind prediction.
+output/max_prediction_age: 2.0
+output/identity_timeout: 6.0
+
+# IMM-MOT CA/CTRA acceleration-driving noise, selected on moving-bag maneuvers.
+# The signed-speed/mixing repair is independent of this setting.
+# Use 16.0 to compare repaired mixing with the previous noise configuration.
+prediction/imm_mot/jerk_psd: 64.0
+
+# Estimate a horizontal body centre from visible lidar surfaces. The radius and
+# view-relative bias are learned only from the selected person's accepted fits.
+# Set false for the original visible-point centroid baseline.
+observation/body_center_enabled: true

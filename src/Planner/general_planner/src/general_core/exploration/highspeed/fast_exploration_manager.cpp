@@ -194,6 +194,18 @@ void FastExplorationManager::initialize(
     ROS_WARN_STREAM("[target exploration] invalid mission_mode='"
                     << mission_mode << "'; fall back to coverage");
   }
+  if (planner_manager_->gcopter_config_) {
+    view_score_hard_gate_default_ =
+        planner_manager_->gcopter_config_->viewScoreHardGateMinKnownFreeRatio;
+  }
+  nh.param("indoor_frontier/view_score_hard_gate_min_known_free_ratio",
+           view_score_hard_gate_indoor_, view_score_hard_gate_indoor_);
+  view_score_hard_gate_indoor_ =
+      std::clamp(view_score_hard_gate_indoor_, 0.0, 1.0);
+  if (!ep_->target_directed_mode_) {
+    frontier_manager_ptr_->applyFrontierGranularity(true);
+    applyViewScoreHardGate(true);
+  }
   nh.param("exploration/target_goal_use_message_z",
            ep_->target_goal_use_message_z_, ep_->target_goal_use_message_z_);
   nh.param("exploration/target_heuristic_weight",
@@ -1000,6 +1012,8 @@ bool FastExplorationManager::setMissionMode(const std::string &mode) {
   }
   planner_manager_->lidar_map_interface_->setTargetNavigation(target);
   frontier_manager_ptr_->setTaskDomain(target);
+  frontier_manager_ptr_->applyFrontierGranularity(!target);
+  applyViewScoreHardGate(!target);
   if (ep_->target_directed_mode_ == target) {
     return true;
   }
@@ -1025,6 +1039,14 @@ bool FastExplorationManager::setMissionMode(const std::string &mode) {
   ROS_INFO_STREAM("[target exploration] runtime mission mode switched to "
                   << (target ? "target" : "coverage"));
   return true;
+}
+
+void FastExplorationManager::applyViewScoreHardGate(bool indoor) {
+  if (!planner_manager_ || !planner_manager_->gcopter_config_) {
+    return;
+  }
+  planner_manager_->gcopter_config_->viewScoreHardGateMinKnownFreeRatio =
+      indoor ? view_score_hard_gate_indoor_ : view_score_hard_gate_default_;
 }
 
 std::string FastExplorationManager::missionMode() const {

@@ -94,6 +94,8 @@ namespace general_planner {
         last_exp_traj_info_ = task_exp_traj;
         robot_on_backup_traj_.store(false);
         gi_.new_goal = false;
+        // Perching handover flies the exact perching yaw polynomial.
+        setTrackingYawServo(false);
 
         {
             TimeConsuming t_viz("tracking_perching_task_viz", false);

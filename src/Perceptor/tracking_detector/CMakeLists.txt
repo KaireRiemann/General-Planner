@@ -5,15 +5,24 @@ find_package(catkin REQUIRED COMPONENTS roscpp rospy std_msgs nav_msgs geometry_
 find_package(Eigen3 REQUIRED)
 add_message_files(FILES BoundingBox.msg BoundingBoxes.msg)
 generate_messages(DEPENDENCIES std_msgs)
-catkin_package(CATKIN_DEPENDS roscpp rospy std_msgs nav_msgs geometry_msgs sensor_msgs message_filters cv_bridge message_runtime DEPENDS Eigen3)
-include_directories(${catkin_INCLUDE_DIRS} ${EIGEN3_INCLUDE_DIRS})
-foreach(node target_ekf_node target_path_predictor_node)
+catkin_package(
+  INCLUDE_DIRS include
+  CATKIN_DEPENDS roscpp rospy std_msgs nav_msgs geometry_msgs sensor_msgs message_filters cv_bridge message_runtime
+  DEPENDS Eigen3)
+include_directories(include ${catkin_INCLUDE_DIRS} ${EIGEN3_INCLUDE_DIR} ${EIGEN3_INCLUDE_DIRS})
+foreach(node target_ekf_node target_path_predictor_node target_cloud_filter target_lidar_cluster)
   add_executable(${node} src/${node}.cpp)
   add_dependencies(${node} ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
   target_link_libraries(${node} ${catkin_LIBRARIES})
   install(TARGETS ${node} RUNTIME DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION})
 endforeach()
+add_executable(target_dynamic_cloud_self_test tests/target_dynamic_cloud_self_test.cpp)
+target_include_directories(target_dynamic_cloud_self_test PRIVATE include ${EIGEN3_INCLUDE_DIR} ${EIGEN3_INCLUDE_DIRS})
+if(CATKIN_ENABLE_TESTING)
+  add_test(NAME target_dynamic_cloud_self_test COMMAND target_dynamic_cloud_self_test)
+endif()
 catkin_install_python(PROGRAMS scripts/yoloe_bbox_node.py scripts/check_runtime.py scripts/target_state_estimator.py DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION})
+install(DIRECTORY include/ DESTINATION ${CATKIN_PACKAGE_INCLUDE_DESTINATION})
 install(DIRECTORY launch config vendor DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}
   PATTERN "__pycache__" EXCLUDE PATTERN "*.pyc" EXCLUDE)
 install(FILES README.md THIRD_PARTY.md LICENSE.target_ekf DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION})

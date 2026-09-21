@@ -86,6 +86,8 @@ private:
   std::string odometry_topic_;
   double command_timeout_{0.30};
   double publish_rate_{100.0};
+  double navigation_resume_max_position_error_{0.30};
+  bool navigation_resume_pending_{true};
 
   CommandOwner authorized_owner_{CommandOwner::HOLD};
   std::uint64_t authorized_epoch_{0};

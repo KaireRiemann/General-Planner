@@ -16,14 +16,14 @@
   <arg name="perceptor_vlm_base_url" default="http://127.0.0.1:18000/v1" />
   <arg name="tracking_ground_truth" default="false" />
   <arg name="tracking_ground_truth_topic" default="/unity/car_ground_truth/odom" />
-  <arg name="tracking_target_odom_topic" default="$(eval '/tracking/ground_truth/target_odom' if arg('tracking_ground_truth') else '/target_ekf_node/target_odom')" />
+  <arg name="tracking_target_odom_topic" default="$(eval '/tracking/ground_truth/target_odom' if arg('tracking_ground_truth') else '/tracking/target_odom')" />
   <arg name="tracking_target_prediction_topic" default="$(eval '/tracking/ground_truth/target_prediction' if arg('tracking_ground_truth') else '/tracking/target_prediction')" />
   <!-- Start perception with runtime so tracking can be selected without another launch. -->
   <arg name="tracking_detector" default="true" />
   <arg name="tracking_camera_info_topic" default="/camera0/color/info" />
   <arg name="tracking_rgb_compressed" default="true" />
   <arg name="tracking_depth_topic" default="/camera0/depth/image/compressed" />
-  <arg name="tracking_range_method" default="ground_plane" />
+  <arg name="tracking_range_method" default="auto" />
   <arg name="tracking_depth_registered" default="false" />
   <arg name="tracking_ground_z" default="0.0" />
   <arg name="tracking_target_center_height" default="0.7" />
@@ -72,15 +72,20 @@
        house profile; Marsim's dedicated wrapper passes an empty override. -->
   <arg name="exploration_overlay_config"
        default="$(find general_planner_release)/config/exploration_unity_overlay.yaml" />
+  <arg name="indoor_frontier_config"
+       default="$(find general_planner_release)/config/exploration_indoor_frontier.yaml" />
   <arg name="rog_map_config" default="$(find general_planner_release)/config/exploration_rog_map.yaml" />
   <arg name="global_topology_config" default="$(find general_planner_release)/config/global_topology.yaml" />
   <arg name="rviz_config" default="$(find general_planner_release)/config/planner_runtime_exploration.rviz" />
   <arg name="exploration_rviz_config" default="$(find general_planner_release)/config/planner_runtime_exploration.rviz" />
   <arg name="state2state_rviz_config" default="$(find general_planner_release)/config/planner_runtime_state2state.rviz" />
-  <!-- Use the bridge output, not Unity's raw /unity_odom.  The bridge supplies
-       ROS-time stamps and the commanded velocity needed by the planner. -->
-  <arg name="odom_topic" default="/unity_odom" />
+  <!-- Planning uses the bridge's ROS clock and velocity estimate. Perception
+       uses tracking_odom_topic on the camera acquisition clock separately. -->
+  <arg name="odom_topic" default="/lidar_slam/odom" />
   <arg name="cloud_topic" default="/cloud_registered" />
+  <arg name="map_cloud_topic" default="/mapping/cloud_without_target" />
+  <arg name="tracking_dynamic_points_topic" default="/tracking/dynamic_points" />
+  <arg name="filter_mapping_cloud" default="true" />
   <arg name="fsm_replan_time" default="0.25" />
   <arg name="fsm_replan_time_after_traj_start" default="0.35" />
   <arg name="fsm_replan_time_before_traj_end" default="1.0" />
@@ -130,12 +135,24 @@
     <param name="execution_enabled_topic" value="/planning/exploration/command_enabled" type="string" />
   </node>
 
+  <node if="$(arg filter_mapping_cloud)" pkg="tracking_detector" type="target_cloud_filter"
+        name="target_cloud_filter" output="screen" clear_params="true">
+    <param name="frontend_voxel_resolution" value="0.10" />
+    <param name="cluster_wait_seconds" value="0.50" />
+    <param name="cluster_hold_seconds" value="1.00" />
+    <remap from="~cloud_in" to="$(arg cloud_topic)" />
+    <remap from="~target_cluster" to="$(arg tracking_dynamic_points_topic)" />
+    <remap from="~cloud_out" to="$(arg map_cloud_topic)" />
+  </node>
+
   <node pkg="general_planner_release" type="planner_runtime_node"
         name="planner_runtime_node" output="screen" clear_params="true">
     <rosparam file="$(arg exploration_config)" command="load" />
     <rosparam file="$(arg target_exploration_config)" command="load" />
     <rosparam if="$(eval arg('exploration_overlay_config') != '')"
               file="$(arg exploration_overlay_config)" command="load" />
+    <rosparam if="$(eval arg('indoor_frontier_config') != '')"
+              file="$(arg indoor_frontier_config)" command="load" />
     <rosparam file="$(arg global_topology_config)" command="load" />
     <rosparam file="$(arg gate_config)" command="load" />
     <rosparam if="$(eval arg('gate_overlay_config') != '')" file="$(arg gate_overlay_config)" command="load" />
@@ -161,7 +178,7 @@
     <param name="navigation_config" value="$(arg navigation_config)" type="string" />
     <param name="tracking_config" value="$(arg tracking_config)" type="string" />
     <param name="odometry_topic" value="$(arg odom_topic)" type="string" />
-    <param name="cloud_topic" value="$(arg cloud_topic)" type="string" />
+    <param name="cloud_topic" value="$(eval arg('map_cloud_topic') if arg('filter_mapping_cloud') else arg('cloud_topic'))" type="string" />
     <param name="RogMapEnable" value="$(arg rog_map_enable)" type="bool" />
     <param name="RogMapConfigPath" value="$(arg rog_map_config)" type="string" />
     <param name="navigation_cmd_topic" value="/planning/navigation/pos_cmd" type="string" />
@@ -277,6 +294,7 @@
     <param name="launch_file" value="$(arg tracking_package_dir)/launch/tracking_detector.launch" />
     <param name="launch_args/rgb_topic" value="$(arg tracking_image_topic)" type="str" />
     <param name="launch_args/odom_topic" value="$(arg tracking_odom_topic)" type="str" />
+    <param name="launch_args/lidar_odom_topic" value="$(arg odom_topic)" type="str" />
     <param name="launch_args/device" value="$(arg tracking_device)" type="str" />
     <param name="launch_args/target_label" value="$(arg tracking_target_label)" type="str" />
     <param name="launch_args/confidence" value="$(arg tracking_confidence)" type="str" />
@@ -284,6 +302,13 @@
     <param name="launch_args/estimator_config" value="$(arg tracking_estimator_config)" type="str" />
     <param name="launch_args/target_odom_topic" value="$(arg tracking_target_odom_topic)" type="str" />
     <param name="launch_args/prediction_topic" value="$(arg tracking_target_prediction_topic)" type="str" />
+    <param name="launch_args/start_cloud_filter" value="false" type="str" />
+    <param name="launch_args/start_person_tracker" value="true" type="str" />
+    <param name="launch_args/start_lidar_cluster" value="false" type="str" />
+    <param name="launch_args/start_predictor" value="false" type="str" />
+    <param name="launch_args/start_ekf" value="false" type="str" />
+    <param name="launch_args/cloud_in_topic" value="$(arg cloud_topic)" type="str" />
+    <param name="launch_args/dynamic_points_topic" value="$(arg tracking_dynamic_points_topic)" type="str" />
   </node>
 
   <!-- Ground truth replaces perception input only. Planner safety/FOV stays enabled. -->
@@ -300,14 +325,14 @@
     </node>
     <node pkg="tracking_detector" type="target_path_predictor_node"
           name="ground_truth_predictor" output="screen" required="true" clear_params="true">
-      <!-- Match the 0.75 s input path used in the latest visual tracking bag. -->
-      <param name="prediction_horizon" value="0.75" />
-      <param name="minimum_prediction_horizon" value="0.75" />
-      <param name="prediction_dt" value="0.25" />
+      <!-- Use the same turn model and horizon as visual tracking. -->
+      <param name="prediction_horizon" value="3.0" />
+      <param name="minimum_prediction_horizon" value="1.0" />
+      <param name="prediction_dt" value="0.2" />
       <param name="publish_rate" value="20.0" />
       <param name="input_timeout" value="0.5" />
       <param name="require_target_valid" value="true" />
-      <param name="enable_turn_prediction" value="false" />
+      <param name="enable_turn_prediction" value="true" />
       <remap from="~target_odom" to="$(arg tracking_target_odom_topic)" />
       <remap from="~target_valid" to="/tracking/ground_truth/target_valid" />
       <remap from="~observation_age" to="/tracking/ground_truth/observation_age" />

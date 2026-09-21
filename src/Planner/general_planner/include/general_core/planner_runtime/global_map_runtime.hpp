@@ -33,6 +33,11 @@ struct GlobalMapContext {
 
   rog_map::ROGMapROS::Ptr rog_map;
   MapManager::Ptr map_manager;
+  // Tracking-dedicated local occupancy map (Elastic-aligned thin inflation).
+  // Fused from the same cloud/odom stream but owned separately, so tracking
+  // clearance never tightens exploration/state2state and vice versa.
+  rog_map::ROGMapROS::Ptr tracking_rog_map;
+  MapManager::Ptr tracking_map_manager;
   std::shared_ptr<fast_planner::LIOInterface> lio_map;
 
   std::atomic<std::uint64_t> world_epoch{1};
@@ -75,12 +80,20 @@ class GlobalMapRuntime {
   GlobalMapRuntime &operator=(const GlobalMapRuntime &) = delete;
 
   // odometry_nh must have its own serviced callback queue (not the world queue).
+  // tracking_map_config_path optionally builds a second, tracking-only ROG
+  // map from the same sensor stream (Elastic-style thin inflation).
   void init(ros::NodeHandle nh, const std::string &map_config_path,
-            ros::NodeHandle odometry_nh);
+            ros::NodeHandle odometry_nh,
+            const std::string &tracking_map_config_path = "");
 
   GlobalMapContext::Ptr context() const { return context_; }
   MapManager::Ptr mapManager() const {
     return context_ ? context_->map_manager : MapManager::Ptr{};
+  }
+  // Falls back to the shared world map when no tracking map is configured.
+  MapManager::Ptr trackingMapManager() const {
+    return (context_ && context_->tracking_map_manager)
+        ? context_->tracking_map_manager : mapManager();
   }
 
   /** Attach the one exploration LIO map before the first cloud callback. */

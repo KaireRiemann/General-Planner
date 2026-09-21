@@ -1,0 +1,64 @@
+<launch>
+  <arg name="device" default="cuda:0" />
+  <arg name="start_camera_sync" default="true" />
+  <arg name="camera_info_topic" default="/camera0/color/info" />
+  <arg name="image_topic" default="/camera0/color/image/compressed" />
+  <arg name="detector_rgb_topic" default="/office_tracking/rgb/compressed" />
+  <arg name="camera_odom_topic" default="/office_tracking/camera_odom" />
+  <arg name="boxes_topic" default="/office_tracking/boxes" />
+  <arg name="odom_topic" default="/unity_odom" />
+  <arg name="cloud_topic" default="/drone_0_pcl_render_node/cloud" />
+  <arg name="camera_config" default="" />
+  <arg name="start_detector" default="true" />
+  <node pkg="tracking_frontend_io" type="camera_sync.py" name="office_tracking_camera_sync" output="screen" required="true" if="$(arg start_camera_sync)">
+    <remap from="/unity_odom" to="$(arg odom_topic)" />
+    <remap from="/camera0/color/image/compressed" to="$(arg image_topic)" />
+    <remap from="/camera0/color/info" to="$(arg camera_info_topic)" />
+    <remap from="/office_tracking/camera_odom" to="$(arg camera_odom_topic)" />
+  </node>
+  <node if="$(arg start_detector)" pkg="tracking_frontend_io" type="detector.py" name="office_tracking_detector" launch-prefix="/opt/yoloe-venv/bin/python" output="screen" required="true">
+    <param name="yoloe_root" value="/opt/yoloe-src" />
+    <param name="model_path" value="/models/yoloe-11m-seg.pt" />
+    <param name="prompt_path" value="$(find tracking_frontend_io)/config/person_prompt.txt" />
+    <param name="device" value="$(arg device)" />
+    <param name="rgb_topic" value="$(arg detector_rgb_topic)" />
+    <param name="odom_topic" value="$(arg camera_odom_topic)" />
+    <param name="odom_sync_slop" type="double" value="0.000000001" />
+    <param name="confidence" value="0.45" />
+    <param name="output_width" value="640" />
+    <param name="output_height" value="480" />
+    <param name="bounding_boxes_topic" value="$(arg boxes_topic)" />
+    <param name="visualization_topic" value="/office_tracking/image" />
+  </node>
+  <node pkg="person_tracker" type="person_tracker_node" name="person_tracker" output="screen" required="true" clear_params="true">
+    <rosparam command="load" file="$(find person_tracker)/config/tracking.yaml" />
+    <rosparam command="load" file="$(find person_tracker)/config/person.yaml" />
+    <param name="fusion/policy" value="lidar_evidence" />
+    <param name="prediction/backend" value="imm_mot_fixed_q" />
+    <param name="prediction/imm_mot/adapter" value="$(find person_tracker)/tools/imm_mot" />
+    <param name="prediction/imm_mot/repository" value="$(find person_tracker)/../IMM-MOT" />
+    <param name="prediction/imm_mot/dependencies" value="/opt/imm_mot_deps" />
+    <param name="prediction/path_horizon" value="1.0" />
+    <param name="prediction/path_step" value="0.25" />
+    <param name="input_cloud_topic" value="$(arg cloud_topic)" />
+    <param name="odom_topic" value="$(arg odom_topic)" />
+    <param name="yolo/camera_odom_topic" value="$(arg camera_odom_topic)" />
+    <param name="yolo/topic" value="$(arg boxes_topic)" />
+    <param name="yolo/enabled" value="true" />
+    <param name="target_label" value="person" />
+    <param name="world_frame" value="world" />
+    <param name="cam_width" value="640" />
+    <param name="cam_height" value="480" />
+    <param name="cam_fx" value="320.0" />
+    <param name="cam_fy" value="320.0" />
+    <param name="cam_cx" value="320.0" />
+    <param name="cam_cy" value="240.0" />
+    <rosparam param="cam2body_R">[0., 0., 1., -1., 0., 0., 0., -1., 0.]</rosparam>
+    <rosparam param="cam2body_p">[0.30, 0.0, 0.12]</rosparam>
+    <rosparam command="load" file="$(arg camera_config)" if="$(eval arg('camera_config') != '')" />
+    <remap from="~target_odom" to="/tracking/target_odom" />
+    <remap from="~target_prediction" to="/tracking/target_prediction" />
+    <remap from="~target_valid" to="/tracking/target_valid" />
+    <remap from="~observation_age" to="/tracking/observation_age" />
+  </node>
+</launch>

@@ -43,6 +43,7 @@ public:
             decision.reason = "ret_emergency";
             return decision;
         }
+        if (trackingDecision(result, decision)) return decision;
         if (result.ret_code == general_utils::NO_NEED &&
             result.request.identity.tracking_like) {
             decision.action = CommitAction::KEEP_OLD_TRAJECTORY;
@@ -100,6 +101,7 @@ public:
             decision.reason = "ret_emergency";
             return decision;
         }
+        if (trackingDecision(result, decision)) return decision;
         if (result.failed() && result.request.identity.tracking_like) {
             decision.action = CommitAction::KEEP_OLD_TRAJECTORY;
             decision.next_phase = ExecutionPhase::EXECUTING;
@@ -163,6 +165,40 @@ public:
         decision.reason = "ret_unhandled";
         return decision;
     }
+private:
+    static bool trackingDecision(const PlanResult &result, CommitDecision &decision) {
+        using Outcome = TrackingPlanOutcome;
+        const auto outcome = result.context.tracking_outcome;
+        if (outcome == Outcome::UNSPECIFIED) return false;
+        decision.clear_task_new = true;
+        decision.plan_from_rest_consumed = true;
+        decision.publish_trajectory = outcome == Outcome::COMMITTED || outcome == Outcome::COMMITTED_RECOVERY;
+        switch (outcome) {
+            case Outcome::COMMITTED:
+                decision.action = CommitAction::COMMIT_CANDIDATE;
+                decision.next_phase = ExecutionPhase::EXECUTING;
+                decision.reason = "tracking_candidate_committed";
+                break;
+            case Outcome::KEPT_TRACKING:
+                decision.action = CommitAction::KEEP_OLD_TRAJECTORY;
+                decision.next_phase = ExecutionPhase::EXECUTING;
+                decision.reason = "tracking_safe_command_retained";
+                break;
+            case Outcome::COMMITTED_RECOVERY:
+            case Outcome::KEPT_RECOVERY:
+                decision.action = CommitAction::HOLD;
+                decision.next_phase = ExecutionPhase::RECOVERING;
+                decision.reason = outcome == Outcome::COMMITTED_RECOVERY ? "tracking_recovery_committed" : "tracking_recovery_continued";
+                break;
+            default:
+                decision.action = CommitAction::EMERGENCY_STOP;
+                decision.next_phase = ExecutionPhase::EMERGENCY;
+                decision.reason = "tracking_no_safe_command";
+                break;
+        }
+        return true;
+    }
+
 };
 
 } // namespace general_planner::architecture

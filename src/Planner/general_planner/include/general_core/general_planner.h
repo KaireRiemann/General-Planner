@@ -80,6 +80,10 @@ namespace general_planner {
         LogOneReplan latest_replan;
         general_planner::Config cfg_;
         MapManager::Ptr map_manager_;
+        // Tracking-dedicated local occupancy map (Elastic-aligned thin
+        // inflation). Falls back to map_manager_ when the runtime does not
+        // provide a separate one; exploration/state2state never see it.
+        MapManager::Ptr tracking_map_manager_;
         CorridorGenerator::Ptr cg_ptr_;
         CorridorGenerator::Ptr tracking_cg_ptr_;
         path_search::Astar::Ptr astar_ptr_;
@@ -128,10 +132,25 @@ namespace general_planner {
                        const ros_interface::RosInterface::Ptr &ros_ptr,
                        const MapManager::Ptr &map_manager,
                        bool configure_private_topology,
-                       const std::string &tracking_config);
+                       const std::string &tracking_config,
+                       const MapManager::Ptr &tracking_map_manager = nullptr);
 
-	        CmdTraj cmd_traj_info_;
-	        ExpTraj last_exp_traj_info_;
+        CmdTraj cmd_traj_info_;
+        ExpTraj last_exp_traj_info_;
+
+        // Elastic traj_server-style yaw servo: tracking commits a scalar
+        // heading setpoint as a constant yaw polynomial and the command
+        // sampler slews toward it at tracking_yaw_rate_limit, exactly like
+        // traj_server's 0.02 rad per 10 ms tick.
+        std::atomic<bool> tracking_yaw_servo_active_{false};
+        mutable std::mutex tracking_yaw_servo_mutex_;
+        double tracking_yaw_servo_last_{0.0};
+        double tracking_yaw_servo_last_wt_{-1.0};
+        void setTrackingYawServo(bool active);
+        void applyTrackingYawServo(double &yaw, double &yaw_dot);
+        // Current slewed yaw command (robot yaw while uninitialized). The
+        // tracking hover commit holds this value like Elastic holds last_yaw_.
+        double trackingYawServoYaw() const;
 
 	        std::unique_ptr<TrackingRuntimeManager> tracking_runtime_manager_;
         std::unique_ptr<PerchingRuntimeManager> perching_runtime_manager_;
@@ -163,6 +182,11 @@ namespace general_planner {
         using TrackingTrajectoryActivity = TrackingRuntimeManager::Activity;
 
     public:
+        architecture::TrackingPlanOutcome trackingPlanOutcome() const {
+            return tracking_runtime_manager_ ? tracking_runtime_manager_->outcome()
+                : architecture::TrackingPlanOutcome::UNSPECIFIED;
+        }
+
         using CommittedTrajectorySafetyReport = general_planner::CommittedTrajectorySafetyReport;
 
         struct TrackingDiagnosticSnapshot {
@@ -196,11 +220,14 @@ namespace general_planner {
          * M2 constructor: callers inject the world-lifetime MapManager.
          * The planner may query it, but may not replace or reconfigure its
          * topology.  Standalone fsm_node keeps using the ROGMap constructor.
+         * tracking_map_manager optionally carries the Elastic-aligned
+         * tracking-dedicated occupancy map; nullptr shares the world map.
          */
         GeneralPlanner(const std::string &cfg_path,
                        const ros_interface::RosInterface::Ptr &ros_ptr,
                        const MapManager::Ptr &shared_map_manager,
-                       const std::string &tracking_config = "");
+                       const std::string &tracking_config = "",
+                       const MapManager::Ptr &tracking_map_manager = nullptr);
 
         ~GeneralPlanner();
 
@@ -225,6 +252,9 @@ namespace general_planner {
         Trajectory getCommittedYawTrajectory();
 
         double getCommittedTrajectoryRemainingDuration();
+
+        // Retire an interrupted command; its absolute clock cannot be resumed.
+        void invalidateTrackingCommand(const std::string &reason);
 
         bool commitTrackingHoldTrajectory(const std::string &reason,
                                           double duration = 0.0,
@@ -417,24 +447,13 @@ namespace general_planner {
         bool buildTrackingGuideCorridor(traj_opt::TrackingProblem &problem,
                                         std::string *failure_reason = nullptr);
 
-        bool tryGenerateTrackingCorridor(const vec_Vec3f &guide_path,
-                                         PolytopeVec &sfcs,
-                                         std::string *failure_reason = nullptr);
-
-
-        bool densifyTrackingGuideForCorridor(const vec_Vec3f &guide_path,
-                                             const std::vector<double> &guide_t,
-                                             vec_Vec3f &dense_path,
-                                             std::vector<double> &dense_t) const;
-
+        bool generateElasticTrackingSFC(const vec_Vec3f &path,
+                                        PolytopeVec &sfcs,
+                                        std::string *failure_reason = nullptr);
 
         bool trackingGuidePointSafe(const Vec3f &point) const;
 
-        bool findTrackingViewpointReference(
-            const traj_opt::DynamicTargetStates &target_prediction,
-            Vec3f &reference_viewpoint,
-            traj_opt::DynamicTargetState &reference_target) const;
-        void rememberTrackingViewpointReference(const traj_opt::TrackingProblem &problem);
+
 
         StatePVAJ makeTaskHeadState(const bool &from_rest,
                                     double eval_wall_time = std::numeric_limits<double>::quiet_NaN());
@@ -504,25 +523,6 @@ namespace general_planner {
                                                       std::string *reason = nullptr,
                                                       std::string *detail = nullptr) const;
 
-        bool trackingSnapshotSatisfiesFovForKeepOld(
-            const Trajectory &pos_traj,
-            const Trajectory &yaw_traj,
-            double local_start_t,
-            const traj_opt::DynamicTargetStates &target_prediction,
-            std::string *reason = nullptr) const;
-
-        bool trackingTrajectorySatisfiesFov(const Trajectory &pos_traj,
-                                            const Trajectory &yaw_traj,
-                                            const traj_opt::DynamicTargetStates &target_prediction,
-                                            double start_t,
-                                            double horizon,
-                                            double dt,
-                                            double target_start_t,
-                                            std::string *reason = nullptr,
-                                            bool allow_keep_old_grace = false,
-                                            bool allow_reacquire_range_grace = false) const;
-
-
         void resetTrackingRuntimeDecision(const std::string &reason = "none");
 
         void maybeResetTrackingRuntimeForReplan(bool new_task,
@@ -544,23 +544,6 @@ namespace general_planner {
                                    const std::string &reason,
                                    const traj_opt::TrackingProblem &problem,
                                    double out_traj_duration = 0.0);
-
-        double trackingViewpointErrorScore(const Vec3f &tracker,
-                                           const Vec3f &target) const;
-
-        bool trackingCommitPassesAntiRollback(const Trajectory &candidate_pos_traj,
-                                              const traj_opt::DynamicTargetStates &target_prediction,
-                                              double commit_wt,
-                                              double candidate_eval_start_t = 0.0,
-                                              double target_eval_start_t = 0.0,
-                                              bool candidate_safe = true,
-                                              bool candidate_fov_ok = true,
-                                              int *worse_count_out = nullptr,
-                                              double *max_regression_out = nullptr,
-                                              std::string *reason = nullptr);
-
-
-
 
         RET_CODE optimizeTrackingTask(const traj_opt::DynamicTargetStates &target_prediction,
                                       const bool &from_rest);
@@ -594,6 +577,14 @@ namespace general_planner {
 
         MapManager::Ptr getMapManager() const {
             return map_manager_;
+        }
+
+        MapManager::Ptr getTrackingMapManager() const {
+            return tracking_map_manager_;
+        }
+
+        bool trackingYawServoActive() const {
+            return tracking_yaw_servo_active_.load();
         }
 
         double ft{0}, bt{0};
