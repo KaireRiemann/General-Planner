@@ -184,6 +184,7 @@ TARGET_EXPLORATION_CONFIG_SRC="${PLANNER_CONFIG_DIR}/target_exploration.yaml"
 EXPLORATION_FOREST_OVERLAY_CONFIG_SRC="${PLANNER_CONFIG_DIR}/exploration_forest_overlay.yaml"
 EXPLORATION_SIM_CONFIG_SRC="${PLANNER_CONFIG_DIR}/exploration_sim.yaml"
 EXPLORATION_ROG_MAP_CONFIG_SRC="${PLANNER_CONFIG_DIR}/exploration_rog_map.yaml"
+TRACKING_ROG_MAP_CONFIG_SRC="${PLANNER_CONFIG_DIR}/tracking_rog_map.yaml"
 M2_STATE2STATE_CONFIG_SRC="${PLANNER_CONFIG_DIR}/task_planner_runtime_state2state.yaml"
 M2_TRACKING_CONFIG_SRC="${PLANNER_CONFIG_DIR}/task_planner_runtime_tracking.yaml"
 GLOBAL_TOPOLOGY_CONFIG_SRC="${PLANNER_CONFIG_DIR}/global_topology.yaml"
@@ -319,6 +320,7 @@ cp "${EXPLORATION_FOREST_OVERLAY_CONFIG_SRC}" \
   "${RELEASE_CONFIG_DIR}/exploration_forest_overlay.yaml"
 cp "${EXPLORATION_SIM_CONFIG_SRC}" "${RELEASE_CONFIG_DIR}/exploration_sim.yaml"
 cp "${EXPLORATION_ROG_MAP_CONFIG_SRC}" "${RELEASE_CONFIG_DIR}/exploration_rog_map.yaml"
+cp "${TRACKING_ROG_MAP_CONFIG_SRC}" "${RELEASE_CONFIG_DIR}/tracking_rog_map.yaml"
 cp "${M2_STATE2STATE_CONFIG_SRC}" \
   "${RELEASE_CONFIG_DIR}/task_planner_runtime_state2state.yaml"
 cp "${M2_TRACKING_CONFIG_SRC}" \

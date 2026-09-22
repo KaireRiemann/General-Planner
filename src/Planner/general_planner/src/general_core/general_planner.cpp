@@ -354,6 +354,10 @@ namespace general_planner {
                     cfg_.tracking_ellipsoid_optimizer,
                     cfg_.tracking_ellipsoid_optimizer_fallback), true);
             tracking_cg_ptr_->SetLineNeighborList(cfg_.seed_line_neighbour);
+            // Elastic alignment: the ring search accepts zero-clearance free
+            // cells, so corridor generation must degrade gracefully (tangent
+            // plane through the too-close voxel) instead of hard-failing.
+            tracking_cg_ptr_->SetAllowTightSeed(true);
         }
         se3_aggressive_manager_ =
                 std::make_unique<SE3AggressiveManager>(cfg_, ros_ptr_, map_manager_, astar_ptr_, cg_ptr_);

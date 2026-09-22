@@ -1,0 +1,58 @@
+# Tracking-dedicated ROG-Map, aligned with Elastic-Tracker's local occupancy
+# grid: same 0.15 m resolution as the shared world map but a single inflation
+# step (0.15 m, Elastic inflate_size=1) instead of the navigation 3-step
+# margin. Unknown stays free; the query-time target exclusion cylinder masks
+# the tracked body. Fused by GlobalMapRuntime from the same cloud/odom pair,
+# so this map must never subscribe on its own.
+rog_map:
+  esdf:
+    enable: false
+    resolution: 0.15
+    local_update_box: [12.0, 12.0, 4.0]
+
+  load_pcd_en: false
+  map_sliding:
+    enable: true
+    threshold: 0.3
+  fix_map_origin: [0.0, 0.0, 1.5]
+  frontier_extraction_en: false
+
+  ros_callback:
+    enable: false
+    cloud_enable: false
+    odom_timeout: 0.10
+
+  visualization:
+    enable: false
+    pub_unknown_map_en: false
+    frame_id: world
+    time_rate: 1.0
+    frame_rate: 0
+    range: [30.0, 30.0, 5.0]
+
+  resolution: 0.15
+  inflation_resolution: 0.15
+  unk_inflation_en: false
+  unk_inflation_step: 1
+  # Elastic-Tracker inflates exactly one cell (0.15 m). The tracking optimizer
+  # adds its own soft corridor clearance on top.
+  inflation_step: 1
+  intensity_thresh: -10
+  map_size: [72.0, 72.0, 8.0]
+  point_filt_num: 1
+
+  raycasting:
+    enable: true
+    batch_update_size: 1
+    unk_thresh: 1.0
+    p_hit: 0.90
+    p_miss: 0.35
+    p_min: 0.12
+    p_max: 0.97
+    p_occ: 0.85
+    p_free: 0.40
+    ray_range: [0.50, 60.0]
+    local_update_box: [70.0, 70.0, 6.0]
+
+  virtual_ground_height: -0.10
+  virtual_ceil_height: 6.40

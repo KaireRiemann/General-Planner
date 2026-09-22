@@ -75,6 +75,10 @@
   <arg name="indoor_frontier_config"
        default="$(find general_planner_release)/config/exploration_indoor_frontier.yaml" />
   <arg name="rog_map_config" default="$(find general_planner_release)/config/exploration_rog_map.yaml" />
+  <!-- Tracking-dedicated occupancy map (Elastic-aligned thin inflation).
+       GlobalMapRuntime fuses it from the same cloud/odom stream; set empty
+       to let tracking share the thick-inflation world map. -->
+  <arg name="tracking_rog_map_config" default="$(find general_planner_release)/config/tracking_rog_map.yaml" />
   <arg name="global_topology_config" default="$(find general_planner_release)/config/global_topology.yaml" />
   <arg name="rviz_config" default="$(find general_planner_release)/config/planner_runtime_exploration.rviz" />
   <arg name="exploration_rviz_config" default="$(find general_planner_release)/config/planner_runtime_exploration.rviz" />
@@ -173,6 +177,7 @@
     <param name="serial_handover" value="false" type="bool" />
     <param name="gate_status_topic" value="$(arg gate_status_topic)" type="string" />
     <param name="global_map_config" value="$(arg rog_map_config)" type="string" />
+    <param name="tracking_map_config" value="$(arg tracking_rog_map_config)" type="string" />
     <param name="tracking_target_odom_topic" value="$(arg tracking_target_odom_topic)" />
     <param name="tracking_target_prediction_topic" value="$(arg tracking_target_prediction_topic)" />
     <param name="navigation_config" value="$(arg navigation_config)" type="string" />

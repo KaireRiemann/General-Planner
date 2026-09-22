@@ -166,6 +166,34 @@ int main(int argc, char **argv) {
                 !corridor_poly.PointIsInside(Eigen::Vector3d(-2.5,2.5,ceiling+.001),0.),
                 "inflated ceiling must also be shared by corridor and safety checks");
 
+        // Tight-seed regression (live CIRI loop, consecutive_failures>2000):
+        // the ring search accepts zero-clearance free cells, so a free seed
+        // line can pass within the voxel-corner radius of an inflated voxel.
+        // Strict CIRI hard-fails there; tracking degrades to a zero-radius
+        // tangent plane and still returns a valid polytope containing the seed.
+        {
+            Eigen::Matrix<double,6,4> bd=Eigen::Matrix<double,6,4>::Zero();
+            bd(0,0)=1.; bd(1,0)=-1.; bd(2,1)=1.; bd(3,1)=-1.; bd(4,2)=1.; bd(5,2)=-1.;
+            bd(0,3)=-2.; bd(1,3)=-2.; bd(2,3)=-2.; bd(3,3)=-2.; bd(4,3)=-2.; bd(5,3)=-2.;
+            Eigen::Matrix<double,3,1> tight_pc;
+            tight_pc.col(0)=Eigen::Vector3d(0.,0.103,0.5);
+            const Eigen::Vector3d seed_a(-1.,0.,0.5), seed_b(1.,0.,0.5);
+            general_planner::CIRI strict_ciri(corridor_ros);
+            strict_ciri.setupParams(voxel_radius,2);
+            require(strict_ciri.comvexDecomposition(bd,tight_pc,seed_a,seed_b)!=general_utils::SUCCESS,
+                    "test setup: strict CIRI must reject the tight seed");
+            general_planner::CIRI tight_ciri(corridor_ros);
+            tight_ciri.setupParams(voxel_radius,2);
+            tight_ciri.setAllowTightSeed(true);
+            require(tight_ciri.comvexDecomposition(bd,tight_pc,seed_a,seed_b)==general_utils::SUCCESS,
+                    "tight-seed tracking CIRI must not hard-fail");
+            geometry_utils::Polytope tight_poly;
+            tight_ciri.getPolytope(tight_poly);
+            require(tight_poly.PointIsInside(seed_a,1.e-6) &&
+                    tight_poly.PointIsInside(seed_b,1.e-6),
+                    "tight-seed corridor must still contain the seed line");
+        }
+
         head.col(0) << -1., 0., 1.2;
         require(!general_planner::TrackingFrontend(cfg, map).buildProblem(head, prediction, problem),
                 "occupied initial state must fail without a fabricated path");

@@ -100,19 +100,15 @@ namespace general_planner {
                     ///
                     const auto & pt_w = pc.col(pcMinId);
                     const auto dis = distancePointToSegment(pt_w,a,b);
-                    if(dis < robot_r_ - 1e-2) {
+                    const bool tight_seed = dis < robot_r_ - 1e-2;
+                    if(tight_seed && !allow_tight_seed_) {
 //                        infeasible_problem = true;
                         infeasible_pt_w = pt_w;
                         cout<<YELLOW<<" -- [CIRI] WARNING! The problem is not feasible, the min dis to obstacle is only: "<<dis<<RESET<<endl;
                         return FAILED;
-                        cout<<" -- [CIRI] dis: "<<dis<<endl;
-                        cout<<" -- [CIRI] robot_r: "<<robot_r_<<endl;
-                        cout<<" -- [CIRI] pcMin: "<<pt_w.transpose()<<endl;
-                        cout<<" -- [CIRI] a: "<<a.transpose()<<endl;
-                        cout<<" -- [CIRI] b: "<<b.transpose()<<endl;
                     }
 
-                    if (robot_r_ < epsilon_) {
+                    if (tight_seed || robot_r_ < epsilon_) {
                         const Vec3f& pt_e = pc_e.col(pcMinId);
                         temp_tangent(3) = -distRs(pcMinId);
                         temp_tangent.head(3) = pt_e.transpose() / distRs(pcMinId);

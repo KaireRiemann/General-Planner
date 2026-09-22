@@ -94,6 +94,9 @@ namespace general_planner {
 
         void SetLineNeighborList(const vec_E<Vec3i> &line_seed_neighbor_list);
 
+        // Elastic-style tracking corridors never hard-fail on tight seeds.
+        void SetAllowTightSeed(bool allow) { ciri_->setAllowTightSeed(allow); }
+
         typedef std::shared_ptr<CorridorGenerator> Ptr;
 
         bool SearchPolytopeOnPath(const vec_Vec3f &path, PolytopeVec &sfcs,

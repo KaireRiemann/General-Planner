@@ -69,6 +69,12 @@ namespace general_planner {
         double robot_r_{0};
         int iter_num_{1};
         bool debug_en{false};
+        // Tracking mode (Elastic-style dilation): a seed line passing closer
+        // than robot_r_ to an obstacle point degrades to a zero-radius tangent
+        // plane through that point instead of failing the whole decomposition.
+        // The corridor stays valid (razor-thin near the obstacle); the hard
+        // safety veto remains the post-optimization occupancy check.
+        bool allow_tight_seed_{false};
         optimization_utils::EllipsoidOptimizerConfig ellipsoid_optimizer_config_{};
         int latest_mvie_lbfgs_iterations_{0};
 
@@ -139,6 +145,8 @@ namespace general_planner {
                          int iter_num,
                          const optimization_utils::EllipsoidOptimizerConfig &ellipsoid_optimizer_config =
                                  optimization_utils::EllipsoidOptimizerConfig());
+
+        void setAllowTightSeed(bool allow) { allow_tight_seed_ = allow; }
 
         RET_CODE comvexDecomposition(const Eigen::MatrixX4d &bd,
                                      const Eigen::Matrix3Xd &pc,
