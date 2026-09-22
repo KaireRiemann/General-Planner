@@ -9,7 +9,7 @@ import struct
 import std_msgs.msg
 
 class PlannerStatus(genpy.Message):
-  _md5sum = "3d038676a4f3a26e56e9d1fd909c5059"
+  _md5sum = "293068bf520cc205a495cf0428a98da6"
   _type = "general_planner/PlannerStatus"
   _has_header = True  # flag to mark the presence of a Header object
   _full_text = """std_msgs/Header header
@@ -52,6 +52,7 @@ uint8 MODE_EMERGENCY_STOP=3
 uint8 MODE_TARGET_EXPLORATION=4
 uint8 MODE_GATE=5
 uint8 MODE_TRACKING=6
+uint8 MODE_REORIENT=7
 
 uint8 PHASE_BOOT=0
 uint8 PHASE_WAITING_INPUT=1
@@ -124,6 +125,7 @@ string frame_id
   MODE_TARGET_EXPLORATION = 4
   MODE_GATE = 5
   MODE_TRACKING = 6
+  MODE_REORIENT = 7
   PHASE_BOOT = 0
   PHASE_WAITING_INPUT = 1
   PHASE_PLANNING = 2

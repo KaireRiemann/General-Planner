@@ -22,7 +22,8 @@ enum class TaskType {
     TRACKING,
     PERCHING,
     EXPLORATION,
-    TAKEOFF
+    TAKEOFF,
+    REORIENT
 };
 
 enum class BackendType {
@@ -132,6 +133,8 @@ inline const char *toString(const TaskType task) {
             return "exploration";
         case TaskType::TAKEOFF:
             return "takeoff";
+        case TaskType::REORIENT:
+            return "reorient";
         case TaskType::STATE_TO_STATE:
         default:
             return "state2state";
@@ -260,6 +263,7 @@ inline MissionMode missionModeForTask(const TaskType task) {
             return MissionMode::EXPLORATION_MISSION;
         case TaskType::TAKEOFF:
             return MissionMode::PERCHING_MISSION;
+        case TaskType::REORIENT:
         case TaskType::STATE_TO_STATE:
         default:
             return MissionMode::SINGLE_TASK;
@@ -272,6 +276,7 @@ inline BackendType defaultBackendForTask(const TaskType task) {
             return BackendType::JERK_TRACKING;
         case TaskType::STATE_TO_STATE:
             return BackendType::CORRIDOR;
+        case TaskType::REORIENT:
         case TaskType::PERCHING:
         case TaskType::EXPLORATION:
         case TaskType::TAKEOFF:

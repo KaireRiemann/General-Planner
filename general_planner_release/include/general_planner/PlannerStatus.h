@@ -196,6 +196,9 @@ struct PlannerStatus_
 #if defined(_WIN32) && defined(MODE_TRACKING)
   #undef MODE_TRACKING
 #endif
+#if defined(_WIN32) && defined(MODE_REORIENT)
+  #undef MODE_REORIENT
+#endif
 #if defined(_WIN32) && defined(PHASE_BOOT)
   #undef PHASE_BOOT
 #endif
@@ -331,6 +334,7 @@ struct PlannerStatus_
     MODE_TARGET_EXPLORATION = 4u,
     MODE_GATE = 5u,
     MODE_TRACKING = 6u,
+    MODE_REORIENT = 7u,
     PHASE_BOOT = 0u,
     PHASE_WAITING_INPUT = 1u,
     PHASE_PLANNING = 2u,
@@ -387,6 +391,8 @@ typedef boost::shared_ptr< ::general_planner::PlannerStatus > PlannerStatusPtr;
 typedef boost::shared_ptr< ::general_planner::PlannerStatus const> PlannerStatusConstPtr;
 
 // constants requiring out of line definition
+
+   
 
    
 
@@ -583,12 +589,12 @@ struct MD5Sum< ::general_planner::PlannerStatus_<ContainerAllocator> >
 {
   static const char* value()
   {
-    return "3d038676a4f3a26e56e9d1fd909c5059";
+    return "293068bf520cc205a495cf0428a98da6";
   }
 
   static const char* value(const ::general_planner::PlannerStatus_<ContainerAllocator>&) { return value(); }
-  static const uint64_t static_value1 = 0x3d038676a4f3a26eULL;
-  static const uint64_t static_value2 = 0x56e9d1fd909c5059ULL;
+  static const uint64_t static_value1 = 0x293068bf520cc205ULL;
+  static const uint64_t static_value2 = 0xa495cf0428a98da6ULL;
 };
 
 template<class ContainerAllocator>
@@ -647,6 +653,7 @@ struct Definition< ::general_planner::PlannerStatus_<ContainerAllocator> >
 "uint8 MODE_TARGET_EXPLORATION=4\n"
 "uint8 MODE_GATE=5\n"
 "uint8 MODE_TRACKING=6\n"
+"uint8 MODE_REORIENT=7\n"
 "\n"
 "uint8 PHASE_BOOT=0\n"
 "uint8 PHASE_WAITING_INPUT=1\n"

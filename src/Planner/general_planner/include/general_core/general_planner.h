@@ -260,6 +260,18 @@ namespace general_planner {
                                           double duration = 0.0,
                                           bool require_safe = false);
 
+        // Commit an in-place / near-field yaw adjustment: a stationary (or
+        // short drift) position trajectory plus a rate-limited cubic yaw
+        // profile from the current yaw to goal_yaw.  Returns false when the
+        // robot state is invalid or the requested rotation is already within
+        // yaw_tolerance (nothing to do).
+        bool commitReorientTrajectory(const Vec3f &target_position,
+                                      const double &goal_yaw,
+                                      const double &yaw_dot_max,
+                                      const double &min_duration,
+                                      const double &yaw_tolerance,
+                                      const std::string &traj_ns);
+
         bool checkCommittedPositionTrajectorySafety(
                 double horizon,
                 double dt,

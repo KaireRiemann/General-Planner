@@ -1280,7 +1280,8 @@ namespace fsm {
                 std::string epoch_text, task_mode;
                 arm_payload >> epoch_text >> task_mode;
                 if (!task_mode.empty()) {
-                    if (task_mode != "state2state" && task_mode != "tracking") {
+                    if (task_mode != "state2state" && task_mode != "tracking" &&
+                        task_mode != "reorient") {
                         ROS_WARN_STREAM("[Fsm] reject unsupported ARM mode=" << task_mode);
                         return;
                     }

@@ -675,7 +675,9 @@ bool PlannerSupervisor::acceptNavigationGoalLocked(
   // A state2state goal replaces the current goal within the same navigation
   // task.  ready_for_new_task only governs starting a distinct task; it must
   // not block a rolling replan while this task is executing.
-  if (status_.active_mode != PlannerMode::STATE2STATE || transition_active_) {
+  if ((status_.active_mode != PlannerMode::STATE2STATE &&
+       status_.active_mode != PlannerMode::REORIENT) ||
+      transition_active_) {
     ROS_WARN_THROTTLE(1.0,
                       "[planner_supervisor] drop navigation goal: inactive "
                       "or transitioning (mode=%s transition=%d)",
@@ -763,7 +765,8 @@ void PlannerSupervisor::clickGoalCallback(
                       toString(status_.active_mode));
     return;
   }
-  if (status_.active_mode == PlannerMode::STATE2STATE) {
+  if (status_.active_mode == PlannerMode::STATE2STATE ||
+      status_.active_mode == PlannerMode::REORIENT) {
     acceptNavigationGoalLocked(*msg);
     return;
   }
@@ -1190,7 +1193,8 @@ void PlannerSupervisor::navigationStatusCallback(
         return;
       }
       const bool completed_dispatched_goal =
-          status_.active_mode == PlannerMode::STATE2STATE &&
+          (status_.active_mode == PlannerMode::STATE2STATE ||
+           status_.active_mode == PlannerMode::REORIENT) &&
           adapter_status.has_lifecycle &&
           navigation_goal_dispatch_pending_ &&
           adapter_status.goal_sequence >
@@ -1200,7 +1204,7 @@ void PlannerSupervisor::navigationStatusCallback(
         // Reuse the normal transition path so stale commands are cleared and
         // the next navigation task is accepted only after a verified hover.
         navigation_goal_dispatch_pending_ = false;
-        beginTransition(PlannerMode::STATE2STATE,
+        beginTransition(status_.active_mode,
                         status_.accepted_request_id,
                         "",
                         "navigation goal completed");

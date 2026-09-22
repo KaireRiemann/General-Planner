@@ -42,8 +42,12 @@
        a crash can be reproduced under gdb without changing the node command. -->
   <arg name="planner_runtime_launch_prefix" default="" />
   <!-- Runtime modes: hold, state2state, exploration (legacy coverage),
-       target_exploration, or gate. Gate keeps the world map/topology alive
-       while the internal SE3 gate task uses the same command gateway. -->
+       target_exploration, gate, tracking, or reorient. Gate keeps the world
+       map/topology alive while the internal SE3 gate task uses the same
+       command gateway.  Reorient is the in-place / near-field yaw adjustment
+       mode: it shares the navigation adapter, accepts PoseStamped goals on
+       /planner/click_goal (quaternion yaw = rotation target), and executes a
+       rate-limited cubic yaw profile at the current hover position. -->
   <arg name="gate_config" default="$(find general_planner)/config/gate_runtime.yaml" />
   <arg name="initial_mode" default="target_exploration" />
   <arg name="exploration_mission_mode" default="target" />

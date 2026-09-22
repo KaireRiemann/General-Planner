@@ -213,6 +213,7 @@ namespace fsm {
         class PerchingTaskExecutor;
         class DynamicTakeoffTaskExecutor;
         class ExplorationTaskExecutor;
+        class ReorientTaskExecutor;
 
         std::unique_ptr<TaskExecutor> task_executor_;
         TaskMode task_executor_mode_{TaskMode::STATE_TO_STATE};
@@ -404,6 +405,8 @@ namespace fsm {
 
         bool explorationMode() const;
 
+        bool reorientMode() const;
+
         bool se3AggressiveMode() const;
 
         virtual void onTaskModeChanged() {}
@@ -418,6 +421,7 @@ namespace fsm {
         void armNavigationTask(std::uint64_t task_epoch);
         bool commandExecutionState() const {
             return machine_state_ == FOLLOW_TRAJ ||
+                   machine_state_ == YAWING ||
                    machine_state_ == STATIC_TRACKING ||
                    machine_state_ == HOLD_TRACKING ||
                    machine_state_ == EMER_STOP;

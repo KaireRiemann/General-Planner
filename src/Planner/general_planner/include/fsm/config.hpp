@@ -48,7 +48,8 @@ namespace fsm {
         PERCHING = 2,
         EXPLORATION = 3,
         DYNAMIC_TAKEOFF = 4,
-        TRACKING_PERCHING = 5
+        TRACKING_PERCHING = 5,
+        REORIENT = 6
     };
 
     inline general_planner::architecture::TaskType taskTypeFromTaskMode(const TaskMode mode) {
@@ -63,6 +64,8 @@ namespace fsm {
                 return TaskType::EXPLORATION;
             case TaskMode::DYNAMIC_TAKEOFF:
                 return TaskType::TAKEOFF;
+            case TaskMode::REORIENT:
+                return TaskType::REORIENT;
             case TaskMode::STATE_TO_STATE:
             default:
                 return TaskType::STATE_TO_STATE;
@@ -103,6 +106,11 @@ namespace fsm {
         if (mode == "explore" || mode == "exploration") {
             return "exploration";
         }
+        if (mode == "reorient" || mode == "rotate" || mode == "yaw" ||
+            mode == "yaw_only" || mode == "yaw-only" || mode == "rotate_in_place" ||
+            mode == "rotate-in-place") {
+            return "reorient";
+        }
         return "state2state";
     }
 
@@ -122,6 +130,9 @@ namespace fsm {
         }
         if (normalized == "exploration") {
             return TaskMode::EXPLORATION;
+        }
+        if (normalized == "reorient") {
+            return TaskMode::REORIENT;
         }
         return TaskMode::STATE_TO_STATE;
     }
@@ -216,6 +227,14 @@ namespace fsm {
         string state2state_topology_selection_topic{
                 "/planner/navigation/use_global_topology"};
         double yaw_dot_max{};
+        // In-place / near-field yaw adjustment (TaskMode::REORIENT).  The
+        // executed trajectory holds the current position (optionally allowing
+        // a small drift toward the clicked point) while rotating to the goal
+        // yaw with a rate-limited cubic profile.
+        double reorient_yaw_dot_max{0.0};
+        double reorient_min_duration{0.6};
+        double reorient_position_drift_max{0.0};
+        double reorient_yaw_goal_tolerance{0.05};
         bool diagnostic_log_en{true};
         string diagnostic_event_topic{"/planning/diagnostics/events"};
         bool swarm_enable{false};
@@ -427,6 +446,16 @@ namespace fsm {
 
 
             loader.LoadParam("general_planner/yaw_dot_max", yaw_dot_max, 1.0, true);
+            loader.LoadParam("fsm/reorient_yaw_dot_max", reorient_yaw_dot_max, 0.0);
+            if (!std::isfinite(reorient_yaw_dot_max) || reorient_yaw_dot_max <= 0.0) {
+                reorient_yaw_dot_max = yaw_dot_max;
+            }
+            loader.LoadParam("fsm/reorient_min_duration", reorient_min_duration, 0.6);
+            loader.LoadParam("fsm/reorient_position_drift_max", reorient_position_drift_max, 0.0);
+            loader.LoadParam("fsm/reorient_yaw_goal_tolerance", reorient_yaw_goal_tolerance, 0.05);
+            reorient_min_duration = std::clamp(reorient_min_duration, 0.2, 10.0);
+            reorient_position_drift_max = std::clamp(reorient_position_drift_max, 0.0, 2.0);
+            reorient_yaw_goal_tolerance = std::clamp(reorient_yaw_goal_tolerance, 0.005, 0.5);
             loader.LoadParam("general_planner/visualization_en", visualization_en, false, true);
             loader.LoadParam("rog_map/resolution", resolution, 0.1, true);
 

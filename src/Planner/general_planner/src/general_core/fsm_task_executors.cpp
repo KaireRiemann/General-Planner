@@ -487,6 +487,77 @@ private:
     }
 };
 
+class Fsm::ReorientTaskExecutor final : public Fsm::TaskExecutor {
+public:
+    TaskMode mode() const override {
+        return TaskMode::REORIENT;
+    }
+
+    const char *name() const override {
+        return "reorient";
+    }
+
+    // Deliberately not goalLike(): the generic goal gates (0.1 m "too close"
+    // rejection, planner goalValid) would reject an in-place rotation by
+    // construction.  The goal is validated at entry in setGoalPosiAndYaw.
+    bool ready(Fsm &fsm) override {
+        return fsm.gi_.new_goal;
+    }
+
+    bool replanAllowed(const Fsm &) const override {
+        // A rate-limited cubic rotation is short and open-loop safe; there is
+        // no rolling replan for this task.
+        return false;
+    }
+
+    PlanResult plan(Fsm &fsm, const PlanRequest &request) override {
+        // Unlike state2state, this executor runs with fsm_tick_mutex_ held
+        // (the plan is microseconds of polynomial assembly, so the FSM never
+        // releases the lock around it).  Read the goal directly — taking the
+        // non-recursive mutex here would deadlock.
+        const general_utils::Vec3f goal_p = fsm.gi_.goal_p;
+        const double goal_yaw = fsm.gi_.goal_yaw;
+        if (!std::isfinite(goal_yaw)) {
+            // Terminal input failure, not a transient planner failure: ask
+            // for a new goal instead of retrying GENERATE_TRAJ forever.
+            TaskPlanContext context;
+            context.missing_input = true;
+            fsm.recordDiagnosticEvent("WARN",
+                                      "reorient_goal_invalid",
+                                      "reason=goal_yaw_missing",
+                                      FAILED);
+            return makeResult(fsm, request, FAILED, context, "reorient goal yaw missing");
+        }
+        const bool committed = fsm.planner_ptr_->commitReorientTrajectory(
+                goal_p,
+                goal_yaw,
+                fsm.cfg_.reorient_yaw_dot_max,
+                fsm.cfg_.reorient_min_duration,
+                fsm.cfg_.reorient_yaw_goal_tolerance,
+                "reorient");
+        if (!committed) {
+            fsm.recordDiagnosticEvent("WARN",
+                                      "reorient_commit_failed",
+                                      "reason=commit_reorient_trajectory_false",
+                                      FAILED);
+            return makeResult(fsm, request, FAILED, {}, "reorient commit failed");
+        }
+        fsm.recordDiagnosticEvent("INFO",
+                                  "reorient_committed",
+                                  fmt::format("goal_yaw={:.3f}", goal_yaw),
+                                  SUCCESS);
+        return makeResult(fsm, request, SUCCESS, {}, "reorient committed");
+    }
+
+    PlanResult replan(Fsm &fsm, const PlanRequest &request) override {
+        return makeResult(fsm, request, NO_NEED, {}, "reorient has no rolling replan");
+    }
+
+    bool shouldGenerateAfterTrajFinish(Fsm &) override {
+        return false;
+    }
+};
+
 class Fsm::ExplorationTaskExecutor final : public Fsm::TaskExecutor {
 public:
     TaskMode mode() const override {
@@ -536,6 +607,8 @@ std::unique_ptr<Fsm::TaskExecutor> Fsm::makeTaskExecutor(const TaskMode mode) co
             return std::make_unique<DynamicTakeoffTaskExecutor>();
         case TaskMode::EXPLORATION:
             return std::make_unique<ExplorationTaskExecutor>();
+        case TaskMode::REORIENT:
+            return std::make_unique<ReorientTaskExecutor>();
         case TaskMode::STATE_TO_STATE:
         default:
             return std::make_unique<State2StateTaskExecutor>();

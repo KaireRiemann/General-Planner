@@ -38,6 +38,14 @@ fsm:
   perception_replan_min_interval: 0.08
   perception_replan_consecutive_hits: 1
   perception_replan_unknown_as_occupied: false
+  # In-place / near-field yaw adjustment mode (planner mode "reorient").
+  # Goals arrive as PoseStamped on click_goal_topic; the quaternion yaw is
+  # the rotation target, the position is clamped to a small drift around the
+  # current hover point (0.0 = pure in-place rotation).
+  reorient_yaw_dot_max: 1.0
+  reorient_min_duration: 0.6
+  reorient_position_drift_max: 0.0
+  reorient_yaw_goal_tolerance: 0.05
   perception_replan_emergency_horizon: 0.45
 
 general_planner:

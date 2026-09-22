@@ -20,7 +20,11 @@ enum class PlannerMode : std::uint8_t {
   // The shared world map/topology remains active throughout.
   GATE = 5,
   // Tracking shares the navigation adapter and its command gateway.
-  TRACKING = 6
+  TRACKING = 6,
+  // In-place / near-field attitude (yaw) adjustment.  Shares the navigation
+  // adapter and command gateway; the executed trajectory holds the current
+  // position (optionally within a small drift radius) while rotating.
+  REORIENT = 7
 };
 
 enum class PlannerPhase : std::uint8_t {
@@ -162,6 +166,8 @@ inline const char *toString(const PlannerMode mode) {
     return "state2state";
   case PlannerMode::TRACKING:
     return "tracking";
+  case PlannerMode::REORIENT:
+    return "reorient";
   case PlannerMode::EXPLORATION:
     return "exploration";
   case PlannerMode::TARGET_EXPLORATION:
@@ -298,6 +304,11 @@ inline bool parsePlannerMode(std::string text, PlannerMode &mode) {
     mode = PlannerMode::TRACKING;
     return true;
   }
+  if (text == "reorient" || text == "rotate" || text == "yaw" ||
+      text == "yaw_only" || text == "yaw-only") {
+    mode = PlannerMode::REORIENT;
+    return true;
+  }
   if (text == "exploration" || text == "explore") {
     mode = PlannerMode::EXPLORATION;
     return true;
@@ -320,7 +331,8 @@ inline bool parsePlannerMode(std::string text, PlannerMode &mode) {
 }
 
 inline bool isNavigationMode(const PlannerMode mode) {
-  return mode == PlannerMode::STATE2STATE || mode == PlannerMode::TRACKING;
+  return mode == PlannerMode::STATE2STATE || mode == PlannerMode::TRACKING ||
+         mode == PlannerMode::REORIENT;
 }
 
 inline bool isExplorationMode(const PlannerMode mode) {
@@ -396,6 +408,7 @@ inline CommandOwner ownerForMode(const PlannerMode mode) {
   switch (mode) {
   case PlannerMode::STATE2STATE:
   case PlannerMode::TRACKING:
+  case PlannerMode::REORIENT:
     return CommandOwner::STATE2STATE;
   case PlannerMode::EXPLORATION:
   case PlannerMode::TARGET_EXPLORATION:

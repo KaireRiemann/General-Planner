@@ -1287,9 +1287,11 @@ namespace fsm {
                             publishPolyTraj();
                         }
                         ChangeState("MainFsmCallback",
-                                    executor.trackingLike() && planned_tracking_static
-                                        ? STATIC_TRACKING
-                                        : FOLLOW_TRAJ);
+                                    reorientMode()
+                                        ? YAWING
+                                        : (executor.trackingLike() && planned_tracking_static
+                                               ? STATIC_TRACKING
+                                               : FOLLOW_TRAJ));
                         break;
                     case general_planner::architecture::CommitAction::EMERGENCY_STOP:
                         ChangeState("MainFsmCallback", EMER_STOP);
@@ -1406,6 +1408,10 @@ namespace fsm {
                 publishCurPoseToPath();
                 break;
             }
+            case YAWING: {
+                publishCurPoseToPath();
+                break;
+            }
             case STATIC_TRACKING:
             case HOLD_TRACKING: {
                 publishCurPoseToPath();
@@ -1450,6 +1456,10 @@ namespace fsm {
 
     bool Fsm::explorationMode() const {
         return cfg_.task_mode == TaskMode::EXPLORATION;
+    }
+
+    bool Fsm::reorientMode() const {
+        return cfg_.task_mode == TaskMode::REORIENT;
     }
 
     bool Fsm::se3AggressiveMode() const {
@@ -1743,10 +1753,10 @@ namespace fsm {
         switch (machine_state_) {
             case INIT:
             case WAIT_GOAL:
-            case YAWING:
                 return ExecutionPhase::WAITING_INPUT;
             case GENERATE_TRAJ:
                 return ExecutionPhase::PLANNING;
+            case YAWING:
             case FOLLOW_TRAJ:
             case STATIC_TRACKING:
                 return ExecutionPhase::EXECUTING;
@@ -2247,6 +2257,59 @@ namespace fsm {
         const bool had_goal = started_;
         const Vec3f last_goal_p = gi_.goal_p;
         const double last_goal_yaw = gi_.goal_yaw;
+
+        if (reorientMode()) {
+            // In-place / near-field attitude adjustment.  The position target
+            // is the current hover position, optionally drifted toward the
+            // click within reorient_position_drift_max; the altitude always
+            // stays at the current one.  The goal yaw is mandatory here —
+            // without it the task has no content.
+            if (isnan(q.w()) || isnan(q.x()) || isnan(q.y()) || isnan(q.z())) {
+                recordDiagnosticEvent("WARN",
+                                      "goal_rejected",
+                                      "reason=reorient_yaw_missing",
+                                      -1,
+                                      -1,
+                                      false,
+                                      -1,
+                                      0);
+                cout << YELLOW << " -- [Fsm] Reorient goal requires a yaw quaternion, skip."
+                     << RESET << endl;
+                return;
+            }
+            const double reorient_goal_yaw = geometry_utils::get_yaw_from_quaternion(q);
+            Vec3f reorient_goal = robot_state_.p;
+            Vec3f drift = click_point - robot_state_.p;
+            drift.z() = 0.0;
+            const double drift_norm = drift.norm();
+            const double drift_max = std::max(0.0, cfg_.reorient_position_drift_max);
+            if (drift_norm > drift_max && drift_norm > 1.0e-6) {
+                drift *= drift_max / drift_norm;
+            }
+            reorient_goal += drift;
+            gi_.goal_p = reorient_goal;
+            gi_.goal_yaw = reorient_goal_yaw;
+            started_ = true;
+            gi_.new_goal = true;
+            state2state_plan_failed_ = false;
+            state2state_next_plan_attempt_wall_ = 0.0;
+            ++navigation_goal_sequence_;
+            navigation_goal_active_ = true;
+            state2state_plan_from_rest_fail_count_ = 0;
+            recordDiagnosticEvent("INFO",
+                                  "goal_accepted",
+                                  fmt::format("mode=reorient;target=[{:.3f},{:.3f},{:.3f}];goal_yaw={:.3f};drift={:.3f}",
+                                              gi_.goal_p.x(), gi_.goal_p.y(), gi_.goal_p.z(),
+                                              gi_.goal_yaw, drift.norm()),
+                                  -1,
+                                  -1,
+                                  false,
+                                  -1,
+                                  0);
+            cout << GREEN << " -- [Fsm] Reorient goal: yaw " << reorient_goal_yaw * 57.3
+                 << " deg, drift " << drift.norm() << " m" << RESET << endl;
+            return;
+        }
 
         // Validate/project a candidate first. A rejected goal must leave the
         // running task untouched (especially the too-close branch).
