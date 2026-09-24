@@ -111,7 +111,7 @@
   <arg name="source_timeout_abort_duration" default="1.0" />
   <arg name="task_control_enable" default="true" />
   <arg name="coverage_guidance_mode"
-       default="$(eval 'off' if arg('initial_mode') == 'target_exploration' else 'full')" />
+       default="$(eval 'off' if arg('initial_mode') == 'target_exploration' else 'tour')" />
   <arg name="original_frontend_compatibility" default="true" />
   <arg name="use_lkh" default="true" />
   <arg name="tsp_dir" default="/tmp" />

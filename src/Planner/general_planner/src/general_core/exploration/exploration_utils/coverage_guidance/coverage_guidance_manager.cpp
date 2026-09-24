@@ -117,7 +117,8 @@ void CoverageGuidanceManager::initialize(ros::NodeHandle &nh,
                    return static_cast<char>(std::tolower(value));
                  });
   if (config_.mode != "off" && config_.mode != "shadow" &&
-      config_.mode != "soft" && config_.mode != "full") {
+      config_.mode != "soft" && config_.mode != "full" &&
+      config_.mode != "tour") {
     ROS_WARN_STREAM("[coverage guidance] invalid mode='" << config_.mode
                     << "', disable guidance");
     config_.mode = "off";
@@ -212,8 +213,12 @@ bool CoverageGuidanceManager::fullMode() const {
   return config_.mode == "full";
 }
 
+bool CoverageGuidanceManager::safetyNetEnabled() const {
+  return fullMode() || config_.mode == "tour";
+}
+
 bool CoverageGuidanceManager::finishGuardEnabled() const {
-  return fullMode() && config_.finish_guard_enable;
+  return safetyNetEnabled() && config_.finish_guard_enable;
 }
 
 const std::string &CoverageGuidanceManager::modeName() const {
@@ -320,7 +325,7 @@ double CoverageGuidanceManager::clusterPenalty(
 }
 
 bool CoverageGuidanceManager::blocksFinish() const {
-  if (!fullMode() || !config_.finish_guard_enable) {
+  if (!safetyNetEnabled() || !config_.finish_guard_enable) {
     return false;
   }
   const CoveragePlan::Ptr plan = latestUsablePlan();
@@ -334,7 +339,7 @@ CoverageGuidanceManager::unknownApproachTargets(
     double min_travel_distance) const {
   std::vector<CoverageTarget> result;
   const CoveragePlan::Ptr plan = latestUsablePlan();
-  if (!fullMode() || !plan || !robot_position.allFinite()) {
+  if (!safetyNetEnabled() || !plan || !robot_position.allFinite()) {
     return result;
   }
   max_targets = std::max(1, max_targets);
@@ -1135,6 +1140,32 @@ bool CoverageGuidanceManager::runDeterministicSelfTest(std::string *error) {
     if (error) {
       *error = "test map produced no executable unknown observation target";
     }
+    return false;
+  }
+  // A diagnostic/shadow plan must never inject preferred frontiers, recovery
+  // actions or completion guards. Tour retains only the latter two roles.
+  auto snapshot = std::make_shared<CoveragePlan>(plan);
+  snapshot->wall_stamp_sec = wallNow();
+  manager.latest_plan_ = snapshot;
+  for (const std::string mode : {"off", "shadow", "tour", "soft", "full"}) {
+    manager.config_.mode = mode;
+    const bool bias = mode == "soft" || mode == "full";
+    const bool recovery = mode == "tour" || mode == "full";
+    const bool has_targets = !manager.unknownApproachTargets(
+        work.robot_position, 160, 0.0).empty();
+    if (manager.affectsPlanning() != bias ||
+        !manager.preferredClusterIds().empty() != bias ||
+        manager.finishGuardEnabled() != recovery || has_targets != recovery ||
+        (!bias && manager.clusterPenalty(7, frontier.position) != 0.0)) {
+      if (error) *error = "coverage mode leaked planning authority: " + mode;
+      return false;
+    }
+  }
+  manager.config_.mode = "full";
+  snapshot->wall_stamp_sec = wallNow() - manager.config_.stale_timeout - 1.0;
+  if (!manager.preferredClusterIds().empty() ||
+      !manager.unknownApproachTargets(work.robot_position, 160, 0.0).empty()) {
+    if (error) *error = "stale coverage plan changed candidate selection";
     return false;
   }
   WorkItem repeated_work = work;

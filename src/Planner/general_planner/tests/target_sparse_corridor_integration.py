@@ -88,6 +88,10 @@ try:
  # Release/Unity and source launch files have different odometry defaults.
  # Always connect the isolated fixture's own sensor topics explicitly.
  launch_args.extend(['odom_topic:=/lidar_slam/odom','cloud_topic:=/cloud_registered'])
+ if os.environ.get('TEST_STARTUP_GRACE'):
+  launch_args.append('source_startup_grace_duration:='+os.environ['TEST_STARTUP_GRACE'])
+ if os.environ.get('TEST_EXPLORATION_OVERLAY'):
+  launch_args.append('exploration_overlay_config:='+os.environ['TEST_EXPLORATION_OVERLAY'])
  if os.environ.get('TEST_NO_TOPOLOGY'):
   launch_args.append('global_topology_config:='+str(Path(__file__).resolve().parent/'config/target_route_no_topology.yaml'))
  if os.environ.get('TEST_TARGET_ROUTE_CONFIG'):
@@ -116,15 +120,18 @@ try:
  began=time.monotonic();success=False
  return_trip=bool(os.environ.get('TEST_RETURN_TRIP'));return_sent=False;return_log_start=0
  coverage_seconds=float(os.environ.get("TEST_COVERAGE_SECONDS","0"))
+ coverage_boxes=[]
+ if coverage_seconds:
+  for index in range(rospy.get_param('/planner_runtime_node/box_num')):
+   prefix='/planner_runtime_node/box_%d/'%index
+   coverage_boxes.append((np.array(rospy.get_param(prefix+'down')),np.array(rospy.get_param(prefix+'up'))))
  coverage_moved=False
  while time.monotonic()-began<180:
   history.append({'t':time.monotonic()-began,'p':pos.tolist(),'result':status.task_result_str,'phase':status.phase_str})
   if any('outside the active exploration capacity' in x for x in logs):raise AssertionError('old capacity rejection')
   if u_shape:assert not (1.3<pos[0]<2.7 and pos[1]<3.2),'command crossed U-wall safety margin'
   if coverage_seconds:
-   in_low=(-20<=pos[0]<=20 and -20<=pos[1]<=20.2 and -.2<=pos[2]<=3.8)
-   in_high=(-9.5<=pos[0]<=9.5 and -9.5<=pos[1]<=9.5 and 2.8<=pos[2]<=6.4)
-   assert in_low or in_high,'coverage command escaped its boxes'
+   assert any(np.all(pos>=low) and np.all(pos<=high) for low,high in coverage_boxes),'coverage command escaped its boxes'
    coverage_moved=coverage_moved or np.linalg.norm(pos-np.array([0.,0.,1.5]))>1.
    if time.monotonic()-began>=coverage_seconds:
     success=coverage_moved and status.active_mode_str=='exploration';break

@@ -483,9 +483,10 @@ bool FastExplorationFSM::handleGoalReached() {
   }
   bool marked = false;
   if (!coverage_reached && !expl_manager_->coverageRouteEnabled()) {
-    const float visited_radius = static_cast<float>(
-        std::max(expl_manager_->ep_->goal_lock_match_radius_,
-                 2.0 * reached_radius));
+    // 只标记真正到达的 cluster：1.0m 的 GoalLockMatchRadius 会把相邻未观测
+    // cluster 误判为 VISITED（epicon 无此机制，靠观测自然清除 frontier）。
+    const float visited_radius =
+        static_cast<float>(std::max(0.5, reached_radius));
     marked = expl_manager_->frontier_manager_ptr_->markClusterVisitedNear(
         goal, visited_radius);
   }
@@ -1130,8 +1131,13 @@ int FastExplorationFSM::callExplorationPlanner() {
       safety.yaw_delta >
           planner_manager_->gcopter_config_->viewScoreHardGateMaxYawDelta ||
       reversal_rejected;
+  // Only a genuinely fast reversal needs a certified controlled stop.  Below
+  // reorientationMinSpeed the hook radius (v^2/a_lat) fits inside the
+  // certified clearance bubble, so the optimizer can absorb the turn directly
+  // instead of burning seconds on a brake-turn-restart cycle.
   const bool moving_for_reorientation =
-      current_speed > fp_->reorient_exit_speed_;
+      current_speed > std::max(fp_->reorient_exit_speed_,
+          planner_manager_->gcopter_config_->reorientationMinSpeed);
   const bool reorientation_required =
       fp_->controlled_reorientation_enable_ && reversal_rejected &&
       moving_for_reorientation;

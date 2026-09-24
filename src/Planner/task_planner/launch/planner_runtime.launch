@@ -51,6 +51,10 @@
   <arg name="gate_config" default="$(find general_planner)/config/gate_runtime.yaml" />
   <arg name="initial_mode" default="target_exploration" />
   <arg name="exploration_mission_mode" default="target" />
+  <!-- Grace period waiting for the first pos_cmd after an exploration START.
+       Indoor/Unity first plans can exceed 2 s; the Unity entry points raise
+       this to 8 s (mirrors the release launch override). -->
+  <arg name="source_startup_grace_duration" default="2.0" />
   <!-- Deprecated compatibility arguments: target exploration uses a sparse
        observed domain. These do not limit targets. Explicit coverage use retains legacy behavior. -->
   <arg name="target_exploration_auto_workspace"
@@ -129,8 +133,11 @@
   <arg name="max_cloud_age" default="0.5" />
   <arg name="heartbeat_timeout" default="1.5" />
   <arg name="task_control_enable" default="true" />
+  <!-- tour: LKH tour leads exploration ordering (epicon-style, no per-cycle
+       coverage bias); the coverage safety net (recovery + finish guard) stays
+       active.  target_exploration keeps guidance off. -->
   <arg name="coverage_guidance_mode"
-       default="$(eval 'off' if arg('initial_mode') == 'target_exploration' else 'full')" />
+       default="$(eval 'off' if arg('initial_mode') == 'target_exploration' else 'tour')" />
   <arg name="original_frontend_compatibility" default="true" />
   <arg name="use_lkh" default="true" />
   <arg name="tsp_dir" default="/tmp" />
@@ -184,6 +191,8 @@
     <rosparam file="$(arg global_topology_config)" command="load" />
 
     <param name="initial_mode" value="$(arg initial_mode)" type="string" />
+    <param name="source_startup_grace_duration"
+           value="$(arg source_startup_grace_duration)" type="double" />
     <!-- Keep the standalone exploration adapter aligned at boot. Runtime mode
          switches still issue MODE target/coverage before accepting a task. -->
     <param name="exploration/mission_mode"

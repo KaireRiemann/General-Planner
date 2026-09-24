@@ -39,6 +39,8 @@
   <arg name="auto_rviz_switch" default="true" />
   <arg name="traj_server" default="true" />
   <arg name="initial_mode" default="state2state" />
+  <arg name="coverage_guidance_mode"
+       default="$(eval 'off' if arg('initial_mode') == 'target_exploration' else 'tour')" />
   <arg name="exploration_mission_mode" default="target" />
   <!-- Indoor first coverage plan is slower than outdoor; 2 s grace HOLDs
        before pos_cmd. Unity-only override, does not change occupancy. -->
@@ -66,6 +68,9 @@
        default="$(find general_planner_release)/config/exploration_unity_overlay.yaml" />
   <arg name="rog_map_config"
        default="$(find general_planner_release)/config/exploration_rog_map.yaml" />
+  <arg name="tracking_map_enable" default="true" />
+  <arg name="tracking_rog_map_config"
+       default="$(find general_planner_release)/config/tracking_rog_map.yaml" />
   <arg name="global_topology_config"
        default="$(find general_planner_release)/config/global_topology.yaml" />
 
@@ -115,6 +120,7 @@
     <arg name="auto_rviz_switch" value="$(arg auto_rviz_switch)" />
     <arg name="traj_server" value="$(arg traj_server)" />
     <arg name="initial_mode" value="$(arg initial_mode)" />
+    <arg name="coverage_guidance_mode" value="$(arg coverage_guidance_mode)" />
     <arg name="exploration_mission_mode" value="$(arg exploration_mission_mode)" />
     <arg name="source_startup_grace_duration"
          value="$(arg source_startup_grace_duration)" />
@@ -126,6 +132,7 @@
     <arg name="target_exploration_config" value="$(arg target_exploration_config)" />
     <arg name="exploration_overlay_config" value="$(arg exploration_overlay_config)" />
     <arg name="rog_map_config" value="$(arg rog_map_config)" />
+    <arg name="tracking_rog_map_config" value="$(eval arg('tracking_rog_map_config') if arg('tracking_map_enable') else '')" />
     <arg name="global_topology_config" value="$(arg global_topology_config)" />
     <arg name="cloud_odom_mode" value="latest_odom" />
     <!-- Measured feedback, not the command odometry sent to Unity. -->

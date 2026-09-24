@@ -11,7 +11,6 @@
 #include <map_manager/map_manager.hpp>
 #include <general_core/exploration/highspeed/fast_exploration_manager.h>
 #include <general_core/exploration/highspeed/target_directed_exploration.h>
-#include <lkh_tsp_solver/lkh_interface.h>
 #include <algorithm>
 #include <cctype>
 #include <cstdio>
@@ -140,10 +139,14 @@ void FastExplorationManager::initialize(
            ep_->goal_reached_radius_);
   nh.param("exploration/original_frontend_compatibility",
            ep_->original_frontend_compatibility_, true);
-  nh.param("global_planning/epic_simple_cost",
-           ep_->epic_simple_global_cost_, true);
+  // Older profiles coupled viewpoint scoring to a misleading edge-cost
+  // switch. Preserve their default while giving viewpoint scoring its own key.
+  bool legacy_simple_cost = true;
+  nh.param("global_planning/epic_simple_cost", legacy_simple_cost, true);
   nh.param("global_planning/composite_candidate_cost_enable",
            ep_->composite_candidate_cost_enable_, true);
+  nh.param("viewpoint_score/enable", ep_->viewpoint_score_enable_,
+           ep_->composite_candidate_cost_enable_ || !legacy_simple_cost);
   nh.param("global_planning/candidate_travel_weight",
            ep_->candidate_travel_weight_, 1.0);
   nh.param("global_planning/candidate_turn_brake_weight",
@@ -315,6 +318,14 @@ void FastExplorationManager::initialize(
   nh.param("exploration/target_empty_pool_unlock_count",
            ep_->target_empty_pool_unlock_count_,
            ep_->target_empty_pool_unlock_count_);
+  nh.param("exploration/coverage_empty_pool_escape_wait",
+           ep_->coverage_empty_pool_escape_wait_,
+           ep_->coverage_empty_pool_escape_wait_);
+  nh.param("exploration/coverage_empty_pool_unlock_count",
+           ep_->coverage_empty_pool_unlock_count_,
+           ep_->coverage_empty_pool_unlock_count_);
+  nh.param("exploration/spatial_failure_cooldown",
+           ep_->spatial_failure_cooldown_, ep_->spatial_failure_cooldown_);
   nh.param("exploration/target_escape_min_progress",
            ep_->target_escape_min_progress_,
            ep_->target_escape_min_progress_);
@@ -372,6 +383,12 @@ void FastExplorationManager::initialize(
       std::clamp(ep_->target_empty_pool_escape_wait_, 0.5, 30.0);
   ep_->target_empty_pool_unlock_count_ =
       std::clamp(ep_->target_empty_pool_unlock_count_, 1, 4);
+  ep_->coverage_empty_pool_escape_wait_ =
+      std::clamp(ep_->coverage_empty_pool_escape_wait_, 0.5, 30.0);
+  ep_->coverage_empty_pool_unlock_count_ =
+      std::clamp(ep_->coverage_empty_pool_unlock_count_, 1, 4);
+  ep_->spatial_failure_cooldown_ =
+      std::clamp(ep_->spatial_failure_cooldown_, 0.5, 30.0);
   ep_->target_escape_min_progress_ =
       std::clamp(ep_->target_escape_min_progress_, -20.0, 5.0);
   ep_->target_near_goal_remaining_ =
@@ -598,7 +615,7 @@ void FastExplorationManager::initialize(
   }
   ROS_INFO_STREAM("[frontend compatibility] original_behavior="
                   << ep_->original_frontend_compatibility_
-                  << " epic_simple_cost=" << ep_->epic_simple_global_cost_
+                  << " viewpoint_score=" << ep_->viewpoint_score_enable_
                   << " composite_candidate_cost="
                   << ep_->composite_candidate_cost_enable_
                   << " lkh=" << ep_->use_lkh_
@@ -2006,176 +2023,6 @@ int FastExplorationManager::commitTargetDirectedTour(
   return SUCCEED;
 }
 
-int FastExplorationManager::selectStableGoalIndex(
-    const vector<TopoNode::Ptr> &viewpoints,
-    const vector<double> &distance_odom2vp, const int candidate_idx,
-    const Eigen::Vector3d &vel) {
-  if (!ep_->goal_lock_enable_ || viewpoints.empty() || candidate_idx < 0 ||
-      candidate_idx >= static_cast<int>(viewpoints.size())) {
-    return candidate_idx;
-  }
-
-  const ros::Time now = ros::Time::now();
-  int locked_idx = -1;
-  double locked_match_distance = std::numeric_limits<double>::max();
-  if (ed_->has_goal_lock_) {
-    if (ed_->locked_goal_is_mission_) {
-      for (int i = 0; i < static_cast<int>(viewpoints.size()); ++i) {
-        if (viewpoints[i]->is_mission_goal_target_) {
-          locked_idx = i;
-          locked_match_distance =
-              (viewpoints[i]->center_ - ed_->locked_goal_).norm();
-          break;
-        }
-      }
-    } else if (ed_->locked_goal_is_coverage_ &&
-        ed_->locked_goal_coverage_id_ != 0) {
-      for (int i = 0; i < static_cast<int>(viewpoints.size()); ++i) {
-        if (viewpoints[i]->is_coverage_target_ &&
-            viewpoints[i]->coverage_target_id_ ==
-                ed_->locked_goal_coverage_id_) {
-          locked_idx = i;
-          locked_match_distance =
-              (viewpoints[i]->center_ - ed_->locked_goal_).norm();
-          break;
-        }
-      }
-    } else if (ed_->locked_goal_cluster_id_ >= 0) {
-      for (int i = 0; i < static_cast<int>(viewpoints.size()); ++i) {
-        if (!viewpoints[i]->is_coverage_target_ &&
-            viewpoints[i]->frontier_cluster_id_ ==
-            ed_->locked_goal_cluster_id_) {
-          const double distance =
-              (viewpoints[i]->center_ - ed_->locked_goal_).norm();
-          // A globally cached cluster may retain its numeric ID while its best
-          // observation point moves to another doorway/side of a room.  Do not
-          // force that spatially different target through the old goal lock.
-          if (distance <= ep_->goal_lock_match_radius_) {
-            locked_idx = i;
-            locked_match_distance = distance;
-            break;
-          }
-        }
-      }
-    }
-    if (locked_idx < 0) {
-      for (int i = 0; i < static_cast<int>(viewpoints.size()); ++i) {
-        const double distance =
-            (viewpoints[i]->center_ - ed_->locked_goal_).norm();
-        if (distance < locked_match_distance) {
-          locked_match_distance = distance;
-          locked_idx = i;
-        }
-      }
-      if (locked_match_distance > ep_->goal_lock_match_radius_) {
-        locked_idx = -1;
-      }
-    }
-  }
-
-  int chosen_idx = candidate_idx;
-  const bool hold_coverage_action=coverageMotionEnabled() && has_active_coverage_goal_ &&
-      locked_idx>=0 && viewpoints[locked_idx]->is_coverage_target_ &&
-      viewpoints[locked_idx]->coverage_target_id_==active_coverage_target_.stable_id &&
-      (viewpoints[locked_idx]->center_.cast<double>()-active_coverage_target_.approach_position).norm()<0.60 &&
-      !active_coverage_goal_start_.isZero() &&
-      (now-active_coverage_goal_start_).toSec()<coverage_recovery_timeout_;
-  if (hold_coverage_action) {
-    chosen_idx=locked_idx;
-  } else if (locked_idx >= 0 && locked_idx != candidate_idx) {
-    const double candidate_cost =
-        candidate_idx < static_cast<int>(distance_odom2vp.size())
-            ? distance_odom2vp[candidate_idx]
-            : 0.0;
-    const double locked_cost =
-        locked_idx < static_cast<int>(distance_odom2vp.size())
-            ? distance_odom2vp[locked_idx]
-            : ed_->locked_goal_cost_;
-    const double since_lock = (now - ed_->locked_goal_time_).toSec();
-    // Goal switching becomes expensive before the exact high-speed threshold.
-    // Waiting until v >= MaxVelMag made the high-speed multiplier practically
-    // unreachable in normal flight (the logged odometry usually stays just
-    // below the configured maximum).
-    const bool high_speed =
-        vel.norm() >=
-        planner_manager_->gcopter_config_->highSpeedModeExitThreshold;
-    const double high_speed_multiplier =
-        high_speed ? std::max(1.0, ep_->goal_switch_high_speed_multiplier_) : 1.0;
-    const double min_improvement =
-        ep_->goal_switch_min_improvement_ * high_speed_multiplier;
-    const double candidate_improvement = locked_cost - candidate_cost;
-    const bool in_cooldown =
-        since_lock < ep_->goal_switch_min_interval_ * high_speed_multiplier;
-    const double relative_margin =
-        std::max(0.0, ep_->goal_keep_cost_ratio_ - 1.0) *
-        std::max(1.0, std::fabs(candidate_cost));
-    const bool old_goal_cost_ok =
-        locked_cost <= candidate_cost + relative_margin + min_improvement;
-
-    if (in_cooldown || old_goal_cost_ok ||
-        candidate_improvement < min_improvement) {
-      chosen_idx = locked_idx;
-      ROS_INFO_STREAM_THROTTLE(
-          0.5,
-          "[goal lock] keep goal idx=" << locked_idx
-                                      << " candidate_idx=" << candidate_idx
-                                      << " locked_cost=" << locked_cost
-                                      << " candidate_cost=" << candidate_cost
-                                      << " since=" << since_lock
-                                      << " high_speed=" << high_speed);
-    }
-  }
-
-  // Frontier IDs are regenerated during reclustering.  A nearby replacement
-  // is the same logical goal even if its numeric ID changed.
-  const bool chosen_is_mission =
-      viewpoints[chosen_idx]->is_mission_goal_target_;
-  const bool chosen_is_coverage =
-      !chosen_is_mission && viewpoints[chosen_idx]->is_coverage_target_;
-  const bool same_identity =
-      ed_->has_goal_lock_ &&
-      chosen_is_mission == ed_->locked_goal_is_mission_ &&
-      chosen_is_coverage == ed_->locked_goal_is_coverage_ &&
-      (chosen_is_mission
-           ? true
-           : chosen_is_coverage
-           ? viewpoints[chosen_idx]->coverage_target_id_ ==
-                 ed_->locked_goal_coverage_id_
-           : viewpoints[chosen_idx]->frontier_cluster_id_ ==
-                     ed_->locked_goal_cluster_id_ &&
-                 (viewpoints[chosen_idx]->center_ - ed_->locked_goal_).norm() <=
-                     ep_->goal_lock_match_radius_);
-  const bool new_lock =
-      !same_identity &&
-      (!ed_->has_goal_lock_ ||
-       (viewpoints[chosen_idx]->center_ - ed_->locked_goal_).norm() >
-           ep_->goal_lock_match_radius_);
-  ed_->has_goal_lock_ = true;
-  ed_->locked_goal_is_mission_ = chosen_is_mission;
-  ed_->locked_goal_is_coverage_ = chosen_is_coverage;
-  ed_->locked_goal_cluster_id_ =
-      (chosen_is_coverage || chosen_is_mission)
-          ? -1
-          : viewpoints[chosen_idx]->frontier_cluster_id_;
-  ed_->locked_goal_coverage_id_ =
-      chosen_is_coverage ? viewpoints[chosen_idx]->coverage_target_id_ : 0;
-  ed_->locked_goal_ = viewpoints[chosen_idx]->center_;
-  ed_->locked_goal_yaw_ = viewpoints[chosen_idx]->yaw_;
-  ed_->locked_goal_cost_ =
-      chosen_idx < static_cast<int>(distance_odom2vp.size())
-          ? distance_odom2vp[chosen_idx]
-          : 0.0;
-  if (new_lock) {
-    ed_->locked_goal_time_ = now;
-    if (frontier_manager_ptr_ && !chosen_is_coverage && !chosen_is_mission) {
-      frontier_manager_ptr_->markClusterGoalSelected(
-          viewpoints[chosen_idx]->frontier_cluster_id_,
-          viewpoints[chosen_idx]->center_, ep_->goal_lock_match_radius_);
-    }
-  }
-  return chosen_idx;
-}
-
 void FastExplorationManager::deferCurrentGoalAfterPlanningFailure() {
   coverage_route_observations_.clear();
   coverage_route_exit_path_.clear();
@@ -2234,10 +2081,26 @@ void FastExplorationManager::deferCurrentGoalAfterPlanningFailure() {
   matched->cluster_id = ed_->locked_goal_cluster_id_;
   matched->position = ed_->locked_goal_;
   double cooldown=ep_->failed_goal_cooldown_;
-  if (coverageRouteEnabled() && planner_manager_) {
+  if (planner_manager_) {
     const auto kind=planner_manager_->coverage_failure_.kind;
-    if (kind==CoverageFailureKind::HEAD || kind==CoverageFailureKind::DYNAMICS || kind==CoverageFailureKind::BUDGET) cooldown=std::min(cooldown,2.0);
-    else if (kind==CoverageFailureKind::PATH) cooldown=std::min(cooldown,5.0);
+    // The pre-optimization path gate rejects marginally tight paths
+    // (min_clearance slightly under the requirement).  Charging the full
+    // 30 s cluster cooldown for that transient rejection emptied the
+    // executable pool and froze coverage runs; bound it so the goal
+    // resurfaces after the map refines.  Repeated failures of the same goal
+    // escalate back toward the full cooldown so a permanently infeasible
+    // goal cannot live-lock the executable pool.
+    if (kind==CoverageFailureKind::SPATIAL) {
+      const double escalated =
+          ep_->spatial_failure_cooldown_ *
+          static_cast<double>(1 << std::min(matched->fail_count, 4));
+      cooldown=std::min(cooldown,escalated);
+      ++matched->fail_count;
+    }
+    if (coverageRouteEnabled()) {
+      if (kind==CoverageFailureKind::HEAD || kind==CoverageFailureKind::DYNAMICS || kind==CoverageFailureKind::BUDGET) cooldown=std::min(cooldown,2.0);
+      else if (kind==CoverageFailureKind::PATH) cooldown=std::min(cooldown,5.0);
+    }
   }
   matched->until = now + ros::Duration(cooldown);
   ROS_WARN_STREAM("[plan recovery] temporarily defer failed goal cluster="
@@ -2881,12 +2744,9 @@ int FastExplorationManager::planGlobalPath(const Eigen::Vector3d &pos,
   vector<TopoNode::Ptr> viewpoints;
   float curr_yaw = (float)planner_manager_->local_data_.curr_yaw_;
   HighSpeedViewScoreContext view_ctx;
-  // The composite selector requires safe, kinematically meaningful viewpoint
-  // representatives even when the legacy edge-cost compatibility switch is
-  // enabled.  Information gain is still carried separately into the global
-  // next-goal objective below, so this does not double-count it.
-  view_ctx.enabled =
-      ep_->composite_candidate_cost_enable_ || !ep_->epic_simple_global_cost_;
+  // Viewpoint representatives keep their safety/kinematic score in every
+  // mode. Node rewards affect final goal selection only in soft/full or swarm.
+  view_ctx.enabled = ep_->viewpoint_score_enable_;
   view_ctx.log = planner_manager_->gcopter_config_->velocityLogEnable;
   view_ctx.curr_pos = pos.cast<float>();
   view_ctx.curr_vel = vel.cast<float>();
@@ -2979,8 +2839,8 @@ int FastExplorationManager::planGlobalPath(const Eigen::Vector3d &pos,
   std::unordered_set<int> preferred_clusters;
   if (target_directed) {
     preferred_clusters = preferredTargetClusterIds(pos);
-  } else if (coverage_snapshot) {
-    preferred_clusters = coverage_snapshot->preferred_cluster_ids;
+  } else if (coverage_guidance_) {
+    preferred_clusters = coverage_guidance_->preferredClusterIds();
   }
   if (structural_coverage) for (const auto &task:coverage_route_tasks_)
     if (task.second.deferred>=coverage_route_config_.mandatory_after && task.second.cluster>=0)
@@ -3080,14 +2940,64 @@ int FastExplorationManager::planGlobalPath(const Eigen::Vector3d &pos,
                      << empty_for << "/" << escape_wait << "s)");
       }
     } else {
-      ROS_WARN_STREAM_THROTTLE(
-          1.0, "[plan recovery] all " << viewpoint_count_before_defer
-                                      << " frontier viewpoints are in "
-                                         "failed-goal cooldown; try coverage "
-                                         "recovery");
+      // Coverage mode gets the same escape hatch as target mode.  Without it,
+      // a single cooled frontier emptied the executable set and the planner
+      // froze for the full 30 s cooldown whenever coverage recovery had no
+      // usable approach either (measured 29.7 s of standstill in an 80 s
+      // house run).  Coverage recovery is tried first; only a sustained empty
+      // pool unlocks the oldest cooled goal.
+      const ros::Time now = ros::Time::now();
+      if (coverage_empty_pool_since_.isZero()) {
+        coverage_empty_pool_since_ = now;
+      }
+      const double empty_for = (now - coverage_empty_pool_since_).toSec();
+      const double escape_wait =
+          ep_ ? ep_->coverage_empty_pool_escape_wait_ : 5.0;
+      const int unlock_budget =
+          ep_ ? ep_->coverage_empty_pool_unlock_count_ : 1;
+      const bool unlock_ready =
+          empty_for >= escape_wait &&
+          (last_coverage_pool_unlock_time_.isZero() ||
+           (now - last_coverage_pool_unlock_time_).toSec() >= escape_wait);
+      if (unlock_ready) {
+        const int unlocked = unlockOldestDeferredGoals(unlock_budget);
+        last_coverage_pool_unlock_time_ = now;
+        if (unlocked > 0) {
+          // Re-admit only the unlocked identities; leave the rest cooling.
+          for (const auto &viewpoint : viewpoints_before_defer) {
+            if (!viewpoint) {
+              continue;
+            }
+            if (failedGoalPenalty(viewpoint) <= 0.0) {
+              viewpoints.emplace_back(viewpoint);
+            }
+          }
+          ROS_WARN_STREAM_THROTTLE(
+              1.0, "[plan recovery] empty deferred shortlist for "
+                       << empty_for << "s; unlock oldest " << unlocked
+                       << " cooled goal(s) and keep remaining cooldowns");
+        } else {
+          ROS_WARN_STREAM_THROTTLE(
+              1.0, "[plan recovery] all " << viewpoint_count_before_defer
+                                          << " frontier viewpoints are in "
+                                             "failed-goal cooldown; try "
+                                             "coverage recovery (empty_for="
+                                          << empty_for << "s)");
+        }
+      } else {
+        ROS_WARN_STREAM_THROTTLE(
+            1.0, "[plan recovery] all " << viewpoint_count_before_defer
+                                        << " frontier viewpoints are in "
+                                           "failed-goal cooldown; try coverage "
+                                           "recovery (empty_for="
+                                        << empty_for << "/" << escape_wait
+                                        << "s)");
+      }
     }
   } else if (target_directed) {
     target_empty_pool_since_ = ros::Time(0);
+  } else {
+    coverage_empty_pool_since_ = ros::Time(0);
   }
 
   const ros::Time coverage_now = ros::Time::now();
@@ -3151,15 +3061,17 @@ int FastExplorationManager::planGlobalPath(const Eigen::Vector3d &pos,
     ROS_INFO_STREAM_THROTTLE(1.0,"[coverage handoff] frontier audit takes precedence over new CP cleanup goals");
     return NO_FRONTIER;
   }
+  const bool recovery_enabled = !target_directed && coverage_guidance_ &&
+      coverage_guidance_->safetyNetEnabled();
   const bool promote_coverage_candidates =
-      !target_directed && coverage_guidance_ &&
+      recovery_enabled &&
       coverage_executable_candidate_enable_ &&
       (structural_coverage || executable_empty_stable) &&
       (moving_handoff_ready ||
        current_speed <= coverage_executable_candidate_max_speed_) &&
       no_executable_frontier;
   const bool coverage_handoff_pending =
-      !structural_coverage && !target_directed && coverage_guidance_ &&
+      !structural_coverage && recovery_enabled &&
       coverage_executable_candidate_enable_ &&
       no_executable_frontier && !has_active_coverage_goal_ &&
       (!executable_empty_stable ||
@@ -3626,10 +3538,16 @@ int FastExplorationManager::planGlobalPath(const Eigen::Vector3d &pos,
   vector<EdgeSafetyCost> viewpoint_reachable_edges;
   vector<int> reversal_indices;
   const double reversal_angle = planner_manager_->gcopter_config_->reorientationHeadingAngle;
+  // Only exclude reversal candidates when a controlled stop is actually
+  // required (high speed).  Below reorientationMinSpeed the optimizer can
+  // absorb the turn directly, so the candidate stays reachable.
+  const bool reversal_blocked =
+      current_speed > std::max(0.5,
+          planner_manager_->gcopter_config_->reorientationMinSpeed);
   for (int i = 0; i < static_cast<int>(distance_odom2vp.size()); ++i) {
     if (distance_odom2vp[i] > 2e3)
       continue;
-    if (moving &&
+    if (moving && reversal_blocked &&
         edge_odom2vp[i].initial_heading_delta > reversal_angle) {
       reversal_indices.emplace_back(i);
       continue;
@@ -4058,27 +3976,6 @@ int FastExplorationManager::planGlobalPath(const Eigen::Vector3d &pos,
         viewpoint_reachable_distance, viewpoint_reachable_edges);
   }
 
-  std::vector<double> swarm_candidate_penalties(viewpoint_reachable.size(),
-                                                 0.0);
-  if (swarm_coordinator_ && swarm_coordinator_->enabled()) {
-    std::vector<SwarmCandidate> swarm_candidates;
-    swarm_candidates.reserve(viewpoint_reachable.size());
-    for (std::size_t i = 0; i < viewpoint_reachable.size(); ++i) {
-      SwarmCandidate candidate;
-      candidate.position = viewpoint_reachable[i]->center_.cast<double>();
-      candidate.information_gain =
-          viewpoint_reachable[i]->is_coverage_target_
-              ? static_cast<double>(
-                    std::max(0, viewpoint_reachable[i]->coverage_voxel_count_))
-              : viewpoint_reachable[i]->frontier_information_gain_;
-      candidate.travel_cost = viewpoint_reachable_distance[i];
-      candidate.coverage = viewpoint_reachable[i]->is_coverage_target_;
-      swarm_candidates.emplace_back(candidate);
-    }
-    swarm_candidate_penalties =
-        swarm_coordinator_->candidatePenalties(swarm_candidates);
-  }
-
   const auto &motion = ep_->coverage_motion_;
   const bool region_hold = coverageMotionEnabled() &&
       !coverage_region_since_.isZero() &&
@@ -4204,118 +4101,13 @@ int FastExplorationManager::planGlobalPath(const Eigen::Vector3d &pos,
     return FAIL;
   }
 
-  struct CandidateCostBreakdown {
-    double travel{0.0};
-    double turn_brake{0.0};
-    double future_return{0.0};
-    double gain_norm{0.0};
-    double wait_norm{0.0};
-    double debt_norm{0.0};
-    double coverage{0.0};
-    double failed_goal{0.0};
-    double swarm{0.0};
-    double region{0.0};
-    double total{0.0};
-  };
-  vector<CandidateCostBreakdown> candidate_terms(viewpoint_reachable.size());
-  auto fillStaticTerms = [&](const int i) {
-    CandidateCostBreakdown &terms = candidate_terms[i];
-    const auto &edge = viewpoint_reachable_edges[i];
-    const auto &viewpoint = viewpoint_reachable[i];
-    terms.travel = edge.time_cost;
-    if (coverageMotionEnabled() && std::isfinite(edge.moving_time_cost))
-      terms.travel = edge.moving_time_cost;
-    if (region_hold && !viewpoint->is_coverage_target_ &&
-        !coverage_motion::sameRegion(viewpoint->center_.cast<double>(),
-                                     coverage_region_anchor_, motion)) {
-      const double age = std::max(0.0, (coverage_now - coverage_region_since_).toSec());
-      terms.region = motion.region_switch_cost *
-          (1.0 - age / std::max(0.01, motion.region_duration));
-    }
-    terms.turn_brake = edge.turn_penalty + edge.yaw_penalty +
-                       edge.known_free_penalty + edge.backup_penalty;
-    if (viewpoint->is_mission_goal_target_) {
-      terms.gain_norm = 0.0;
-      terms.wait_norm = 0.0;
-      terms.debt_norm = 0.0;
-      terms.coverage = 0.0;
-    } else if (viewpoint->is_coverage_target_) {
-      const double gain =
-          static_cast<double>(std::max(0, viewpoint->coverage_voxel_count_));
-      terms.gain_norm = gain / (60.0 + gain);
-      terms.wait_norm = 0.0;
-      terms.debt_norm = 0.0;
-      const double rank_bonus =
-          viewpoint->coverage_route_rank_ >= 0
-              ? 1.0 / (1.0 + viewpoint->coverage_route_rank_)
-              : 0.0;
-      const double bounded_rank = std::min(
-          40.0, static_cast<double>(
-                    std::max(0, viewpoint->coverage_route_rank_)));
-      terms.coverage = -coverage_executable_candidate_bonus_ - rank_bonus +
-                       coverage_route_rank_weight_ * bounded_rank;
-      if (priority_floor_active &&
-          (!ascending_to_priority_floor ||
-           (viewpoint->coverage_route_rank_ >=
-                std::max(0, first_priority_floor_rank -
-                                coverage_floor_transition_rank_window_) &&
-            viewpoint->coverage_route_rank_ <= first_priority_floor_rank))) {
-        terms.coverage -= coverage_executable_candidate_bonus_;
-      }
-    } else {
-      terms.gain_norm =
-          viewpoint->frontier_information_gain_ /
-          (std::max(1.0e-3, ep_->candidate_gain_saturation_) +
-           viewpoint->frontier_information_gain_);
-      terms.wait_norm = std::clamp(
-          viewpoint->frontier_wait_age_ /
-              std::max(1.0, ep_->candidate_wait_saturation_),
-          0.0, 1.0);
-      terms.debt_norm = std::clamp(
-          viewpoint->frontier_pass_debt_ /
-              std::max(1.0, ep_->candidate_debt_saturation_),
-          0.0, 1.0);
-      terms.coverage = !target_directed && coverage_guidance_
-                           ? coverage_guidance_->clusterPenalty(
-                                 viewpoint->frontier_cluster_id_,
-                                 viewpoint->center_.cast<double>())
-                           : 0.0;
-    }
-    terms.failed_goal = failedGoalPenalty(viewpoint);
-    terms.swarm = swarm_candidate_penalties[i];
-  };
-  auto finishCompositeCost = [&](const int i) {
-    CandidateCostBreakdown &terms = candidate_terms[i];
-    if (!ep_->composite_candidate_cost_enable_) {
-      terms.total = viewpoint_reachable_distance[i] + terms.coverage +
-                    terms.failed_goal + terms.swarm + terms.region;
-      return;
-    }
-    terms.total =
-        ep_->candidate_travel_weight_ * terms.travel +
-        ep_->candidate_turn_brake_weight_ * terms.turn_brake +
-        ep_->candidate_future_return_weight_ * terms.future_return -
-        ep_->candidate_information_gain_weight_ * terms.gain_norm -
-        ep_->candidate_wait_weight_ * terms.wait_norm -
-        ep_->candidate_debt_weight_ * terms.debt_norm + terms.coverage +
-        terms.failed_goal + terms.swarm + terms.region;
-  };
-
-  for (int i = 0; i < static_cast<int>(candidate_terms.size()); ++i) {
-    fillStaticTerms(i);
-  }
-
-  if (viewpoint_reachable.size() == 1) {
-    finishCompositeCost(0);
-    vector<double> composite_costs{candidate_terms[0].total};
-    const int goal_idx =
-        selectStableGoalIndex(viewpoint_reachable, composite_costs,
-                              0, vel);
-    if (deferStalledNormalGoal(
-            viewpoint_reachable[goal_idx],
-            viewpoint_reachable_edges[goal_idx].time_cost)) {
+  // Selection owns the order; this block only commits the selected action.
+  auto commitSelectedGoal = [&](const int goal_idx,
+                                const vector<int> &tour_indices) {
+    if (deferStalledNormalGoal(viewpoint_reachable[goal_idx],
+                               viewpoint_reachable_distance[goal_idx])) {
       planner_manager_->topo_graph_->removeNodes(viewpoints);
-      return planGlobalPath(pos, vel);
+      return false;
     }
     activateSelectedGoal(viewpoint_reachable[goal_idx]);
     if (swarm_coordinator_ && swarm_coordinator_->enabled()) {
@@ -4326,36 +4118,42 @@ int FastExplorationManager::planGlobalPath(const Eigen::Vector3d &pos,
               ? static_cast<double>(std::max(
                     0, viewpoint_reachable[goal_idx]->coverage_voxel_count_))
               : viewpoint_reachable[goal_idx]->frontier_information_gain_;
-      claim.travel_cost = candidate_terms[goal_idx].travel;
+      claim.travel_cost = viewpoint_reachable_distance[goal_idx];
       claim.coverage = viewpoint_reachable[goal_idx]->is_coverage_target_;
       swarm_coordinator_->claimTask(claim);
     }
     ROS_INFO_STREAM_THROTTLE(
-        0.5, "[candidate cost] chosen_cluster="
+        0.5, "[exploration goal] chosen_cluster="
                  << viewpoint_reachable[goal_idx]->frontier_cluster_id_
                  << " coverage_id="
                  << viewpoint_reachable[goal_idx]->coverage_target_id_
-                 << " total=" << candidate_terms[goal_idx].total
-                 << " travel=" << candidate_terms[goal_idx].travel
-                 << " turn_brake=" << candidate_terms[goal_idx].turn_brake
-                 << " future_return=0 gain="
-                 << candidate_terms[goal_idx].gain_norm
-                 << " wait=" << candidate_terms[goal_idx].wait_norm
-                 << " debt=" << candidate_terms[goal_idx].debt_norm
-                 << " coverage=" << candidate_terms[goal_idx].coverage
-                 << " failed_goal="
-                 << candidate_terms[goal_idx].failed_goal
-                 << " swarm=" << candidate_terms[goal_idx].swarm);
+                 << " travel=" << viewpoint_reachable_distance[goal_idx]);
     ed_->global_tour_.clear();
-    ed_->global_tour_.emplace_back(pos.cast<float>());
+    ed_->global_tour_.push_back(
+        planner_manager_->topo_graph_->odom_node_->center_);
     ed_->global_tour_.emplace_back(viewpoint_reachable[goal_idx]->center_);
-    planner_manager_->local_data_.end_yaw_ = viewpoint_reachable[goal_idx]->yaw_;
+    for (const int i : tour_indices) {
+      if (i <= 0) {
+        continue;
+      }
+      const int viewpoint_idx = i - 1;
+      if (viewpoint_idx == goal_idx) {
+        continue;
+      }
+      if (viewpoint_idx >= 0 &&
+          viewpoint_idx < static_cast<int>(viewpoint_reachable.size())) {
+        ed_->global_tour_.emplace_back(
+            viewpoint_reachable[viewpoint_idx]->center_);
+      }
+    }
+    planner_manager_->local_data_.end_yaw_ =
+        viewpoint_reachable[goal_idx]->yaw_;
     planner_manager_->topo_graph_->removeNodes(viewpoints);
     planner_manager_->graph_visualizer_->vizTour(ed_->global_tour_,
                                                  VizColor::RED, "global");
     updateGoalNode();
-    return SUCCEED;
-  }
+    return true;
+  };
 
   int dim = viewpoint_reachable.size() + 1;
   Eigen::MatrixXd mat;
@@ -4384,477 +4182,22 @@ int FastExplorationManager::planGlobalPath(const Eigen::Vector3d &pos,
     }
   }
 
-  // Estimate the cost of skipping a currently cheap/high-value frontier and
-  // returning to it after visiting candidate i.  This is evaluated only for
-  // next-goal selection; adding a fixed node reward to an all-node TSP would be
-  // a constant and could not change visit order.
-  const int return_horizon = std::clamp(
-      ep_->candidate_return_horizon_, 1,
-      std::max(1, static_cast<int>(viewpoint_reachable.size()) - 1));
-  for (int i = 0; i < static_cast<int>(viewpoint_reachable.size()); ++i) {
-    struct ReturnAlternative {
-      double priority;
-      double extra;
-    };
-    vector<ReturnAlternative> alternatives;
-    alternatives.reserve(viewpoint_reachable.size() - 1);
-    for (int k = 0; k < static_cast<int>(viewpoint_reachable.size()); ++k) {
-      if (k == i) {
-        continue;
-      }
-      const double extra = std::max(
-          0.0, mat(i + 1, k + 1) - candidate_terms[k].travel);
-      if (extra <= 1.0e-6) {
-        continue;
-      }
-      const double priority = 1.0 + candidate_terms[k].gain_norm +
-                              candidate_terms[k].wait_norm +
-                              candidate_terms[k].debt_norm;
-      alternatives.push_back({priority, extra});
-    }
-    std::stable_sort(
-        alternatives.begin(), alternatives.end(),
-        [](const ReturnAlternative &a, const ReturnAlternative &b) {
-          return a.priority * a.extra > b.priority * b.extra;
-        });
-    double weighted_extra = 0.0;
-    double weight_sum = 0.0;
-    for (int k = 0;
-         k < std::min(return_horizon, static_cast<int>(alternatives.size()));
-         ++k) {
-      weighted_extra += alternatives[k].priority * alternatives[k].extra;
-      weight_sum += alternatives[k].priority;
-    }
-    candidate_terms[i].future_return =
-        std::min(std::max(0.0, ep_->candidate_return_cost_cap_),
-                 weight_sum > 1.0e-6 ? weighted_extra / weight_sum : 0.0);
-    finishCompositeCost(i);
-  }
-
-  vector<double> composite_costs(candidate_terms.size(), 0.0);
-  int candidate_goal_idx = 0;
-  auto deterministicCandidateLess = [&](const int first, const int second) {
-    constexpr double kCostTieEpsilon = 1.0e-6;
-    const double delta =
-        candidate_terms[first].total - candidate_terms[second].total;
-    if (std::fabs(delta) > kCostTieEpsilon) {
-      return delta < 0.0;
-    }
-    const Eigen::Vector3f &first_center =
-        viewpoint_reachable[first]->center_;
-    const Eigen::Vector3f &second_center =
-        viewpoint_reachable[second]->center_;
-    if (first_center.x() != second_center.x())
-      return first_center.x() < second_center.x();
-    if (first_center.y() != second_center.y())
-      return first_center.y() < second_center.y();
-    if (first_center.z() != second_center.z())
-      return first_center.z() < second_center.z();
-    if (viewpoint_reachable[first]->is_coverage_target_ !=
-        viewpoint_reachable[second]->is_coverage_target_) {
-      return !viewpoint_reachable[first]->is_coverage_target_;
-    }
-    return viewpoint_reachable[first]->frontier_cluster_id_ <
-           viewpoint_reachable[second]->frontier_cluster_id_;
-  };
-  for (int i = 0; i < static_cast<int>(candidate_terms.size()); ++i) {
-    composite_costs[i] = candidate_terms[i].total;
-    if (deterministicCandidateLess(i, candidate_goal_idx)) {
-      candidate_goal_idx = i;
-    }
-  }
-  const int stable_goal_idx = selectStableGoalIndex(
-      viewpoint_reachable, composite_costs, candidate_goal_idx, vel);
-  if (deferStalledNormalGoal(
-          viewpoint_reachable[stable_goal_idx],
-          viewpoint_reachable_edges[stable_goal_idx].time_cost)) {
+  vector<int> indices;
+  const ros::WallTime selection_start = ros::WallTime::now();
+  const int stable_goal_idx = selectExplorationTour(
+      viewpoint_reachable, viewpoint_reachable_edges, mat, vel,
+      priority_floor_active, ascending_to_priority_floor,
+      first_priority_floor_rank, indices);
+  ROS_INFO_STREAM_THROTTLE(0.5, "[exploration selection] cost_ms="
+      << (ros::WallTime::now() - selection_start).toSec() * 1000.0);
+  if (stable_goal_idx < 0) {
     planner_manager_->topo_graph_->removeNodes(viewpoints);
+    return FAIL;
+  }
+  if (!commitSelectedGoal(stable_goal_idx, indices)) {
     return planGlobalPath(pos, vel);
   }
-  activateSelectedGoal(viewpoint_reachable[stable_goal_idx]);
-  if (swarm_coordinator_ && swarm_coordinator_->enabled()) {
-    SwarmCandidate claim;
-    claim.position =
-        viewpoint_reachable[stable_goal_idx]->center_.cast<double>();
-    claim.information_gain =
-        viewpoint_reachable[stable_goal_idx]->is_coverage_target_
-            ? static_cast<double>(std::max(
-                  0, viewpoint_reachable[stable_goal_idx]
-                         ->coverage_voxel_count_))
-            : viewpoint_reachable[stable_goal_idx]
-                  ->frontier_information_gain_;
-    claim.travel_cost = candidate_terms[stable_goal_idx].travel;
-    claim.coverage =
-        viewpoint_reachable[stable_goal_idx]->is_coverage_target_;
-    swarm_coordinator_->claimTask(claim);
-  }
-
-  vector<int> debug_order(candidate_terms.size());
-  for (int i = 0; i < static_cast<int>(debug_order.size()); ++i) {
-    debug_order[i] = i;
-  }
-  std::stable_sort(debug_order.begin(), debug_order.end(),
-                   deterministicCandidateLess);
-  std::ostringstream cost_log;
-  cost_log << "[candidate cost] chosen_cluster="
-           << viewpoint_reachable[stable_goal_idx]->frontier_cluster_id_
-           << " chosen_coverage="
-           << viewpoint_reachable[stable_goal_idx]->coverage_target_id_
-           << " raw_best_cluster="
-           << viewpoint_reachable[candidate_goal_idx]->frontier_cluster_id_
-           << " raw_best_coverage="
-           << viewpoint_reachable[candidate_goal_idx]->coverage_target_id_;
-  for (int rank = 0;
-       rank < std::min(3, static_cast<int>(debug_order.size())); ++rank) {
-    const int i = debug_order[rank];
-    const auto &term = candidate_terms[i];
-    cost_log << " | #" << rank << " c="
-             << viewpoint_reachable[i]->frontier_cluster_id_
-             << "/cp=" << viewpoint_reachable[i]->coverage_target_id_
-             << " J=" << term.total << " T=" << term.travel
-             << " TB=" << term.turn_brake << " R=" << term.future_return
-             << " G=" << term.gain_norm << " W=" << term.wait_norm
-             << " D=" << term.debt_norm << " C=" << term.coverage
-             << " region=" << term.region;
-    if (std::fabs(term.swarm) > 1.0e-9) {
-      cost_log << " S=" << term.swarm;
-    }
-    if (term.failed_goal > 0.0) {
-      cost_log << " F=" << term.failed_goal;
-    }
-  }
-  ROS_INFO_STREAM_THROTTLE(0.5, cost_log.str());
-
-  // Convert the cycle into an open route and force the separately scored next
-  // goal to be first.  The old far-end return-edge trick systematically
-  // postponed side rooms and is intentionally removed.
-  Eigen::MatrixXd route_mat = mat;
-  constexpr double kForceFirstPenalty = 1e3;
-  for (int i = 1; i < dim; ++i) {
-    route_mat(i, 0) = 0.0;
-    if (i != stable_goal_idx + 1) {
-      route_mat(0, i) += kForceFirstPenalty;
-    }
-  }
-  vector<int> indices;
-  indices.reserve(dim);
-  ros::Time start_tsp = ros::Time::now();
-  cout << "calculate tsp cost matrix cost " << (start_tsp - t2).toSec() * 1000
-       << "ms" << endl;
-  solveTour(route_mat, indices);
-  ros::Time end_tsp = ros::Time::now();
-  cout << "tour solver cost: " << (end_tsp - start_tsp).toSec() * 1000 << "ms"
-       << endl;
-  if (indices.size() < 2 || indices[1] != stable_goal_idx + 1) {
-    // Deterministic greedy fallback with the already selected first goal.  A
-    // route-solver failure must not discard an otherwise valid next target.
-    indices.clear();
-    indices.emplace_back(0);
-    indices.emplace_back(stable_goal_idx + 1);
-    vector<bool> used(dim, false);
-    used[0] = true;
-    used[stable_goal_idx + 1] = true;
-    int current = stable_goal_idx + 1;
-    while (static_cast<int>(indices.size()) < dim) {
-      int best = -1;
-      for (int next = 1; next < dim; ++next) {
-        if (!used[next] &&
-            (best < 0 || mat(current, next) < mat(current, best))) {
-          best = next;
-        }
-      }
-      if (best < 0) {
-        break;
-      }
-      used[best] = true;
-      indices.emplace_back(best);
-      current = best;
-    }
-  }
-  ed_->global_tour_.clear();
-  ed_->global_tour_.push_back(planner_manager_->topo_graph_->odom_node_->center_);
-  ed_->global_tour_.emplace_back(viewpoint_reachable[stable_goal_idx]->center_);
-  for (auto &i : indices) {
-    if (i <= 0)
-      continue;
-    const int viewpoint_idx = i - 1;
-    if (viewpoint_idx == stable_goal_idx)
-      continue;
-    if (viewpoint_idx >= 0 &&
-        viewpoint_idx < static_cast<int>(viewpoint_reachable.size())) {
-      ed_->global_tour_.emplace_back(viewpoint_reachable[viewpoint_idx]->center_);
-    }
-  }
-  planner_manager_->topo_graph_->removeNodes(viewpoints);
-  planner_manager_->graph_visualizer_->vizTour(ed_->global_tour_, VizColor::RED,
-                                               "global");
-
-  planner_manager_->local_data_.end_yaw_ =
-      viewpoint_reachable[stable_goal_idx]->yaw_;
-  updateGoalNode();
   return SUCCEED;
-}
-
-void FastExplorationManager::solveTour(Eigen::MatrixXd &cost_mat,
-                                       vector<int> &indices) {
-  indices.clear();
-  const int dimension = cost_mat.rows();
-  if (dimension <= 0 || cost_mat.cols() != dimension)
-    return;
-  if (dimension == 1) {
-    indices.emplace_back(0);
-    return;
-  }
-
-  if (ep_->use_lkh_ && solveLKH(cost_mat, indices)) {
-    return;
-  }
-
-  if (ep_->use_lkh_) {
-    ROS_WARN_STREAM_THROTTLE(
-        1.0, "[global tour] LKH failed; use deterministic ATSP fallback");
-  }
-  solveFallbackTour(cost_mat, indices);
-}
-
-bool FastExplorationManager::solveLKH(const Eigen::MatrixXd &cost_mat,
-                                      vector<int> &indices) {
-  indices.clear();
-  const int dimension = cost_mat.rows();
-  if (dimension < 3 || cost_mat.cols() != dimension || ep_->tsp_dir_.empty()) {
-    return false;
-  }
-
-  const string problem_file = ep_->tsp_dir_ + "/single.tsp";
-  const string parameter_file = ep_->tsp_dir_ + "/single.par";
-  const string result_file = ep_->tsp_dir_ + "/single.txt";
-  ofstream problem(problem_file, std::ios::out | std::ios::trunc);
-  if (!problem.is_open()) {
-    return false;
-  }
-
-  problem << "NAME : single\n"
-          << "TYPE : ATSP\n"
-          << "DIMENSION : " << dimension << "\n"
-          << "EDGE_WEIGHT_TYPE : EXPLICIT\n"
-          << "EDGE_WEIGHT_FORMAT : FULL_MATRIX\n"
-          << "EDGE_WEIGHT_SECTION\n";
-  constexpr double kScale = 100.0;
-  constexpr int kMaxLkhCost = std::numeric_limits<int>::max() / 8;
-  for (int row = 0; row < dimension; ++row) {
-    for (int col = 0; col < dimension; ++col) {
-      const double cost = cost_mat(row, col);
-      if (!std::isfinite(cost)) {
-        problem.close();
-        return false;
-      }
-      const long long scaled = std::llround(cost * kScale);
-      problem << std::clamp<long long>(scaled, 0, kMaxLkhCost) << " ";
-    }
-    problem << "\n";
-  }
-  problem << "EOF\n";
-  problem.close();
-  if (!problem) {
-    return false;
-  }
-
-  // Do not accept a tour left by an earlier failed invocation.
-  std::remove(result_file.c_str());
-  if (solveTSPLKH(parameter_file.c_str()) != EXIT_SUCCESS) {
-    return false;
-  }
-
-  ifstream result(result_file);
-  if (!result.is_open()) {
-    return false;
-  }
-  string line;
-  bool in_tour_section = false;
-  vector<int> raw_tour;
-  raw_tour.reserve(dimension);
-  while (std::getline(result, line)) {
-    if (!in_tour_section) {
-      if (line == "TOUR_SECTION") {
-        in_tour_section = true;
-      }
-      continue;
-    }
-    std::istringstream line_stream(line);
-    int id = 0;
-    if (!(line_stream >> id)) {
-      continue;
-    }
-    if (id == -1) {
-      break;
-    }
-    raw_tour.emplace_back(id - 1);
-  }
-  if (static_cast<int>(raw_tour.size()) != dimension) {
-    return false;
-  }
-
-  vector<bool> seen(dimension, false);
-  for (const int node : raw_tour) {
-    if (node < 0 || node >= dimension || seen[node]) {
-      return false;
-    }
-    seen[node] = true;
-  }
-  const auto depot = std::find(raw_tour.begin(), raw_tour.end(), 0);
-  if (depot == raw_tour.end()) {
-    return false;
-  }
-  indices.insert(indices.end(), depot, raw_tour.end());
-  indices.insert(indices.end(), raw_tour.begin(), depot);
-  return static_cast<int>(indices.size()) == dimension && indices.front() == 0;
-}
-
-void FastExplorationManager::solveFallbackTour(
-    const Eigen::MatrixXd &cost_mat, vector<int> &indices) const {
-  indices.clear();
-  const int dimension = cost_mat.rows();
-  if (dimension <= 0 || cost_mat.cols() != dimension) {
-    return;
-  }
-  if (dimension == 1) {
-    indices.emplace_back(0);
-    return;
-  }
-
-  constexpr int kExactMaxDimension = 16;
-  const double inf = std::numeric_limits<double>::infinity();
-  if (dimension <= kExactMaxDimension) {
-    const int node_num = dimension - 1;
-    const int state_num = 1 << node_num;
-    vector<double> dp(static_cast<std::size_t>(state_num) * node_num, inf);
-    vector<int> parent(static_cast<std::size_t>(state_num) * node_num, -1);
-    const auto offset = [node_num](const int mask, const int node) {
-      return static_cast<std::size_t>(mask) * node_num + node;
-    };
-
-    for (int node = 0; node < node_num; ++node) {
-      dp[offset(1 << node, node)] = cost_mat(0, node + 1);
-    }
-    for (int mask = 1; mask < state_num; ++mask) {
-      for (int node = 0; node < node_num; ++node) {
-        if ((mask & (1 << node)) == 0)
-          continue;
-        const int previous_mask = mask ^ (1 << node);
-        if (previous_mask == 0)
-          continue;
-        for (int previous = 0; previous < node_num; ++previous) {
-          if ((previous_mask & (1 << previous)) == 0)
-            continue;
-          const double candidate =
-              dp[offset(previous_mask, previous)] +
-              cost_mat(previous + 1, node + 1);
-          if (candidate < dp[offset(mask, node)]) {
-            dp[offset(mask, node)] = candidate;
-            parent[offset(mask, node)] = previous;
-          }
-        }
-      }
-    }
-
-    const int full_mask = state_num - 1;
-    int last_node = -1;
-    double best_cost = inf;
-    for (int node = 0; node < node_num; ++node) {
-      const double cycle_cost =
-          dp[offset(full_mask, node)] + cost_mat(node + 1, 0);
-      if (cycle_cost < best_cost) {
-        best_cost = cycle_cost;
-        last_node = node;
-      }
-    }
-    if (last_node >= 0 && std::isfinite(best_cost)) {
-      vector<int> reversed;
-      int mask = full_mask;
-      while (last_node >= 0) {
-        reversed.push_back(last_node + 1);
-        const int previous = parent[offset(mask, last_node)];
-        mask ^= 1 << last_node;
-        last_node = previous;
-      }
-      indices.push_back(0);
-      indices.insert(indices.end(), reversed.rbegin(), reversed.rend());
-      return;
-    }
-  }
-
-  // Directed cheapest insertion keeps the depot-closing edge in the objective.
-  // For the current open-route matrix every frontier-to-depot edge is zero,
-  // while depot departure still forces the separately selected first goal.
-  vector<bool> visited(dimension, false);
-  vector<int> route{0};
-  visited[0] = true;
-  while (static_cast<int>(route.size()) < dimension) {
-    int best_node = -1;
-    int best_insert_after = -1;
-    double best_delta = inf;
-    for (int node = 1; node < dimension; ++node) {
-      if (visited[node]) {
-        continue;
-      }
-      for (int pos = 0; pos < static_cast<int>(route.size()); ++pos) {
-        const int from = route[pos];
-        const int to = pos + 1 < static_cast<int>(route.size())
-                           ? route[pos + 1]
-                           : 0;
-        const double delta = cost_mat(from, node) + cost_mat(node, to) -
-                             cost_mat(from, to);
-        if (std::isfinite(delta) && delta < best_delta) {
-          best_delta = delta;
-          best_node = node;
-          best_insert_after = pos;
-        }
-      }
-    }
-    if (best_node < 0) {
-      indices.clear();
-      return;
-    }
-    route.insert(route.begin() + best_insert_after + 1, best_node);
-    visited[best_node] = true;
-  }
-
-  const auto cycle_cost = [&cost_mat](const vector<int> &tour) {
-    double cost = 0.0;
-    for (int i = 0; i < static_cast<int>(tour.size()); ++i) {
-      cost += cost_mat(tour[i],
-                       i + 1 < static_cast<int>(tour.size()) ? tour[i + 1] : 0);
-    }
-    return cost;
-  };
-  double best_cost = cycle_cost(route);
-  // A few deterministic relocate passes cheaply remove bad insertions while
-  // retaining directed edge costs.
-  for (int pass = 0; pass < 4; ++pass) {
-    bool improved = false;
-    for (int from = 1; from < dimension && !improved; ++from) {
-      for (int insert_at = 1; insert_at < dimension && !improved;
-           ++insert_at) {
-        vector<int> candidate = route;
-        const int node = candidate[from];
-        candidate.erase(candidate.begin() + from);
-        candidate.insert(candidate.begin() + insert_at, node);
-        if (candidate == route) {
-          continue;
-        }
-        const double candidate_cost = cycle_cost(candidate);
-        if (candidate_cost + 1.0e-9 < best_cost) {
-          route.swap(candidate);
-          best_cost = candidate_cost;
-          improved = true;
-        }
-      }
-    }
-    if (!improved) {
-      break;
-    }
-  }
-  indices.swap(route);
 }
 
 void FastExplorationManager::updateGoalNode() {

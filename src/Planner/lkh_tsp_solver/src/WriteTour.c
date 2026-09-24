@@ -24,12 +24,14 @@ void WriteTour(char *FileName, int *Tour, GainType Cost)
         return;
     FullFileName = FullName(FileName, Cost);
     Now = time(&Now);
-    if (TraceLevel >= 1)
-        // printff("Writing%s: \"%s\" ... ",
-        //         FileName == TourFileName ? " TOUR_FILE" :
-        //         FileName == OutputTourFileName ? " OUTPUT_TOUR_FILE" : "",
-        //         FullFileName);
+    /* Output must not depend on tracing. The caller can fall back when no
+       result file was produced, including an unwritable output directory. */
     TourFile = fopen(FullFileName, "w");
+    if (!TourFile) {
+        fprintf(stderr, "LKH: cannot write tour to %s\n", FullFileName);
+        free(FullFileName);
+        return;
+    }
     fprintf(TourFile, "NAME : %s." GainFormat ".tour\n", Name, Cost);
     fprintf(TourFile, "COMMENT : Length = " GainFormat "\n", Cost);
     fprintf(TourFile, "COMMENT : Found by LKH [Keld Helsgaun] %s",

@@ -9,6 +9,26 @@
 
 #include "general_core/exploration/exploration_utils/pointcloud_topo/graph.h"
 
+namespace {
+using EdgeBudget = fast_planner::TopologyUpdateBudget<std::array<int, 6>>;
+
+EdgeBudget::Candidate edgeWork(const TopoNode::Ptr &first,
+                               const TopoNode::Ptr &second) {
+  // Match topology's millimetre spatial identity; pointer identity changes
+  // whenever temporary viewpoints are regenerated.
+  auto key = [](const Eigen::Vector3f &p) {
+    return std::array<int, 3>{static_cast<int>(std::floor(p.x() * 1000.0)),
+                              static_cast<int>(std::floor(p.y() * 1000.0)),
+                              static_cast<int>(std::floor(p.z() * 1000.0))};
+  };
+  auto a = key(first->center_);
+  auto b = key(second->center_);
+  if (b < a) std::swap(a, b);
+  return {{a[0], a[1], a[2], b[0], b[1], b[2]},
+          (first->center_ - second->center_).squaredNorm()};
+}
+}  // namespace
+
 void debug_exit(const std::string &location) {
   std::cout << "\033[1;31m Terminating process at location: " << location << "\033[0m" << std::endl;
   exit(0);
@@ -52,8 +72,15 @@ void TopoGraph::init(ros::NodeHandle &nh, LIOInterface::Ptr &lidar_map, Parallel
   odom_astar_fallback_max_ =
       std::clamp(odom_astar_fallback_max_, 0,
                  odom_connection_candidate_max_);
+  nh.param("bubble_topo/edge_test_budget", edge_test_budget_,
+           edge_test_budget_);
+  edge_test_budget_ = std::clamp(edge_test_budget_, 8, 256);
 
   nh.getParam("max_update_region_num", max_update_region_num_);
+  // Hard budget: an uncapped region set makes updateSkeleton() cost grow with
+  // map size (measured 1.5 s+ on the planning thread). Distant regions keep
+  // their previously built nodes; they are refreshed when the robot approaches.
+  max_update_region_num_ = std::clamp(max_update_region_num_, 4, 64);
   update_idx_vec_.reserve(100);
   global_path_.reserve(200);
   x_len = std::ceil((max_bd - min_bd).x() / init_region_size_x_);
@@ -533,6 +560,15 @@ void TopoGraph::updateRemainedConnections(vector<TopoNode::Ptr> &nodes) {
   }
   edge2test.flatten();
   edge2check.flatten();
+  // Existing edges are always revalidated. New connections share a bounded
+  // budget between nearby work and the oldest untested geometric identities.
+  std::vector<EdgeBudget::Candidate> work;
+  for (const auto &edge : edge2test.flatten_data)
+    work.push_back(edgeWork(edge.p1, edge.p2));
+  std::vector<PtrPair::iter_elem> selected;
+  for (const auto index : connection_budget_.select(work, edge_test_budget_))
+    selected.push_back(std::move(edge2test.flatten_data[index]));
+  edge2test.flatten_data.swap(selected);
   omp_set_num_threads(6);
   // clang-format off
   #pragma omp parallel for
@@ -715,7 +751,21 @@ void TopoGraph::insertNodes(vector<TopoNode::Ptr> &nodes, bool only_raycast) {
     }
   }
 
-  // 获得节点对的vector
+  // Pure raycasts are cheap and must not inherit the A* budget. Keep
+  // temporary viewpoints and persistent skeleton insertions in separate
+  // queues so frequent goal generation cannot reset skeleton fairness.
+  if (!only_raycast) {
+    std::vector<EdgeBudget::Candidate> work;
+    for (const auto &edge : pair_vector)
+      work.push_back(edgeWork(edge.first, edge.second));
+    const bool temporary = std::any_of(nodes.begin(), nodes.end(),
+        [](const TopoNode::Ptr &node) { return node->is_viewpoint_; });
+    auto &budget = temporary ? viewpoint_budget_ : insertion_budget_;
+    vector<pair<TopoNode::Ptr, TopoNode::Ptr>> selected;
+    for (const auto index : budget.select(work, 2 * edge_test_budget_))
+      selected.push_back(pair_vector[index]);
+    pair_vector.swap(selected);
+  }
   vector<vector<Eigen::Vector3f>> path_vec; // 初始是start和end两个点, 算完是path+一个zero/one表示成功/失败
   path_vec.resize(pair_vector.size());
 
@@ -802,25 +852,6 @@ void TopoGraph::getRegionsToUpdate() {
   for (auto &region : region_set) {
     toponodes_update_region_arr_.push_back(region);
   }
-  auto shorten_by_distance_insert_update_arr = [&](vector<RegionNode::Ptr> &arr) {
-    std::sort(arr.begin(), arr.end(), [this](const RegionNode::Ptr &region1, const RegionNode::Ptr &region2) {
-      Eigen::Vector3f lb1, hb1, lb2, hb2;
-      index2boundary(region1->region_idx_, lb1, hb1);
-      index2boundary(region2->region_idx_, lb2, hb2);
-      Eigen::Vector3f diff1 = ((hb1 + lb1) * 0.5 - lidar_map_interface_->ld_->lidar_pose_);
-      Eigen::Vector3f diff2 = ((hb2 + lb2) * 0.5 - lidar_map_interface_->ld_->lidar_pose_);
-      double dist1 = diff1.norm();
-      double dist2 = diff2.norm();
-      return dist1 < dist2;
-    });
-    arr.resize(std::min(arr.size(), static_cast<size_t>(std::max(1, max_update_region_num_))));
-
-    // 去重
-    unordered_set<RegionNode::Ptr> region2update(arr.begin(), arr.end());
-    arr = vector<RegionNode::Ptr>(region2update.begin(), region2update.end());
-  };
-  // shorten_by_distance_insert_update_arr(toponodes_update_region_arr_);
-
   // 向四周发射射线，超过当前单位球大概一格子的范围
   double step_size = min(init_region_size_x_, init_region_size_y_);
   step_size = min(step_size, init_region_size_z_);
@@ -844,14 +875,22 @@ void TopoGraph::getRegionsToUpdate() {
     }
   }
 
-  if (lidar_map_interface_->targetNavigation()) {
-    toponodes_update_region_arr_.assign(region_set.begin(), region_set.end());
-  } else {
-    // Keep coverage update ordering/budget behavior unchanged.
-    for (auto &region : region_set) toponodes_update_region_arr_.push_back(region);
+  // Deduplicate before charging the budget. Coverage used to append the
+  // hit regions twice, truncate, then deduplicate, silently wasting slots.
+  toponodes_update_region_arr_.assign(region_set.begin(), region_set.end());
+  using RegionBudget = fast_planner::TopologyUpdateBudget<std::array<int, 3>>;
+  std::vector<RegionBudget::Candidate> work;
+  for (const auto &region : toponodes_update_region_arr_) {
+    Eigen::Vector3f low, high;
+    index2boundary(region->region_idx_, low, high);
+    const auto &idx = region->region_idx_;
+    work.push_back({{idx.x(), idx.y(), idx.z()},
+        ((low + high) * 0.5f - lidar_map_interface_->ld_->lidar_pose_).squaredNorm()});
   }
-
-  shorten_by_distance_insert_update_arr(toponodes_update_region_arr_);
+  vector<RegionNode::Ptr> selected;
+  for (const auto index : region_budget_.select(work, max_update_region_num_))
+    selected.push_back(toponodes_update_region_arr_[index]);
+  toponodes_update_region_arr_.swap(selected);
   for (auto &region : toponodes_update_region_arr_) {
     update_idx_vec_.push_back(region->region_idx_);
   }

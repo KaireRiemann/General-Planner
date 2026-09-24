@@ -13,6 +13,7 @@
 namespace fast_planner {
 
 class CoverageGuidanceManager {
+  friend struct ExplorationTourTestAccess;
 public:
   using Ptr = std::shared_ptr<CoverageGuidanceManager>;
 
@@ -23,6 +24,9 @@ public:
   bool enabled() const;
   bool affectsPlanning() const;
   bool fullMode() const;
+  // "tour" mode: no per-cycle candidate bias (like shadow) but the coverage
+  // safety net (unknown-approach recovery + finish guard) stays active.
+  bool safetyNetEnabled() const;
   bool finishGuardEnabled() const;
   const std::string &modeName() const;
   const CoverageMapSpec &mapSpec() const;

@@ -139,7 +139,7 @@ struct ExplorationParam {
   double goal_lock_match_radius_;
   double goal_reached_radius_;
   bool original_frontend_compatibility_;
-  bool epic_simple_global_cost_;
+  bool viewpoint_score_enable_;
   bool composite_candidate_cost_enable_;
   double candidate_travel_weight_;
   double candidate_turn_brake_weight_;
@@ -201,6 +201,14 @@ struct ExplorationParam {
   // oldest cooled bridge (never unlock the whole set at once).
   double target_empty_pool_escape_wait_{2.5};
   int target_empty_pool_unlock_count_{1};
+  // Coverage mode gets the same escape hatch, but waits longer so the
+  // coverage-recovery phase (unknown-approach targets) is tried first.
+  double coverage_empty_pool_escape_wait_{5.0};
+  int coverage_empty_pool_unlock_count_{1};
+  // Cooldown cap for pre-optimization path-gate (SPATIAL) rejections.  These
+  // are marginal clearance failures, not exhausted goals; the full
+  // failed_goal_cooldown empties the executable pool for 30 s.
+  double spatial_failure_cooldown_{3.0};
   // Detours weaker than this progress (metres toward the mission) are never
   // committed.  Prevents large backward flights when the forward map is thin.
   double target_escape_min_progress_{-1.0};

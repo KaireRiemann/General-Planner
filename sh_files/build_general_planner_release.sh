@@ -314,6 +314,10 @@ echo "[build_release] Sync exploration and target-navigation configs"
 mkdir -p "${RELEASE_CONFIG_DIR}"
 cp "${EXPLORATION_CONFIG_SRC}" "${RELEASE_CONFIG_DIR}/exploration.yaml"
 cp "${EXPLORATION_HOUSE_CONFIG_SRC}" "${RELEASE_CONFIG_DIR}/exploration_house.yaml"
+cp "${PLANNER_CONFIG_DIR}/exploration_unity_overlay.yaml" "${RELEASE_CONFIG_DIR}/exploration_unity_overlay.yaml"
+cp "${PLANNER_CONFIG_DIR}/exploration_indoor_frontier.yaml" "${RELEASE_CONFIG_DIR}/exploration_indoor_frontier.yaml"
+cp "${PLANNER_CONFIG_DIR}/exploration_unity_neighborhood.yaml" "${RELEASE_CONFIG_DIR}/exploration_unity_neighborhood.yaml"
+cp "${PLANNER_CONFIG_DIR}/exploration_unity_neighborhood_rog_map.yaml" "${RELEASE_CONFIG_DIR}/exploration_unity_neighborhood_rog_map.yaml"
 cp "${TARGET_EXPLORATION_CONFIG_SRC}" \
   "${RELEASE_CONFIG_DIR}/target_exploration.yaml"
 cp "${EXPLORATION_FOREST_OVERLAY_CONFIG_SRC}" \

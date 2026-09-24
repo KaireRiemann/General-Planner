@@ -1154,6 +1154,8 @@ void GcopterConfig::init(const ros::NodeHandle &nh_priv)
   nh_priv.param("TurnHardVelocity", turnHardVelocity, turnHardVelocity);
   nh_priv.param("ReorientationHeadingAngle", reorientationHeadingAngle,
                 reorientationHeadingAngle);
+  nh_priv.param("ReorientationMinSpeed", reorientationMinSpeed,
+                reorientationMinSpeed);
   turnLateralAcceleration = std::max(0.5, turnLateralAcceleration);
   turnSoftAngle = std::clamp(turnSoftAngle, 0.05, M_PI - 0.10);
   turnHardAngle = std::clamp(turnHardAngle, turnSoftAngle + 0.05, M_PI);
@@ -1162,6 +1164,8 @@ void GcopterConfig::init(const ros::NodeHandle &nh_priv)
                                 turnSoftVelocity);
   reorientationHeadingAngle =
       std::clamp(reorientationHeadingAngle, turnHardAngle, M_PI);
+  reorientationMinSpeed =
+      std::clamp(reorientationMinSpeed, 0.0, maxVelMag);
   nh_priv.param("NonstopTerminalVelocityEnable", nonstopTerminalVelocityEnable, nonstopTerminalVelocityEnable);
   nh_priv.param("NonstopTerminalVelocityRatio", nonstopTerminalVelocityRatio, nonstopTerminalVelocityRatio);
   nh_priv.param("NonstopTerminalMinPathLength", nonstopTerminalMinPathLength, nonstopTerminalMinPathLength);

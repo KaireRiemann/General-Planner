@@ -41,10 +41,12 @@ coverage_motion/caution_timeout: 20.0
 # and, when the executable frontier pool is empty, contributes a bounded number of
 # known-free observation candidates to the same topology/cost pipeline.
 # Corridor/MINCO/backup/traj_server remain unchanged.
-# Modes: off (legacy), shadow (compute/log only), soft (cost bias), full
-# (coverage order + finish guard). Any missing/stale result falls back to the
-# legacy frontier objective automatically.
-coverage_guidance/mode: full
+# Modes: off disables guidance; shadow computes diagnostics only; tour uses
+# the open LKH order with recovery and finish checks; soft/full additionally
+# enable candidate rewards and preferred-cluster injection. Only full/tour
+# contribute recovery goals and gate completion. Structural coverage_route
+# remains an explicit, separate experiment.
+coverage_guidance/mode: tour
 coverage_guidance/voxel_resolution: 0.60
 # Keep the two 3 m-tall floors in separate coverage cells.  The previous
 # 4.8 m cell could merge lower- and upper-floor unknown space and weaken the
@@ -73,9 +75,9 @@ coverage_guidance/recovery_target_cooldown: 45.0
 coverage_guidance/recovery_target_timeout: 25.0
 coverage_guidance/recovery_target_match_radius: 1.8
 coverage_guidance/recovery_reached_radius: 1.0
-# FINISH requires all three conditions: stable frontend NO_FRONTIER (FSM
-# debounce below), no meaningful persistent-map growth for this duration, and
-# every currently actionable observation target permanently exhausted.
+# FINISH requires a full frontier audit, stable NO_FRONTIER, a coverage
+# plateau and no active recovery action. Unknown volume and exhaustion counts
+# are diagnostics; wall interiors do not require repeated observation attempts.
 coverage_guidance/finish_plateau_duration: 20.0
 coverage_guidance/finish_min_progress_voxels: 12
 # fy_node blacklists an unreachable frontier; use the same convergence idea
@@ -105,7 +107,8 @@ coverage_guidance/executable_candidate_max_speed: 0.50
 # moving. Reversal candidates remain protected by the existing heading gate
 # and controlled REORIENT state, so a normal same-direction handoff no longer
 # waits for the terminal-stop endpoint.
-coverage_guidance/moving_handoff_enable: true
+# recovery-only：恢复目标只在动作边界（低速）选择，不在 committed 轨迹飞行中切换
+coverage_guidance/moving_handoff_enable: false
 # Preserve the persistent CP ordering inside the bounded execution shortlist.
 coverage_guidance/route_rank_weight: 0.15
 # House-specific two-floor phase: once normal frontiers are empty, drain
@@ -121,7 +124,7 @@ coverage_guidance/executable_candidate_bonus: 3.0
 global_planning/w_firstnode: 0.2
 # Composite next-frontier objective.  All cost-like terms are positive and all
 # exploration rewards are subtracted in FastExplorationManager.
-global_planning/epic_simple_cost: false
+viewpoint_score/enable: true
 global_planning/composite_candidate_cost_enable: true
 global_planning/candidate_travel_weight: 1.0
 global_planning/candidate_turn_brake_weight: 1.0
@@ -129,7 +132,7 @@ global_planning/candidate_future_return_weight: 0.55
 global_planning/candidate_information_gain_weight: 2.0
 global_planning/candidate_wait_weight: 1.5
 global_planning/candidate_debt_weight: 2.5
-global_planning/failed_goal_cooldown: 30.0
+global_planning/failed_goal_cooldown: 5.0
 global_planning/failed_goal_penalty: 2000.0
 # A locally valid trajectory is not necessarily exploration progress. If the
 # same ordinary frontier is selected for 12 s without reducing either topology
@@ -177,13 +180,18 @@ bubble_topo/odom_node_distance: 2.5
 bubble_topo/odom_connection_candidate_max: 64
 bubble_topo/odom_direct_connection_target: 8
 bubble_topo/odom_astar_fallback_max: 12
+# Per-update A* candidate-edge test budget in updateRemainedConnections.
+bubble_topo/edge_test_budget: 48
 # ParallelBubbleAstar internally adds another 0.1 m clearance.  Keeping this at
 # the 0.45 m hard vehicle radius gives an effective 0.55 m planning clearance
 # without declaring a 1.2 m doorway geometrically closed.
 bubble_astar/resolution_astar: 0.25
 bubble_astar/safe_distance: 0.45
 # map param
-max_update_region_num: 99999999
+# Budget of skeleton regions rebuilt per map revision (4x4x2 m each, nearby
+# plus oldest pending). Uncapped values let updateSkeleton() exceed 1.5 s on the planning
+# thread; the code clamps this to [4, 64].
+max_update_region_num: 32
 frontier/candidate_dphi: 0.26
 frontier/candidate_znum: 3
 lidar_perception/fov_up: 52.0
@@ -192,8 +200,8 @@ lidar_perception/lidar_pitch: 40.0
 lidar_perception/fov_viewpoint_up: 48.0
 lidar_perception/fov_viewpoint_down: -5.0
 lidar_perception/max_ray_length: 36
-parallel_astar/update_connection_timeout: 0.020
-parallel_astar/insert_node_timeout: 0.020
+parallel_astar/update_connection_timeout: 0.010
+parallel_astar/insert_node_timeout: 0.010
 FrontierManager/cell_size: 0.6
 FrontierManager/noise_cell_range: 1
 FrontierManager/good_observation_direction_score: 0.65
@@ -201,8 +209,8 @@ FrontierManager/good_observation_force_trust_length: 7.0
 FrontierManager/good_observation_trust_length: 28.0
 FrontierManager/update_length: 36.0 # 大空旷场景扩大更新半径，frontier/viewpoint 更远
 FrontierManager/cluster_max_size: 14.0
-FrontierManager/cluster_min_size: 4.0
-FrontierManager/cluster_min_radius: 2.0 # DBSCAN 判断邻居的阈值
+FrontierManager/cluster_min_size: 0.8 # 对齐 epicon house：保留门洞级小 cluster
+FrontierManager/cluster_min_radius: 1.0 # DBSCAN 判断邻居的阈值（与 min_size 0.8 配对）
 FrontierManager/cluster_direction_radius: 0.0 # cos(theta) > cluster_direction_radius
 FrontierManager/cluster_minmum_point_num: 10
 FrontierManager/cluster_min_observation_frames: 2
@@ -390,6 +398,10 @@ TurnHardAngle: 1.05
 TurnSoftVelocity: 7.0
 TurnHardVelocity: 2.0
 ReorientationHeadingAngle: 1.75
+# Below this speed a heading reversal is planned directly by the optimizer
+# instead of braking to a full stop first (hook radius fits the clearance
+# bubble). Above it the certified controlled-stop REORIENT is kept.
+ReorientationMinSpeed: 1.5
 # Only receding-horizon prefixes use a non-zero terminal velocity. True
 # observation goals, reversal prefixes, unknown tails, and paths without a
 # verified braking backup still end at rest.

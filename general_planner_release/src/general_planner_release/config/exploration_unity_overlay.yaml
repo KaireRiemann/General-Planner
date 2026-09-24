@@ -34,27 +34,29 @@ lidar_perception/max_ray_length: 60.0
 # overlapping boxes keep 1F and 2F connected through the stair well.
 # These keys override exploration_house.yaml villa boxes; they do not change
 # ROG or global topology.
-box_num: 2
-box_0/down: [27.0, -17.0, -0.2]
-box_0/up:   [41.0,  15.0,  3.8]
-box_1/down: [27.0, -17.0,  2.8]
-box_1/up:   [41.0,  15.0,  6.4]
+# box_num: 2
+# box_0/down: [27.0, -17.0, -0.2]
+# box_0/up:   [41.0,  15.0,  3.8]
+# box_1/down: [27.0, -17.0,  2.8]
+# box_1/up:   [41.0,  15.0,  6.4]
+
+# EPICON-style 20x20 m test box centered at the Unity spawn (0, 0, ~1.5).
+# Single continuous volume; z up to 8.0 covers the two-story roof.
+box_num: 1
+box_0/down: [-10.0, -10.0, -0.2]
+box_0/up:   [10.0,  10.0,  8.0]
 dead_area_num: 0
 
 # 2nd-floor slabs sit at z=3.50; villa 3.80 would treat them as still "lower".
 coverage_guidance/floor_priority_enable: true
 coverage_guidance/floor_priority_min_z: 3.20
 
-# Indoor coverage granularity. The installed release binary reads these
-# FrontierManager / ViewpointManager / HardGate keys at boot and does not
-# apply indoor_frontier/* hot-switch. Overlay loads after house.yaml, so
-# this Unity session uses the indoor lattice. house.yaml outdoor defaults
-# (4.0 / HardGate 1.0) stay unchanged for non-Unity launches. Shared ROG
-# occupancy / z-window are not touched; only bubble clearance for the
-# ~1.0 m Neighborhood exterior door is narrowed below.
+# Boot-time frontier keys match exploration_indoor_frontier.yaml, which is
+# applied again when the runtime enters coverage mode. The local bubble
+# clearance below remains separate from the shared ROG occupancy margin.
 FrontierManager/update_length: 22.0
-FrontierManager/cluster_min_size: 2.0
-FrontierManager/cluster_min_radius: 1.2
+FrontierManager/cluster_min_size: 0.8
+FrontierManager/cluster_min_radius: 1.0
 FrontierManager/cluster_max_size: 8.0
 FrontierManager/cluster_minmum_point_num: 6
 FrontierManager/cluster_match_radius: 1.8

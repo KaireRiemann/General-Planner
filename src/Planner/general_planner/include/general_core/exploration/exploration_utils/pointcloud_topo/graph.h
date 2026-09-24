@@ -8,6 +8,8 @@
  */
 
 #pragma once
+#include <array>
+#include <general_core/exploration/exploration_utils/pointcloud_topo/topology_update_budget.h>
 #include <Eigen/Eigen>
 #include <geometry_msgs/Point.h>
 #include <omp.h>
@@ -290,6 +292,15 @@ private:
   int odom_connection_candidate_max_{64};
   int odom_direct_connection_target_{8};
   int odom_astar_fallback_max_{12};
+  // Per-update budget of A* candidate-edge tests in updateRemainedConnections.
+  // Each test is a timeout-bounded bubble A* search; an uncapped candidate set
+  // made skeleton refreshes exceed 1.5 s on the planning thread. Untested
+  // candidates are re-collected on the next update.
+  int edge_test_budget_{48};
+  fast_planner::TopologyUpdateBudget<std::array<int, 3>> region_budget_;
+  fast_planner::TopologyUpdateBudget<std::array<int, 6>> connection_budget_;
+  fast_planner::TopologyUpdateBudget<std::array<int, 6>> insertion_budget_;
+  fast_planner::TopologyUpdateBudget<std::array<int, 6>> viewpoint_budget_;
   bool hasOverlapWithBox(const Eigen::Vector3f &low_bd, const Eigen::Vector3f &high_bd);
 
   void generateBubble(const Eigen::Vector3f &low_bd, const Eigen::Vector3f &high_bd, vector<BubbleNode::Ptr> &bubble_node_vec,

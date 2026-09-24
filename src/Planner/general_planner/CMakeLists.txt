@@ -151,6 +151,7 @@ target_link_libraries(general_planner_exploration_utils PUBLIC
 add_library(general_planner_exploration STATIC
         ${GENERAL_PLANNER_EXPLORATION_DIR}/coverage_local_route.cpp
         ${GENERAL_PLANNER_EXPLORATION_DIR}/fast_exploration_manager.cpp
+        ${GENERAL_PLANNER_EXPLORATION_DIR}/exploration_tour.cpp
         ${GENERAL_PLANNER_EXPLORATION_DIR}/target_topology_guidance.cpp
         ${GENERAL_PLANNER_EXPLORATION_DIR}/target_route_runtime.cpp
         ${GENERAL_PLANNER_EXPLORATION_DIR}/general_planner_adapter.cpp
@@ -320,6 +321,15 @@ target_include_directories(coverage_recovery_identity_self_test PRIVATE include)
 
 add_executable(coverage_motion_policy_self_test tests/coverage_motion_policy_self_test.cpp)
 add_executable(coverage_route_policy_self_test tests/coverage_route_policy_self_test.cpp)
+add_executable(topology_update_budget_self_test tests/topology_update_budget_self_test.cpp)
+target_include_directories(topology_update_budget_self_test PRIVATE include)
+add_executable(exploration_tour_self_test tests/exploration_tour_self_test.cpp)
+add_dependencies(exploration_tour_self_test ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
+target_link_libraries(exploration_tour_self_test general_planner_exploration ${THIRD_PARTY})
+if(CATKIN_ENABLE_TESTING)
+  add_test(NAME topology_update_budget_self_test COMMAND topology_update_budget_self_test)
+  add_test(NAME exploration_tour_self_test COMMAND exploration_tour_self_test)
+endif()
 target_include_directories(coverage_route_policy_self_test PRIVATE include)
 if(CATKIN_ENABLE_TESTING)
   add_test(NAME coverage_route_policy_self_test COMMAND coverage_route_policy_self_test)

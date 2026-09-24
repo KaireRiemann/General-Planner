@@ -45,6 +45,7 @@ struct SwarmCandidate {
 // and RACER's explicit task ownership.  It is a strict no-op when disabled;
 // the existing single-UAV exploration pipeline never depends on this class.
 class SwarmExplorationCoordinator {
+  friend struct ExplorationTourTestAccess;
 public:
   using Ptr = std::shared_ptr<SwarmExplorationCoordinator>;
 

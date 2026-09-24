@@ -1094,9 +1094,29 @@ void FastExplorationFSM::updateTopoAndGlobalPath() {
   const bool map_revision_changed =
       !topology_revision_applied_ ||
       topology_applied_revision_ != topology_map_revision_;
-  if (map_revision_changed) {
+  // A stationary robot still receives slightly different point clouds and
+  // therefore new map revisions. Rebuilding the bubble skeleton on every
+  // revision is wasted work when nothing relevant changed: gate the rebuild
+  // on motion, with a watchdog so genuine map changes never go stale. The
+  // revision stays unapplied while skipped, so the next due update rebuilds.
+  const double skeleton_motion =
+      skeleton_update_initialized_
+          ? (fd_->odom_pos_ - last_skeleton_update_pos_).norm()
+          : std::numeric_limits<double>::infinity();
+  const double skeleton_age =
+      skeleton_update_initialized_
+          ? (t2 - last_skeleton_update_time_).toSec()
+          : std::numeric_limits<double>::infinity();
+  const bool skeleton_update_due =
+      map_revision_changed &&
+      (!skeleton_update_initialized_ || skeleton_motion >= 0.30 ||
+       skeleton_age >= 2.0);
+  if (skeleton_update_due) {
     planner_manager_->topo_graph_->getRegionsToUpdate();
     planner_manager_->topo_graph_->updateSkeleton();
+    last_skeleton_update_time_ = t2;
+    last_skeleton_update_pos_ = fd_->odom_pos_;
+    skeleton_update_initialized_ = true;
   }
   ros::Time t3 = ros::Time::now();
   planner_manager_->topo_graph_->updateOdomNode(fd_->odom_pos_, fd_->odom_yaw_);
@@ -1125,7 +1145,7 @@ void FastExplorationFSM::updateTopoAndGlobalPath() {
     last_historical_topology_update_pos_ = fd_->odom_pos_;
     historical_topology_update_initialized_ = true;
   }
-  if (map_revision_changed) {
+  if (skeleton_update_due) {
     topology_applied_revision_ = topology_map_revision_;
     topology_revision_applied_ = true;
   }
@@ -1213,7 +1233,7 @@ void FastExplorationFSM::updateTopoAndGlobalPath() {
   ROS_INFO("[topology update] map_revision=%lu rebuilt=%d history_due=%d "
            "skeleton=%0.3fms odom=%0.3fms history=%0.3fms",
            static_cast<unsigned long>(topology_map_revision_),
-           map_revision_changed,
+           skeleton_update_due,
            historical_update_due,
            (t3 - t2).toSec() * 1000.0,
            (t4 - t3).toSec() * 1000.0,

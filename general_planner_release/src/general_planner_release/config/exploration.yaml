@@ -44,10 +44,12 @@ fsm/target_goal_start_on_receive: false
 # Persistent long-horizon coverage guidance. Target-directed missions ignore
 # this worker; it is used only when exploration/mission_mode=coverage.
 # Corridor/MINCO/backup/traj_server remain unchanged.
-# Modes: off (legacy), shadow (compute/log only), soft (cost bias), full
-# (coverage order + finish guard). Any missing/stale result falls back to the
-# legacy frontier objective automatically.
-coverage_guidance/mode: full
+# Modes: off disables guidance; shadow computes diagnostics only; tour uses
+# the open LKH order with recovery and finish checks; soft/full additionally
+# enable candidate rewards and preferred-cluster injection. Only full/tour
+# contribute recovery goals and gate completion. Structural coverage_route
+# remains an explicit, separate experiment.
+coverage_guidance/mode: tour
 coverage_guidance/voxel_resolution: 0.60
 coverage_guidance/fine_cell_size: 4.8
 coverage_guidance/macro_cell_size: 14.4
@@ -69,7 +71,7 @@ coverage_guidance/visualization_enable: true
 global_planning/w_firstnode: 0.2
 # Composite next-frontier objective.  All cost-like terms are positive and all
 # exploration rewards are subtracted in FastExplorationManager.
-global_planning/epic_simple_cost: false
+viewpoint_score/enable: true
 global_planning/composite_candidate_cost_enable: true
 global_planning/candidate_travel_weight: 1.0
 global_planning/candidate_turn_brake_weight: 1.0
@@ -107,7 +109,10 @@ bubble_topo/cube_discrete_size: 0.5
 bubble_topo/odom_node_distance: 5.0
 bubble_astar/safe_distance: 0.7
 # map param
-max_update_region_num: 99999999
+# Budget of skeleton regions rebuilt per map revision (nearby plus oldest pending). The
+# code clamps this to [4, 64]; uncapped values make updateSkeleton() exceed
+# 1.5 s on the planning thread as the map grows.
+max_update_region_num: 32
 frontier/candidate_dphi: 0.26
 frontier/candidate_znum: 3
 lidar_perception/fov_up: 52.0

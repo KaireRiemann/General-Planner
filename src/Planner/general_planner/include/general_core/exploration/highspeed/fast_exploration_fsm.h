@@ -99,6 +99,9 @@ private:
   Eigen::Vector3f last_historical_topology_update_pos_{
       Eigen::Vector3f::Zero()};
   bool historical_topology_update_initialized_{false};
+  ros::Time last_skeleton_update_time_;
+  Eigen::Vector3f last_skeleton_update_pos_{Eigen::Vector3f::Zero()};
+  bool skeleton_update_initialized_{false};
   std::uint64_t topology_map_revision_{0};
   std::uint64_t topology_applied_revision_{0};
   bool topology_revision_applied_{false};

@@ -1,0 +1,58 @@
+# Unity Neighborhood: 20 x 20 m coverage trial around the street spawn.
+# Select with exploration_overlay_config; shared occupancy margins are kept.
+odometry_topic: /lidar_slam/odom
+cloud_topic: /cloud_registered
+fsm/cloud_odom_mode: latest_odom
+fsm/latest_odom_timeout: 0.5
+lidar_perception/fov_up: 30.0
+lidar_perception/fov_down: -30.0
+lidar_perception/lidar_pitch: 0.0
+lidar_perception/fov_viewpoint_up: 28.0
+lidar_perception/fov_viewpoint_down: -28.0
+lidar_perception/max_ray_length: 30.0
+
+# Stay below the shared ROG virtual ceiling (6.4 m), with endpoint clearance.
+box_num: 1
+box_0/down: [-10.0, -10.0, -0.2]
+box_0/up: [10.0, 10.0, 6.0]
+dead_area_num: 0
+coverage_guidance/floor_priority_enable: false
+coverage_guidance/moving_handoff_enable: false
+coverage_route/enabled: false
+
+FrontierManager/update_length: 22.0
+FrontierManager/cluster_min_size: 0.8
+FrontierManager/cluster_min_radius: 1.0
+FrontierManager/cluster_max_size: 8.0
+FrontierManager/cluster_minmum_point_num: 6
+FrontierManager/cluster_match_radius: 1.8
+ViewpointManager/sample_pillar_min_height: -0.6
+ViewpointManager/sample_pillar_max_height: 2.4
+ViewpointManager/sample_pillar_min_radius: 0.8
+ViewpointManager/sample_pillar_max_radius: 3.5
+ViewpointManager/consider_range: 16
+ViewpointManager/global_recluster_size: 22
+ViewScoreHardGateMinKnownFreeRatio: 0.80
+ViewScoreHardGateMinClearance: 0.30
+bubble_astar/safe_distance: 0.28
+bubble_topo/bubble_min_radius: 0.32
+bubble_topo/frontier_bubble_min_radius: 0.32
+DilateRadiusSoft: 0.50
+DilateRadiusHard: 0.35
+CorridorRobotRadius: 0.35
+
+# Modest speed while validating the live sensor/command loop among trees.
+MaxVelMag: 2.0
+MaxAccMag: 3.0
+DynamicVelocityEnable: true
+MinSegmentVel: 0.8
+TrajectoryRetryMinVel: 0.5
+OpenSegmentVel: 2.0
+TurnLateralAcceleration: 1.5
+TurnSoftVelocity: 1.6
+TurnHardVelocity: 0.8
+BackupMaxVel: 2.0
+BackupMaxAcc: 3.0
+yaw_max_vel: 1.2
+coverage_guidance/recovery_max_failure_attempts: 4
+coverage_guidance/recovery_max_no_gain_attempts: 2

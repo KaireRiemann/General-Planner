@@ -116,6 +116,10 @@ struct GcopterConfig
   double turnSoftVelocity{7.0};
   double turnHardVelocity{3.5};
   double reorientationHeadingAngle{1.75};
+  // Below this speed a heading reversal is handed to the trajectory optimizer
+  // directly instead of braking first: the hook radius v^2/a_lat stays inside
+  // the certified clearance bubble, so a full controlled stop is wasted time.
+  double reorientationMinSpeed{1.5};
   bool nonstopTerminalVelocityEnable{false};
   double nonstopTerminalVelocityRatio{0.65};
   double nonstopTerminalMinPathLength{8.0};

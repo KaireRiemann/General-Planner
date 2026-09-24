@@ -78,6 +78,7 @@ struct CoverageFinishStatus {
 
 class FastExplorationManager {
   friend struct CoverageRecoveryTestAccess;
+  friend struct ExplorationTourTestAccess;
 public:
   typedef shared_ptr<FastExplorationManager> Ptr;
   FastExplorationManager();
@@ -197,6 +198,10 @@ private:
     int cluster_id{-1};
     Eigen::Vector3f position{Eigen::Vector3f::Zero()};
     ros::Time until;
+    // Consecutive failures while this entry stays active; drives cooldown
+    // escalation so a permanently infeasible goal converges to the full
+    // failed_goal_cooldown instead of live-locking the executable pool.
+    int fail_count{0};
   };
 
   struct LocalPreflightFailure {
@@ -294,6 +299,8 @@ private:
   ros::Time mission_goal_direct_retry_after_;
   ros::Time target_empty_pool_since_;
   ros::Time last_target_pool_unlock_time_;
+  ros::Time coverage_empty_pool_since_;
+  ros::Time last_coverage_pool_unlock_time_;
   ros::Time target_no_progress_since_;
   std::string target_no_progress_reason_;
   double coverage_executable_candidate_max_speed_{0.50};
@@ -317,6 +324,16 @@ private:
   double frontier_progress_min_distance_drop_{0.75};
 
   double failedGoalPenalty(const TopoNode::Ptr &viewpoint) const;
+  vector<double> scoreExplorationCandidates(
+      const vector<TopoNode::Ptr> &candidates, const vector<double> &departure,
+      const vector<EdgeSafetyCost> &edges, const Eigen::MatrixXd &path_costs,
+      bool priority_floor_active, bool ascending_to_priority_floor,
+      int first_priority_floor_rank);
+  int selectExplorationTour(
+      const vector<TopoNode::Ptr> &candidates, const vector<EdgeSafetyCost> &edges,
+      const Eigen::MatrixXd &path_costs, const Eigen::Vector3d &velocity,
+      bool priority_floor_active, bool ascending_to_priority_floor,
+      int first_priority_floor_rank, vector<int> &indices);
   void applyViewScoreHardGate(bool indoor);
   TargetDirectedExplorationConfig targetGuidanceConfig() const;
   TargetTopologyGuidanceConfig targetTopologyGuidanceConfig() const;
