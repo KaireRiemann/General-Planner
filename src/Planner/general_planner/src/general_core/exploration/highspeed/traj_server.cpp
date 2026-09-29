@@ -1,6 +1,9 @@
 #include <data_structure/base/trajectory.h>
 #include <nav_msgs/Odometry.h>
 #include <quadrotor_msgs/PositionCommand.h>
+#include <general_planner/ExplorationTrajectory.h>
+#include <general_planner/ExplorationTaskRequest.h>
+#include <general_planner/PlannerPositionCommand.h>
 #include <ros/ros.h>
 #include <std_msgs/Bool.h>
 #include <std_msgs/Empty.h>
@@ -17,6 +20,12 @@
 namespace
 {
 ros::Publisher pos_cmd_pub;
+ros::Publisher bound_cmd_pub;
+bool require_task_binding = false;
+std::uint64_t active_task_epoch = 0;
+std::string active_task_id;
+bool trajectory_task_bound = false;
+general_planner::ExplorationTrajectoryConstPtr pending_bound_trajectory;
 ros::Publisher cmd_vis_pub;
 ros::Publisher traj_pub;
 std::shared_ptr<geometry_utils::Trajectory> traj;
@@ -72,6 +81,8 @@ void heartbeatCallback(const std_msgs::EmptyConstPtr &)
   heartbeat_time = ros::Time::now();
 }
 
+void boundTrajectoryCallback(const general_planner::ExplorationTrajectoryConstPtr &msg);
+
 void executionEnabledCallback(const std_msgs::BoolConstPtr &msg)
 {
   if (!msg)
@@ -87,6 +98,7 @@ void executionEnabledCallback(const std_msgs::BoolConstPtr &msg)
     // until the next PolyTraj arrives, which can command the previous target
     // for one or more cycles.
     receive_traj = false;
+    trajectory_task_bound = false;
     traj.reset();
     yaw_traj.reset();
     traj_duration = 0.0;
@@ -102,6 +114,10 @@ void executionEnabledCallback(const std_msgs::BoolConstPtr &msg)
   else if (!was_enabled && execution_enabled)
   {
     ROS_INFO("[highspeed_traj_server] exploration command output enabled");
+    if (require_task_binding && pending_bound_trajectory) {
+      const auto candidate = pending_bound_trajectory;
+      boundTrajectoryCallback(candidate);
+    }
   }
 }
 
@@ -228,6 +244,65 @@ void polyYawTrajCallback(const traj_utils::PolyTrajConstPtr &msg)
   yaw_hold_active = false;
 }
 
+void boundTrajectoryCallback(const general_planner::ExplorationTrajectoryConstPtr &msg) {
+  if (!msg) return;
+  if (msg->task_epoch != active_task_epoch || msg->task_id != active_task_id || active_task_id.empty()) {
+    // Independent subscriber connections may deliver the trajectory before
+    // its atomic START. Retain one future candidate, never execute it early.
+    if (msg->task_epoch >= active_task_epoch) pending_bound_trajectory = msg;
+    return;
+  }
+  if (!execution_enabled) {
+    pending_bound_trajectory = msg;
+    return;
+  }
+  if (msg->position.order != 7 || msg->position.duration.empty() ||
+      msg->position.traj_id < traj_id) return;
+  const auto valid = [](const traj_utils::PolyTraj &p, const int order) {
+    if (p.order != order || p.duration.empty() || p.coef_x.size() != p.duration.size() * (order+1) ||
+        p.coef_y.size() != p.coef_x.size() || p.coef_z.size() != p.coef_x.size()) return false;
+    for (auto d : p.duration) if (!std::isfinite(d) || d <= 0) return false;
+    for (const auto *axis : {&p.coef_x, &p.coef_y, &p.coef_z})
+      for (auto c : *axis) if (!std::isfinite(c)) return false;
+    return true;
+  };
+  if (!valid(msg->position, 7)) return;
+  const bool has_yaw = !msg->yaw.duration.empty();
+  if (has_yaw && (msg->yaw.traj_id != msg->position.traj_id ||
+                 msg->yaw.start_time != msg->position.start_time || !valid(msg->yaw, 5))) return;
+  polyTrajCallback(boost::make_shared<traj_utils::PolyTraj>(msg->position));
+  if (!receive_traj || traj_id != msg->position.traj_id) return;
+  yaw_traj.reset();
+  yaw_traj_duration = 0;
+  if (has_yaw) polyYawTrajCallback(boost::make_shared<traj_utils::PolyTraj>(msg->yaw));
+  trajectory_task_bound = true;
+  pending_bound_trajectory.reset();
+}
+
+void taskRequestCallback(const general_planner::ExplorationTaskRequestConstPtr &msg) {
+  if (!msg || !msg->start || msg->task_id.empty() || msg->task_epoch < active_task_epoch) return;
+  if (msg->task_epoch != active_task_epoch || msg->task_id != active_task_id) {
+    active_task_epoch = msg->task_epoch;
+    active_task_id = msg->task_id;
+    receive_traj = false;
+    trajectory_task_bound = false;
+    traj.reset();
+    yaw_traj.reset();
+    // Trajectory ids are local to the planner process. A relaunched adapter
+    // can start again at id 1; task identity, rather than the previous task's
+    // counter, excludes its old queued polynomials.
+    traj_id = 0;
+    min_traj_id_after_disable = 0;
+    waiting_for_fresh_traj = false;
+    traj_duration = yaw_traj_duration = 0;
+    position_hold_active = yaw_hold_active = false;
+  }
+  if (pending_bound_trajectory) {
+    const auto candidate = pending_bound_trajectory;
+    boundTrajectoryCallback(candidate);
+  }
+}
+
 void publishCmd(const Eigen::Vector3d &pos,
                 const Eigen::Vector3d &vel,
                 const Eigen::Vector3d &acc,
@@ -256,6 +331,13 @@ void publishCmd(const Eigen::Vector3d &pos,
   cmd.vel_norm = vel.norm();
   cmd.acc_norm = acc.norm();
   pos_cmd_pub.publish(cmd);
+  if (require_task_binding && trajectory_task_bound) {
+    general_planner::PlannerPositionCommand bound;
+    bound.task_epoch = active_task_epoch;
+    bound.task_id = active_task_id;
+    bound.command = cmd;
+    bound_cmd_pub.publish(bound);
+  }
 }
 
 void cmdTimerCallback(const ros::TimerEvent &)
@@ -411,12 +493,21 @@ int main(int argc, char **argv)
   nh.param<std::string>("pos_cmd_topic", pos_cmd_topic, "/planning/pos_cmd");
   nh.param<std::string>("execution_enabled_topic", execution_enabled_topic,
                         "/planning/exploration/command_enabled");
+  nh.param("require_task_binding", require_task_binding, false);
   nh.param("replan_time", replan_time, 0.1);
   nh.param("heartbeat_timeout", heartbeat_timeout, 1.5);
   heartbeat_timeout = std::max(0.5, heartbeat_timeout);
 
-  ros::Subscriber poly_traj_sub = nh.subscribe("/planning/trajectory", 10, polyTrajCallback);
-  ros::Subscriber poly_yaw_traj_sub = nh.subscribe("/planning/yaw_trajectory", 10, polyYawTrajCallback);
+  ros::Subscriber poly_traj_sub, poly_yaw_traj_sub, bound_traj_sub, task_request_sub;
+  if (require_task_binding) {
+    bound_traj_sub = nh.subscribe("/planning/exploration/trajectory", 10, boundTrajectoryCallback);
+    task_request_sub = nh.subscribe("/planning/exploration/task_request", 10, taskRequestCallback);
+    bound_cmd_pub = nh.advertise<general_planner::PlannerPositionCommand>(
+        "/planning/exploration/command_bound", 10);
+  } else {
+    poly_traj_sub = nh.subscribe("/planning/trajectory", 10, polyTrajCallback);
+    poly_yaw_traj_sub = nh.subscribe("/planning/yaw_trajectory", 10, polyYawTrajCallback);
+  }
   ros::Subscriber heartbeat_sub = nh.subscribe("/planning/heartbeat", 10, heartbeatCallback);
   ros::Subscriber execution_enabled_sub;
   if (!execution_enabled_topic.empty())

@@ -85,6 +85,9 @@ PlannerSupervisor::PlannerSupervisor(ros::NodeHandle &nh,
   nh_.param("max_odom_age", max_odom_age_, 0.20);
   nh_.param("status_rate", status_rate_, 10.0);
   nh_.param("navigation_planning_timeout", planning_timeout_, 5.0);
+  nh_.param("navigation_goal_ack_timeout", navigation_goal_ack_timeout_, 2.0);
+  navigation_goal_ack_timeout_ = std::isfinite(navigation_goal_ack_timeout_)
+      ? std::clamp(navigation_goal_ack_timeout_, 0.5, 10.0) : 2.0;
   nh_.param("exploration_first_command_timeout", exploration_first_command_timeout_, 15.0);
   exploration_first_command_timeout_ = std::isfinite(exploration_first_command_timeout_)
       ? std::clamp(exploration_first_command_timeout_, 2.0, 60.0) : 15.0;
@@ -132,6 +135,10 @@ PlannerSupervisor::PlannerSupervisor(ros::NodeHandle &nh,
       nh_.advertise<std_msgs::String>(navigation_command_topic_, 10, true);
   navigation_task_mode_pub_ =
       nh_.advertise<std_msgs::String>(navigation_task_mode_topic_, 10, true);
+  navigation_goal_request_pub_ = nh_.advertise<general_planner::NavigationGoalRequest>(
+      "/planning/navigation/goal_request", 10);
+  navigation_goal_ack_sub_ = nh_.subscribe("/planning/navigation/goal_ack", 10,
+      &PlannerSupervisor::navigationGoalAckCallback, this);
   navigation_goal_pub_ =
       nh_.advertise<geometry_msgs::PoseStamped>(navigation_goal_out_topic_, 10);
   navigation_goal_3d_pub_ =
@@ -522,6 +529,7 @@ void PlannerSupervisor::activateMode(const PlannerMode mode,
     // freshly dispatched goal.
     navigation_goal_sequence_before_dispatch_ = navigation_goal_sequence_;
     navigation_goal_dispatch_pending_ = false;
+    navigation_accepted_goal_active_ = false;
     status_.phase = PlannerPhase::WAITING_INPUT;
     status_.mode_state = ModeState::S2S_WAIT_GOAL;
     status_.stable_hover = true;
@@ -633,14 +641,15 @@ void PlannerSupervisor::requestExplorationStartLocked(const std::string &reason)
   if (status_.task_id.empty()) {
     status_.task_id = makeTaskId(status_.active_mode);
   }
-  if (isTargetExplorationMode(status_.active_mode) &&
+  if (isExplorationMode(status_.active_mode) &&
       exploration_plan_wait_task_id_ != status_.task_id) {
     exploration_plan_wait_task_id_ = status_.task_id;
     exploration_plan_wait_started_ = ros::WallTime::now();
+    gateway_.prepareExplorationTask(status_.task_epoch, status_.task_id);
     status_.phase = PlannerPhase::WAITING_INPUT;
     status_.ready_for_new_task = false;
     status_.command_owner = CommandOwner::HOLD;
-    authorizeHoldAtCurrentOdomLocked("target exploration waiting for first command");
+    authorizeHoldAtCurrentOdomLocked("exploration waiting for first command");
   }
   exploration_start_pending_ = true;
   last_exploration_start_pub_ = ros::Time::now();
@@ -708,28 +717,18 @@ bool PlannerSupervisor::acceptNavigationGoalLocked(
                     << ")");
     return true;
   }
-  status_.task_result = PlannerTaskResult::NONE;
-  status_.phase = PlannerPhase::PLANNING;
-  status_.ready_for_new_task = false;
-  status_.stable_hover = false;
-  status_.command_owner = CommandOwner::STATE2STATE;
-  status_.reason = preserve_message_height ? "navigation 3d goal accepted"
-                                           : "navigation goal accepted";
-  navigation_goal_sequence_before_dispatch_ =
-      navigation_status_epoch_ == status_.task_epoch
-          ? navigation_goal_sequence_ : 0;
+  // Admission is a distinct transaction. A rejected replacement must not
+  // overwrite the currently accepted goal or its completion sequence.
+  navigation_goal_sequence_before_dispatch_ = navigation_goal_sequence_;
   navigation_goal_dispatch_pending_ = true;
-  gateway_.setAuthorizedOwner(CommandOwner::STATE2STATE, status_.task_epoch);
-  if (preserve_message_height) {
-    navigation_goal_3d_pub_.publish(msg);
-  } else {
-    navigation_goal_pub_.publish(msg);
-  }
-  ROS_INFO_STREAM("[planner_supervisor] navigation "
-                  << (preserve_message_height ? "3d " : "")
-                  << "goal accepted epoch="
-                  << status_.task_epoch << " p=(" << msg.pose.position.x << ","
-                  << msg.pose.position.y << "," << msg.pose.position.z << ")");
+  navigation_request_started_ = ros::WallTime::now();
+  general_planner::NavigationGoalRequest request;
+  request.task_epoch = status_.task_epoch;
+  request.request_id = ++navigation_request_id_;
+  request.goal = msg;
+  request.preserve_message_height = preserve_message_height;
+  navigation_goal_request_pub_.publish(request);
+  status_.reason = "navigation goal awaiting admission";
   return true;
 }
 
@@ -1007,6 +1006,10 @@ void PlannerSupervisor::explorationStatusCallback(
         task_id.c_str(), status_.task_id.c_str(), state.c_str());
     return;
   }
+  if (!task_id.empty() && task_id == terminal_exploration_task_id_ &&
+      terminal_exploration_result_ != PlannerTaskResult::NONE &&
+      state != "SUCCEEDED" && state != "BLOCKED" && state != "FAILED" &&
+      state != "PAUSED" && state != "PAUSING") return;
   exploration_status_ = state;
   exploration_status_task_id_ = task_id;
   if (!task_id.empty() && task_id == failed_exploration_plan_task_id_ &&
@@ -1022,18 +1025,28 @@ void PlannerSupervisor::explorationStatusCallback(
       return;
     }
     status_.mode_state = modeStateFromExplorationString(state);
-    if (state == "WAITING_LOCAL_PLAN" && isTargetExplorationMode(status_.active_mode)) {
+    if (state == "WAITING_LOCAL_PLAN" && exploration_plan_wait_started_.isZero() &&
+        exploration_plan_wait_task_id_ == status_.task_id) return;
+    if (state == "WAITING_LOCAL_PLAN" && isExplorationMode(status_.active_mode)) {
       exploration_start_pending_ = false;  // START acknowledged, no command yet
       status_.phase = PlannerPhase::WAITING_INPUT;
       status_.ready_for_new_task = false;
       status_.stable_hover = hoverConditionMetLocked();
       status_.command_owner = CommandOwner::HOLD;
       gateway_.setAuthorizedOwner(CommandOwner::HOLD, status_.task_epoch);
-      status_.reason = "target exploration waiting for first verified local trajectory";
+      status_.reason = "exploration waiting for first verified local trajectory";
     } else if (state == "RUNNING" || state == "PLAN_TRAJ" || state == "EXEC_TRAJ" ||
         state == "REORIENT" || state == "CAUTION") {
-      exploration_plan_wait_started_ = ros::WallTime();
       exploration_start_pending_ = false;
+      if (!exploration_plan_wait_started_.isZero()) {
+        // Publishing a polynomial does not prove the separate trajectory
+        // server has emitted a command. HOLD remains the sole output owner.
+        status_.phase = PlannerPhase::WAITING_INPUT;
+        status_.ready_for_new_task = false;
+        status_.command_owner = CommandOwner::HOLD;
+        status_.reason = "exploration waiting for first task-bound position command";
+        return;
+      }
       status_.phase = (state == "EXEC_TRAJ" || state == "REORIENT")
                           ? PlannerPhase::EXECUTING
                           : PlannerPhase::PLANNING;
@@ -1121,6 +1134,32 @@ void PlannerSupervisor::explorationStatusCallback(
   }
 }
 
+void PlannerSupervisor::navigationGoalAckCallback(
+    const general_planner::NavigationGoalAckConstPtr &msg) {
+  if (!msg) return;
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (transition_active_ || msg->task_epoch != status_.task_epoch ||
+      msg->request_id != navigation_request_id_ || !navigation_goal_dispatch_pending_) return;
+  navigation_goal_dispatch_pending_ = false;
+  if (msg->result == general_planner::NavigationGoalAck::REJECTED) {
+    status_.reason = "navigation goal rejected: " + msg->reason;
+    ROS_WARN_STREAM("[planner_supervisor] " << status_.reason
+                    << " request=" << msg->request_id);
+    return;
+  }
+  navigation_goal_sequence_ = std::max(navigation_goal_sequence_, msg->goal_sequence);
+  navigation_accepted_goal_sequence_ = msg->goal_sequence;
+  navigation_accepted_goal_active_ = true;
+  status_.task_result = PlannerTaskResult::NONE;
+  status_.phase = msg->result == general_planner::NavigationGoalAck::ALREADY_ACTIVE
+      ? status_.phase : PlannerPhase::PLANNING;
+  status_.ready_for_new_task = false;
+  status_.stable_hover = false;
+  status_.command_owner = CommandOwner::STATE2STATE;
+  gateway_.setAuthorizedOwner(CommandOwner::STATE2STATE, status_.task_epoch);
+  status_.reason = "navigation goal admitted: " + msg->reason;
+}
+
 void PlannerSupervisor::navigationStatusCallback(
     const std_msgs::StringConstPtr &msg) {
   if (!msg) {
@@ -1144,6 +1183,11 @@ void PlannerSupervisor::navigationStatusCallback(
     }
     if (adapter_status.goal_sequence < navigation_goal_sequence_) {
       return;
+    }
+    if (adapter_status.goal_active &&
+        (status_.active_mode == PlannerMode::STATE2STATE || status_.active_mode == PlannerMode::REORIENT)) {
+      navigation_accepted_goal_sequence_ = adapter_status.goal_sequence;
+      navigation_accepted_goal_active_ = true;
     }
     navigation_status_epoch_ = adapter_status.task_epoch;
     navigation_goal_sequence_ = adapter_status.goal_sequence;
@@ -1196,14 +1240,15 @@ void PlannerSupervisor::navigationStatusCallback(
           (status_.active_mode == PlannerMode::STATE2STATE ||
            status_.active_mode == PlannerMode::REORIENT) &&
           adapter_status.has_lifecycle &&
-          navigation_goal_dispatch_pending_ &&
-          adapter_status.goal_sequence >
-              navigation_goal_sequence_before_dispatch_ &&
+          navigation_accepted_goal_active_ &&
+          !navigation_goal_dispatch_pending_ &&
+          adapter_status.goal_sequence >= navigation_accepted_goal_sequence_ &&
           !adapter_status.goal_active;
       if (completed_dispatched_goal) {
         // Reuse the normal transition path so stale commands are cleared and
         // the next navigation task is accepted only after a verified hover.
         navigation_goal_dispatch_pending_ = false;
+        navigation_accepted_goal_active_ = false;
         beginTransition(status_.active_mode,
                         status_.accepted_request_id,
                         "",
@@ -1214,7 +1259,7 @@ void PlannerSupervisor::navigationStatusCallback(
       // The FSM has accepted this goal but is still in the one-tick
       // WAIT_GOAL-to-GENERATE_TRAJ window.  The old implementation mistook
       // this for a terminal wait; do not expose readiness yet.
-      if (navigation_goal_dispatch_pending_) {
+      if (navigation_goal_dispatch_pending_ || adapter_status.goal_active) {
         return;
       }
       // The status and command subscribers use separate callback queues.
@@ -1253,7 +1298,7 @@ void PlannerSupervisor::navigationStatusCallback(
             ? (state == "TRACKING_LOST" ? "tracking target lost; waiting for confirmed reacquisition"
                                         : "tracking waiting for fresh target")
             : "navigation wait goal";
-        status_.task_result = tracking ? PlannerTaskResult::NONE : PlannerTaskResult::SUCCEEDED;
+        if (tracking) status_.task_result = PlannerTaskResult::NONE;
       }
     }
   }
@@ -1376,6 +1421,28 @@ void PlannerSupervisor::odometryCallback(const nav_msgs::OdometryConstPtr &msg) 
     return;
   }
   std::lock_guard<std::mutex> lock(mutex_);
+  const auto &p = msg->pose.pose.position;
+  const auto &q = msg->pose.pose.orientation;
+  const auto &v = msg->twist.twist.linear;
+  if (!std::isfinite(p.x) || !std::isfinite(p.y) || !std::isfinite(p.z) ||
+      !std::isfinite(q.x) || !std::isfinite(q.y) || !std::isfinite(q.z) || !std::isfinite(q.w) ||
+      q.x*q.x + q.y*q.y + q.z*q.z + q.w*q.w < 1.e-6 ||
+      !std::isfinite(v.x) || !std::isfinite(v.y) || !std::isfinite(v.z) ||
+      !std::isfinite(msg->twist.twist.angular.z)) return;
+  const auto now = ros::WallTime::now();
+  const double yaw = yawFromQuaternion(q);
+  const double dx = p.x - hover_reference_pose_.position.x;
+  const double dy = p.y - hover_reference_pose_.position.y;
+  const double dz = p.z - hover_reference_pose_.position.z;
+  const double dyaw = std::atan2(std::sin(yaw-hover_reference_yaw_), std::cos(yaw-hover_reference_yaw_));
+  if (!have_odom_ || (now - last_odom_wall_time_).toSec() > max_odom_age_ ||
+      std::sqrt(dx*dx + dy*dy + dz*dz) > hover_speed_threshold_ * hover_hold_duration_ ||
+      std::abs(dyaw) > hover_yaw_rate_threshold_ * hover_hold_duration_) {
+    hover_reference_pose_ = msg->pose.pose;
+    hover_reference_yaw_ = yaw;
+    hover_pose_stable_since_ = now;
+  }
+  last_odom_wall_time_ = now;
   odom_ = *msg;
   have_odom_ = true;
   last_odom_time_ = ros::Time::now();
@@ -1386,14 +1453,14 @@ void PlannerSupervisor::odometryCallback(const nav_msgs::OdometryConstPtr &msg) 
       static_cast<float>(std::sqrt(vx * vx + vy * vy + vz * vz));
   status_.yaw_rate_rps = static_cast<float>(msg->twist.twist.angular.z);
   status_.odom_valid =
-      (ros::Time::now() - last_odom_time_).toSec() <= max_odom_age_;
+      (ros::WallTime::now() - last_odom_wall_time_).toSec() <= max_odom_age_;
 }
 
 bool PlannerSupervisor::authorizeHoldAtCurrentOdomLocked(
     const std::string &reason) {
   const bool fresh_odom =
-      have_odom_ && !last_odom_time_.isZero() &&
-      (ros::Time::now() - last_odom_time_).toSec() <= max_odom_age_;
+      have_odom_ && !last_odom_wall_time_.isZero() &&
+      (ros::WallTime::now() - last_odom_wall_time_).toSec() <= max_odom_age_;
   if (!fresh_odom) {
     // Do not preserve a hold point from a previous task when the current
     // vehicle pose is unknown.  No position command is safer than a command
@@ -1416,11 +1483,15 @@ bool PlannerSupervisor::hoverConditionMetLocked() const {
   if (!have_odom_) {
     return false;
   }
-  const double odom_age = (ros::Time::now() - last_odom_time_).toSec();
+  const double odom_age = (ros::WallTime::now() - last_odom_wall_time_).toSec();
   if (odom_age > max_odom_age_) {
     return false;
   }
-  return status_.speed_mps <= hover_speed_threshold_ &&
+  // Unity may supply a zero twist while its pose is still moving. Require
+  // measured pose stability as well as the reported velocity before ARM.
+  return !hover_pose_stable_since_.isZero() &&
+         (ros::WallTime::now() - hover_pose_stable_since_).toSec() >= hover_hold_duration_ &&
+         status_.speed_mps <= hover_speed_threshold_ &&
          std::abs(status_.yaw_rate_rps) <= hover_yaw_rate_threshold_;
 }
 
@@ -1671,9 +1742,33 @@ void PlannerSupervisor::timerCallback(const ros::TimerEvent &) {
         status_.stable_hover = false;
       }
     } else {
+      if (navigation_goal_dispatch_pending_ &&
+          (ros::WallTime::now() - navigation_request_started_).toSec() >= navigation_goal_ack_timeout_) {
+        navigation_goal_dispatch_pending_ = false;
+        // An unacknowledged request may have changed the adapter. Cancel it
+        // explicitly before another task can be armed; never assume rejection.
+        beginTransition(status_.active_mode, status_.accepted_request_id,
+                        status_.task_id, "navigation goal admission timeout");
+        status_.task_result = PlannerTaskResult::FAILED;
+        status_.reason = "navigation goal admission timeout; verified hold pending";
+        return;
+      }
       // Independent supervisor queue: also bounds an optimizer which never
       // returns, not just the fast-failure retry loop in the navigation FSM.
-      if (isTargetExplorationMode(status_.active_mode) &&
+      if (isExplorationMode(status_.active_mode) &&
+          !exploration_plan_wait_started_.isZero() &&
+          (exploration_status_ == "RUNNING" || exploration_status_ == "PLAN_TRAJ" ||
+           exploration_status_ == "EXEC_TRAJ" || exploration_status_ == "REORIENT" ||
+           exploration_status_ == "CAUTION") &&
+          exploration_status_task_id_ == status_.task_id &&
+          gateway_.authorizeExplorationIfReady(status_.task_epoch, status_.task_id)) {
+        exploration_plan_wait_started_ = ros::WallTime();
+        status_.phase = PlannerPhase::EXECUTING;
+        status_.command_owner = CommandOwner::EXPLORATION;
+        status_.stable_hover = false;
+        status_.reason = "exploration first task-bound position command received";
+      }
+      if (isExplorationMode(status_.active_mode) &&
           exploration_plan_wait_task_id_ == status_.task_id &&
           !exploration_plan_wait_started_.isZero() &&
           (ros::WallTime::now() - exploration_plan_wait_started_).toSec() >=
@@ -1682,9 +1777,9 @@ void PlannerSupervisor::timerCallback(const ros::TimerEvent &) {
         exploration_plan_wait_started_ = ros::WallTime();
         exploration_start_pending_ = false;
         beginTransition(status_.active_mode, status_.accepted_request_id,
-                        status_.task_id, "target exploration first-command deadline exceeded");
+                        status_.task_id, "exploration first-command deadline exceeded");
         status_.task_result = PlannerTaskResult::FAILED;
-        status_.reason = "target exploration first-command deadline exceeded; verified hold pending";
+        status_.reason = "exploration first-command deadline exceeded; verified hold pending";
         return;
       }
       if (planning_deadline_.expired(

@@ -130,7 +130,7 @@ void FastExplorationFSM::pubState() {
     result << (coverage_result_=="CONVERGED" ? "FINISH / COVERAGE_" : "COVERAGE_") << coverage_result_ << " " << std::fixed << std::setprecision(1)
            << 100.0*coverage_result_ratio_ << "%";
     state_marker.text=result.str();
-    if(usingEpicon()) state_marker.text="EPICON / "+coverage_result_;
+    if(usingEpicon()) state_marker.text="exploration / "+coverage_result_;
   }
   if ((state_ == PLAN_TRAJ || state_ == EXEC_TRAJ) &&
       finish_gate_.no_frontier_count > 0 &&
@@ -1419,6 +1419,7 @@ void FastExplorationFSM::taskRequestCallback(
   if (msg->start && msg->task_id == active_task_id_ && pending_target_task_id_.empty() &&
       fd_->trigger_ && (state_ == INIT || state_ == WAIT_TRIGGER || state_ == PLAN_TRAJ ||
                        state_ == EXEC_TRAJ || state_ == REORIENT || state_ == CAUTION)) {
+    active_task_epoch_ = msg->task_epoch;
     // A retry is an acknowledgement request, not a new goal/world generation.
     // In particular it must not reset route progress/cooldowns while START's
     // initial status is still in transport.
@@ -1439,6 +1440,7 @@ void FastExplorationFSM::taskRequestCallback(
     expl_manager_->setMissionGoal(msg->target);
   }
   if (msg->start) {
+    active_task_epoch_ = msg->task_epoch;
     startExplorationTask(msg->task_id, "atomic task request");
   }
 }
@@ -1583,7 +1585,7 @@ void FastExplorationFSM::startExplorationTask(const std::string &task_id,
   if (usingEpicon()) {
     epicon_frontend_->resetTask();
     resetEpiconExecution();
-    ROS_INFO("[EPICON] coverage task uses native point-cloud exploration");
+    ROS_INFO("[exploration] coverage task uses native point-cloud exploration");
   }
   active_task_id_ = task_id;
   resetCoverageMotion();
@@ -1669,6 +1671,19 @@ bool FastExplorationFSM::handoverSafe() const {
          fd_->odom_vel_.norm() <= handover_slow_speed_ && trajectoryEnded();
 }
 
+void FastExplorationFSM::publishCommittedTaskTrajectory(const bool with_yaw) {
+  if (with_yaw) poly_yaw_traj_pub_.publish(fd_->newest_yaw_traj_);
+  poly_traj_pub_.publish(fd_->newest_traj_);
+  if (task_control_enable_ && !active_task_id_.empty()) {
+    general_planner::ExplorationTrajectory bound;
+    bound.task_epoch = active_task_epoch_;
+    bound.task_id = active_task_id_;
+    bound.position = fd_->newest_traj_;
+    if (with_yaw) bound.yaw = fd_->newest_yaw_traj_;
+    bound_trajectory_pub_.publish(bound);
+  }
+}
+
 void FastExplorationFSM::publishTaskStatus() {
   if (!task_control_enable_ || !task_status_pub_ || active_task_id_.empty()) {
     return;
@@ -1688,7 +1703,7 @@ void FastExplorationFSM::publishTaskStatus() {
     state_name = "FAILED";
   } else if (state_ == INIT || state_ == WAIT_TRIGGER) {
     state_name = "IDLE";
-  } else if (expl_manager_->targetDirectedModeConfigured() && !task_command_started_) {
+  } else if (!task_command_started_) {
     state_name = "WAITING_LOCAL_PLAN";
   } else {
     state_name = "RUNNING";
@@ -2038,8 +2053,7 @@ void FastExplorationFSM::stopTraj(const string &reason) {
     if (!stop_pos_msg.duration.empty() && !stop_yaw_msg.duration.empty()) {
       fd_->newest_traj_ = stop_pos_msg;
       fd_->newest_yaw_traj_ = stop_yaw_msg;
-      poly_yaw_traj_pub_.publish(fd_->newest_yaw_traj_);
-      poly_traj_pub_.publish(fd_->newest_traj_);
+      publishCommittedTaskTrajectory();
       task_command_started_ = true;
       publishTaskStatus();
       fd_->static_state_ = false;

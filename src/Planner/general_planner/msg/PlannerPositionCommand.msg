@@ -1,0 +1,3 @@
+uint64 task_epoch
+string task_id
+quadrotor_msgs/PositionCommand command

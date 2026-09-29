@@ -28,6 +28,8 @@
 #define SRC_FSM_ROS1_HPP
 
 #include "fsm/fsm.h"
+#include <general_planner/NavigationGoalRequest.h>
+#include <general_planner/NavigationGoalAck.h>
 #include "ros_interface/ros_adapter_contract.hpp"
 #include <map_manager/topology_graph_ros1.hpp>
 
@@ -70,6 +72,9 @@ namespace fsm {
         // to starve PAUSE/CLEAR or navigation lifecycle heartbeats.
         ros::NodeHandle command_nh_;
         ros::NodeHandle replan_nh_;
+        ros::Subscriber navigation_goal_request_sub_;
+        ros::Publisher navigation_goal_ack_pub_;
+        general_planner::NavigationGoalAck last_navigation_goal_ack_;
         ros::Subscriber goal_sub_;
         ros::Subscriber goal_3d_sub_;
         ros::Subscriber task_mode_sub_;
@@ -864,6 +869,36 @@ namespace fsm {
             return true;
         }
 
+        void navigationGoalRequestCallback(const general_planner::NavigationGoalRequestConstPtr &msg) {
+            if (!msg) return;
+            std::lock_guard<std::mutex> lock(fsm_tick_mutex_);
+            general_planner::NavigationGoalAck ack;
+            ack.task_epoch = msg->task_epoch;
+            ack.request_id = msg->request_id;
+            ack.goal_sequence = navigationGoalSequence();
+            if (msg->task_epoch != navigationTaskEpoch()) {
+                ack.reason = "stale_task_epoch";
+            } else if (last_navigation_goal_ack_.task_epoch == msg->task_epoch &&
+                       msg->request_id <= last_navigation_goal_ack_.request_id) {
+                if (msg->request_id == last_navigation_goal_ack_.request_id) {
+                    navigation_goal_ack_pub_.publish(last_navigation_goal_ack_);
+                    return;
+                }
+                ack.reason = "stale_request_id";
+            } else {
+                const auto &p = msg->goal.pose.position;
+                const auto &q = msg->goal.pose.orientation;
+                const auto admission = setGoalPosiAndYaw(Vec3f{p.x,p.y,p.z}, Quatf(q.w,q.x,q.y,q.z),
+                    msg->preserve_message_height ? GoalHeightMode::MESSAGE_HEIGHT
+                                                 : GoalHeightMode::CONFIGURED_CLICK_HEIGHT);
+                ack.result = static_cast<std::uint8_t>(admission.result);
+                ack.reason = admission.reason;
+                ack.goal_sequence = navigationGoalSequence();
+                last_navigation_goal_ack_ = ack;
+            }
+            navigation_goal_ack_pub_.publish(ack);
+        }
+
         void goalCallback(const geometry_msgs::PoseStampedConstPtr &msg) {
             if (!msg) {
                 return;
@@ -1451,6 +1486,10 @@ namespace fsm {
             }
             mpc_cmd_pub_ = nh_.advertise<quadrotor_msgs::PolynomialTrajectory>(cfg_.mpc_cmd_topic, 10);
             path_pub_ = nh_.advertise<nav_msgs::Path>("fsm/path", 100);
+            navigation_goal_ack_pub_ = nh_.advertise<general_planner::NavigationGoalAck>(
+                "/planning/navigation/goal_ack", 10);
+            navigation_goal_request_sub_ = nh_.subscribe("/planning/navigation/goal_request", 10,
+                &FsmRos1::navigationGoalRequestCallback, this);
             navigation_status_pub_ =
                 nh_.advertise<std_msgs::String>("/planning/navigation/status", 10, true);
             nh_.param<std::string>("fsm/state2state_replan_watchdog_topic",

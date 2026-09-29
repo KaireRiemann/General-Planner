@@ -2202,7 +2202,7 @@ namespace fsm {
         return true;
     }
 
-    void Fsm::setGoalPosiAndYaw(const Vec3f &p,
+    Fsm::GoalAdmission Fsm::setGoalPosiAndYaw(const Vec3f &p,
                                 const Quatf &q,
                                 const GoalHeightMode height_mode) {
         if (!accept_external_goals_.load()) {
@@ -2217,7 +2217,7 @@ namespace fsm {
             cout << YELLOW
                  << " -- [Fsm] Ignore goal while navigation handover gate is closed."
                  << RESET << endl;
-            return;
+            return {GoalAdmission::REJECTED, "navigation_not_armed"};
         }
 
         if (!p.allFinite()) {
@@ -2229,7 +2229,7 @@ namespace fsm {
                                   false,
                                   -1,
                                   0);
-            return;
+            return {GoalAdmission::REJECTED, "non_finite_position"};
         }
         if (!checker::quaternionValidOrDisabled(q)) {
             recordDiagnosticEvent("WARN",
@@ -2240,7 +2240,19 @@ namespace fsm {
                                   false,
                                   -1,
                                   0);
-            return;
+            return {GoalAdmission::REJECTED, "invalid_quaternion"};
+        }
+
+        // Goal admission may run while a rolling optimizer owns its working
+        // robot_state_. Read the independent odometry snapshot into a local
+        // value: neither a stale FSM tick nor a write to the optimizer's state
+        // is appropriate for the too-close/reorient geometry check.
+        rog_map::RobotState admission_robot_state = robot_state_;
+        if ((state2stateMode() || reorientMode()) && planner_ptr_) {
+            planner_ptr_->getRobotStateSnapshot(admission_robot_state);
+            if (!admission_robot_state.rcv || !admission_robot_state.p.allFinite()) {
+                return {GoalAdmission::REJECTED, "odometry_unavailable"};
+            }
         }
 
         auto click_point = p;
@@ -2278,11 +2290,11 @@ namespace fsm {
                                       0);
                 cout << YELLOW << " -- [Fsm] Reorient goal requires a yaw quaternion, skip."
                      << RESET << endl;
-                return;
+                return {GoalAdmission::REJECTED, "reorient_yaw_missing"};
             }
             const double reorient_goal_yaw = geometry_utils::get_yaw_from_quaternion(q);
-            Vec3f reorient_goal = robot_state_.p;
-            Vec3f drift = click_point - robot_state_.p;
+            Vec3f reorient_goal = admission_robot_state.p;
+            Vec3f drift = click_point - admission_robot_state.p;
             drift.z() = 0.0;
             const double drift_norm = drift.norm();
             const double drift_max = std::max(0.0, cfg_.reorient_position_drift_max);
@@ -2311,7 +2323,7 @@ namespace fsm {
                                   0);
             cout << GREEN << " -- [Fsm] Reorient goal: yaw " << reorient_goal_yaw * 57.3
                  << " deg, drift " << drift.norm() << " m" << RESET << endl;
-            return;
+            return {GoalAdmission::ACCEPTED, "accepted"};
         }
 
         // Validate/project a candidate first. A rejected goal must leave the
@@ -2332,24 +2344,24 @@ namespace fsm {
                                       false,
                                       -1,
                                       0);
-                return;
+                return {GoalAdmission::REJECTED, "occupied_or_no_free_projection"};
             }
         } else {
             cout << GREEN << " -- [Fsm] Get goal at " << RESET << candidate_goal.transpose() << endl;
         }
-        if ((robot_state_.p - candidate_goal).norm() <
+        if ((admission_robot_state.p - candidate_goal).norm() <
             0.1) {
             //                print(fg(color::gray), " -- [Rviz] Too close to goal, skip this target.\n");
             recordDiagnosticEvent("INFO",
                                   "goal_rejected",
                                   fmt::format("reason=too_close;distance={:.3f}",
-                                              (robot_state_.p - candidate_goal).norm()),
+                                              (admission_robot_state.p - candidate_goal).norm()),
                                   -1,
                                   -1,
                                   false,
                                   -1,
                                   0);
-            return;
+            return {GoalAdmission::REJECTED, "too_close"};
         }
 
         double candidate_yaw = NAN;
@@ -2371,7 +2383,7 @@ namespace fsm {
         const bool same_yaw = (std::isnan(last_goal_yaw) && std::isnan(candidate_yaw)) ||
                               (std::isfinite(last_goal_yaw) && std::isfinite(candidate_yaw) &&
                                std::fabs(last_goal_yaw - candidate_yaw) < 0.02);
-        if (had_goal && (last_goal_p - candidate_goal).norm() < 0.05 && same_yaw) {
+        if (had_goal && (!state2stateMode() || navigation_goal_active_.load()) && (last_goal_p - candidate_goal).norm() < 0.05 && same_yaw) {
             recordDiagnosticEvent("INFO",
                                   "goal_duplicated",
                                   fmt::format("position_delta={:.3f};same_yaw={}",
@@ -2382,7 +2394,7 @@ namespace fsm {
                                   false,
                                   -1,
                                   0);
-            return;
+            return {GoalAdmission::ALREADY_ACTIVE, "duplicate"};
         }
 
         gi_.goal_p = candidate_goal;
@@ -2408,6 +2420,7 @@ namespace fsm {
                               false,
                               -1,
                               0);
+        return {GoalAdmission::ACCEPTED, "accepted"};
     }
 
     void Fsm::ChangeState(const string &call_func, const MACHINE_STATE &new_state) {

@@ -78,15 +78,15 @@ void configureNativeParameters(ros::NodeHandle &parent, ros::NodeHandle &nh) {
   }
   int boxes = 0, dead = 0;
   parent.getParam("box_num", boxes); parent.param("dead_area_num", dead, 0);
-  if (boxes < 1) throw std::runtime_error("EPICON requires an exploration box");
+  if (boxes < 1) throw std::runtime_error("point-cloud exploration requires an exploration box");
   for (const auto &entry : std::vector<std::pair<std::string,int>>{{"box_",boxes},{"dead_",dead}}) {
     for (int i=0;i<entry.second;++i) {
       const auto key=entry.first+std::to_string(i);
       XmlRpc::XmlRpcValue value;
-      if (!parent.getParam(key,value)) throw std::runtime_error("EPICON missing " + key);
+      if (!parent.getParam(key,value)) throw std::runtime_error("point-cloud exploration missing " + key);
       for (const auto *bound : {"down","up"}) {
         if (!value.hasMember(bound) || value[bound].getType()!=XmlRpc::XmlRpcValue::TypeArray || value[bound].size()!=3)
-          throw std::runtime_error("EPICON invalid box " + key);
+          throw std::runtime_error("point-cloud exploration invalid box " + key);
       }
       nh.setParam(key,value);
     }
@@ -177,7 +177,7 @@ void EpiconFrontend::init(ros::NodeHandle &runtime_nh) {
   nh.getParam("fsm/unknown_penalty_factor",i.unknown_penalty);
   i.status=runtime_nh.advertise<std_msgs::String>("/planning/exploration/epicon_status",1,true);
   runtime_nh.setParam("exploration/frontend",std::string("epicon_pointcloud"));
-  ROS_INFO("[EPICON] native point-cloud frontier/topology/tour enabled; backend=ExplorationCostManager+ExplorationTrajOpt");
+  ROS_INFO("[exploration] native point-cloud frontier/topology/tour enabled; backend=ExplorationCostManager+ExplorationTrajOpt");
 }
 void EpiconFrontend::ingestCloud(const sensor_msgs::PointCloud2ConstPtr &cloud, const nav_msgs::OdometryConstPtr &odom) {
   if (!cloud || !odom || cloud->width*cloud->height==0) return;
@@ -213,7 +213,7 @@ void EpiconFrontend::deferCurrentGoal(double seconds, double radius) {
   if (i.selected && tour().size()>=2) {
     i.deferred.push_back({tour()[1],ros::WallTime::now()+ros::WallDuration(std::max(1.0,seconds)),
                           std::max(0.1,radius)});
-    ROS_WARN_STREAM("[EPICON] defer failed goal " << tour()[1].transpose()
+    ROS_WARN_STREAM("[exploration] defer failed goal " << tour()[1].transpose()
                     << " for " << seconds << "s; select an alternative viewpoint");
   }
   i.clearGoal();
@@ -257,7 +257,7 @@ EpiconFrontend::Result EpiconFrontend::update(bool select_goal, bool full_audit)
                    result==epicon_native::fast_planner::NO_FRONTIER ? "NO_FRONTIER" :
                    result==epicon_native::fast_planner::BLOCKED ? "BLOCKED" : "FAIL";
   i.publish(name,i.unknown.size(),i.active.size());
-  ROS_INFO_STREAM("[EPICON] global result=" << name << " clusters=" << clusterCount()
+  ROS_INFO_STREAM("[exploration] global result=" << name << " clusters=" << clusterCount()
       << " unknown=" << i.unknown.size() << " active=" << i.active.size()
       << " tour=" << tour().size() << " speed=" << i.vel.norm() << " ms=" << (ros::WallTime::now()-start).toSec()*1000.0);
   if(result==epicon_native::fast_planner::NO_FRONTIER) return Result::NO_FRONTIER;

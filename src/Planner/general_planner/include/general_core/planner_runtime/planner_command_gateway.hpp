@@ -8,6 +8,7 @@
 #include <general_core/planner_runtime/planner_command_gateway_policy.hpp>
 #include <general_core/planner_runtime/planner_status.hpp>
 #include <geometry_msgs/Quaternion.h>
+#include <general_planner/PlannerPositionCommand.h>
 #include <nav_msgs/Odometry.h>
 #include <quadrotor_msgs/PositionCommand.h>
 #include <ros/ros.h>
@@ -35,6 +36,10 @@ class PlannerCommandGateway {
 public:
   explicit PlannerCommandGateway(ros::NodeHandle &nh);
 
+  // Collect a first command while HOLD owns output. The task binding survives
+  // callback queue delays and is checked again during the atomic handoff.
+  void prepareExplorationTask(std::uint64_t epoch, const std::string &task_id);
+  bool authorizeExplorationIfReady(std::uint64_t epoch, const std::string &task_id);
   bool submitGateCommand(const quadrotor_msgs::PositionCommand &command, std::uint64_t epoch);
   void setAuthorizedOwner(CommandOwner owner, std::uint64_t task_epoch);
   // Atomically transfer command ownership to HOLD and replace its anchor.
@@ -63,6 +68,7 @@ public:
 
 private:
   void navigationCallback(const quadrotor_msgs::PositionCommandConstPtr &msg);
+  void boundExplorationCallback(const general_planner::PlannerPositionCommandConstPtr &msg);
   void explorationCallback(const quadrotor_msgs::PositionCommandConstPtr &msg);
   void odometryCallback(const nav_msgs::OdometryConstPtr &msg);
   void timerCallback(const ros::WallTimerEvent &);
@@ -76,6 +82,10 @@ private:
   ros::Publisher output_pub_;
   ros::Subscriber navigation_sub_;
   ros::Subscriber exploration_sub_;
+  ros::Subscriber bound_exploration_sub_;
+  bool require_exploration_task_binding_{true};
+  std::uint64_t exploration_task_epoch_{0};
+  std::string exploration_task_id_;
   ros::Subscriber odom_sub_;
   ros::WallTimer timer_;
 

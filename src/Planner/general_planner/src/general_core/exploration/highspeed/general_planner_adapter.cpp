@@ -1738,7 +1738,7 @@ bool FastPlannerManager::planExploreTraj(
     if (search!=EpiconFrontend::Result::SUCCEED) {
       coverage_failure_.kind=search==EpiconFrontend::Result::DISCONNECTED
           ? CoverageFailureKind::HEAD : CoverageFailureKind::PATH;
-      ROS_WARN("[EPICON backend] no point-cloud path from execution head");
+      ROS_WARN("[exploration backend] no point-cloud path from execution head");
       return false;
     }
   }
@@ -1815,7 +1815,7 @@ bool FastPlannerManager::planExploreTraj(
         safetyDistanceToOcc(head.col(0))-.02)) : gcopter_config_->dilateRadiusSoft;
     if (!epicon_frontend_->corridor(local_path,gcopter_config_->corridor_size,margin,native)) {
       coverage_failure_.kind=CoverageFailureKind::PATH;
-      ROS_WARN_STREAM("[EPICON backend] point-cloud corridor failed: " << native.failure);
+      ROS_WARN_STREAM("[exploration backend] point-cloud corridor failed: " << native.failure);
       return false;
     }
     local_path=native.path;
@@ -2003,7 +2003,7 @@ bool FastPlannerManager::planExploreTraj(
   if (pointcloud_frontend) {
     velocity_limit.open=velocity_limit.known_free=velocity_limit.brake=velocity_limit.clearance=
         velocity_limit.curvature=velocity_limit.yaw=velocity_limit.backup=velocity_limit.final_limit=gcopter_config_->maxVelMag;
-    velocity_limit.reason="epicon_pointcloud";
+    velocity_limit.reason="pointcloud";
   }
   PieceVelocityProfile piece_velocity_profile = computePieceVelocityProfile(
       local_path, sfcs, head.col(1), yaw_init(0), *gcopter_config_, velocity_limit);
@@ -2353,7 +2353,7 @@ bool FastPlannerManager::planExploreTraj(
   {
     if (pointcloud_frontend) {
       coverage_failure_.kind=CoverageFailureKind::DYNAMICS;
-      ROS_WARN("[EPICON backend] yaw optimization failed; retain committed command");
+      ROS_WARN("[exploration backend] yaw optimization failed; retain committed command");
       return false;
     }
     yaw_traj = makeHoldYawTrajectory(yaw_init(0), pos_traj.getTotalDuration());
@@ -2373,7 +2373,7 @@ bool FastPlannerManager::planExploreTraj(
       return false;
     }
     yaw_traj=std::move(boundary_yaw);
-    ROS_INFO("[EPICON backend] use rate-feasible boundary yaw through local turn");
+    ROS_INFO("[exploration backend] use rate-feasible boundary yaw through local turn");
   }
 
   // Check joint position/yaw in sequence after both optimizers, before any
@@ -3251,7 +3251,7 @@ bool FastPlannerManager::planExploreTraj(
 		                  << ", max_a=" << committed_pos_traj_->getMaxAccRate()
 		                  << ", sfc(raw/simplified/final)=" << raw_sfc_count
                       << "/" << simplified_sfc_count << "/" << sfcs.size()
-		                  << ", corridor=" << (pointcloud_frontend ? "epicon_pointcloud" : "general")
+		                  << ", corridor=" << (pointcloud_frontend ? "pointcloud" : "general")
                       << ", box_bounded="
                       << (lidar_map_interface_->targetNavigation() ? "disabled_target" :
                           (bounded_to_exploration_boxes ? "yes" : "fallback"))
@@ -3531,7 +3531,7 @@ bool FastPlannerManager::flyToSafeRegion(bool is_static,
     if (!epicon_frontend_->recoveryPoint(local_data_.curr_pos_,goal)) return false;
     const std::vector<Eigen::Vector3f> path{local_data_.curr_pos_.cast<float>(),goal.cast<float>()};
     if (!planExploreTraj(path,is_static,true,false,{},{},{},true)) return false;
-    ROS_WARN_STREAM("[EPICON recovery] point-cloud interior start=" << local_data_.curr_pos_.transpose()
+    ROS_WARN_STREAM("[exploration recovery] point-cloud interior start=" << local_data_.curr_pos_.transpose()
                     << " goal=" << goal.transpose());
     return true;
   }

@@ -12,6 +12,8 @@
 #include <general_core/planner_runtime/planner_status.hpp>
 #include <general_core/planner_runtime/topology_maintenance_policy.hpp>
 #include <general_planner/ExplorationTaskRequest.h>
+#include <general_planner/NavigationGoalRequest.h>
+#include <general_planner/NavigationGoalAck.h>
 #include <general_planner/PlannerModeRequest.h>
 #include <general_planner/PlannerStatus.h>
 #include <general_planner/TargetExplorationStatus.h>
@@ -60,6 +62,7 @@ private:
   bool forwardExplorationTargetGoalLocked(
       const geometry_msgs::PoseStamped &msg, const std::string &source);
   void explorationStatusCallback(const std_msgs::StringConstPtr &msg);
+  void navigationGoalAckCallback(const general_planner::NavigationGoalAckConstPtr &msg);
   void navigationStatusCallback(const std_msgs::StringConstPtr &msg);
   // Emitted only after state2state has reached the stationary endpoint of an
   // already committed backup trajectory while its rolling replan is still
@@ -116,6 +119,8 @@ private:
   std::vector<ros::Subscriber> exploration_rviz_trigger_subs_;
   ros::Subscriber exploration_status_sub_;
   ros::Subscriber navigation_status_sub_;
+  ros::Subscriber navigation_goal_ack_sub_;
+  ros::Publisher navigation_goal_request_pub_;
   ros::Subscriber navigation_replan_watchdog_sub_;
   ros::Subscriber gate_status_sub_;
   ros::Subscriber handover_status_sub_;
@@ -160,6 +165,10 @@ private:
   ros::Time hover_satisfied_since_;
   ros::Time last_odom_time_;
   ros::Time last_exploration_start_pub_;
+  ros::WallTime last_odom_wall_time_;
+  ros::WallTime hover_pose_stable_since_;
+  geometry_msgs::Pose hover_reference_pose_;
+  double hover_reference_yaw_{0.0};
   nav_msgs::Odometry odom_;
   bool have_odom_{false};
 
@@ -183,6 +192,11 @@ private:
   std::uint64_t navigation_goal_sequence_{0};
   std::uint64_t navigation_goal_sequence_before_dispatch_{0};
   bool navigation_goal_dispatch_pending_{false};
+  std::uint64_t navigation_request_id_{0};
+  std::uint64_t navigation_accepted_goal_sequence_{0};
+  bool navigation_accepted_goal_active_{false};
+  ros::WallTime navigation_request_started_;
+  double navigation_goal_ack_timeout_{2.0};
 
   std::string exploration_command_topic_;
   std::string exploration_task_request_topic_;

@@ -37,12 +37,22 @@ int main(int argc, char **argv) {
       [&](const std_msgs::StringConstPtr &m) {
         if (m->data.rfind("ARM ", 0) == 0) last_arm = m->data;
       });
+  std::uint64_t admitted_sequence = 0;
+  auto ack_pub = nh.advertise<general_planner::NavigationGoalAck>("/planning/navigation/goal_ack", 10);
+  auto request_sub = nh.subscribe<general_planner::NavigationGoalRequest>("/planning/navigation/goal_request", 10,
+      [&](const general_planner::NavigationGoalRequestConstPtr &request) {
+        general_planner::NavigationGoalAck ack;
+        ack.task_epoch = request->task_epoch; ack.request_id = request->request_id;
+        ack.goal_sequence = ++admitted_sequence; ack.result = ack.ACCEPTED;
+        ack_pub.publish(ack);
+      });
   auto mode_pub = nh.advertise<std_msgs::String>("/planner/mode_request_text", 1);
   auto nav_pub = nh.advertise<std_msgs::String>("/planning/navigation/status", 1);
   auto cmd_pub = nh.advertise<quadrotor_msgs::PositionCommand>("/planning/navigation/pos_cmd", 1);
   quadrotor_msgs::PositionCommand endpoint;
   endpoint.position.x = 17.5; endpoint.position.y = 2.; endpoint.position.z = 3.;
   endpoint.yaw = 1.1;
+  endpoint.trajectory_flag = quadrotor_msgs::PositionCommand::TRAJECTORY_STATUS_READY;
   bool send_endpoint = false;
   bool check_hold_endpoint = false, bad_hold_endpoint = false, saw_hold_endpoint = false;
   auto output = nh.subscribe<quadrotor_msgs::PositionCommand>("/planning/pos_cmd", 50,

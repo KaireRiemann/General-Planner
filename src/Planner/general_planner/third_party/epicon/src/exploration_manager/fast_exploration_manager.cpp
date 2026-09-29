@@ -58,15 +58,15 @@ void FastExplorationManager::initialize(
   nh.getParam("global_planning/w_yawdir", ep_->w_yawdir_);
   Eigen::Vector3d origin, size;
   // The embedded solver is process-global; files belong to this frontend instance.
-  std::string pattern = (std::filesystem::temp_directory_path() / "epicon_lkh_XXXXXX").string();
+  std::string pattern = (std::filesystem::temp_directory_path() / "exploration_lkh_XXXXXX").string();
   std::vector<char> dir(pattern.begin(), pattern.end()); dir.push_back('\0');
-  if (!::mkdtemp(dir.data())) throw std::runtime_error("cannot create EPICON LKH work directory");
+  if (!::mkdtemp(dir.data())) throw std::runtime_error("cannot create exploration LKH work directory");
   ep_->tsp_dir_ = dir.data();
   ofstream par_file(ep_->tsp_dir_ + "/single.par");
   par_file << "PROBLEM_FILE = " << ep_->tsp_dir_ << "/single.tsp\n"
            << "GAIN23 = NO\nMOVE_TYPE = 2\nOUTPUT_TOUR_FILE = "
            << ep_->tsp_dir_ << "/single.txt\nRUNS = 10\nTRACE_LEVEL = 0\n";
-  if (!par_file) throw std::runtime_error("cannot write EPICON LKH parameters");
+  if (!par_file) throw std::runtime_error("cannot write exploration LKH parameters");
 
 }
 

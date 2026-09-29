@@ -9,6 +9,7 @@
 #include <general_core/general_planner.h>
 #include <general_core/state2state/state2state_frontend_services.hpp>
 #include <general_core/state2state/state2state_path_utils.hpp>
+#include <general_core/state2state/state2state_topology_search.hpp>
 #include <algorithm>
 #include <cmath>
 #include <fmt/color.h>
@@ -307,6 +308,15 @@ namespace state2state_task {
                    (unknown_as_occupied_for_frontend ? UNKNOWN_AS_OCCUPIED : UNKNOWN_AS_FREE) |
                    DONT_USE_INF_NEIGHBOR;
 
+        // Inflation can leave UNKNOWN cells unlabelled when unknown inflation
+        // is disabled. Check raw known-free evidence as well as inflated safety.
+        auto topologyLineUsable = [&](const Vec3f &a, const Vec3f &b) {
+            return lineUsable(a, b) &&
+                   services.map_manager->getGridType(a) == KNOWN_FREE &&
+                   services.map_manager->getGridType(b) == KNOWN_FREE &&
+                   services.map_manager->isLineFree(a, b, false, true);
+        };
+        bool topology_required = false;
         auto buildTopologyCandidate = [&](vec_Vec3f &candidate,
                                           RET_CODE &candidate_ret) {
             candidate.clear();
@@ -345,24 +355,27 @@ namespace state2state_task {
                 return false;
             }
 
-            const double query_distance = (goal - temp_start_point).norm();
-            if (query_distance < std::max(0.0,
-                    services.cfg.state2state_topology_min_query_distance)) {
-                route.last_result = "LOCAL_ONLY_SHORT_GOAL";
-                return false;
-            }
+            // Even a nearby off-graph goal may require a long graph detour.
+            // Distance to the final goal must not release the graph leg.
+            topology_required = true;
             const std::uint64_t task_epoch = runtime.task_epoch.load(
                 std::memory_order_acquire);
             const std::uint64_t world_epoch = services.map_manager->worldEpoch();
-            const double goal_change_tolerance = std::max(
-                0.05, 0.5 * services.cfg.resolution);
-            if (route.valid &&
-                ((route.goal - goal).norm() > goal_change_tolerance ||
-                 route.task_epoch != task_epoch ||
-                 route.world_epoch != world_epoch)) {
+            const double goal_change_tolerance = 1.0e-4;
+            if ((route.goal - goal).norm() > goal_change_tolerance ||
+                route.task_epoch != task_epoch || route.world_epoch != world_epoch) {
                 clearRoute(route.world_epoch != world_epoch
                                ? "WORLD_EPOCH_CHANGED" : "GOAL_CHANGED",
                            true);
+            }
+
+            route.goal = goal;
+            route.task_epoch = task_epoch;
+            route.world_epoch = world_epoch;
+            if (route.phase == TopologyRoutePhase::LOCAL_GOAL) {
+                topology_required = false;
+                route.last_result = "TOPO_ANCHOR_REACHED_LOCAL_GOAL";
+                return false;
             }
 
             const double now = services.ros_ptr->getSimTime();
@@ -387,60 +400,15 @@ namespace state2state_task {
                 }
 
                 vec_Vec3f raw_route;
-                bool reaches_goal = services.map_manager->findTopologyPath(
-                    snapshot, temp_start_point, goal, raw_route);
-                if (!reaches_goal) {
-                    struct RouteTarget {
-                        Vec3f position;
-                        double score{0.0};
-                    };
-                    std::vector<RouteTarget> targets;
-                    Vec3f direction = Vec3f::Zero();
-                    if (query_distance > 1.0e-9) {
-                        direction = (goal - temp_start_point) / query_distance;
-                    }
-                    for (const auto &entry : snapshot->graph) {
-                        const Vec3f offset = entry.second.node.position - temp_start_point;
-                        const double radial_distance = offset.norm();
-                        const double progress = offset.dot(direction);
-                        if (progress <= services.cfg.resolution ||
-                            radial_distance > std::max(3.0 * searching_horizon,
-                                                       searching_horizon + 5.0)) {
-                            continue;
-                        }
-                        targets.push_back({entry.second.node.position,
-                                           progress - 0.10 * radial_distance -
-                                               0.05 * (goal - entry.second.node.position).norm()});
-                    }
-                    std::sort(targets.begin(), targets.end(),
-                              [](const RouteTarget &lhs, const RouteTarget &rhs) {
-                                  return lhs.score > rhs.score;
-                              });
-                    const std::size_t attempts = std::min<std::size_t>(3, targets.size());
-                    const double required_length = 0.35 * std::min(
-                        searching_horizon, query_distance);
-                    for (std::size_t i = 0; i < attempts; ++i) {
-                        vec_Vec3f anchor_route;
-                        if (!services.map_manager->findTopologyPath(
-                                snapshot, temp_start_point,
-                                targets[i].position, anchor_route)) {
-                            continue;
-                        }
-                        if (geometry_utils::computePathLength(anchor_route) +
-                                services.cfg.resolution < required_length) {
-                            continue;
-                        }
-                        raw_route = std::move(anchor_route);
-                        break;
-                    }
-                }
-                if (raw_route.size() < 2) {
-                    route.last_result = "NO_TOPO_ROUTE";
+                if (!findClosestReachableTopologyRoute(*snapshot, temp_start_point,
+                        goal, topologyLineUsable, raw_route)) {
+                    route.last_result = "NO_REACHABLE_TOPO_ANCHOR";
                     return false;
                 }
 
                 route.valid = true;
-                route.reaches_goal = reaches_goal;
+                route.reaches_goal = (raw_route.back() - goal).norm() <= 1.0e-4;
+                route.phase = TopologyRoutePhase::FOLLOW_GRAPH;
                 ++route.route_id;
                 route.task_epoch = task_epoch;
                 route.world_epoch = world_epoch;
@@ -450,12 +418,29 @@ namespace state2state_task {
                 route.raw_topology_route = std::move(raw_route);
                 buildRouteArcLength(route.raw_topology_route, route.arc_length);
                 route.committed_route_s = 0.0;
-                route.last_result = reaches_goal ? "TOPO_ROUTE_READY"
-                                                  : "TOPO_PROGRESS_ANCHOR";
+                route.last_result = "TOPO_ANCHOR_ROUTE_READY";
                 return true;
             };
 
             if (!route.valid && !queryGlobalRoute(false)) {
+                return false;
+            }
+
+            const auto measured = services.map_manager->getRobotState();
+            const double arrival_radius = std::max(0.3, 2.0 * services.cfg.resolution);
+            if (measured.rcv &&
+                (measured.p - route.raw_topology_route.back()).norm() <= arrival_radius &&
+                topologyLineUsable(measured.p, route.raw_topology_route.back()) &&
+                finishTopologyLeg(route, measured.p, arrival_radius)) {
+                topology_required = false;
+                return false;
+            }
+            // The predictive planning head can exhaust the route before the
+            // measured vehicle arrives. Keep the existing approach trajectory;
+            // never extend this head straight into the unknown final segment.
+            if (route.raw_topology_route.size() < 2 ||
+                (temp_start_point - route.raw_topology_route.back()).norm() < services.cfg.resolution) {
+                route.last_result = "TOPO_WAIT_ANCHOR_ARRIVAL";
                 return false;
             }
 
@@ -532,7 +517,7 @@ namespace state2state_task {
                         boundary_limited = true;
                         return false;
                     }
-                    if (!lineUsable(out.back(), sample)) {
+                    if (!topologyLineUsable(out.back(), sample)) {
                         return false;
                     }
                     appendPathPointUnique(sample, out);
@@ -575,8 +560,7 @@ namespace state2state_task {
             // the next window without needlessly discarding the global route.
             if ((prefix_verified || (boundary_limited && !blocked)) &&
                 candidate.size() >= 2 &&
-                (candidate.back() - candidate.front()).norm() >=
-                    2.0 * services.cfg.resolution) {
+                geometry_utils::computePathLength(candidate) >= services.cfg.resolution) {
                 const bool reaches_route_end = prefix_verified &&
                     route_end_s >= route.arc_length.back() -
                     services.cfg.resolution;
@@ -616,7 +600,8 @@ namespace state2state_task {
                     vec_Vec3f repair_path;
                     const RET_CODE repair_ret = services.astar->pointToPointPathSearch(
                         temp_start_point, route.raw_topology_route[anchors[attempt].index],
-                        flag, prefix_length, repair_path,
+                        ON_PROB_MAP | UNKNOWN_AS_OCCUPIED | USE_INF_NEIGHBOR,
+                        prefix_length, repair_path,
                         services.cfg.frontend_astar_time_out);
                     if (repair_ret != REACH_GOAL || repair_path.size() < 2) {
                         continue;
@@ -669,8 +654,8 @@ namespace state2state_task {
                 // A fresh route can become locally attachable after topology
                 // maintenance catches up. Defer consuming it to the next
                 // local replan rather than recursively starting another global
-                // search in this tick; local-only remains the safe fallback.
-                route.last_result = "TOPO_REQUERY_READY_LOCAL_FALLBACK";
+                // search in this tick. The graph leg remains mandatory.
+                route.last_result = "TOPO_REQUERY_READY_WAIT";
             }
             return false;
         };
@@ -679,6 +664,11 @@ namespace state2state_task {
         RET_CODE ret_code = FAILED;
         const bool topology_frontend =
                 buildTopologyCandidate(normal_path, ret_code);
+        if (topology_required && !topology_frontend) {
+            // A failed attachment, blocked prefix or pending requery is not
+            // permission to fly directly to an off-graph goal.
+            return false;
+        }
         const bool direct_line_frontend = !topology_frontend &&
                 buildDirectLineCandidate(normal_path, ret_code);
         if (!direct_line_frontend && !topology_frontend) {
@@ -822,7 +812,7 @@ namespace state2state_task {
         RET_CODE selected_ret = ret_code;
         vec_Vec3f over_wall_path;
         RET_CODE over_wall_ret = FAILED;
-        if (buildOverWallCandidate(over_wall_path, over_wall_ret)) {
+        if (!topology_frontend && buildOverWallCandidate(over_wall_path, over_wall_ret)) {
             const Vec3f goal_dir = (goal - temp_start_point).norm() > 1.0e-6
                                        ? (goal - temp_start_point).normalized()
                                        : Vec3f::Zero();
@@ -896,14 +886,14 @@ namespace state2state_task {
         };
 
         const std::size_t raw_path_size = path.size();
-        path = shortcutPathByLineOfSight(path);
+        if (!topology_frontend) path = shortcutPathByLineOfSight(path);
         if (services.cfg.print_log && path.size() + 2 < raw_path_size) {
             services.ros_ptr->info(" -- [GeneralPlanner] Frontend line-of-sight shortcut: {} -> {} points.",
                            raw_path_size,
                            path.size());
         }
 
-        if (services.cfg.state2state_over_goal_guard_enable) {
+        if (!topology_frontend && services.cfg.state2state_over_goal_guard_enable) {
             const double near_goal_radius = std::max(services.cfg.resolution * 3.0,
                                                      services.cfg.state2state_near_goal_radius);
             const double near_goal_xy = (temp_start_point.head<2>() - goal.head<2>()).norm();

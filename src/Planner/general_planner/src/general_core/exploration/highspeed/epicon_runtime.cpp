@@ -28,7 +28,7 @@ void FastExplorationFSM::resetEpiconExecution() {
   epicon_last_motion_=ros::WallTime::now();
   epicon_normal_motion_=false; epicon_goal_best_distance_=0.0;
   epicon_progress_.reset(epicon_last_motion_.toSec());
-  ROS_INFO_STREAM("[EPICON] execution policy: audit_period=" << epicon_audit_period_
+  ROS_INFO_STREAM("[exploration] execution policy: audit_period=" << epicon_audit_period_
       << " goal_failure_limit=" << epicon_goal_failure_limit_
       << " stall_reselect=" << epicon_stall_reselect_ << " stall_timeout=" << epicon_stall_timeout_);
 }
@@ -41,7 +41,7 @@ void FastExplorationFSM::finishEpiconTask(bool completed, const std::string &rea
   msg.data="{\"backend\":\"epicon_pointcloud\",\"result\":\""+coverage_result_+
       "\",\"reason\":\""+reason+"\",\"verified_frames\":"+std::to_string(epicon_finish_.count())+"}";
   coverage_result_pub_.publish(msg);
-  ROS_WARN_STREAM("[EPICON] " << coverage_result_ << ": " << reason);
+  ROS_WARN_STREAM("[exploration] " << coverage_result_ << ": " << reason);
   if(task_control_enable_ || !completed) beginPause(reason,completed);
   else transitState(FINISH,reason);
 }
@@ -81,7 +81,7 @@ void FastExplorationFSM::updateEpiconGlobalPath() {
     epicon_recheck_pending_=true;
     if(!safe) {
       epicon_finish_.reset();
-      stopTraj("EPICON: unsafe remaining trajectory during finish verification");
+      stopTraj("exploration: unsafe remaining trajectory during finish verification");
       return;
     }
     // Keep the safe committed motion and the global timer alive. In particular,
@@ -93,7 +93,7 @@ void FastExplorationFSM::updateEpiconGlobalPath() {
       if(state_!=FINISH) finishEpiconTask(true,"fresh point-cloud audits found no actionable frontier after settling");
       return;
     }
-    ROS_INFO_STREAM_THROTTLE(1.0,"[EPICON] finish pending: settled=" << settled
+    ROS_INFO_STREAM_THROTTLE(1.0,"[exploration] finish pending: settled=" << settled
         << " fresh=" << fresh << " audited_frames=" << epicon_finish_.count()
         << " remaining=" << planner_manager_->committedTrajectoryRemainingTime());
   } else if(result==fast_planner::EpiconFrontend::Result::SUCCEED) {
@@ -104,12 +104,12 @@ void FastExplorationFSM::updateEpiconGlobalPath() {
     epicon_finish_.reset(); epicon_recheck_pending_=false;
     expl_manager_->ed_->global_tour_=epicon_frontend_->tour(); // visualization/task compatibility only
     if(state_!=CAUTION && now>=fd_->next_plan_retry_time_)
-      transitState(PLAN_TRAJ,"EPICON: global tour ready");
+      transitState(PLAN_TRAJ,"exploration: global tour ready");
   } else {
     epicon_finish_.reset(); epicon_recheck_pending_=true;
     if(result==fast_planner::EpiconFrontend::Result::DISCONNECTED &&
        (!safe || planner_manager_->committedTrajectoryRemainingTime()<=0.03))
-      transitState(CAUTION,"EPICON: odometry disconnected",true);
+      transitState(CAUTION,"exploration: odometry disconnected",true);
   }
 }
 
@@ -152,20 +152,20 @@ bool FastExplorationFSM::epiconFSMCallback() {
       epicon_last_deferral_=wall_now; epicon_recheck_pending_=true;
       epicon_finish_.reset(); fd_->consecutive_plan_failures_=0;
       epicon_normal_motion_=false;
-      transitState(PLAN_TRAJ,"EPICON: no exploration progress; audit alternatives",true);
+      transitState(PLAN_TRAJ,"exploration: no exploration progress; audit alternatives",true);
     }
   }
   if(fd_->trigger_ && (fd_->last_odom_receive_time_.isZero() ||
       (now-fd_->last_odom_receive_time_).toSec()>fp_->max_odom_age_)) return true;
   switch(state_) {
   case INIT:
-    if(fd_->have_odom_) transitState(WAIT_TRIGGER,"EPICON: odometry ready");
+    if(fd_->have_odom_) transitState(WAIT_TRIGGER,"exploration: odometry ready");
     break;
   case WAIT_TRIGGER:
-    if(fd_->trigger_) { global_path_update_timer_.start(); transitState(PLAN_TRAJ,"EPICON: trigger"); }
+    if(fd_->trigger_) { global_path_update_timer_.start(); transitState(PLAN_TRAJ,"exploration: trigger"); }
     else if(fp_->auto_trigger_enable_ && !fd_->auto_triggered_ && fd_->have_odom_ && epicon_frontend_->ready() &&
             (now-fd_->first_odom_time_).toSec()>=fp_->auto_trigger_delay_)
-      startExplorationTask("auto","EPICON: auto trigger");
+      startExplorationTask("auto","exploration: auto trigger");
     break;
   case PLAN_TRAJ: {
     if(!fd_->trigger_ || !epicon_frontend_->hasCloud() || now<fd_->next_plan_retry_time_) break;
@@ -176,20 +176,18 @@ bool FastExplorationFSM::epiconFSMCallback() {
         fd_->odom_vel_.norm()<=.05 && planner_manager_->planControlledStopTrajectory(false)) {
       planner_manager_->polyTraj2ROSMsg(fd_->newest_traj_,planner_manager_->local_data_.start_time_);
       planner_manager_->polyYawTraj2ROSMsg(fd_->newest_yaw_traj_,planner_manager_->local_data_.start_time_);
-      poly_yaw_traj_pub_.publish(fd_->newest_yaw_traj_);
-      poly_traj_pub_.publish(fd_->newest_traj_);
+      publishCommittedTaskTrajectory();
       task_command_started_=true;
-      ROS_INFO("[EPICON] certified initial hold while auditing point-cloud frontiers");
+      ROS_INFO("[exploration] certified initial hold while auditing point-cloud frontiers");
     }
     if(!epicon_frontend_->ready() || !epicon_frontend_->hasSelectedGoal()) break;
     exec_timer_.stop();
     const auto started=ros::WallTime::now();
     const int result=callEpiconPlanner();
     exec_timer_.start();
-    ROS_INFO("[EPICON] trajectory backend result=%d ms=%.1f",result,(ros::WallTime::now()-started).toSec()*1000.0);
+    ROS_INFO("[exploration] trajectory backend result=%d ms=%.1f",result,(ros::WallTime::now()-started).toSec()*1000.0);
     if(result==SUCCEED) {
-      poly_yaw_traj_pub_.publish(fd_->newest_yaw_traj_);
-      poly_traj_pub_.publish(fd_->newest_traj_);
+      publishCommittedTaskTrajectory();
       fd_->static_state_=false; task_command_started_=true;
       const auto &tour=epicon_frontend_->tour();
       if (tour.size()>=2) {
@@ -200,7 +198,7 @@ bool FastExplorationFSM::epiconFSMCallback() {
         epicon_normal_motion_=true;
       }
       fd_->consecutive_plan_failures_=0;
-      transitState(EXEC_TRAJ,"EPICON: General trajectory committed");
+      transitState(EXEC_TRAJ,"exploration: General trajectory committed");
     } else {
       ++fd_->consecutive_plan_failures_;
       const auto failure=planner_manager_->coverage_failure_.kind;
@@ -218,12 +216,12 @@ bool FastExplorationFSM::epiconFSMCallback() {
       // General's committed safe prefix stays executable during a failed
       // optimization. This is the backend's ownership contract.
       if(!safe || planner_manager_->committedTrajectoryRemainingTime()<=0.05)
-        stopTraj("EPICON: local planning failed without safe remaining trajectory");
+        stopTraj("exploration: local planning failed without safe remaining trajectory");
       if(result==START_FAIL || unsafe_origin) {
         epicon_normal_motion_=false;
-        transitState(CAUTION,"EPICON: disconnected or unsafe execution origin",true);
+        transitState(CAUTION,"exploration: disconnected or unsafe execution origin",true);
       }
-      else transitState(EXEC_TRAJ,"EPICON: local retry pending",true);
+      else transitState(EXEC_TRAJ,"exploration: local retry pending",true);
     }
     break;
   }
@@ -231,23 +229,23 @@ bool FastExplorationFSM::epiconFSMCallback() {
     double collision_time=0.0;
     const bool safe=planner_manager_->checkTrajCollision(collision_time);
     if(!safe) {
-      if(collision_time<fp_->replan_time_+0.2) stopTraj("EPICON: imminent collision");
-      transitState(PLAN_TRAJ,"EPICON: collision replan",true);
+      if(collision_time<fp_->replan_time_+0.2) stopTraj("exploration: imminent collision");
+      transitState(PLAN_TRAJ,"exploration: collision replan",true);
     } else if(!planner_manager_->checkTrajVelocity() ||
               planner_manager_->committedTrajectoryRemainingTime()<=fp_->replan_time_before_traj_end_) {
-      if(now>=fd_->next_plan_retry_time_) transitState(PLAN_TRAJ,"EPICON: trajectory replan");
+      if(now>=fd_->next_plan_retry_time_) transitState(PLAN_TRAJ,"exploration: trajectory replan");
     }
     break;
   }
   case CAUTION: {
     if(epicon_frontend_->ready() && epicon_frontend_->clearance(fd_->odom_pos_.cast<double>())>
         planner_manager_->gcopter_config_->dilateRadiusSoft) {
-      transitState(PLAN_TRAJ,"EPICON: execution origin reconnected");
+      transitState(PLAN_TRAJ,"exploration: execution origin reconnected");
       break;
     }
     if(fd_->caution_last_stop_request_time_.isZero() ||
         (now-fd_->caution_last_stop_request_time_).toSec()>=fp_->caution_stop_retry_interval_) {
-      stopTraj("EPICON: caution"); fd_->caution_last_stop_request_time_=now;
+      stopTraj("exploration: caution"); fd_->caution_last_stop_request_time_=now;
     }
     if(!fd_->caution_last_recovery_attempt_time_.isZero() &&
        (now-fd_->caution_last_recovery_attempt_time_).toSec()<fp_->caution_recovery_retry_interval_) break;
@@ -256,22 +254,22 @@ bool FastExplorationFSM::epiconFSMCallback() {
     if(planner_manager_->flyToSafeRegion(fd_->static_state_,false)) {
       planner_manager_->polyTraj2ROSMsg(fd_->newest_traj_,planner_manager_->local_data_.start_time_);
       planner_manager_->polyYawTraj2ROSMsg(fd_->newest_yaw_traj_,planner_manager_->local_data_.start_time_);
-      poly_yaw_traj_pub_.publish(fd_->newest_yaw_traj_); poly_traj_pub_.publish(fd_->newest_traj_);
+      publishCommittedTaskTrajectory();
       fd_->static_state_=false; epicon_normal_motion_=false;
       // Execute the certified relocation instead of braking it again on the
       // next CAUTION stop-retry tick.
-      transitState(EXEC_TRAJ,"EPICON: execute topology reconnection");
+      transitState(EXEC_TRAJ,"exploration: execute topology reconnection");
       break;
     }
     if(epicon_frontend_->ready() && epicon_frontend_->clearance(fd_->odom_pos_.cast<double>())>
-        planner_manager_->gcopter_config_->dilateRadiusSoft) transitState(PLAN_TRAJ,"EPICON: safe region");
+        planner_manager_->gcopter_config_->dilateRadiusSoft) transitState(PLAN_TRAJ,"exploration: safe region");
     break;
   }
   case FINISH:
     // Unmanaged EPICON FINISH remains reversible through the global timer.
     break;
   case REORIENT:
-    transitState(PLAN_TRAJ,"EPICON: replan from backend stop");
+    transitState(PLAN_TRAJ,"exploration: replan from backend stop");
     break;
   default: break;
   }

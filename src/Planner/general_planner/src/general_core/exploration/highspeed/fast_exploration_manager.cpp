@@ -2688,7 +2688,7 @@ double FastExplorationManager::failedGoalPenalty(
 int FastExplorationManager::planGlobalPath(const Eigen::Vector3d &pos,
                                            const Eigen::Vector3d &vel) {
   if (native_coverage_ && !targetDirectedModeConfigured()) {
-    ROS_ERROR_THROTTLE(1.0, "[EPICON] legacy coverage planner called by mistake; no fallback is permitted");
+    ROS_ERROR_THROTTLE(1.0, "[exploration] legacy coverage planner called by mistake; no fallback is permitted");
     return FAIL;
   }
   if (swarm_coordinator_ && swarm_coordinator_->enabled()) {

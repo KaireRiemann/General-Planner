@@ -117,6 +117,10 @@ class YoloeSemanticPublisher:
         if not self.class_names:
             raise RuntimeError("YOLOE prompt file is empty: {}".format(prompt_path))
 
+        if self.target_label not in self.class_names:
+            raise RuntimeError("target_label {!r} is absent from YOLOE prompts {}".format(
+                self.target_label, prompt_path))
+
         rospy.loginfo("Loading YOLOE model %s with %d prompts.", model_path, len(self.class_names))
         previous_directory = os.getcwd()
         try:
@@ -194,6 +198,7 @@ class YoloeSemanticPublisher:
                 rospy.logerr_throttle(1.0, "YOLOE frame processing failed: %s", exc)
 
     def _process_frame(self, rgb_msg, odom_msg):
+        inference_started = time.monotonic()
         rgb, compressed_rgb = self._prepare_frame(rgb_msg)
         # Use lower-score proposals only to maintain an already confirmed
         # target. The estimator still requires spatial association and strong
@@ -209,6 +214,10 @@ class YoloeSemanticPublisher:
                 retina_masks=False,
                 verbose=self.debug,
             )
+        inference_seconds = time.monotonic() - inference_started
+        if inference_seconds > 0.8:
+            rospy.logwarn_throttle(5.0, "YOLOE inference took %.3fs on %s; target initialization may reject stale observations. Use a faster model/device or smaller image size.",
+                                   inference_seconds, self.device)
         if not results:
             empty = BoundingBoxes()
             empty.header = rgb_msg.header

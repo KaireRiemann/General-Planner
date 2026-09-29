@@ -51,6 +51,46 @@ public:
     }
     void tick() { callMainFsmOnce(); }
 };
+
+class GoalAdmissionProbe : public fsm::FsmRos1 {
+public:
+    GoalAdmissionProbe(general_planner::GeneralPlanner &planner,
+                       const std::shared_ptr<ProbeClock> &clock) {
+        planner_ptr_ = general_planner::GeneralPlanner::Ptr(&planner, [](auto *) {});
+        ros_ptr_ = clock;
+        cfg_.task_mode = fsm::TaskMode::STATE_TO_STATE;
+        cfg_.diagnostic_log_en = false;
+        cfg_.click_yaw_en = false;
+        navigation_goal_sequence_ = 42;
+        navigation_goal_active_ = true;
+        started_ = true;
+        robot_state_.p << 100., 100., 100.; // deliberately stale FSM geometry
+    }
+    void verify(const general_utils::Vec3f &current) {
+        gi_.goal_p = current + general_utils::Vec3f(1., 0., 0.);
+        gi_.goal_yaw = NAN;
+        const auto previous = gi_.goal_p;
+        const general_utils::Quatf q = general_utils::Quatf::Identity();
+        const auto close = setGoalPosiAndYaw(current, q, fsm::GoalHeightMode::MESSAGE_HEIGHT);
+        require(close.result == GoalAdmission::REJECTED && close.reason == "too_close" &&
+                navigationGoalSequence() == 42 && (gi_.goal_p-previous).norm() == 0,
+                "goal admission used stale FSM pose or changed the active goal on rejection");
+        const auto duplicate = setGoalPosiAndYaw(previous, q, fsm::GoalHeightMode::MESSAGE_HEIGHT);
+        require(duplicate.result == GoalAdmission::ALREADY_ACTIVE && navigationGoalSequence() == 42,
+                "active duplicate did not acknowledge its existing sequence");
+        navigation_goal_active_ = false;
+        const auto retry = setGoalPosiAndYaw(previous, q, fsm::GoalHeightMode::MESSAGE_HEIGHT);
+        require(retry.result == GoalAdmission::ACCEPTED && navigationGoalSequence() == 43,
+                "a completed goal prevented a new request to the same location");
+        auto invalid = current; invalid.x() = NAN;
+        require(setGoalPosiAndYaw(invalid, q).reason == "non_finite_position" &&
+                setGoalPosiAndYaw(current, general_utils::Quatf(0.,0.,0.,0.)).reason == "invalid_quaternion",
+                "invalid goal admission did not return a rejection reason");
+        accept_external_goals_ = false;
+        require(setGoalPosiAndYaw(current, q).reason == "navigation_not_armed" &&
+                navigationGoalSequence() == 43, "disarmed admission changed the goal sequence");
+    }
+};
 }
 
 int main(int argc, char **argv) {
@@ -392,6 +432,15 @@ int main(int argc, char **argv) {
         require(retired_position.empty() && retired_yaw.empty() &&
                 !planner.getLatestTrackingDiagnosticSnapshot().has_committed_tracking,
                 "emergency stop did not retire the executable trajectory");
+        map->enableIndependentOdometry();
+        auto admission_state = services.robot_state;
+        admission_state.rcv = true;
+        map->updateOdometrySnapshot(admission_state);
+        const auto working_position = services.robot_state.p;
+        GoalAdmissionProbe admission_probe(planner, clock);
+        admission_probe.verify(admission_state.p);
+        require((services.robot_state.p-working_position).norm() == 0,
+                "goal admission mutated the optimizer's working robot state");
         std::cout << "tracking_frontend_map_self_test PASS: unknown, occlusion detour, collision segments, CIRI commit/replan, constant yaw setpoint + command-side slew servo, blocked head, from-rest fail without hold\n";
     } catch (const std::exception &e) {
         std::cerr << e.what() << '\n';

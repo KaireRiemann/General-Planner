@@ -1,0 +1,4 @@
+uint64 task_epoch
+uint64 request_id
+geometry_msgs/PoseStamped goal
+bool preserve_message_height

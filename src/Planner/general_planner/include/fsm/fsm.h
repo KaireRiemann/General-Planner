@@ -388,7 +388,12 @@ namespace fsm {
 
         bool closeToGoal(const double &thresh_dis);
 
-        void setGoalPosiAndYaw(
+        struct GoalAdmission {
+            enum Result { REJECTED, ACCEPTED, ALREADY_ACTIVE } result;
+            std::string reason;
+        };
+
+        GoalAdmission setGoalPosiAndYaw(
                 const Vec3f &p,
                 const Quatf &q,
                 GoalHeightMode height_mode = GoalHeightMode::CONFIGURED_CLICK_HEIGHT);

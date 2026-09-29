@@ -1587,7 +1587,7 @@ void TopoGraph::insertNode(TopoNode::Ptr &new_node, vector<TopoNode::Ptr> &nbr_n
   getIndex(new_node->center_, region_idx);
   auto region_node = getRegionNode(region_idx);
   if (region_node == nullptr) {
-    ROS_WARN_THROTTLE(1.0, "[EPICON] ignore topology insertion outside exploration regions");
+    ROS_WARN_THROTTLE(1.0, "[exploration] ignore topology insertion outside exploration regions");
     return;
   }
   region_node->topo_nodes_.insert(new_node);

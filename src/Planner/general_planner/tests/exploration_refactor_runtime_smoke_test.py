@@ -107,7 +107,7 @@ try:
     prefix = "/planner_runtime_node/"
     assert rospy.get_param(prefix + "exploration/frontend") == "epicon_pointcloud"
     assert rospy.get_param(prefix + "epicon/fsm/unknown_penalty_factor") == 1.5
-    assert any("[EPICON] native point-cloud frontier/topology/tour enabled" in x for x in runtime_logs)
+    assert any("[exploration] native point-cloud frontier/topology/tour enabled" in x for x in runtime_logs)
 
     def runtime_pid():
         code, _, uri = master.lookupNode("profile_test", "/planner_runtime_node")
@@ -131,7 +131,7 @@ try:
     assert any("[frontier] granularity=indoor" in line and
                "cluster_min_size=0.8 cluster_min_radius=1" in line
                for line in runtime_logs[first_log:])
-    print(package + ": heartbeat, native EPICON frontend, live mode switches: PASS")
+    print(package + ": heartbeat, point-cloud frontend, live mode switches: PASS")
 except Exception:
     print("\n".join(output))
     print("\n".join(runtime_logs[-30:]))

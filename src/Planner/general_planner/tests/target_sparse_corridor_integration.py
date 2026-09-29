@@ -235,9 +235,9 @@ try:
    'measured_height_range':measured_height,
    'coverage_bounds_violation':coverage_bounds_violation,
    'hold_handover_passed':handover_passed,
-   'global_updates':sum('[EPICON] global result=SUCCEED' in x for x in logs),
-   'trajectory_commits':sum('[EPICON] trajectory backend result=3' in x for x in logs),
-   'moving_global_updates':sum('[EPICON] global result=SUCCEED' in x and
+   'global_updates':sum('[exploration] global result=SUCCEED' in x for x in logs),
+   'trajectory_commits':sum('[exploration] trajectory backend result=3' in x for x in logs),
+   'moving_global_updates':sum('[exploration] global result=SUCCEED' in x and
        float(re.search(r'speed=([\d.e+-]+)',x).group(1))>.5 for x in logs),
    'legacy_coverage_updates':sum('[coverage candidate]' in x or '[coverage recovery] select' in x for x in logs)}
   if expect_epicon_blocked:
@@ -262,7 +262,7 @@ try:
   assert result['epicon']['legacy_coverage_updates']==0,'legacy coverage selection remained active'
   if expect_epicon_blocked:
    assert not any(h['result']=='succeeded' for h in history),'stationary actuator fault reported successful exploration'
-   assert any('[EPICON] defer failed goal' in x for x in logs),'stationary recovery never tried another goal'
+   assert any('[exploration] defer failed goal' in x for x in logs),'stationary recovery never tried another goal'
    assert history[-1]['t']<30,'recovery exceeded its configured bounded timeout'
   if expect_epicon_empty:
    assert result['epicon']['independent_empty_audits']>=4,'completion reused sensor evidence'

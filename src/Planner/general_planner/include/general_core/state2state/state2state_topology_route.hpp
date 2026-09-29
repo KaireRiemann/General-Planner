@@ -12,6 +12,8 @@
 
 namespace general_planner::state2state_task {
 
+enum class TopologyRoutePhase { QUERY, FOLLOW_GRAPH, LOCAL_GOAL };
+
 /**
  * Task-local consumer state for the persistent global topology graph.
  *
@@ -23,6 +25,7 @@ namespace general_planner::state2state_task {
 struct GlobalTopologyRouteContext {
     bool valid{false};
     bool reaches_goal{false};
+    TopologyRoutePhase phase{TopologyRoutePhase::QUERY};
     std::uint64_t route_id{0};
     std::uint64_t task_epoch{0};
     std::uint64_t world_epoch{0};
@@ -49,6 +52,14 @@ struct State2StateTopologyRouteRuntime {
     std::uint64_t consumed_task_generation{0};
     GlobalTopologyRouteContext route;
 
+    bool requiresTopologyLeg(const general_utils::Vec3f &goal) const {
+        return policy_enabled.load(std::memory_order_acquire) &&
+            (consumed_policy_generation != policy_generation.load(std::memory_order_acquire) ||
+             consumed_task_generation != task_generation.load(std::memory_order_acquire) ||
+             route.phase != TopologyRoutePhase::LOCAL_GOAL ||
+             (route.goal - goal).norm() > 1.0e-4);
+    }
+
     void setPolicy(const bool enabled) {
         const bool previous = policy_enabled.exchange(enabled,
                                                       std::memory_order_acq_rel);
@@ -70,10 +81,26 @@ inline void resetGlobalTopologyRoute(GlobalTopologyRouteContext &route,
                                      const std::string &reason) {
     route.valid = false;
     route.reaches_goal = false;
+    route.phase = TopologyRoutePhase::QUERY;
     route.raw_topology_route.clear();
     route.arc_length.clear();
     route.committed_route_s = 0.0;
     route.last_result = reason;
+}
+
+// Only measured odometry may release the graph leg. A future replan start or
+// a guide endpoint can already be at the relay while the vehicle is far away.
+inline bool finishTopologyLeg(GlobalTopologyRouteContext &route,
+                              const general_utils::Vec3f &measured_position,
+                              const double arrival_radius) {
+    if (!route.valid || route.phase != TopologyRoutePhase::FOLLOW_GRAPH ||
+        route.raw_topology_route.empty() || !measured_position.allFinite() ||
+        (measured_position - route.raw_topology_route.back()).norm() > arrival_radius) {
+        return false;
+    }
+    route.phase = TopologyRoutePhase::LOCAL_GOAL;
+    route.last_result = "TOPO_ANCHOR_REACHED_LOCAL_GOAL";
+    return true;
 }
 
 inline void buildRouteArcLength(const general_utils::vec_Vec3f &path,

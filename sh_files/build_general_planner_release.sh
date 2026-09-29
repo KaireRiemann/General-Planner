@@ -357,6 +357,9 @@ cp "${PLANNER_MSG_DIR}/ExplorationTaskRequest.msg" \
   "${GP_MSG_PKG_DST}/msg/ExplorationTaskRequest.msg"
 cp "${PLANNER_MSG_DIR}/TargetExplorationStatus.msg" \
   "${GP_MSG_PKG_DST}/msg/TargetExplorationStatus.msg"
+for _message in NavigationGoalRequest NavigationGoalAck ExplorationTrajectory PlannerPositionCommand; do
+  cp "${PLANNER_MSG_DIR}/${_message}.msg" "${GP_MSG_PKG_DST}/msg/${_message}.msg"
+done
 cat >"${GP_MSG_PKG_DST}/package.xml" <<'EOF'
 <?xml version="1.0"?>
 <package format="2">
@@ -369,9 +372,13 @@ cat >"${GP_MSG_PKG_DST}/package.xml" <<'EOF'
   <build_depend>message_generation</build_depend>
   <build_depend>std_msgs</build_depend>
   <build_depend>geometry_msgs</build_depend>
+  <build_depend>traj_utils</build_depend>
+  <build_depend>quadrotor_msgs</build_depend>
   <exec_depend>message_runtime</exec_depend>
   <exec_depend>std_msgs</exec_depend>
   <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>traj_utils</exec_depend>
+  <exec_depend>quadrotor_msgs</exec_depend>
 </package>
 EOF
 rm -rf "${GP_CPP_MSG_DST}"

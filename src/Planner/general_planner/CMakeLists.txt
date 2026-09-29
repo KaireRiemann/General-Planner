@@ -44,6 +44,10 @@ find_package(catkin REQUIRED COMPONENTS
 add_message_files(
         FILES
         ExplorationTaskRequest.msg
+        NavigationGoalRequest.msg
+        NavigationGoalAck.msg
+        ExplorationTrajectory.msg
+        PlannerPositionCommand.msg
         PlannerModeRequest.msg
         PlannerStatus.msg
         TargetExplorationStatus.msg
@@ -55,6 +59,8 @@ generate_messages(
         DEPENDENCIES
         std_msgs
         geometry_msgs
+        traj_utils
+        quadrotor_msgs
 )
 
 find_package(OpenMP REQUIRED)
@@ -314,6 +320,11 @@ add_executable(state2state_topology_route_self_test
         tests/state2state_topology_route_self_test.cpp
 )
 target_include_directories(state2state_topology_route_self_test PRIVATE include)
+
+add_executable(state2state_topology_frontend_test
+        tests/state2state_topology_frontend_test.cpp)
+add_dependencies(state2state_topology_frontend_test ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
+target_link_libraries(state2state_topology_frontend_test general_planner_core ${THIRD_PARTY})
 
 add_executable(coverage_guidance_self_test
         ${GENERAL_PLANNER_EXPLORATION_UTILS_DIR}/coverage_guidance/coverage_guidance_self_test.cpp
@@ -627,6 +638,12 @@ add_executable(target_route_handshake_integration_test tests/target_route_handsh
         src/general_core/planner_runtime/planner_command_gateway.cpp)
 add_dependencies(target_route_handshake_integration_test ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
 target_link_libraries(target_route_handshake_integration_test general_planner_core ${THIRD_PARTY})
+
+add_executable(navigation_goal_admission_integration_test tests/navigation_goal_admission_integration_test.cpp
+        src/general_core/planner_runtime/planner_command_gateway.cpp
+        src/general_core/planner_runtime/planner_supervisor.cpp)
+add_dependencies(navigation_goal_admission_integration_test ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
+target_link_libraries(navigation_goal_admission_integration_test general_planner_core ${THIRD_PARTY})
 if(CATKIN_ENABLE_TESTING)
   add_test(NAME target_route_runtime_self_test COMMAND target_route_runtime_self_test)
 endif()

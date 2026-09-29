@@ -14,6 +14,7 @@
 #include <cstdint>
 #include <geometry_msgs/PoseStamped.h>
 #include <general_planner/ExplorationTaskRequest.h>
+#include <general_planner/ExplorationTrajectory.h>
 #include <general_core/exploration/highspeed/fast_exploration_manager.h>
 #include <iostream>
 #include <mutex>
@@ -120,6 +121,9 @@ private:
   speed_pub_, land_pub_, task_status_pub_, execution_enabled_pub_;
   bool task_control_enable_{false};
   bool task_command_started_{false};
+  std::uint64_t active_task_epoch_{0};
+  ros::Publisher bound_trajectory_pub_;
+  void publishCommittedTaskTrajectory(bool with_yaw = true);
   bool last_plan_used_target_route_{false};
   TargetRoutePrefix prepared_target_route_;
   ros::WallTime target_last_motion_time_;

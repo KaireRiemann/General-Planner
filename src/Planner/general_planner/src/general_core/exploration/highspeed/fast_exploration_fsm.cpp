@@ -320,8 +320,7 @@ void FastExplorationFSM::FSMCallback(const ros::TimerEvent &e) {
       fd_->stationary_failure_refreshes_ = 0;
       fd_->next_plan_retry_time_ = ros::Time(0);
       resetFinishGate("PLAN_TRAJ succeed");
-      poly_yaw_traj_pub_.publish(fd_->newest_yaw_traj_);
-      poly_traj_pub_.publish(fd_->newest_traj_);
+      publishCommittedTaskTrajectory();
       task_command_started_ = true;
       publishTaskStatus();
       fd_->static_state_ = false;
@@ -701,7 +700,7 @@ void FastExplorationFSM::FSMCallback(const ros::TimerEvent &e) {
       auto info = &planner_manager_->local_data_;
       planner_manager_->polyTraj2ROSMsg(poly_traj_msg, info->start_time_);
       fd_->newest_traj_ = poly_traj_msg;
-      poly_traj_pub_.publish(fd_->newest_traj_);
+      publishCommittedTaskTrajectory(false);
       task_command_started_ = true;
       publishTaskStatus();
       if (!expl_manager_->coverageMotionEnabled()) ros::Duration(0.2).sleep();
@@ -977,6 +976,8 @@ void FastExplorationFSM::init(ros::NodeHandle &nh,
   land_pub_ =
       nh.advertise<quadrotor_msgs::TakeoffLand>("/px4ctrl/takeoff_land", 10);
 
+  bound_trajectory_pub_ = nh.advertise<general_planner::ExplorationTrajectory>(
+      "/planning/exploration/trajectory", 10);
   poly_traj_pub_ =
       nh.advertise<traj_utils::PolyTraj>("/planning/trajectory", 10);
   poly_yaw_traj_pub_ =

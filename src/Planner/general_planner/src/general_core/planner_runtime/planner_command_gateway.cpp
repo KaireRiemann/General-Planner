@@ -21,6 +21,9 @@ PlannerCommandGateway::PlannerCommandGateway(ros::NodeHandle &nh) : nh_(nh) {
   command_timeout_ = std::clamp(command_timeout_, 0.05, 2.0);
   publish_rate_ = std::clamp(publish_rate_, 20.0, 200.0);
 
+  nh_.param("require_exploration_task_binding", require_exploration_task_binding_, true);
+  bound_exploration_sub_ = nh_.subscribe("/planning/exploration/command_bound", 10,
+      &PlannerCommandGateway::boundExplorationCallback, this);
   output_pub_ =
       nh_.advertise<quadrotor_msgs::PositionCommand>(output_cmd_topic_, 50);
   navigation_sub_ = nh_.subscribe(navigation_cmd_topic_, 50,
@@ -37,6 +40,54 @@ PlannerCommandGateway::PlannerCommandGateway(ros::NodeHandle &nh) : nh_(nh) {
   ROS_INFO_STREAM("[planner_command_gateway] nav=" << navigation_cmd_topic_
                   << " exploration=" << exploration_cmd_topic_
                   << " output=" << output_cmd_topic_);
+}
+
+namespace {
+bool finiteReadyCommand(const quadrotor_msgs::PositionCommand &cmd) {
+  const auto finite = [](const auto &p) {
+    return std::isfinite(p.x) && std::isfinite(p.y) && std::isfinite(p.z);
+  };
+  return cmd.trajectory_flag == quadrotor_msgs::PositionCommand::TRAJECTORY_STATUS_READY &&
+      finite(cmd.position) && finite(cmd.velocity) && finite(cmd.acceleration) && finite(cmd.jerk) &&
+      std::isfinite(cmd.yaw) && std::isfinite(cmd.yaw_dot) &&
+      std::isfinite(cmd.vel_norm) && std::isfinite(cmd.acc_norm);
+}
+}
+
+void PlannerCommandGateway::prepareExplorationTask(
+    const std::uint64_t epoch, const std::string &task_id) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (epoch == exploration_task_epoch_ && task_id == exploration_task_id_) return;
+  exploration_task_epoch_ = epoch;
+  exploration_task_id_ = task_id;
+  have_exploration_cmd_ = false;
+}
+
+bool PlannerCommandGateway::authorizeExplorationIfReady(
+    const std::uint64_t epoch, const std::string &task_id) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (epoch != authorized_epoch_ || epoch != exploration_task_epoch_ ||
+      task_id != exploration_task_id_ || !have_exploration_cmd_ ||
+      (ros::WallTime::now() - exploration_rx_time_).toSec() > command_timeout_) return false;
+  authorized_owner_ = CommandOwner::EXPLORATION;
+  // This command was already validated while HOLD owned output. Preserve its
+  // receipt time instead of making the first valid sample artificially stale.
+  authorization_time_ = exploration_rx_time_;
+  clearSourceTimeoutHoldLocked();
+  return true;
+}
+
+void PlannerCommandGateway::boundExplorationCallback(
+    const general_planner::PlannerPositionCommandConstPtr &msg) {
+  if (!msg || !finiteReadyCommand(msg->command)) return;
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (msg->task_epoch != exploration_task_epoch_ || msg->task_id != exploration_task_id_ ||
+      exploration_task_id_.empty()) return;
+  const double age = (ros::Time::now() - msg->command.header.stamp).toSec();
+  if (msg->command.header.stamp.isZero() || age < -0.1 || age > command_timeout_) return;
+  exploration_cmd_ = msg->command;
+  exploration_rx_time_ = ros::WallTime::now();
+  have_exploration_cmd_ = true;
 }
 
 bool PlannerCommandGateway::submitGateCommand(const quadrotor_msgs::PositionCommand &command, std::uint64_t epoch) {
@@ -232,7 +283,7 @@ CommandSourceHealth PlannerCommandGateway::commandSourceHealth() const {
 
 void PlannerCommandGateway::navigationCallback(
     const quadrotor_msgs::PositionCommandConstPtr &msg) {
-  if (!msg) {
+  if (!msg || !finiteReadyCommand(*msg)) {
     return;
   }
   std::lock_guard<std::mutex> lock(mutex_);
@@ -261,7 +312,7 @@ void PlannerCommandGateway::navigationCallback(
 
 void PlannerCommandGateway::explorationCallback(
     const quadrotor_msgs::PositionCommandConstPtr &msg) {
-  if (!msg) {
+  if (!msg || require_exploration_task_binding_ || !finiteReadyCommand(*msg)) {
     return;
   }
   std::lock_guard<std::mutex> lock(mutex_);
