@@ -1089,7 +1089,7 @@ void PlannerSupervisor::explorationStatusCallback(
       status_.stable_hover = true;
       status_.command_owner = CommandOwner::HOLD;
       status_.mode_state = ModeState::EXP_PAUSED;
-      status_.reason = "target exploration blocked; topo graph retained";
+      status_.reason = "exploration blocked; world map retained";
       if (!exploration_terminal_hold_locked_) {
         exploration_terminal_hold_locked_ =
             authorizeHoldAtCurrentOdomLocked("exploration blocked");

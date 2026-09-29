@@ -81,6 +81,7 @@ class FastExplorationManager {
   friend struct ExplorationTourTestAccess;
 public:
   typedef shared_ptr<FastExplorationManager> Ptr;
+  bool native_coverage_{false};
   FastExplorationManager();
   ~FastExplorationManager();
   shared_ptr<ExplorationData> ed_;
@@ -103,7 +104,7 @@ public:
                                  TopoNode::Ptr &n2,
                                  float yaw2);
   void initialize(ros::NodeHandle &nh, FrontierManager::Ptr frt_manager,
-                  FastPlannerManager::Ptr planner_manager);
+                  FastPlannerManager::Ptr planner_manager, bool native_coverage = false);
   int planGlobalPath(const Vector3d &pos, const Vector3d &vel);
   void updateCoverageGuidance(const Vector3d &pos);
   CoverageFinishStatus coverageFinishStatus();
@@ -117,6 +118,10 @@ public:
   bool completeActiveCoverageGoalIfReached(const Vector3d &pos);
   bool hasActiveCoverageRecoveryGoal() const {
     return has_active_coverage_goal_;
+  }
+  bool activeCoverageObservation(CoverageObservationGate &gate) const;
+  const coverage_motion::Path &coverageTourContinuation() const {
+    return coverage_tour_continuation_;
   }
   int selectStableGoalIndex(const vector<TopoNode::Ptr> &viewpoints,
                             const vector<double> &distance_odom2vp,
@@ -166,6 +171,19 @@ public:
   bool targetRouteSelected() const { return target_route_selected_; }
 
 private:
+  struct CoverageCandidatesResult {
+    bool handoff_pending{false}, terminal_audit{false};
+    bool priority_floor_active{false}, ascending_to_priority_floor{false};
+    int first_priority_floor_rank{std::numeric_limits<int>::max()};
+  };
+  CoverageCandidatesResult appendCoverageCandidates(
+      const Eigen::Vector3d &pos, double speed, double yaw,
+      std::size_t frontier_count_before_defer, const CoveragePlan::Ptr &snapshot,
+      vector<TopoNode::Ptr> &viewpoints);
+  bool jointCoverageCandidatesEnabled() const;
+  coverage_motion::Path coverage_tour_continuation_;
+  bool coverage_joint_candidates_{true};
+  double coverage_tour_unknown_penalty_{1.5};
   coverage_route::Config coverage_route_config_;
   struct RouteTaskState {
     int deferred{0}, cluster{-1}; double last_seen{0.0}; bool verifying{false};
@@ -304,7 +322,7 @@ private:
   ros::Time target_no_progress_since_;
   std::string target_no_progress_reason_;
   double coverage_executable_candidate_max_speed_{0.50};
-  bool coverage_moving_handoff_enable_{false};
+  bool coverage_moving_handoff_enable_{true};
   double coverage_route_rank_weight_{0.15};
   bool coverage_floor_priority_enable_{false};
   double coverage_floor_priority_min_z_{3.8};

@@ -41,7 +41,7 @@
   <!-- Empty in normal operation.  Kept as a launch-level diagnostic hook so
        a crash can be reproduced under gdb without changing the node command. -->
   <arg name="planner_runtime_launch_prefix" default="" />
-  <!-- Runtime modes: hold, state2state, exploration (legacy coverage),
+  <!-- Runtime modes: hold, state2state, exploration (EPICON point-cloud coverage),
        target_exploration, gate, tracking, or reorient. Gate keeps the world
        map/topology alive while the internal SE3 gate task uses the same
        command gateway.  Reorient is the in-place / near-field yaw adjustment
@@ -133,11 +133,10 @@
   <arg name="max_cloud_age" default="0.5" />
   <arg name="heartbeat_timeout" default="1.5" />
   <arg name="task_control_enable" default="true" />
-  <!-- tour: LKH tour leads exploration ordering (epicon-style, no per-cycle
-       coverage bias); the coverage safety net (recovery + finish guard) stays
-       active.  target_exploration keeps guidance off. -->
+  <!-- Deprecated compatibility argument. Native EPICON coverage operates
+       directly on point clouds and never starts the ROG coverage worker. -->
   <arg name="coverage_guidance_mode"
-       default="$(eval 'off' if arg('initial_mode') == 'target_exploration' else 'tour')" />
+       default="off" />
   <arg name="original_frontend_compatibility" default="true" />
   <arg name="use_lkh" default="true" />
   <arg name="tsp_dir" default="/tmp" />

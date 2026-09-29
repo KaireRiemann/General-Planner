@@ -14,7 +14,7 @@
   <arg name="auto_start" default="false"/>
   <arg name="auto_start_delay" default="2.0"/>
   <arg name="trigger_topic" default="/move_base_simple/goal"/>
-  <arg name="coverage_guidance_mode" default="full"/>
+  <arg name="coverage_guidance_mode" default="off"/>
   <arg name="traj_server" default="true"/>
   <arg name="rviz" default="true"/>
 

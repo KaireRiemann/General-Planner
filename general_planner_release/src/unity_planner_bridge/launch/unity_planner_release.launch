@@ -40,7 +40,7 @@
   <arg name="traj_server" default="true" />
   <arg name="initial_mode" default="state2state" />
   <arg name="coverage_guidance_mode"
-       default="$(eval 'off' if arg('initial_mode') == 'target_exploration' else 'tour')" />
+       default="off" />
   <arg name="exploration_mission_mode" default="target" />
   <!-- Indoor first coverage plan is slower than outdoor; 2 s grace HOLDs
        before pos_cmd. Unity-only override, does not change occupancy. -->

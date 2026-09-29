@@ -474,14 +474,6 @@ Visualization Manager:
           Value: true
         - Class: rviz/MarkerArray
           Enabled: true
-          Marker Topic: /planner_runtime_node/coverage_guidance/route
-          Name: CoverageRoute
-          Namespaces:
-            {}
-          Queue Size: 10
-          Value: true
-        - Class: rviz/MarkerArray
-          Enabled: true
           Marker Topic: /planner_runtime_node/sf_cluster_marker
           Name: ExplorationFrontierMarkers
           Namespaces:

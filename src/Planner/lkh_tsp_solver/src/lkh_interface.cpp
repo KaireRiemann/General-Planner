@@ -1,6 +1,13 @@
 #include <lkh_tsp_solver/lkh_interface.h>
+#include <mutex>
+extern "C" {
+#include "LKH.h"
+#include "Genetic.h"
+}
 
 int solveTSPLKH(const char* input_file) {
+  static std::mutex solver_mutex;
+  std::lock_guard<std::mutex> lock(solver_mutex);
   GainType Cost, OldOptimum;
   double Time, LastTime = GetTime();
 

@@ -236,7 +236,7 @@ int main(int argc, char **argv) {
         global_map_runtime->mapManager());
     frontier_manager->init(world_nh, lio_interface, bubble_graph);
     exploration_manager->initialize(world_nh, frontier_manager,
-                                    exploration_planner);
+                                    exploration_planner, true);
     exploration_fsm->init(world_nh, exploration_manager, true);
 
     global_map_runtime->attachLioMap(lio_interface);

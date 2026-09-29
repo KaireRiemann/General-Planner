@@ -16,7 +16,7 @@
   <arg name="task_control_enable" default="false"/>
   <arg name="disable_local_trigger" default="false"/>
   <arg name="pos_cmd_topic" default="/planning/pos_cmd"/>
-  <arg name="coverage_guidance_mode" default="tour"/>
+  <arg name="coverage_guidance_mode" default="off"/>
   <arg name="traj_server" default="true"/>
 
   <arg name="fsm_replan_time" default="0.25"/>

@@ -1,0 +1,120 @@
+{
+  "reference": "ros1_ws/epicon_ws/src/epicon",
+  "files": [
+    {
+      "source": "global_planner/lidar_map/include/lidar_map/ikd_Tree.h",
+      "sha256": "b5a35e706ea23c7016c6a8313f248331d5203cc45430cf04f12f2ce03c7d1d81",
+      "destination": "include/epicon_native/lidar_map/ikd_Tree.h"
+    },
+    {
+      "source": "global_planner/lidar_map/include/lidar_map/lidar_map.h",
+      "sha256": "cf3f0f820008473e6c12142b15f25ecf44083d78a8c4a0ded48539d7aa1e83b1",
+      "destination": "include/epicon_native/lidar_map/lidar_map.h"
+    },
+    {
+      "source": "global_planner/lidar_map/src/sim_lio.cpp",
+      "sha256": "739c56b6d729a959aa3f79a397dcc51aa9b12f6359b2ec7d037a3e380ba48fbb",
+      "destination": "src/lidar_map/sim_lio.cpp"
+    },
+    {
+      "source": "global_planner/lidar_map/src/ikd_Tree.cpp",
+      "sha256": "f438dfd899f66ca9ff0d6bde892cd144b4b9b7c139320ad988af913f4bbc3118",
+      "destination": "src/lidar_map/ikd_Tree.cpp"
+    },
+    {
+      "source": "global_planner/lidar_map/src/lidar_map_interface.cpp",
+      "sha256": "ef0bfea17986213f1420110702a2c2e8deb105f7669cb643492fd9374edebcf2",
+      "destination": "src/lidar_map/lidar_map_interface.cpp"
+    },
+    {
+      "source": "global_planner/pointcloud_topo/include/pointcloud_topo/parallel_bubble_astar.h",
+      "sha256": "ab165a9c236090b5c19280a30e98f449dcec50f9b28ee580a15e7c4b36add8e4",
+      "destination": "include/epicon_native/pointcloud_topo/parallel_bubble_astar.h"
+    },
+    {
+      "source": "global_planner/pointcloud_topo/include/pointcloud_topo/graph_visualizer.hpp",
+      "sha256": "40831b3888cd9e42775ca590734214af4d8a7516807cab777bc3f8a43745bf20",
+      "destination": "include/epicon_native/pointcloud_topo/graph_visualizer.hpp"
+    },
+    {
+      "source": "global_planner/pointcloud_topo/include/pointcloud_topo/graph.h",
+      "sha256": "db41d83621dd395d443f4bb61bbc86ed48be8093e6c779bf68306533b3d0a95f",
+      "destination": "include/epicon_native/pointcloud_topo/graph.h"
+    },
+    {
+      "source": "global_planner/pointcloud_topo/src/historical_odom_graph.cpp",
+      "sha256": "adc002ad6db691d5a0cc4ecf7443bfbbc1fc15cef4779a8f1d2620c83983e862",
+      "destination": "src/pointcloud_topo/historical_odom_graph.cpp"
+    },
+    {
+      "source": "global_planner/pointcloud_topo/src/topo_skeleton_graph.cpp",
+      "sha256": "44bc971392fa16377cbdabb10526210c868ae67424a3d4e115d78e1dcf6bc668",
+      "destination": "src/pointcloud_topo/topo_skeleton_graph.cpp"
+    },
+    {
+      "source": "global_planner/pointcloud_topo/src/parallel_bubble_astar.cpp",
+      "sha256": "6bb4bc42bab84caca1b471ee73562c7512e9dd3d2ad7f56112d8b0d5975d0740",
+      "destination": "src/pointcloud_topo/parallel_bubble_astar.cpp"
+    },
+    {
+      "source": "global_planner/pointcloud_topo/src/bubble_split.cpp",
+      "sha256": "8918b637df316c57a0283f63b2bcc20250d3d7005211ebb2581d9152b23d4e65",
+      "destination": "src/pointcloud_topo/bubble_split.cpp"
+    },
+    {
+      "source": "global_planner/frontier_manager/include/frontier_manager/raycast.h",
+      "sha256": "c8629019d9db757d1c45ecc698b794f609e0d14b92820b4b52818813c87c5242",
+      "destination": "include/epicon_native/frontier_manager/raycast.h"
+    },
+    {
+      "source": "global_planner/frontier_manager/include/frontier_manager/frontier_manager.h",
+      "sha256": "a711e5a08a959162f61f2b2742cb714063b8695b64e59bf655677ac3edbbbd01",
+      "destination": "include/epicon_native/frontier_manager/frontier_manager.h"
+    },
+    {
+      "source": "global_planner/frontier_manager/src/frontier_viszer.cpp",
+      "sha256": "f8e893ea4f2307beacb59fcf72b4c995d0ae1a313ab64a29647f6f105eb01bd0",
+      "destination": "src/frontier_manager/frontier_viszer.cpp"
+    },
+    {
+      "source": "global_planner/frontier_manager/src/raycast.cpp",
+      "sha256": "64aac1410575fa1fd4e6b9398fdcf59f45195c91907ae6d5b31205c70dd26758",
+      "destination": "src/frontier_manager/raycast.cpp"
+    },
+    {
+      "source": "global_planner/frontier_manager/src/global_planning.cpp",
+      "sha256": "5f92f1fe4471e7c3917035f65c4744280498ee947ef3da7685ab79febaec320d",
+      "destination": "src/frontier_manager/global_planning.cpp"
+    },
+    {
+      "source": "global_planner/frontier_manager/src/frontier_manager.cpp",
+      "sha256": "f22b0e24b62da8b5db61d9ffbdbf7aacabbea8b600670faee9de578a291a4dc4",
+      "destination": "src/frontier_manager/frontier_manager.cpp"
+    },
+    {
+      "source": "local_planner/path_searching/include/path_searching/bubble_astar.h",
+      "sha256": "677832a06265b6dd66b8020c7fbaeabc6241e034d41457e1075b46b317b83fda",
+      "destination": "include/epicon_native/path_searching/bubble_astar.h"
+    },
+    {
+      "source": "local_planner/path_searching/src/bubble_astar.cpp",
+      "sha256": "8063a653e6e64fbfc7e7a963a4bd3ed38c6247aa25fc86062050616c18b9baaa",
+      "destination": "src/path_searching/bubble_astar.cpp"
+    },
+    {
+      "source": "global_planner/exploration_manager/include/epicon_planner/fast_exploration_manager.h",
+      "sha256": "1ab132b40d9f49afc57b91be2dd5833682d052033da0273194e6fdba12a8092e",
+      "destination": "include/epicon_native/epicon_planner/fast_exploration_manager.h"
+    },
+    {
+      "source": "global_planner/exploration_manager/include/epicon_planner/expl_data.h",
+      "sha256": "061c95c7e62f2b5b16fb0e60c3a05d8ed9be85d1dfeb6a7eb593f0000d38de46",
+      "destination": "include/epicon_native/epicon_planner/expl_data.h"
+    },
+    {
+      "source": "global_planner/exploration_manager/src/fast_exploration_manager.cpp",
+      "sha256": "bfff2e662d5c58aa7b5e9cdddf7825ca8d72d7b4b84e537bd207eb616bc66882",
+      "destination": "src/exploration_manager/fast_exploration_manager.cpp"
+    }
+  ]
+}

@@ -414,7 +414,8 @@ public:
                        bool rolling_horizon = false,
                        const TargetRouteExecutionContext &route = {},
                        const CoverageObservationContext &observation = {},
-                       const CoverageExecutionContext &coverage = {});
+                       const CoverageExecutionContext &coverage = {},
+                       bool pointcloud_frontend = false);
   // Revalidate a rolling coverage prefix at the same future head used by MINCO.
   bool prepareCoveragePath(std::vector<Eigen::Vector3f> &path, bool is_static,
                            double horizon = 26.0);
@@ -553,6 +554,8 @@ private:
   std::shared_ptr<rog_map::ROGMapROS> rog_map_;
   std::shared_ptr<general_planner::MapManager> map_manager_;
   std::shared_ptr<general_planner::CorridorGenerator> corridor_generator_;
+  std::shared_ptr<general_planner::CorridorGenerator> pointcloud_corridor_generator_;
+  double pointcloud_min_clearance_{0.65};
   std::shared_ptr<geometry_utils::Trajectory> committed_pos_traj_;
   std::shared_ptr<geometry_utils::Trajectory> committed_yaw_traj_;
   std::shared_ptr<geometry_utils::Trajectory> latest_exp_pos_traj_;

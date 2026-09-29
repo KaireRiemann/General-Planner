@@ -39,7 +39,8 @@ FastExplorationManager::~FastExplorationManager() {}
 
 void FastExplorationManager::initialize(
     ros::NodeHandle &nh, FrontierManager::Ptr frt_manager,
-    FastPlannerManager::Ptr planner_manager) {
+    FastPlannerManager::Ptr planner_manager, bool native_coverage) {
+  native_coverage_ = native_coverage;
 
   frontier_manager_ptr_ = frt_manager;
   planner_manager_ = planner_manager;
@@ -472,6 +473,9 @@ void FastExplorationManager::initialize(
   nh.param("coverage_guidance/moving_handoff_enable",
            coverage_moving_handoff_enable_,
            coverage_moving_handoff_enable_);
+  nh.param("coverage_guidance/joint_candidates", coverage_joint_candidates_, coverage_joint_candidates_);
+  nh.param("coverage_guidance/tour_unknown_penalty", coverage_tour_unknown_penalty_, coverage_tour_unknown_penalty_);
+  coverage_tour_unknown_penalty_ = std::max(1.0, coverage_tour_unknown_penalty_);
   nh.param("coverage_guidance/route_rank_weight",
            coverage_route_rank_weight_,
            coverage_route_rank_weight_);
@@ -564,8 +568,10 @@ void FastExplorationManager::initialize(
            lio->dead_area_max_boundary_vec_[i].cast<double>()});
     }
   }
-  coverage_guidance_ = std::make_shared<CoverageGuidanceManager>();
-  coverage_guidance_->initialize(nh, coverage_spec);
+  if (!native_coverage_) {
+    coverage_guidance_ = std::make_shared<CoverageGuidanceManager>();
+    coverage_guidance_->initialize(nh, coverage_spec);
+  }
 
   string tsp_base_dir;
   nh.param("exploration/tsp_dir", tsp_base_dir,
@@ -632,6 +638,7 @@ void FastExplorationManager::initialize(
 
 void FastExplorationManager::updateCoverageGuidance(
     const Eigen::Vector3d &pos) {
+  if (native_coverage_) return;
   if (targetDirectedModeConfigured()) {
     return;
   }
@@ -761,6 +768,7 @@ bool FastExplorationManager::retryActiveCoverageGoal() {
 }
 
 void FastExplorationManager::resetCoverageRecovery() {
+  coverage_tour_continuation_.clear();
   coverage_route_tasks_.clear(); coverage_route_observations_.clear();
   coverage_intention_ids_.clear(); coverage_intention_since_=0.0;
   if (!coverageMotionEnabled()) return;
@@ -928,6 +936,7 @@ bool FastExplorationManager::targetDirectedModeConfigured() const {
 }
 
 bool FastExplorationManager::coverageMotionEnabled() const {
+  if (native_coverage_) return false;
   return ep_ && ep_->coverage_motion_.enabled && !targetDirectedModeConfigured() &&
          (!swarm_coordinator_ || !swarm_coordinator_->enabled());
 }
@@ -2678,6 +2687,10 @@ double FastExplorationManager::failedGoalPenalty(
 
 int FastExplorationManager::planGlobalPath(const Eigen::Vector3d &pos,
                                            const Eigen::Vector3d &vel) {
+  if (native_coverage_ && !targetDirectedModeConfigured()) {
+    ROS_ERROR_THROTTLE(1.0, "[EPICON] legacy coverage planner called by mistake; no fallback is permitted");
+    return FAIL;
+  }
   if (swarm_coordinator_ && swarm_coordinator_->enabled()) {
     swarm_coordinator_->updateRobotState(pos, vel);
   }
@@ -3010,394 +3023,15 @@ int FastExplorationManager::planGlobalPath(const Eigen::Vector3d &pos,
                           CoverageRecoveryOutcome::TIMEOUT);
   }
 
+  const auto coverage_candidates = appendCoverageCandidates(
+      pos, current_speed, curr_yaw, viewpoint_count_before_defer, coverage_snapshot, viewpoints);
+  if (coverage_candidates.terminal_audit) return NO_FRONTIER;
+  const bool coverage_handoff_pending = coverage_candidates.handoff_pending;
+  const bool priority_floor_active = coverage_candidates.priority_floor_active;
+  const bool ascending_to_priority_floor = coverage_candidates.ascending_to_priority_floor;
+  const int first_priority_floor_rank = coverage_candidates.first_priority_floor_rank;
   const int active_clusters = frontier_manager_ptr_->activeClusterCount();
-  const int reachable_clusters =
-      frontier_manager_ptr_->reachableClusterCount();
-  // Coverage is a strict fallback phase.  Base the handoff on the executable
-  // set after failed-goal cooldown filtering, not on raw cached cluster counts:
-  // a reachable-but-deferred cluster cannot produce a trajectory.  Conversely,
-  // never mix a coverage target with an executable frontend viewpoint.
-  const bool no_executable_frontier = viewpoints.empty();
-  if (!no_executable_frontier) {
-    coverage_executable_empty_count_ = 0;
-    coverage_executable_empty_since_ = ros::Time(0);
-  } else {
-    if (coverage_executable_empty_since_.isZero()) {
-      coverage_executable_empty_since_ = coverage_now;
-      coverage_executable_empty_count_ = 1;
-    } else {
-      ++coverage_executable_empty_count_;
-    }
-  }
-  const double executable_empty_duration =
-      coverage_executable_empty_since_.isZero()
-          ? 0.0
-          : (coverage_now - coverage_executable_empty_since_).toSec();
-  const bool executable_empty_stable =
-      no_executable_frontier &&
-      ((coverageMotionEnabled() && viewpoint_count_before_defer > 0 &&
-        coverage_executable_empty_count_ >= 2 && executable_empty_duration >= 0.20) ||
-      (coverage_executable_empty_count_ >=
-          coverage_executable_empty_min_count_ &&
-      executable_empty_duration >=
-          coverage_executable_empty_min_duration_));
-  const bool moving_handoff_ready =
-      coverage_moving_handoff_enable_ &&
-      planner_manager_->hasCommittedTrajectory();
-  // End the fallback phase at an action boundary, not after exhausting every
-  // regenerated unknown-volume approach. The FSM will force/validate the full
-  // frontier audit and independently require repeated empty results and rest.
-  // Never interrupt an active observation or mistake cooldown for absence of
-  // reachable frontiers; renewed measured gain/frontiers reopen this gate.
-  // The pre-cooldown pool is an independent veto: a validated viewpoint must
-  // not disappear from completion merely because it is temporarily deferred.
-  updateCoverageCompletion(std::max(reachable_clusters, static_cast<int>(viewpoint_count_before_defer)),
-      executable_empty_stable,
-      coverage_guidance_ && coverage_guidance_->finishGuardEnabled() && coverage_snapshot && coverage_snapshot->valid,
-      coverage_snapshot ? coverage_snapshot->observed_voxel_count : -1);
-  if (coverageMotionEnabled() && coverage_terminal_audit_pending_ && !has_active_coverage_goal_) {
-    last_plan_empty_frontier_=active_clusters==0;
-    last_plan_no_reachable_=active_clusters>0;
-    ROS_INFO_STREAM_THROTTLE(1.0,"[coverage handoff] frontier audit takes precedence over new CP cleanup goals");
-    return NO_FRONTIER;
-  }
-  const bool recovery_enabled = !target_directed && coverage_guidance_ &&
-      coverage_guidance_->safetyNetEnabled();
-  const bool promote_coverage_candidates =
-      recovery_enabled &&
-      coverage_executable_candidate_enable_ &&
-      (structural_coverage || executable_empty_stable) &&
-      (moving_handoff_ready ||
-       current_speed <= coverage_executable_candidate_max_speed_) &&
-      no_executable_frontier;
-  const bool coverage_handoff_pending =
-      !structural_coverage && recovery_enabled &&
-      coverage_executable_candidate_enable_ &&
-      no_executable_frontier && !has_active_coverage_goal_ &&
-      (!executable_empty_stable ||
-       (!moving_handoff_ready &&
-        current_speed > coverage_executable_candidate_max_speed_));
-  if (coverage_handoff_pending) {
-    ROS_INFO_STREAM_THROTTLE(
-        0.5, "[coverage handoff] wait for stable executable-frontier-empty "
-                 "count="
-                 << coverage_executable_empty_count_ << "/"
-                 << coverage_executable_empty_min_count_ << " duration="
-                 << executable_empty_duration << "/"
-                 << coverage_executable_empty_min_duration_
-                 << "s raw_active=" << active_clusters
-                 << " raw_reachable=" << reachable_clusters
-                 << " speed=" << current_speed << "/"
-                 << coverage_executable_candidate_max_speed_
-                 << " moving_handoff=" << moving_handoff_ready
-                 << " blocker="
-                 << (!executable_empty_stable ? "empty_debounce"
-                                              : "vehicle_speed"));
-  }
-  bool priority_floor_active = false;
-  bool ascending_to_priority_floor = false;
-  int first_priority_floor_rank = std::numeric_limits<int>::max();
-  auto isPriorityFloorTarget = [&](const CoverageTarget &target) {
-    return !structural_coverage && coverage_floor_priority_enable_ &&
-           target.position.z() >= coverage_floor_priority_min_z_;
-  };
-  if (promote_coverage_candidates) {
-    auto coverage_targets = coverage_guidance_->unknownApproachTargets(pos, 160, 0.8);
-    if (structural_coverage) {
-      coverage_targets.clear();
-      if (coverage_snapshot) for (const auto &target : coverage_snapshot->ordered_targets)
-        if (target.type == CoverageTargetType::REACHABLE_UNKNOWN && target.has_approach &&
-            (target.approach_position-pos).norm() >= .8) coverage_targets.push_back(target);
-      // The persistent component inventory remains the recovery authority,
-      // even when the current sparse CP has no usable approach.
-      if (coverage_targets.empty())
-        coverage_targets = coverage_guidance_->unknownApproachTargets(pos, 160, 0.8);
-    }
-    // Canonicalize the executable approach before consulting recovery state.
-    // The raw approach_position is only a component hint; the selected entry
-    // from approach_candidates is the action that is actually inserted into
-    // the topology graph. Checking cooldown/exhaustion before this step let
-    // two regenerated ids mapped to one disconnected approach bypass each
-    // other's terminal record indefinitely.
-    std::vector<CoverageTarget> canonical_coverage_targets;
-    canonical_coverage_targets.reserve(coverage_targets.size());
-    for (CoverageTarget target : coverage_targets) {
-      if (coverageRecoveryExhausted(target)) {
-        continue;
-      }
-      if (!selectSafeCoverageApproach(target, false)) {
-        continue;
-      }
-      if (coverageRecoveryExhausted(target)) {
-        rememberCoverageRecoveryAlias(target);
-        continue;
-      }
-      canonical_coverage_targets.emplace_back(std::move(target));
-    }
-    coverage_targets.swap(canonical_coverage_targets);
-    const bool active_goal_is_priority =
-        has_active_coverage_goal_ &&
-        isPriorityFloorTarget(active_coverage_target_);
-    // Once ordinary frontiers are exhausted in a multi-floor scene, finish
-    // the executable upper-floor pool before returning to lower-floor
-    // perimeter cleanup. Preserve an already active lower-floor goal, then
-    // switch floors at the next handoff.
-    priority_floor_active =
-        coverage_floor_priority_enable_ &&
-        (!has_active_coverage_goal_ || active_goal_is_priority) &&
-        std::any_of(
-            coverage_targets.begin(), coverage_targets.end(),
-            [&](const CoverageTarget &target) {
-              return isPriorityFloorTarget(target) &&
-                     !coverageRecoveryDeferred(target, coverage_now);
-            });
-    if (priority_floor_active) {
-      for (const CoverageTarget &target : coverage_targets) {
-        if (isPriorityFloorTarget(target) &&
-            !coverageRecoveryDeferred(target, coverage_now)) {
-          first_priority_floor_rank =
-              std::min(first_priority_floor_rank, target.route_rank);
-        }
-      }
-      ascending_to_priority_floor =
-          pos.z() < coverage_floor_priority_min_z_ - 0.4 &&
-          first_priority_floor_rank != std::numeric_limits<int>::max();
-    }
-    // When the robot is still below the priority floor, retain the short CP
-    // prefix immediately preceding its first upper-floor observation. Those
-    // lower-z nodes describe the staircase/doorway transition in the free-zone
-    // graph. A pure z filter discarded them and asked MINCO to connect
-    // directly to scattered upper-floor endpoints.
-    auto isFloorPhaseTarget = [&](const CoverageTarget &target) {
-      if (!priority_floor_active) {
-        return true;
-      }
-      if (!ascending_to_priority_floor) {
-        return isPriorityFloorTarget(target);
-      }
-      const int transition_rank_begin =
-          std::max(0, first_priority_floor_rank -
-                          coverage_floor_transition_rank_window_);
-      return target.route_rank >= transition_rank_begin &&
-             target.route_rank <= first_priority_floor_rank;
-    };
-    // The persistent CP route remains a long-horizon guide, but execution is
-    // receding-horizon: expose several nearby/high-gain observations to the
-    // real topology cost instead of blindly taking the first two CP nodes.
-    auto localExecutionScore = [&](const CoverageTarget &target) {
-      const double distance =
-          target.has_approach
-              ? (target.approach_position - pos).norm()
-              : std::numeric_limits<double>::infinity();
-      const double bounded_rank =
-          std::min(40.0, static_cast<double>(std::max(0, target.route_rank)));
-      const double bounded_gain =
-          std::min(2.0, 0.35 * std::log1p(std::max(0, target.voxel_count)));
-      if (structural_coverage) return static_cast<double>(target.route_rank);
-      return distance + coverage_route_rank_weight_ * bounded_rank -
-             bounded_gain;
-    };
-    std::stable_sort(
-        coverage_targets.begin(), coverage_targets.end(),
-        [&](const CoverageTarget &first, const CoverageTarget &second) {
-          return localExecutionScore(first) < localExecutionScore(second);
-        });
-    if (has_active_coverage_goal_) {
-      std::stable_sort(
-          coverage_targets.begin(), coverage_targets.end(),
-          [&](const CoverageTarget &first, const CoverageTarget &second) {
-            const bool first_active =
-                first.stable_id != 0 &&
-                first.stable_id == active_coverage_target_.stable_id;
-            const bool second_active =
-                second.stable_id != 0 &&
-                second.stable_id == active_coverage_target_.stable_id;
-            return first_active && !second_active;
-          });
-    }
-    auto appendCoverageViewpoint = [&](const CoverageTarget &target) {
-      if (!target.has_approach || !target.approach_position.allFinite()) {
-        return false;
-      }
-      TopoNode::Ptr viewpoint = std::make_shared<TopoNode>();
-      viewpoint->is_viewpoint_ = true;
-      viewpoint->is_coverage_target_ = true;
-      viewpoint->frontier_cluster_id_ = -1;
-      viewpoint->coverage_target_id_ = target.stable_id;
-      viewpoint->center_ = target.approach_position.cast<float>();
-      viewpoint->coverage_unknown_ = target.position.cast<float>();
-      viewpoint->coverage_voxel_count_ = target.voxel_count;
-      viewpoint->coverage_route_rank_ = target.route_rank;
-      viewpoint->frontier_information_gain_ =
-          static_cast<double>(std::max(0, target.voxel_count));
-      const Eigen::Vector3d observe_direction =
-          target.position - target.approach_position;
-      viewpoint->yaw_ =
-          std::hypot(observe_direction.x(), observe_direction.y()) > 1.0e-3
-              ? std::atan2(observe_direction.y(), observe_direction.x())
-              : curr_yaw;
-      viewpoints.emplace_back(viewpoint);
-      return true;
-    };
-
-    // Drain the current bounded action before the full FSM audit. Do not
-    // let a newly generated speculative CP node start another cleanup tour.
-    if (coverage_terminal_audit_pending_) coverage_targets.clear();
-    int promoted = 0;
-    std::vector<CoverageTarget> promoted_identities;
-    promoted_identities.reserve(coverage_executable_candidate_max_count_);
-    auto alreadyPromoted = [&](const CoverageTarget &target) {
-      return std::any_of(
-          promoted_identities.begin(), promoted_identities.end(),
-          [&](const CoverageTarget &accepted) {
-            return sameCoverageExecutionTarget(
-                accepted, target, coverage_recovery_match_radius_);
-          });
-    };
-    if (coverageMotionEnabled() && has_active_coverage_goal_) {
-      CoverageTarget held=active_coverage_target_;
-      held.approach_candidates={held.approach_position};
-      if (!coverageRecoveryExhausted(held) && selectSafeCoverageApproach(held,false) &&
-          appendCoverageViewpoint(held)) {
-        ++promoted;
-        promoted_identities.push_back(held);
-      }
-    }
-    for (CoverageTarget target : coverage_targets) {
-      if (promoted >= coverage_executable_candidate_max_count_) {
-        break;
-      }
-      if (!isFloorPhaseTarget(target)) {
-        continue;
-      }
-      if (coverageRecoveryExhausted(target)) {
-        rememberCoverageRecoveryAlias(target);
-        continue;
-      }
-      const bool is_active =
-          has_active_coverage_goal_ && target.stable_id != 0 &&
-          target.stable_id == active_coverage_target_.stable_id;
-      if (!is_active && coverageRecoveryDeferred(target, coverage_now)) {
-        rememberCoverageRecoveryAlias(target);
-        continue;
-      }
-      if (alreadyPromoted(target)) {
-        continue;
-      }
-      if (appendCoverageViewpoint(target)) {
-        ++promoted;
-        promoted_identities.emplace_back(target);
-      }
-    }
-
-    // Preserve the normal 45 s room/floor rotation while another target is
-    // executable. Once both the frontend and normal coverage pool are empty,
-    // however, waiting for the coverage plateau before shortening cooldown is
-    // dead time: the current zero-terminal trajectory can end long before a
-    // retry is exposed. The retry remains bounded by the per-target attempt
-    // counters and terminal_retry_interval, so it cannot spin forever.
-    int terminal_retry_promoted = 0;
-    int terminal_eligible_promoted = 0;
-    int cooling_pending = 0;
-    double next_terminal_retry =
-        std::numeric_limits<double>::infinity();
-    if (promoted == 0 && no_executable_frontier) {
-      auto terminal_targets =
-          coverage_guidance_->unknownApproachTargets(pos, 160, 0.0);
-      std::stable_sort(
-          terminal_targets.begin(), terminal_targets.end(),
-          [&](const CoverageTarget &first, const CoverageTarget &second) {
-            return localExecutionScore(first) < localExecutionScore(second);
-          });
-      for (CoverageTarget target : terminal_targets) {
-        if (promoted >= coverage_executable_candidate_max_count_) {
-          break;
-        }
-        // The terminal set includes low-gain and cooling targets omitted from
-        // the preferred pool, so it must repeat the same canonicalization.
-        // Terminal failures are recorded here because there is no remaining
-        // normal executable action to make progress on them later.
-        if (coverageRecoveryExhausted(target)) {
-          continue;
-        }
-        if (!selectSafeCoverageApproach(target, true)) {
-          continue;
-        }
-        if (coverageRecoveryExhausted(target)) {
-          rememberCoverageRecoveryAlias(target);
-          continue;
-        }
-        if (!isFloorPhaseTarget(target)) {
-          continue;
-        }
-        if (alreadyPromoted(target)) {
-          continue;
-        }
-        const bool is_active =
-            has_active_coverage_goal_ && target.stable_id != 0 &&
-            target.stable_id == active_coverage_target_.stable_id;
-        if (is_active ||
-            !coverageRecoveryDeferred(target, coverage_now)) {
-          if (appendCoverageViewpoint(target)) {
-            ++promoted;
-            ++terminal_eligible_promoted;
-            promoted_identities.emplace_back(target);
-          }
-          continue;
-        }
-        rememberCoverageRecoveryAlias(target);
-        double cooling_remaining = 0.0;
-        if (!coverageRecoveryCooling(target, coverage_now,
-                                     &cooling_remaining)) {
-          continue;
-        }
-        ++cooling_pending;
-        double retry_after = cooling_remaining;
-        if (!coverage_terminal_retry_enable_ ||
-            !coverageTerminalRetryReady(target, coverage_now, &retry_after)) {
-          next_terminal_retry =
-              std::min(next_terminal_retry, retry_after);
-          continue;
-        }
-        if (appendCoverageViewpoint(target)) {
-          ++promoted;
-          ++terminal_retry_promoted;
-          promoted_identities.emplace_back(target);
-        }
-      }
-    }
-    if (terminal_retry_promoted > 0) {
-      ROS_WARN_STREAM_THROTTLE(
-          0.5, "[coverage terminal retry] promoted="
-                   << terminal_retry_promoted
-                   << " after normal eligible set drained; cooling="
-                   << cooling_pending
-                   << " retry_interval="
-                   << coverage_terminal_retry_interval_ << "s");
-    } else if (terminal_eligible_promoted > 0) {
-      ROS_INFO_STREAM_THROTTLE(
-          0.5, "[coverage terminal drain] promoted low-gain actionable="
-                   << terminal_eligible_promoted
-                   << " after preferred execution pool drained");
-    } else if (promoted == 0 && cooling_pending > 0) {
-      ROS_INFO_STREAM_THROTTLE(
-          0.5, "[coverage terminal retry] wait for bounded retry: cooling="
-                   << cooling_pending << " retry_after="
-                   << (std::isfinite(next_terminal_retry)
-                           ? std::max(0.0, next_terminal_retry)
-                           : coverage_terminal_retry_interval_)
-                   << "s");
-    }
-    if (promoted > 0) {
-      ROS_INFO_STREAM_THROTTLE(
-          0.5, "[coverage candidate] promoted=" << promoted
-                                                << " frontend_active="
-                                                << active_clusters
-                                                << " executable_frontiers="
-                                                << viewpoints.size() - promoted
-                                                << " speed=" << current_speed);
-    }
-  }
+  const int reachable_clusters = frontier_manager_ptr_->reachableClusterCount();
 
   // Do not ask the local planner to cross unknown space to the remote goal.
   // Once perception has made the endpoint known free, however, insert it as a
@@ -4146,6 +3780,17 @@ int FastExplorationManager::planGlobalPath(const Eigen::Vector3d &pos,
             viewpoint_reachable[viewpoint_idx]->center_);
       }
     }
+    coverage_tour_continuation_.clear();
+    if (coverageMotionEnabled() && ed_->global_tour_.size() >= 3) {
+      const auto next = std::find_if(viewpoint_reachable.begin(), viewpoint_reachable.end(),
+          [&](const TopoNode::Ptr &node) { return (node->center_ - ed_->global_tour_[2]).norm() < 1e-3; });
+      if (next != viewpoint_reachable.end()) {
+        vector<Eigen::Vector3f> continuation;
+        if (planner_manager_->fast_searcher_->topoSearch(
+                viewpoint_reachable[goal_idx], *next, 0.01, continuation) == BubbleAstar::REACH_END)
+          for (const auto &point : continuation) coverage_tour_continuation_.push_back(point.cast<double>());
+      }
+    }
     planner_manager_->local_data_.end_yaw_ =
         viewpoint_reachable[goal_idx]->yaw_;
     planner_manager_->topo_graph_->removeNodes(viewpoints);
@@ -4180,6 +3825,13 @@ int FastExplorationManager::planGlobalPath(const Eigen::Vector3d &pos,
       mat(i, j) = forward.total_cost;
       mat(j, i) = reverse.total_cost;
     }
+  }
+
+  if (jointCoverageCandidatesEnabled()) {
+    for (int j = 1; j < dim; ++j)
+      if (viewpoint_reachable[j - 1]->is_coverage_target_)
+        for (int i = 0; i < dim; ++i)
+          if (i != j) mat(i, j) *= coverage_tour_unknown_penalty_;
   }
 
   vector<int> indices;

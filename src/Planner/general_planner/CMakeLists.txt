@@ -65,7 +65,7 @@ find_package(Eigen3 REQUIRED)
 find_package(PCL REQUIRED)
 catkin_package(
         INCLUDE_DIRS include
-        LIBRARIES general_planner_core general_planner_exploration_utils general_planner_exploration
+        LIBRARIES general_planner_core general_planner_exploration_utils general_planner_exploration general_planner_epicon
         CATKIN_DEPENDS roscpp rospy std_msgs geometry_msgs nav_msgs sensor_msgs
                        visualization_msgs message_filters cv_bridge map_manager
                        lkh_tsp_solver traj_utils tf message_runtime aperture_detector
@@ -148,7 +148,16 @@ target_link_libraries(general_planner_exploration_utils PUBLIC
         OpenMP::OpenMP_CXX
 )
 
+file(GLOB_RECURSE EPICON_NATIVE_SOURCES CONFIGURE_DEPENDS third_party/epicon/src/*.cpp)
+add_library(general_planner_epicon STATIC ${EPICON_NATIVE_SOURCES}
+        ${GENERAL_PLANNER_EXPLORATION_DIR}/epicon_frontend.cpp)
+target_include_directories(general_planner_epicon PRIVATE third_party/epicon/include PUBLIC include)
+target_compile_options(general_planner_epicon PRIVATE -Wno-error=unused-variable -Wno-error=unused-but-set-variable)
+target_link_libraries(general_planner_epicon PUBLIC ${catkin_LIBRARIES} ${PCL_LIBRARIES} ${OpenCV_LIBS} OpenMP::OpenMP_CXX)
+add_dependencies(general_planner_epicon ${catkin_EXPORTED_TARGETS})
+
 add_library(general_planner_exploration STATIC
+        ${GENERAL_PLANNER_EXPLORATION_DIR}/coverage_candidates.cpp
         ${GENERAL_PLANNER_EXPLORATION_DIR}/coverage_local_route.cpp
         ${GENERAL_PLANNER_EXPLORATION_DIR}/fast_exploration_manager.cpp
         ${GENERAL_PLANNER_EXPLORATION_DIR}/exploration_tour.cpp
@@ -169,6 +178,7 @@ target_compile_options(general_planner_exploration PRIVATE
 target_link_libraries(general_planner_exploration PUBLIC
         general_planner_core
         general_planner_exploration_utils
+        general_planner_epicon
         ${THIRD_PARTY}
         OpenMP::OpenMP_CXX
 )
@@ -178,6 +188,7 @@ add_executable(exploration_node
         ${GENERAL_PLANNER_EXPLORATION_DIR}/dynamic_bounding_box_selector.cpp
         ${GENERAL_PLANNER_EXPLORATION_DIR}/fast_exploration_fsm.cpp
         ${GENERAL_PLANNER_EXPLORATION_DIR}/fsm_utils.cpp
+        ${GENERAL_PLANNER_EXPLORATION_DIR}/epicon_runtime.cpp
 )
 add_dependencies(exploration_node
         ${${PROJECT_NAME}_EXPORTED_TARGETS}
@@ -232,6 +243,7 @@ add_executable(planner_runtime_node
         ${GENERAL_PLANNER_EXPLORATION_DIR}/dynamic_bounding_box_selector.cpp
         ${GENERAL_PLANNER_EXPLORATION_DIR}/fast_exploration_fsm.cpp
         ${GENERAL_PLANNER_EXPLORATION_DIR}/fsm_utils.cpp
+        ${GENERAL_PLANNER_EXPLORATION_DIR}/epicon_runtime.cpp
 )
 add_dependencies(planner_runtime_node
         ${${PROJECT_NAME}_EXPORTED_TARGETS}
@@ -662,3 +674,13 @@ target_link_libraries(tracking_runtime_self_test general_planner_core ${THIRD_PA
 if(CATKIN_ENABLE_TESTING)
   add_test(NAME tracking_runtime_self_test COMMAND tracking_runtime_self_test)
 endif()
+
+add_executable(epicon_frontend_replay_test tests/epicon_frontend_replay_test.cpp)
+add_executable(epicon_execution_policy_self_test tests/epicon_execution_policy_self_test.cpp)
+if(CATKIN_ENABLE_TESTING)
+  add_test(NAME epicon_execution_policy_self_test COMMAND epicon_execution_policy_self_test)
+endif()
+target_link_libraries(epicon_frontend_replay_test general_planner_epicon ${THIRD_PARTY})
+add_executable(epicon_tour_self_test tests/epicon_tour_self_test.cpp)
+target_include_directories(epicon_tour_self_test PRIVATE third_party/epicon/include)
+target_link_libraries(epicon_tour_self_test general_planner_epicon ${THIRD_PARTY})

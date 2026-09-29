@@ -79,7 +79,7 @@ int main(int argc, char **argv) {
   parallel_path_finder->init(nh, lio_interface);
   planner_manager->initPlanModules(nh, parallel_path_finder, graph);
   frontier_manager->init(nh, lio_interface, graph);
-  explore_manager->initialize(nh, frontier_manager, planner_manager);
+  explore_manager->initialize(nh, frontier_manager, planner_manager, true);
   expl_fsm.init(nh, explore_manager);
 
   // Startup must not depend on simulated time.  With /use_sim_time=true and

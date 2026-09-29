@@ -105,6 +105,7 @@ void FastExplorationFSM::FSMCallback(const ros::TimerEvent &e) {
       return;
     }
   }
+  if (usingEpicon() && epiconFSMCallback()) return;
   switch (state_) {
   case INIT: {
     if (!fd_->have_odom_) {
@@ -749,6 +750,7 @@ void FastExplorationFSM::FSMCallback(const ros::TimerEvent &e) {
 void FastExplorationFSM::init(ros::NodeHandle &nh,
                               FastExplorationManager::Ptr &explorer,
                               const bool external_sensor_ingress) {
+  node_ = nh;
   external_sensor_ingress_ = external_sensor_ingress;
   fp_.reset(new FSMParam);
   fd_.reset(new FSMData);
@@ -886,6 +888,8 @@ void FastExplorationFSM::init(ros::NodeHandle &nh,
   // expl_manager_->initialize(nh);
   expl_manager_ = explorer;
   planner_manager_ = expl_manager_->planner_manager_;
+  epicon_frontend_.reset(new fast_planner::EpiconFrontend);
+  epicon_frontend_->init(nh);
 
   state_ = EXPL_STATE::INIT;
   fd_->have_odom_ = false;
@@ -1052,6 +1056,7 @@ void FastExplorationFSM::battaryCallback(
 
 void FastExplorationFSM::updateTopoAndGlobalPath() {
   refreshRuntimeOdometry();
+  if (usingEpicon()) { updateEpiconGlobalPath(); return; }
   const auto frontend_started=ros::WallTime::now();
   const auto account_frontend=[&](int *) {
     if (expl_manager_->coverageMotionEnabled())

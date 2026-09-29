@@ -2,7 +2,7 @@
 """Isolated runtime + ideal position-command follower + raycast corridor.
 This is a synthetic software closed loop, not Unity/dynamics flight validation.
 """
-import os,socket,subprocess,time,signal,threading,json,math,xmlrpc.client,tempfile
+import os,socket,subprocess,time,signal,threading,json,math,xmlrpc.client,tempfile,re
 from pathlib import Path
 import numpy as np
 output_dir=os.environ.get('TARGET_TEST_OUTPUT_DIR')
@@ -34,8 +34,20 @@ try:
  from sensor_msgs.point_cloud2 import create_cloud_xyz32
  from std_msgs.msg import Header, String
  rospy.init_node('synthetic_corridor_test',anonymous=True,disable_signals=True)
+ epicon=bool(os.environ.get('TEST_EPICON'))
+ expect_epicon_blocked=epicon and bool(os.environ.get('TEST_EXPECT_EPICON_BLOCKED'))
+ expect_epicon_empty=epicon and bool(os.environ.get('TEST_EXPECT_EPICON_EMPTY'))
+ native_audits=[]; native_results=[]
+ def native_audit(m):
+  native_audits.append(json.loads(m.data))
+ def native_result(m):
+  native_results.append(json.loads(m.data))
+ rospy.Subscriber('/planning/exploration/epicon_status',String,native_audit,queue_size=100)
+ rospy.Subscriber('/planning/coverage_result',String,native_result,queue_size=10)
  u_shape=bool(os.environ.get('TEST_U_SHAPE'))
- follow_commands=not u_shape
+ epicon_boxes=[(np.array(low),np.array(high)) for low,high in [([-8.,-4.,0.],[-3.,4.,5.]),([3.,-8.,0.],[8.,-3.,4.]),([3.,3.,0.],[8.,8.,5.])]]
+ minimum_clearance=float('inf')
+ follow_commands=not u_shape and not expect_epicon_blocked
  pos=np.array([float(os.environ.get('TEST_START_X','0')),0.,1.5]); vel=np.zeros(3);yaw=0.;cmd=None;status=None;logs=[];history=[];running=True
  def command(m):
   global cmd
@@ -55,22 +67,33 @@ try:
  az,el=np.meshgrid(np.linspace(-math.pi,math.pi,240,endpoint=False),np.linspace(-math.radians(float(os.environ.get('TEST_HALF_FOV','30'))),math.radians(float(os.environ.get('TEST_HALF_FOV','30'))),64))
  directions=np.c_[np.cos(el).ravel()*np.cos(az).ravel(),np.cos(el).ravel()*np.sin(az).ravel(),np.sin(el).ravel()]
  def sensor_loop():
-  global pos,vel,yaw
+  global pos,vel,yaw,minimum_clearance
   tick=0
   while running and not rospy.is_shutdown():
    if cmd is not None and follow_commands:
     desired=np.array([cmd.position.x,cmd.position.y,cmd.position.z]);delta=desired-pos
     pos=pos+delta*min(1.,.12/max(float(np.linalg.norm(delta)),1e-9))
     vel=np.array([cmd.velocity.x,cmd.velocity.y,cmd.velocity.z]);yaw=cmd.yaw
+   if epicon:
+    minimum_clearance=min(minimum_clearance,float(pos[2]),*(float(np.linalg.norm(np.maximum(np.maximum(low-pos,pos-high),0.))) for low,high in epicon_boxes))
    stamp=rospy.Time.now();o=Odometry();o.header.stamp=stamp;o.header.frame_id='world';o.child_frame_id='body'
    o.pose.pose.position.x,o.pose.pose.position.y,o.pose.pose.position.z=pos.tolist()
    o.pose.pose.orientation.z=math.sin(yaw/2);o.pose.pose.orientation.w=math.cos(yaw/2)
    o.twist.twist.linear.x,o.twist.twist.linear.y,o.twist.twist.linear.z=vel.tolist();odom_pub.publish(o)
    if tick%10==0:
     distances=np.full(len(directions),np.inf)
-    for axis,boundary in [(0,-15.),(0,180.),(1,-6.),(1,6.),(2,0.),(2,4.5)]:
+    planes=[(0,-12.),(0,12.),(1,-12.),(1,12.),(2,0.),(2,8.)] if epicon else [(0,-15.),(0,180.),(1,-6.),(1,6.),(2,0.),(2,4.5)]
+    for axis,boundary in planes:
      with np.errstate(divide='ignore',invalid='ignore'): t=(boundary-pos[axis])/directions[:,axis]
      distances=np.minimum(distances,np.where(t>0,t,np.inf))
+    if epicon:
+     # Occluding buildings make native point-cloud frontiers; a featureless
+     # corridor is insufficient to exercise the EPICON observation model.
+     for low,high in epicon_boxes:
+      with np.errstate(divide='ignore',invalid='ignore'):
+       first=(np.array(low)-pos)/directions;second=(np.array(high)-pos)/directions
+      enter=np.max(np.minimum(first,second),axis=1);leave=np.min(np.maximum(first,second),axis=1)
+      distances=np.minimum(distances,np.where((enter>0)&(leave>=enter),enter,np.inf))
     if u_shape:
      # A wall between start (0,0) and goal (4,0), open only above y=3.
      # Exact ray/AABB intersection, not an artificial point waypoint barrier.
@@ -79,7 +102,7 @@ try:
       t2=(np.array([2.5,3.,4.5])-pos)/directions
      enter=np.max(np.minimum(t1,t2),axis=1);leave=np.min(np.maximum(t1,t2),axis=1)
      distances=np.minimum(distances,np.where((enter>0)&(leave>=enter),enter,np.inf))
-    valid=np.isfinite(distances) & (distances < 30.)
+    valid=np.isfinite(distances) & (distances < float(os.environ.get('TEST_SENSOR_RANGE','30')))
     pts=pos+directions[valid]*distances[valid,None]
     cloud_pub.publish(create_cloud_xyz32(Header(stamp=stamp,frame_id='world'),pts.tolist()))
    tick+=1;time.sleep(.01)
@@ -91,7 +114,19 @@ try:
  if os.environ.get('TEST_STARTUP_GRACE'):
   launch_args.append('source_startup_grace_duration:='+os.environ['TEST_STARTUP_GRACE'])
  if os.environ.get('TEST_EXPLORATION_OVERLAY'):
-  launch_args.append('exploration_overlay_config:='+os.environ['TEST_EXPLORATION_OVERLAY'])
+  overlay=os.environ['TEST_EXPLORATION_OVERLAY']
+  if expect_epicon_blocked or expect_epicon_empty:
+   import yaml
+   parameters=yaml.safe_load(Path(overlay).read_text())
+   if expect_epicon_blocked:
+    parameters.setdefault('epicon',{}).update({'execution/stall_timeout':12.0,'execution/stall_reselect':3.0})
+   if expect_epicon_empty:
+    # Deliberately make every cluster dormant to exercise an audited empty
+    # pool. This fixture tests termination, not physical coverage quality.
+    parameters.setdefault('epicon',{})['FrontierManager/cluster_min_size']=1000.0
+   overlay=str(base/'termination_fixture.yaml')
+   Path(overlay).write_text(yaml.safe_dump(parameters))
+  launch_args.append('exploration_overlay_config:='+overlay)
  if os.environ.get('TEST_NO_TOPOLOGY'):
   launch_args.append('global_topology_config:='+str(Path(__file__).resolve().parent/'config/target_route_no_topology.yaml'))
  if os.environ.get('TEST_TARGET_ROUTE_CONFIG'):
@@ -127,14 +162,19 @@ try:
    coverage_boxes.append((np.array(rospy.get_param(prefix+'down')),np.array(rospy.get_param(prefix+'up'))))
  coverage_moved=False
  while time.monotonic()-began<180:
-  history.append({'t':time.monotonic()-began,'p':pos.tolist(),'result':status.task_result_str,'phase':status.phase_str})
+  history.append({'t':time.monotonic()-began,'p':pos.tolist(),'speed':float(np.linalg.norm(vel)),'result':status.task_result_str,'phase':status.phase_str})
   if any('outside the active exploration capacity' in x for x in logs):raise AssertionError('old capacity rejection')
   if u_shape:assert not (1.3<pos[0]<2.7 and pos[1]<3.2),'command crossed U-wall safety margin'
   if coverage_seconds:
    assert any(np.all(pos>=low) and np.all(pos<=high) for low,high in coverage_boxes),'coverage command escaped its boxes'
-   coverage_moved=coverage_moved or np.linalg.norm(pos-np.array([0.,0.,1.5]))>1.
+   coverage_moved=coverage_moved or bool(np.linalg.norm(pos-np.array([0.,0.,1.5]))>1.)
+   if expect_epicon_empty and status.task_result_str=='succeeded':
+    success=True;break
+   if os.environ.get('TEST_REQUIRE_COVERAGE_FINISH') and status.task_result_str=='succeeded':
+    success=coverage_moved;break
    if time.monotonic()-began>=coverage_seconds:
-    success=coverage_moved and status.active_mode_str=='exploration';break
+    success=coverage_moved and status.active_mode_str=='exploration' and (
+        not os.environ.get('TEST_REQUIRE_COVERAGE_FINISH') or status.task_result_str=='succeeded');break
   elif status.task_result_str=='succeeded' and np.linalg.norm(pos[:2]-np.array([goal.pose.position.x,0.]))<1.:
    if return_trip and not return_sent:
     if status.ready_for_new_task:
@@ -142,17 +182,69 @@ try:
      goal.pose.position.x=float(os.environ.get('TEST_START_X','0'))
      goal.header.stamp=rospy.Time.now();goal_pub.publish(goal)
    else:success=True;break
-  if status.task_result_str in ['blocked','failed'] and time.monotonic()-began>3:break
+  if status.task_result_str in ['blocked','failed'] and time.monotonic()-began>3:
+   success=expect_epicon_blocked and status.task_result_str=='blocked'
+   break
   if launch.poll() is not None:raise RuntimeError('runtime exited')
   time.sleep(.5)
+ handover_passed=False
+ if epicon and success:
+  mode_pub.publish(String(data='hold'))
+  deadline=time.monotonic()+20
+  while time.monotonic()<deadline:
+   if status.active_mode_str=='hold' and status.ready_for_new_task and np.linalg.norm(vel)<.15:
+    handover_passed=True;break
+   if launch.poll() is not None:raise RuntimeError('runtime exited during handover')
+   time.sleep(.1)
  route_commits=sum('[target route commit] accepted' in x and 'source=KNOWN_' in x for x in logs)
  local_goal_commits=sum('[target route commit] accepted' in x and 'source=LOCAL_GOAL' in x for x in logs)
  return_commits=sum('[target route commit] accepted' in x and 'source=KNOWN_' in x for x in logs[return_log_start:]) if return_sent else 0
  validation_pending=sum('[target route]' in x and 'ROUTE_VALIDATION_PENDING' in x for x in logs)
  result={'success':success,'final':pos.tolist(),'elapsed':time.monotonic()-began,'result':status.task_result_str,'reason':status.reason,'known_route_commits':route_commits,'local_goal_commits':local_goal_commits,'return_route_commits':return_commits,'validation_pending':validation_pending,'history':history}
+ if coverage_seconds:
+  result['coverage_execution']={
+   'mixed_candidate_updates':sum('[coverage candidate]' in x and 'joint=1' in x and
+       re.search(r'executable_frontiers=[1-9]',x) is not None for x in logs),
+   'moving_candidate_updates':sum('[coverage candidate]' in x and
+       float(re.search(r'speed=([\d.e+-]+)',x).group(1))>.5 for x in logs),
+   'measured_passages':sum('measured observation passage' in x for x in logs),
+   'coverage_passages':sum('measured observation passage' in x and 'coverage=1' in x for x in logs),
+   'active_goal_finish_guard':sum('retain active observation after' in x for x in logs),
+   'speed_admission_waits':sum('blocker=vehicle_speed' in x for x in logs)}
+ if epicon:
+  result['epicon']={
+   'minimum_geometry_clearance':minimum_clearance,
+   'hold_handover_passed':handover_passed,
+   'global_updates':sum('[EPICON] global result=SUCCEED' in x for x in logs),
+   'trajectory_commits':sum('[EPICON] trajectory backend result=3' in x for x in logs),
+   'moving_global_updates':sum('[EPICON] global result=SUCCEED' in x and
+       float(re.search(r'speed=([\d.e+-]+)',x).group(1))>.5 for x in logs),
+   'legacy_coverage_updates':sum('[coverage candidate]' in x or '[coverage recovery] select' in x for x in logs)}
+  if expect_epicon_blocked:
+   result['epicon']['actuator_fault']=True
+  if expect_epicon_empty:
+   result['epicon']['empty_pool_fixture']=True
+   result['epicon']['independent_empty_audits']=len({x['cloud_revision'] for x in native_audits if x.get('audited') and x['result']=='NO_FRONTIER'})
+   result['epicon']['termination_evidence']=native_results
  (base/'synthetic_result.json').write_text(json.dumps(result,indent=2))
  print(json.dumps({k:v for k,v in result.items() if k!='history'}),flush=True)
  assert success,'synthetic corridor not completed; inspect runtime log'
+ if epicon:
+  assert handover_passed,'EPICON did not release command ownership into a verified hold'
+  assert minimum_clearance>=.30,'trajectory crossed synthetic obstacle clearance'
+  if not expect_epicon_empty:
+   assert result['epicon']['trajectory_commits']>=2,'native paths did not reach General trajectory optimizer'
+  assert result['epicon']['legacy_coverage_updates']==0,'legacy coverage selection remained active'
+  if expect_epicon_blocked:
+   assert not any(h['result']=='succeeded' for h in history),'stationary actuator fault reported successful exploration'
+   assert any('[EPICON] defer failed goal' in x for x in logs),'stationary recovery never tried another goal'
+   assert history[-1]['t']<30,'recovery exceeded its configured bounded timeout'
+  if expect_epicon_empty:
+   assert result['epicon']['independent_empty_audits']>=4,'completion reused sensor evidence'
+   assert any(x.get('result')=='COMPLETE' and x.get('verified_frames',0)>=4 for x in native_results),'completion lacked settled fresh audits'
+ if os.environ.get('TEST_REQUIRE_JOINT_COVERAGE'):
+  assert result['coverage_execution']['mixed_candidate_updates']>0,'joint candidate pipeline was not exercised'
+  assert result['coverage_execution']['speed_admission_waits']==0,'joint coverage waited for low-speed admission'
  if os.environ.get('TEST_REQUIRE_ROUTE'):assert route_commits>0,'task finished without executing a known route'
  if return_trip:assert return_sent and return_commits>0,'return task did not execute the existing topology route'
  if os.environ.get('TEST_NO_TOPOLOGY'):assert route_commits==0,'disabled topology unexpectedly executed a known route'

@@ -1,4 +1,5 @@
 #include <general_core/exploration/highspeed/coverage_motion_policy.h>
+#include <general_core/exploration/highspeed/coverage_candidate_policy.h>
 #include <iostream>
 #include <stdexcept>
 
@@ -12,6 +13,32 @@ void require(bool condition, const char *reason) {
 
 int main() {
   try {
+    for (double speed : {0.0, 0.49, 0.51, 2.0}) {
+      const auto active = coverage_candidates::admission(
+          true, false, true, true, false, true, false, false, speed, 0.5);
+      require(active.retain_active, "speed threshold revoked an active observation");
+      require(active.admit_new == (speed <= .5), "legacy entry threshold changed");
+      require(active.admit_new || active.waiting,
+              "blocked admission was misclassified as a terminal empty pool");
+      for (bool empty : {false, true}) {
+        const auto joint = coverage_candidates::admission(
+            true, true, empty, false, false, false, false, false, speed, .5);
+        require(joint.admit_new && !joint.waiting, "joint tour retained frontier/speed phase barriers");
+      }
+    }
+    const auto drain = coverage_candidates::admission(true,true,true,true,false,true,true,true,2,.5);
+    require(drain.retain_active && !drain.admit_new, "terminal audit restarted cleanup or canceled its active action");
+    const auto off = coverage_candidates::admission(false,true,true,true,false,true,false,true,0,.5);
+    require(!off.admit_new && !off.retain_active && !off.waiting, "disabled policy affected another task");
+    CoverageObservationGate evidence;
+    evidence.goal = Vector3d(3,0,1); evidence.radius=.5; evidence.yaw=0; evidence.yaw_tolerance=.2;
+    require(observedAtGate(evidence,evidence.goal,0,10,9.8), "fresh measured observation rejected");
+    require(!observedAtGate(evidence,evidence.goal,0,10,9) &&
+            !observedAtGate(evidence,evidence.goal,0,10,10.1) &&
+            !observedAtGate(evidence,evidence.goal,0,10,0), "stale/future/missing cloud completed a target");
+    require(!observedAtGate(evidence,evidence.goal,1,10,9.8) &&
+            !observedAtGate(evidence,evidence.goal+Vector3d(1,0,0),0,10,9.8),
+            "wrong orientation or outside position completed an observation");
     CoverageMotionConfig cfg;
     require(!cfg.enabled, "non-house profiles must remain opt-in");
     const double rest = executionTime(15, 0, 0, 5, 3, 3);

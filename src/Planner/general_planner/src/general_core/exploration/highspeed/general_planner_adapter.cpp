@@ -1295,6 +1295,9 @@ void FastPlannerManager::initPlanModules(ros::NodeHandle &nh,
                                              &shared_map_manager)
 {
   gcopter_config_->init(nh);
+  nh.param("epicon/bubble_topo/bubble_min_radius",pointcloud_min_clearance_,0.61);
+  pointcloud_min_clearance_=std::max(gcopter_config_->commitKnownFreeSafeDistance,
+                                   pointcloud_min_clearance_+0.04);
   nh.param("max_traj_len", max_traj_len_, 12.0);
   parallel_path_finder_ = parallel_path_finder;
   topo_graph_ = graph;
@@ -1540,7 +1543,8 @@ bool FastPlannerManager::planExploreTraj(
     bool rolling_horizon,
     const TargetRouteExecutionContext &route,
     const CoverageObservationContext &observation,
-    const CoverageExecutionContext &coverage)
+    const CoverageExecutionContext &coverage,
+    bool pointcloud_frontend)
 {
   coverage_failure_ = {};
   if (coverage.enabled && (route.enabled() || clearance_recovery ||
@@ -1686,7 +1690,7 @@ bool FastPlannerManager::planExploreTraj(
                                                 : std::numeric_limits<double>::infinity();
   }
   const double max_head_projection_dist =
-      std::max({coverage.enabled ? local_data_.curr_vel_.norm()*switch_delay+.75 : .75,
+      std::max({(coverage.enabled || pointcloud_frontend) ? local_data_.curr_vel_.norm()*switch_delay+.75 : .75,
                 2.5 * std::max(0.05, gcopter_config_->corridorMaxStartShift),
                 0.25 * local_data_.curr_vel_.norm() * std::max(0.05, switch_delay) + 0.50});
   const double max_head_arc = (route.enabled() || coverage.enabled)
@@ -1720,14 +1724,64 @@ bool FastPlannerManager::planExploreTraj(
     }
   }
 
+  double pointcloud_lower_z=-std::numeric_limits<double>::infinity();
+  double pointcloud_upper_z=std::numeric_limits<double>::infinity();
+  if (pointcloud_frontend && map_manager_) {
+    // EPICON reasons about obstacle points. Its paths do not know the virtual
+    // flight-height bounds used by General's corridor. Apply only that backend
+    // constraint here; no occupancy-derived goal or coverage score is fed back
+    // into EPICON. The corridor and commit checks still validate every segment.
+    general_utils::Vec3f lower = general_utils::Vec3f::Constant(-1.0e6);
+    general_utils::Vec3f upper = general_utils::Vec3f::Constant(1.0e6);
+    map_manager_->boundBoxByLocalMap(lower, upper, false);
+    lower.z() += std::max(0.0, gcopter_config_->corridorRobotRadius) + 0.05;
+    upper.z() -= std::max(0.0, gcopter_config_->corridorRobotRadius) + 0.05;
+    pointcloud_lower_z=lower.z(); pointcloud_upper_z=upper.z();
+    if (lower.z() >= upper.z() || head(2,0) < lower.z()-0.05 || head(2,0) > upper.z()+0.05) {
+      ROS_WARN_THROTTLE(1.0, "[EPICON backend] current trajectory head is outside the corridor height domain");
+      return false;
+    }
+    int adjusted = 0;
+    for (std::size_t i=1; i<local_path.size(); ++i) {
+      const double z = std::clamp(local_path[i].z(), lower.z(), upper.z());
+      adjusted += std::abs(z-local_path[i].z()) > 1.0e-6;
+      local_path[i].z() = z;
+    }
+    local_path.erase(std::unique(local_path.begin(), local_path.end(),
+        [](const Eigen::Vector3d &a, const Eigen::Vector3d &b) { return (a-b).norm()<1.0e-3; }), local_path.end());
+    if (local_path.size()<2) return false;
+    if (adjusted) ROS_INFO_STREAM_THROTTLE(1.0, "[EPICON backend] guide height constrained at "
+        << adjusted << " points to [" << lower.z() << ", " << upper.z() << "]");
+  }
+
   const general_utils::vec_E<general_utils::Vec3f> guide_path = toVec3fPath(local_path);
+
+  if (pointcloud_frontend && map_manager_ && !pointcloud_corridor_generator_) {
+    // Use the same inflated obstacle geometry as the independent commit check.
+    // Inflation already contains a vehicle margin; CIRI encloses voxel corners
+    // plus any extra clearance needed to retain native bubble connectivity.
+    // Coverage goal selection remains point-cloud-only.
+    const auto map_config=map_manager_->rawRosMap()->getMapConfig();
+    const double inflation_radius=map_config.inflation_step*map_config.inflation_resolution;
+    const double voxel_radius=0.5*std::sqrt(3.0)*map_manager_->getInfResolution()+0.01+
+        std::max(0.0,pointcloud_min_clearance_-inflation_radius);
+    pointcloud_corridor_generator_=std::make_shared<general_planner::CorridorGenerator>(
+        ros_ptr_,map_manager_,std::max(0.2,gcopter_config_->corridor_size),
+        std::max(0.2,gcopter_config_->corridorLineMaxLength),
+        std::max(0.01,gcopter_config_->corridorMinOverlapThreshold),
+        gcopter_config_->corridorVirtualGroundHeight,gcopter_config_->corridorVirtualCeilHeight,
+        voxel_radius,std::max(1,gcopter_config_->corridorBoxSearchSkipNum),
+        std::max(1,gcopter_config_->corridorIrisIterNum),
+        optimization_utils::EllipsoidOptimizerConfig(),true);
+  }
+  const auto &active_corridor=pointcloud_frontend ? pointcloud_corridor_generator_ : corridor_generator_;
 
   geometry_utils::PolytopeVec sfcs;
   bool used_general_corridor = false;
   double shifted_start_dist = 0.0;
   const bool try_general_corridor = gcopter_config_->generalCorridorEnable;
   const bool general_corridor_ready =
-      try_general_corridor && corridor_generator_ && rog_map_updated_;
+      try_general_corridor && active_corridor && rog_map_updated_;
   if (try_general_corridor && !general_corridor_ready)
   {
     ROS_WARN_STREAM_THROTTLE(
@@ -1743,7 +1797,7 @@ bool FastPlannerManager::planExploreTraj(
     {
       general_utils::Vec3f shifted_start_pt = local_path.front();
       used_general_corridor =
-          corridor_generator_->SearchPolytopeOnPath(guide_path, sfcs, shifted_start_pt, false);
+          active_corridor->SearchPolytopeOnPath(guide_path, sfcs, shifted_start_pt, false);
       shifted_start_dist = (shifted_start_pt - local_path.front()).norm();
       if (shifted_start_dist > 0.05)
       {
@@ -1765,6 +1819,18 @@ bool FastPlannerManager::planExploreTraj(
   {
     ROS_WARN("[highspeed_exp adapter] General corridor generation failed; keep the committed trajectory.");
     return false;
+  }
+  if (pointcloud_frontend) {
+    // Guide vertices alone do not bound a polynomial. Keep every corridor
+    // inside the same height domain, including curves between those vertices.
+    for(auto &poly:sfcs) {
+      const auto planes=poly.GetPlanes();
+      Eigen::MatrixX4d clipped(planes.rows()+2,4);
+      clipped.topRows(planes.rows())=planes;
+      clipped.row(planes.rows()) << 0,0,-1,pointcloud_lower_z;
+      clipped.row(planes.rows()+1) << 0,0,1,-pointcloud_upper_z;
+      poly.SetPlanes(clipped);
+    }
   }
   std::vector<Eigen::MatrixX4d> h_polys = hPolysFromSfcs(sfcs);
   if (!pointInsideHPoly(h_polys.front(), local_path.front()))
@@ -2011,7 +2077,8 @@ bool FastPlannerManager::planExploreTraj(
           const int attempt,
           const double guide_speed) -> bool {
     const double normal_safe_distance =
-        std::max(0.05, gcopter_config_->commitKnownFreeSafeDistance);
+        std::max(pointcloud_frontend ? pointcloud_min_clearance_ : 0.05,
+                 gcopter_config_->commitKnownFreeSafeDistance);
     const double recovery_target_distance =
         std::max(normal_safe_distance, gcopter_config_->dilateRadiusSoft);
     double previous_clearance = safetyDistanceToOcc(candidate.getPos(0.0));
@@ -2183,7 +2250,7 @@ bool FastPlannerManager::planExploreTraj(
       {
         ok = false;
         pos_traj.clear();
-        if (coverage.enabled) {
+        if (coverage.enabled || pointcloud_frontend) {
           // Retiming cannot certify occupied geometry. Let the caller rebuild
           // an observed-free constrained corridor instead of lowering speed.
           break;

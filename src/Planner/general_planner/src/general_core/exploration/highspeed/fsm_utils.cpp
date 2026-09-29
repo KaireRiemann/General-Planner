@@ -130,6 +130,7 @@ void FastExplorationFSM::pubState() {
     result << (coverage_result_=="CONVERGED" ? "FINISH / COVERAGE_" : "COVERAGE_") << coverage_result_ << " " << std::fixed << std::setprecision(1)
            << 100.0*coverage_result_ratio_ << "%";
     state_marker.text=result.str();
+    if(usingEpicon()) state_marker.text="EPICON / "+coverage_result_;
   }
   if ((state_ == PLAN_TRAJ || state_ == EXEC_TRAJ) &&
       finish_gate_.no_frontier_count > 0 &&
@@ -349,6 +350,14 @@ void FastExplorationFSM::requestFrontierRecheck(const string &reason) {
 
 void FastExplorationFSM::handleNoFrontierResult(const string &source) {
   const ros::Time now = ros::Time::now();
+  if (expl_manager_->coverageMotionEnabled() && expl_manager_->hasActiveCoverageRecoveryGoal()) {
+    // A pending observation is not a terminal empty pool. Keep both the
+    // submitted command and its goal until completion, timeout or rejection.
+    expl_manager_->last_plan_empty_frontier_ = false;
+    expl_manager_->last_plan_no_reachable_ = false;
+    ROS_WARN_STREAM_THROTTLE(1.0, "[coverage handoff] retain active observation after " << source);
+    return;
+  }
   // A NO_FRONTIER result invalidates the previous navigation goal. Keeping
   // the old tour here lets PLAN_TRAJ optimize that stale path successfully on
   // the next tick, which resets the finish gate before its count/duration can
@@ -437,13 +446,31 @@ bool FastExplorationFSM::handleGoalReached() {
   const Eigen::Vector3f goal = expl_manager_->ed_->global_tour_[1];
   const double reached_radius =
       std::max(0.05, expl_manager_->ep_->goal_reached_radius_);
-  const bool observed_passage = expl_manager_->coverageMotionEnabled() &&
+  bool observed_passage = expl_manager_->coverageMotionEnabled() &&
       coverage_passage_.active && coverage_passage_.passed &&
       (goal.cast<double>() - coverage_passage_.goal).norm() <= reached_radius;
   // Recovery has its own configured observation radius (1 m in house).
   // The ordinary frontier's 0.35 m gate used to mask that check completely.
-  bool coverage_reached = expl_manager_->coverageMotionEnabled() &&
-      expl_manager_->completeActiveCoverageGoalIfReached(fd_->odom_pos_.cast<double>());
+  bool coverage_reached = false;
+  CoverageObservationGate recovery_gate;
+  if (expl_manager_->activeCoverageObservation(recovery_gate)) {
+    if ((goal.cast<double>() - recovery_gate.goal).norm() > 0.10) return false;
+    const bool measured_passage = observed_passage && !coverage_sequence_.empty() &&
+        coverage_sequence_.front().identity == recovery_gate.identity;
+    if (measured_passage) {
+      coverage_reached = expl_manager_->completeActiveCoverageGoalIfReached(
+          coverage_passage_.measured_position);
+    } else if (coverage_motion::observedAtGate(recovery_gate, fd_->odom_pos_.cast<double>(),
+                   fd_->odom_yaw_, ros::Time::now().toSec(), coverage_cloud_received_.toSec())) {
+      coverage_reached = expl_manager_->completeActiveCoverageGoalIfReached(fd_->odom_pos_.cast<double>());
+    }
+    if (!coverage_reached) return false;
+    // The cloud callback may make the current measured pose admissible before
+    // the next odometry callback latches passage. It is the same observation,
+    // so do not force a full frontier audit at this otherwise moving handoff.
+    observed_passage = observed_passage || (coverage_passage_.active &&
+        (coverage_passage_.goal - recovery_gate.goal).norm() < 0.10);
+  }
   if (!observed_passage && !coverage_reached && (goal - fd_->odom_pos_).norm() > reached_radius) {
     return false;
   }
@@ -492,7 +519,8 @@ bool FastExplorationFSM::handleGoalReached() {
   }
   if (observed_passage) {
     expl_manager_->retainCoverageContinuation(planner_manager_->committedTrajectoryRemainingTime()-0.8);
-    ROS_INFO("[coverage motion] measured observation passage; hand off while moving");
+    ROS_INFO_STREAM("[coverage motion] measured observation passage; handoff coverage="
+                    << coverage_reached << " speed=" << fd_->odom_vel_.norm());
   }
   resetCoverageMotion();
   expl_manager_->ed_->has_goal_lock_ = false;
@@ -609,6 +637,7 @@ double FastExplorationFSM::coverageReplanLead() const {
 }
 
 int FastExplorationFSM::callExplorationPlanner() {
+  if (usingEpicon()) return callEpiconPlanner();
   refreshRuntimeOdometry();
   if (expl_manager_->coverageMotionEnabled() && !coverage_emergency_stop_until_.isZero()) {
     // Emergency truncation invalidated the stored polynomial. Wait for the
@@ -1007,6 +1036,9 @@ int FastExplorationFSM::callExplorationPlanner() {
     }
   }
   CoverageObservationContext observation;
+  CoverageObservationGate recovery_gate;
+  const bool recovery_observation = expl_manager_->activeCoverageObservation(recovery_gate) &&
+      (recovery_gate.goal - requested_goal).norm() < 0.10;
   CoverageMotionConfig observation_motion=motion;
   // A route-selected corner may be negotiated at a lower transit speed.
   // Keep the raw-free guide and backend dynamic/yaw checks as hard gates.
@@ -1015,7 +1047,7 @@ int FastExplorationFSM::callExplorationPlanner() {
   const vector<Eigen::Vector3f> stopped_goal_path = expl_manager_->ed_->path_next_goal_;
   const bool stopped_goal_rolling = rolling_horizon;
   if (coverage_motion_enabled && motion.continuous_observation &&
-      !expl_manager_->hasActiveCoverageRecoveryGoal() && !truncated_before_reversal &&
+      !truncated_before_reversal &&
       !rolling_horizon && (expl_manager_->coverageRouteEnabled() || expl_manager_->ed_->global_tour_.size() >= 3) &&
       (path_d.back() - expl_manager_->ed_->global_tour_[1].cast<double>()).norm() <= 0.10) {
     const Eigen::Vector3d goal = path_d.back();
@@ -1024,18 +1056,24 @@ int FastExplorationFSM::callExplorationPlanner() {
     const auto &tasks=expl_manager_->coverageRouteObservations();
     std::size_t current=0;
     while (current<tasks.size() && (tasks[current].position-goal).norm()>.1) ++current;
-    const auto &continuation=current+1<tasks.size() ? tasks[current+1].path_from_previous :
-        expl_manager_->coverageRouteExitPath();
-    const bool extended=expl_manager_->coverageRouteEnabled() ?
-        (current<tasks.size() && coverage_motion::appendPathContinuation(path_d,
-            continuation,planner_manager_->max_traj_len_,observation_motion,observed_free)) :
-        coverage_motion::appendContinuation(path_d,expl_manager_->ed_->global_tour_[2].cast<double>(),
-            planner_manager_->max_traj_len_,observation_motion,observed_free);
+    const auto &continuation=expl_manager_->coverageRouteEnabled()
+        ? (current+1<tasks.size() ? tasks[current+1].path_from_previous :
+                                  expl_manager_->coverageRouteExitPath())
+        : expl_manager_->coverageTourContinuation();
+    bool extended = (!expl_manager_->coverageRouteEnabled() || current < tasks.size()) &&
+        coverage_motion::appendPathContinuation(path_d, continuation,
+            planner_manager_->max_traj_len_, observation_motion, observed_free);
+    if (!extended && !expl_manager_->coverageRouteEnabled())
+      extended = coverage_motion::appendContinuation(path_d,
+          expl_manager_->ed_->global_tour_[2].cast<double>(),
+          planner_manager_->max_traj_len_, observation_motion, observed_free);
     if (extended) {
       observation.enabled = true;
       observation.goal = goal;
-      observation.radius = std::max(0.05, expl_manager_->ep_->goal_reached_radius_);
-      if (expl_manager_->coverageRouteEnabled()) {
+      observation.radius = recovery_observation ? recovery_gate.radius :
+          std::max(0.05, expl_manager_->ep_->goal_reached_radius_);
+      if (recovery_observation) observation.gates = {recovery_gate};
+      if (expl_manager_->coverageRouteEnabled() && !recovery_observation) {
         if (current+2<tasks.size() && (path_d.back()-tasks[current+1].position).norm()<.1)
           coverage_motion::appendPathContinuation(path_d,tasks[current+2].path_from_previous,
               planner_manager_->max_traj_len_,observation_motion,observed_free);
@@ -1089,6 +1127,13 @@ int FastExplorationFSM::callExplorationPlanner() {
       gate.radius=observation.radius;gate.yaw_tolerance=.75;gate.identity=task.identity;gate.cluster=task.cluster;
       observation.gates={gate};
     }
+  }
+  if (recovery_observation && !observation.enabled && !rolling_horizon &&
+      (path_d.back() - requested_goal).norm() < 0.10) {
+    observation.enabled = true;
+    observation.goal = recovery_gate.goal;
+    observation.radius = recovery_gate.radius;
+    observation.gates = {recovery_gate};
   }
   const auto limit = planner_manager_->computeSegmentVelocityLimit(safety);
   const double current_speed = planner_manager_->local_data_.curr_vel_.norm();
@@ -1224,7 +1269,7 @@ int FastExplorationFSM::callExplorationPlanner() {
     backend_retried=true;
     // One bounded fallback through the unchanged stopped-viewpoint pipeline.
     CoverageObservationContext stopped_observation;
-    if (expl_manager_->coverageRouteEnabled() && !observation.gates.empty() &&
+    if (!observation.gates.empty() &&
         !stopped_goal_rolling && (stopped_goal_path.back().cast<double>()-observation.goal).norm()<.1) {
       stopped_observation=observation;stopped_observation.gates.resize(1);
     }
@@ -1249,7 +1294,11 @@ int FastExplorationFSM::callExplorationPlanner() {
     if (planner_manager_->prepareCoveragePath(repair_path, fd_->static_state_, 8.0)) {
       observation = {};
       const bool repair_rolling = (repair_path.back().cast<double>() - requested_goal).norm() > 0.10;
-      planned=planner_manager_->planExploreTraj(repair_path,fd_->static_state_,false,repair_rolling,{}, {},
+      if (!repair_rolling && recovery_observation) {
+        observation.enabled=true; observation.goal=recovery_gate.goal;
+        observation.radius=recovery_gate.radius; observation.gates={recovery_gate};
+      }
+      planned=planner_manager_->planExploreTraj(repair_path,fd_->static_state_,false,repair_rolling,{}, observation,
                                                CoverageExecutionContext{true,true,repair_position});
       if (planned) expl_manager_->ed_->path_next_goal_=repair_path;
       ROS_INFO_STREAM("[coverage repair] constrained seed corridor success=" << planned);
@@ -1262,20 +1311,26 @@ int FastExplorationFSM::callExplorationPlanner() {
       coverage_retained_goal_ = expl_manager_->ed_->global_tour_[1].cast<double>();
       coverage_retained_time_ = ros::Time::now();
       if (observation.enabled) {
+        const auto previous_sequence = coverage_sequence_;
+        coverage_sequence_ = observation.gates;
+        coverage_sequence_passed_ = 0;
         if (expl_manager_->coverageRouteEnabled()) {
-          coverage_sequence_=observation.orderedGates();coverage_sequence_passed_=0;
           if (coverage_sequence_.size()>1) {
             auto &tour=expl_manager_->ed_->global_tour_;
             tour.resize(1);
             for (const auto &gate:coverage_sequence_) tour.push_back(gate.goal.cast<float>());
           }
         }
-        if (!coverage_passage_.active ||
+        const bool identity_changed = previous_sequence.empty() != coverage_sequence_.empty() ||
+            (!previous_sequence.empty() && !coverage_sequence_.empty() &&
+             previous_sequence.front().identity != coverage_sequence_.front().identity);
+        if (!coverage_passage_.active || identity_changed ||
             (coverage_passage_.goal - observation.goal).norm() > 0.10) coverage_passage_ = {};
+        if (!coverage_sequence_.empty() && coverage_passage_.passed) coverage_sequence_passed_ = 1;
         coverage_passage_.active = true;
         coverage_passage_.goal = observation.goal;
         coverage_passage_.radius = observation.radius;
-        if (!expl_manager_->coverageRouteEnabled())
+        if (coverage_sequence_.empty())
           coverage_passage_.observe(fd_->odom_pos_.cast<double>(),
               fd_->last_odom_receive_time_.toSec(), planner_manager_->gcopter_config_->maxVelMag);
         ROS_INFO_STREAM("[coverage motion] transit observation=(" << observation.goal.transpose()
@@ -1521,16 +1576,21 @@ void FastExplorationFSM::startExplorationTask(const std::string &task_id,
 
   // Another controller may have moved the vehicle since PAUSED. Its old
   // exploration command is no longer an execution seed for the next task.
-  if (expl_manager_->coverageMotionEnabled() && state_==PAUSED) {
+  if ((usingEpicon() || expl_manager_->coverageMotionEnabled()) && state_==PAUSED) {
     planner_manager_->clearReleasedTrajectory();
     coverage_emergency_stop_until_=ros::Time(0);
+  }
+  if (usingEpicon()) {
+    epicon_frontend_->resetTask();
+    resetEpiconExecution();
+    ROS_INFO("[EPICON] coverage task uses native point-cloud exploration");
   }
   active_task_id_ = task_id;
   resetCoverageMotion();
   coverage_blocked_pending_=false;
   coverage_result_.clear();
   expl_manager_->resetCoverageRecovery();
-  if (expl_manager_->coverageMotionEnabled()) {
+  if (usingEpicon() || expl_manager_->coverageMotionEnabled()) {
     std_msgs::String msg; msg.data="{\"result\":\"RUNNING\"}";
     coverage_result_pub_.publish(msg);
   }
@@ -1719,13 +1779,17 @@ void FastExplorationFSM::applyOdometry(
   fd_->odom_yaw_ = static_cast<float>(tf::getYaw(msg->pose.pose.orientation));
   fd_->last_odom_receive_time_ = received;
   if (expl_manager_->coverageMotionEnabled()) {
-    if (expl_manager_->coverageRouteEnabled() && !coverage_sequence_.empty()) {
+    if (!coverage_sequence_.empty()) {
       if (!coverage_cloud_received_.isZero() && (received-coverage_cloud_received_).toSec()<=.5) {
         while (coverage_sequence_passed_<coverage_sequence_.size()) {
           const auto &gate=coverage_sequence_[coverage_sequence_passed_];
-          if ((fd_->odom_pos_.cast<double>()-gate.goal).norm()>gate.radius ||
-              coverage_route::yawDistance(fd_->odom_yaw_,gate.yaw)>gate.yaw_tolerance) break;
-          expl_manager_->notifyCoverageRoutePassage(gate.identity);++coverage_sequence_passed_;
+          if (!coverage_motion::observedAtGate(gate, fd_->odom_pos_.cast<double>(),
+                  fd_->odom_yaw_, received.toSec(), coverage_cloud_received_.toSec())) break;
+          if (coverage_sequence_passed_ == 0)
+            coverage_passage_.measured_position = fd_->odom_pos_.cast<double>();
+          if (expl_manager_->coverageRouteEnabled() && gate.cluster >= 0)
+            expl_manager_->notifyCoverageRoutePassage(gate.identity);
+          ++coverage_sequence_passed_;
         }
         coverage_passage_.passed=coverage_sequence_passed_>0;
       }
@@ -1848,7 +1912,7 @@ void FastExplorationFSM::CloudOdomCallback(
   coverage_cloud_received_=now;
   double collision_time;
   bool safe = planner_manager_->checkTrajCollision(collision_time, expl_manager_->coverageMotionEnabled());
-  if (!safe) {
+  if (!safe && (!usingEpicon() || state_ == EXEC_TRAJ || state_ == PLAN_TRAJ)) {
     transitState(PLAN_TRAJ, "safetyCallback: not safe, time:" + to_string(collision_time), true);
     if (collision_time < fp_->replan_time_ + 0.2)
       stopTraj("cloud-map collision update");
@@ -1861,6 +1925,8 @@ void FastExplorationFSM::CloudOdomCallback(
   // Do not overwrite current FSM state with the odometry selected for this map
   // update. odometryCallback owns the live vehicle state; this callback owns
   // only the map/frontier update.
+  epicon_frontend_->ingestCloud(msg, odom_);
+  if (usingEpicon()) return;
   vector<ClusterInfo::Ptr> new_clusters;
   vector<int> cluster_removed;
   expl_manager_->frontier_manager_ptr_->updateFrontierClusters(new_clusters, cluster_removed);

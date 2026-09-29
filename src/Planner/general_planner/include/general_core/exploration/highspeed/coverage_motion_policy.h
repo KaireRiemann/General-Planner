@@ -68,6 +68,17 @@ namespace coverage_motion {
 using Path = std::vector<Eigen::Vector3d>;
 using SegmentFree = std::function<bool(const Eigen::Vector3d &, const Eigen::Vector3d &)>;
 
+// Completion is measured, never inferred from the polynomial crossing a goal.
+inline bool observedAtGate(const CoverageObservationGate &gate,
+                           const Eigen::Vector3d &position, double yaw,
+                           double odom_time, double cloud_time) {
+  const double age = odom_time - cloud_time;
+  return position.allFinite() && gate.goal.allFinite() && std::isfinite(yaw) &&
+      std::isfinite(gate.yaw) && cloud_time > 0.0 && age >= 0.0 && age <= 0.5 &&
+      (position - gate.goal).norm() <= gate.radius &&
+      std::abs(std::remainder(yaw - gate.yaw, 2.0 * M_PI)) <= gate.yaw_tolerance;
+}
+
 inline double length(const Path &path) {
   double result = 0.0;
   for (std::size_t i = 1; i < path.size(); ++i)
@@ -314,6 +325,7 @@ struct LivenessMonitor {
 struct PassageMonitor {
   bool active{false}, passed{false}, have_previous{false};
   Eigen::Vector3d goal{Eigen::Vector3d::Zero()}, previous{Eigen::Vector3d::Zero()};
+  Eigen::Vector3d measured_position{Eigen::Vector3d::Zero()};
   double previous_time{0.0}, radius{0.35};
   void observe(const Eigen::Vector3d &position, double time, double max_speed) {
     if (!active || !position.allFinite() || !std::isfinite(time)) return;

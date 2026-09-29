@@ -140,7 +140,7 @@ cd "${WORKSPACE_ROOT}"
 catkin_cmd=(
   catkin_make
   --force-cmake
-  "-DCATKIN_WHITELIST_PACKAGES=map_manager;general_planner;general_planner_rviz_plugins;tracking_detector;aperture_detector;person_tracker"
+  "-DCATKIN_WHITELIST_PACKAGES=lkh_tsp_solver;map_manager;general_planner;general_planner_rviz_plugins;tracking_detector;aperture_detector;person_tracker"
   -DCMAKE_BUILD_TYPE="${BUILD_TYPE}"
 )
 if [[ -n "${GP_CATKIN_ARGS:-}" ]]; then
@@ -287,6 +287,9 @@ chmod +x \
   "${RELEASE_PKG_DIR}/planner_runtime_node" \
   "${RELEASE_PKG_DIR}/planner_serial_handover.py" \
   "${RELEASE_PKG_DIR}/planner_rviz_switcher.py"
+
+mkdir -p "${RELEASE_ROOT}/licenses"
+cp "${REPO_ROOT}/src/Planner/general_planner/third_party/epicon/LICENSE" "${RELEASE_ROOT}/licenses/EPICON-LICENSE"
 
 echo "[build_release] Sync exploration runtime library"
 mkdir -p "$(dirname "${LKH_LIBRARY_DST}")"

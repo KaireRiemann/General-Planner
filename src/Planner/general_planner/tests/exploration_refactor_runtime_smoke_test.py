@@ -105,10 +105,9 @@ try:
                request.get_num_connections() > 0,
                "runtime heartbeat and mode receiver", timeout=60)
     prefix = "/planner_runtime_node/"
-    assert rospy.get_param(prefix + "coverage_guidance/mode") == "tour"
-    assert rospy.get_param(prefix + "indoor_frontier/cluster_min_size") == .8
-    assert rospy.get_param(prefix + "indoor_frontier/cluster_min_radius") == 1.
-    assert rospy.get_param(prefix + "viewpoint_score/enable") is True
+    assert rospy.get_param(prefix + "exploration/frontend") == "epicon_pointcloud"
+    assert rospy.get_param(prefix + "epicon/fsm/unknown_penalty_factor") == 1.5
+    assert any("[EPICON] native point-cloud frontier/topology/tour enabled" in x for x in runtime_logs)
 
     def runtime_pid():
         code, _, uri = master.lookupNode("profile_test", "/planner_runtime_node")
@@ -132,7 +131,7 @@ try:
     assert any("[frontier] granularity=indoor" in line and
                "cluster_min_size=0.8 cluster_min_radius=1" in line
                for line in runtime_logs[first_log:])
-    print(package + ": heartbeat, tour default, indoor granularity, live mode switches: PASS")
+    print(package + ": heartbeat, native EPICON frontend, live mode switches: PASS")
 except Exception:
     print("\n".join(output))
     print("\n".join(runtime_logs[-30:]))

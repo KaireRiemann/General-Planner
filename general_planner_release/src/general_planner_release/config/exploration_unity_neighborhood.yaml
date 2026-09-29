@@ -16,9 +16,6 @@ box_num: 1
 box_0/down: [-10.0, -10.0, -0.2]
 box_0/up: [10.0, 10.0, 6.0]
 dead_area_num: 0
-coverage_guidance/floor_priority_enable: false
-coverage_guidance/moving_handoff_enable: false
-coverage_route/enabled: false
 
 FrontierManager/update_length: 22.0
 FrontierManager/cluster_min_size: 0.8
@@ -54,5 +51,10 @@ TurnHardVelocity: 0.8
 BackupMaxVel: 2.0
 BackupMaxAcc: 3.0
 yaw_max_vel: 1.2
-coverage_guidance/recovery_max_failure_attempts: 4
-coverage_guidance/recovery_max_no_gain_attempts: 2
+
+# Native EPICON frontend settings; no ROG occupancy/free coverage goals.
+epicon:
+  FrontierManager/cluster_min_size: 0.8
+  FrontierManager/cluster_min_radius: 1.0
+  bubble_topo/bubble_min_radius: 0.61
+  bubble_astar/safe_distance: 0.6

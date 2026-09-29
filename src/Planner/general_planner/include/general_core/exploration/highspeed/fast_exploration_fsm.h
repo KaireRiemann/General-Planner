@@ -23,6 +23,8 @@
 #include <general_core/exploration/exploration_utils/pointcloud_topo/graph_visualizer.hpp>
 #include <quadrotor_msgs/TakeoffLand.h>
 #include <ros/ros.h>
+#include <general_core/exploration/highspeed/epicon_frontend.h>
+#include <general_core/exploration/highspeed/epicon_execution_policy.h>
 #include <ros/callback_queue.h>
 #include <ros/spinner.h>
 #include <sensor_msgs/BatteryState.h>
@@ -172,6 +174,21 @@ private:
   void latestCloudCallback(const sensor_msgs::PointCloud2ConstPtr &msg);
 
   /* helper functions */
+  std::unique_ptr<fast_planner::EpiconFrontend> epicon_frontend_;
+  EpiconFinishVerifier epicon_finish_;
+  bool epicon_recheck_pending_{false};
+  ros::WallTime epicon_last_audit_, epicon_last_motion_, epicon_last_deferral_;
+  Eigen::Vector3f epicon_motion_anchor_{Eigen::Vector3f::Zero()};
+  double epicon_finish_cloud_age_{1.0}, epicon_audit_period_{1.0};
+  double epicon_goal_cooldown_{15.0}, epicon_goal_exclusion_radius_{0.8};
+  double epicon_stall_reselect_{8.0}, epicon_stall_timeout_{40.0};
+  int epicon_goal_failure_limit_{3};
+  void resetEpiconExecution();
+  void finishEpiconTask(bool completed, const std::string &reason);
+  bool usingEpicon() const;
+  bool epiconFSMCallback();
+  void updateEpiconGlobalPath();
+  int callEpiconPlanner();
   int callExplorationPlanner();
   void transitState(EXPL_STATE new_state, string pos_call, bool red = false);
   void battaryCallback(const sensor_msgs::BatteryStateConstPtr &msg);

@@ -293,6 +293,76 @@ struct CoverageRecoveryTestAccess {
             "configured recovery radius did not complete the active observation");
     manager.resetCoverageRecovery();
   }
+
+  static void verifyMovingCandidates(FastExplorationManager &manager, ros::NodeHandle &nh) {
+    manager.frontier_manager_ptr_ = std::make_shared<FrontierManager>();
+    manager.coverage_guidance_ = std::make_shared<CoverageGuidanceManager>();
+    CoverageMapSpec spec;
+    spec.min={-10,-5,0}; spec.max={10,5,4}; spec.dims={20,10,4}; spec.resolution=1;
+    spec.valid_boxes.push_back({spec.min,spec.max});
+    nh.setParam("coverage_guidance/mode", "tour");
+    manager.coverage_guidance_->initialize(nh,spec);
+    manager.coverage_joint_candidates_=false;
+    manager.coverage_moving_handoff_enable_=false;
+    manager.has_active_coverage_goal_=true;
+    auto &target=manager.active_coverage_target_;
+    target.stable_id=123; target.has_approach=true; target.voxel_count=30;
+    target.approach_position={2,0,1.5}; target.position={3,0,1.5};
+    target.approach_candidates={target.approach_position};
+    for (double speed : {.49,.51,2.0}) {
+      vector<TopoNode::Ptr> candidates;
+      const auto result=manager.appendCoverageCandidates({0,0,1.5},speed,0,0,{},candidates);
+      require(!result.terminal_audit && candidates.size()==1 &&
+              candidates.front()->coverage_target_id_==123 && manager.has_active_coverage_goal_,
+              "actual candidate pipeline lost an active goal while crossing the speed threshold");
+    }
+    auto frontier=std::make_shared<TopoNode>(); frontier->frontier_cluster_id_=7;
+    vector<TopoNode::Ptr> candidates{frontier};
+    manager.appendCoverageCandidates({0,0,1.5},2,0,1,{},candidates);
+    require(candidates.size()==2 && candidates.front()==frontier,
+            "renewed frontier silently discarded the pending observation");
+    manager.coverage_terminal_audit_pending_=true;
+    candidates.clear();
+    manager.appendCoverageCandidates({0,0,1.5},2,0,0,{},candidates);
+    require(candidates.size()==1, "completion audit did not drain its moving observation");
+    CoverageObservationGate gate;
+    require(manager.activeCoverageObservation(gate) && gate.identity==123 &&
+            gate.goal==target.approach_position && std::abs(gate.yaw)<1e-6,
+            "coverage observation lost identity, position or sensor direction");
+    manager.ep_->target_directed_mode_=true;
+    candidates.clear(); manager.appendCoverageCandidates({0,0,1.5},0,0,0,{},candidates);
+    require(candidates.empty() && !manager.activeCoverageObservation(gate),
+            "coverage candidate policy leaked into target navigation");
+    manager.ep_->target_directed_mode_=false;
+    manager.resetCoverageRecovery();
+    // A delayed persistent-map snapshot has not yet credited the right half
+    // of the observed room. Its approaches must join an existing frontier at
+    // cruising speed, through the actual worker and local-map safety checks.
+    CoverageMapDelta delta; delta.version=1;
+    for (int z=0;z<spec.dims.z();++z) for (int y=0;y<spec.dims.y();++y)
+      for (int x=0;x<13;++x)
+        delta.samples.push_back({spec.flatten({x,y,z}),CoverageVoxelState::KNOWN_FREE});
+    CoverageFrontier frontier_hint;frontier_hint.cluster_id=7;frontier_hint.position={1,1,1.5};
+    manager.coverage_guidance_->submit(std::move(delta),{frontier_hint},{0,0,1.5});
+    CoveragePlan::Ptr snapshot;
+    const auto deadline=ros::WallTime::now()+ros::WallDuration(5);
+    while (!(snapshot=manager.coverage_guidance_->latestUsablePlan()) && ros::WallTime::now()<deadline)
+      ros::WallDuration(.01).sleep();
+    require(snapshot && snapshot->valid,"joint candidate fixture did not produce a coverage snapshot");
+    require(!manager.coverage_guidance_->unknownApproachTargets({0,0,1.5}).empty(),
+            "joint candidate fixture did not contain unknown approaches");
+    manager.coverage_joint_candidates_=true;
+    candidates={frontier};
+    manager.appendCoverageCandidates({0,0,1.5},2,0,1,snapshot,candidates);
+    require(candidates.size()>1 && candidates.front()==frontier &&
+            std::any_of(candidates.begin()+1,candidates.end(),[](const auto &node){return node->is_coverage_target_;}),
+            "real joint candidate pipeline failed to mix fresh approaches with a frontier while moving");
+    manager.coverage_joint_candidates_=false;
+    candidates={frontier};manager.appendCoverageCandidates({0,0,1.5},2,0,1,snapshot,candidates);
+    require(candidates.size()==1,"legacy candidate policy unexpectedly mixed new coverage goals");
+    manager.resetCoverageRecovery();
+    std::cout << "moving coverage candidate regression PASS: threshold crossing, frontier return, audit drain, mode isolation, mixed moving candidates\n";
+  }
 };
 }
 
@@ -465,6 +535,7 @@ int main(int argc, char **argv) {
     manager.ep_->coverage_motion_.enabled=true;
     require(manager.coverageMotionEnabled(), "coverage policy did not activate");
     CoverageRecoveryTestAccess::run(manager,planner);
+    CoverageRecoveryTestAccess::verifyMovingCandidates(manager,nh);
     manager.ep_->target_directed_mode_=true;
     require(!manager.coverageMotionEnabled(), "coverage policy leaked into target exploration");
     lio->setTargetNavigation(true);

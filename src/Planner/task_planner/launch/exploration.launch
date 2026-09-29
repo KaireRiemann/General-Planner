@@ -27,7 +27,7 @@
   <arg name="auto_start_delay" default="2.0" />
   <arg name="trigger_topic" default="/move_base_simple/goal" />
   <arg name="legacy_trigger_topic" default="" />
-  <arg name="coverage_guidance_mode" default="tour" />
+  <arg name="coverage_guidance_mode" default="off" />
   <!-- Empty preserves the selected YAML. Opt in with true for route trials. -->
   <arg name="coverage_route_enabled" default="" />
   <!-- planner_runtime serial handover: take START only from task command. -->
