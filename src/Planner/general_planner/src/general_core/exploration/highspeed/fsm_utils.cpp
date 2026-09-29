@@ -1910,6 +1910,7 @@ void FastExplorationFSM::CloudOdomCallback(
   // graph two or three times.
   ++topology_map_revision_;
   coverage_cloud_received_=now;
+  epicon_frontend_->ingestCloud(msg, odom_);
   double collision_time;
   bool safe = planner_manager_->checkTrajCollision(collision_time, expl_manager_->coverageMotionEnabled());
   if (!safe && (!usingEpicon() || state_ == EXEC_TRAJ || state_ == PLAN_TRAJ)) {
@@ -1920,12 +1921,11 @@ void FastExplorationFSM::CloudOdomCallback(
   ros::Time t2 = ros::Time::now();
   ros::Time t3 = ros::Time::now();
 
-  if (planner_manager_->lidar_map_interface_->ld_->lidar_cloud_.points.empty())
+  if (!usingEpicon() && planner_manager_->lidar_map_interface_->ld_->lidar_cloud_.points.empty())
     return;
   // Do not overwrite current FSM state with the odometry selected for this map
   // update. odometryCallback owns the live vehicle state; this callback owns
   // only the map/frontier update.
-  epicon_frontend_->ingestCloud(msg, odom_);
   if (usingEpicon()) return;
   vector<ClusterInfo::Ptr> new_clusters;
   vector<int> cluster_removed;

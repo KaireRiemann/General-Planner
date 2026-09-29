@@ -718,6 +718,7 @@ public:
   ExplorationTrajOpt(const traj_opt::Config &cfg,
                      const ros_interface::RosInterface::Ptr &ros_ptr);
   ~ExplorationTrajOpt();
+  void setYawTimeLowerBound(double value) { linear_time_cost_.reference_duration=value; }
 
   bool optimize(const StatePVAJ &headPVAJ,
                 const StatePVAJ &tailPVAJ,

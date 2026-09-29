@@ -3,6 +3,18 @@
 #include <cstdint>
 
 namespace fast_planner {
+// Only movement toward a normal exploration goal is productive. Goal reselection,
+// successful optimization and spatial recovery alone do not replenish the budget.
+class EpiconProgressWatchdog {
+public:
+  void reset(double now) { last_progress_=now; }
+  void observe(double now, bool advances_goal) {
+    if (advances_goal || now<last_progress_) last_progress_=now;
+  }
+  double idleSeconds(double now) const { return std::max(0.0,now-last_progress_); }
+private:
+  double last_progress_{0.0};
+};
 // A native NO_FRONTIER is provisional. Mission completion needs independent
 // sensor observations acquired after the last executable trajectory settled.
 class EpiconFinishVerifier {

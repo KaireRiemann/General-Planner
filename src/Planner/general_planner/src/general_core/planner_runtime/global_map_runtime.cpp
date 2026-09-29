@@ -42,6 +42,10 @@ void GlobalMapRuntime::init(ros::NodeHandle nh,
   nh_ = std::move(nh);
   nh_.param("global_map/max_odom_age", max_odom_age_, 0.20);
   nh_.param("global_map/max_cloud_age", max_cloud_age_, 0.50);
+  nh_.param("global_map/pointcloud_main_period", pointcloud_main_period_, 0.5);
+  nh_.param("global_map/pointcloud_tracking_period", pointcloud_tracking_period_, 1.0);
+  pointcloud_main_period_=std::clamp(pointcloud_main_period_,0.0,1.0);
+  pointcloud_tracking_period_=std::clamp(pointcloud_tracking_period_,0.0,2.0);
   max_odom_age_ = std::clamp(max_odom_age_, 0.05, 5.0);
   max_cloud_age_ = std::max(0.0, max_cloud_age_);
 
@@ -147,12 +151,12 @@ void GlobalMapRuntime::attachLioMap(
   context_->lio_map = lio_map;
 }
 
-void GlobalMapRuntime::addCloudConsumer(CloudConsumer consumer) {
+void GlobalMapRuntime::addCloudConsumer(CloudConsumer consumer, std::function<bool()> pointcloud_only) {
   if (!consumer) {
     return;
   }
   std::lock_guard<std::mutex> lock(mutex_);
-  cloud_consumers_.push_back(std::move(consumer));
+  cloud_consumers_.push_back({std::move(consumer),std::move(pointcloud_only)});
 }
 
 void GlobalMapRuntime::addOdomConsumer(OdomConsumer consumer) {
@@ -264,28 +268,44 @@ void GlobalMapRuntime::cloudOdomCallback(
                                 odom->pose.pose.orientation.z);
 
   std::shared_ptr<fast_planner::LIOInterface> lio_map;
-  std::vector<CloudConsumer> consumers;
+  std::vector<CloudSubscription> consumers;
   {
     std::lock_guard<std::mutex> lock(mutex_);
     lio_map = context_->lio_map;
     consumers = cloud_consumers_;
   }
-  // LIO and ROG are each updated exactly once for an accepted sensor pair.
+  std::vector<bool> early;
+  bool native_coverage=false;
+  for (const auto &consumer:consumers) {
+    early.push_back(consumer.pointcloud_only && consumer.pointcloud_only());
+    native_coverage=native_coverage || early.back();
+    if (early.back()) consumer.consume(cloud,odom,MapManager::UpdateSnapshot{});
+  }
+  // LIO retains every accepted observation. Occupancy remains available to
+  // other modes, but is not allowed to consume every native exploration tick.
   if (lio_map) {
     lio_map->updateCloudMapOdometry(cloud, odom);
   }
-  const MapManager::UpdateSnapshot update =
-      context_->map_manager->updateMap(rog_cloud, pose);
+  const auto wall_now=ros::WallTime::now();
+  const bool fuse_main=!native_coverage || last_main_fusion_.isZero() ||
+      (wall_now-last_main_fusion_).toSec()>=pointcloud_main_period_;
+  MapManager::UpdateSnapshot update;
+  if (fuse_main) {
+    update=context_->map_manager->updateMap(rog_cloud,pose);
+    last_main_fusion_=ros::WallTime::now();
+  }
   // The tracking map fuses the same accepted pair exactly once. It is a
   // separate occupancy world: query-time target exclusion and thin inflation
   // never leak into exploration/state2state queries.
-  if (context_->tracking_map_manager) {
+  if (context_->tracking_map_manager && (!native_coverage || last_tracking_fusion_.isZero() ||
+      (wall_now-last_tracking_fusion_).toSec()>=pointcloud_tracking_period_)) {
     context_->tracking_map_manager->updateMap(rog_cloud, pose);
+    last_tracking_fusion_=ros::WallTime::now();
   }
   // World topology is maintained through task transitions as well. Its
   // worker consumes only the odometry-local dirty-region window, while map
   // fusion continues to record remote evidence for a future visit.
-  if (topology_maintainer_ && topologyMaintenanceEnabled()) {
+  if (fuse_main && topology_maintainer_ && topologyMaintenanceEnabled()) {
     topology_maintainer_->updateAndPublish();
     publishTopologyExpansionSnapshot();
   }
@@ -293,10 +313,10 @@ void GlobalMapRuntime::cloudOdomCallback(
 
   {
     std::lock_guard<std::mutex> lock(mutex_);
-    last_map_time_ = now;
+    if (fuse_main) last_map_time_ = now;
   }
-  for (const auto &consumer : consumers) {
-    consumer(cloud, odom, update);
+  for (std::size_t k=0;k<consumers.size();++k) {
+    if (!early[k]) consumers[k].consume(cloud, odom, update);
   }
 }
 

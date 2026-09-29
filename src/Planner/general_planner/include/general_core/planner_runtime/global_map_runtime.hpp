@@ -59,7 +59,9 @@ struct GlobalMapStatus {
  *
  * ROGMapROS must be configured with `rog_map/ros_callback/enable: false`.
  * The runtime receives raw odom plus one cloud/odom synchronized stream,
- * updates LIO and ROG exactly once, then notifies read-side task adapters.
+ * updates LIO once per accepted frame. Point-cloud exploration consumers run
+ * before rate-limited ROG fusion; other modes fuse each accepted frame before
+ * notifying their read-side task adapters.
  * Raw odometry snapshots use a dedicated, lightweight callback queue. Map
  * mutation and exploration consumers stay serialized on the world queue;
  * their execution time must never be used as a sensor receive timestamp.
@@ -98,7 +100,9 @@ class GlobalMapRuntime {
 
   /** Attach the one exploration LIO map before the first cloud callback. */
   void attachLioMap(const std::shared_ptr<fast_planner::LIOInterface> &lio_map);
-  void addCloudConsumer(CloudConsumer consumer);
+  // A point-cloud-only consumer may run before occupancy fusion. Its predicate
+  // is evaluated on the serial world queue; mode changes restore normal fusion.
+  void addCloudConsumer(CloudConsumer consumer, std::function<bool()> pointcloud_only = {});
   void addOdomConsumer(OdomConsumer consumer);
 
   /**
@@ -138,7 +142,10 @@ class GlobalMapRuntime {
 
   mutable std::mutex mutex_;
   std::mutex topology_expansion_mutex_;
-  std::vector<CloudConsumer> cloud_consumers_;
+  struct CloudSubscription { CloudConsumer consume; std::function<bool()> pointcloud_only; };
+  std::vector<CloudSubscription> cloud_consumers_;
+  ros::WallTime last_main_fusion_, last_tracking_fusion_;
+  double pointcloud_main_period_{0.5}, pointcloud_tracking_period_{1.0};
   std::vector<OdomConsumer> odom_consumers_;
   ros::Time last_odom_time_;
   ros::Time last_map_time_;

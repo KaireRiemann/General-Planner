@@ -47,8 +47,10 @@ try:
  u_shape=bool(os.environ.get('TEST_U_SHAPE'))
  epicon_boxes=[(np.array(low),np.array(high)) for low,high in [([-8.,-4.,0.],[-3.,4.,5.]),([3.,-8.,0.],[8.,-3.,4.]),([3.,3.,0.],[8.,8.,5.])]]
  minimum_clearance=float('inf')
+ measured_height=[float('inf'),float('-inf')]
+ coverage_boxes=[]; coverage_bounds_violation=False
  follow_commands=not u_shape and not expect_epicon_blocked
- pos=np.array([float(os.environ.get('TEST_START_X','0')),0.,1.5]); vel=np.zeros(3);yaw=0.;cmd=None;status=None;logs=[];history=[];running=True
+ pos=np.array([float(os.environ.get('TEST_START_X','0')),0.,float(os.environ.get('TEST_START_Z','1.5'))]); vel=np.zeros(3);yaw=0.;cmd=None;status=None;logs=[];history=[];running=True
  def command(m):
   global cmd
   cmd=m
@@ -67,7 +69,7 @@ try:
  az,el=np.meshgrid(np.linspace(-math.pi,math.pi,240,endpoint=False),np.linspace(-math.radians(float(os.environ.get('TEST_HALF_FOV','30'))),math.radians(float(os.environ.get('TEST_HALF_FOV','30'))),64))
  directions=np.c_[np.cos(el).ravel()*np.cos(az).ravel(),np.cos(el).ravel()*np.sin(az).ravel(),np.sin(el).ravel()]
  def sensor_loop():
-  global pos,vel,yaw,minimum_clearance
+  global pos,vel,yaw,minimum_clearance,coverage_bounds_violation
   tick=0
   while running and not rospy.is_shutdown():
    if cmd is not None and follow_commands:
@@ -76,13 +78,17 @@ try:
     vel=np.array([cmd.velocity.x,cmd.velocity.y,cmd.velocity.z]);yaw=cmd.yaw
    if epicon:
     minimum_clearance=min(minimum_clearance,float(pos[2]),*(float(np.linalg.norm(np.maximum(np.maximum(low-pos,pos-high),0.))) for low,high in epicon_boxes))
+    measured_height[0]=min(measured_height[0],float(pos[2]))
+    measured_height[1]=max(measured_height[1],float(pos[2]))
+    if coverage_boxes and not any(np.all(pos>=low) and np.all(pos<=high) for low,high in coverage_boxes):
+     coverage_bounds_violation=True
    stamp=rospy.Time.now();o=Odometry();o.header.stamp=stamp;o.header.frame_id='world';o.child_frame_id='body'
    o.pose.pose.position.x,o.pose.pose.position.y,o.pose.pose.position.z=pos.tolist()
    o.pose.pose.orientation.z=math.sin(yaw/2);o.pose.pose.orientation.w=math.cos(yaw/2)
    o.twist.twist.linear.x,o.twist.twist.linear.y,o.twist.twist.linear.z=vel.tolist();odom_pub.publish(o)
    if tick%10==0:
     distances=np.full(len(directions),np.inf)
-    planes=[(0,-12.),(0,12.),(1,-12.),(1,12.),(2,0.),(2,8.)] if epicon else [(0,-15.),(0,180.),(1,-6.),(1,6.),(2,0.),(2,4.5)]
+    planes=[(0,-12.),(0,12.),(1,-12.),(1,12.),(2,0.),(2,8.)] if epicon else [(0,-15.),(0,180.),(1,-6.),(1,6.),(2,0.),(2,float(os.environ.get('TEST_CEILING_Z','4.5')))]
     for axis,boundary in planes:
      with np.errstate(divide='ignore',invalid='ignore'): t=(boundary-pos[axis])/directions[:,axis]
      distances=np.minimum(distances,np.where(t>0,t,np.inf))
@@ -111,6 +117,8 @@ try:
  # Release/Unity and source launch files have different odometry defaults.
  # Always connect the isolated fixture's own sensor topics explicitly.
  launch_args.extend(['odom_topic:=/lidar_slam/odom','cloud_topic:=/cloud_registered'])
+ for key,arg in [('TEST_ROG_MAP_CONFIG','rog_map_config'),('TEST_TRACKING_ROG_MAP_CONFIG','tracking_rog_map_config')]:
+  if os.environ.get(key):launch_args.append(arg+':='+os.environ[key])
  if os.environ.get('TEST_STARTUP_GRACE'):
   launch_args.append('source_startup_grace_duration:='+os.environ['TEST_STARTUP_GRACE'])
  if os.environ.get('TEST_EXPLORATION_OVERLAY'):
@@ -151,7 +159,7 @@ try:
   until=time.monotonic()+15
   while time.monotonic()<until and status.active_mode_str != 'target_exploration':time.sleep(.1)
   assert status.active_mode_str == 'target_exploration','mode switch failed'
- goal=PoseStamped();goal.header.frame_id='world';goal.header.stamp=rospy.Time.now();goal.pose.position.x=float(os.environ.get('TEST_GOAL_X','4' if u_shape else '145'));goal.pose.position.z=1.5;goal.pose.orientation.w=1;goal_pub.publish(goal)
+ goal=PoseStamped();goal.header.frame_id='world';goal.header.stamp=rospy.Time.now();goal.pose.position.x=float(os.environ.get('TEST_GOAL_X','4' if u_shape else '145'));goal.pose.position.z=float(os.environ.get('TEST_GOAL_Z','1.5'));goal.pose.orientation.w=1;goal_pub.publish(goal)
  began=time.monotonic();success=False
  return_trip=bool(os.environ.get('TEST_RETURN_TRIP'));return_sent=False;return_log_start=0
  coverage_seconds=float(os.environ.get("TEST_COVERAGE_SECONDS","0"))
@@ -160,9 +168,14 @@ try:
   for index in range(rospy.get_param('/planner_runtime_node/box_num')):
    prefix='/planner_runtime_node/box_%d/'%index
    coverage_boxes.append((np.array(rospy.get_param(prefix+'down')),np.array(rospy.get_param(prefix+'up'))))
+  if epicon:
+   for index,(low,high) in enumerate(coverage_boxes):
+    prefix='/planner_runtime_node/epicon/box_%d/'%index
+    assert np.array_equal(low,rospy.get_param(prefix+'down')) and np.array_equal(high,rospy.get_param(prefix+'up')),'native frontend task bounds differ from runtime'
  coverage_moved=False
- while time.monotonic()-began<180:
-  history.append({'t':time.monotonic()-began,'p':pos.tolist(),'speed':float(np.linalg.norm(vel)),'result':status.task_result_str,'phase':status.phase_str})
+ while time.monotonic()-began<float(os.environ.get('TEST_MAX_SECONDS','180')):
+  history.append({'t':time.monotonic()-began,'p':pos.tolist(),'speed':float(np.linalg.norm(vel)),'result':status.task_result_str,'phase':status.phase_str,
+                  'world_epoch':status.world_epoch,'map_revision':status.map_revision,'topo_revision':status.topo_revision,'topology_ready':status.topology_ready})
   if any('outside the active exploration capacity' in x for x in logs):raise AssertionError('old capacity rejection')
   if u_shape:assert not (1.3<pos[0]<2.7 and pos[1]<3.2),'command crossed U-wall safety margin'
   if coverage_seconds:
@@ -201,6 +214,11 @@ try:
  return_commits=sum('[target route commit] accepted' in x and 'source=KNOWN_' in x for x in logs[return_log_start:]) if return_sent else 0
  validation_pending=sum('[target route]' in x and 'ROUTE_VALIDATION_PENDING' in x for x in logs)
  result={'success':success,'final':pos.tolist(),'elapsed':time.monotonic()-began,'result':status.task_result_str,'reason':status.reason,'known_route_commits':route_commits,'local_goal_commits':local_goal_commits,'return_route_commits':return_commits,'validation_pending':validation_pending,'history':history}
+ if os.environ.get('TEST_REQUIRE_WORLD_MAP'):
+  result['world_map']={'world_epochs':sorted({h['world_epoch'] for h in history}),
+   'map_revision_start':history[0]['map_revision'],'map_revision_end':status.map_revision,
+   'topo_revision_start':history[0]['topo_revision'],'topo_revision_end':status.topo_revision,
+   'topology_ready':status.topology_ready}
  if coverage_seconds:
   result['coverage_execution']={
    'mixed_candidate_updates':sum('[coverage candidate]' in x and 'joint=1' in x and
@@ -214,6 +232,8 @@ try:
  if epicon:
   result['epicon']={
    'minimum_geometry_clearance':minimum_clearance,
+   'measured_height_range':measured_height,
+   'coverage_bounds_violation':coverage_bounds_violation,
    'hold_handover_passed':handover_passed,
    'global_updates':sum('[EPICON] global result=SUCCEED' in x for x in logs),
    'trajectory_commits':sum('[EPICON] trajectory backend result=3' in x for x in logs),
@@ -229,7 +249,12 @@ try:
  (base/'synthetic_result.json').write_text(json.dumps(result,indent=2))
  print(json.dumps({k:v for k,v in result.items() if k!='history'}),flush=True)
  assert success,'synthetic corridor not completed; inspect runtime log'
+ if os.environ.get('TEST_REQUIRE_WORLD_MAP'):
+  assert len(result['world_map']['world_epochs'])==1 and status.world_epoch==history[0]['world_epoch'],'task or mode change replaced the world'
+  assert status.map_revision>history[0]['map_revision'],'shared ROG stopped fusing during exploration'
+  assert status.topology_ready and status.topo_revision>0,'shared global topology unavailable'
  if epicon:
+  assert not coverage_bounds_violation,'100 Hz follower escaped exploration bounds'
   assert handover_passed,'EPICON did not release command ownership into a verified hold'
   assert minimum_clearance>=.30,'trajectory crossed synthetic obstacle clearance'
   if not expect_epicon_empty:

@@ -8,6 +8,12 @@ static void require(bool condition, const char *message) {
 int main() {
   using fast_planner::EpiconFinishVerifier;
   try {
+    fast_planner::EpiconProgressWatchdog progress;
+    progress.reset(100.0);
+    for (int n=1;n<=50;++n) progress.observe(100+n,false);
+    require(progress.idleSeconds(150)==50,"recovery or goal reselection reset the progress timeout");
+    progress.observe(151,true);
+    require(progress.idleSeconds(153)==2,"approaching an exploration goal did not count as progress");
     EpiconFinishVerifier gate;
     // Recorded failure: empty selection 0.418 s after committing a trajectory
     // with 5.466 s remaining. Repeated timer callbacks must not stop it.

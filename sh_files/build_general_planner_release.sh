@@ -328,6 +328,7 @@ cp "${EXPLORATION_FOREST_OVERLAY_CONFIG_SRC}" \
 cp "${EXPLORATION_SIM_CONFIG_SRC}" "${RELEASE_CONFIG_DIR}/exploration_sim.yaml"
 cp "${EXPLORATION_ROG_MAP_CONFIG_SRC}" "${RELEASE_CONFIG_DIR}/exploration_rog_map.yaml"
 cp "${TRACKING_ROG_MAP_CONFIG_SRC}" "${RELEASE_CONFIG_DIR}/tracking_rog_map.yaml"
+cp "${PLANNER_CONFIG_DIR}/tracking_unity_rog_map.yaml" "${RELEASE_CONFIG_DIR}/tracking_unity_rog_map.yaml"
 cp "${M2_STATE2STATE_CONFIG_SRC}" \
   "${RELEASE_CONFIG_DIR}/task_planner_runtime_state2state.yaml"
 cp "${M2_TRACKING_CONFIG_SRC}" \

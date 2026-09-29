@@ -67,10 +67,10 @@
   <arg name="exploration_overlay_config"
        default="$(find general_planner_release)/config/exploration_unity_overlay.yaml" />
   <arg name="rog_map_config"
-       default="$(find general_planner_release)/config/exploration_rog_map.yaml" />
+       default="$(find general_planner_release)/config/exploration_unity_neighborhood_rog_map.yaml" />
   <arg name="tracking_map_enable" default="true" />
   <arg name="tracking_rog_map_config"
-       default="$(find general_planner_release)/config/tracking_rog_map.yaml" />
+       default="$(find general_planner_release)/config/tracking_unity_rog_map.yaml" />
   <arg name="global_topology_config"
        default="$(find general_planner_release)/config/global_topology.yaml" />
 

@@ -83,6 +83,7 @@ add_topic /ekf/ekf_odom
 add_topic /ekf/ekf_odom_lidar
 add_topic /mavros/local_position/odom
 add_topic /cloud_registered
+add_topic /mapping/cloud_without_target
 add_topic /cloud_registered_body
 
 # Common simulation topic variants used by the exploration launch files.
@@ -96,6 +97,7 @@ add_topic /planning/replan
 add_topic /planning/heartbeat
 add_topic /planning/coverage_result
 add_topic /planning/exploration/status
+add_topic /planning/exploration/epicon_status
 add_topic /planning/exploration/command_enabled
 # Committed corridor/guide carry the trajectory ID in Marker.text and commit time in the header.
 add_topic /visualizer/mesh

@@ -56,6 +56,7 @@ class YawTrajOpt;
 namespace fast_planner
 {
 struct GeneralCommitStore;
+class EpiconFrontend;
 
 struct GcopterConfig
 {
@@ -406,6 +407,8 @@ public:
 
   FastPlannerManager();
   ~FastPlannerManager();
+  void attachEpiconFrontend(const std::shared_ptr<EpiconFrontend> &frontend) { epicon_frontend_=frontend; }
+  bool usingPointcloudGeometry() const;
 
   void printTimeCost(double time_threshold, double time_cost, std::string print_info);
   bool planExploreTraj(const std::vector<Eigen::Vector3f> &path,
@@ -554,8 +557,8 @@ private:
   std::shared_ptr<rog_map::ROGMapROS> rog_map_;
   std::shared_ptr<general_planner::MapManager> map_manager_;
   std::shared_ptr<general_planner::CorridorGenerator> corridor_generator_;
-  std::shared_ptr<general_planner::CorridorGenerator> pointcloud_corridor_generator_;
-  double pointcloud_min_clearance_{0.65};
+  std::shared_ptr<EpiconFrontend> epicon_frontend_;
+  double pointcloud_min_clearance_{0.6};
   std::shared_ptr<geometry_utils::Trajectory> committed_pos_traj_;
   std::shared_ptr<geometry_utils::Trajectory> committed_yaw_traj_;
   std::shared_ptr<geometry_utils::Trajectory> latest_exp_pos_traj_;

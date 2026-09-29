@@ -1,4 +1,4 @@
-# Unity Neighborhood trial; keep 0.15 m voxels and the existing 0.45 m inflation.
+# Unity shared world; high navigation remains available outside the low exploration task.
 rog_map:
   esdf:
     enable: false
@@ -40,7 +40,7 @@ rog_map:
   - 72.0
   - 72.0
   - 8.0
-  point_filt_num: 2
+  point_filt_num: 1
   raycasting:
     enable: true
     batch_update_size: 1
@@ -53,10 +53,10 @@ rog_map:
     p_free: 0.4
     ray_range:
     - 0.5
-    - 30.0
+    - 60.0
     local_update_box:
     - 70.0
     - 70.0
     - 6.0
   virtual_ground_height: -0.1
-  virtual_ceil_height: 6.4
+  virtual_ceil_height: 8.6

@@ -890,6 +890,7 @@ void FastExplorationFSM::init(ros::NodeHandle &nh,
   planner_manager_ = expl_manager_->planner_manager_;
   epicon_frontend_.reset(new fast_planner::EpiconFrontend);
   epicon_frontend_->init(nh);
+  planner_manager_->attachEpiconFrontend(epicon_frontend_);
 
   state_ = EXPL_STATE::INIT;
   fd_->have_odom_ = false;

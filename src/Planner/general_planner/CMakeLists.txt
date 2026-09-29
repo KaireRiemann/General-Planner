@@ -150,7 +150,8 @@ target_link_libraries(general_planner_exploration_utils PUBLIC
 
 file(GLOB_RECURSE EPICON_NATIVE_SOURCES CONFIGURE_DEPENDS third_party/epicon/src/*.cpp)
 add_library(general_planner_epicon STATIC ${EPICON_NATIVE_SOURCES}
-        ${GENERAL_PLANNER_EXPLORATION_DIR}/epicon_frontend.cpp)
+        ${GENERAL_PLANNER_EXPLORATION_DIR}/epicon_frontend.cpp
+        ${GENERAL_PLANNER_EXPLORATION_DIR}/epicon_corridor.cpp)
 target_include_directories(general_planner_epicon PRIVATE third_party/epicon/include PUBLIC include)
 target_compile_options(general_planner_epicon PRIVATE -Wno-error=unused-variable -Wno-error=unused-but-set-variable)
 target_link_libraries(general_planner_epicon PUBLIC ${catkin_LIBRARIES} ${PCL_LIBRARIES} ${OpenCV_LIBS} OpenMP::OpenMP_CXX)
@@ -684,3 +685,10 @@ target_link_libraries(epicon_frontend_replay_test general_planner_epicon ${THIRD
 add_executable(epicon_tour_self_test tests/epicon_tour_self_test.cpp)
 target_include_directories(epicon_tour_self_test PRIVATE third_party/epicon/include)
 target_link_libraries(epicon_tour_self_test general_planner_epicon ${THIRD_PARTY})
+add_executable(epicon_corridor_self_test tests/epicon_corridor_self_test.cpp)
+target_link_libraries(epicon_corridor_self_test general_planner_epicon ${THIRD_PARTY})
+add_executable(epicon_backend_replay_test tests/epicon_backend_replay_test.cpp)
+target_link_libraries(epicon_backend_replay_test general_planner_exploration ${THIRD_PARTY})
+if(CATKIN_ENABLE_TESTING)
+  add_test(NAME epicon_corridor_self_test COMMAND epicon_corridor_self_test)
+endif()

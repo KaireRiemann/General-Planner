@@ -2645,7 +2645,7 @@ ExplorationTrajOpt::ExplorationTrajOpt(const traj_opt::Config &cfg,
   opt_vars_.magnitude_bounds.resize(6);
   opt_vars_.penalty_weights.resize(6);
   opt_vars_.magnitude_bounds << cfg_.max_vel, cfg_.max_acc,
-      cfg_.max_omg, std::numeric_limits<double>::infinity(),
+      cfg_.max_omg, cfg_.max_tilt,
       cfg_.min_acc_thr * cfg_.mass, cfg_.max_acc_thr * cfg_.mass;
   opt_vars_.penalty_weights << cfg_.penna_pos, cfg_.penna_vel,
       cfg_.penna_acc, cfg_.penna_omg, cfg_.penna_theta, cfg_.penna_thr;
@@ -3193,11 +3193,16 @@ bool ExplorationTrajOpt::optimize(const StatePVAJ &headPVAJ,
                                   Trajectory &out_traj,
                                   bool preserve_corridor_order, double time_budget)
 {
-  if (guide_path.size() != guide_t.size() || guide_path.empty())
+  if (guide_path.size() != guide_t.size())
   {
     return false;
   }
-  opt_vars_.default_init = false;
+  // Empty guidance requests the corridor's interior initialization while
+  // retaining explicit velocity bounds, corridor order and the time budget.
+  // Native point-cloud corridors may share a head-containing overlap; guide
+  // projection assigned these a 0.01 s first piece and produced ill-conditioned
+  // moving replans. Initialize from corridor geometry in that mode.
+  opt_vars_.default_init = guide_path.empty();
   opt_vars_.given_init_ts_and_ps = false;
   opt_vars_.head_pvaj = headPVAJ;
   opt_vars_.tail_pvaj = tailPVAJ;

@@ -115,6 +115,31 @@
       "source": "global_planner/exploration_manager/src/fast_exploration_manager.cpp",
       "sha256": "bfff2e662d5c58aa7b5e9cdddf7825ca8d72d7b4b84e537bd207eb616bc66882",
       "destination": "src/exploration_manager/fast_exploration_manager.cpp"
+    },
+    {
+      "source": "local_planner/minco_planner/include/gcopter/firi.hpp",
+      "sha256": "99cd4ac8b928f7a01d5af837e4c17922d60833733e3ee8827eff410b8450cda7",
+      "destination": "include/epicon_native/corridor/firi.hpp"
+    },
+    {
+      "source": "local_planner/minco_planner/include/gcopter/sdlp.hpp",
+      "sha256": "d7b7bd66597ca1355d7bf16d902cf17da638ad0fd98870673f209a329ded0abf",
+      "destination": "include/epicon_native/corridor/sdlp.hpp"
+    },
+    {
+      "source": "local_planner/minco_planner/include/gcopter/lbfgs.hpp",
+      "sha256": "fdc6b0d4c4b4c50e0368d6983dd28ffd893c824df461aebe9e3b24dd8a99b3ca",
+      "destination": "include/epicon_native/corridor/lbfgs.hpp"
+    },
+    {
+      "source": "local_planner/minco_planner/include/gcopter/geo_utils.hpp",
+      "sha256": "1cea1be13558538d578364845fcf5280f56b07bbb5ff83cb9b379bdfcd38bb28",
+      "destination": "include/epicon_native/corridor/geo_utils.hpp"
+    },
+    {
+      "source": "local_planner/minco_planner/include/gcopter/quickhull.hpp",
+      "sha256": "c0d2668c2c87ff9dfddc750d2bca9f91e4846f8fa78beffe44def0736b5e0e21",
+      "destination": "include/epicon_native/corridor/quickhull.hpp"
     }
   ]
 }

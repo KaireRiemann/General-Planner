@@ -4,6 +4,7 @@
 #include <std_msgs/String.h>
 #include <sstream>
 #include <stdexcept>
+#include <pcl/filters/voxel_grid.h>
 
 namespace fast_planner {
 namespace {
@@ -280,6 +281,63 @@ EpiconFrontend::Result EpiconFrontend::pathToGoal(std::vector<Eigen::Vector3f> &
     if((path[n]-sampled.back()).norm()>=.01f) sampled.push_back(path[n]);
   }
   path.swap(sampled); return Result::SUCCEED;
+}
+EpiconFrontend::Result EpiconFrontend::pathFrom(const Eigen::Vector3d &position,
+    const Eigen::Vector3d &velocity, double yaw, std::vector<Eigen::Vector3f> &path) {
+  auto &i=*impl_;
+  if (!position.allFinite() || !velocity.allFinite() || !contains(position)) return Result::DISCONNECTED;
+  // The graph and sensor history retain measured odometry. Only the search
+  // origin is temporarily reconnected at the exact future trajectory head.
+  auto &graph=*i.planner->topo_graph_;
+  Eigen::Vector3f search_position=position.cast<float>();
+  float search_yaw=static_cast<float>(yaw);
+  graph.updateOdomNode(search_position,search_yaw);
+  const Eigen::Vector3f old_velocity=i.vel;
+  i.vel=velocity.cast<float>();
+  const auto result=pathToGoal(path);
+  i.vel=old_velocity;
+  graph.updateOdomNode(i.pos,i.yaw);
+  return result;
+}
+bool EpiconFrontend::corridor(const std::vector<Eigen::Vector3d> &path,
+    double range, double clearance, EpiconCorridor &result) const {
+  if (path.size()<2 || !hasCloud()) { result={}; result.failure="no point-cloud path"; return false; }
+  Eigen::Vector3d lower=path.front(), upper=path.front();
+  for (const auto &p:path) { lower=lower.cwiseMin(p); upper=upper.cwiseMax(p); }
+  // Match EPICON's obstacle crop, especially its local vertical envelope.
+  lower-=Eigen::Vector3d(3,3,1); upper+=Eigen::Vector3d(3,3,1);
+  epicon_native::PointVector points;
+  impl_->planner->lidar_map_interface_->boxSearch(lower.cast<float>(),upper.cast<float>(),points);
+  pcl::PointCloud<pcl::PointXYZ>::Ptr input(new pcl::PointCloud<pcl::PointXYZ>);
+  input->points=points;
+  pcl::PointCloud<pcl::PointXYZ> filtered;
+  pcl::VoxelGrid<pcl::PointXYZ> filter;
+  filter.setInputCloud(input); filter.setLeafSize(.2f,.2f,.2f); filter.filter(filtered);
+  std::vector<Eigen::Vector3d> surface; surface.reserve(filtered.size());
+  for (const auto &p:filtered) surface.emplace_back(p.x,p.y,p.z);
+  return buildEpiconCorridor(path,surface,lower,upper,range,clearance,result);
+}
+double EpiconFrontend::clearance(const Eigen::Vector3d &position) const {
+  if (!hasCloud() || !position.allFinite()) return -std::numeric_limits<double>::infinity();
+  return impl_->planner->lidar_map_interface_->getDisToOcc(position);
+}
+bool EpiconFrontend::contains(const Eigen::Vector3d &position) const {
+  return position.allFinite() && impl_->planner->lidar_map_interface_->IsInBox(position.cast<float>().eval());
+}
+bool EpiconFrontend::recoveryPoint(const Eigen::Vector3d &start, Eigen::Vector3d &goal) const {
+  if (!hasCloud() || !contains(start)) return false;
+  epicon_native::PointVector points;
+  const Eigen::Vector3f extent(2,2,1);
+  impl_->planner->lidar_map_interface_->boxSearch(start.cast<float>()-extent,start.cast<float>()+extent,points);
+  std::vector<Eigen::Vector3d> surface; surface.reserve(points.size());
+  for (const auto &p:points) surface.emplace_back(p.x,p.y,p.z);
+  if (!epiconRecoveryPoint(start,surface,goal)) return false;
+  // Prefer the same-height interior when it restores clearance. Vertical
+  // escape is reserved for geometry that actually requires it.
+  Eigen::Vector3d level=goal; level.z()=start.z();
+  const double required=std::max(.6,clearance(start)+.05);
+  if (contains(level) && clearance(level)>=required && (level-start).norm()>.1) goal=level;
+  return contains(goal) && clearance(goal)>=required;
 }
 const std::vector<Eigen::Vector3f> &EpiconFrontend::tour() const { return impl_->explorer->ed_->global_tour_; }
 double EpiconFrontend::goalYaw() const { return impl_->planner->local_data_.end_yaw_; }

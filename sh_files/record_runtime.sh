@@ -188,6 +188,7 @@ add_topic /ekf/ekf_odom
 add_topic /ekf/ekf_odom_lidar
 add_topic /mavros/local_position/odom
 add_topic /cloud_registered
+add_topic /mapping/cloud_without_target
 add_topic /cloud_registered_body
 add_topic /quad_0/lidar_slam/odom
 add_topic /quad0_pcl_render_node/cloud
@@ -197,6 +198,7 @@ add_topic /drone_0_pcl_render_node/cloud
 # Exploration adapter command / status / traj_server chain.
 add_topic /planning/exploration/command
 add_topic /planning/exploration/status
+add_topic /planning/exploration/epicon_status
 add_topic /planning/exploration/command_enabled
 add_topic /planning/exploration/pos_cmd
 add_topic /planning/replan

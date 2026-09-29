@@ -1,5 +1,4 @@
-# Unity Neighborhood: 20 x 20 m coverage trial around the street spawn.
-# Select with exploration_overlay_config; shared occupancy margins are kept.
+# EPICON Unity baseline. Native coverage uses point-cloud geometry through execution.
 odometry_topic: /lidar_slam/odom
 cloud_topic: /cloud_registered
 fsm/cloud_odom_mode: latest_odom
@@ -9,52 +8,63 @@ lidar_perception/fov_down: -30.0
 lidar_perception/lidar_pitch: 0.0
 lidar_perception/fov_viewpoint_up: 28.0
 lidar_perception/fov_viewpoint_down: -28.0
-lidar_perception/max_ray_length: 30.0
-
-# Stay below the shared ROG virtual ceiling (6.4 m), with endpoint clearance.
+lidar_perception/max_ray_length: 60.0
 box_num: 1
 box_0/down: [-10.0, -10.0, -0.2]
-box_0/up: [10.0, 10.0, 6.0]
+# Low-level exploration task: do not select second-floor or rooftop goals.
+# The shared ROG/topology world retains its separate, larger vertical extent.
+box_0/up: [10.0, 10.0, 3.0]
 dead_area_num: 0
 
-FrontierManager/update_length: 22.0
-FrontierManager/cluster_min_size: 0.8
-FrontierManager/cluster_min_radius: 1.0
-FrontierManager/cluster_max_size: 8.0
-FrontierManager/cluster_minmum_point_num: 6
-FrontierManager/cluster_match_radius: 1.8
-ViewpointManager/sample_pillar_min_height: -0.6
-ViewpointManager/sample_pillar_max_height: 2.4
-ViewpointManager/sample_pillar_min_radius: 0.8
-ViewpointManager/sample_pillar_max_radius: 3.5
-ViewpointManager/consider_range: 16
-ViewpointManager/global_recluster_size: 22
-ViewScoreHardGateMinKnownFreeRatio: 0.80
-ViewScoreHardGateMinClearance: 0.30
-bubble_astar/safe_distance: 0.28
-bubble_topo/bubble_min_radius: 0.32
-bubble_topo/frontier_bubble_min_radius: 0.32
-DilateRadiusSoft: 0.50
-DilateRadiusHard: 0.35
-CorridorRobotRadius: 0.35
-
-# Modest speed while validating the live sensor/command loop among trees.
+# Same local horizon, point-cloud clearance and physical bounds as epicon_ws/unity.yaml.
+max_traj_len: 10.0
+MaxCorridorSize: 3.5
+DilateRadiusSoft: 0.6
+DilateRadiusHard: 0.5
 MaxVelMag: 2.0
-MaxAccMag: 3.0
-DynamicVelocityEnable: true
-MinSegmentVel: 0.8
+MaxAccMag: 10.0
+maxBdrMag: 10000.0
+MaxTiltAngle: 0.5
+MinThrust: 15.0
+MaxThrust: 22.0
+VehicleMass: 1.9
+GravAcc: 9.8
+HorizDrag: 0.7
+VertDrag: 0.8
+ParasDrag: 0.01
+SpeedEps: 0.0001
+WeightT: 2000.0
+WeightSafeT: 400.0
+# EPICON's five weights: position, velocity, body rate, tilt, thrust.
+ChiVec: [200000.0, 15000.0, 10000.0, 100000.0, 100000.0]
+SmoothingEps: 0.015
+IntegralIntervs: 32
+RelCostTol: 0.000001
+yaw_max_vel: 4.0
+DynamicVelocityEnable: false
+MinSegmentVel: 0.5
 TrajectoryRetryMinVel: 0.5
 OpenSegmentVel: 2.0
-TurnLateralAcceleration: 1.5
-TurnSoftVelocity: 1.6
-TurnHardVelocity: 0.8
+TurnSoftVelocity: 2.0
+TurnHardVelocity: 1.0
 BackupMaxVel: 2.0
-BackupMaxAcc: 3.0
-yaw_max_vel: 1.2
+ReplanCommitDelay: 0.35
+CommitKnownFreeSafeDistance: 0.5
+NonstopTerminalVelocityEnable: false
 
-# Native EPICON frontend settings; no ROG occupancy/free coverage goals.
+# Coverage still publishes the shared occupancy world for subsequent tasks.
+# Full-rate fusion resumes on pause/handover or in any non-coverage mode.
+global_map/pointcloud_main_period: 0.5
+global_map/pointcloud_tracking_period: 1.0
+
 epicon:
   FrontierManager/cluster_min_size: 0.8
   FrontierManager/cluster_min_radius: 1.0
   bubble_topo/bubble_min_radius: 0.61
   bubble_astar/safe_distance: 0.6
+  execution/audit_period: 0.5
+  execution/goal_failure_limit: 3
+  execution/goal_cooldown: 5.0
+  execution/goal_exclusion_radius: 0.8
+  execution/stall_reselect: 8.0
+  execution/stall_timeout: 40.0

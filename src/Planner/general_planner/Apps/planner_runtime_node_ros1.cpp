@@ -252,7 +252,7 @@ int main(int argc, char **argv) {
           // The local exploration modules use this only as a revision fence;
           // the actual ROG update already happened in GlobalMapRuntime.
           (void)update;
-        });
+        }, [exploration_fsm]() { return exploration_fsm->pointcloudExplorationActive(); });
 
     auto navigation_fsm = std::make_shared<fsm::FsmRos1>();
     navigation_fsm->init(navigation_nh, navigation_config,

@@ -174,11 +174,14 @@ private:
   void latestCloudCallback(const sensor_msgs::PointCloud2ConstPtr &msg);
 
   /* helper functions */
-  std::unique_ptr<fast_planner::EpiconFrontend> epicon_frontend_;
+  std::shared_ptr<fast_planner::EpiconFrontend> epicon_frontend_;
   EpiconFinishVerifier epicon_finish_;
   bool epicon_recheck_pending_{false};
   ros::WallTime epicon_last_audit_, epicon_last_motion_, epicon_last_deferral_;
-  Eigen::Vector3f epicon_motion_anchor_{Eigen::Vector3f::Zero()};
+  bool epicon_normal_motion_{false};
+  Eigen::Vector3f epicon_progress_goal_{Eigen::Vector3f::Zero()};
+  double epicon_goal_best_distance_{0.0};
+  EpiconProgressWatchdog epicon_progress_;
   double epicon_finish_cloud_age_{1.0}, epicon_audit_period_{1.0};
   double epicon_goal_cooldown_{15.0}, epicon_goal_exclusion_radius_{0.8};
   double epicon_stall_reselect_{8.0}, epicon_stall_timeout_{40.0};
@@ -232,6 +235,7 @@ private:
   void pubState();
 
 public:
+  bool pointcloudExplorationActive() const;
   FastExplorationFSM(/* args */) {}
 
   ~FastExplorationFSM();

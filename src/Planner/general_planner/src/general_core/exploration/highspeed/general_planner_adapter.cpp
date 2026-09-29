@@ -20,6 +20,7 @@ using namespace geometry_utils;
 #include <data_structure/exp_traj.h>
 
 #include <general_core/exploration/highspeed/planner_manager.h>
+#include <general_core/exploration/highspeed/epicon_frontend.h>
 
 #include <cmath>
 #include <iostream>
@@ -32,10 +33,37 @@ struct GeneralCommitStore
 {
   general_planner::CmdTraj cmd_traj_info;
   general_planner::ExpTraj last_exp_traj_info;
+  bool pointcloud_escape{false};
 };
 
 namespace
 {
+double recoveryPhysicalFloor(const GcopterConfig &cfg) {
+  return std::max(.05,std::min(cfg.dilateRadiusHard,cfg.corridorRobotRadius)-cfg.safetyClearanceTolerance);
+}
+
+bool certifyPointcloudEscape(const EpiconFrontend &map, const geometry_utils::Trajectory &traj,
+                            double begin, const GcopterConfig &cfg, double &blocked_time) {
+  if (traj.empty()) return false;
+  const double duration=traj.getTotalDuration();
+  begin=std::clamp(begin,0.0,duration);
+  const double floor=recoveryPhysicalFloor(cfg);
+  const double target=std::max(cfg.dilateRadiusSoft,cfg.commitKnownFreeSafeDistance);
+  double best=std::min(target,map.clearance(traj.getPos(begin)));
+  const double dt=std::min(.02,.02/std::max(1.0,traj.getMaxVelRate()));
+  for (double t=begin;t<duration+dt;t+=dt) {
+    const double tt=std::min(t,duration);
+    const auto p=traj.getPos(tt);
+    const double clearance=map.clearance(p);
+    if (!map.contains(p) || !std::isfinite(clearance) || clearance<floor || clearance+.02<best) {
+      blocked_time=tt-begin; return false;
+    }
+    best=std::max(best,std::min(target,clearance));
+    if (tt>=duration) return clearance>=target;
+  }
+  return false;
+}
+
 class NullRosInterface final : public ros_interface::RosInterface
 {
 public:
@@ -218,7 +246,8 @@ traj_opt::Config makeGeneralExpConfig(const GcopterConfig &cfg)
   out.max_vel = std::max(0.2, cfg.maxVelMag);
   out.max_acc = std::max(0.2, cfg.maxAccMag);
   out.max_jerk = std::max(10.0, cfg.maxBdrMag);
-  out.max_omg = std::max(0.2, cfg.yaw_max_vel);
+  out.max_omg = std::max(0.2, cfg.maxBdrMag);
+  out.max_tilt = cfg.maxTiltAngle;
   out.min_acc_thr = std::max(0.0, cfg.minThrust / out.mass);
   out.max_acc_thr = std::max(out.min_acc_thr + 1.0e-3, cfg.maxThrust / out.mass);
   out.penna_t = std::max(0.0, cfg.weightT);
@@ -574,6 +603,21 @@ geometry_utils::Trajectory makeHoldYawTrajectory(double yaw, double duration)
   return out;
 }
 
+geometry_utils::Trajectory makeBoundaryYawTrajectory(const general_utils::Vec4f &head,
+                                                       double goal, double duration)
+{
+  geometry_utils::Trajectory out;
+  if (!head.allFinite() || !std::isfinite(goal) || !std::isfinite(duration) || duration<=1e-4) return out;
+  const double delta=std::remainder(goal-head(0),2*M_PI);
+  Eigen::MatrixXd coeff=Eigen::MatrixXd::Zero(3,6);
+  coeff(0,5)=head(0);
+  coeff(0,4)=head(1);
+  coeff(0,3)=3*delta/(duration*duration)-2*head(1)/duration;
+  coeff(0,2)=-2*delta/(duration*duration*duration)+head(1)/(duration*duration);
+  out.emplace_back(duration,coeff);
+  return out;
+}
+
 // traj_server holds a stopped command's endpoint after expiry. Represent
 // that same hold when a coverage replan switches beyond a short brake tail,
 // so optimization can keep its full compute window without using stale odom.
@@ -731,7 +775,8 @@ bool constrainSfcsToExplorationBoxes(
     const Eigen::Vector3d &tail,
     const LIOInterface::Ptr &lidar_map,
     double min_overlap_depth,
-    geometry_utils::PolytopeVec &sfcs)
+    geometry_utils::PolytopeVec &sfcs,
+    bool allow_partial_box = false)
 {
   // Navigation keeps obstacle SFCs and final known-free validation.
   if (lidar_map && lidar_map->targetNavigation()) return !sfcs.empty();
@@ -774,9 +819,12 @@ bool constrainSfcsToExplorationBoxes(
       const Eigen::Vector3d maximum =
           lidar_map->lp_->global_box_max_boundary_vec_[box].cast<double>() -
           Eigen::Vector3d::Constant(boundary_margin);
+      // A point-cloud corridor may extend above a low exploration box. Its
+      // original center need not lie in the valid clipped intersection.
       if ((minimum.array() >= maximum.array()).any() ||
-          (representative.array() < minimum.array()).any() ||
-          (representative.array() > maximum.array()).any())
+          (!allow_partial_box &&
+           ((representative.array() < minimum.array()).any() ||
+            (representative.array() > maximum.array()).any())))
       {
         continue;
       }
@@ -785,7 +833,8 @@ bool constrainSfcsToExplorationBoxes(
       if ((i == 0 && !pointInsideHPoly(clipped.GetPlanes(), head)) ||
           (i + 1 == sfcs.size() &&
            !pointInsideHPoly(clipped.GetPlanes(), tail)) ||
-          !pointInsideHPoly(clipped.GetPlanes(), representative))
+          (!allow_partial_box &&
+           !pointInsideHPoly(clipped.GetPlanes(), representative)))
       {
         continue;
       }
@@ -1264,6 +1313,10 @@ FastPlannerManager::FastPlannerManager()
 
 FastPlannerManager::~FastPlannerManager() = default;
 
+bool FastPlannerManager::usingPointcloudGeometry() const {
+  return epicon_frontend_ && lidar_map_interface_ && !lidar_map_interface_->targetNavigation();
+}
+
 void FastPlannerManager::clearReleasedTrajectory()
 {
   commit_store_ = std::make_unique<GeneralCommitStore>();
@@ -1295,9 +1348,9 @@ void FastPlannerManager::initPlanModules(ros::NodeHandle &nh,
                                              &shared_map_manager)
 {
   gcopter_config_->init(nh);
-  nh.param("epicon/bubble_topo/bubble_min_radius",pointcloud_min_clearance_,0.61);
-  pointcloud_min_clearance_=std::max(gcopter_config_->commitKnownFreeSafeDistance,
-                                   pointcloud_min_clearance_+0.04);
+  // Native search, FIRI inflation and final certification share obstacle points.
+  pointcloud_min_clearance_=std::max(gcopter_config_->dilateRadiusHard,
+                                   gcopter_config_->commitKnownFreeSafeDistance);
   nh.param("max_traj_len", max_traj_len_, 12.0);
   parallel_path_finder_ = parallel_path_finder;
   topo_graph_ = graph;
@@ -1547,11 +1600,13 @@ bool FastPlannerManager::planExploreTraj(
     bool pointcloud_frontend)
 {
   coverage_failure_ = {};
+  pointcloud_frontend = pointcloud_frontend || (clearance_recovery && usingPointcloudGeometry());
+  if (pointcloud_frontend && (!epicon_frontend_ || !epicon_frontend_->hasCloud())) return false;
   if (coverage.enabled && (route.enabled() || clearance_recovery ||
       !lidar_map_interface_ || lidar_map_interface_->targetNavigation())) return false;
   const ros::Time plan_process_start = ros::Time::now();
   const auto planning_wall_start=std::chrono::steady_clock::now();
-  if (coverage.enabled && hasCommittedTrajectory()) is_static=false;
+  if ((coverage.enabled || pointcloud_frontend) && hasCommittedTrajectory() && !clearance_recovery) is_static=false;
   const auto observation_gates=observation.orderedGates();
   if (observation_gates.size()>3) return false;
   for (const auto &gate:observation_gates)
@@ -1602,7 +1657,7 @@ bool FastPlannerManager::planExploreTraj(
   };
 
   if (!is_static && !commit_store_->cmd_traj_info.empty() &&
-      (coverage.enabled || !commit_store_->last_exp_traj_info.empty()))
+      (coverage.enabled || pointcloud_frontend || !commit_store_->last_exp_traj_info.empty()))
   {
     commit_store_->cmd_traj_info.lock();
     guide_pos_traj = commit_store_->cmd_traj_info.posTraj();
@@ -1614,7 +1669,7 @@ bool FastPlannerManager::planExploreTraj(
     {
       switch_delay = std::clamp(gcopter_config_->replanCommitDelay, 0.05, 1.50);
       original_command_duration=committed_duration;
-      if (coverage.enabled) {
+      if (coverage.enabled || pointcloud_frontend) {
         const double until=std::max(0.0,replan_process_start_wt-guide_pos_traj.start_WT)+switch_delay+1e-3;
         if (!extendStoppedCommand(guide_pos_traj,until) ||
             (!guide_yaw_traj.empty() && !extendStoppedCommand(guide_yaw_traj,until,false))) {
@@ -1664,7 +1719,7 @@ bool FastPlannerManager::planExploreTraj(
 
   if (!use_committed_replan_state)
   {
-    if (coverage.enabled && hasCommittedTrajectory()) {
+    if ((coverage.enabled || pointcloud_frontend) && hasCommittedTrajectory() && !clearance_recovery) {
       coverage_failure_.kind=CoverageFailureKind::HEAD;
       return false;
     }
@@ -1677,7 +1732,31 @@ bool FastPlannerManager::planExploreTraj(
     }
   }
 
-  std::vector<Eigen::Vector3d> local_path = shortenPath(path, max_traj_len_);
+  std::vector<Eigen::Vector3f> execution_path=path;
+  if (pointcloud_frontend && !clearance_recovery) {
+    const auto search=epicon_frontend_->pathFrom(head.col(0),head.col(1),yaw_init(0),execution_path);
+    if (search!=EpiconFrontend::Result::SUCCEED) {
+      coverage_failure_.kind=search==EpiconFrontend::Result::DISCONNECTED
+          ? CoverageFailureKind::HEAD : CoverageFailureKind::PATH;
+      ROS_WARN("[EPICON backend] no point-cloud path from execution head");
+      return false;
+    }
+  }
+  std::vector<Eigen::Vector3d> local_path;
+  bool pointcloud_truncated=false;
+  if (pointcloud_frontend) {
+    // Same arc/radial endpoint rule as EPICON's local planner.
+    std::size_t radial=execution_path.size()-1, arc=1;
+    while (radial>0 && (execution_path[radial]-execution_path.front()).norm()>max_traj_len_/2) --radial;
+    double length=0;
+    for (;arc<execution_path.size();++arc) {
+      length+=(execution_path[arc]-execution_path[arc-1]).norm();
+      if (length>max_traj_len_ || arc+1==execution_path.size()) break;
+    }
+    const auto end=std::min(execution_path.size()-1,std::max(radial,arc));
+    for (std::size_t k=0;k<=end;++k) local_path.push_back(execution_path[k].cast<double>());
+    pointcloud_truncated=end+1<execution_path.size();
+  } else local_path=shortenPath(execution_path,max_traj_len_);
   if (local_path.size() < 2)
   {
     return false;
@@ -1697,7 +1776,7 @@ bool FastPlannerManager::planExploreTraj(
       ? std::max(1.0, local_data_.curr_vel_.norm() * switch_delay +
                      0.5 * gcopter_config_->maxAccMag * switch_delay * switch_delay + 0.5)
       : std::numeric_limits<double>::infinity();
-  if (!alignPathStart(local_path,
+  if (!pointcloud_frontend && !alignPathStart(local_path,
                       head.col(0),
                       use_committed_replan_state,
                       max_head_projection_dist, max_head_arc))
@@ -1724,114 +1803,45 @@ bool FastPlannerManager::planExploreTraj(
     }
   }
 
-  double pointcloud_lower_z=-std::numeric_limits<double>::infinity();
-  double pointcloud_upper_z=std::numeric_limits<double>::infinity();
-  if (pointcloud_frontend && map_manager_) {
-    // EPICON reasons about obstacle points. Its paths do not know the virtual
-    // flight-height bounds used by General's corridor. Apply only that backend
-    // constraint here; no occupancy-derived goal or coverage score is fed back
-    // into EPICON. The corridor and commit checks still validate every segment.
-    general_utils::Vec3f lower = general_utils::Vec3f::Constant(-1.0e6);
-    general_utils::Vec3f upper = general_utils::Vec3f::Constant(1.0e6);
-    map_manager_->boundBoxByLocalMap(lower, upper, false);
-    lower.z() += std::max(0.0, gcopter_config_->corridorRobotRadius) + 0.05;
-    upper.z() -= std::max(0.0, gcopter_config_->corridorRobotRadius) + 0.05;
-    pointcloud_lower_z=lower.z(); pointcloud_upper_z=upper.z();
-    if (lower.z() >= upper.z() || head(2,0) < lower.z()-0.05 || head(2,0) > upper.z()+0.05) {
-      ROS_WARN_THROTTLE(1.0, "[EPICON backend] current trajectory head is outside the corridor height domain");
+  general_utils::vec_E<general_utils::Vec3f> guide_path;
+  geometry_utils::PolytopeVec sfcs;
+  bool used_general_corridor=false;
+  double shifted_start_dist=0.0;
+  if (pointcloud_frontend) {
+    EpiconCorridor native;
+    // Recovery may start below the normal soft margin. Inflate to the current
+    // certified clearance and enforce monotonically increasing clearance below.
+    const double margin=clearance_recovery ? std::max(.05,std::min(gcopter_config_->dilateRadiusSoft,
+        safetyDistanceToOcc(head.col(0))-.02)) : gcopter_config_->dilateRadiusSoft;
+    if (!epicon_frontend_->corridor(local_path,gcopter_config_->corridor_size,margin,native)) {
+      coverage_failure_.kind=CoverageFailureKind::PATH;
+      ROS_WARN_STREAM("[EPICON backend] point-cloud corridor failed: " << native.failure);
       return false;
     }
-    int adjusted = 0;
-    for (std::size_t i=1; i<local_path.size(); ++i) {
-      const double z = std::clamp(local_path[i].z(), lower.z(), upper.z());
-      adjusted += std::abs(z-local_path[i].z()) > 1.0e-6;
-      local_path[i].z() = z;
+    local_path=native.path;
+    pointcloud_truncated=pointcloud_truncated || native.truncated;
+    for (const auto &planes:native.planes) {
+      geometry_utils::Polytope poly; poly.SetPlanes(planes); sfcs.push_back(poly);
     }
-    local_path.erase(std::unique(local_path.begin(), local_path.end(),
-        [](const Eigen::Vector3d &a, const Eigen::Vector3d &b) { return (a-b).norm()<1.0e-3; }), local_path.end());
-    if (local_path.size()<2) return false;
-    if (adjusted) ROS_INFO_STREAM_THROTTLE(1.0, "[EPICON backend] guide height constrained at "
-        << adjusted << " points to [" << lower.z() << ", " << upper.z() << "]");
-  }
-
-  const general_utils::vec_E<general_utils::Vec3f> guide_path = toVec3fPath(local_path);
-
-  if (pointcloud_frontend && map_manager_ && !pointcloud_corridor_generator_) {
-    // Use the same inflated obstacle geometry as the independent commit check.
-    // Inflation already contains a vehicle margin; CIRI encloses voxel corners
-    // plus any extra clearance needed to retain native bubble connectivity.
-    // Coverage goal selection remains point-cloud-only.
-    const auto map_config=map_manager_->rawRosMap()->getMapConfig();
-    const double inflation_radius=map_config.inflation_step*map_config.inflation_resolution;
-    const double voxel_radius=0.5*std::sqrt(3.0)*map_manager_->getInfResolution()+0.01+
-        std::max(0.0,pointcloud_min_clearance_-inflation_radius);
-    pointcloud_corridor_generator_=std::make_shared<general_planner::CorridorGenerator>(
-        ros_ptr_,map_manager_,std::max(0.2,gcopter_config_->corridor_size),
-        std::max(0.2,gcopter_config_->corridorLineMaxLength),
-        std::max(0.01,gcopter_config_->corridorMinOverlapThreshold),
-        gcopter_config_->corridorVirtualGroundHeight,gcopter_config_->corridorVirtualCeilHeight,
-        voxel_radius,std::max(1,gcopter_config_->corridorBoxSearchSkipNum),
-        std::max(1,gcopter_config_->corridorIrisIterNum),
-        optimization_utils::EllipsoidOptimizerConfig(),true);
-  }
-  const auto &active_corridor=pointcloud_frontend ? pointcloud_corridor_generator_ : corridor_generator_;
-
-  geometry_utils::PolytopeVec sfcs;
-  bool used_general_corridor = false;
-  double shifted_start_dist = 0.0;
-  const bool try_general_corridor = gcopter_config_->generalCorridorEnable;
-  const bool general_corridor_ready =
-      try_general_corridor && active_corridor && rog_map_updated_;
-  if (try_general_corridor && !general_corridor_ready)
-  {
-    ROS_WARN_STREAM_THROTTLE(
-        1.0,
-        "[highspeed_exp adapter] General corridor backend/map is not ready; keep the committed trajectory:"
-            << " generator=" << static_cast<bool>(corridor_generator_)
-            << " rog_updated=" << rog_map_updated_);
-    return false;
-  }
-  if (general_corridor_ready)
-  {
-    try
-    {
-      general_utils::Vec3f shifted_start_pt = local_path.front();
-      used_general_corridor =
-          active_corridor->SearchPolytopeOnPath(guide_path, sfcs, shifted_start_pt, false);
-      shifted_start_dist = (shifted_start_pt - local_path.front()).norm();
-      if (shifted_start_dist > 0.05)
-      {
-        ROS_WARN_STREAM_THROTTLE(
-            1.0,
-                "[highspeed_exp adapter] corridor generator shifted occupied start by "
-                << shifted_start_dist << " m; keep optimization head at committed/current state.");
-      }
+  } else {
+    if (!gcopter_config_->generalCorridorEnable || !corridor_generator_ || !rog_map_updated_) {
+      ROS_WARN_THROTTLE(1.0,"[highspeed_exp adapter] General corridor backend/map is not ready");
+      return false;
     }
-    catch (const std::exception &e)
-    {
-      ROS_WARN_STREAM("[highspeed_exp adapter] general corridor generation threw exception: "
-                      << e.what());
-      sfcs.clear();
+    try {
+      general_utils::Vec3f shifted=local_path.front();
+      used_general_corridor=corridor_generator_->SearchPolytopeOnPath(toVec3fPath(local_path),sfcs,shifted,false);
+      shifted_start_dist=(shifted-local_path.front()).norm();
+    } catch (const std::exception &error) {
+      ROS_WARN_STREAM("[highspeed_exp adapter] corridor exception: " << error.what());
+    }
+    if (!used_general_corridor || sfcs.empty()) {
+      coverage_failure_.kind=CoverageFailureKind::PATH;
+      ROS_WARN("[highspeed_exp adapter] General corridor generation failed; keep the committed trajectory.");
+      return false;
     }
   }
-
-  if (!used_general_corridor || sfcs.empty())
-  {
-    ROS_WARN("[highspeed_exp adapter] General corridor generation failed; keep the committed trajectory.");
-    return false;
-  }
-  if (pointcloud_frontend) {
-    // Guide vertices alone do not bound a polynomial. Keep every corridor
-    // inside the same height domain, including curves between those vertices.
-    for(auto &poly:sfcs) {
-      const auto planes=poly.GetPlanes();
-      Eigen::MatrixX4d clipped(planes.rows()+2,4);
-      clipped.topRows(planes.rows())=planes;
-      clipped.row(planes.rows()) << 0,0,-1,pointcloud_lower_z;
-      clipped.row(planes.rows()+1) << 0,0,1,-pointcloud_upper_z;
-      poly.SetPlanes(clipped);
-    }
-  }
+  guide_path=toVec3fPath(local_path);
   std::vector<Eigen::MatrixX4d> h_polys = hPolysFromSfcs(sfcs);
   if (!pointInsideHPoly(h_polys.front(), local_path.front()))
   {
@@ -1857,21 +1867,21 @@ bool FastPlannerManager::planExploreTraj(
   // after a spatial/shape failure, rather than tightening every successful
   // exploration trajectory and changing its observation footprint.
   const bool retain_coverage_shape=coverage.enabled && coverage.spatial_repair;
-  if ((!retain_coverage_shape && !geometry_utils::SimplifySFC(local_path.front(), local_path.back(), sfcs)) ||
+  if ((!pointcloud_frontend && !retain_coverage_shape && !geometry_utils::SimplifySFC(local_path.front(), local_path.back(), sfcs)) ||
       sfcs.empty())
   {
     ROS_WARN("[highspeed_exp adapter] General corridor simplification failed.");
     return false;
   }
   const std::size_t simplified_sfc_count = sfcs.size();
-  const double required_overlap =
+  const double required_overlap = pointcloud_frontend ? 1e-2 :
       std::max(1.0e-3,
                0.25 * gcopter_config_->corridorMinOverlapThreshold);
   geometry_utils::PolytopeVec bounded_sfcs = sfcs;
   const bool bounded_to_exploration_boxes =
       constrainSfcsToExplorationBoxes(local_path.front(), local_path.back(),
                                       lidar_map_interface_, required_overlap,
-                                      bounded_sfcs);
+                                      bounded_sfcs, pointcloud_frontend);
   if (bounded_to_exploration_boxes)
   {
     sfcs.swap(bounded_sfcs);
@@ -1962,7 +1972,7 @@ bool FastPlannerManager::planExploreTraj(
     return false;
   }
   double end_yaw = local_data_.end_yaw_;
-  if (local_path.size() >= 2)
+  if (local_path.size() >= 2 && (!pointcloud_frontend || pointcloud_truncated || clearance_recovery))
   {
     const Eigen::Vector3d dir = local_path.back() - local_path[local_path.size() - 2U];
     if (std::hypot(dir.x(), dir.y()) > 1.0e-3)
@@ -1971,12 +1981,33 @@ bool FastPlannerManager::planExploreTraj(
     }
   }
   if (!observation.gates.empty()) end_yaw=observation.gates.back().yaw;
+  double yaw_time_bound=-1.0;
+  if (pointcloud_frontend) {
+    const Eigen::Vector3d first=local_path[1]-local_path.front();
+    const Eigen::Vector3d last=local_path.back()-local_path[local_path.size()-2];
+    const double first_yaw=first.head<2>().squaredNorm()>=first.z()*first.z() && first.head<2>().norm()>.1
+        ? std::atan2(first.y(),first.x()) : yaw_init(0);
+    const double last_yaw=last.head<2>().squaredNorm()>=last.z()*last.z() && last.head<2>().norm()>.1
+        ? std::atan2(last.y(),last.x()) : end_yaw;
+    yaw_time_bound=(std::abs(yawDelta(yaw_init(0),first_yaw))+std::abs(yawDelta(last_yaw,end_yaw)))/
+        std::max(.2,gcopter_config_->yaw_max_vel);
+    if (local_path.size()==2 && first.head<2>().norm()<=.1)
+      yaw_time_bound=std::abs(yawDelta(yaw_init(0),end_yaw))/std::max(.2,gcopter_config_->yaw_max_vel);
+  }
+  exploration_traj_opt_->setYawTimeLowerBound(yaw_time_bound);
+
 
   const SegmentSafetyInfo segment_safety =
       evaluatePathSegmentSafety(local_path, local_data_.curr_yaw_, end_yaw);
-  const SegmentVelocityLimit velocity_limit = computeSegmentVelocityLimit(segment_safety);
-  const PieceVelocityProfile piece_velocity_profile = computePieceVelocityProfile(
+  SegmentVelocityLimit velocity_limit = computeSegmentVelocityLimit(segment_safety);
+  if (pointcloud_frontend) {
+    velocity_limit.open=velocity_limit.known_free=velocity_limit.brake=velocity_limit.clearance=
+        velocity_limit.curvature=velocity_limit.yaw=velocity_limit.backup=velocity_limit.final_limit=gcopter_config_->maxVelMag;
+    velocity_limit.reason="epicon_pointcloud";
+  }
+  PieceVelocityProfile piece_velocity_profile = computePieceVelocityProfile(
       local_path, sfcs, head.col(1), yaw_init(0), *gcopter_config_, velocity_limit);
+  if (pointcloud_frontend) piece_velocity_profile.bounds.setConstant(gcopter_config_->maxVelMag);
   if (piece_velocity_profile.bounds.size() != static_cast<int>(sfcs.size()))
   {
     ROS_WARN("[highspeed_exp adapter] cannot map path velocity profile to simplified corridor.");
@@ -2076,6 +2107,15 @@ bool FastPlannerManager::planExploreTraj(
       [&](const geometry_utils::Trajectory &candidate,
           const int attempt,
           const double guide_speed) -> bool {
+    if (pointcloud_frontend && clearance_recovery) {
+      // The hard exploration margin is not an occupied surface. An escape
+      // from its thin outer buffer must retain physical robot clearance and
+      // increase distance monotonically; ordinary trajectories stay strict.
+      double blocked_time=0;
+      const bool certified=certifyPointcloudEscape(*epicon_frontend_,candidate,0,*gcopter_config_,blocked_time);
+      if (!certified) coverage_failure_.kind=CoverageFailureKind::SPATIAL;
+      return certified;
+    }
     const double normal_safe_distance =
         std::max(pointcloud_frontend ? pointcloud_min_clearance_ : 0.05,
                  gcopter_config_->commitKnownFreeSafeDistance);
@@ -2088,7 +2128,7 @@ bool FastPlannerManager::planExploreTraj(
     double last_t = 0.0;
     Eigen::Vector3d last_p = candidate.getPos(0.0);
     for (double t = check_dt;
-         t <= candidate.getTotalDuration() + 1.0e-6; t += check_dt)
+         t < candidate.getTotalDuration() + check_dt; t += check_dt)
     {
       const double tt = std::min(t, candidate.getTotalDuration());
       const Eigen::Vector3d p = candidate.getPos(tt);
@@ -2183,8 +2223,9 @@ bool FastPlannerManager::planExploreTraj(
   for (const double opt_speed : opt_speed_attempts)
   {
     const double elapsed=std::chrono::duration<double>(std::chrono::steady_clock::now()-planning_wall_start).count();
-    const double remaining_budget=0.32-elapsed;
-    if (coverage.enabled && remaining_budget<0.01) {
+    const double remaining_budget=(pointcloud_frontend && use_committed_replan_state
+        ? std::min(.32,std::max(.05,switch_delay-.03)) : .32)-elapsed;
+    if ((coverage.enabled || pointcloud_frontend) && remaining_budget<0.01) {
       coverage_failure_.kind=CoverageFailureKind::BUDGET;
       ROS_WARN_THROTTLE(0.5,"[coverage budget] stop optimization before the commit deadline");
       return false;
@@ -2200,13 +2241,15 @@ bool FastPlannerManager::planExploreTraj(
       piece_velocity_bounds(i) =
           std::clamp(piece_velocity_bounds(i), min_opt_speed, max_opt_speed);
     }
-    piece_velocity_bounds(0) = std::min(
-        1.05 * max_opt_speed,
-        std::max(piece_velocity_bounds(0), head_boundary_speed + 0.30));
-    piece_velocity_bounds(piece_velocity_bounds.size() - 1) = std::min(
-        1.05 * max_opt_speed,
-        std::max(piece_velocity_bounds(piece_velocity_bounds.size() - 1),
-                 tail_boundary_speed + 0.30));
+    // Native EPICON uses the global velocity limit, including the first
+    // polynomial. A 5% boundary relaxation made moving replans optimize to
+    // 2.1 m/s and then fail our 2.06 m/s commit gate on every retry.
+    const double boundary_cap=pointcloud_frontend ? max_opt_speed : 1.05*max_opt_speed;
+    const double boundary_slack=pointcloud_frontend ? 0.0 : 0.30;
+    piece_velocity_bounds(0) = std::min(boundary_cap,
+        std::max(piece_velocity_bounds(0),head_boundary_speed+boundary_slack));
+    piece_velocity_bounds(piece_velocity_bounds.size()-1) = std::min(boundary_cap,
+        std::max(piece_velocity_bounds(piece_velocity_bounds.size()-1),tail_boundary_speed+boundary_slack));
     const double velocity_bound = piece_velocity_bounds.maxCoeff();
     const std::vector<double> guide_t =
         allocateGuideTimes(local_path, piece_velocity_profile,
@@ -2214,13 +2257,13 @@ bool FastPlannerManager::planExploreTraj(
     pos_traj.clear();
     ok = exploration_traj_opt_->optimize(head,
                                          tail,
-                                         guide_path,
-                                         guide_t,
+                                         pointcloud_frontend ? general_utils::vec_E<general_utils::Vec3f>{} : guide_path,
+                                         pointcloud_frontend ? std::vector<double>{} : guide_t,
                                          attempt_sfcs,
                                          piece_velocity_bounds,
                                          pos_traj,
-                                         coverage.enabled || observation_sfc_begin>0,
-                                         coverage.enabled ? remaining_budget : 0.0);
+                                         pointcloud_frontend || coverage.enabled || observation_sfc_begin>0,
+                                         (coverage.enabled || pointcloud_frontend) ? remaining_budget : 0.0);
     if (ok && !pos_traj.empty())
     {
       const double candidate_max_speed = pos_traj.getMaxVelRate();
@@ -2284,7 +2327,7 @@ bool FastPlannerManager::planExploreTraj(
       sfcs.swap(attempt_sfcs);
       break;
     }
-    if (coverage.enabled && std::chrono::duration<double>(std::chrono::steady_clock::now()-planning_wall_start).count()>=0.31) {
+    if ((coverage.enabled || pointcloud_frontend) && std::chrono::duration<double>(std::chrono::steady_clock::now()-planning_wall_start).count()>=0.31) {
       coverage_failure_.kind=CoverageFailureKind::BUDGET;
       ROS_WARN_THROTTLE(0.5,"[coverage budget] MINCO deadline reached; retain executable command");
       return false;
@@ -2297,6 +2340,7 @@ bool FastPlannerManager::planExploreTraj(
   }
   if (!ok || pos_traj.empty())
   {
+    if (coverage_failure_.kind==CoverageFailureKind::NONE) coverage_failure_.kind=CoverageFailureKind::DYNAMICS;
     ROS_WARN("[highspeed_exp adapter] General exploration MINCO optimization failed.");
     return false;
   }
@@ -2307,12 +2351,29 @@ bool FastPlannerManager::planExploreTraj(
   if (!yaw_traj_opt_->optimize(yaw_init, yaw_goal, pos_traj, yaw_traj, 3, false, false) ||
       yaw_traj.empty())
   {
+    if (pointcloud_frontend) {
+      coverage_failure_.kind=CoverageFailureKind::DYNAMICS;
+      ROS_WARN("[EPICON backend] yaw optimization failed; retain committed command");
+      return false;
+    }
     yaw_traj = makeHoldYawTrajectory(yaw_init(0), pos_traj.getTotalDuration());
     if (yaw_traj.empty())
     {
       ROS_WARN("[highspeed_exp adapter] yaw trajectory generation failed.");
       return false;
     }
+  }
+  if (pointcloud_frontend && yaw_traj.getMaxVelRate()>1.35*gcopter_config_->yaw_max_vel) {
+    // Tangent-following yaw waypoints can overshoot the rate bound around a
+    // short turn. Keep the exact boundary yaw/rate and observation goal, but
+    // remove the optional intermediate headings before rejecting safe motion.
+    auto boundary_yaw=makeBoundaryYawTrajectory(yaw_init,end_yaw,pos_traj.getTotalDuration());
+    if (boundary_yaw.empty() || boundary_yaw.getMaxVelRate()>1.35*gcopter_config_->yaw_max_vel) {
+      coverage_failure_.kind=CoverageFailureKind::DYNAMICS;
+      return false;
+    }
+    yaw_traj=std::move(boundary_yaw);
+    ROS_INFO("[EPICON backend] use rate-feasible boundary yaw through local turn");
   }
 
   // Check joint position/yaw in sequence after both optimizers, before any
@@ -2341,7 +2402,7 @@ bool FastPlannerManager::planExploreTraj(
     // A verified terminal hold has a time-invariant state. Move its switch
     // time to the earliest safe command handoff; preserving a fixed 450 ms
     // delay after every brake creates a deliberate pause with no safety gain.
-    if (coverage.enabled && original_command_duration>0.0 &&
+    if ((coverage.enabled || pointcloud_frontend) && original_command_duration>0.0 &&
         replan_state_tt>original_command_duration && head.rightCols<3>().norm()<1e-4) {
       const double new_tt=std::max(original_command_duration+0.01,
           ros::Time::now().toSec()-guide_pos_traj.start_WT+std::max(0.03,gcopter_config_->controlLatency));
@@ -2971,7 +3032,14 @@ bool FastPlannerManager::planExploreTraj(
   geometry_utils::Trajectory backup_yaw_traj;
   double backup_known_len = 0.0;
   bool known_free_terminal_stop = false;
-  if (!terminal_velocity_used && !committed_pos.empty())
+  if (pointcloud_frontend && !terminal_velocity_used && !committed_pos.empty()) {
+    if (!trajectoryPassesSafetyCheck(committed_pos,0,accepted_opt_speed)) return false;
+    const double duration=committed_pos.getTotalDuration();
+    known_free_terminal_stop=committed_pos.getVel(duration).norm()<.05 && committed_pos.getAcc(duration).norm()<.1;
+    if (!known_free_terminal_stop) return false;
+    exp_traj_info.setWholeTrajKnownFreeFlag(true);
+  }
+  if (!pointcloud_frontend && !terminal_velocity_used && !committed_pos.empty())
   {
     double primary_known_length = 0.0;
     const double primary_known_end =
@@ -3115,6 +3183,8 @@ bool FastPlannerManager::planExploreTraj(
   }
   committed_stop_active_ = false;
 
+  commit_store_->pointcloud_escape=pointcloud_frontend && clearance_recovery;
+
   *committed_pos_traj_ = commit_store_->cmd_traj_info.posTraj();
   *committed_yaw_traj_ = commit_store_->cmd_traj_info.yawTraj();
   *latest_exp_pos_traj_ = exp_traj_info.posTraj();
@@ -3181,7 +3251,7 @@ bool FastPlannerManager::planExploreTraj(
 		                  << ", max_a=" << committed_pos_traj_->getMaxAccRate()
 		                  << ", sfc(raw/simplified/final)=" << raw_sfc_count
                       << "/" << simplified_sfc_count << "/" << sfcs.size()
-		                  << ", corridor=" << (used_general_corridor ? "general" : "box")
+		                  << ", corridor=" << (pointcloud_frontend ? "epicon_pointcloud" : "general")
                       << ", box_bounded="
                       << (lidar_map_interface_->targetNavigation() ? "disabled_target" :
                           (bounded_to_exploration_boxes ? "yes" : "fallback"))
@@ -3413,6 +3483,7 @@ bool FastPlannerManager::planControlledStopTrajectory(bool coverage)
   stop_info.setWholeTrajKnownFreeFlag(true);
   stop_info.setTrajectory(commit_start_time.toSec(), accepted_pos, accepted_yaw);
   commit_store_->cmd_traj_info.setTrajectory(stop_info);
+  commit_store_->pointcloud_escape=false;
   commit_store_->last_exp_traj_info = stop_info;
   *committed_pos_traj_ = accepted_pos;
   *committed_yaw_traj_ = accepted_yaw;
@@ -3452,6 +3523,18 @@ bool FastPlannerManager::planControlledStopTrajectory(bool coverage)
 bool FastPlannerManager::flyToSafeRegion(bool is_static,
                                          bool force_relocation)
 {
+  if (usingPointcloudGeometry()) {
+    // Ordinary corridor/optimizer failures must not trigger arbitrary motion.
+    // CAUTION requests this only for a disconnected or unsafe execution origin.
+    if (epicon_frontend_->clearance(local_data_.curr_pos_)<recoveryPhysicalFloor(*gcopter_config_)) return false;
+    Eigen::Vector3d goal;
+    if (!epicon_frontend_->recoveryPoint(local_data_.curr_pos_,goal)) return false;
+    const std::vector<Eigen::Vector3f> path{local_data_.curr_pos_.cast<float>(),goal.cast<float>()};
+    if (!planExploreTraj(path,is_static,true,false,{},{},{},true)) return false;
+    ROS_WARN_STREAM("[EPICON recovery] point-cloud interior start=" << local_data_.curr_pos_.transpose()
+                    << " goal=" << goal.transpose());
+    return true;
+  }
   if (!gcopter_config_ || !lidar_map_interface_ || !corridor_generator_ ||
       !exploration_traj_opt_ || !rog_map_updated_)
   {
@@ -3657,12 +3740,16 @@ bool FastPlannerManager::checkTrajCollision(double &collision_time, bool coverag
     return true;
   }
 
+  if (usingPointcloudGeometry() && commit_store_->pointcloud_escape) {
+    return certifyPointcloudEscape(*epicon_frontend_,committed_pos,now_t,*gcopter_config_,collision_time);
+  }
+
   // Match the original highspeedExp collision checker: one expensive nearest-
   // obstacle query defines a free sphere, then trajectory samples inside that
   // sphere are accepted without another map query.  The old adapter raycasted
   // every 30--50 ms segment over the complete remaining horizon and this
   // function is called both by the 100 Hz FSM and every cloud callback.
-  coverage_checks = coverage_checks && !lidar_map_interface_->targetNavigation();
+  coverage_checks = coverage_checks && !lidar_map_interface_->targetNavigation() && !usingPointcloudGeometry();
   const double sample_dt = coverage_checks && map_manager_
       ? std::min(0.05, 0.5*map_manager_->getResolution()/std::max(0.5,gcopter_config_->maxVelMag))
       : 0.05;
@@ -3690,6 +3777,9 @@ bool FastPlannerManager::checkTrajCollision(double &collision_time, bool coverag
   while (probe_t < horizon)
   {
     const Eigen::Vector3d pos = committed_pos.getPos(probe_t);
+    if (usingPointcloudGeometry() && !epicon_frontend_->contains(pos)) {
+      collision_time=std::max(0.0,probe_t-now_t); return false;
+    }
     // A LIO free sphere cannot certify the separately inflated ROG map.
     // Newly occupied voxels used to invalidate all new trajectories while the
     // old command was still called safe and ran to an unrecoverable endpoint.
@@ -4003,6 +4093,11 @@ MapVoxelState FastPlannerManager::querySafetyState(const Eigen::Vector3d &pos) c
   if (lidar_map_interface_->targetNavigation() &&
       (!map_manager_ || !rog_map_updated_)) return MapVoxelState::UNKNOWN;
 
+  if (usingPointcloudGeometry()) {
+    if (!epicon_frontend_->contains(pos)) return MapVoxelState::OUT_OF_MAP;
+    return safetyDistanceToOcc(pos)>=gcopter_config_->dilateRadiusHard
+        ? MapVoxelState::KNOWN_FREE : MapVoxelState::OCCUPIED;
+  }
   const double safe_distance =
       gcopter_config_ ? std::max(0.05, gcopter_config_->commitKnownFreeSafeDistance)
                       : 0.45;
@@ -4106,6 +4201,7 @@ double FastPlannerManager::safetyDistanceToOcc(const Eigen::Vector3d &pos) const
   {
     return -std::numeric_limits<double>::infinity();
   }
+  if (usingPointcloudGeometry()) return epicon_frontend_->clearance(pos);
   return lidar_map_interface_->getDisToOcc(pos);
 }
 
