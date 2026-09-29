@@ -31,8 +31,12 @@ RET_CODE GeneralPlanner::optimizeTrackingTask(const traj_opt::DynamicTargetState
     const auto prediction = trackingPredictionAtTime(input, now);
     if (tracking_runtime_manager_) tracking_runtime_manager_->observeExecution(now, robot_state_.p);
     if (tracking_runtime_manager_) tracking_runtime_manager_->beginAttempt();
+    traj_opt::TrackingProblem problem;
     auto fail = [&](const std::string phase, const std::string reason) -> RET_CODE {
-        setTrackingDiagnostic(phase, reason, 0, 0, prediction.size(), 0.0);
+        // Retain the failed guide/corridor sizes; previously every failure
+        // overwrote them with zero, hiding the actual frontend geometry.
+        setTrackingDiagnostic(phase, reason, problem.guide_path.size(), problem.sfcs.size(),
+                              problem.target_prediction.empty() ? prediction.size() : problem.target_prediction.size(), 0.0);
         setTrackingCommitRejectInfo(phase, reason + ";" + solveDetail());
         // Elastic: a failed replan keeps the last 1 s-safe trajectory. Hover
         // only if that command is gone or colliding. A from-rest failure
@@ -78,7 +82,7 @@ RET_CODE GeneralPlanner::optimizeTrackingTask(const traj_opt::DynamicTargetState
     frontend_cfg.sample_dt = cfg_.tracking_sample_dt;
     frontend_cfg.search_budget_seconds = cfg_.tracking_frontend_budget;
     TrackingFrontend frontend(frontend_cfg, tracking_map_manager_);
-    traj_opt::TrackingProblem problem;
+    const auto map_revision = tracking_map_manager_->mapRevision();
     TimeConsuming frontend_timer("tracking_frontend", false);
     if (!frontend.buildProblem(head, trusted_prediction, problem)) {
         time_consuming_[EPX_TRAJ_FRONTEND] = frontend_timer.stop();
@@ -87,8 +91,24 @@ RET_CODE GeneralPlanner::optimizeTrackingTask(const traj_opt::DynamicTargetState
     std::string reason;
     if (!buildTrackingGuideCorridor(problem, &reason)) {
         time_consuming_[EPX_TRAJ_FRONTEND] = frontend_timer.stop();
+        const auto map_config = tracking_map_manager_->getMapConfig();
+        double floor, ceiling;
+        tracking_map_manager_->getInflatedVirtualHeightBounds(floor, ceiling);
+        reason += fmt::format(";tracking_map_revision_start={};tracking_map_revision_end={};"
+            "tracking_resolution={};tracking_inflation_resolution={};tracking_inflation_step={};"
+            "tracking_floor={};tracking_ceiling={};execution_head=[{},{},{}];execution_tail=[{},{},{}];"
+            "head_grid={};tail_grid={};target_exclusion_center=[{},{},{}];target_exclusion_radius=[{},{}]",
+            map_revision, tracking_map_manager_->mapRevision(), map_config.resolution,
+            tracking_map_manager_->getInfResolution(), map_config.inflation_step, floor, ceiling,
+            head(0,0), head(1,0), head(2,0), problem.tail_pvaj(0,0), problem.tail_pvaj(1,0), problem.tail_pvaj(2,0),
+            static_cast<int>(tracking_map_manager_->getInfGridType(head.col(0))),
+            static_cast<int>(tracking_map_manager_->getInfGridType(problem.tail_pvaj.col(0))),
+            input.front().position.x(), input.front().position.y(), input.front().position.z() + cfg_.tracking_height_offset,
+            cfg_.tracking_target_exclusion_xy_radius, cfg_.tracking_target_exclusion_z_radius);
         return fail("corridor", reason);
     }
+    if (tracking_map_manager_->mapRevision() != map_revision)
+        return fail("corridor", "tracking map changed during frontend/corridor construction");
     time_consuming_[EPX_TRAJ_FRONTEND] = frontend_timer.stop();
     problem.max_yaw_rate = cfg_.tracking_yaw_rate_limit;
     problem.max_yaw_acceleration = cfg_.tracking_yaw_acceleration_limit;

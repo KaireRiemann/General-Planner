@@ -40,7 +40,7 @@ private:
     bool visibleRegion(const Vec &center, Vec &seed,
                        traj_opt::TrackingVisibleRegion &region,
                        const Deadline &deadline) const;
-    void pts2path(const Path &way_pts, Path &path, const Deadline &deadline) const;
+    bool pts2path(const Path &way_pts, Path &path, const Deadline &deadline) const;
     Config cfg_;
     MapManager::Ptr map_manager_;
 };

@@ -665,6 +665,13 @@ add_executable(tracking_frontend_map_self_test tests/tracking_frontend_map_self_
 add_dependencies(tracking_frontend_map_self_test ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
 target_link_libraries(tracking_frontend_map_self_test general_planner_core ${THIRD_PARTY})
 
+add_executable(tracking_corridor_self_test tests/tracking_corridor_self_test.cpp)
+add_dependencies(tracking_corridor_self_test ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
+target_link_libraries(tracking_corridor_self_test general_planner_core ${THIRD_PARTY})
+if(CATKIN_ENABLE_TESTING)
+  add_test(NAME tracking_corridor_self_test COMMAND tracking_corridor_self_test)
+endif()
+
 add_executable(tracking_wall_replay_self_test tests/tracking_wall_replay_self_test.cpp)
 add_dependencies(tracking_wall_replay_self_test ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
 target_link_libraries(tracking_wall_replay_self_test general_planner_core ${THIRD_PARTY})

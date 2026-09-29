@@ -1066,6 +1066,9 @@ namespace fsm {
                 break;
             }
             case GENERATE_TRAJ: {
+                if (taskExecutor().trackingLike() && trackingPlanFromRestBackoffActive()) {
+                    return;
+                }
                 if (state2stateMode() &&
                     (state2state_plan_failed_ ||
                      general_planner::planningWallSeconds() < state2state_next_plan_attempt_wall_)) {

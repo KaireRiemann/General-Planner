@@ -1,6 +1,7 @@
 #include <general_core/tracking/tracking_frontend.hpp>
 #include <general_core/general_planner.h>
 #include <general_core/tracking/tracking_map_query.hpp>
+#include <ros_interface/ros1/fsm_ros1.hpp>
 #include <cstdlib>
 #include <iostream>
 #include <stdexcept>
@@ -9,6 +10,47 @@ namespace {
 void require(bool condition, const char *message) {
     if (!condition) throw std::runtime_error(message);
 }
+
+class ProbeClock : public ros_interface::Ros1Interface {
+public:
+    explicit ProbeClock(const ros::NodeHandle &nh) : Ros1Interface(nh) {}
+    double now{100.0};
+    double getSimTime() override { return now; }
+};
+
+class BackoffProbe : public fsm::FsmRos1 {
+    class Executor : public TaskExecutor {
+    public:
+        Executor(fsm::TaskMode mode, int &calls) : mode_(mode), calls_(calls) {}
+        fsm::TaskMode mode() const override { return mode_; }
+        const char *name() const override { return "tracking_backoff_probe"; }
+        bool trackingLike() const override { return mode_ == fsm::TaskMode::TRACKING; }
+        bool ready(fsm::Fsm &) override { return true; }
+        bool replanAllowed(const fsm::Fsm &) const override { return false; }
+        bool shouldGenerateAfterTrajFinish(fsm::Fsm &) override { return false; }
+        PlanResult plan(fsm::Fsm &, const PlanRequest &) override {
+            ++calls_; PlanResult result; result.context.handled = true; return result;
+        }
+        PlanResult replan(fsm::Fsm &fsm, const PlanRequest &request) override { return plan(fsm, request); }
+    private:
+        fsm::TaskMode mode_;
+        int &calls_;
+    };
+public:
+    int calls{0};
+    BackoffProbe(general_planner::GeneralPlanner &planner,
+                 const std::shared_ptr<ProbeClock> &clock, fsm::TaskMode mode) {
+        planner_ptr_ = general_planner::GeneralPlanner::Ptr(&planner, [](auto *) {});
+        ros_ptr_ = clock; cfg_.task_mode = mode; cfg_.diagnostic_log_en = false;
+        machine_state_ = GENERATE_TRAJ; started_ = true; navigation_execution_enabled_ = true;
+        tracking_target_prediction_.resize(2);
+        tracking_target_rcv_time_ = clock->now;
+        tracking_plan_from_rest_backoff_until_ = clock->now + .5;
+        task_executor_ = std::make_unique<Executor>(mode, calls);
+        task_executor_mode_ = mode;
+    }
+    void tick() { callMainFsmOnce(); }
+};
 }
 
 int main(int argc, char **argv) {
@@ -207,6 +249,46 @@ int main(int argc, char **argv) {
             ros_interface, map,
             std::string(ROOT_DIR) + "config/task_planner_runtime_tracking.yaml");
         auto services = planner.makeTrackingTaskServices();
+        services.robot_state.rcv = true;
+        services.robot_state.v.setZero();
+        services.robot_state.a.setZero();
+        services.robot_state.yaw = 0.0;
+        // Exact bag starting geometry: the observation ring is ~4.7 m away.
+        // Its sparse head->tail edge previously exceeded the 2 m seed limit,
+        // producing only a head polytope and failing tail overlap.
+        services.robot_state.p << 1.634001,-3.781708,1.696750;
+        traj_opt::DynamicTargetStates bag_target(16);
+        const double bag_epoch = ros::Time::now().toSec();
+        for (int i=0;i<16;++i) {
+            bag_target[i].t=.2*i;bag_target[i].reference_time=bag_epoch;
+            bag_target[i].position << 3.678,3.081,.930645;
+        }
+        const auto bag_ret = planner.PlanTrackingFromRest(bag_target,true);
+        if (bag_ret != general_utils::SUCCESS) {
+            const auto d = planner.getLatestTrackingDiagnosticSnapshot();
+            throw std::runtime_error("sparse bag-geometry commit failed: "+d.phase+" "+d.reason);
+        }
+        const auto catch_up = planner.getCommittedPositionTrajectory();
+        require(!catch_up.empty() && (catch_up.getPos(catch_up.getTotalDuration())-
+                catch_up.getPos(0)).norm()>4.0,"long catch-up guide did not execute");
+        for(double t=0;t<=catch_up.getTotalDuration();t+=.02)
+            require(!general_planner::trackingInflatedOccupied(map,catch_up.getPos(t)),
+                    "sparse bag-geometry trajectory intersects occupied cells");
+
+        // Execute the real FSM GENERATE_TRAJ branch: a declared backoff must
+        // suppress planning, then release it at expiry. Exploration ignores it.
+        auto clock = std::make_shared<ProbeClock>(nh);
+        BackoffProbe tracking_probe(planner,clock,fsm::TaskMode::TRACKING);
+        tracking_probe.tick();tracking_probe.tick();
+        require(tracking_probe.calls==0,"tracking GENERATE_TRAJ bypassed retry backoff");
+        clock->now+=.501;tracking_probe.tick();
+        require(tracking_probe.calls==1,"expired backoff did not release tracking planning");
+        BackoffProbe exploration_probe(planner,clock,fsm::TaskMode::EXPLORATION);
+        exploration_probe.tick();
+        require(exploration_probe.calls==1,"tracking backoff leaked into exploration");
+
+        // FSM ticks refresh the planner state from this test's map (which has
+        // no odometry publisher). Restore the injected state for backend tests.
         services.robot_state.rcv = true;
         services.robot_state.p = head.col(0);
         services.robot_state.v.setZero();

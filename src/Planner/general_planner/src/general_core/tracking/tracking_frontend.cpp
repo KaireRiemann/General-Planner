@@ -33,7 +33,10 @@ TrackingFrontend::TrackingFrontend(const Config &cfg, const MapManager::Ptr &map
 bool TrackingFrontend::safe(const Vec &p) const {
     if (!p.allFinite()) return false;
     if (!map_manager_) return true;
-    return !trackingInflatedOccupied(map_manager_, p, cfg_.unknown_as_occupied);
+    double floor, ceiling;
+    map_manager_->getInflatedVirtualHeightBounds(floor, ceiling);
+    return map_manager_->insideLocalMap(p) && p.z() >= floor && p.z() <= ceiling &&
+           !trackingInflatedOccupied(map_manager_, p, cfg_.unknown_as_occupied);
 }
 bool TrackingFrontend::lineFree(const Vec &a, const Vec &b) const {
     return trackingSeedLineFree(map_manager_, a, b, cfg_.unknown_as_occupied);
@@ -159,16 +162,18 @@ bool TrackingFrontend::visibleRegion(const Vec &center, Vec &seed,
     if (safe(adjusted) && visible(adjusted, center)) seed = adjusted;
     return true;
 }
-void TrackingFrontend::pts2path(const Path &way_pts, Path &path,
+bool TrackingFrontend::pts2path(const Path &way_pts, Path &path,
                                 const Deadline &deadline) const {
     path.clear();
-    if (way_pts.empty()) return;
+    if (way_pts.empty()) return false;
     path.push_back(way_pts.front());
     for (std::size_t i = 0; i + 1 < way_pts.size(); ++i) {
         const Vec &p0 = path.back();
         const Vec &p1 = way_pts[i + 1];
         if ((p1 - p0).norm() < 1.e-5) continue;
-        if (!trackingSeedLineFree(map_manager_, p0, p1, cfg_.unknown_as_occupied, 1.5)) {
+        // Length is a corridor subdivision concern. An occupied chord must
+        // never be appended after its local search has failed or timed out.
+        if (!lineFree(p0, p1)) {
             Path short_path;
             if (search(p0, p1, false, short_path, deadline)) {
                 for (std::size_t k = 1; k < short_path.size(); ++k) {
@@ -177,12 +182,14 @@ void TrackingFrontend::pts2path(const Path &way_pts, Path &path,
                 }
                 continue;
             }
+            return false;
         }
         path.push_back(p1);
     }
     if (path.size() < 2) {
         path.push_back(path.front());
     }
+    return true;
 }
 bool TrackingFrontend::buildProblem(const general_utils::StatePVAJ &head,
                                     const traj_opt::DynamicTargetStates &prediction,
@@ -234,7 +241,7 @@ bool TrackingFrontend::buildProblem(const general_utils::StatePVAJ &head,
     }
     Path way_pts = seeds;
     way_pts.insert(way_pts.begin(), head.col(0));
-    pts2path(way_pts, problem.guide_path, deadline);
+    if (!pts2path(way_pts, problem.guide_path, deadline)) return false;
     problem.guide_t.clear();
     problem.guide_t.reserve(problem.guide_path.size());
     const double path_horizon = std::max(horizon, cfg_.nominal_horizon);
