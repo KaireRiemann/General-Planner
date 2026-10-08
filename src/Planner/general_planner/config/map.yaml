@@ -1,7 +1,61 @@
-# M2 world-lifetime topology. This configuration is loaded exactly once by
-# planner_runtime_node / GlobalMapRuntime; individual planner modes must not
-# override it. The graph is intentionally a sparse long-range navigation
-# skeleton, not a second dense free-space map.
+# Single map configuration for every planner_runtime entry point.
+# Loaded via map_config. Scene-specific limits are values, not separate profiles.
+# One occupancy fusion + BoundaryMap/topology, with navigation and tracking inflation views.
+# Task YAMLs contain planning policy only; planner/FSM sampling uses this map's resolution.
+rog_map:
+  # Geometry: keep historical local occupancy; update only the nearby box below.
+  resolution: 0.15
+  inflation_resolution: 0.15
+  inflation_step: 3  # Navigation / exploration: 0.45 m.
+  tracking_inflation_step: 1  # Tracking: 0.15 m over the same occupancy evidence.
+  unk_inflation_en: false
+  unk_inflation_step: 1
+  map_size: [72.0, 72.0, 8.0]
+  map_sliding:
+    enable: true
+    threshold: 0.3
+  fix_map_origin: [0.0, 0.0, 1.5]
+  virtual_ground_height: -0.10
+  virtual_ceil_height: 8.60
+
+  # All three dimensions are FULL lengths in metres, centred on current odometry.
+  # 40 m XY gives +/-20 m for the 8 m navigation / 3 s tracking horizons.
+  # Rays outside this box are clipped to free-space evidence, not occupied hits.
+  raycasting:
+    enable: true
+    local_update_box: [40.0, 40.0, 6.0]
+    ray_range: [0.50, 30.0]  # radial limits; the update box also clips each ray.
+    batch_update_size: 1
+    # Frame-deduplicated hit/miss fusion clears departed objects when reobserved.
+    p_hit: 0.90
+    p_miss: 0.35
+    p_min: 0.12
+    p_max: 0.97
+    p_occ: 0.85
+    p_free: 0.40
+    unk_thresh: 1.0
+  point_filt_num: 1  # keep all input points; no extra thinning here.
+  intensity_thresh: -10
+
+  # GlobalMapRuntime supplies the filtered cloud and odometry. Never subscribe twice.
+  ros_callback:
+    enable: false
+  load_pcd_en: false
+  frontier_extraction_en: false
+  esdf:
+    enable: false
+    resolution: 0.15
+    local_update_box: [12.0, 12.0, 4.0]
+
+  visualization:
+    enable: true
+    frame_id: world
+    time_rate: 1.0
+    frame_rate: 0
+    range: [30.0, 30.0, 5.0]
+    pub_unknown_map_en: false
+
+# World-lifetime topology; individual task modes only choose how to query it.
 global_topology:
   enabled: true
   # Topology is world-lifetime state: HOLD and planner handovers never stop

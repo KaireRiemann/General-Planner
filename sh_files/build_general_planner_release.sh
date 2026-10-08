@@ -184,10 +184,9 @@ TARGET_EXPLORATION_CONFIG_SRC="${PLANNER_CONFIG_DIR}/target_exploration.yaml"
 EXPLORATION_FOREST_OVERLAY_CONFIG_SRC="${PLANNER_CONFIG_DIR}/exploration_forest_overlay.yaml"
 EXPLORATION_SIM_CONFIG_SRC="${PLANNER_CONFIG_DIR}/exploration_sim.yaml"
 EXPLORATION_ROG_MAP_CONFIG_SRC="${PLANNER_CONFIG_DIR}/exploration_rog_map.yaml"
-TRACKING_ROG_MAP_CONFIG_SRC="${PLANNER_CONFIG_DIR}/tracking_rog_map.yaml"
+MAP_CONFIG_SRC="${PLANNER_CONFIG_DIR}/map.yaml"
 M2_STATE2STATE_CONFIG_SRC="${PLANNER_CONFIG_DIR}/task_planner_runtime_state2state.yaml"
 M2_TRACKING_CONFIG_SRC="${PLANNER_CONFIG_DIR}/task_planner_runtime_tracking.yaml"
-GLOBAL_TOPOLOGY_CONFIG_SRC="${PLANNER_CONFIG_DIR}/global_topology.yaml"
 M2_CONVEX_HULL_CONFIG_SRC="${PLANNER_CONFIG_DIR}/traj_opt/convex_hull/click_real_highspeed.yaml"
 EXPLORATION_RVIZ_CONFIG_SRC="${PLANNER_CONFIG_DIR}/exploration/highspeed/traj.rviz"
 RUNTIME_EXPLORATION_RVIZ_SRC="${PLANNER_RVIZ_DIR}/planner_runtime_exploration.rviz"
@@ -232,7 +231,7 @@ for required in \
   "${EXPLORATION_ROG_MAP_CONFIG_SRC}" \
   "${M2_STATE2STATE_CONFIG_SRC}" \
   "${M2_TRACKING_CONFIG_SRC}" \
-  "${GLOBAL_TOPOLOGY_CONFIG_SRC}" \
+  "${MAP_CONFIG_SRC}" \
   "${M2_CONVEX_HULL_CONFIG_SRC}" \
   "${EXPLORATION_RVIZ_CONFIG_SRC}" \
   "${RUNTIME_EXPLORATION_RVIZ_SRC}" \
@@ -320,21 +319,28 @@ cp "${EXPLORATION_HOUSE_CONFIG_SRC}" "${RELEASE_CONFIG_DIR}/exploration_house.ya
 cp "${PLANNER_CONFIG_DIR}/exploration_unity_overlay.yaml" "${RELEASE_CONFIG_DIR}/exploration_unity_overlay.yaml"
 cp "${PLANNER_CONFIG_DIR}/exploration_indoor_frontier.yaml" "${RELEASE_CONFIG_DIR}/exploration_indoor_frontier.yaml"
 cp "${PLANNER_CONFIG_DIR}/exploration_unity_neighborhood.yaml" "${RELEASE_CONFIG_DIR}/exploration_unity_neighborhood.yaml"
-cp "${PLANNER_CONFIG_DIR}/exploration_unity_neighborhood_rog_map.yaml" "${RELEASE_CONFIG_DIR}/exploration_unity_neighborhood_rog_map.yaml"
 cp "${TARGET_EXPLORATION_CONFIG_SRC}" \
   "${RELEASE_CONFIG_DIR}/target_exploration.yaml"
 cp "${EXPLORATION_FOREST_OVERLAY_CONFIG_SRC}" \
   "${RELEASE_CONFIG_DIR}/exploration_forest_overlay.yaml"
 cp "${EXPLORATION_SIM_CONFIG_SRC}" "${RELEASE_CONFIG_DIR}/exploration_sim.yaml"
 cp "${EXPLORATION_ROG_MAP_CONFIG_SRC}" "${RELEASE_CONFIG_DIR}/exploration_rog_map.yaml"
-cp "${TRACKING_ROG_MAP_CONFIG_SRC}" "${RELEASE_CONFIG_DIR}/tracking_rog_map.yaml"
-cp "${PLANNER_CONFIG_DIR}/tracking_unity_rog_map.yaml" "${RELEASE_CONFIG_DIR}/tracking_unity_rog_map.yaml"
+cp "${MAP_CONFIG_SRC}" "${RELEASE_CONFIG_DIR}/map.yaml"
+# Retire superseded map profiles when updating an older release.
+rm -f "${RELEASE_CONFIG_DIR}/tracking_rog_map.yaml" \
+  "${RELEASE_CONFIG_DIR}/tracking_unity_rog_map.yaml" \
+  "${RELEASE_CONFIG_DIR}/exploration_unity_neighborhood_rog_map.yaml" \
+  "${RELEASE_CONFIG_DIR}/global_topology.yaml"
+for profile in world world_unity tracking tracking_unity; do
+  rm -f "${RELEASE_CONFIG_DIR}/runtime_map/${profile}.yaml"
+done
+if [[ -d "${RELEASE_CONFIG_DIR}/runtime_map" ]]; then
+  rmdir --ignore-fail-on-non-empty "${RELEASE_CONFIG_DIR}/runtime_map"
+fi
 cp "${M2_STATE2STATE_CONFIG_SRC}" \
   "${RELEASE_CONFIG_DIR}/task_planner_runtime_state2state.yaml"
 cp "${M2_TRACKING_CONFIG_SRC}" \
   "${RELEASE_CONFIG_DIR}/task_planner_runtime_tracking.yaml"
-cp "${GLOBAL_TOPOLOGY_CONFIG_SRC}" \
-  "${RELEASE_CONFIG_DIR}/global_topology.yaml"
 mkdir -p "${RELEASE_CONFIG_DIR}/traj_opt/convex_hull"
 cp "${M2_CONVEX_HULL_CONFIG_SRC}" \
   "${RELEASE_CONFIG_DIR}/traj_opt/convex_hull/click_real_highspeed.yaml"

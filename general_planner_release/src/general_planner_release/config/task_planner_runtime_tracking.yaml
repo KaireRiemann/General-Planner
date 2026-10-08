@@ -1,3 +1,4 @@
+# Mapping is shared with all modes; configure both inflation margins in map.yaml.
 # Tracking planning aligned with zip Elastic-Tracker:
 # 20 Hz, 30 ms stamp, unknown-as-free occupancy, keep last traj on replan fail,
 # collision validcheck (1 s), vmax/amax 3/6, observation ring 2.5 m.

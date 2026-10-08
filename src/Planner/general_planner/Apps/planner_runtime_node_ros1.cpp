@@ -130,15 +130,19 @@ int main(int argc, char **argv) {
 
   std::string global_map_config;
   std::string navigation_config;
-  std::string tracking_map_config;
   std::string navigation_command_topic{"/planning/navigation/pos_cmd"};
-  nh.param<std::string>("global_map_config", global_map_config, "");
+  nh.param<std::string>("map_config", global_map_config, "");
+  // Preserve external integrations passing the old main-map parameter.
+  if (global_map_config.empty()) nh.param<std::string>("global_map_config", global_map_config, "");
+  if (nh.hasParam("tracking_map_config")) {
+    ROS_FATAL("Separate tracking_map_config is no longer supported; configure rog_map/tracking_inflation_step in map.yaml");
+    return 2;
+  }
   nh.param<std::string>("navigation_config", navigation_config, "");
-  nh.param<std::string>("tracking_map_config", tracking_map_config, "");
   nh.param<std::string>("navigation_cmd_topic", navigation_command_topic,
                         navigation_command_topic);
   if (global_map_config.empty() || navigation_config.empty()) {
-    ROS_FATAL("M2 planner_runtime_node requires ~global_map_config and "
+    ROS_FATAL("M2 planner_runtime_node requires ~map_config and "
               "~navigation_config");
     return 2;
   }
@@ -174,8 +178,7 @@ int main(int argc, char **argv) {
     gateway_nh.setCallbackQueue(&gateway_callback_queue);
 
     auto global_map_runtime = std::make_shared<GlobalMapRuntime>();
-    global_map_runtime->init(world_nh, global_map_config, odometry_nh,
-                             tracking_map_config);
+    global_map_runtime->init(world_nh, global_map_config, odometry_nh);
 
     // Keep LIO/Bubble/frontier task structures local to exploration, but make
     // the LIO evidence and ROG safety map world-lifetime resources.

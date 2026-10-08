@@ -1,5 +1,9 @@
 # Single-person profile. Loaded after tracking.yaml.
 
+# Keep the CV model selected even when launch sets prediction/backend later.
+# The cv alias uses the analytic constant-velocity state and path prediction.
+prediction/backend_override: cv
+
 # YOLO provides identity evidence; all XYZ measurements still come from LiDAR
 # and the local ground surface.
 yolo/confirmation_frames: 2
@@ -16,7 +20,8 @@ yolo/reacquisition_max_distance: 2.50
 yolo/reacquisition_max_z_difference: 0.80
 yolo/box_inset: 0.08
 yolo/cluster_tolerance: 0.30
-yolo/min_points: 5
+# Match the three-point bootstrap recorded on Jetson on 2026-09-30.
+yolo/min_points: 3
 yolo/min_cluster_extent: 0.15
 yolo/max_cluster_extent: 2.40
 yolo/min_box_coverage: 0.02
@@ -57,7 +62,12 @@ ground_height/max_step: 0.25
 selection/fixed_body_size_enabled: false
 selection/fixed_body_size: [0.60, 0.60, 1.70]
 selection/adaptive_size_enabled: true
-selection/roi_min_points: 5
+# Validated with CV and the current-cloud predicted search centre.
+# Keep three-point support, a 0.65 m ROI and a 0.75 m association gate.
+# See docs/tracking_model_comparison_20260930.md for replay results and limits.
+selection/roi_min_points: 3
+selection/roi_radius_xy: 0.65
+selection/association_max_distance: 0.75
 selection/measurement_velocity_blend: 0.30
 selection/velocity_min_displacement: 0.15
 selection/size_compatibility_min_ratio: 0.40
@@ -71,4 +81,3 @@ tracking/turn_rate_smoothing: 0.25
 
 output/max_prediction_age: 0.80
 output/identity_timeout: 4.0
-

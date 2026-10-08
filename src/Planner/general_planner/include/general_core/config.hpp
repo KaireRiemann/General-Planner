@@ -1,3 +1,4 @@
+#include <utils/header/map_config.hpp>
 #include <stdexcept>
 /**
 * This file is part of SUPER
@@ -312,7 +313,7 @@ namespace general_planner {
 
 
         Config() = default;
-        Config(const std::string & cfg_path, const std::string &tracking_override = "") {
+        Config(const std::string & cfg_path, const std::string &tracking_override = "", double map_resolution = 0.0) {
             yaml_loader::YamlLoader loader(cfg_path);
             tracking_config_path = config_utils::resolveTrackingConfig(cfg_path, tracking_override);
             yaml_loader::YamlLoader tracking_loader(
@@ -739,7 +740,7 @@ namespace general_planner {
             loader.LoadParam("general_planner/swarm/formation/stale_timeout",
                              swarm_formation_stale_timeout, 1.0);
 
-            loader.LoadParam("rog_map/resolution", resolution, 0.01, true);
+            resolution = general_planner::config_utils::mapResolution(cfg_path, map_resolution);
 
             sample_traj_dt = resolution / exp_traj_cfg.max_vel;
 

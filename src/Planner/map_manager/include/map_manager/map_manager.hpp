@@ -7,6 +7,7 @@
 #include <limits>
 #include <memory>
 #include <mutex>
+#include <stdexcept>
 #include <vector>
 
 #include <map_manager/boundary_map.hpp>
@@ -38,8 +39,19 @@ public:
         setMap(map);
     }
 
+    // Shares all evidence/history and revision state; only the inflation query differs.
+    static Ptr trackingView(const Ptr &owner) {
+        if (!owner || !owner->ready()) throw std::invalid_argument("Tracking view requires a ready map owner");
+        auto view = std::make_shared<MapManager>();
+        view->owner_ = owner;
+        view->map_ = owner->map_;
+        view->inflation_view_ = owner->map_->inflationMap(true);
+        return view;
+    }
+
     ~MapManager()
     {
+        if (owner_) return; // A view must never detach the owner's callbacks.
         // Detach ROG callbacks while every member they refer to is still
         // alive. This makes Ctrl-C shutdown deterministic and prevents a late
         // map callback from racing topology container destruction.
@@ -54,6 +66,7 @@ public:
 
     void setMap(const rog_map::ROGMapROS::Ptr &map)
     {
+        if (owner_) throw std::logic_error("Cannot replace the map behind a read-only view");
         if (map_) {
             map_->setStateChangeCallback({});
             map_->setRobotStateCallback({});
@@ -127,12 +140,19 @@ public:
 
     rog_map::Config getMapConfig() const
     {
-        return map_->getMapConfig();
+        auto config = map_->getMapConfig();
+        if (map_->hasTrackingInflation()) {
+            if (owner_) config.inflation_step = config.tracking_inflation_step;
+            map_->inflationMap(owner_ != nullptr)->getVirtualHeightBounds(
+                config.virtual_ground_height, config.virtual_ceil_height);
+        }
+        return config;
     }
 
     UpdateSnapshot updateMap(const rog_map::PointCloud &cloud,
                              const general_utils::Pose &pose) const
     {
+        if (owner_) throw std::logic_error("Only the map owner may fuse point clouds");
         if (!map_) {
             return latestUpdate();
         }
@@ -152,6 +172,7 @@ public:
 
     std::uint64_t mapRevision() const
     {
+        if (owner_) return owner_->mapRevision();
         return map_revision_.load(std::memory_order_acquire);
     }
 
@@ -160,6 +181,7 @@ public:
     // changes map or topology ownership.
     std::uint64_t worldEpoch() const
     {
+        if (owner_) return owner_->worldEpoch();
         return world_epoch_.load(std::memory_order_acquire);
     }
 
@@ -171,6 +193,7 @@ public:
 
     UpdateSnapshot latestUpdate() const
     {
+        if (owner_) return owner_->latestUpdate();
         std::lock_guard<std::mutex> lock(update_snapshot_mutex_);
         return latest_update_;
     }
@@ -178,11 +201,12 @@ public:
     /** Synchronize pending ROG discrete transitions into the sparse global map. */
     void syncBoundaryMap() const
     {
-        syncBoundaryMapImpl(map_, boundary_map_, topology_graph_);
+        if (!owner_) syncBoundaryMapImpl(map_, boundary_map_, topology_graph_);
     }
 
     void configureTopology(const IncrementalTopologyGraph::Config &config)
     {
+        if (owner_) throw std::logic_error("Only the map owner may configure topology");
         if (!topology_graph_) {
             topology_graph_ = std::make_shared<IncrementalTopologyGraph>(config);
         } else {
@@ -311,6 +335,7 @@ public:
 
     rog_map::RobotState getRobotState() const
     {
+        if (owner_) return owner_->getRobotState();
         std::lock_guard<std::mutex> lock(odometry_mutex_);
         if (independent_odometry_) {
             return latest_odometry_;
@@ -339,7 +364,7 @@ public:
     }
 
     void getInflatedVirtualHeightBounds(double &floor, double &ceiling) const {
-        map_->getInflatedVirtualHeightBounds(floor, ceiling);
+        map_->inflationMap(owner_ != nullptr)->getVirtualHeightBounds(floor, ceiling);
     }
 
     double getInfResolution() const
@@ -449,12 +474,12 @@ public:
 
     rog_map::GridType getInfGridType(const rog_map::Vec3f &pos) const
     {
-        return map_->getInfGridType(pos);
+        return inflation_view_ ? inflation_view_->getGridType(pos) : map_->getInfGridType(pos);
     }
 
     bool isOccupiedInflate(const rog_map::Vec3f &pos) const
     {
-        return map_->isOccupiedInflate(pos);
+        return inflation_view_ ? inflation_view_->isOccupiedInflate(pos) : map_->isOccupiedInflate(pos);
     }
 
     bool isLineFree(const rog_map::Vec3f &start_pt,
@@ -473,7 +498,7 @@ public:
         const bool safe_use_unk_as_occ =
                 use_unk_as_occ &&
                 (!use_inf_map || map_->getMapConfig().unk_inflation_en);
-        return map_->isLineFree(start_pt, end_pt, use_inf_map, safe_use_unk_as_occ);
+        return map_->isLineFree(start_pt, end_pt, use_inf_map, safe_use_unk_as_occ, inflation_view_);
     }
 
     bool getNearestCellNot(const rog_map::GridType &target_type,
@@ -489,7 +514,7 @@ public:
                               rog_map::Vec3f &nearest_pt,
                               const double &max_dis) const
     {
-        return map_->getNearestInfCellNot(target_type, start_pos, nearest_pt, max_dis);
+        return map_->getNearestInfCellNot(target_type, start_pos, nearest_pt, max_dis, inflation_view_);
     }
 
     void probMapPosToGlobalIndex(const rog_map::Vec3f &pos, rog_map::Vec3i &id_g) const
@@ -515,7 +540,13 @@ public:
     void boundBoxByLocalMap(rog_map::Vec3f &box_min, rog_map::Vec3f &box_max,
                             bool inflated = false) const
     {
-        map_->boundBoxByLocalMap(box_min, box_max, inflated);
+        map_->boundBoxByLocalMap(box_min, box_max, inflated && !inflation_view_);
+        if (inflated && inflation_view_) {
+            double floor, ceiling;
+            inflation_view_->getVirtualHeightBounds(floor, ceiling);
+            box_min.z() = std::max(box_min.z(), floor);
+            box_max.z() = std::min(box_max.z(), ceiling);
+        }
     }
 
     bool getUpdatedBox(rog_map::Vec3f &box_min, rog_map::Vec3f &box_max) const
@@ -536,7 +567,8 @@ public:
                           const rog_map::GridType &gt,
                           rog_map::vec_E<rog_map::Vec3f> &out_points) const
     {
-        map_->boxSearchInflate(box_min, box_max, gt, out_points);
+        if (inflation_view_) inflation_view_->boxSearch(box_min, box_max, gt, out_points);
+        else map_->boxSearchInflate(box_min, box_max, gt, out_points);
     }
 
     bool hasESDF() const
@@ -634,6 +666,8 @@ public:
     }
 
 private:
+    Ptr owner_;
+    rog_map::InfMap::Ptr inflation_view_;
     mutable std::mutex odometry_mutex_;
     bool independent_odometry_{false};
     rog_map::RobotState latest_odometry_{};

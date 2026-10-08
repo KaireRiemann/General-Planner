@@ -80,9 +80,7 @@ namespace general_planner {
         LogOneReplan latest_replan;
         general_planner::Config cfg_;
         MapManager::Ptr map_manager_;
-        // Tracking-dedicated local occupancy map (Elastic-aligned thin
-        // inflation). Falls back to map_manager_ when the runtime does not
-        // provide a separate one; exploration/state2state never see it.
+        // Tracking inflation view; runtime shares occupancy and history with map_manager_.
         MapManager::Ptr tracking_map_manager_;
         CorridorGenerator::Ptr cg_ptr_;
         CorridorGenerator::Ptr tracking_cg_ptr_;
@@ -220,8 +218,8 @@ namespace general_planner {
          * M2 constructor: callers inject the world-lifetime MapManager.
          * The planner may query it, but may not replace or reconfigure its
          * topology.  Standalone fsm_node keeps using the ROGMap constructor.
-         * tracking_map_manager optionally carries the Elastic-aligned
-         * tracking-dedicated occupancy map; nullptr shares the world map.
+         * tracking_map_manager selects the thin inflation query view.
+         * Without it, the map's configured tracking view is selected automatically.
          */
         GeneralPlanner(const std::string &cfg_path,
                        const ros_interface::RosInterface::Ptr &ros_ptr,

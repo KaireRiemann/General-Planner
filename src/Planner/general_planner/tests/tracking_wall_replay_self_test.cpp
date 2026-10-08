@@ -72,13 +72,10 @@ int main(int argc, char **argv) {
         std::cout << "snapshot points: " << cloud.size() << '\n';
 
         auto grid_main = std::make_shared<rog_map::ROGMapROS>(
-            nh, std::string(ROOT_DIR) + "config/exploration_rog_map.yaml");
-        auto grid_track = std::make_shared<rog_map::ROGMapROS>(
-            nh, std::string(ROOT_DIR) + "config/tracking_rog_map.yaml");
-        grid_main->updateOccPointCloud(cloud);
-        grid_track->updateOccPointCloud(cloud);
+            nh, std::string(ROOT_DIR) + "config/map.yaml");
         auto map_main = std::make_shared<general_planner::MapManager>(grid_main);
-        auto map_track = std::make_shared<general_planner::MapManager>(grid_track);
+        auto map_track = general_planner::MapManager::trackingView(map_main);
+        grid_main->updateOccPointCloud(cloud);
         require(std::abs(map_main->getInfResolution() - 0.15) < 1e-9 &&
                 std::abs(map_track->getInfResolution() - 0.15) < 1e-9,
                 "both maps share the 0.15 m grid; only inflation differs");

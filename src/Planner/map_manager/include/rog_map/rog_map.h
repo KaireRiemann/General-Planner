@@ -69,7 +69,8 @@ namespace rog_map {
 
         bool isLineFree(const Vec3f& start_pt, const Vec3f& end_pt,
                         const bool& use_inf_map = false,
-                        const bool& use_unk_as_occ = false) const;
+                        const bool& use_unk_as_occ = false,
+                        const InfMap::Ptr &inflation_view = nullptr) const;
 
         bool getNearestCellIs(const GridType& target_type,
                                 const Vec3f& start_pos,
@@ -91,8 +92,9 @@ namespace rog_map {
 
         bool getNearestInfCellNot(const GridType& target_type,
                              const Vec3f& start_pos,
-                             Vec3f& nearest_pt, const double& max_dis) const {
-            return findNearestInfCellThat(NOT, target_type, start_pos, nearest_pt, max_dis);
+                             Vec3f& nearest_pt, const double& max_dis,
+                             const InfMap::Ptr &inflation_view = nullptr) const {
+            return findNearestInfCellThat(NOT, target_type, start_pos, nearest_pt, max_dis, inflation_view);
         }
 
         void probMapPosToGlobalIndex(const Vec3f & pos, Vec3i & id_g) const {
@@ -126,10 +128,11 @@ namespace rog_map {
         void updateRobotState(const Pose& pose);
 
         bool findNearestCellThat(const bool & is, const GridType& target_type,
-            const Vec3f & start_pos, Vec3f& nearest_pt, const double & max_dis) const ;
+            const Vec3f & start_pos, Vec3f& nearest_pt, const double & max_dis) const;
 
         bool findNearestInfCellThat(const bool & is, const GridType& target_type,
-          const Vec3f & start_pos, Vec3f& nearest_pt, const double & max_dis) const ;
+          const Vec3f & start_pos, Vec3f& nearest_pt, const double & max_dis,
+          const InfMap::Ptr &inflation_view = nullptr) const;
 
         RobotState robot_state_;
         mutable std::mutex robot_state_callback_mutex_;

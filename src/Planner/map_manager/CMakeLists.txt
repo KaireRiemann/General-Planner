@@ -75,6 +75,8 @@ add_dependencies(incremental_topology_self_test ${catkin_EXPORTED_TARGETS})
 
 add_executable(local_dynamic_fusion_self_test tests/local_dynamic_fusion_self_test.cpp)
 target_link_libraries(local_dynamic_fusion_self_test map_manager)
+add_executable(shared_map_view_self_test tests/shared_map_view_self_test.cpp)
+target_link_libraries(shared_map_view_self_test map_manager)
 add_executable(raycaster_self_test tests/raycaster_self_test.cpp
         include/rog_map/rog_map_core/raycaster.cpp)
 target_link_libraries(raycaster_self_test ${catkin_LIBRARIES})

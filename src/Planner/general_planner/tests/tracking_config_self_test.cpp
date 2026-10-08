@@ -35,6 +35,10 @@ int main(int argc, char **argv) {
     try {
         YAML::Node nav = YAML::LoadFile(argv[1]);
         YAML::Node tracking = YAML::LoadFile(argv[2]);
+        nav.remove("rog_map");
+        YAML::Node map;
+        map["rog_map"]["resolution"] = 0.15;
+        save(dir / "map.yaml", map);
         // Test the real loaders with deliberately conflicting navigation data.
         nav["tracking_config"] = "profiles/tracking.yaml";
         nav["traj_opt"]["exp_traj"]["convex_hull_en"] = false;
@@ -65,6 +69,13 @@ int main(int argc, char **argv) {
 
         general_planner::Config planner(nav_path.string());
         fsm::Config state(nav_path.string());
+        check(near(planner.resolution, .15) && near(state.resolution, .15), "separate map.yaml resolution");
+        general_planner::Config injected(nav_path.string(), "", .20);
+        fsm::Config injected_state(nav_path.string(), "", .20);
+        check(near(injected.resolution, .20) && near(injected_state.resolution, .20),
+              "owning map resolution must override config-file lookup");
+        check(near(injected.sample_traj_dt, .20 / injected.exp_traj_cfg.max_vel),
+              "derived sampling must use the injected resolution");
         check(near(planner.esdf_traj_cfg.max_vel, 7.0), "navigation limit changed");
         check(near(planner.esdf_traj_cfg.penna_t, 777.0), "navigation weight changed");
         check(near(planner.tracking_traj_cfg.max_vel, 5.0), "tracking inherited navigation limit");

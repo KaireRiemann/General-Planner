@@ -33,10 +33,7 @@ struct GlobalMapContext {
 
   rog_map::ROGMapROS::Ptr rog_map;
   MapManager::Ptr map_manager;
-  // Tracking-dedicated local occupancy map (Elastic-aligned thin inflation).
-  // Fused from the same cloud/odom stream but owned separately, so tracking
-  // clearance never tightens exploration/state2state and vice versa.
-  rog_map::ROGMapROS::Ptr tracking_rog_map;
+  // Read-only tracking inflation view over the single world occupancy map.
   MapManager::Ptr tracking_map_manager;
   std::shared_ptr<fast_planner::LIOInterface> lio_map;
 
@@ -82,17 +79,15 @@ class GlobalMapRuntime {
   GlobalMapRuntime &operator=(const GlobalMapRuntime &) = delete;
 
   // odometry_nh must have its own serviced callback queue (not the world queue).
-  // tracking_map_config_path optionally builds a second, tracking-only ROG
-  // map from the same sensor stream (Elastic-style thin inflation).
+  // map_config_path configures shared evidence and both inflation margins.
   void init(ros::NodeHandle nh, const std::string &map_config_path,
-            ros::NodeHandle odometry_nh,
-            const std::string &tracking_map_config_path = "");
+            ros::NodeHandle odometry_nh);
 
   GlobalMapContext::Ptr context() const { return context_; }
   MapManager::Ptr mapManager() const {
     return context_ ? context_->map_manager : MapManager::Ptr{};
   }
-  // Falls back to the shared world map when no tracking map is configured.
+  // Uses the shared occupancy with the tracking inflation margin.
   MapManager::Ptr trackingMapManager() const {
     return (context_ && context_->tracking_map_manager)
         ? context_->tracking_map_manager : mapManager();
@@ -144,8 +139,8 @@ class GlobalMapRuntime {
   std::mutex topology_expansion_mutex_;
   struct CloudSubscription { CloudConsumer consume; std::function<bool()> pointcloud_only; };
   std::vector<CloudSubscription> cloud_consumers_;
-  ros::WallTime last_main_fusion_, last_tracking_fusion_;
-  double pointcloud_main_period_{0.5}, pointcloud_tracking_period_{1.0};
+  ros::WallTime last_main_fusion_;
+  double pointcloud_main_period_{0.5};
   std::vector<OdomConsumer> odom_consumers_;
   ros::Time last_odom_time_;
   ros::Time last_map_time_;

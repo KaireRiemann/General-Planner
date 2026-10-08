@@ -1,4 +1,4 @@
-# ROG-Map backend used by the HighSpeedExp frontend in General Planner.
+# Standalone exploration map. Composed runtime uses config/map.yaml.
 rog_map:
   esdf:
     enable: false

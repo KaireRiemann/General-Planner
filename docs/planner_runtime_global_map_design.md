@@ -1,6 +1,10 @@
 # 统一规划运行时、控制权切换与全局地图/拓扑图设计
 
-> 状态：M1、M2 已实施；M3 的 exploration 全局路线消费仍为后续项。\
+> 当前实现核对（2026-10-08）：目标探索已通过 `TargetRouteRuntime` 消费全局已知路线；\
+> 覆盖探索采用原生 EPICON 点云前端与 General 轨迹后端，尚未统一为全局拓扑消费者。\
+> 当前调用链、地图语义与配置入口见[当前探索框架与 MapManager 协作](exploration_map_manager_current.md)。\
+> 本文保留早期分阶段设计；下文“当前问题”“目标改造”和 M3 待办须按原设计语境阅读，\
+> 不能据此判断现有组合运行时仍在重复创建地图或目标探索尚未接入全局路线。\
 > 范围：ROS1 Noetic 下的 HighSpeedExp exploration、state2state、ROG map、LIO map 和增量 topo 图。\
 > 目标：上层只做“执行什么任务”的决策；底层保证模式切换安全，并持续维护所有任务共享的全局地图和 topo 图。\
 >\
@@ -10,7 +14,8 @@
 > **M2 进度（已落地）**：同一进程中的 `GlobalMapRuntime` 现在是唯一 cloud/odom\
 > 融合入口和唯一 `ROGMapROS`/`MapManager`/`BoundaryMap`/global topo 所有者；\
 > exploration 与 state2state 均注入同一 `MapManager::Ptr`。全局 topo 默认采用\
-> 真 3D、`dense_known_free` 的增量路网，并发布 `/planner/global_topology`。
+> 真 3D、`persistent_bubble_skeleton` 增量图，并发布 `/planner/global_topology`；\
+> tracking 膨胀查询视图复用同一份占据证据，地图构建由统一 `map.yaml` 配置。
 
 ## 1. 需求与结论
 

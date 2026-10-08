@@ -201,6 +201,13 @@ std::vector<Detection> MappingRos::updateManualTarget(
     return selected_detection;
   }
 
+  // cloudCallback() has already called predictTrackers(stamp_sec). Use that
+  // current-scan prior for search and association without predicting twice.
+  // associationPosition() remains the last accepted observation for height,
+  // measurement history and the separate crossing/identity logic.
+  const Eigen::Vector3d search_center = tracker->position();
+  ROS_INFO_ONCE("Selected-target search uses current-cloud prediction (prediction_roi_v1)");
+
   const Detection * best_candidate = nullptr;
   int best_candidate_index = -1;
   Detection roi_candidate;
@@ -229,7 +236,7 @@ std::vector<Detection> MappingRos::updateManualTarget(
     semantic_candidate.indices_from_current_cloud = true;
     best_candidate = &semantic_candidate;
     best_position_distance =
-      (semantic_reference.head<2>() - tracker->associationPosition().head<2>()).norm();
+      (semantic_reference.head<2>() - search_center.head<2>()).norm();
     best_cost = 0.0;
     reacquired = true;
   }
@@ -242,18 +249,25 @@ std::vector<Detection> MappingRos::updateManualTarget(
     bool used_stop_hypothesis{false};
   };
 
-  // Score continuity against the last accepted observation, with no motion extrapolation.
+  const auto association_distance = [](const Eigen::Vector3d & position,
+      const Eigen::Vector3d & center) {
+      const Eigen::Vector3d offset = position - center;
+      return std::sqrt(
+        offset.x() * offset.x() + offset.y() * offset.y() + 0.25 * offset.z() * offset.z());
+    };
+
+  // All ordinary candidate scores use the same current-scan prediction as ROI.
   const auto score_motion = [&](const Eigen::Vector3d & position) {
       MotionScore score;
       score.predicted_distance =
-        (position.head<2>() - tracker->associationPosition().head<2>()).norm();
-      score.cost = tracker->associationDistance(position);
+        (position.head<2>() - search_center.head<2>()).norm();
+      score.cost = association_distance(position, search_center);
       score.gate_distance = score.predicted_distance;
       return score;
     };
 
   // First follow the actual foreground points inside a target-sized gate
-  // centred on the last accepted observation. The configured values are minimums;
+  // centred on the current-scan prediction. The configured values are minimums;
   // larger non-human targets expand the gate from their learned dimensions.
   // This is deliberately evaluated before
   // global clusters: when the target has no return, a different cluster 0.5 m
@@ -267,7 +281,7 @@ std::vector<Detection> MappingRos::updateManualTarget(
   if (
     params_.selection_roi_fallback_enabled &&
     buildRoiDetection(
-      candidate_cloud, tracker->associationPosition(),
+      candidate_cloud, search_center,
       adaptive_roi_radius_xy, adaptive_roi_half_height,
       roi_candidate))
   {
@@ -275,7 +289,7 @@ std::vector<Detection> MappingRos::updateManualTarget(
       interacting_auxiliary != nullptr &&
       detectionSupportsTrack(roi_candidate, candidate_cloud, *tracker) &&
       detectionSupportsTrack(roi_candidate, candidate_cloud, *interacting_auxiliary);
-    const Eigen::Vector3d offset = roi_candidate.position - tracker->associationPosition();
+    const Eigen::Vector3d offset = roi_candidate.position - search_center;
     // Mid360 often observes only a person's torso or legs in one scan, so the
     // measured vertical centroid can jump even though XY is correct.  With a
     // known body height, association is intentionally horizontal and Z is
@@ -311,9 +325,7 @@ std::vector<Detection> MappingRos::updateManualTarget(
     for (std::size_t candidate_index = 0; candidate_index < candidates.size(); ++candidate_index) {
       const auto & candidate = candidates[candidate_index];
       if (!semantic_supports(candidate)) continue;
-      const Eigen::Vector3d offset = candidate.position - tracker->associationPosition();
-      const double position_distance = std::sqrt(
-        offset.x() * offset.x() + offset.y() * offset.y() + 0.25 * offset.z() * offset.z());
+      const double position_distance = association_distance(candidate.position, search_center);
       best_position_distance = std::min(best_position_distance, position_distance);
       const double size_change = (candidate.size - tracker->size()).cwiseAbs().maxCoeff();
       if (
@@ -367,9 +379,9 @@ std::vector<Detection> MappingRos::updateManualTarget(
           detectionSupportsTrack(candidate, candidate_cloud, *tracker);
         const bool auxiliary_support =
           detectionSupportsTrack(candidate, candidate_cloud, *interacting_auxiliary);
-        const double target_motion_cost = tracker->associationDistance(candidate.position);
+        const double target_motion_cost = association_distance(candidate.position, search_center);
         const double auxiliary_motion_cost =
-          interacting_auxiliary->associationDistance(candidate.position);
+          association_distance(candidate.position, interacting_auxiliary->position());
         if (
           auxiliary_support &&
           (!target_support || auxiliary_motion_cost + 0.08 < target_motion_cost))
@@ -382,7 +394,7 @@ std::vector<Detection> MappingRos::updateManualTarget(
           continue;
         }
       }
-      const Eigen::Vector3d offset = candidate.position - tracker->associationPosition();
+      const Eigen::Vector3d offset = candidate.position - search_center;
       const MotionScore motion_score = score_motion(candidate.position);
       const double horizontal_distance = motion_score.predicted_distance;
       best_position_distance = std::min(best_position_distance, horizontal_distance);
@@ -428,7 +440,7 @@ std::vector<Detection> MappingRos::updateManualTarget(
       semantic_age <= yolo_continuous_validation_max_age_ &&
       buildRoiDetection(candidate_cloud, yolo_semantic_position_,
         adaptive_roi_radius_xy, adaptive_roi_half_height, semantic_candidate)) {
-    const double distance = (semantic_candidate.position.head<2>() - tracker->associationPosition().head<2>()).norm();
+    const double distance = (semantic_candidate.position.head<2>() - search_center.head<2>()).norm();
     const double since_last = std::max(0.0, stamp_sec - last_target_measurement_stamp_sec_);
     const bool reachable = has_last_target_measurement_ &&
       (semantic_candidate.position.head<2>() - last_target_measurement_position_.head<2>()).norm() <=
@@ -447,8 +459,11 @@ std::vector<Detection> MappingRos::updateManualTarget(
 
   if (best_candidate != nullptr) {
     const bool fusion_reselection = semantic_guard_active;
+    // Recovery checks bound the innovation, not the legitimate motion since
+    // the last observation. Keep last_target_measurement_* unchanged until an
+    // actual point-cloud observation is accepted below.
     const Eigen::Vector2d correction_offset =
-      best_candidate->position.head<2>() - tracker->associationPosition().head<2>();
+      best_candidate->position.head<2>() - search_center.head<2>();
     const double correction_distance = correction_offset.norm();
     const bool far_reacquisition =
       reacquired && !fusion_reselection &&
@@ -503,14 +518,14 @@ std::vector<Detection> MappingRos::updateManualTarget(
     // Confirming the physical candidate must not create a one-frame teleport
     // in the published target, so converge over several scans instead.
     const Eigen::Vector2d measurement_correction_offset =
-      measurement_position.head<2>() - tracker->associationPosition().head<2>();
+      measurement_position.head<2>() - search_center.head<2>();
     const double measurement_correction_distance = measurement_correction_offset.norm();
     if (
       !fusion_reselection &&
       (far_reacquisition || best_used_stop_hypothesis) &&
       measurement_correction_distance > params_.selection_reacquisition_max_position_correction)
     {
-      measurement_position.head<2>() = tracker->associationPosition().head<2>() +
+      measurement_position.head<2>() = search_center.head<2>() +
         params_.selection_reacquisition_max_position_correction *
         measurement_correction_offset / measurement_correction_distance;
     }

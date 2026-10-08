@@ -7,7 +7,16 @@ namespace person_tracker
 {
 void MappingRos::configurePredictionModel()
 {
-  const std::string backend = readParameter<std::string>("prediction/backend", "analytic");
+  // Existing launch files assign prediction/backend after loading the profile.
+  // A distinct profile override allows aircraft YAML to select the model
+  // without replacing launch files that contain aircraft-specific topics.
+  const std::string backend_override =
+    readParameter<std::string>("prediction/backend_override", "");
+  std::string backend = backend_override.empty() ?
+    readParameter<std::string>("prediction/backend", "analytic") : backend_override;
+  // The analytic backend propagates the live posterior and future path with
+  // constant velocity. Its CA/CT diagnostic hypotheses do not drive either.
+  if (backend == "cv") backend = "analytic";
   MmkNetConfig config;
   TargetEkf::defaultUpstreamMode() = (backend=="imm_mot" || backend=="imm_mot_ctra" || backend=="imm_mot_r" || backend=="imm_mot_rt" || backend=="imm_mot_fixed" || backend=="imm_mot_fixed_q") ? backend : "";
   if (!TargetEkf::defaultUpstreamMode().empty()) {
@@ -45,9 +54,12 @@ void MappingRos::configurePredictionModel()
       "Bundled simulation weights used dt=1 s and are not calibrated for pedestrian tracking. "
       "Warm-up and observation gaps use CV; ground height remains unchanged.", config.sample_period);
   } else if (backend != "analytic" && backend != "imm" && backend != "imm_mot" && backend != "imm_mot_ctra" && backend != "imm_mot_r" && backend != "imm_mot_rt" && backend != "imm_mot_fixed" && backend != "imm_mot_fixed_q") {
-    throw std::runtime_error("prediction/backend must be analytic, mmknet, imm, imm_mot_ctra or imm_mot");
+    throw std::runtime_error("prediction/backend or prediction/backend_override must be cv, analytic, mmknet, imm, imm_mot_ctra or imm_mot");
   }
   TargetEkf::defaultMmkNetConfig() = config;
   ROS_INFO("Target prediction backend: %s", backend.c_str());
+  if (!backend_override.empty()) {
+    ROS_INFO("Prediction profile override: %s -> %s", backend_override.c_str(), backend.c_str());
+  }
 }
 }  // namespace person_tracker

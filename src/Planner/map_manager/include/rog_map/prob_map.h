@@ -55,6 +55,12 @@ namespace rog_map {
 
         void initProbMap();
 
+        // Query-only handles. All layers are updated by this ProbMap's single fusion pass.
+        InfMap::Ptr inflationMap(bool tracking = false) const {
+            return tracking && tracking_inf_map_ ? tracking_inf_map_ : inf_map_;
+        }
+        bool hasTrackingInflation() const { return tracking_inf_map_ != nullptr; }
+
         bool isOccupied(const Vec3f &pos) const;
 
         bool isUnknown(const Vec3f &pos) const;
@@ -160,6 +166,12 @@ namespace rog_map {
     protected:
         rog_map::Config cfg_;
         InfMap::Ptr inf_map_;
+        InfMap::Ptr tracking_inf_map_;
+        void updateInflationCounters(const Vec3f &pos, GridType from, GridType to) {
+            inf_map_->updateGridCounter(pos, from, to);
+            if (tracking_inf_map_ && tracking_inf_map_ != inf_map_)
+                tracking_inf_map_->updateGridCounter(pos, from, to);
+        }
         FreeCntMap::Ptr fcnt_map_;
         ESDFMap::Ptr esdf_map_;
         /// Spherical neighborhood lookup table

@@ -156,6 +156,10 @@ namespace rog_map {
             loader.LoadParam(name_space + "/unk_inflation_step", unk_inflation_step, 1);
 
             loader.LoadParam(name_space + "/inflation_step", inflation_step, 1);
+            loader.LoadParam(name_space + "/tracking_inflation_step", tracking_inflation_step, -1);
+            if (tracking_inflation_step < -1 || tracking_inflation_step > inflation_step) {
+                throw std::invalid_argument("tracking_inflation_step must be -1 (disabled) or between 0 and inflation_step");
+            }
             loader.LoadParam(name_space + "/intensity_thresh", intensity_thresh, -1);
 
             vector<double> temp_map_size;
@@ -211,6 +215,8 @@ namespace rog_map {
             loader.LoadParam(name_space + "/virtual_ground_height", virtual_ground_height, -0.1);
             loader.LoadParam(name_space + "/virtual_ceil_height", virtual_ceil_height, -0.1);
 
+            physical_ground_height = virtual_ground_height;
+            physical_ceil_height = virtual_ceil_height;
             resetMapSize();
 
             /// Probabilistic Update
@@ -298,6 +304,9 @@ namespace rog_map {
 
         double resolution{}, inflation_resolution{};
         int inflation_step{};
+        // A second inflation counter over the SAME occupancy evidence; no second raycast.
+        int tracking_inflation_step{-1};
+        double physical_ground_height{}, physical_ceil_height{};
         Vec3f local_update_box_d, half_local_update_box_d{};
         Vec3i local_update_box_i, half_local_update_box_i{};
         Vec3f map_size_d, half_map_size_d{};
@@ -345,6 +354,31 @@ namespace rog_map {
 
         double unk_thresh{};
         double map_sliding_thresh{};
+
+        Config withInflationStep(const int step) const {
+            if (step < 0 || step > inflation_step) {
+                throw std::invalid_argument("Inflation view exceeds the configured navigation margin");
+            }
+            Config view = *this;
+            view.inflation_step = step;
+#ifdef ORIGIN_AT_CORNER
+            const int delta = inflation_step - step;
+            view.inf_virtual_ground_height_id_g -= delta;
+            view.inf_virtual_ceil_height_id_g += delta;
+            view.virtual_ground_height -= delta * inflation_resolution;
+            view.virtual_ceil_height += delta * inflation_resolution;
+#endif
+            const int max_step = unk_inflation_en ? std::max(step, unk_inflation_step) : step;
+            const int ratio = static_cast<int>(std::round(inflation_resolution / resolution));
+            view.inf_half_map_size_i = half_map_size_i / ratio + (max_step + 1) * Vec3i::Ones();
+            view.inf_spherical_neighbor.clear();
+            for (int x = -step; x <= step; ++x)
+                for (int y = -step; y <= step; ++y)
+                    for (int z = -step; z <= step; ++z)
+                        if (step == 1 || x*x + y*y + z*z <= step*step)
+                            view.inf_spherical_neighbor.emplace_back(x, y, z);
+            return view;
+        }
 
         void resetMapSize() {
             int inflation_ratio = ceil(inflation_resolution / resolution);

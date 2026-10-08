@@ -16,10 +16,8 @@
   <arg name="tracking_camera_config" default="$(find tracking_detector)/config/camera.yaml" />
   <arg name="tracking_estimator_config" default="$(find tracking_detector)/config/estimator.yaml" />
 
-  <!-- M2 composed runtime. planner_runtime_node owns exactly one ROG map,
-       MapManager, BoundaryMap and global topology worker.  Exploration and
-       state2state are in-process adapters; switching modes never kills a
-       planner or recreates a map. -->
+  <!-- Composed runtime owns the shared occupancy map, global topology and tracking
+       inflation view. Switching task modes preserves these maps. -->
   <!-- The base runtime consumes external odometry/cloud by default.  A
        perfect_drone_sim run must explicitly select marsim:=true. -->
   <!-- Detector processes run only in active Gate mode; requests also gate detection internally. -->
@@ -90,17 +88,10 @@
        not replace the shared ROG or global topology. -->
   <arg name="indoor_frontier_config"
        default="$(find general_planner)/config/exploration_indoor_frontier.yaml" />
-  <!-- Must keep rog_map/ros_callback/enable=false: GlobalMapRuntime is the
-       only cloud/odom fusion owner. -->
-  <arg name="rog_map_config"
-       default="$(find general_planner)/config/exploration_rog_map.yaml" />
-  <!-- Tracking-dedicated occupancy map (Elastic-aligned thin inflation).
-       GlobalMapRuntime fuses it from the same cloud/odom stream; set empty
-       to let tracking share the world map. -->
-  <arg name="tracking_rog_map_config"
-       default="$(find general_planner)/config/tracking_rog_map.yaml" />
-  <arg name="global_topology_config"
-       default="$(find general_planner)/config/global_topology.yaml" />
+  <!-- Runtime map tuning lives in config/map.yaml. Navigation YAML does
+       not configure fusion. Keep rog_map/ros_callback/enable=false. -->
+  <arg name="map_config"
+       default="$(find general_planner)/config/map.yaml" />
 
   <arg name="rviz_config"
        default="$(find general_planner)/rviz/planner_runtime_exploration.rviz" />
@@ -188,7 +179,7 @@
               file="$(arg exploration_overlay_config)" command="load" />
     <rosparam if="$(eval arg('indoor_frontier_config') != '')"
               file="$(arg indoor_frontier_config)" command="load" />
-    <rosparam file="$(arg global_topology_config)" command="load" />
+    <rosparam file="$(arg map_config)" command="load" />
 
     <param name="initial_mode" value="$(arg initial_mode)" type="string" />
     <param name="source_startup_grace_duration"
@@ -212,8 +203,7 @@
          serial_handover=true: a separately launched fsm_node would otherwise
          be another uncontrolled writer on /planning/pos_cmd. -->
     <param name="gate_status_topic" value="$(arg gate_status_topic)" type="string" />
-    <param name="global_map_config" value="$(arg rog_map_config)" type="string" />
-    <param name="tracking_map_config" value="$(arg tracking_rog_map_config)" type="string" />
+    <param name="map_config" value="$(arg map_config)" type="string" />
     <param name="tracking_target_odom_topic" value="$(arg tracking_target_odom_topic)" />
     <param name="tracking_target_prediction_topic" value="$(arg tracking_target_prediction_topic)" />
     <param name="navigation_config" value="$(arg navigation_config)" type="string" />
@@ -221,7 +211,7 @@
     <param name="odometry_topic" value="$(arg odom_topic)" type="string" />
     <param name="cloud_topic" value="$(eval arg('map_cloud_topic') if arg('filter_mapping_cloud') else arg('cloud_topic'))" type="string" />
     <param name="RogMapEnable" value="$(arg rog_map_enable)" type="bool" />
-    <param name="RogMapConfigPath" value="$(arg rog_map_config)" type="string" />
+    <param name="RogMapConfigPath" value="$(arg map_config)" type="string" />
     <param name="navigation_cmd_topic" value="/planning/navigation/pos_cmd" type="string" />
     <param name="exploration_cmd_topic" value="/planning/exploration/pos_cmd" type="string" />
     <param name="output_cmd_topic" value="/planning/pos_cmd" type="string" />

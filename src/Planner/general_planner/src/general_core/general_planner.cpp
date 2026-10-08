@@ -175,9 +175,12 @@ namespace general_planner {
             const bool configure_private_topology,
             const std::string &tracking_config,
             const MapManager::Ptr &tracking_map_manager)
-            : cfg_(Config(cfg_path, tracking_config)),
+            : cfg_(Config(cfg_path, tracking_config,
+                          map_manager && map_manager->ready() ? map_manager->getResolution() : 0.0)),
                 map_manager_(map_manager),
-                tracking_map_manager_(tracking_map_manager ? tracking_map_manager : map_manager),
+                tracking_map_manager_(tracking_map_manager ? tracking_map_manager :
+                    (map_manager && map_manager->ready() && map_manager->rawRosMap()->hasTrackingInflation()
+                        ? MapManager::trackingView(map_manager) : map_manager)),
                 ros_ptr_(ros_ptr) {
 
         if (!map_manager_ || !map_manager_->ready()) {
@@ -272,7 +275,7 @@ namespace general_planner {
         if (tracking_map_manager_ != map_manager_) {
             const auto tracking_rog_cfg = tracking_map_manager_->getMapConfig();
             ros_ptr_->info(
-                " -- [GeneralPlanner] Tracking uses a dedicated occupancy map: resolution={:.3f}m, inflation_step={}, inflation_resolution={:.3f}m.",
+                " -- [GeneralPlanner] Tracking uses an inflation query view: resolution={:.3f}m, inflation_step={}, inflation_resolution={:.3f}m.",
                 tracking_rog_cfg.resolution,
                 tracking_rog_cfg.inflation_step,
                 tracking_rog_cfg.inflation_resolution);
@@ -338,9 +341,7 @@ namespace general_planner {
         cg_ptr_->SetLineNeighborList(cfg_.seed_line_neighbour);
         tracking_cg_ptr_ = cg_ptr_;
         if (!cfg_.tracking_config_path.empty()) {
-            // CIRI for tracking grows corridors on the dedicated tracking map.
-            // Its inflation/virtual bounds therefore come from that map, not
-            // from the shared world map.
+            // Tracking corridors use the tracking inflation view and its height bounds.
             const auto tracking_rog_cfg = tracking_map_manager_->getMapConfig();
             tracking_cg_ptr_ = std::make_shared<CorridorGenerator>(
                 ros_ptr_, tracking_map_manager_, cfg_.tracking_corridor_bound_dis,

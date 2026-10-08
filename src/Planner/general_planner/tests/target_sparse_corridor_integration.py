@@ -117,8 +117,18 @@ try:
  # Release/Unity and source launch files have different odometry defaults.
  # Always connect the isolated fixture's own sensor topics explicitly.
  launch_args.extend(['odom_topic:=/lidar_slam/odom','cloud_topic:=/cloud_registered'])
- for key,arg in [('TEST_ROG_MAP_CONFIG','rog_map_config'),('TEST_TRACKING_ROG_MAP_CONFIG','tracking_rog_map_config')]:
-  if os.environ.get(key):launch_args.append(arg+':='+os.environ[key])
+ map_override=os.environ.get('TEST_MAP_CONFIG',os.environ.get('TEST_ROG_MAP_CONFIG',''))
+ if os.environ.get('TEST_TRACKING_ROG_MAP_CONFIG'):
+  raise ValueError('Use TEST_MAP_CONFIG with rog_map/tracking_inflation_step; tracking shares occupancy')
+ if os.environ.get('TEST_NO_TOPOLOGY'):
+  import yaml,rospkg
+  package='general_planner_release' if os.environ.get('TEST_LAUNCH_PACKAGE')=='general_planner_release' else 'general_planner'
+  map_path=Path(map_override) if map_override else Path(rospkg.RosPack().get_path(package))/'config/map.yaml'
+  parameters=yaml.safe_load(map_path.read_text())
+  parameters.setdefault('global_topology',{})['enabled']=False
+  map_override=str(base/'map.yaml')
+  Path(map_override).write_text(yaml.safe_dump(parameters))
+ if map_override:launch_args.append('map_config:='+map_override)
  if os.environ.get('TEST_STARTUP_GRACE'):
   launch_args.append('source_startup_grace_duration:='+os.environ['TEST_STARTUP_GRACE'])
  if os.environ.get('TEST_EXPLORATION_OVERLAY'):
@@ -135,8 +145,6 @@ try:
    overlay=str(base/'termination_fixture.yaml')
    Path(overlay).write_text(yaml.safe_dump(parameters))
   launch_args.append('exploration_overlay_config:='+overlay)
- if os.environ.get('TEST_NO_TOPOLOGY'):
-  launch_args.append('global_topology_config:='+str(Path(__file__).resolve().parent/'config/target_route_no_topology.yaml'))
  if os.environ.get('TEST_TARGET_ROUTE_CONFIG'):
   launch_args.append('target_exploration_config:='+os.environ['TEST_TARGET_ROUTE_CONFIG'])
  launch=start(launch_args,'synthetic_runtime.log')

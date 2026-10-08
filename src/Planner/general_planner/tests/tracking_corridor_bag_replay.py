@@ -74,8 +74,7 @@ def main():
                          "perceptor:=false", "rviz:=false", "auto_rviz_switch:=false",
                          "enable_exploration:=false", "source_startup_grace_duration:=2.0",
                          "cloud_odom_mode:=latest_odom", "tracking_target_odom_topic:=/tracking/target_odom",
-                         "tracking_rog_map_config:=" + str(config / "tracking_unity_rog_map.yaml"),
-                         "rog_map_config:=" + str(config / "exploration_unity_neighborhood_rog_map.yaml")])
+                         "map_config:=" + str(config / "map.yaml")])
         for _ in range(300):
             subscribers = dict(rospy.get_master().getSystemState()[2][1])
             if "/tracking/target_odom" in subscribers and "/cloud_registered" in subscribers:

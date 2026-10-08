@@ -36,16 +36,14 @@ void ROGMap::init() {
     robot_state_.p = cfg_.fix_map_origin;
 
     if (cfg_.map_sliding_en) {
-        mapSliding(Vec3f(0, 0, 0));
-        inf_map_->mapSliding(Vec3f(0, 0, 0));
+        slideAllMap(Vec3f(0, 0, 0));
     }
     else {
         /// if disable map sliding, fix map origin to (0,0,0)
         /// update the local map bound as
         local_map_bound_min_d_ = -cfg_.half_map_size_d + cfg_.fix_map_origin;
         local_map_bound_max_d_ = cfg_.half_map_size_d + cfg_.fix_map_origin;
-        mapSliding(cfg_.fix_map_origin);
-        inf_map_->mapSliding(cfg_.fix_map_origin);
+        slideAllMap(cfg_.fix_map_origin);
     }
 
     writeMapInfoToLog(map_info_log_file_);
@@ -103,7 +101,9 @@ bool ROGMap::findNearestCellThat(const bool & is, const GridType& target_type,
 }
 
 bool ROGMap::findNearestInfCellThat(const bool & is, const GridType& target_type,
-    const Vec3f & start_pos, Vec3f& nearest_pt, const double & max_dis) const {
+    const Vec3f & start_pos, Vec3f& nearest_pt, const double & max_dis,
+    const InfMap::Ptr &inflation_view) const {
+    const auto &inflation = inflation_view ? inflation_view : inf_map_;
 
     Vec3i start_id;
     posToGlobalIndex(start_pos, start_id);
@@ -118,7 +118,7 @@ bool ROGMap::findNearestInfCellThat(const bool & is, const GridType& target_type
             return false;
         }
 
-        if((getInfGridType(q_pos) == target_type) == is) {
+        if((inflation->getGridType(q_pos) == target_type) == is) {
             nearest_pt = q_pos;
             return true;
         }
@@ -130,7 +130,9 @@ bool ROGMap::findNearestInfCellThat(const bool & is, const GridType& target_type
 
 
 bool ROGMap::isLineFree(const rog_map::Vec3f& start_pt, const rog_map::Vec3f& end_pt,
-                        const bool& use_inf_map, const bool& use_unk_as_occ) const {
+                        const bool& use_inf_map, const bool& use_unk_as_occ,
+                        const InfMap::Ptr &inflation_view) const {
+    const auto &inflation = inflation_view ? inflation_view : inf_map_;
     if (start_pt.array().isNaN().any() || end_pt.array().isNaN().any()) {
         cout << YELLOW << " -- [ROGMap] Call isLineFree with NaN in start or end pt, return false." << RESET << endl;
         return false;
@@ -148,7 +150,7 @@ bool ROGMap::isLineFree(const rog_map::Vec3f& start_pt, const rog_map::Vec3f& en
         if (!use_unk_as_occ) {
             // allow both unk and free
             if (use_inf_map) {
-                if (isOccupiedInflate(ray_pt)) {
+                if (inflation->isOccupiedInflate(ray_pt)) {
                     return false;
                 }
             }
@@ -161,7 +163,7 @@ bool ROGMap::isLineFree(const rog_map::Vec3f& start_pt, const rog_map::Vec3f& en
         else {
             // only allow known free
             if (use_inf_map) {
-                if ((isUnknownInflate(ray_pt) || isOccupiedInflate(ray_pt)))
+                if ((inflation->isUnknownInflate(ray_pt) || inflation->isOccupiedInflate(ray_pt)))
                     return false;
             }
             else {

@@ -14,6 +14,14 @@ This ROS package owns both occupancy representations used by General Planner:
   stable node IDs, stored edge costs, bounded dirty-region rebuilding,
   weighted shortest-path queries, and immutable snapshots.
 
+In the composed `planner_runtime_node`, `GlobalMapRuntime` owns one ROG map and
+one owner `MapManager` for the world lifetime. Navigation and exploration share
+that manager; tracking uses `MapManager::trackingView()` to query a different
+inflation radius over the same occupancy, history, and revisions. The view does
+not own sensor fusion or install another set of ROG callbacks. Map construction
+is configured by the launch `map_config` (`general_planner/config/map.yaml`, with
+a release-owned copy), while task YAMLs configure planning policy.
+
 ROGMap reports only sensor-driven discrete occupancy transitions. MapManager
 re-evaluates the changed voxel and its six neighbors and incrementally updates
 their boundary status. Ring-buffer resets caused by sliding are deliberately
@@ -24,6 +32,18 @@ Exploration policy is intentionally outside this package. It may consume
 `getGlobalFrontiers()` and `getGlobalGridType()`, but frontier scoring, route
 commitment, failure cooldown, and behavior state machines belong to planner
 modules.
+
+Current target exploration consumes the shared topology and global occupancy,
+then certifies executable prefixes against current raw-local known-free ROG
+evidence. Native EPICON coverage instead owns its point-cloud frontier/Bubble
+frontend and uses point-cloud clearance through trajectory execution; its
+`KNOWN_FREE` safety classification is not a raw-ROG observation certificate.
+During active native coverage, shared ROG fusion is throttled by
+`global_map/pointcloud_main_period` (0.5 s in the Unity overlay); accepted clouds
+still reach the point-cloud frontend, and full per-accepted-frame fusion resumes
+outside active coverage. `getGlobalFrontiers()` is available but is not the
+frontier source of either current main exploration frontend. See
+[current exploration integration](../../../docs/exploration_map_manager_current.md).
 
 ## Incremental topology
 
@@ -64,7 +84,9 @@ and every stored edge continues to receive a full 3D map visibility check.
 This avoids counting the already-inflated virtual floor/ceiling a second time
 as horizontal topology clearance.
 
-The module is disabled by default. It can be enabled directly:
+The standalone package's `config/topology.yaml` disables the module by default.
+The composed runtime enables `global_topology` in its shared `map.yaml`.
+Standalone users can enable it directly:
 
 ```cpp
 general_planner::IncrementalTopologyGraph::Config topology;
@@ -110,20 +132,28 @@ General Planner derives `navigation_altitude` from the center of ROG's actual
 post-inflation virtual height bounds. Standalone users of `MapManager` should
 set it explicitly when enabling `planar_mode`.
 
-General Planner separates construction from consumption. The click profiles use
-`topology.enable: true` with `topology.query_enable: true`: immutable graph A*
-produces a global route, then state2state clips and collision-checks only the
-prefix inside the current rolling ROG window. Direct line and local A* remain
-fallbacks when the graph has not yet observed the requested area.
+General Planner separates construction from consumption. The current runtime
+state2state profile permits topology queries with
+`general_planner/state2state/topology/query_capability_enable: true`, but starts
+with local navigation; `/planner/navigation/use_global_topology` selects global
+route consumption. When selected, immutable graph A* produces a global route,
+then state2state clips and collision-checks only the prefix inside the current
+rolling ROG window. Direct line and local A* remain fallbacks when the graph has
+not yet observed the requested area. Target exploration separately configures
+route consumption with `exploration/target_route/mode: prefer_known`.
 
-The first full-window seed is delayed until real odometry has initialized the
-ROG sliding-map origin. This prevents `unknown_as_free` from creating persistent
-nodes around the default origin before the robot's actual map window exists.
+Initial topology seeding is delayed until real odometry has initialized the
+ROG sliding-map origin. It uses the latest observed update box when available;
+full-window seeding is a fallback for late attachment. UNKNOWN evidence does
+not create persistent geometry around an unobserved origin.
 
 Standalone tools may use `findTopologyPath(start, goal, path)`. Endpoint
 attachment and all stored edges must pass current visibility checks; a
 disconnected graph returns `false` with an empty path rather than inventing an
 unvalidated straight line.
-The ROS adapter can receive a mission-active predicate. General Planner binds it
-to `state2stateMode()`, which disables this resource during exploration; the
-exploration `pointcloud_topo::TopoGraph` remains independently owned and updated.
+The ROS adapter can receive a mission-active predicate in standalone setups.
+The composed `GlobalMapRuntime` does not bind it to `state2stateMode()`:
+maintenance continues through exploration, navigation, HOLD, and handovers.
+Fresh odometry and the local dirty-region window bound construction work.
+Exploration's task-specific Bubble graphs remain independently owned; they are
+not the shared `IncrementalTopologyGraph`.

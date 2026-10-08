@@ -26,6 +26,7 @@
 #define GENERAL_FSM_CONFIG_HPP
 
 
+#include <utils/header/map_config.hpp>
 #include <general_core/config.hpp>
 #include <general_core/planning_semantics.hpp>
 #include <algorithm>
@@ -260,7 +261,7 @@ namespace fsm {
 
         Config() = default;
 
-        Config(const std::string & cfg_path, const std::string &tracking_override = "") {
+        Config(const std::string & cfg_path, const std::string &tracking_override = "", double map_resolution = 0.0) {
             yaml_loader::YamlLoader loader(cfg_path);
             tracking_config_path = general_planner::config_utils::resolveTrackingConfig(cfg_path, tracking_override);
             yaml_loader::YamlLoader tracking_loader(
@@ -457,7 +458,7 @@ namespace fsm {
             reorient_position_drift_max = std::clamp(reorient_position_drift_max, 0.0, 2.0);
             reorient_yaw_goal_tolerance = std::clamp(reorient_yaw_goal_tolerance, 0.005, 0.5);
             loader.LoadParam("general_planner/visualization_en", visualization_en, false, true);
-            loader.LoadParam("rog_map/resolution", resolution, 0.1, true);
+            resolution = general_planner::config_utils::mapResolution(cfg_path, map_resolution);
 
         }
     };

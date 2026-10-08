@@ -74,12 +74,8 @@
        default="$(find general_planner_release)/config/exploration_unity_overlay.yaml" />
   <arg name="indoor_frontier_config"
        default="$(find general_planner_release)/config/exploration_indoor_frontier.yaml" />
-  <arg name="rog_map_config" default="$(find general_planner_release)/config/exploration_rog_map.yaml" />
-  <!-- Tracking-dedicated occupancy map (Elastic-aligned thin inflation).
-       GlobalMapRuntime fuses it from the same cloud/odom stream; set empty
-       to let tracking share the thick-inflation world map. -->
-  <arg name="tracking_rog_map_config" default="$(find general_planner_release)/config/tracking_rog_map.yaml" />
-  <arg name="global_topology_config" default="$(find general_planner_release)/config/global_topology.yaml" />
+  <!-- Map geometry and fusion: config/map.yaml. Task YAML does not own mapping. -->
+  <arg name="map_config" default="$(find general_planner_release)/config/map.yaml" />
   <arg name="rviz_config" default="$(find general_planner_release)/config/planner_runtime_exploration.rviz" />
   <arg name="exploration_rviz_config" default="$(find general_planner_release)/config/planner_runtime_exploration.rviz" />
   <arg name="state2state_rviz_config" default="$(find general_planner_release)/config/planner_runtime_state2state.rviz" />
@@ -158,7 +154,7 @@
               file="$(arg exploration_overlay_config)" command="load" />
     <rosparam if="$(eval arg('indoor_frontier_config') != '')"
               file="$(arg indoor_frontier_config)" command="load" />
-    <rosparam file="$(arg global_topology_config)" command="load" />
+    <rosparam file="$(arg map_config)" command="load" />
     <rosparam file="$(arg gate_config)" command="load" />
     <rosparam if="$(eval arg('gate_overlay_config') != '')" file="$(arg gate_overlay_config)" command="load" />
 
@@ -177,8 +173,7 @@
     <param name="exploration_enabled" value="$(arg enable_exploration)" type="bool" />
     <param name="serial_handover" value="false" type="bool" />
     <param name="gate_status_topic" value="$(arg gate_status_topic)" type="string" />
-    <param name="global_map_config" value="$(arg rog_map_config)" type="string" />
-    <param name="tracking_map_config" value="$(arg tracking_rog_map_config)" type="string" />
+    <param name="map_config" value="$(arg map_config)" type="string" />
     <param name="tracking_target_odom_topic" value="$(arg tracking_target_odom_topic)" />
     <param name="tracking_target_prediction_topic" value="$(arg tracking_target_prediction_topic)" />
     <param name="navigation_config" value="$(arg navigation_config)" type="string" />
@@ -186,7 +181,7 @@
     <param name="odometry_topic" value="$(arg odom_topic)" type="string" />
     <param name="cloud_topic" value="$(eval arg('map_cloud_topic') if arg('filter_mapping_cloud') else arg('cloud_topic'))" type="string" />
     <param name="RogMapEnable" value="$(arg rog_map_enable)" type="bool" />
-    <param name="RogMapConfigPath" value="$(arg rog_map_config)" type="string" />
+    <param name="RogMapConfigPath" value="$(arg map_config)" type="string" />
     <param name="navigation_cmd_topic" value="/planning/navigation/pos_cmd" type="string" />
     <param name="exploration_cmd_topic" value="/planning/exploration/pos_cmd" type="string" />
     <param name="output_cmd_topic" value="/planning/pos_cmd" type="string" />

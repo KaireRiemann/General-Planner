@@ -98,7 +98,7 @@ namespace fsm {
         rog_map::ROGMapROS::Ptr map_ptr_;
         // Tracking-dedicated occupancy map (Elastic-aligned thin inflation).
         // Falls back to map_ptr_ when the runtime provides no separate map.
-        rog_map::ROGMapROS::Ptr tracking_map_ptr_;
+        general_planner::MapManager::Ptr tracking_map_query_;
         general_planner::TopologyGraphROS1::Ptr topology_graph_ros1_;
         quadrotor_msgs::PositionCommand latest_cmd;
         nav_msgs::Path path;
@@ -682,7 +682,7 @@ namespace fsm {
             topology_graph_ros1_.reset();
             planner_ptr_.reset();
             map_ptr_.reset();
-            tracking_map_ptr_.reset();
+            tracking_map_query_.reset();
         };
 
         typedef std::shared_ptr<FsmRos1> Ptr;
@@ -991,16 +991,14 @@ namespace fsm {
                 general_planner::trackingOccupancyExclusion().contains(query)) {
                 return true;
             }
-            // Elastic predicts against its own local occupancy grid; GP uses
-            // the tracking-dedicated map so prediction clearance matches the
-            // corridor/safety queries exactly.
-            if (tracking_map_ptr_ == nullptr) {
+            // Prediction, corridors and safety must select the same inflation view.
+            if (tracking_map_query_ == nullptr) {
                 return true;
             }
-            if (!tracking_map_ptr_->insideLocalMap(query)) {
+            if (!tracking_map_query_->insideLocalMap(query)) {
                 return true;
             }
-            const auto inf_grid_type = tracking_map_ptr_->getInfGridType(query);
+            const auto inf_grid_type = tracking_map_query_->getInfGridType(query);
             return inf_grid_type != general_utils::GridType::OCCUPIED &&
                    inf_grid_type != general_utils::GridType::OUT_OF_MAP;
         }
@@ -1415,7 +1413,8 @@ namespace fsm {
             replan_nh_ = replan_nh;
             std::string tracking_config;
             nh_.param<std::string>("tracking_config", tracking_config, "");
-            cfg_ = Config(cfg_path, tracking_config);
+            cfg_ = Config(cfg_path, tracking_config,
+                          shared_map_manager ? shared_map_manager->getResolution() : 0.0);
             applyLaunchOverrides();
             if (!cfg_.tracking_config_path.empty()) {
                 nh_.setParam("tracking_config_resolved", cfg_.tracking_config_path);
@@ -1440,15 +1439,6 @@ namespace fsm {
             } else {
                 map_ptr_ = std::make_shared<rog_map::ROGMapROS>(nh, cfg_path);
             }
-            tracking_map_ptr_ = map_ptr_;
-            if (tracking_map_manager) {
-                tracking_map_ptr_ = tracking_map_manager->rawRosMap();
-                if (!tracking_map_ptr_) {
-                    throw std::invalid_argument(
-                        "FsmRos1 received a tracking MapManager without ROGMapROS");
-                }
-                ROS_INFO_STREAM("[Fsm] tracking prediction queries use the dedicated tracking occupancy map");
-            }
             // 初始化Planner
             auto ros1_ptr = std::make_shared<ros_interface::Ros1Interface>(nh_);
             ros_ptr_ = ros1_ptr;
@@ -1457,6 +1447,7 @@ namespace fsm {
                                                     shared_map_manager, cfg_.tracking_config_path,
                                                     tracking_map_manager)
                 : std::make_shared<GeneralPlanner>(cfg_path, ros_ptr_, map_ptr_, cfg_.tracking_config_path);
+            tracking_map_query_ = planner_ptr_->getTrackingMapManager();
             planner_ptr_->setSwarmDroneId(cfg_.swarm_drone_id);
             if (!shared_map_manager) {
                 topology_graph_ros1_ =

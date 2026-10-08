@@ -26,8 +26,7 @@ GlobalMapRuntime::~GlobalMapRuntime() {
 
 void GlobalMapRuntime::init(ros::NodeHandle nh,
                             const std::string &map_config_path,
-                            ros::NodeHandle odometry_nh,
-                            const std::string &tracking_map_config_path) {
+                            ros::NodeHandle odometry_nh) {
   if (initialized_) {
     throw std::logic_error("GlobalMapRuntime::init called twice");
   }
@@ -43,9 +42,7 @@ void GlobalMapRuntime::init(ros::NodeHandle nh,
   nh_.param("global_map/max_odom_age", max_odom_age_, 0.20);
   nh_.param("global_map/max_cloud_age", max_cloud_age_, 0.50);
   nh_.param("global_map/pointcloud_main_period", pointcloud_main_period_, 0.5);
-  nh_.param("global_map/pointcloud_tracking_period", pointcloud_tracking_period_, 1.0);
   pointcloud_main_period_=std::clamp(pointcloud_main_period_,0.0,1.0);
-  pointcloud_tracking_period_=std::clamp(pointcloud_tracking_period_,0.0,2.0);
   max_odom_age_ = std::clamp(max_odom_age_, 0.05, 5.0);
   max_cloud_age_ = std::max(0.0, max_cloud_age_);
 
@@ -61,26 +58,11 @@ void GlobalMapRuntime::init(ros::NodeHandle nh,
   context_->map_manager->setWorldEpoch(
       context_->world_epoch.load(std::memory_order_acquire));
 
-  if (!tracking_map_config_path.empty()) {
-    context_->tracking_rog_map =
-        std::make_shared<rog_map::ROGMapROS>(nh_, tracking_map_config_path);
-    if (context_->tracking_rog_map->getMapConfig().ros_callback_en) {
-      throw std::invalid_argument(
-          "GlobalMapRuntime tracking map requires rog_map/ros_callback/enable=false; "
-          "otherwise it would fuse cloud frames a second time");
-    }
-    context_->tracking_map_manager =
-        std::make_shared<MapManager>(context_->tracking_rog_map);
-    context_->tracking_map_manager->enableIndependentOdometry();
-    context_->tracking_map_manager->setWorldEpoch(
-        context_->world_epoch.load(std::memory_order_acquire));
-    const auto tracking_cfg = context_->tracking_rog_map->getMapConfig();
-    ROS_INFO_STREAM(
-        "[global_map_runtime] tracking-dedicated ROG ready: resolution="
-        << tracking_cfg.resolution << " inflation_step=" << tracking_cfg.inflation_step
-        << " inflation_resolution=" << tracking_cfg.inflation_resolution
-        << " map_config=" << tracking_map_config_path);
-  }
+  context_->tracking_map_manager = MapManager::trackingView(context_->map_manager);
+  ROS_INFO_STREAM("[global_map_runtime] one occupancy map, shared history; navigation inflation="
+                  << context_->map_manager->getMapConfig().inflation_step
+                  << ", tracking inflation="
+                  << context_->tracking_map_manager->getMapConfig().inflation_step);
 
   // No task-mode callback: topology remains active in exploration, navigation,
   // WAIT and stable hold for the complete world lifetime.
@@ -211,9 +193,6 @@ void GlobalMapRuntime::odomCallback(const nav_msgs::OdometryConstPtr &msg) {
     return;
   }
   context_->rog_map->ingestOdometry(msg);
-  if (context_->tracking_rog_map) {
-    context_->tracking_rog_map->ingestOdometry(msg);
-  }
   // Topology is a world-lifetime resource, but its maintenance budget is
   // local to the vehicle.  Refreshing this inexpensive focus on every odom
   // makes a stale planner query unable to pull the worker into remote dirty
@@ -294,14 +273,7 @@ void GlobalMapRuntime::cloudOdomCallback(
     update=context_->map_manager->updateMap(rog_cloud,pose);
     last_main_fusion_=ros::WallTime::now();
   }
-  // The tracking map fuses the same accepted pair exactly once. It is a
-  // separate occupancy world: query-time target exclusion and thin inflation
-  // never leak into exploration/state2state queries.
-  if (context_->tracking_map_manager && (!native_coverage || last_tracking_fusion_.isZero() ||
-      (wall_now-last_tracking_fusion_).toSec()>=pointcloud_tracking_period_)) {
-    context_->tracking_map_manager->updateMap(rog_cloud, pose);
-    last_tracking_fusion_=ros::WallTime::now();
-  }
+  // Tracking inflation is updated by the same occupancy transitions above.
   // World topology is maintained through task transitions as well. Its
   // worker consumes only the odometry-local dirty-region window, while map
   // fusion continues to record remote evidence for a future visit.

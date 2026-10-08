@@ -35,6 +35,15 @@ void ProbMap::initProbMap() {
                    cfg_.fix_map_origin);
     time_consuming_.resize(7);
     inf_map_ = std::make_shared<InfMap>(cfg_);
+    if (cfg_.tracking_inflation_step >= 0) {
+        auto tracking_cfg = cfg_.withInflationStep(cfg_.tracking_inflation_step);
+        tracking_inf_map_ = cfg_.tracking_inflation_step == cfg_.inflation_step
+            ? inf_map_ : std::make_shared<InfMap>(tracking_cfg);
+        // Sensor evidence is bounded by the physical world, not one task's clearance.
+        // Each InfMap retains its own configuration-space floor and ceiling.
+        cfg_.virtual_ground_height = cfg_.physical_ground_height;
+        cfg_.virtual_ceil_height = cfg_.physical_ceil_height;
+    }
 
 
     if (cfg_.frontier_extraction_en) {
@@ -297,6 +306,8 @@ void ProbMap::updateOccPointCloud(const PointCloud& input_cloud) {
 void ProbMap::slideAllMap(const rog_map::Vec3f& pos) {
     mapSliding(pos);
     inf_map_->mapSliding(pos);
+    if (tracking_inf_map_ && tracking_inf_map_ != inf_map_)
+        tracking_inf_map_->mapSliding(pos);
     if (cfg_.frontier_extraction_en) {
         fcnt_map_->mapSliding(pos);
     }
@@ -391,6 +402,12 @@ void ProbMap::updateProbMap(const PointCloud& cloud, const Pose& pose) {
         map_empty_ = false;
     }
     inf_map_->getInflationNumAndTime(time_consuming_[6], time_consuming_[3]);
+    if (tracking_inf_map_ && tracking_inf_map_ != inf_map_) {
+        double count = 0.0, elapsed = 0.0;
+        tracking_inf_map_->getInflationNumAndTime(count, elapsed);
+        time_consuming_[6] += count;
+        time_consuming_[3] += elapsed;
+    }
     time_consuming_[0] = tc.stop();
 
     /* Update ESDF map */
@@ -565,7 +582,7 @@ void ProbMap::resetCell(const int& hash_id) {
         /// if current state is occupied
         Vec3f pos;
         hashIdToPos(hash_id, pos);
-        inf_map_->updateGridCounter(pos, OCCUPIED, UNKNOWN);
+        updateInflationCounters(pos, OCCUPIED, UNKNOWN);
         if (cfg_.esdf_en) {
             esdf_map_->updateGridCounter(pos, OCCUPIED, UNKNOWN);
         }
@@ -574,7 +591,7 @@ void ProbMap::resetCell(const int& hash_id) {
         /// if current state is free
         Vec3f pos;
         hashIdToPos(hash_id, pos);
-        inf_map_->updateGridCounter(pos, KNOWN_FREE, UNKNOWN);
+        updateInflationCounters(pos, KNOWN_FREE, UNKNOWN);
         if (cfg_.esdf_en) {
             esdf_map_->updateGridCounter(pos, KNOWN_FREE, UNKNOWN);
         }
@@ -655,7 +672,7 @@ void ProbMap::hitPointUpdate(const Vec3f& pos, const int& hash_id, const int& hi
         posToGlobalIndex(pos, id_g);
         globalIndexToPos(id_g, center_pos);
         recordStateChange(id_g, from_type, to_type);
-        inf_map_->updateGridCounter(center_pos, from_type, to_type);
+        updateInflationCounters(center_pos, from_type, to_type);
         if (cfg_.esdf_en) {
             esdf_map_->updateGridCounter(center_pos, from_type, to_type);
         }
@@ -702,7 +719,7 @@ void ProbMap::missPointUpdate(const Vec3f& pos, const int& hash_id, const int& h
         globalIndexToPos(id_g, center_pos);
         recordStateChange(id_g, from_type, to_type);
         // Update inf map
-        inf_map_->updateGridCounter(center_pos, from_type, to_type);
+        updateInflationCounters(center_pos, from_type, to_type);
         if (cfg_.esdf_en) {
             esdf_map_->updateGridCounter(center_pos, from_type, to_type);
         }

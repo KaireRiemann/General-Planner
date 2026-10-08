@@ -1,5 +1,10 @@
 # 探索链路审计：以 FALCON 覆盖引导结合 EPIC 轻量前端
 
+> 历史审计说明（2026-10-08）：本文的“当前”指下述 2026-08-05 审计版本。
+> 现有组合运行时的覆盖主链已改为原生 EPICON，目标探索另有共享拓扑路线复用；
+> `CoverageGuidanceManager` 不再是该入口的覆盖主链。实际架构见
+> [当前探索框架与 MapManager 协作](exploration_map_manager_current.md)。
+
 > 审计对象：`General-Planner` commit `2ebcf08`（2026-08-05）。本文描述的是当前实际调用链，而不是配置注释所表达的设计意图。结论是：**全局覆盖层应保留，但只提供离散的候选集合/次序；局部执行层应回归 EPIC 式的“点云—拓扑—少量视点—快速可行边”闭环。不要再把所有偏好叠加到一个大标量 cost 中。**
 
 ## 结论摘要
@@ -237,4 +242,3 @@ choose  = min_lexicographic(pool,
 - 边运动学/安全代价：[general_planner_adapter.cpp](../src/Planner/general_planner/src/general_core/exploration/highspeed/general_planner_adapter.cpp)
 - FSM、恢复和 FINISH：[fast_exploration_fsm.cpp](../src/Planner/general_planner/src/general_core/exploration/highspeed/fast_exploration_fsm.cpp)
 - 当前调参入口：[exploration_house.yaml](../src/Planner/general_planner/config/exploration_house.yaml)、[exploration.yaml](../src/Planner/general_planner/config/exploration.yaml)
-

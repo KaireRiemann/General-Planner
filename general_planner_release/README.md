@@ -16,7 +16,8 @@ state2state and HighSpeedExp-based exploration.
 - `src/general_planner_release/config/interface_state2state_*.yaml`: full state2state runtime configs.
 - `src/general_planner_release/config/exploration.yaml`: delivered garage exploration profile.
 - `src/general_planner_release/config/exploration_sim.yaml`: garage simulator and LiDAR profile.
-- `src/general_planner_release/config/exploration_rog_map.yaml`: exploration map-backend profile.
+- `src/general_planner_release/config/map.yaml`: shared runtime mapping, inflation and topology.
+- `src/general_planner_release/config/exploration_rog_map.yaml`: standalone exploration map profile.
 - `src/general_planner_release/config/exploration.rviz`: exploration visualization profile.
 - `src/general_planner_release/launch/tracking.launch`: tracking launch entry.
 - `src/general_planner_release/launch/state2state.launch`: state2state launch entry.
@@ -223,7 +224,23 @@ this binary-only planner archive.
 
 ## Runtime Config
 
-The launch files pass a complete runtime YAML into `general_planner_runtime_node`. Edit these files directly to tune planner behavior, map behavior, FSM behavior, trajectory optimization, and topics:
+For `planner_runtime.launch` and `unity_planner_release.launch`, tune the files below under `src/general_planner_release/config/`. The source equivalents live under `src/Planner/general_planner/config/` and are copied by the release packaging script.
+
+| File | Responsibility |
+| --- | --- |
+| `map.yaml` | One occupancy map, navigation/tracking inflation margins, physical height bounds, topology and input freshness. |
+| `task_planner_runtime_state2state.yaml` | Navigation FSM, route-query policy and trajectory optimization. |
+| `task_planner_runtime_tracking.yaml` | Tracking prediction and trajectory optimization. |
+
+Every composed runtime entry point, including the simulator wrappers, selects `map.yaml` through `map_config`. Scene bounds are edited in that file. There is no separate tracking map file or scene-named map profile. The source and release copies have identical contents; packaging copies the source configuration into the release.
+
+`rog_map/inflation_step: 3` and `rog_map/tracking_inflation_step: 1` retain 0.45 m navigation and 0.15 m tracking inflation at 0.15 m resolution. The runtime raycasts once, updates both inflation counters from the same occupancy transitions, and maintains one BoundaryMap/topology. Tracking prediction, corridors and safety all select the thin view, including its floor/ceiling bounds. Its target-exclusion and unknown-space policies remain in the tracking planner; a second inflation layer does not detect or predict moving obstacles.
+
+`map_size` is rolling storage (72 x 72 x 8 m); `raycasting/local_update_box` is the full per-frame update extent (40 x 40 x 6 m, centred on odometry). `raycasting/ray_range` clips rays to 0.5–30 m. New distant obstacles enter occupancy when they enter the update box; observed cells outside it remain until updated or evicted. Physical floor/ceiling limits bound sensor fusion, while each inflation view applies its own clearance. The default physical limits are -0.1 m and 8.6 m; set them for the operating environment.
+
+Task YAMLs contain no `rog_map` block. The planner and FSM obtain resolution from the actual injected map, including derived sampling intervals. Configuration-only tools resolve the adjacent `map.yaml`; standalone legacy profiles with embedded map parameters remain supported. This change requires rebuilding the runtime binaries together with `map_manager`; restart the runtime after deploying the matching binaries and configuration. Old `tracking_rog_map_config` / `global_topology_config` launch overrides should be migrated into `map_config:=/path/to/map.yaml`.
+
+The separate `tracking.launch` and `state2state.launch` entries use `general_planner_runtime_node` and complete standalone profiles:
 
 - `config/interface.yaml`: tracking.
 - `config/interface_state2state_corridor.yaml`: state2state corridor/backup optimizer.

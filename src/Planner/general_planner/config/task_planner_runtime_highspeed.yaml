@@ -1,7 +1,5 @@
-# Isolated state2state baseline for comparing PlannerRuntime with click_demo.
-# General planner, trajectory optimizer and ROG values below are copied from
-# click_real_highspeed.yaml.  Only the task-runtime ownership topics remain
-# different so every command still goes through PlannerSupervisor.
+# Optional high-speed runtime planning baseline derived from click_real_highspeed.yaml.
+# Map fusion and topology construction are owned by GlobalMapRuntime (map.yaml).
 fsm:
   task_mode: "state2state"
   task_planner_en: true
@@ -87,33 +85,8 @@ general_planner:
       # Global bubble A* supplies a route; the local planner executes only the
       # collision-checked prefix inside the rolling ROG window.
       query_enable: false
-      # Sparse persistent 3D skeleton over sensor-observed global free space.
-      construction_mode: persistent_bubble_skeleton
-      planar_mode: false
       navigation_altitude: 1.5
-      unknown_as_free: false
       min_query_distance: 3.0
-      # Dirty regions nearest to current odom are consumed asynchronously.
-      update_budget: 8
-      update_period: 0.05
-      publish_period: 0.20
-      region_size: 4.0
-      sample_spacing: 0.8
-      # Nodes still require KNOWN_FREE and inflated-safe edges; 0.20 m lets
-      # first-pass LiDAR ray evidence seed the graph at robot-radius clearance.
-      min_clearance: 0.20
-      max_clearance: 2.5
-      # Committed nodes never move; global spacing prevents clusters at dirty
-      # region boundaries while later observations fill uncovered gaps.
-      candidate_separation: 1.5
-      stable_match_distance: 1.0
-      connection_radius: 6.0
-      edge_sample_spacing: 0.20
-      dirty_padding: 2.5
-      bubble_overlap_margin: 0.10
-      max_nodes_per_region: 12
-      max_bubbles_per_region: 192
-      max_neighbors: 8
     altitude_guard_enable: true
     altitude_band: 0.25
     altitude_escape_enable: true
@@ -267,89 +240,3 @@ astar:
   # 0 DIAG; 1 MANHATTAN; 2 EUCLIDEAN
   heu_type: 2
   debug_visualization_en: false
-
-
-rog_map:
-  resolution: 0.15
-  inflation_resolution: 0.15
-  inflation_step: 3
-  unk_inflation_en: false
-  unk_inflation_step: 1
-  map_size: [ 50,50,6 ]
-  # If the map rolling is disable, the map origin [m] should be set.
-  fix_map_origin: [ 0,0,1.5 ]
-  frontier_extraction_en: false
-
-  # Virtual ceil and ground
-  virtual_ceil_height: 2.5
-  virtual_ground_height: -0.1
-
-  load_pcd_en: false
-
-  map_sliding:
-    enable: true
-    # The minimum distance [m] to slide the map.
-    threshold: 0.3
-
-  esdf:
-    enable: false
-    resolution: 0.1
-    # The range of esdf around the odom [m].
-    local_update_box: [ 5,5,3 ]
-
-  # If [enable = true], the ROG-Map will actively take ros topic as input.
-  #  else user should call function [updateMap] to update the map.
-  ros_callback:
-    enable: true
-    cloud_topic: "/cloud_registered"
-    odom_topic: "/lidar_slam/odom"
-    odom_timeout: 2.0
-
-
-  visualization:
-    enable: true
-    # when enabled, use rqt_reconfigure to change the visualization parameters.
-    use_dynamic_reconfigure: false
-    # The rate of visualization [Hz], if set to 0, the visualization will not be triggered by frame.
-    time_rate: 2
-    # The frame rate of visualization [Hz], if set to 0, the visualization will not be triggered by frame.
-    frame_rate: 0
-    # visualization range along the odom [m].
-    range: [ 20, 20,4 ]
-    frame_id: "world"
-    pub_unknown_map_en: false
-
-  # Intensity filter for input point cloud. If the point intensity is less than this value,
-  # it will be ignored (to avoid noise like dusk).
-  intensity_thresh: -10
-  # The temporal downsample rate for input point cloud.
-  #  e.g. if set to k, the point cloud will be downsampled to 1/k.
-  point_filt_num: 1
-
-  # Probabilistc update
-  raycasting:
-    # if disable, the map will only maintain occupied information, and all other grid
-    # will be considered as unknown.
-    # Persistent topology requires miss-ray integration; otherwise ROG contains
-    # OCCUPIED and UNKNOWN only and cannot supply observed KNOWN_FREE evidence.
-    enable: true
-    batch_update_size: 1
-    local_update_box: [ 100,100,5 ]
-    # The range of raycasting [m].
-    ray_range: [0.5, 100 ]
-
-    p_min: 0.12
-    p_miss: 0.49
-    p_free: 0.499
-    p_occ: 0.85
-    p_hit: 0.9
-    p_max: 0.98
-    # The threshold of a non-occupied inf map grid to be considered as free. [0.0-1.0]
-    # for counter map, if each cell contains N cells in prob map, then only when
-    # N_unk > N * unk_thresh cells are unknown, the cell will be considered as unknown.
-    # example: 1) if unk_thresh is set 0.0, then once at least one cell in prob map is unknown,
-    #             the cell will be considered as unknown.
-    #         2) if unk_thresh is set to 1.0, then only all cells in prob map are unknown,
-    #             the cell will be considered as unknown.
-    # in all, 1.0 is more aggressive while 0.0 is more conservative.
-    unk_thresh: 1.0

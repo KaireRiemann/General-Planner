@@ -91,8 +91,7 @@ def main():
                          "cloud_odom_mode:=latest_odom", "source_startup_grace_duration:=2.0",
                          "exploration_config:=" + str(config / "exploration_house.yaml"),
                          "exploration_overlay_config:=" + str(config / "exploration_unity_overlay.yaml"),
-                         "tracking_rog_map_config:=" + str(config / "tracking_unity_rog_map.yaml"),
-                         "rog_map_config:=" + str(config / "exploration_unity_neighborhood_rog_map.yaml")])
+                         "map_config:=" + str(config / "map.yaml")])
         for _ in range(400):
             if all(publishers[t].get_num_connections() for t in publishers):
                 break
