@@ -35,6 +35,9 @@ int main(int argc,char **argv) {
       const Eigen::Vector3d start(start_x,0,1.5);
       frontend->setOdometry(start.cast<float>(),Eigen::Vector3f::Zero(),0);
       frontend->ingestCloud(cloud,odom);
+      Eigen::Vector3d disconnected_goal;
+      if (frontend->ready() || !frontend->recoveryPoint(start,disconnected_goal))
+        throw std::runtime_error("local recovery was blocked by the missing graph");
       planner.local_data_.curr_pos_=start; planner.local_data_.curr_vel_.setZero();
       planner.local_data_.curr_yaw_=0; planner.local_data_.end_yaw_=0;
       Eigen::Vector3d recovery_goal;
@@ -48,11 +51,26 @@ int main(int argc,char **argv) {
       double collision_time=0;
       if (!planner.checkTrajCollision(collision_time)) throw std::runtime_error("live checker immediately rejected certified recovery");
       const auto goal=planner.local_data_.minco_traj_.getPos(planner.local_data_.duration_);
-      if (frontend->clearance(goal)<.6 || std::abs(goal.z()-start.z())>.05)
-        throw std::runtime_error("recovery did not restore clearance at the same height");
+      if (frontend->clearance(goal)<frontend->recoveryClearance() ||
+          std::abs(goal.z()-start.z())>.05)
+        throw std::runtime_error("local recovery did not restore level clearance");
+      for(double t=0;t<=planner.local_data_.duration_;t+=.01)
+        if(frontend->clearance(planner.local_data_.minco_traj_.getPos(t))<.48)
+          throw std::runtime_error("local recovery crossed the physical clearance floor");
+      // Reproduce the recorded 0.57352 m soft-buffer stop without a graph.
+      planner.clearReleasedTrajectory();
+      planner.local_data_.curr_pos_=Eigen::Vector3d(.57352,0,1.5);
+      frontend->setOdometry(planner.local_data_.curr_pos_.cast<float>(),Eigen::Vector3f::Zero(),0);
+      if(!planner.planControlledStopTrajectory(true) || !planner.checkTrajCollision(collision_time))
+        throw std::runtime_error("hard-safe hold was rejected by the soft corridor clearance");
+      wall.emplace_back(.57352,0,1.5);
+      pcl::toROSMsg(wall,*cloud); cloud->header.stamp=ros::Time::now();
+      frontend->ingestCloud(cloud,odom);
+      if(planner.checkTrajCollision(collision_time))
+        throw std::runtime_error("live checker ignored a new obstacle on the committed hold");
       planner.clearReleasedTrajectory(); planner.local_data_.curr_pos_=Eigen::Vector3d(.1,0,1.5);
       if (planner.flyToSafeRegion(true,false)) throw std::runtime_error("recovery bypassed physical body clearance");
-      std::cout<<"EPICON_RECOVERY PASS: thin buffer escape, live certification, level goal, physical floor\n";
+      std::cout<<"EPICON_RECOVERY PASS: graph-independent local escape, live certification, level goal, hard-safe hold, new obstacle rejection, physical floor\n";
       return 0;
     }
     std::ifstream input(argv[1]);

@@ -18,8 +18,11 @@ bool buildEpiconCorridor(const std::vector<Eigen::Vector3d> &path,
                         const Eigen::Vector3d &lower,
                         const Eigen::Vector3d &upper,
                         double range, double clearance,
-                        EpiconCorridor &result);
+                        EpiconCorridor &result, bool simplify=true);
 bool epiconRecoveryPoint(const Eigen::Vector3d &start,
                          const std::vector<Eigen::Vector3d> &points,
                          Eigen::Vector3d &goal);
+bool clipEpiconCorridorToBoxes(const Eigen::Vector3d &head, const Eigen::Vector3d &tail,
+    const std::vector<Eigen::Vector3d> &lower, const std::vector<Eigen::Vector3d> &upper,
+    std::vector<Eigen::MatrixX4d> &polys, double min_overlap=1e-2);
 }

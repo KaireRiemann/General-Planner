@@ -4,6 +4,8 @@
 #include <std_msgs/String.h>
 #include <sstream>
 #include <stdexcept>
+#include <algorithm>
+#include <cmath>
 #include <pcl/filters/voxel_grid.h>
 
 namespace fast_planner {
@@ -57,6 +59,7 @@ void configureNativeParameters(ros::NodeHandle &parent, ros::NodeHandle &nh) {
   defaultParam(nh, "ViewpointManager/sample_pillar_max_radius", 3.2);
   defaultParam(nh, "ViewpointManager/sample_pillar_radius_layer_num", 6);
   defaultParam(nh, "ViewpointManager/sample_pillar_circle_sample_num", 16);
+  defaultParam(nh, "ViewpointManager/min_clearance", 0.9);
   defaultParam(nh, "ViewpointManager/local_tsp_size", 20);
   defaultParam(nh, "bubble_astar/allocate_num", 1000000);
   defaultParam(nh, "bubble_astar/lambda_heu", 100.0);
@@ -108,6 +111,8 @@ struct EpiconFrontend::Impl {
   Eigen::Vector3f last_path_sample{Eigen::Vector3f::Zero()};
   using Points=std::vector<Eigen::Vector3f,Eigen::aligned_allocator<Eigen::Vector3f>>;
   Points unknown, active;
+  Points safe_history;
+  std::vector<std::pair<Eigen::Vector3d,ros::WallTime>> recovery_history;
   struct DeferredGoal { Eigen::Vector3f position; ros::WallTime until; double radius; };
   std::vector<DeferredGoal> deferred;
   void clearGoal() {
@@ -118,6 +123,8 @@ struct EpiconFrontend::Impl {
   }
   int valid_cubes{10};
   double sample_path{0.1}, hybrid_radius{15.0}, unknown_penalty{1.5};
+  double planning_clearance{0.6}, physical_floor{0.48}, execution_clearance{0.48};
+  double connection_timeout{.002};
   ros::Publisher status;
   void publish(const char *result, size_t unknown, size_t active) {
     std_msgs::String msg;
@@ -134,7 +141,19 @@ struct EpiconFrontend::Impl {
         << ",\"deferred_goals\":" << deferred.size()
         << ",\"geometry_rejected\":" << frontier->geometry_rejected_
         << ",\"connectivity_rejected\":" << frontier->connectivity_rejected_
-        << ",\"unobservable_clusters\":" << frontier->unobservable_clusters_ << "}";
+        << ",\"unobservable_clusters\":" << frontier->unobservable_clusters_
+        << ",\"odom_clearance\":" << planner->lidar_map_interface_->getDisToOcc(pos)
+        << ",\"planning_clearance\":" << planning_clearance
+        << ",\"execution_clearance\":" << execution_clearance
+        << ",\"connect_reused\":" << planner->topo_graph_->odom_reused_connections_
+        << ",\"connect_retry\":" << planner->topo_graph_->odom_retry_count_
+        << ",\"connect_ms\":" << planner->topo_graph_->odom_connection_ms_
+        << ",\"odom_neighbors\":" << planner->topo_graph_->odom_node_->neighbors_.size()
+        << ",\"connect_reached\":" << planner->topo_graph_->odom_connection_results_[1]
+        << ",\"connect_no_path\":" << planner->topo_graph_->odom_connection_results_[2]
+        << ",\"connect_start_fail\":" << planner->topo_graph_->odom_connection_results_[3]
+        << ",\"connect_end_fail\":" << planner->topo_graph_->odom_connection_results_[4]
+        << ",\"connect_timeout\":" << planner->topo_graph_->odom_connection_results_[5] << "}";
     msg.data=out.str(); status.publish(msg);
   }
 };
@@ -150,6 +169,29 @@ void EpiconFrontend::init(ros::NodeHandle &runtime_nh) {
   p.lidar_map_interface_->init(nh);
   p.parallel_path_finder_=std::make_shared<epicon_native::ParallelBubbleAstar>();
   p.parallel_path_finder_->init(nh,p.lidar_map_interface_);
+  double hard=.5, soft=.6, commit=.5, tolerance=.02;
+  runtime_nh.param("DilateRadiusHard",hard,hard);
+  runtime_nh.param("DilateRadiusSoft",soft,soft);
+  runtime_nh.param("CommitKnownFreeSafeDistance",commit,commit);
+  runtime_nh.param("SafetyClearanceTolerance",tolerance,tolerance);
+  tolerance=std::clamp(tolerance,0.0,.05);
+  i.physical_floor=std::max(.05,hard-tolerance);
+  // Hard/commit clearance governs execution. Soft clearance shapes new
+  // corridors; search endpoint slack must not silently raise the hard stop.
+  i.execution_clearance=std::max(.05,std::max(hard,commit)-tolerance);
+  i.planning_clearance=std::max({hard,soft,commit});
+  // The direct connector needs >1 cm of free sphere beyond its search radius.
+  double bubble_radius=.61;
+  nh.param("bubble_topo/bubble_min_radius",bubble_radius,bubble_radius);
+  const double endpoint_clearance=std::max(i.planning_clearance,
+      p.parallel_path_finder_->safe_distance_+.02);
+  nh.setParam("bubble_topo/bubble_min_radius",std::max(bubble_radius,endpoint_clearance));
+  double viewpoint_clearance=.9;
+  nh.getParam("ViewpointManager/min_clearance",viewpoint_clearance);
+  // A viewpoint must also be a valid graph endpoint when an indoor profile
+  // lowers the sampling clearance below the native 0.9 m default.
+  nh.setParam("ViewpointManager/min_clearance",
+      std::max({viewpoint_clearance,bubble_radius,endpoint_clearance}));
   p.topo_graph_=std::make_shared<epicon_native::TopoGraph>();
   p.topo_graph_->init(nh,p.lidar_map_interface_,p.parallel_path_finder_);
   p.bubble_path_finder_=std::make_shared<epicon_native::fast_planner::BubbleAstar>();
@@ -165,6 +207,16 @@ void EpiconFrontend::init(ros::NodeHandle &runtime_nh) {
   i.frontier=std::make_shared<epicon_native::FrontierManager>();
   i.frontier->init(nh,p.lidar_map_interface_,p.topo_graph_);
   i.frontier->viewpoint_allowed_=[&i](const Eigen::Vector3f &point) {
+    // Keep viewpoints away from task boundaries, so the backend has room to
+    // build a bounded corridor through overlapping floor volumes.
+    bool fits=false;
+    const auto &bounds=*i.planner->lidar_map_interface_->lp_;
+    for (size_t box=0;box<bounds.global_box_min_boundary_vec_.size();++box) {
+      const auto lo=bounds.global_box_min_boundary_vec_[box].array()+i.planning_clearance;
+      const auto hi=bounds.global_box_max_boundary_vec_[box].array()-i.planning_clearance;
+      if ((point.array()>=lo).all() && (point.array()<=hi).all()) { fits=true; break; }
+    }
+    if (!fits) return false;
     for (const auto &goal:i.deferred)
       if ((point-goal.position).norm()<goal.radius) return false;
     return true;
@@ -175,6 +227,7 @@ void EpiconFrontend::init(ros::NodeHandle &runtime_nh) {
   nh.getParam("fsm/sample_traj_point",i.sample_path);
   nh.getParam("fsm/hybrid_search_radius",i.hybrid_radius);
   nh.getParam("fsm/unknown_penalty_factor",i.unknown_penalty);
+  nh.getParam("parallel_astar/update_connection_timeout",i.connection_timeout);
   i.status=runtime_nh.advertise<std_msgs::String>("/planning/exploration/epicon_status",1,true);
   runtime_nh.setParam("exploration/frontend",std::string("epicon_pointcloud"));
   ROS_INFO("[exploration] native point-cloud frontier/topology/tour enabled; backend=ExplorationCostManager+ExplorationTrajOpt");
@@ -193,6 +246,10 @@ void EpiconFrontend::ingestCloud(const sensor_msgs::PointCloud2ConstPtr &cloud, 
   if (p.lidar_map_interface_->IsInBox(pose) &&
       (!i.path_sampled || (i.last_path_sample-pose).norm()>=i.sample_path)) {
     i.new_path.push_back(pose); i.last_path_sample=pose; i.path_sampled=true;
+    if(p.lidar_map_interface_->getDisToOcc(pose)>=recoveryClearance()) {
+      i.safe_history.push_back(pose);
+      if(i.safe_history.size()>200) i.safe_history.erase(i.safe_history.begin());
+    }
   }
   std::vector<epicon_native::ClusterInfo::Ptr> added; std::vector<int> removed;
   i.frontier->updateFrontierClusters(added,removed);
@@ -206,11 +263,13 @@ void EpiconFrontend::setOdometry(const Eigen::Vector3f &position,const Eigen::Ve
 }
 void EpiconFrontend::resetTask() {
   auto &i=*impl_;
-  i.clearGoal(); i.deferred.clear(); i.audited=false;
+  i.clearGoal(); i.deferred.clear(); i.recovery_history.clear(); i.audited=false;
 }
 void EpiconFrontend::deferCurrentGoal(double seconds, double radius) {
   auto &i=*impl_;
-  if (i.selected && tour().size()>=2) {
+  // DISCONNECTED clears selected before the FSM handles the failed route.
+  // The last tour still identifies the viewpoint that led into this pocket.
+  if (tour().size()>=2) {
     i.deferred.push_back({tour()[1],ros::WallTime::now()+ros::WallDuration(std::max(1.0,seconds)),
                           std::max(0.1,radius)});
     ROS_WARN_STREAM("[exploration] defer failed goal " << tour()[1].transpose()
@@ -315,29 +374,159 @@ bool EpiconFrontend::corridor(const std::vector<Eigen::Vector3d> &path,
   filter.setInputCloud(input); filter.setLeafSize(.2f,.2f,.2f); filter.filter(filtered);
   std::vector<Eigen::Vector3d> surface; surface.reserve(filtered.size());
   for (const auto &p:filtered) surface.emplace_back(p.x,p.y,p.z);
-  return buildEpiconCorridor(path,surface,lower,upper,range,clearance,result);
+  if(!buildEpiconCorridor(path,surface,lower,upper,range,clearance,result,false)) return false;
+  const auto &bounds=*impl_->planner->lidar_map_interface_->lp_;
+  std::vector<Eigen::Vector3d> box_lower,box_upper;
+  for(size_t n=0;n<bounds.global_box_min_boundary_vec_.size();++n) {
+    box_lower.push_back(bounds.global_box_min_boundary_vec_[n].cast<double>());
+    box_upper.push_back(bounds.global_box_max_boundary_vec_[n].cast<double>());
+  }
+  if(!clipEpiconCorridorToBoxes(result.path.front(),result.path.back(),box_lower,box_upper,result.planes)) {
+    // If only a prefix has positive corridor overlap, end at a certified
+    // guide point in that prefix and replan after moving. Never use the
+    // interior of an unbounded cell as an arbitrary upward relocation.
+    bool prefix=false;
+    for(size_t n=result.path.size()-1;n>0;--n) {
+      if((result.path[n]-result.path.front()).norm()<.3) continue;
+      if(clipEpiconCorridorToBoxes(result.path.front(),result.path[n],box_lower,box_upper,result.planes)) {
+        result.path.resize(n+1); result.truncated=true; prefix=true; break;
+      }
+    }
+    if(!prefix) { result.failure="corridor disconnected inside task-box union"; return false; }
+  }
+  return true;
 }
 double EpiconFrontend::clearance(const Eigen::Vector3d &position) const {
   if (!hasCloud() || !position.allFinite()) return -std::numeric_limits<double>::infinity();
   return impl_->planner->lidar_map_interface_->getDisToOcc(position);
 }
+double EpiconFrontend::planningClearance() const { return impl_->planning_clearance; }
+double EpiconFrontend::executionClearance() const { return impl_->execution_clearance; }
+double EpiconFrontend::recoveryClearance() const {
+  return std::max(planningClearance(),impl_->planner->parallel_path_finder_->safe_distance_+.02);
+}
+bool EpiconFrontend::connectedAt(const Eigen::Vector3d &position) const {
+  if (!hasCloud() || !contains(position)) return false;
+  const auto &i=*impl_; const auto &graph=*i.planner->topo_graph_;
+  std::vector<epicon_native::TopoNode::Ptr> nodes;
+  for (const auto &region:graph.reg_map_idx2ptr_) for (const auto &node:region.second->topo_nodes_) {
+    if (node==graph.odom_node_ || (node->center_.cast<double>()-position).norm()>4.0) continue;
+    // Match ready(): connect to a persistent skeleton node. Requiring that
+    // node to already have another edge prevents bootstrapping small rooms.
+    if (clearance(node->center_.cast<double>())>=planningClearance()) nodes.push_back(node);
+  }
+  std::sort(nodes.begin(),nodes.end(),[&](const epicon_native::TopoNode::Ptr &a,
+                                      const epicon_native::TopoNode::Ptr &b) {
+    return (a->center_.cast<double>()-position).squaredNorm()<
+           (b->center_.cast<double>()-position).squaredNorm();
+  });
+  const auto deadline=ros::WallTime::now()+ros::WallDuration(.01);
+  for (size_t n=0;n<std::min<size_t>(nodes.size(),12);++n) {
+    const double remaining=(deadline-ros::WallTime::now()).toSec();
+    if(remaining<=0) break;
+    std::vector<Eigen::Vector3f> path;
+    if (i.planner->parallel_path_finder_->search(position.cast<float>(),nodes[n]->center_,path,
+        std::min(i.connection_timeout,remaining),true)==epicon_native::ParallelBubbleAstar::REACH_END &&
+        i.planner->parallel_path_finder_->collisionCheck_shortenPath(path)) return true;
+  }
+  return false;
+}
 bool EpiconFrontend::contains(const Eigen::Vector3d &position) const {
   return position.allFinite() && impl_->planner->lidar_map_interface_->IsInBox(position.cast<float>().eval());
 }
 bool EpiconFrontend::recoveryPoint(const Eigen::Vector3d &start, Eigen::Vector3d &goal) const {
-  if (!hasCloud() || !contains(start)) return false;
+  if (!hasCloud() || !contains(start) || clearance(start)<impl_->physical_floor) return false;
   epicon_native::PointVector points;
   const Eigen::Vector3f extent(2,2,1);
   impl_->planner->lidar_map_interface_->boxSearch(start.cast<float>()-extent,start.cast<float>()+extent,points);
   std::vector<Eigen::Vector3d> surface; surface.reserve(points.size());
   for (const auto &p:points) surface.emplace_back(p.x,p.y,p.z);
-  if (!epiconRecoveryPoint(start,surface,goal)) return false;
-  // Prefer the same-height interior when it restores clearance. Vertical
-  // escape is reserved for geometry that actually requires it.
-  Eigen::Vector3d level=goal; level.z()=start.z();
-  const double required=std::max(.6,clearance(start)+.05);
-  if (contains(level) && clearance(level)>=required && (level-start).norm()>.1) goal=level;
-  return contains(goal) && clearance(goal)>=required;
+  std::vector<Eigen::Vector3d> candidates;
+  Eigen::Vector3d interior;
+  if (epiconRecoveryPoint(start,surface,interior)) {
+    candidates.push_back(interior);
+    interior.z()=start.z(); candidates.push_back(interior);
+  }
+  for (const auto &node:impl_->planner->topo_graph_->history_odom_nodes_)
+    if ((node->center_.cast<double>()-start).norm()<=2.5) candidates.push_back(node->center_.cast<double>());
+  for(auto pose=impl_->safe_history.rbegin();pose!=impl_->safe_history.rend();++pose) {
+    Eigen::Vector3d delta=pose->cast<double>()-start;
+    if(delta.norm()>.2 && delta.norm()<3.0)
+      candidates.push_back(start+delta*std::min(1.0,1.0/delta.norm()));
+  }
+  // Also handle a root that has clearance but is on the wrong side of a turn.
+  // Prefer level moves; a single convex interior can oscillate vertically.
+  for (double dz:{-.35,.35,-.7,.7,-1.05,1.05})
+    candidates.push_back(start+Eigen::Vector3d(0,0,dz));
+  for (double dz:{0.0,-.35,.35,-.7,.7}) for (double radius:{.4,.8,1.2,1.6})
+    for (int k=0;k<12;++k) {
+      const double angle=k*2.0*M_PI/12.0;
+      candidates.push_back(start+Eigen::Vector3d(radius*std::cos(angle),radius*std::sin(angle),dz));
+    }
+  struct Candidate { Eigen::Vector3d point; double score; };
+  std::vector<Candidate> safe_candidates;
+  std::vector<Eigen::Vector3d> centers;
+  for(const auto &region:impl_->planner->topo_graph_->reg_map_idx2ptr_)
+    for(const auto &node:region.second->topo_nodes_)
+      if(node!=impl_->planner->topo_graph_->odom_node_) centers.push_back(node->center_.cast<double>());
+  auto distance_to_graph=[&](const Eigen::Vector3d &p) {
+    double distance=4.0;
+    for(const auto &center:centers) distance=std::min(distance,(center-p).norm());
+    return distance;
+  };
+  const double required=recoveryClearance();
+  const auto now=ros::WallTime::now();
+  auto &recent=impl_->recovery_history;
+  recent.erase(std::remove_if(recent.begin(),recent.end(),[&](const auto &entry) {
+    return (now-entry.second).toSec()>5.0;
+  }),recent.end());
+  for (auto candidate:candidates) {
+    Eigen::Vector3d delta=candidate-start;
+    if(delta.norm()>1.0) candidate=start+delta.normalized();
+    const double distance=(candidate-start).norm();
+    if(distance<.15 || !contains(candidate) || clearance(candidate)<required) continue;
+    bool repeated=false;
+    for(const auto &entry:recent) if((candidate-entry.first).norm()<.25) repeated=true;
+    if(repeated) continue;
+    bool safe=true; double best=std::min(required,clearance(start));
+    const int samples=std::max(1,static_cast<int>(std::ceil(distance/.04)));
+    for(int k=1;k<=samples;++k) {
+      const Eigen::Vector3d p=start+(candidate-start)*(static_cast<double>(k)/samples);
+      const double d=clearance(p);
+      if(!contains(p) || d<impl_->physical_floor || d+.02<best) { safe=false; break; }
+      best=std::max(best,std::min(required,d));
+    }
+    if(!safe) continue;
+    double history_distance=2.0;
+    for(const auto &pose:impl_->safe_history)
+      if((pose.cast<double>()-start).norm()>.25)
+        history_distance=std::min(history_distance,(pose.cast<double>()-candidate).norm());
+    const double score=distance_to_graph(candidate)+.5*history_distance+
+        .75*std::abs(candidate.z()-start.z())+.1*distance-.2*std::min(2.0,clearance(candidate));
+    safe_candidates.push_back({candidate,score});
+  }
+  std::sort(safe_candidates.begin(),safe_candidates.end(),[](const auto &a,const auto &b) {
+    return a.score<b.score;
+  });
+  if(safe_candidates.empty()) {
+    ROS_WARN_STREAM_THROTTLE(1.0,"[exploration recovery] no locally certified target; clearance="
+        <<clearance(start)<<" required="<<required);
+    return false;
+  }
+  // Graph connection is a preference, not a prerequisite for a bounded local
+  // escape. The backend certifies the entire trajectory again before commit.
+  goal=safe_candidates.front().point;
+  bool connected=false;
+  const auto deadline=ros::WallTime::now()+ros::WallDuration(.03);
+  for(size_t n=0;n<std::min<size_t>(3,safe_candidates.size()) && ros::WallTime::now()<deadline;++n)
+    if(connectedAt(safe_candidates[n].point)) { goal=safe_candidates[n].point; connected=true; break; }
+  ROS_INFO_STREAM_THROTTLE(1.0,"[exploration recovery] certified local target="<<goal.transpose()
+      <<" graph_connected="<<connected<<" clearance="<<clearance(goal));
+  return true;
+}
+void EpiconFrontend::noteRecoveryAttempt(const Eigen::Vector3d &goal) {
+  impl_->recovery_history.push_back({goal,ros::WallTime::now()});
+  if(impl_->recovery_history.size()>12) impl_->recovery_history.erase(impl_->recovery_history.begin());
 }
 const std::vector<Eigen::Vector3f> &EpiconFrontend::tour() const { return impl_->explorer->ed_->global_tour_; }
 double EpiconFrontend::goalYaw() const { return impl_->planner->local_data_.end_yaw_; }

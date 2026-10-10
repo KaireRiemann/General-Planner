@@ -11,6 +11,57 @@
 
 namespace epicon_native {
 
+namespace {
+// Cover the whole segment with box intervals. Point sampling can miss small
+// gaps between floors or cut across the outside corner of a non-convex union.
+bool segmentInTaskBounds(const LIOInterface::Ptr &map,
+                         const Eigen::Vector3f &a, const Eigen::Vector3f &b) {
+  auto interval = [&](const Eigen::Vector3f &lo, const Eigen::Vector3f &hi,
+                      double &enter, double &leave) {
+    enter=0.0; leave=1.0;
+    for(int axis=0;axis<3;++axis) {
+      const double delta=double(b[axis])-a[axis];
+      if(std::abs(delta)<1e-12) {
+        if(a[axis]<lo[axis] || a[axis]>hi[axis]) return false;
+      } else {
+        double t0=(double(lo[axis])-a[axis])/delta;
+        double t1=(double(hi[axis])-a[axis])/delta;
+        if(t0>t1) std::swap(t0,t1);
+        enter=std::max(enter,t0); leave=std::min(leave,t1);
+        if(enter>leave) return false;
+      }
+    }
+    return true;
+  };
+  for(int i=0;i<map->lp_->dead_area_num_;++i) {
+    double enter,leave;
+    if(interval(map->lp_->dead_area_min_boundary_vec_[i],
+                map->lp_->dead_area_max_boundary_vec_[i],enter,leave)) return false;
+  }
+  for(int i=0;i<map->lp_->box_num_;++i) {
+    const auto &lo=map->lp_->global_box_min_boundary_vec_[i];
+    const auto &hi=map->lp_->global_box_max_boundary_vec_[i];
+    if((a.array()>=lo.array()).all() && (a.array()<=hi.array()).all() &&
+       (b.array()>=lo.array()).all() && (b.array()<=hi.array()).all()) return true;
+  }
+  std::vector<std::pair<double,double>> intervals;
+  for(int i=0;i<map->lp_->box_num_;++i) {
+    double enter,leave;
+    if(interval(map->lp_->global_box_min_boundary_vec_[i],
+                map->lp_->global_box_max_boundary_vec_[i],enter,leave))
+      intervals.emplace_back(enter,leave);
+  }
+  std::sort(intervals.begin(),intervals.end());
+  double covered=0.0;
+  for(const auto &range:intervals) {
+    if(range.first>covered) return false;
+    covered=std::max(covered,range.second);
+    if(covered>=1.0) return true;
+  }
+  return false;
+}
+}
+
 void ParallelBubbleAstar::init(ros::NodeHandle &nh, const LIOInterface::Ptr &lidar_map) {
   nh.param("bubble_astar/resolution_astar", resolution_, 0.1);
   nh.param("bubble_astar/lambda_heu", lambda_heu_, 1.0);
@@ -24,82 +75,56 @@ void ParallelBubbleAstar::init(ros::NodeHandle &nh, const LIOInterface::Ptr &lid
   // frontier_manager_ = frontier_manager_;
 }
 
-bool ParallelBubbleAstar::isNodeSafe(Node::Ptr node, const Eigen::Vector3f &bbox_min, const Eigen::Vector3f &bbox_max,
-                                     unordered_set<Eigen::Vector3i, v3i_hash> &safe_set, unordered_set<Eigen::Vector3i, v3i_hash> &danger_set) {
-
-  if (!lidar_map_interface_->IsInMap(node->position))
-    return false;
-
-  if (node->position.x() < bbox_min.x() || node->position.y() < bbox_min.y() || node->position.z() < bbox_min.z() ||
-      node->position.x() > bbox_max.x() || node->position.y() > bbox_max.y() || node->position.z() > bbox_max.z())
-    return false;
-  Eigen::Vector3i idx;
-  posToIndex(node->position, idx);
-  if (safe_set.count(idx))
-    return true;
-  if (danger_set.count(idx))
-    return false;
-
-  double radius = lidar_map_interface_->getDisToOcc(node->position) - safe_distance_ - 1e-1;
-
-  if (radius > 0) {
-    int width = (int)((radius * 0.57737) * inv_resolution_) - 1;
-    width = min(0, width);
-    for (int i = -width; i <= width; i++) {
-      for (int j = -width; j <= width; j++) {
-        for (int k = -width; k <= width; k++) {
-          Eigen::Vector3i idx_tmp = idx + Eigen::Vector3i(i, j, k);
-          safe_set.insert(idx_tmp);
-        }
-      }
-    }
-    return true;
+bool ParallelBubbleAstar::isNodeSafe(Node::Ptr node, const Eigen::Vector3f &bbox_min,
+    const Eigen::Vector3f &bbox_max, std::unordered_map<Eigen::Vector3i,double,v3i_hash> &radii,
+    bool grid_center) {
+  if(!node->position.allFinite() || !lidar_map_interface_->IsInMap(node->position) ||
+     !lidar_map_interface_->IsInBox(node->position) ||
+     (node->position.array()<bbox_min.array()).any() ||
+     (node->position.array()>bbox_max.array()).any()) return false;
+  // Cache exact grid-center distances only, within this search/map revision.
+  // Start/goal can share a cell but have very different obstacle distances.
+  Eigen::Vector3i idx; posToIndex(node->position,idx);
+  auto cached=radii.find(idx);
+  if(grid_center && cached!=radii.end()) node->radius=cached->second;
+  else {
+    node->radius=lidar_map_interface_->getDisToOcc(node->position)-safe_distance_;
+    if(grid_center) radii.emplace(idx,node->radius);
   }
-  danger_set.insert(idx);
-  return false;
+  return std::isfinite(node->radius) && node->radius>1e-3;
 }
 
 int ParallelBubbleAstar::search(const Eigen::Vector3f &start, const Eigen::Vector3f &goal, vector<Eigen::Vector3f> &path, double timeout,
                                 bool best_result, bool only_raycast, const Eigen::Vector3f &bbox_min, const Eigen::Vector3f &bbox_max) {
-  // step 1 清空路径并计算目标点安全半径
-  vector<Eigen::Vector3f>().swap(path);
-  double goal_r;
-  goal_r = min(1.5, lidar_map_interface_->getDisToOcc(goal) - safe_distance_ - 1e-3);
-  if (goal_r <= 1e-2) {
-    return ParallelBubbleAstar::NO_PATH;  // 目标点不安全
-  }
-  double len = (goal - start).norm();
-  Eigen::Vector3f dir = (goal - start).normalized();  // 直接连接尝试，即点到点直线距离
-  Eigen::Vector3f curr_pos = start;
-  vector<Eigen::Vector3f> path_tmp;
-  path_tmp.push_back(curr_pos);
-
-  // 尝试沿直线逐步前进
-  while (true) {
-    double step;
-    step = min(1.5, lidar_map_interface_->getDisToOcc(curr_pos) - safe_distance_ - 1e-3);
-    if (step <= 1e-2)
-      break;  // 遇到障碍物
-    if (step + goal_r > (goal - curr_pos).norm()) {
-      path.swap(path_tmp);
-      path.push_back((goal + curr_pos) / 2.0);
-      path.push_back(goal);
-      // ROS_INFO("one shot! reach goal");
-      return ParallelBubbleAstar::REACH_END;  // 直接连接成功
-    } else {
-      curr_pos += step * dir; // 前进一步
-      path_tmp.push_back(curr_pos);
+  path.clear();
+  const auto deadline=ros::WallTime::now()+ros::WallDuration(std::max(0.0,timeout));
+  std::unordered_map<Eigen::Vector3i,double,v3i_hash> radii;
+  radii.reserve(1000);
+  auto curr_node=std::make_shared<Node>(); auto end_node=std::make_shared<Node>();
+  curr_node->position=start; end_node->position=goal;
+  if(!isNodeSafe(curr_node,bbox_min,bbox_max,radii)) return START_FAIL;
+  if(!isNodeSafe(end_node,bbox_min,bbox_max,radii)) return END_FAIL;
+  const double goal_r=std::min(1.5,end_node->radius-1e-3);
+  Eigen::Vector3f curr_pos=start;
+  const double length=(goal-start).norm();
+  const Eigen::Vector3f dir=length>1e-6 ? ((goal-start)/length).eval() : Eigen::Vector3f::Zero();
+  vector<Eigen::Vector3f> direct{start};
+  double radius=curr_node->radius;
+  while(radius>1.1e-2) {
+    if(ros::WallTime::now()>=deadline) return TIME_OUT;
+    const double step=std::min(1.5,radius-1e-3);
+    if(step+goal_r>(goal-curr_pos).norm()) {
+      direct.push_back((curr_pos+goal)/2.0); direct.push_back(goal);
+      if(collisionCheck_shortenPath(direct)) { path.swap(direct); return REACH_END; }
+      break;
     }
-    len -= step;
-    if (len < 0) {
-      ROS_ERROR("one shot has bug");
-      exit(0);
-    }
+    curr_pos+=step*dir;
+    if(!lidar_map_interface_->IsInBox(curr_pos) ||
+       (curr_pos.array()<bbox_min.array()).any() || (curr_pos.array()>bbox_max.array()).any()) break;
+    direct.push_back(curr_pos);
+    radius=lidar_map_interface_->getDisToOcc(curr_pos)-safe_distance_;
   }
-  if (only_raycast) {
-    return ParallelBubbleAstar::NO_PATH;  // 直接连接失败且仅需射线检测
-  }
-  // ROS_INFO("one shot fail");
+  if(only_raycast) return NO_PATH;
 
   // 启发式函数，用于在A*算法中估算从当前节点x1到目标节点x2的预估代价
   auto getHeu = [&](const Eigen::Vector3f &x1, const Eigen::Vector3f &x2) -> double {
@@ -113,7 +138,7 @@ int ParallelBubbleAstar::search(const Eigen::Vector3f &start, const Eigen::Vecto
   };
 
   // 到达目标判断函数
-  auto arriveGoal = [&](Eigen::Vector3f &curr_pos, double &curr_radius) -> bool {
+  auto arriveGoal = [&](const Eigen::Vector3f &curr_pos, double curr_radius) -> bool {
     double curr_r = curr_radius;
     double dis2goal = (curr_pos - goal).norm();
     return (curr_r + goal_r > dis2goal);
@@ -122,26 +147,9 @@ int ParallelBubbleAstar::search(const Eigen::Vector3f &start, const Eigen::Vecto
   // 初始化开放集和封闭集
   std::priority_queue<Node::Ptr, std::vector<Node::Ptr>, NodeCompre> open_set;
   std::unordered_map<Eigen::Vector3i, Node::Ptr, v3i_hash> open_set_map;
-  std::unordered_set<Eigen::Vector3i, v3i_hash> close_set, safe_set, danger_set;
-  safe_set.reserve(1000);
-  danger_set.reserve(1000);
+  std::unordered_set<Eigen::Vector3i, v3i_hash> close_set;
   close_set.reserve(1000);
   open_set_map.reserve(1000);
-  Node::Ptr curr_node = std::make_shared<Node>();
-  Node::Ptr end_node = std::make_shared<Node>();
-  curr_node->parent = nullptr;
-  curr_node->position = start;
-  end_node->position = goal;
-
-  // 检查起点和终点的安全性
-  if (!isNodeSafe(curr_node, bbox_min, bbox_max, safe_set, danger_set)) {
-    // ROS_ERROR("ParallelBubbleAstar: unsafe start point");
-    return ParallelBubbleAstar::START_FAIL;
-  }
-  if (!isNodeSafe(end_node, bbox_min, bbox_max, safe_set, danger_set)) {
-    // ROS_ERROR("ParallelBubbleAstar: unsafe end point");
-    return ParallelBubbleAstar::END_FAIL;
-  }
   curr_node->g_score = 0.0;
   if (!best_result)
     curr_node->f_score = lambda_heu_ * getHeu(start, goal);
@@ -163,33 +171,29 @@ int ParallelBubbleAstar::search(const Eigen::Vector3f &start, const Eigen::Vecto
     path.push_back(goal);
   };
 
-  ros::Time t1 = ros::Time::now();
 
   // A*主循环
   while (!open_set.empty()) {
-    auto curr_node = open_set.top();
-    double curr_radius = lidar_map_interface_->getDisToOcc(curr_node->position) - safe_distance_;
+    auto curr_node = open_set.top(); open_set.pop();
+    posToIndex(curr_node->position,curr_idx);
+    auto current_entry=open_set_map.find(curr_idx);
+    if(current_entry==open_set_map.end() || current_entry->second!=curr_node) continue;
+    const double curr_radius=curr_node->radius;
     // 检查是否到达目标
     if (arriveGoal(curr_node->position, curr_radius)) {
       backtrack(curr_node); // 回溯路径
-      bool safe = collisionCheck_shortenPath(path); // 安全检查
-      if (!safe) {
-        // ROS_ERROR("path just found not safe");
-        return ParallelBubbleAstar::NO_PATH;
-        // exit(1);
-      }
-      // ROS_INFO_STREAM("ParallelBubbleAstar: time cost = " << (ros::Time::now() - t1).toSec() *
-      // 1000 << "ms");
-      return ParallelBubbleAstar::REACH_END;
+      if (collisionCheck_shortenPath(path)) return REACH_END;
+      // Sphere overlap can span the outside of a non-convex task box.
+      // Keep searching for a route inside the union instead of aborting.
+      path.clear();
     }
 
     // 处理超时
-    if ((ros::Time::now() - t1).toSec() > timeout) {
+    if (ros::WallTime::now() >= deadline) {
       // ROS_ERROR("ParallelBubbleAstar: TIME_OUT");
       return ParallelBubbleAstar::TIME_OUT;
     }
 
-    open_set.pop();
     posToIndex(curr_node->position, curr_idx);
     open_set_map.erase(curr_idx);
     close_set.insert(curr_idx);
@@ -219,25 +223,25 @@ int ParallelBubbleAstar::search(const Eigen::Vector3f &start, const Eigen::Vecto
       auto nei_node = std::make_shared<Node>();
       nei_node->position = nbr_pos;
 
-      if (!isNodeSafe(nei_node, bbox_min, bbox_max, safe_set, danger_set))
+      if (!isNodeSafe(nei_node, bbox_min, bbox_max, radii, true))
         continue;
-      nei_node->parent = curr_node;
-      double tmp_g_score = step.norm() + curr_node->g_score;
-      auto node_iter = open_set_map.find(nbr_idx);
-      if (node_iter == open_set_map.end()) {
-        nei_node->g_score = tmp_g_score;
-        if (!best_result)
-          nei_node->f_score = lambda_heu_ * getHeu(nbr_pos, goal) + tmp_g_score;
-        else
-          nei_node->f_score = getHeu(nbr_pos, goal) + tmp_g_score;
-
-        open_set_map.insert(make_pair(nbr_idx, nei_node));
-        open_set.push(nei_node);
-      } else if (tmp_g_score < node_iter->second->g_score) {
-        nei_node = node_iter->second;
-      } else {
-        continue;
-      }
+      // Certify each edge with the same overlapping free spheres used by
+      // collisionCheck_shortenPath. Safe endpoints alone can cross a corner;
+      // selecting that parent used to reject the whole route at the end.
+      const double next_radius=nei_node->radius;
+      if (std::min(2.0,curr_radius)+std::min(2.0,next_radius)+1e-3 <
+          (nbr_pos-curr_node->position).norm()) continue;
+      if(!segmentInTaskBounds(lidar_map_interface_,curr_node->position,nbr_pos)) continue;
+      const double tmp_g_score=(nbr_pos-curr_node->position).norm()+curr_node->g_score;
+      auto node_iter=open_set_map.find(nbr_idx);
+      if(node_iter!=open_set_map.end() && tmp_g_score>=node_iter->second->g_score) continue;
+      nei_node->parent=curr_node;
+      nei_node->g_score=tmp_g_score;
+      nei_node->f_score=(best_result ? 1.0 : lambda_heu_)*getHeu(nbr_pos,goal)+tmp_g_score;
+      // Immutable heap entries: a better parent replaces the map entry and
+      // old heap entries are skipped on pop. The old relaxation did neither.
+      open_set_map[nbr_idx]=nei_node;
+      open_set.push(nei_node);
     }
   }
   // ROS_INFO("all space searched");
@@ -294,6 +298,11 @@ bool ParallelBubbleAstar::collisionCheck_shortenPath(vector<Eigen::Vector3f> &pa
   // return true;
   if (path.size() < 2)
     return false;
+  for(size_t i=0;i<path.size();++i) {
+    if(!path[i].allFinite() || !lidar_map_interface_->IsInMap(path[i]) ||
+       !lidar_map_interface_->IsInBox(path[i])) return false;
+    if(i && !segmentInTaskBounds(lidar_map_interface_,path[i-1],path[i])) return false;
+  }
   std::vector<Eigen::Vector3f> path_shorten;
   std::vector<double> raduis_lis;
   for (int i = 0; i < path.size(); i++) {
@@ -313,6 +322,7 @@ bool ParallelBubbleAstar::collisionCheck_shortenPath(vector<Eigen::Vector3f> &pa
       double j_raduis = raduis_lis[j];
       double distance = (path[i] - path[j]).norm();
       if (i_raduis + j_raduis + 1e-3 > distance) {
+        if(!segmentInTaskBounds(lidar_map_interface_,path[j],path[i])) continue;
         indices.push_front(j);
         connected = true;
         i = j + 1;

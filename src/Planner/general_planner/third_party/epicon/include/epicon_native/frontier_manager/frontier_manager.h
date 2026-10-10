@@ -64,6 +64,8 @@ struct ViewpointParam {
       sample_pillar_min_radius_, sample_pillar_max_radius_,
       view_direction_range_;
   float fov_up_, fov_down_, lidar_pitch_;
+  float min_clearance_{0.9f};
+  float preferred_clearance_{0.9f};
   int consider_range_, global_recluster_size_, local_tsp_size_;
 };
 struct ByteArrayRaw {

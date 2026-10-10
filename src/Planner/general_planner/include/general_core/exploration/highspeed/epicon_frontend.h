@@ -32,8 +32,13 @@ public:
   bool corridor(const std::vector<Eigen::Vector3d> &path, double range,
                 double clearance, EpiconCorridor &result) const;
   double clearance(const Eigen::Vector3d &position) const;
+  double planningClearance() const;
+  double executionClearance() const;
+  double recoveryClearance() const;
+  bool connectedAt(const Eigen::Vector3d &position) const;
   bool contains(const Eigen::Vector3d &position) const;
   bool recoveryPoint(const Eigen::Vector3d &start, Eigen::Vector3d &goal) const;
+  void noteRecoveryAttempt(const Eigen::Vector3d &goal);
   const std::vector<Eigen::Vector3f> &tour() const;
   double goalYaw() const;
   bool ready() const;

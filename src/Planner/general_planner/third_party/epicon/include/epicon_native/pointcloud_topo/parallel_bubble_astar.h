@@ -50,6 +50,7 @@ public:
     Eigen::Vector3f position;
     double g_score;
     double f_score;
+    double radius{0.0};
   };
 
   struct NodeCompre {
@@ -75,7 +76,7 @@ public:
   void posToIndex(const Eigen::Vector3f &pt, Eigen::Vector3i &idx);
   void IndexToPos(Eigen::Vector3f &pt, Eigen::Vector3i &idx);
   bool isNodeSafe(Node::Ptr node, const Eigen::Vector3f &bbox_min, const Eigen::Vector3f &bbox_max,
-                  unordered_set<Eigen::Vector3i, v3i_hash> &safe_set, unordered_set<Eigen::Vector3i, v3i_hash> &danger_set);
+                  std::unordered_map<Eigen::Vector3i,double,v3i_hash> &radii, bool grid_center=false);
 
   void init(ros::NodeHandle &nh, const LIOInterface::Ptr &lidar_map);
   void reset();

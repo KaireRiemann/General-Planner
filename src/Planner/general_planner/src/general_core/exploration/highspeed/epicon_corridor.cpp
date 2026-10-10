@@ -12,6 +12,56 @@ bool contains(const Eigen::MatrixX4d &poly, const Eigen::Vector3d &p) {
 }
 }
 
+bool clipEpiconCorridorToBoxes(const Eigen::Vector3d &head, const Eigen::Vector3d &tail,
+    const std::vector<Eigen::Vector3d> &lower, const std::vector<Eigen::Vector3d> &upper,
+    std::vector<Eigen::MatrixX4d> &polys, double min_overlap) {
+  if(polys.empty() || lower.empty() || lower.size()!=upper.size()) return false;
+  // A single convex cell may span several overlapping task boxes. Keep all
+  // valid intersections and search a connected sequence; greedily choosing
+  // one box per cell can discard the only transition to the next floor.
+  struct Cell { Eigen::MatrixX4d poly; int layer; int parent{-2}; };
+  std::vector<Cell> cells;
+  std::vector<std::vector<int>> layers(polys.size());
+  for(size_t i=0;i<polys.size();++i) for(size_t box=0;box<lower.size();++box) {
+    const Eigen::Vector3d lo=lower[box].array()+.03,hi=upper[box].array()-.03;
+    if(!lo.allFinite() || !hi.allFinite() || (lo.array()>=hi.array()).any()) continue;
+    Eigen::MatrixX4d clipped(polys[i].rows()+6,4);
+    clipped.topRows(polys[i].rows())=polys[i]; clipped.bottomRows(6).setZero();
+    for(int axis=0;axis<3;++axis) {
+      const int row=polys[i].rows()+2*axis;
+      clipped(row,axis)=1; clipped(row,3)=-hi[axis];
+      clipped(row+1,axis)=-1; clipped(row+1,3)=lo[axis];
+    }
+    Eigen::Vector3d interior;
+    if(!epicon_native::geo_utils::findInterior(clipped,interior)) continue;
+    layers[i].push_back(cells.size()); cells.push_back({clipped,static_cast<int>(i),-2});
+  }
+  std::deque<int> queue;
+  for(int index:layers.front()) if(contains(cells[index].poly,head)) {
+    cells[index].parent=-1; queue.push_back(index);
+  }
+  int reached=-1;
+  while(!queue.empty()) {
+    const int current=queue.front(); queue.pop_front();
+    const int layer=cells[current].layer;
+    if(contains(cells[current].poly,tail)) {
+      reached=current; break;
+    }
+    for(int next_layer=layer;next_layer<static_cast<int>(layers.size());++next_layer)
+      for(int next:layers[next_layer]) {
+        if(cells[next].parent!=-2 ||
+           !epicon_native::geo_utils::overlap(cells[current].poly,cells[next].poly,min_overlap)) continue;
+        cells[next].parent=current; queue.push_back(next);
+      }
+  }
+  if(reached<0) return false;
+  std::vector<Eigen::MatrixX4d> bounded;
+  for(int index=reached;index>=0;index=cells[index].parent) bounded.push_back(cells[index].poly);
+  std::reverse(bounded.begin(),bounded.end());
+  if(bounded.size()==1) bounded.push_back(bounded.front());
+  polys.swap(bounded); return true;
+}
+
 bool epiconRecoveryPoint(const Eigen::Vector3d &start,
                          const std::vector<Eigen::Vector3d> &points,
                          Eigen::Vector3d &goal) {
@@ -39,7 +89,7 @@ bool buildEpiconCorridor(const std::vector<Eigen::Vector3d> &path,
                         const Eigen::Vector3d &lower,
                         const Eigen::Vector3d &upper,
                         double range, double clearance,
-                        EpiconCorridor &result) {
+                        EpiconCorridor &result, bool simplify) {
   result = {};
   const auto fail = [&](const char *reason) { result.failure = reason; return false; };
   if (path.size() < 2 || !lower.allFinite() || !upper.allFinite() ||
@@ -96,6 +146,10 @@ bool buildEpiconCorridor(const std::vector<Eigen::Vector3d> &path,
     if (contains(polys[k], path.front())) { start=k; break; }
   if (start < 0) return fail("head outside point-cloud corridor");
   polys.erase(polys.begin(), polys.begin()+start);
+  // When task boxes are present, intersect before simplifying. An obstacle-
+  // free shortcut can pass outside the non-convex union and remove the cells
+  // needed for a valid turn at the next floor.
+  if(!simplify) return true;
   // Drop contained/redundant cells only when the shortcut has positive volume.
   std::vector<Eigen::MatrixX4d> simplified;
   for (std::size_t k=0; k<polys.size();) {

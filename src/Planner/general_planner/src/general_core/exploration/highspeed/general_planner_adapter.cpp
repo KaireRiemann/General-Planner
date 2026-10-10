@@ -39,7 +39,7 @@ struct GeneralCommitStore
 namespace
 {
 double recoveryPhysicalFloor(const GcopterConfig &cfg) {
-  return std::max(.05,std::min(cfg.dilateRadiusHard,cfg.corridorRobotRadius)-cfg.safetyClearanceTolerance);
+  return std::max(.05,cfg.dilateRadiusHard-cfg.safetyClearanceTolerance);
 }
 
 bool certifyPointcloudEscape(const EpiconFrontend &map, const geometry_utils::Trajectory &traj,
@@ -48,7 +48,7 @@ bool certifyPointcloudEscape(const EpiconFrontend &map, const geometry_utils::Tr
   const double duration=traj.getTotalDuration();
   begin=std::clamp(begin,0.0,duration);
   const double floor=recoveryPhysicalFloor(cfg);
-  const double target=std::max(cfg.dilateRadiusSoft,cfg.commitKnownFreeSafeDistance);
+  const double target=std::max({cfg.dilateRadiusSoft,cfg.commitKnownFreeSafeDistance,map.recoveryClearance()});
   double best=std::min(target,map.clearance(traj.getPos(begin)));
   const double dt=std::min(.02,.02/std::max(1.0,traj.getMaxVelRate()));
   for (double t=begin;t<duration+dt;t+=dt) {
@@ -1812,7 +1812,7 @@ bool FastPlannerManager::planExploreTraj(
     // Recovery may start below the normal soft margin. Inflate to the current
     // certified clearance and enforce monotonically increasing clearance below.
     const double margin=clearance_recovery ? std::max(.05,std::min(gcopter_config_->dilateRadiusSoft,
-        safetyDistanceToOcc(head.col(0))-.02)) : gcopter_config_->dilateRadiusSoft;
+        safetyDistanceToOcc(head.col(0))-.02)) : epicon_frontend_->planningClearance();
     if (!epicon_frontend_->corridor(local_path,gcopter_config_->corridor_size,margin,native)) {
       coverage_failure_.kind=CoverageFailureKind::PATH;
       ROS_WARN_STREAM("[exploration backend] point-cloud corridor failed: " << native.failure);
@@ -1879,7 +1879,7 @@ bool FastPlannerManager::planExploreTraj(
                0.25 * gcopter_config_->corridorMinOverlapThreshold);
   geometry_utils::PolytopeVec bounded_sfcs = sfcs;
   const bool bounded_to_exploration_boxes =
-      constrainSfcsToExplorationBoxes(local_path.front(), local_path.back(),
+      pointcloud_frontend || constrainSfcsToExplorationBoxes(local_path.front(), local_path.back(),
                                       lidar_map_interface_, required_overlap,
                                       bounded_sfcs, pointcloud_frontend);
   if (bounded_to_exploration_boxes)
@@ -3529,6 +3529,7 @@ bool FastPlannerManager::flyToSafeRegion(bool is_static,
     if (epicon_frontend_->clearance(local_data_.curr_pos_)<recoveryPhysicalFloor(*gcopter_config_)) return false;
     Eigen::Vector3d goal;
     if (!epicon_frontend_->recoveryPoint(local_data_.curr_pos_,goal)) return false;
+    epicon_frontend_->noteRecoveryAttempt(goal);
     const std::vector<Eigen::Vector3f> path{local_data_.curr_pos_.cast<float>(),goal.cast<float>()};
     if (!planExploreTraj(path,is_static,true,false,{},{},{},true)) return false;
     ROS_WARN_STREAM("[exploration recovery] point-cloud interior start=" << local_data_.curr_pos_.transpose()
@@ -3756,7 +3757,9 @@ bool FastPlannerManager::checkTrajCollision(double &collision_time, bool coverag
   const double collision_clearance =
       std::max(0.05, (coverage_checks ? std::max(gcopter_config_->dilateRadiusHard,
                                                 gcopter_config_->commitKnownFreeSafeDistance)
-                                     : gcopter_config_->dilateRadiusHard) -
+                                     : (usingPointcloudGeometry() ? std::max(gcopter_config_->dilateRadiusHard,
+                                                                          gcopter_config_->commitKnownFreeSafeDistance)
+                                                                  : gcopter_config_->dilateRadiusHard)) -
                          gcopter_config_->safetyClearanceTolerance);
   double probe_t = now_t;
   Eigen::Vector3d sphere_center = committed_pos.getPos(probe_t);

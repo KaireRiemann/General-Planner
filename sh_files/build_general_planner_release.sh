@@ -32,7 +32,7 @@ What is synced:
   - devel/lib/general_planner/exploration_node
   - devel/lib/general_planner/highspeed_traj_server
   - M2 planner_runtime launch + mode RViz configs
-  - M2 state2state and global-topology configuration
+  - M2 navigation/tracking policies and shared map.yaml configuration
   - general_planner PlannerStatus/PlannerModeRequest/TopologyExpansionPoint msgs
   - devel/lib/liblkh_tsp_solver.so
   - General Planner 3D Nav Goal RViz plugin
@@ -639,6 +639,27 @@ PY
 # Runtime smoke tests are deliberately excluded from this script. Packaging
 # must only compile, synchronize the release tree, and optionally create the
 # archive; runtime validation belongs to an explicitly managed test workflow.
+
+# Validate the complete Unity release launch using only bundled ROS packages.
+# This catches stale arguments forwarded to planner_runtime.launch before a
+# working release tree is replaced by an archive that fails at launch time.
+echo "[build_release] Validate Unity release launch arguments"
+ROS_PACKAGE_PATH="${RELEASE_ROOT}/src:/opt/ros/noetic/share" \
+  roslaunch --dump-params unity_planner_bridge unity_planner_release.launch |
+  GP_RELEASE_MAP_EXPECTED="${RELEASE_ROOT}/src/general_planner_release/config/map.yaml" \
+  python3 -c '
+import os
+import pathlib
+import sys
+import yaml
+
+params = yaml.safe_load(sys.stdin)
+expected = pathlib.Path(os.environ["GP_RELEASE_MAP_EXPECTED"]).resolve()
+for key in ("/planner_runtime_node/map_config", "/planner_runtime_node/RogMapConfigPath"):
+    actual = pathlib.Path(params[key]).resolve()
+    assert actual == expected, (key, actual, expected)
+assert expected.is_file(), expected
+'
 
 if [[ "${GP_SKIP_ARCHIVE:-0}" != "1" ]]; then
   echo "[build_release] Create archive: ${ARCHIVE_PATH}"

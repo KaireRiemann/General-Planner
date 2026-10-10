@@ -57,6 +57,9 @@ void FrontierManager::init(ros::NodeHandle &nh, LIOInterface::Ptr &lio_interface
               vpp_.sample_pillar_min_radius_);
   nh.getParam("ViewpointManager/sample_pillar_max_radius",
               vpp_.sample_pillar_max_radius_);
+  nh.param("ViewpointManager/min_clearance", vpp_.min_clearance_, 0.9f);
+  nh.param("ViewpointManager/preferred_clearance",vpp_.preferred_clearance_,vpp_.min_clearance_);
+  vpp_.preferred_clearance_=std::max(vpp_.preferred_clearance_,vpp_.min_clearance_);
 
   nh.getParam("ViewpointManager/consider_range", vpp_.consider_range_);
   nh.getParam("ViewpointManager/global_recluster_size",
@@ -1123,6 +1126,15 @@ void FrontierManager::selectBestViewpoint(ClusterInfo::Ptr &cluster) {
   }
   int best_vp_idx = std::distance(score.begin(),
                                   std::max_element(score.begin(), score.end()));
+  // Connectivity and observation scoring have already removed unusable
+  // candidates. Prefer the native margin when available, but do not discard
+  // the only certified indoor viewpoint merely for having less soft space.
+  bool found_preferred=false;
+  for(size_t n=0;n<vps.size();++n) {
+    if(score[n]<=0 || lidar_map_interface_->getDisToOcc(vps[n])<vpp_.preferred_clearance_) continue;
+    if(!found_preferred || score[n]>score[best_vp_idx]) best_vp_idx=n;
+    found_preferred=true;
+  }
   if (score[best_vp_idx] == 0) {
     cluster->is_reachable_ = false;
     cluster->vp_clusters_.clear();
@@ -1154,7 +1166,10 @@ void FrontierManager::initClusterViewpoints(ClusterInfo::Ptr &cluster) {
   vps_init.reserve(origin_viewpoints_.size());
   for (auto &ovp : origin_viewpoints_) {
     Eigen::Vector3f vp = ovp + cluster->center_;
-    if (lidar_map_interface_->getDisToOcc(vp) < 0.9)
+    // Apply bounds/exclusions before a representative can reject its group.
+    if (viewpoint_allowed_ && !viewpoint_allowed_(vp))
+      continue;
+    if (lidar_map_interface_->getDisToOcc(vp) < vpp_.min_clearance_)
       continue;
     if (!isInBox(vp))
       continue;
@@ -1275,7 +1290,10 @@ void FrontierManager::removeUnreachableViewpoints(
   }
 
   ros::Time t1 = ros::Time::now();
-  graph_->insertNodes(nodes2insert, true); // only_raycast=true 可以显著加速
+  // The fast pass may use direct visibility. A completion audit must also
+  // try the bounded A* connector: a room around a corner is not unreachable
+  // merely because its viewpoint has no straight edge to the sparse graph.
+  graph_->insertNodes(nodes2insert, !full_audit_);
   ros::Time t2 = ros::Time::now();
   vector<bool> vp_cluster_kept;
   vp_cluster_kept.resize(nodes2insert.size(), true);

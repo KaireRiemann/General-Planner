@@ -233,7 +233,20 @@ void GlobalMapRuntime::cloudOdomCallback(
   }
 
   rog_map::PointCloud rog_cloud;
-  pcl::fromROSMsg(*cloud, rog_cloud);
+  const bool has_intensity=std::any_of(cloud->fields.begin(),cloud->fields.end(),
+      [](const auto &field) { return field.name=="intensity"; });
+  if(has_intensity) pcl::fromROSMsg(*cloud,rog_cloud);
+  else {
+    pcl::PointCloud<pcl::PointXYZ> xyz;
+    pcl::fromROSMsg(*cloud,xyz);
+    rog_cloud.resize(xyz.size());
+    for(size_t n=0;n<xyz.size();++n) {
+      rog_cloud[n].x=xyz[n].x; rog_cloud[n].y=xyz[n].y; rog_cloud[n].z=xyz[n].z;
+      rog_cloud[n].intensity=0.0f;
+    }
+    rog_cloud.header=xyz.header; rog_cloud.width=xyz.width; rog_cloud.height=xyz.height;
+    rog_cloud.is_dense=xyz.is_dense;
+  }
   if (rog_cloud.empty()) {
     return;
   }

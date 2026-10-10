@@ -108,8 +108,22 @@ void FastExplorationFSM::updateEpiconGlobalPath() {
   } else {
     epicon_finish_.reset(); epicon_recheck_pending_=true;
     if(result==fast_planner::EpiconFrontend::Result::DISCONNECTED &&
-       (!safe || planner_manager_->committedTrajectoryRemainingTime()<=0.03))
-      transitState(CAUTION,"exploration: odometry disconnected",true);
+       (!safe || planner_manager_->committedTrajectoryRemainingTime()<=0.03)) {
+      if (epicon_normal_motion_) {
+        epicon_frontend_->deferCurrentGoal(epicon_goal_cooldown_,epicon_goal_exclusion_radius_);
+        epicon_normal_motion_=false;
+        epicon_last_deferral_=ros::WallTime::now();
+      }
+      transitState(CAUTION,"exploration: topology disconnected",true);
+    }
+    else if(result==fast_planner::EpiconFrontend::Result::BLOCKED &&
+            (!safe || planner_manager_->committedTrajectoryRemainingTime()<=0.03)) {
+      // A root attached to an isolated component is "ready" but can still
+      // reach no viewpoint. It needs the same bounded local recovery as an
+      // unattached root, rather than waiting motionless for the stall timeout.
+      epicon_normal_motion_=false;
+      transitState(CAUTION,"exploration: no reachable viewpoint",true);
+    }
   }
 }
 
@@ -238,7 +252,8 @@ bool FastExplorationFSM::epiconFSMCallback() {
     break;
   }
   case CAUTION: {
-    if(epicon_frontend_->ready() && epicon_frontend_->clearance(fd_->odom_pos_.cast<double>())>
+    if(epicon_frontend_->ready() && epicon_frontend_->hasSelectedGoal() &&
+        epicon_frontend_->clearance(fd_->odom_pos_.cast<double>())>
         planner_manager_->gcopter_config_->dilateRadiusSoft) {
       transitState(PLAN_TRAJ,"exploration: execution origin reconnected");
       break;
@@ -261,7 +276,8 @@ bool FastExplorationFSM::epiconFSMCallback() {
       transitState(EXEC_TRAJ,"exploration: execute topology reconnection");
       break;
     }
-    if(epicon_frontend_->ready() && epicon_frontend_->clearance(fd_->odom_pos_.cast<double>())>
+    if(epicon_frontend_->ready() && epicon_frontend_->hasSelectedGoal() &&
+        epicon_frontend_->clearance(fd_->odom_pos_.cast<double>())>
         planner_manager_->gcopter_config_->dilateRadiusSoft) transitState(PLAN_TRAJ,"exploration: safe region");
     break;
   }

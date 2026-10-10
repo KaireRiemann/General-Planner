@@ -371,6 +371,8 @@ source /absolute/path/to/general_planner_release/setup.bash
 roslaunch unity_planner_bridge unity_planner_release.launch
 ```
 
+此入口与源码 Unity 入口均使用 `map_config` 指向统一的 `map.yaml`；需要覆盖地图参数时传入 `map_config:=/path/to/map.yaml`。旧的 `rog_map_config`、`tracking_rog_map_config` 参数不再适用于组合式 runtime。
+
 包内包含 Unity bridge、ROS-TCP endpoint、aperture_detector 和 tracking_detector。
 此入口不启动 Marsim，使用 /lidar_slam/odom 的实际反馈；tracking 按相机原始时间轴使用 /unity_odom。
 默认状态为 state2state，检测进程在对应模式被 /planner/status 确认后才启动。

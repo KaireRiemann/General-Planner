@@ -20,6 +20,18 @@ int main() {
       require((poly.leftCols<3>()*Vector3d(1,0,4.5)+poly.col(3)).maxCoeff()>0,
               "low guide admitted the recorded 4.5 m excursion");
     }
+    const auto unbounded=corridor.planes;
+    std::vector<Vector3d> box_lo{{-.5,-.9,.7},{1.3,-.9,.7}};
+    const std::vector<Vector3d> box_hi{{1.7,.9,2.3},{3.5,.9,2.3}};
+    require(fast_planner::clipEpiconCorridorToBoxes(path.front(),path.back(),box_lo,box_hi,corridor.planes),
+            "one convex corridor could not cross overlapping task boxes");
+    require(corridor.planes.size()>=2,"cross-box corridor was not partitioned");
+    for(const auto &poly:corridor.planes)
+      require((poly.leftCols<3>()*Vector3d(1.5,1.1,1.5)+poly.col(3)).maxCoeff()>0,
+              "clipped corridor admitted a point outside both task boxes");
+    box_lo[1].x()=1.8; corridor.planes=unbounded;
+    require(!fast_planner::clipEpiconCorridorToBoxes(path.front(),path.back(),box_lo,box_hi,corridor.planes),
+            "disconnected task-box corridor was accepted");
     std::vector<Vector3d> walls;
     for(double x=-2;x<=5;x+=.2) for(double z=0;z<=3;z+=.2) {
       walls.emplace_back(x,-.8,z); walls.emplace_back(x,.8,z);
@@ -45,7 +57,7 @@ int main() {
         require(std::abs((fhi-flo)/2e-6-gradient(j))<1e-3,"yaw time cost gradient mismatch");
       }
     }
-    std::cout<<"EPICON_CORRIDOR PASS: empty crop, vertical bounds, wide/narrow passage, recovery, temporal gradient\n";
+    std::cout<<"EPICON_CORRIDOR PASS: empty crop, vertical bounds, overlapping/disconnected boxes, wide/narrow passage, recovery, temporal gradient\n";
     return 0;
   } catch(const std::exception &error) { std::cerr<<error.what()<<'\n'; return 1; }
 }

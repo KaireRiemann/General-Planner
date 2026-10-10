@@ -701,6 +701,7 @@ if(CATKIN_ENABLE_TESTING)
 endif()
 
 add_executable(epicon_frontend_replay_test tests/epicon_frontend_replay_test.cpp)
+target_include_directories(epicon_frontend_replay_test PRIVATE third_party/epicon/include)
 add_executable(epicon_execution_policy_self_test tests/epicon_execution_policy_self_test.cpp)
 if(CATKIN_ENABLE_TESTING)
   add_test(NAME epicon_execution_policy_self_test COMMAND epicon_execution_policy_self_test)

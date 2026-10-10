@@ -1,11 +1,37 @@
-# Indoor coverage frontier granularity. Loaded on every planner_runtime boot
-# under the indoor_frontier/ prefix so it does not overwrite the house
-# FrontierManager/ViewpointManager keys.  GlobalMapRuntime still owns one
-# shared ROG + topology for every mode.
-#
-# MODE exploration (coverage) applies these numbers at runtime and reclusters
-# in both source and release runtimes. Unity boot-time frontier keys match
-# this profile so switching modes does not silently restore coarser clusters.
+# Loaded after exploration_unity_overlay.yaml by planner_runtime.launch.
+# Native point-cloud coverage reads epicon/*; indoor_frontier/* below is
+# consumed by the shared map frontend and does not configure EPICON.
+# Indoor profile verified with recorded scans; full-house flight remains
+# subject to doorway clearance and closed-loop validation.
+
+epicon/FrontierManager/cell_size: 0.2
+epicon/FrontierManager/cluster_min_radius: 0.5
+epicon/FrontierManager/cluster_min_size: 0.4
+epicon/FrontierManager/cluster_max_size: 3.0
+epicon/FrontierManager/cluster_minmum_point_num: 6
+epicon/ViewpointManager/sample_pillar_min_height: -1.2
+epicon/ViewpointManager/sample_pillar_max_height: 1.2
+epicon/ViewpointManager/sample_pillar_height_layer_num: 8
+epicon/ViewpointManager/sample_pillar_min_radius: 0.7
+epicon/ViewpointManager/sample_pillar_max_radius: 2.5
+epicon/ViewpointManager/sample_pillar_radius_layer_num: 6
+epicon/ViewpointManager/sample_pillar_circle_sample_num: 24
+# Candidate sampling only. The adapter clamps this above graph/planning
+# clearance; physical collision and execution clearances stay unchanged.
+# Prefer the native 0.9 m margin among connected, observable candidates.
+# A narrow room may use a 0.68 m candidate if it has no such viewpoint;
+# corridor and trajectory certification still apply independently.
+epicon/ViewpointManager/min_clearance: 0.68
+epicon/ViewpointManager/preferred_clearance: 0.9
+# Fast connectors remain cheap. A disconnected odometry root may retry with
+# 10 ms, under a 30 ms total connection budget. Batch insertion stays at 2 ms.
+epicon/parallel_astar/update_connection_timeout: 0.002
+epicon/parallel_astar/insert_node_timeout: 0.002
+epicon/parallel_astar/odom_retry_timeout: 0.01
+epicon/parallel_astar/odom_connection_budget: 0.03
+epicon/parallel_astar/odom_max_connections: 3
+
+# Shared map frontend profile.
 
 indoor_frontier/update_length: 22.0
 indoor_frontier/cluster_min_size: 0.8

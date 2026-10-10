@@ -1,8 +1,11 @@
 # 当前探索框架与 MapManager 协作
 
-核对日期：2026-10-08。本文依据当前工作树源码与 release launch/YAML，描述组合式
+核对日期：2026-10-09。本文依据当前工作树源码与 release launch/YAML，描述组合式
 `planner_runtime_node` 的实际调用链；不代表已验证正在运行的 release 二进制与源码完全一致。
 历史 EPIC/FALCON 重构建议和早期 M1/M2 设计不能替代本文的模式与接口说明。
+
+若需要先理解 coverage 如何从点云证据形成任务、如何执行并更新完成状态，请先读
+[Coverage 点云探索完整任务流程](coverage_pointcloud_task_flow.md)，再查本文的地图接口与配置。
 
 ## 1. 当前有两条探索链
 
