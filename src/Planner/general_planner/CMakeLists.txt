@@ -269,6 +269,17 @@ add_executable(planner_status_self_test
 )
 target_include_directories(planner_status_self_test PRIVATE include)
 
+add_executable(vertical_trajectory_self_test tests/vertical_trajectory_self_test.cpp)
+target_link_libraries(vertical_trajectory_self_test general_planner_core ${THIRD_PARTY})
+add_executable(vertical_runtime_integration_test tests/vertical_runtime_integration_test.cpp
+        src/general_core/planner_runtime/planner_command_gateway.cpp
+        src/general_core/planner_runtime/planner_supervisor.cpp)
+add_dependencies(vertical_runtime_integration_test ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
+target_link_libraries(vertical_runtime_integration_test general_planner_core ${THIRD_PARTY})
+if(CATKIN_ENABLE_TESTING)
+  add_test(NAME vertical_trajectory_self_test COMMAND vertical_trajectory_self_test)
+endif()
+
 add_executable(planning_retry_self_test tests/planning_retry_self_test.cpp)
 target_include_directories(planning_retry_self_test PRIVATE include)
 

@@ -14,14 +14,14 @@ box_num: 2
 # Scene floor/wall assets extend over x=[28,40], y=[-16,14]; the observed
 # first-floor surface is z=0.67, upper-floor pieces start at z=3.5, and
 # upper roof pieces start at z=6.5. Include both floors and the entrance.
-box_0/down: [26.9, -17.0, 0.67]
-box_0/up: [42.0, 15.0, 3.5]
+box_0/down: [30.9, -17.0, 0.67]
+box_0/up: [42.0, 15.0, 6.5]
 # Overlap z=[2.0,3.5] connects the floor volumes through the staircase.
 # After viewpoint filtering insets each box by the 0.6 m planning clearance, the
 # overlap remains z=[2.6,2.9] (0.3 m); touching faces would disconnect.
 # These are task bounds. Point-cloud collision checks still apply.
-box_1/down: [27.5, -16.5, 2.0]
-box_1/up: [40.5, 14.5, 6.5]
+# box_1/down: [27.5, -16.5, 2.0]
+# box_1/up: [40.5, 14.5, 6.5]
 dynamic_bounding_box/enabled: false
 dead_area_num: 0
 

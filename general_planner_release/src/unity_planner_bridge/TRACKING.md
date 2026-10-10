@@ -7,6 +7,9 @@ source /root/ws/real_planner/devel/setup.bash
 roslaunch unity_planner_bridge unity_planner_sim.launch
 ```
 
+This entry point loads the shared planner map from `general_planner/config/map.yaml`.
+To use another map configuration, pass `map_config:=/path/to/map.yaml`.
+
 Start the YOLOE and target EKF nodes separately. Switch the existing runtime with:
 
 ```bash

@@ -1,13 +1,18 @@
-# Loaded after exploration_unity_overlay.yaml by planner_runtime.launch.
+# Loaded after the base/scene configs by the release exploration entries and
+# planner_runtime.launch. Keep the source and release copies identical.
 # Native point-cloud coverage reads epicon/*; indoor_frontier/* below is
 # consumed by the shared map frontend and does not configure EPICON.
 # Indoor profile verified with recorded scans; full-house flight remains
 # subject to doorway clearance and closed-loop validation.
 
-epicon/FrontierManager/cell_size: 0.2
-epicon/FrontierManager/cluster_min_radius: 0.5
-epicon/FrontierManager/cluster_min_size: 0.4
-epicon/FrontierManager/cluster_max_size: 3.0
+# Preserve small doorway frontiers and split nearby room boundaries sooner.
+# Six points still gate the clustering input; retain noise filtering.
+# 0.18 m keeps the recorded doorway detail with substantially cheaper full
+# audits than 0.15 m. This changes detection, not collision clearance.
+epicon/FrontierManager/cell_size: 0.18
+epicon/FrontierManager/cluster_min_radius: 0.4
+epicon/FrontierManager/cluster_min_size: 0.3
+epicon/FrontierManager/cluster_max_size: 2.5
 epicon/FrontierManager/cluster_minmum_point_num: 6
 epicon/ViewpointManager/sample_pillar_min_height: -1.2
 epicon/ViewpointManager/sample_pillar_max_height: 1.2
@@ -23,6 +28,10 @@ epicon/ViewpointManager/sample_pillar_circle_sample_num: 24
 # corridor and trajectory certification still apply independently.
 epicon/ViewpointManager/min_clearance: 0.68
 epicon/ViewpointManager/preferred_clearance: 0.9
+# Native coverage reads these namespaced values, not the legacy launch
+# arguments bubble_astar_resolution / bubble_topo_cube_discrete_size.
+epicon/bubble_astar/resolution_astar: 0.2
+epicon/bubble_topo/cube_discrete_size: 0.25
 # Fast connectors remain cheap. A disconnected odometry root may retry with
 # 10 ms, under a 30 ms total connection budget. Batch insertion stays at 2 ms.
 epicon/parallel_astar/update_connection_timeout: 0.002

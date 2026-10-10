@@ -2,6 +2,10 @@
   <!-- Garage simulator + planner entry, parallel to state2state_sim.launch. -->
   <arg name="exploration_config"
        default="$(find general_planner_release)/config/exploration.yaml"/>
+  <arg name="exploration_overlay_config" default=""/>
+  <arg name="indoor_frontier_config"
+       default="$(find general_planner_release)/config/exploration_indoor_frontier.yaml"/>
+  <arg name="exploration_mission_mode" default=""/>
   <arg name="sim_config"
        default="$(find general_planner_release)/config/exploration_sim.yaml"/>
   <arg name="rog_map_config"
@@ -28,6 +32,9 @@
 
   <include file="$(find general_planner_release)/launch/exploration.launch">
     <arg name="exploration_config" value="$(arg exploration_config)"/>
+    <arg name="exploration_overlay_config" value="$(arg exploration_overlay_config)"/>
+    <arg name="indoor_frontier_config" value="$(arg indoor_frontier_config)"/>
+    <arg name="exploration_mission_mode" value="$(arg exploration_mission_mode)"/>
     <arg name="rog_map_config" value="$(arg rog_map_config)"/>
     <arg name="odom_topic" value="$(arg odom_topic)"/>
     <arg name="cloud_topic" value="$(arg cloud_topic)"/>

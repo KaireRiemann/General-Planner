@@ -1314,7 +1314,7 @@ namespace fsm {
                 arm_payload >> epoch_text >> task_mode;
                 if (!task_mode.empty()) {
                     if (task_mode != "state2state" && task_mode != "tracking" &&
-                        task_mode != "reorient") {
+                        task_mode != "reorient" && task_mode != "vertical") {
                         ROS_WARN_STREAM("[Fsm] reject unsupported ARM mode=" << task_mode);
                         return;
                     }
@@ -1353,7 +1353,7 @@ namespace fsm {
             }
             std::lock_guard<std::mutex> lock(fsm_tick_mutex_);
             std_msgs::String status;
-            status.data = std::string(state2stateMode() && state2state_plan_failed_
+            status.data = std::string((state2stateMode() || verticalMode()) && state2state_plan_failed_
                                       ? "FAILED" : (trackingMode() && tracking_target_lost_
                                           ? (tracking_lost_braking_ ? "TRACKING_BRAKING" : "TRACKING_LOST")
                                           : machineStateName())) + " " +

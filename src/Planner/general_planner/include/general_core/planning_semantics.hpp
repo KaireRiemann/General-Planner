@@ -23,7 +23,8 @@ enum class TaskType {
     PERCHING,
     EXPLORATION,
     TAKEOFF,
-    REORIENT
+    REORIENT,
+    VERTICAL
 };
 
 enum class BackendType {
@@ -135,6 +136,8 @@ inline const char *toString(const TaskType task) {
             return "takeoff";
         case TaskType::REORIENT:
             return "reorient";
+        case TaskType::VERTICAL:
+            return "vertical";
         case TaskType::STATE_TO_STATE:
         default:
             return "state2state";

@@ -165,6 +165,8 @@ PlannerSupervisor::PlannerSupervisor(ros::NodeHandle &nh,
   navigation_goal_3d_sub_ =
       nh_.subscribe(navigation_goal_3d_in_topic_, 10,
                     &PlannerSupervisor::navigationGoal3DCallback, this);
+  vertical_height_sub_ = nh_.subscribe("/planner/vertical/height", 10,
+                                       &PlannerSupervisor::verticalHeightCallback, this);
   exploration_trigger_sub_ =
       nh_.subscribe("/planner/exploration/trigger", 10,
                     &PlannerSupervisor::clickGoalCallback, this);
@@ -245,6 +247,9 @@ void PlannerSupervisor::modeRequestCallback(
   case general_planner::PlannerModeRequest::MODE_STATE2STATE:
     mode = PlannerMode::STATE2STATE;
     break;
+  case general_planner::PlannerModeRequest::MODE_VERTICAL:
+    mode = PlannerMode::VERTICAL;
+    break;
   case general_planner::PlannerModeRequest::MODE_TRACKING:
     mode = PlannerMode::TRACKING;
     break;
@@ -299,10 +304,10 @@ void PlannerSupervisor::handleModeRequest(const std::uint64_t request_id,
                     << status_.reason);
     return;
   }
-  if (mode == PlannerMode::TRACKING && serial_handover_) {
+  if ((mode == PlannerMode::TRACKING || mode == PlannerMode::VERTICAL) && serial_handover_) {
     status_.accepted_request_id = request_id;
     status_.phase = PlannerPhase::FAILED;
-    status_.reason = "tracking requires serial_handover=false (composed runtime)";
+    status_.reason = std::string(toString(mode)) + " requires serial_handover=false (composed runtime)";
     return;
   }
   // Gate hands the final command bus to a different planner.  The legacy
@@ -680,12 +685,14 @@ void PlannerSupervisor::publishExplorationTaskRequestLocked(const bool start) {
 }
 
 bool PlannerSupervisor::acceptNavigationGoalLocked(
-    const geometry_msgs::PoseStamped &msg, const bool preserve_message_height) {
+    const geometry_msgs::PoseStamped &msg, const bool preserve_message_height,
+    const bool vertical_height_request) {
   // A state2state goal replaces the current goal within the same navigation
   // task.  ready_for_new_task only governs starting a distinct task; it must
   // not block a rolling replan while this task is executing.
   if ((status_.active_mode != PlannerMode::STATE2STATE &&
-       status_.active_mode != PlannerMode::REORIENT) ||
+       status_.active_mode != PlannerMode::REORIENT &&
+       !(status_.active_mode == PlannerMode::VERTICAL && vertical_height_request)) ||
       transition_active_) {
     ROS_WARN_THROTTLE(1.0,
                       "[planner_supervisor] drop navigation goal: inactive "
@@ -748,6 +755,37 @@ void PlannerSupervisor::navigationGoal3DCallback(
   }
   std::lock_guard<std::mutex> lock(mutex_);
   acceptNavigationGoalLocked(*msg, true);
+}
+
+void PlannerSupervisor::verticalHeightCallback(const std_msgs::Float64ConstPtr &msg) {
+  if (!msg) return;
+  std::lock_guard<std::mutex> lock(mutex_);
+  // Relative commands are applied once, against the odometry at receipt.
+  // Never accumulate repeated commands during admission, execution or handover.
+  if (!boot_complete_ || transition_active_ || status_.active_mode != PlannerMode::VERTICAL ||
+      !status_.ready_for_new_task || navigation_goal_dispatch_pending_ ||
+      navigation_accepted_goal_active_) {
+    ROS_WARN_THROTTLE(1.0, "[planner_supervisor] vertical height requires idle vertical mode");
+    return;
+  }
+  if (!std::isfinite(msg->data) || msg->data == 0.0) {
+    status_.reason = "vertical height ignored: require a finite nonzero relative height";
+    return;
+  }
+  if (!hoverConditionMetLocked()) {
+    status_.reason = "vertical height rejected: require fresh odometry and stable hover";
+    return;
+  }
+  const double target_z = odom_.pose.pose.position.z + msg->data;
+  if (!std::isfinite(target_z)) {
+    status_.reason = "vertical height rejected: target height overflow";
+    return;
+  }
+  geometry_msgs::PoseStamped goal;
+  goal.header = odom_.header;
+  goal.pose = odom_.pose.pose;
+  goal.pose.position.z = target_z;
+  acceptNavigationGoalLocked(goal, true, true);
 }
 
 void PlannerSupervisor::clickGoalCallback(
@@ -1185,7 +1223,8 @@ void PlannerSupervisor::navigationStatusCallback(
       return;
     }
     if (adapter_status.goal_active &&
-        (status_.active_mode == PlannerMode::STATE2STATE || status_.active_mode == PlannerMode::REORIENT)) {
+        (status_.active_mode == PlannerMode::STATE2STATE || status_.active_mode == PlannerMode::REORIENT ||
+         status_.active_mode == PlannerMode::VERTICAL)) {
       navigation_accepted_goal_sequence_ = adapter_status.goal_sequence;
       navigation_accepted_goal_active_ = true;
     }
@@ -1201,10 +1240,12 @@ void PlannerSupervisor::navigationStatusCallback(
         (!navigation_goal_dispatch_pending_ ||
          adapter_status.goal_sequence > navigation_goal_sequence_before_dispatch_)) {
       navigation_goal_dispatch_pending_ = false;
+      const std::string failure = status_.active_mode == PlannerMode::VERTICAL
+          ? "vertical motion failed" : "navigation planning retries exhausted";
       beginTransition(status_.active_mode, status_.accepted_request_id,
-                      status_.task_id, "navigation planning retries exhausted");
+                      status_.task_id, failure);
       status_.task_result = PlannerTaskResult::FAILED;
-      status_.reason = "navigation planning retries exhausted; verified hold pending";
+      status_.reason = failure + "; verified hold pending";
       return;
     }
     status_.mode_state = modeStateFromNavigationString(state);
@@ -1238,7 +1279,8 @@ void PlannerSupervisor::navigationStatusCallback(
       }
       const bool completed_dispatched_goal =
           (status_.active_mode == PlannerMode::STATE2STATE ||
-           status_.active_mode == PlannerMode::REORIENT) &&
+           status_.active_mode == PlannerMode::REORIENT ||
+           status_.active_mode == PlannerMode::VERTICAL) &&
           adapter_status.has_lifecycle &&
           navigation_accepted_goal_active_ &&
           !navigation_goal_dispatch_pending_ &&

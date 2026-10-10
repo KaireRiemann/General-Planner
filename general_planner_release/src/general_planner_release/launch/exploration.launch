@@ -2,6 +2,11 @@
   <!-- Planner-only entry: use with real sensors, rosbag, or an external simulator. -->
   <arg name="exploration_config"
        default="$(find general_planner_release)/config/exploration.yaml"/>
+  <arg name="exploration_overlay_config" default=""/>
+  <arg name="indoor_frontier_config"
+       default="$(find general_planner_release)/config/exploration_indoor_frontier.yaml"/>
+  <!-- Empty preserves the mission in the base YAML; coverage selects EPICON. -->
+  <arg name="exploration_mission_mode" default=""/>
   <arg name="rog_map_config"
        default="$(find general_planner_release)/config/exploration_rog_map.yaml"/>
 
@@ -51,6 +56,13 @@
         clear_params="true">
     <!-- Dynamic bounding-box selection is configured by exploration.yaml. -->
     <rosparam file="$(arg exploration_config)" command="load"/>
+    <rosparam if="$(eval arg('exploration_overlay_config') != '')"
+              file="$(arg exploration_overlay_config)" command="load"/>
+    <rosparam if="$(eval arg('indoor_frontier_config') != '')"
+              file="$(arg indoor_frontier_config)" command="load"/>
+    <param if="$(eval arg('exploration_mission_mode') != '')"
+           name="exploration/mission_mode"
+           value="$(arg exploration_mission_mode)" type="string"/>
 
     <param name="odometry_topic" value="$(arg odom_topic)" type="string"/>
     <param name="cloud_topic" value="$(arg cloud_topic)" type="string"/>

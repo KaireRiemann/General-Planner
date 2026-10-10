@@ -48,6 +48,7 @@
   <arg name="exploration_config" default="$(find general_planner_release)/config/exploration_house.yaml" />
   <arg name="target_exploration_config" default="$(find general_planner_release)/config/target_exploration.yaml" />
   <arg name="exploration_overlay_config" default="" />
+  <arg name="indoor_frontier_config" default="$(find general_planner_release)/config/exploration_indoor_frontier.yaml" />
   <arg name="map_config" default="$(find general_planner_release)/config/map.yaml" />
   <arg name="rviz_config" default="$(find general_planner_release)/config/planner_runtime_exploration.rviz" />
   <arg name="exploration_rviz_config" default="$(find general_planner_release)/config/planner_runtime_exploration.rviz" />
@@ -107,6 +108,7 @@
     <arg name="exploration_config" value="$(arg exploration_config)" />
     <arg name="target_exploration_config" value="$(arg target_exploration_config)" />
     <arg name="exploration_overlay_config" value="$(arg exploration_overlay_config)" />
+    <arg name="indoor_frontier_config" value="$(arg indoor_frontier_config)" />
     <arg name="map_config" value="$(arg map_config)" />
     <arg name="rviz_config" value="$(arg rviz_config)" />
     <arg name="exploration_rviz_config" value="$(arg exploration_rviz_config)" />

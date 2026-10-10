@@ -5,8 +5,8 @@
        /drone_0_pcl_render_node/cloud. -->
   <arg name="tcp_ip" default="0.0.0.0" />
   <arg name="tcp_port" default="10000" />
-  <arg name="init_x" default="0.0" />
-  <arg name="init_y" default="0.0" />
+  <arg name="init_x" default="37.0" />
+  <arg name="init_y" default="-2.0" />
   <arg name="init_z" default="1.5" />
   <arg name="init_yaw" default="0.0" />
   <arg name="estimate_feedback_twist" default="true" />

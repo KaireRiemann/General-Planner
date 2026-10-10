@@ -29,6 +29,7 @@
 #include <utils/header/map_config.hpp>
 #include <general_core/config.hpp>
 #include <general_core/planning_semantics.hpp>
+#include <general_core/vertical/vertical_trajectory.hpp>
 #include <algorithm>
 #include <cctype>
 #include <vector>
@@ -50,7 +51,8 @@ namespace fsm {
         EXPLORATION = 3,
         DYNAMIC_TAKEOFF = 4,
         TRACKING_PERCHING = 5,
-        REORIENT = 6
+        REORIENT = 6,
+        VERTICAL = 7
     };
 
     inline general_planner::architecture::TaskType taskTypeFromTaskMode(const TaskMode mode) {
@@ -65,6 +67,8 @@ namespace fsm {
                 return TaskType::EXPLORATION;
             case TaskMode::DYNAMIC_TAKEOFF:
                 return TaskType::TAKEOFF;
+            case TaskMode::VERTICAL:
+                return TaskType::VERTICAL;
             case TaskMode::REORIENT:
                 return TaskType::REORIENT;
             case TaskMode::STATE_TO_STATE:
@@ -107,6 +111,7 @@ namespace fsm {
         if (mode == "explore" || mode == "exploration") {
             return "exploration";
         }
+        if (mode == "vertical") return "vertical";
         if (mode == "reorient" || mode == "rotate" || mode == "yaw" ||
             mode == "yaw_only" || mode == "yaw-only" || mode == "rotate_in_place" ||
             mode == "rotate-in-place") {
@@ -132,6 +137,7 @@ namespace fsm {
         if (normalized == "exploration") {
             return TaskMode::EXPLORATION;
         }
+        if (normalized == "vertical") return TaskMode::VERTICAL;
         if (normalized == "reorient") {
             return TaskMode::REORIENT;
         }
@@ -228,6 +234,7 @@ namespace fsm {
         string state2state_topology_selection_topic{
                 "/planner/navigation/use_global_topology"};
         double yaw_dot_max{};
+        VerticalMotionConfig vertical;
         // In-place / near-field yaw adjustment (TaskMode::REORIENT).  The
         // executed trajectory holds the current position (optionally allowing
         // a small drift toward the clicked point) while rotating to the goal
@@ -447,6 +454,17 @@ namespace fsm {
 
 
             loader.LoadParam("general_planner/yaw_dot_max", yaw_dot_max, 1.0, true);
+            loader.LoadParam("fsm/vertical/max_vel", vertical.max_vel, vertical.max_vel);
+            loader.LoadParam("fsm/vertical/max_acc", vertical.max_acc, vertical.max_acc);
+            loader.LoadParam("fsm/vertical/max_jerk", vertical.max_jerk, vertical.max_jerk);
+            loader.LoadParam("fsm/vertical/min_duration", vertical.min_duration, vertical.min_duration);
+            loader.LoadParam("fsm/vertical/max_duration", vertical.max_duration, vertical.max_duration);
+            loader.LoadParam("fsm/vertical/start_speed_tolerance", vertical.start_speed_tolerance, vertical.start_speed_tolerance);
+            loader.LoadParam("fsm/vertical/tracking_error_max", vertical.tracking_error_max, vertical.tracking_error_max);
+            loader.LoadParam("fsm/vertical/goal_tolerance", vertical.goal_tolerance, vertical.goal_tolerance);
+            loader.LoadParam("fsm/vertical/completion_timeout", vertical.completion_timeout, vertical.completion_timeout);
+            loader.LoadParam("fsm/vertical/unknown_as_occupied", vertical.unknown_as_occupied, vertical.unknown_as_occupied);
+
             loader.LoadParam("fsm/reorient_yaw_dot_max", reorient_yaw_dot_max, 0.0);
             if (!std::isfinite(reorient_yaw_dot_max) || reorient_yaw_dot_max <= 0.0) {
                 reorient_yaw_dot_max = yaw_dot_max;

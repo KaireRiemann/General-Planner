@@ -1013,6 +1013,35 @@ namespace fsm {
         static double last_print_t = 0.0;
         planner_ptr_->getRobotState(robot_state_);
 
+        if (verticalMode() && machine_state_ == FOLLOW_TRAJ && navigation_goal_active_.load()) {
+            std::string reason;
+            const double now = ros_ptr_->getSimTime();
+            if (!robot_state_.rcv || !robot_state_.p.allFinite() ||
+                !std::isfinite(robot_state_.rcv_time) || now - robot_state_.rcv_time > 0.2) {
+                failVerticalTask("vertical_odometry_unavailable");
+                return;
+            }
+            planner_ptr_->lockCommittedTraj();
+            const auto trajectory = planner_ptr_->getCommittedPositionTrajectory();
+            planner_ptr_->unlockCommittedTraj();
+            if (trajectory.empty()) {
+                failVerticalTask("vertical_command_missing");
+                return;
+            }
+            const double t = std::clamp(now - trajectory.start_WT, 0.0, trajectory.getTotalDuration());
+            const Vec3f expected = trajectory.getPos(t);
+            if ((robot_state_.p - expected).norm() > cfg_.vertical.tracking_error_max) {
+                failVerticalTask("vertical_tracking_error");
+                return;
+            }
+            if (!planner_ptr_->checkVerticalSegment(expected, gi_.goal_p,
+                                                     cfg_.vertical.unknown_as_occupied, reason) ||
+                !planner_ptr_->checkVerticalSegment(robot_state_.p, expected,
+                                                     cfg_.vertical.unknown_as_occupied, reason)) {
+                failVerticalTask(reason);
+                return;
+            }
+        }
 
         if (cur_t - last_print_t > 1.0) {
             last_print_t = cur_t;
@@ -1461,6 +1490,26 @@ namespace fsm {
         return cfg_.task_mode == TaskMode::EXPLORATION;
     }
 
+    bool Fsm::verticalMode() const {
+        return cfg_.task_mode == TaskMode::VERTICAL;
+    }
+
+    void Fsm::failVerticalTask(const std::string &reason) {
+        recordDiagnosticEvent("ERROR", "vertical_failed", reason, FAILED);
+        // Keep the supervisor epoch so FAILED belongs to the accepted task.
+        // Its existing failure handover captures current odometry for HOLD.
+        state2state_plan_failed_ = true;
+        navigation_execution_enabled_ = false;
+        accept_external_goals_ = false;
+        navigation_goal_active_ = false;
+        gi_.new_goal = false;
+        started_ = false;
+        finish_plan = true;
+        plan_from_rest_ = false;
+        task_new_ = false;
+        ChangeState("vertical_failed", WAIT_GOAL);
+    }
+
     bool Fsm::reorientMode() const {
         return cfg_.task_mode == TaskMode::REORIENT;
     }
@@ -1795,6 +1844,25 @@ namespace fsm {
             const bool record_regular_finish,
             const bool mark_static_target_finished) {
         ExecutedTrajectoryFinishResult result;
+        if (verticalMode()) {
+            planner_ptr_->getRobotStateSnapshot(robot_state_);
+            const double now = ros_ptr_->getSimTime();
+            const bool fresh = robot_state_.rcv && robot_state_.p.allFinite() &&
+                robot_state_.v.allFinite() && now - robot_state_.rcv_time <= 0.2;
+            const bool reached = fresh && (robot_state_.p - gi_.goal_p).norm() <= cfg_.vertical.goal_tolerance &&
+                robot_state_.v.norm() <= cfg_.vertical.start_speed_tolerance;
+            if (!reached) {
+                planner_ptr_->lockCommittedTraj();
+                const auto trajectory = planner_ptr_->getCommittedPositionTrajectory();
+                planner_ptr_->unlockCommittedTraj();
+                if (!fresh || trajectory.empty() ||
+                    now - trajectory.start_WT - trajectory.getTotalDuration() > cfg_.vertical.completion_timeout) {
+                    failVerticalTask(fresh ? "vertical_goal_not_reached" : "vertical_odometry_unavailable");
+                    result.state_changed = true;
+                }
+                return result; // Keep publishing the stationary endpoint while settling.
+            }
+        }
         // Elastic keeps flying the last polynomial. When it ends, replan from
         // the measured state if the target is still valid; otherwise hover.
         if (trackingMode()) {
@@ -2231,7 +2299,7 @@ namespace fsm {
                                   0);
             return {GoalAdmission::REJECTED, "non_finite_position"};
         }
-        if (!checker::quaternionValidOrDisabled(q)) {
+        if (!verticalMode() && !checker::quaternionValidOrDisabled(q)) {
             recordDiagnosticEvent("WARN",
                                   "goal_rejected",
                                   "reason=invalid_quaternion",
@@ -2248,11 +2316,37 @@ namespace fsm {
         // value: neither a stale FSM tick nor a write to the optimizer's state
         // is appropriate for the too-close/reorient geometry check.
         rog_map::RobotState admission_robot_state = robot_state_;
-        if ((state2stateMode() || reorientMode()) && planner_ptr_) {
+        if ((state2stateMode() || reorientMode() || verticalMode()) && planner_ptr_) {
             planner_ptr_->getRobotStateSnapshot(admission_robot_state);
             if (!admission_robot_state.rcv || !admission_robot_state.p.allFinite()) {
                 return {GoalAdmission::REJECTED, "odometry_unavailable"};
             }
+        }
+
+        if (verticalMode()) {
+            // Rest-to-rest only. Rejected replacements preserve the active
+            // sequence and polynomial; callers can HOLD before another move.
+            if (navigation_goal_active_.load()) {
+                if (std::abs(p.z() - gi_.goal_p.z()) < 1e-6)
+                    return {GoalAdmission::ALREADY_ACTIVE, "vertical_already_active"};
+                return {GoalAdmission::REJECTED, "vertical_busy"};
+            }
+            Trajectory position, yaw;
+            std::string reason;
+            if (!planner_ptr_->prepareVerticalTrajectory(p.z(), cfg_.vertical, position, yaw, reason)) {
+                recordDiagnosticEvent("WARN", "goal_rejected", reason);
+                return {GoalAdmission::REJECTED, reason};
+            }
+            gi_.goal_p = position.getPos(position.getTotalDuration());
+            gi_.goal_yaw = yaw.getPos(0).x();
+            gi_.new_goal = true;
+            started_ = true;
+            state2state_plan_failed_ = false;
+            ++navigation_goal_sequence_;
+            navigation_goal_active_ = true;
+            recordDiagnosticEvent("INFO", "goal_accepted",
+                                  fmt::format("mode=vertical;target_z={:.3f}", p.z()));
+            return {GoalAdmission::ACCEPTED, "accepted"};
         }
 
         auto click_point = p;

@@ -214,6 +214,7 @@ namespace fsm {
         class DynamicTakeoffTaskExecutor;
         class ExplorationTaskExecutor;
         class ReorientTaskExecutor;
+        class VerticalTaskExecutor;
 
         std::unique_ptr<TaskExecutor> task_executor_;
         TaskMode task_executor_mode_{TaskMode::STATE_TO_STATE};
@@ -411,6 +412,8 @@ namespace fsm {
         bool explorationMode() const;
 
         bool reorientMode() const;
+        bool verticalMode() const;
+        void failVerticalTask(const std::string &reason);
 
         bool se3AggressiveMode() const;
 

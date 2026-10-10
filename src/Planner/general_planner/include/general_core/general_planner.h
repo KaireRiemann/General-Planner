@@ -32,6 +32,7 @@
 
 
 #include <general_core/config.hpp>
+#include <general_core/vertical/vertical_trajectory.hpp>
 #include <ros_interface/ros1/ros1_interface.hpp>
 #include <data_structure/base/trajectory.h>
 
@@ -269,6 +270,13 @@ namespace general_planner {
                                       const double &min_duration,
                                       const double &yaw_tolerance,
                                       const std::string &traj_ns);
+
+        bool prepareVerticalTrajectory(double target_z, const VerticalMotionConfig &limits,
+                                       Trajectory &position, Trajectory &yaw, std::string &reason);
+        bool commitVerticalTrajectory(double target_z, const VerticalMotionConfig &limits,
+                                      std::string &reason);
+        bool checkVerticalSegment(const Vec3f &start, const Vec3f &end,
+                                  bool unknown_as_occupied, std::string &reason) const;
 
         bool checkCommittedPositionTrajectorySafety(
                 double horizon,

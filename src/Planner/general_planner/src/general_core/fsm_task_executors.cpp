@@ -487,6 +487,38 @@ private:
     }
 };
 
+class Fsm::VerticalTaskExecutor final : public Fsm::TaskExecutor {
+public:
+    TaskMode mode() const override { return TaskMode::VERTICAL; }
+    const char *name() const override { return "vertical"; }
+    bool ready(Fsm &fsm) override { return fsm.gi_.new_goal; }
+    bool replanAllowed(const Fsm &) const override { return false; }
+    bool shouldGenerateAfterTrajFinish(Fsm &) override { return false; }
+    PlanResult plan(Fsm &fsm, const PlanRequest &request) override {
+        std::string reason;
+        if (!fsm.planner_ptr_->commitVerticalTrajectory(fsm.gi_.goal_p.z(), fsm.cfg_.vertical, reason)) {
+            // Admission and commit have separate map snapshots. A newly
+            // blocked path is terminal, never an endless planning retry.
+            fsm.failVerticalTask(reason);
+            TaskPlanContext context;
+            context.handled = true;
+            return makeResult(fsm, request, FAILED, context, reason);
+        }
+        fsm.planner_ptr_->lockCommittedTraj();
+        const auto position = fsm.planner_ptr_->getCommittedPositionTrajectory();
+        const auto yaw = fsm.planner_ptr_->getCommittedYawTrajectory();
+        fsm.planner_ptr_->unlockCommittedTraj();
+        fsm.gi_.goal_p = position.getPos(position.getTotalDuration());
+        fsm.gi_.goal_yaw = yaw.getPos(0).x();
+        fsm.recordDiagnosticEvent("INFO", "vertical_committed",
+                                  fmt::format("target_z={:.3f}", fsm.gi_.goal_p.z()), SUCCESS);
+        return makeResult(fsm, request, SUCCESS, {}, "vertical committed");
+    }
+    PlanResult replan(Fsm &fsm, const PlanRequest &request) override {
+        return makeResult(fsm, request, NO_NEED, {}, "vertical has no rolling replan");
+    }
+};
+
 class Fsm::ReorientTaskExecutor final : public Fsm::TaskExecutor {
 public:
     TaskMode mode() const override {
@@ -607,6 +639,8 @@ std::unique_ptr<Fsm::TaskExecutor> Fsm::makeTaskExecutor(const TaskMode mode) co
             return std::make_unique<DynamicTakeoffTaskExecutor>();
         case TaskMode::EXPLORATION:
             return std::make_unique<ExplorationTaskExecutor>();
+        case TaskMode::VERTICAL:
+            return std::make_unique<VerticalTaskExecutor>();
         case TaskMode::REORIENT:
             return std::make_unique<ReorientTaskExecutor>();
         case TaskMode::STATE_TO_STATE:

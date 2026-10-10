@@ -24,7 +24,8 @@ enum class PlannerMode : std::uint8_t {
   // In-place / near-field attitude (yaw) adjustment.  Shares the navigation
   // adapter and command gateway; the executed trajectory holds the current
   // position (optionally within a small drift radius) while rotating.
-  REORIENT = 7
+  REORIENT = 7,
+  VERTICAL = 8
 };
 
 enum class PlannerPhase : std::uint8_t {
@@ -168,6 +169,8 @@ inline const char *toString(const PlannerMode mode) {
     return "tracking";
   case PlannerMode::REORIENT:
     return "reorient";
+  case PlannerMode::VERTICAL:
+    return "vertical";
   case PlannerMode::EXPLORATION:
     return "exploration";
   case PlannerMode::TARGET_EXPLORATION:
@@ -304,6 +307,10 @@ inline bool parsePlannerMode(std::string text, PlannerMode &mode) {
     mode = PlannerMode::TRACKING;
     return true;
   }
+  if (text == "vertical") {
+    mode = PlannerMode::VERTICAL;
+    return true;
+  }
   if (text == "reorient" || text == "rotate" || text == "yaw" ||
       text == "yaw_only" || text == "yaw-only") {
     mode = PlannerMode::REORIENT;
@@ -332,7 +339,7 @@ inline bool parsePlannerMode(std::string text, PlannerMode &mode) {
 
 inline bool isNavigationMode(const PlannerMode mode) {
   return mode == PlannerMode::STATE2STATE || mode == PlannerMode::TRACKING ||
-         mode == PlannerMode::REORIENT;
+         mode == PlannerMode::REORIENT || mode == PlannerMode::VERTICAL;
 }
 
 inline bool isExplorationMode(const PlannerMode mode) {
@@ -409,6 +416,7 @@ inline CommandOwner ownerForMode(const PlannerMode mode) {
   case PlannerMode::STATE2STATE:
   case PlannerMode::TRACKING:
   case PlannerMode::REORIENT:
+  case PlannerMode::VERTICAL:
     return CommandOwner::STATE2STATE;
   case PlannerMode::EXPLORATION:
   case PlannerMode::TARGET_EXPLORATION:

@@ -22,6 +22,7 @@
 #include <nav_msgs/Odometry.h>
 #include <ros/ros.h>
 #include <std_msgs/String.h>
+#include <std_msgs/Float64.h>
 #include <std_msgs/UInt64.h>
 
 namespace general_planner::gate { class Runtime; }
@@ -43,6 +44,7 @@ private:
   void modeRequestTextCallback(const std_msgs::StringConstPtr &msg);
   void navigationGoalCallback(const geometry_msgs::PoseStampedConstPtr &msg);
   void navigationGoal3DCallback(const geometry_msgs::PoseStampedConstPtr &msg);
+  void verticalHeightCallback(const std_msgs::Float64ConstPtr &msg);
   void explorationTriggerCallback(const geometry_msgs::PoseStampedConstPtr &msg);
   void explorationTargetGoalCallback(
       const geometry_msgs::PoseStampedConstPtr &msg);
@@ -51,7 +53,8 @@ private:
   // `preserve_message_height` selects the FSM's 3D ingress so z is not
   // replaced by the configured 2D click height.
   bool acceptNavigationGoalLocked(const geometry_msgs::PoseStamped &msg,
-                                  bool preserve_message_height = false);
+                                  bool preserve_message_height = false,
+                                  bool vertical_height_request = false);
   bool acceptExplorationTriggerLocked(const geometry_msgs::PoseStamped &msg);
   // A new destination is a controlled replacement, not an unsafe restart of
   // the active target planner.  The old task is paused first; only its
@@ -114,6 +117,7 @@ private:
   ros::Subscriber mode_request_text_sub_;
   ros::Subscriber navigation_goal_sub_;
   ros::Subscriber navigation_goal_3d_sub_;
+  ros::Subscriber vertical_height_sub_;
   ros::Subscriber exploration_trigger_sub_;
   ros::Subscriber exploration_target_goal_sub_;
   std::vector<ros::Subscriber> exploration_rviz_trigger_subs_;
