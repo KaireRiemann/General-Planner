@@ -241,6 +241,7 @@ namespace general_planner {
                 exp_services,
                 services.last_exp_traj_info,
                 exp_traj_info);
+        if (exp_ret_code == WAIT_FOR_TOPOLOGY) return WAIT_FOR_TOPOLOGY;
         if (exp_ret_code == FAILED) {
             services.ros_ptr->warn(" -- [GeneralPlanner] in [PlanFromRest] GenerateExpTrajectory failed with {}.",
                                    RET_CODE_STR[exp_ret_code].c_str());
@@ -411,6 +412,7 @@ namespace general_planner {
                 exp_traj_info);
         services.time_consuming[GENERATE_EXP_TRAJ] = t_exp.stop();
 
+        if (exp_ret_code == WAIT_FOR_TOPOLOGY) return WAIT_FOR_TOPOLOGY;
         if (exp_ret_code == FAILED) {
             services.ros_ptr->warn(" -- [GeneralPlanner] in [ReplanOnce]: GenerateExpTrajectory failed, force return");
             return FAILED;

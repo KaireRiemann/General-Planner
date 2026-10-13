@@ -32,6 +32,7 @@ struct StateToStateFrontendServices {
     general_utils::Vec3f &local_start_p;
     const general_utils::Vec3f &goal_p;
     bool &goal_valid;
+    bool waiting_for_topology{false};
 };
 
 bool pathSearch(StateToStateFrontendServices &services,

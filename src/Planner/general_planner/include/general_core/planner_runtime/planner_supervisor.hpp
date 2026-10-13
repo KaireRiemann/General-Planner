@@ -149,6 +149,12 @@ private:
   PlannerMode initial_mode_{PlannerMode::HOLD};
   PlannerMode transition_target_{PlannerMode::HOLD};
   bool transition_active_{false};
+  bool recovery_goal_pending_{false};
+  geometry_msgs::PoseStamped recovery_goal_;
+  bool recovery_goal_preserve_height_{false};
+  ros::WallTime recovery_goal_received_;
+  double recovery_goal_timeout_{10.0};
+  bool queueRecoveryGoalLocked(const geometry_msgs::PoseStamped &goal, bool preserve_height);
   bool boot_complete_{false};
   bool hold_anchor_locked_for_transition_{false};
   bool exploration_start_pending_{false};
@@ -223,7 +229,7 @@ private:
   double hover_speed_threshold_{0.10};
   double hover_yaw_rate_threshold_{0.10};
   double hover_hold_duration_{0.50};
-  double max_odom_age_{0.20};
+  double max_odom_age_{0.5};
   double status_rate_{10.0};
   double exploration_start_retry_period_{0.5};
   double source_startup_grace_duration_{2.0};

@@ -66,6 +66,8 @@ namespace fsm {
                     return "NO_PATH";
                 case TIME_OUT:
                     return "TIME_OUT";
+                case WAIT_FOR_TOPOLOGY:
+                    return "WAIT_FOR_TOPOLOGY";
                 default:
                     return std::to_string(ret_code);
             }
@@ -1270,6 +1272,11 @@ namespace fsm {
                                                       : plan_context.decision_detail),
                                       retcode);
 
+                if (retcode == WAIT_FOR_TOPOLOGY) {
+                    state2state_next_plan_attempt_wall_ = general_planner::planningWallSeconds() +
+                        general_planner::planningRetryBackoff(cfg_.state2state_plan_from_rest_failure_backoff);
+                    return;  // Keep the goal and HOLD; do not consume a hard-failure attempt.
+                }
                 switch (commit_decision.action) {
                     case general_planner::architecture::CommitAction::HOLD:
                     case general_planner::architecture::CommitAction::BRAKE:

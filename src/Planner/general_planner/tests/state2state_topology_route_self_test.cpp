@@ -2,6 +2,7 @@
 #include <general_core/state2state/state2state_topology_search.hpp>
 #include <map_manager/incremental_topology_graph.hpp>
 
+#include <general_core/commit_governor.hpp>
 #include <cmath>
 #include <iostream>
 #include <stdexcept>
@@ -116,6 +117,39 @@ int main() {
     expect(!findClosestReachableTopologyRoute(graph, points.front(), outside_goal,
         [](const Vec3f &, const Vec3f &) { return false; }, relay_route) && relay_route.empty(),
         "failed known-free attachment must never fabricate a direct route");
+
+    // A blocked straight attachment can use a validated local dogleg, while
+    // unknown or obstacle-crossing connectors must still be rejected.
+    Graph::SearchSnapshot attachment_graph;
+    attachment_graph.config.connection_radius = 2.0;
+    attachment_graph.config.max_neighbors = 4;
+    attachment_graph.graph[1].node.position = Vec3f(1,1,1);
+    attachment_graph.graph[1].node.id = 1;
+    auto axis_free = [](const Vec3f &a, const Vec3f &b) {
+        return std::abs(a.x()-b.x()) < 1.e-6 || std::abs(a.y()-b.y()) < 1.e-6;
+    };
+    general_planner::state2state_task::TopologyConnector connector =
+        [](const Vec3f &a, const Vec3f &b, vec_Vec3f &out) {
+            out = {a, Vec3f(b.x(),a.y(),a.z()), b}; return true;
+        };
+    expect(findClosestReachableTopologyRoute(attachment_graph, Vec3f(0,0,1), outside_goal,
+        axis_free, relay_route, connector) && relay_route.size() == 3,
+        "validated bent attachment must be retained in the graph route");
+    expect(!findClosestReachableTopologyRoute(attachment_graph, Vec3f(0,0,1), outside_goal,
+        [](const Vec3f &, const Vec3f &) { return false; }, relay_route, connector),
+        "repair must not bypass known-free checks");
+    runtime.wait_started = -1.0;
+    expect(runtime.allowWait("NO_TOPO_SNAPSHOT", 10., 3.), "initial topology wait");
+    expect(runtime.allowWait("TOPO_QUERY_RATE_LIMIT", 12., 3.), "wait reason change retains deadline");
+    expect(!runtime.allowWait("TOPO_REQUERY_READY_WAIT", 13., 3.), "bounded topology wait");
+    expect(!runtime.allowWait("NO_REACHABLE_TOPO_ANCHOR", 10., 3.), "hard attachment failure is not wait");
+    using namespace general_planner::architecture;
+    CommitGovernorInput input;
+    input.result.ret_code = general_utils::WAIT_FOR_TOPOLOGY;
+    input.result.request.identity.goal_like = true;
+    const auto decision = CommitGovernor{}.decidePlanFromRest(input);
+    expect(decision.action == CommitAction::NOOP && !decision.publish_trajectory && !decision.clear_goal,
+           "waiting at rest must neither count a failure nor commit an empty trajectory");
 
     runtime.setPolicy(true);
     runtime.consumed_policy_generation = runtime.policy_generation.load();

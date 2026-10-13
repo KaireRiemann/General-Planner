@@ -100,8 +100,11 @@ int main(int argc, char **argv) {
         }
         require(passed_corner, "line-of-sight shortcut discarded graph detour");
         require(!pathSearch(services, relay, goal, 8., path) &&
-                runtime.route.last_result == "TOPO_WAIT_ANCHOR_ARRIVAL",
+                runtime.route.last_result == "TOPO_WAIT_ANCHOR_ARRIVAL" && services.waiting_for_topology,
                 "future planning head released graph before measured arrival");
+        runtime.wait_started -= cfg.state2state_topology_wait_timeout + 1.0;
+        require(!pathSearch(services, relay, goal, 8., path) && !services.waiting_for_topology,
+                "topology wait did not become a bounded failure");
         measured.p = relay;
         map->updateOdometrySnapshot(measured);
         require(pathSearch(services, relay, goal, 8., path) &&

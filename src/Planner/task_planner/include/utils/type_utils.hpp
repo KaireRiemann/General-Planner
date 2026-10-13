@@ -40,13 +40,14 @@ namespace general_utils{
         REACH_HORIZON,
         REACH_GOAL,
         NO_PATH,
-        TIME_OUT
+        TIME_OUT,
+        WAIT_FOR_TOPOLOGY
     };
 
     static const std::vector<std::string> RET_CODE_STR{"FAILED", "NO_NEED", "SUCCESS",
                                                        "FINISH", "NEW_TRAJ", "EMER",
                                                        "OPT_FAILED","INIT_ERROR",
-                                                        "REACH_HORIZON", "REACH_GOAL", "NO_PATH", "TIME_OUT"};
+                                                        "REACH_HORIZON", "REACH_GOAL", "NO_PATH", "TIME_OUT", "WAIT_FOR_TOPOLOGY"};
 
     enum GridType {
         UNDEFINED = 0,

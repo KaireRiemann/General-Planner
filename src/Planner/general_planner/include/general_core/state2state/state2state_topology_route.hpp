@@ -51,6 +51,18 @@ struct State2StateTopologyRouteRuntime {
     std::uint64_t consumed_policy_generation{0};
     std::uint64_t consumed_task_generation{0};
     GlobalTopologyRouteContext route;
+    double wait_started{-1.0};
+
+    // Caller supplies monotonic wall seconds; query retries must not renew this deadline.
+    bool allowWait(const std::string &reason, double now, double timeout) {
+        const bool transient = reason == "TOPO_QUERY_RATE_LIMIT" ||
+            reason == "TOPO_REQUERY_READY_WAIT" || reason == "TOPO_WAIT_ANCHOR_ARRIVAL" ||
+            reason == "NO_TOPO_SNAPSHOT";
+        if (!transient) return false;
+        if (wait_started < 0.0) wait_started = now;
+        return now - wait_started < timeout;
+    }
+
 
     bool requiresTopologyLeg(const general_utils::Vec3f &goal) const {
         return policy_enabled.load(std::memory_order_acquire) &&

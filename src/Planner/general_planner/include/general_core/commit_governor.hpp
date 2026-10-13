@@ -29,6 +29,12 @@ public:
             decision.reason = "handled_by_task_plugin";
             return decision;
         }
+        if (result.ret_code == general_utils::WAIT_FOR_TOPOLOGY) {
+            decision.action = CommitAction::NOOP;
+            decision.next_phase = ExecutionPhase::PLANNING;
+            decision.reason = "waiting_for_topology";
+            return decision;
+        }
         if (result.request.identity.goal_like && !input.planner_goal_valid) {
             decision.action = CommitAction::REQUEST_NEW_INPUT;
             decision.next_phase = ExecutionPhase::WAITING_INPUT;
@@ -102,6 +108,12 @@ public:
             return decision;
         }
         if (trackingDecision(result, decision)) return decision;
+        if (result.ret_code == general_utils::WAIT_FOR_TOPOLOGY) {
+            decision.action = CommitAction::NOOP;
+            decision.next_phase = result.request.phase;
+            decision.reason = "waiting_for_topology";
+            return decision;
+        }
         if (result.failed() && result.request.identity.tracking_like) {
             decision.action = CommitAction::KEEP_OLD_TRAJECTORY;
             decision.next_phase = ExecutionPhase::EXECUTING;

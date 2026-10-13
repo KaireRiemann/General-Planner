@@ -12,6 +12,7 @@
 #include <general_core/state2state/state2state_topology_search.hpp>
 #include <algorithm>
 #include <cmath>
+#include <chrono>
 #include <fmt/color.h>
 
 using namespace general_utils;
@@ -198,6 +199,7 @@ namespace state2state_task {
                     const double searching_horizon,
                     vec_Vec3f &path) {
         using namespace path_search;
+        services.waiting_for_topology = false;
         if (searching_horizon <= 0.0) {
             services.ros_ptr->error(" -- [GeneralPlanner] Goal waypoints empty or searching horizon negative, force return.");
             return false;
@@ -333,6 +335,7 @@ namespace state2state_task {
                                         const bool reset_query_timer) {
                 resetGlobalTopologyRoute(route, reason);
                 if (reset_query_timer) {
+                    runtime.wait_started = -1.0;
                     route.last_query_time = -std::numeric_limits<double>::infinity();
                 }
             };
@@ -400,8 +403,32 @@ namespace state2state_task {
                 }
 
                 vec_Vec3f raw_route;
-                if (!findClosestReachableTopologyRoute(*snapshot, temp_start_point,
-                        goal, topologyLineUsable, raw_route)) {
+                TopologyAttachmentDiagnostics attachment;
+                const auto repair_started = std::chrono::steady_clock::now();
+                const TopologyConnector repair_attachment = [&](const Vec3f &from, const Vec3f &to,
+                                                                vec_Vec3f &connection) {
+                    const double remaining = 0.06 - std::chrono::duration<double>(
+                        std::chrono::steady_clock::now() - repair_started).count();
+                    if (remaining <= 0.0) return false;
+                    const auto result = services.astar->pointToPointPathSearch(from, to,
+                        ON_PROB_MAP | UNKNOWN_AS_OCCUPIED,
+                        2.0 * snapshot->config.connection_radius, connection,
+                        std::min(0.02, remaining));
+                    if (result != REACH_GOAL) return false;
+                    connection.insert(connection.begin(), from);
+                    connection.push_back(to);
+                    return true; // Search helper revalidates every segment against topologyLineUsable.
+                };
+                const bool found = findClosestReachableTopologyRoute(*snapshot, temp_start_point,
+                        goal, topologyLineUsable, raw_route, repair_attachment, &attachment);
+                if (!found || attachment.repaired) {
+                    services.ros_ptr->warn(
+                        " -- [TopologyAttachment] found={} candidates={} direct_checks={} direct_links={} "
+                        "repair_checks={} repaired={} snapshot_revision={}", found, attachment.candidates,
+                        attachment.direct_checks, attachment.direct_links, attachment.repair_checks,
+                        attachment.repaired, snapshot->revision);
+                }
+                if (!found) {
                     route.last_result = "NO_REACHABLE_TOPO_ANCHOR";
                     return false;
                 }
@@ -667,8 +694,28 @@ namespace state2state_task {
         if (topology_required && !topology_frontend) {
             // A failed attachment, blocked prefix or pending requery is not
             // permission to fly directly to an off-graph goal.
+            auto &runtime = *services.topology_route_runtime;
+            const double wall_now = std::chrono::duration<double>(
+                std::chrono::steady_clock::now().time_since_epoch()).count();
+            services.waiting_for_topology = runtime.allowWait(
+                runtime.route.last_result, wall_now, services.cfg.state2state_topology_wait_timeout);
+            services.ros_ptr->warn(
+                " -- [TopologyFrontend] outcome={} reason={} policy={} route_id={} "
+                "map_revision={} topo_revision={} start=[{},{},{}] goal=[{},{},{}] "
+                "start_raw={} goal_raw={} start_in_map={} goal_in_map={} wait_s={}",
+                services.waiting_for_topology ? "WAIT" : "FAILED", runtime.route.last_result,
+                runtime.policy_enabled.load(), runtime.route.route_id,
+                services.map_manager->mapRevision(), runtime.route.topo_revision,
+                temp_start_point.x(), temp_start_point.y(), temp_start_point.z(),
+                goal.x(), goal.y(), goal.z(),
+                static_cast<int>(services.map_manager->getGridType(temp_start_point)),
+                static_cast<int>(services.map_manager->getGridType(goal)),
+                services.map_manager->insideLocalMap(temp_start_point), goal_inside_local_map,
+                runtime.wait_started < 0.0 ? 0.0 : wall_now - runtime.wait_started);
             return false;
         }
+        if (services.topology_route_runtime && topology_frontend)
+            services.topology_route_runtime->wait_started = -1.0;
         const bool direct_line_frontend = !topology_frontend &&
                 buildDirectLineCandidate(normal_path, ret_code);
         if (!direct_line_frontend && !topology_frontend) {

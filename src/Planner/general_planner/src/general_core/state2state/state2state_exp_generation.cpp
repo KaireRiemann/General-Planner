@@ -440,6 +440,7 @@ namespace general_planner {
                         out_exp_traj_info = last_exp_traj_info;
                         return NO_NEED;
                     }
+                    if (services.frontend.waiting_for_topology) return WAIT_FOR_TOPOLOGY;
                     services.ros_ptr->warn(" -- [GeneralPlanner] PathSearch for new path failed");
                     return FAILED;
                 } else if (new_path.size() < 2) {

@@ -546,8 +546,8 @@ reason: "command source timeout in exploration (no command received within start
 | `hover_speed_threshold` | 0.10 m/s | 限制到 0.01～1.0；三维速度范数。 |
 | `hover_yaw_rate_threshold` | 0.10 rad/s | 限制到 0.01～1.0；检查绝对值。 |
 | `hover_hold_duration` | 0.50 s | 限制到 0.1～5.0；普通启动/切换需连续满足。 |
-| `max_odom_age` | 0.20 s | 限制到 0.05～1.0；Supervisor 接收时间新鲜度。 |
-| `global_map/max_odom_age` | 0.20 s | 共享地图状态的里程计时效，范围 0.05～5.0。 |
+| `max_odom_age` | 0.5 s | 限制到 0.05～1.0；Supervisor 接收时间新鲜度。 |
+| `global_map/max_odom_age` | 0.5 s | 共享地图状态的里程计时效，范围 0.05～5.0。 |
 | `status_rate` | 10 Hz | 限制到 1～50；状态周期与过渡检查。 |
 | `exploration_start_retry_period` | 0.50 s | 限制到 0.1～2.0；START 未确认时重发。 |
 | `source_startup_grace_duration` | 2.0 s | 限制到 0.5～10.0；授权后首条源指令宽限。 |

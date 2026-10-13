@@ -149,7 +149,7 @@ class GlobalMapRuntime {
   double topology_expansion_publish_period_{0.50};
   std::uint64_t last_topology_expansion_revision_{0};
   bool topology_expansion_published_{false};
-  double max_odom_age_{0.20};
+  double max_odom_age_{0.5};
   double max_cloud_age_{0.50};
   bool initialized_{false};
 };

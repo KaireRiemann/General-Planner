@@ -39,7 +39,7 @@ void GlobalMapRuntime::init(ros::NodeHandle nh,
   }
 
   nh_ = std::move(nh);
-  nh_.param("global_map/max_odom_age", max_odom_age_, 0.20);
+  nh_.param("global_map/max_odom_age", max_odom_age_, 0.5);
   nh_.param("global_map/max_cloud_age", max_cloud_age_, 0.50);
   nh_.param("global_map/pointcloud_main_period", pointcloud_main_period_, 0.5);
   pointcloud_main_period_=std::clamp(pointcloud_main_period_,0.0,1.0);

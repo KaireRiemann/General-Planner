@@ -12,6 +12,10 @@ int main(int argc, char **argv) {
     std::cerr << "requires isolated ROS_MASTER_URI on loopback port 11381 or 11383\n";
     return 2;
   }
+  const bool cancel_queued_test = argc > 1 && std::string(argv[1]) == "queued_cancel";
+  const bool expired_queued_test = argc > 1 && std::string(argv[1]) == "queued_expired";
+  const bool queued_test = argc > 1 && (std::string(argv[1]) == "queued" ||
+                                     cancel_queued_test || expired_queued_test);
   const bool tracking_test = argc > 1 && std::string(argv[1]) == "tracking";
   const bool deadline_test = argc > 1 && std::string(argv[1]) == "deadline";
   ros::init(argc, argv, "planning_failure_integration_test");
@@ -19,6 +23,7 @@ int main(int argc, char **argv) {
   nh.setParam("initial_mode", "state2state");
   nh.setParam("serial_handover", false);
   nh.setParam("navigation_planning_timeout", 0.5);
+  if (expired_queued_test) nh.setParam("recovery_goal_timeout", .1);
   nh.setParam("odometry_topic", "/failure_test/odom");
   general_planner::planner_runtime::PlannerCommandGateway gateway(nh);
   general_planner::planner_runtime::PlannerSupervisor supervisor(nh, gateway, [] {
@@ -38,9 +43,15 @@ int main(int argc, char **argv) {
         if (m->data.rfind("ARM ", 0) == 0) last_arm = m->data;
       });
   std::uint64_t admitted_sequence = 0;
+  double admitted_x = 0.0;
+  std::uint64_t admitted_epoch = 0;
+  bool admitted_preserve_height = false;
   auto ack_pub = nh.advertise<general_planner::NavigationGoalAck>("/planning/navigation/goal_ack", 10);
   auto request_sub = nh.subscribe<general_planner::NavigationGoalRequest>("/planning/navigation/goal_request", 10,
       [&](const general_planner::NavigationGoalRequestConstPtr &request) {
+        admitted_x = request->goal.pose.position.x;
+        admitted_epoch = request->task_epoch;
+        admitted_preserve_height = request->preserve_message_height;
         general_planner::NavigationGoalAck ack;
         ack.task_epoch = request->task_epoch; ack.request_id = request->request_id;
         ack.goal_sequence = ++admitted_sequence; ack.result = ack.ACCEPTED;
@@ -179,12 +190,34 @@ int main(int argc, char **argv) {
     std::cerr << "failure was not detected\n"; return 1;
   }
   const auto canceled_epoch = latest.task_epoch;
+  const auto sequence_before_recovery = admitted_sequence;
+  if (queued_test) {
+    auto replacement = goal;
+    replacement.pose.position.x = 31.; goal_pub.publish(replacement);
+    wait([] { return false; }, .05);
+    replacement.pose.position.x = 32.; goal_pub.publish(replacement);
+    wait([] { return false; }, .05);
+  }
   // A stable vehicle alone must not unlock a still-running optimizer.
   nav.data = "FAILED " + std::to_string(canceled_epoch) + " 1 IDLE BUSY";
   nav_pub.publish(nav);
   wait([] { return false; }, 1.0);
   if (latest.ready_for_new_task) {
     std::cerr << "busy optimizer exposed readiness\n"; return 1;
+  }
+  if (cancel_queued_test) {
+    std_msgs::String cancel; cancel.data = "hold"; mode_pub.publish(cancel);
+    if (!wait([&] { return latest.active_mode_str == "hold" && latest.ready_for_new_task; }, 3)) {
+      std::cerr << "cancel did not reach hold\n"; return 1;
+    }
+    cancel.data = "state2state"; mode_pub.publish(cancel);
+    if (!wait([&] { return latest.active_mode_str == "state2state" && latest.ready_for_new_task; }, 3)) return 1;
+    wait([] { return false; }, .2);
+    if (admitted_sequence != sequence_before_recovery) {
+      std::cerr << "canceled queued goal resurrected\n"; return 1;
+    }
+    std::cout << "planning_failure_integration_test queued_cancel passed\n";
+    return 0;
   }
   nav.data = "FAILED " + std::to_string(canceled_epoch - 1) + " 1 IDLE QUIESCENT";
   nav_pub.publish(nav);
@@ -198,12 +231,37 @@ int main(int argc, char **argv) {
                         latest.phase_str == "waiting_input"; }, 2)) {
     std::cerr << "recovery did not ARM a new epoch: " << latest.reason << '\n'; return 1;
   }
+  if (queued_test && admitted_sequence != sequence_before_recovery) {
+    std::cerr << "queued goal dispatched before ARM acknowledgement\n"; return 1;
+  }
   if (latest.ready_for_new_task) {
     std::cerr << "ready before ARM acknowledgement\n"; return 1;
   }
   const std::string failure_reason = latest.reason;
   nav.data = "WAIT_GOAL " + std::to_string(latest.task_epoch) + " 1 IDLE QUIESCENT";
   nav_pub.publish(nav);
+  if (expired_queued_test) {
+    if (!wait([&] { return latest.ready_for_new_task; }, 1)) return 1;
+    wait([] { return false; }, .2);
+    if (admitted_sequence != sequence_before_recovery) {
+      std::cerr << "expired queued goal dispatched\n"; return 1;
+    }
+    std::cout << "planning_failure_integration_test queued_expired passed\n";
+    return 0;
+  }
+  if (queued_test) {
+    if (!wait([&] { return admitted_sequence == sequence_before_recovery + 1 &&
+                          latest.phase_str == "planning"; }, 1)) {
+      std::cerr << "queued goal not admitted after recovery\n"; return 1;
+    }
+    if (admitted_x != 32. || admitted_epoch != latest.task_epoch || !admitted_preserve_height) {
+      std::cerr << "queued goal lost latest value, epoch or 3D height semantics\n"; return 1;
+    }
+    wait([] { return false; }, .15);
+    if (admitted_sequence != sequence_before_recovery + 1) return 1;
+    std::cout << "planning_failure_integration_test queued passed\n";
+    return 0;
+  }
   if (!wait([&] { return latest.active_mode_str == "state2state" &&
                         latest.task_result_str == "failed" && latest.ready_for_new_task; }, 2)) {
     std::cerr << "failure did not recover to ready state2state: " << latest.reason << '\n'; return 1;

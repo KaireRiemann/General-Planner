@@ -9,7 +9,7 @@ import struct
 import std_msgs.msg
 
 class PlannerModeRequest(genpy.Message):
-  _md5sum = "b788bce986be0f536b7a8dd7abd36a23"
+  _md5sum = "5306698b9b53c5467dcbed743cd2af4f"
   _type = "general_planner/PlannerModeRequest"
   _has_header = True  # flag to mark the presence of a Header object
   _full_text = """std_msgs/Header header
@@ -25,6 +25,7 @@ uint8 MODE_TARGET_EXPLORATION=4
 uint8 MODE_GATE=5
 uint8 MODE_TRACKING=6
 uint8 MODE_REORIENT=7
+uint8 MODE_VERTICAL=8
 
 ================================================================================
 MSG: std_msgs/Header
@@ -51,6 +52,7 @@ string frame_id
   MODE_GATE = 5
   MODE_TRACKING = 6
   MODE_REORIENT = 7
+  MODE_VERTICAL = 8
 
   __slots__ = ['header','request_id','task_id','mode']
   _slot_types = ['std_msgs/Header','uint64','string','uint8']

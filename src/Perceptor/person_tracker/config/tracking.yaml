@@ -3,7 +3,7 @@ input_cloud_topic: /cloud_registered
 odom_topic: /lidar_slam/odom
 world_frame: world
 cloud_is_registered: true
-max_odom_age: 0.15
+max_odom_age: 0.5
 
 # Local observation grid used for tracker diagnostics. FAST-LIO points are quantized to
 # fixed 0.1 m world voxels before processing. Tracking consumes only the

@@ -10,7 +10,7 @@ rog_map:
   tracking_inflation_step: 1  # Tracking: 0.15 m over the same occupancy evidence.
   unk_inflation_en: false
   unk_inflation_step: 1
-  map_size: [72.0, 72.0, 8.0]
+  map_size: [72.0, 72.0, 15.0]
   map_sliding:
     enable: true
     threshold: 0.3
@@ -118,7 +118,7 @@ global_topology:
   edge_scale: 0.06
 
 global_map:
-  max_odom_age: 0.20
+  max_odom_age: 0.5
   max_cloud_age: 0.50
   odom_queue: 50
   cloud_queue: 1

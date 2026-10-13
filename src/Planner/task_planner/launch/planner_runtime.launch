@@ -230,7 +230,7 @@
     <param name="hover_speed_threshold" value="0.10" type="double" />
     <param name="hover_yaw_rate_threshold" value="0.10" type="double" />
     <param name="hover_hold_duration" value="0.50" type="double" />
-    <param name="max_odom_age" value="0.20" type="double" />
+    <param name="max_odom_age" value="0.5" type="double" />
 
     <!-- Exploration adapter configuration.  It owns only LIO/Bubble/frontier
          task state; cloud/odom subscriptions are disabled by composition. -->

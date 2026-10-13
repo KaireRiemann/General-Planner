@@ -117,6 +117,7 @@ namespace general_planner {
         int state2state_topology_route_rejoin_max_candidates{3};
         double state2state_topology_route_deviation_requery_distance{1.0};
         double state2state_topology_route_query_min_interval{0.5};
+        double state2state_topology_wait_timeout{3.0};
         int state2state_topology_update_budget{1};
         double state2state_topology_update_period{0.20};
         double state2state_topology_publish_period{0.50};
@@ -427,6 +428,10 @@ namespace general_planner {
                              state2state_topology_route_deviation_requery_distance, 1.0);
             loader.LoadParam("general_planner/state2state/topology/route_query_min_interval",
                              state2state_topology_route_query_min_interval, 0.5);
+            loader.LoadParam("general_planner/state2state/topology/wait_timeout",
+                             state2state_topology_wait_timeout, 3.0);
+            if (!std::isfinite(state2state_topology_wait_timeout) || state2state_topology_wait_timeout <= 0.0)
+                state2state_topology_wait_timeout = 3.0;
             loader.LoadParam("general_planner/state2state/topology/update_budget",
                              state2state_topology_update_budget, 1);
             loader.LoadParam("general_planner/state2state/topology/update_period",

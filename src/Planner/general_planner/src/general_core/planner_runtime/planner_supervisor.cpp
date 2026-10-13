@@ -82,7 +82,10 @@ PlannerSupervisor::PlannerSupervisor(ros::NodeHandle &nh,
   nh_.param("hover_speed_threshold", hover_speed_threshold_, 0.10);
   nh_.param("hover_yaw_rate_threshold", hover_yaw_rate_threshold_, 0.10);
   nh_.param("hover_hold_duration", hover_hold_duration_, 0.50);
-  nh_.param("max_odom_age", max_odom_age_, 0.20);
+  nh_.param("max_odom_age", max_odom_age_, 0.5);
+  nh_.param("recovery_goal_timeout", recovery_goal_timeout_, 10.0);
+  if (!std::isfinite(recovery_goal_timeout_) || recovery_goal_timeout_ <= 0.0)
+    recovery_goal_timeout_ = 10.0;
   nh_.param("status_rate", status_rate_, 10.0);
   nh_.param("navigation_planning_timeout", planning_timeout_, 5.0);
   nh_.param("navigation_goal_ack_timeout", navigation_goal_ack_timeout_, 2.0);
@@ -411,6 +414,7 @@ void PlannerSupervisor::beginTransition(const PlannerMode target,
                                         const std::uint64_t request_id,
                                         const std::string &task_id,
                                         const std::string &reason) {
+  recovery_goal_pending_ = false; // New cancel/mode transition invalidates any queued goal.
   ++status_.transition_id;
   // Invalidate any in-flight plans/commands from the previous task epoch.
   ++status_.task_epoch;
@@ -684,9 +688,24 @@ void PlannerSupervisor::publishExplorationTaskRequestLocked(const bool start) {
   exploration_task_request_pub_.publish(request);
 }
 
+bool PlannerSupervisor::queueRecoveryGoalLocked(const geometry_msgs::PoseStamped &goal,
+                                                const bool preserve_height) {
+  if (!boot_complete_ || serial_handover_ || status_.active_mode != PlannerMode::STATE2STATE ||
+      status_.task_result != PlannerTaskResult::FAILED ||
+      (transition_active_ && transition_target_ != PlannerMode::STATE2STATE) ||
+      (!transition_active_ && status_.ready_for_new_task)) return false;
+  recovery_goal_ = goal;
+  recovery_goal_preserve_height_ = preserve_height;
+  recovery_goal_received_ = ros::WallTime::now();
+  recovery_goal_pending_ = true;
+  ROS_INFO("[planner_supervisor] queued latest navigation goal during failure recovery; awaiting verified hold and ARM");
+  return true;
+}
+
 bool PlannerSupervisor::acceptNavigationGoalLocked(
     const geometry_msgs::PoseStamped &msg, const bool preserve_message_height,
     const bool vertical_height_request) {
+  if (!vertical_height_request && queueRecoveryGoalLocked(msg, preserve_message_height)) return true;
   // A state2state goal replaces the current goal within the same navigation
   // task.  ready_for_new_task only governs starting a distinct task; it must
   // not block a rolling replan while this task is executing.
@@ -704,6 +723,8 @@ bool PlannerSupervisor::acceptNavigationGoalLocked(
     ROS_WARN_THROTTLE(1.0, "[planner_supervisor] drop navigation goal: recovery ARM pending");
     return false;
   }
+  // A newer accepted goal supersedes any goal queued during recovery.
+  recovery_goal_pending_ = false;
   if (serial_handover_) {
     if (!serial_state2state_ready_) {
       ROS_WARN_THROTTLE(1.0,
@@ -794,6 +815,7 @@ void PlannerSupervisor::clickGoalCallback(
     return;
   }
   std::lock_guard<std::mutex> lock(mutex_);
+  if (queueRecoveryGoalLocked(*msg, false)) return;
   if (!boot_complete_ || transition_active_) {
     ROS_WARN_THROTTLE(1.0,
                       "[planner_supervisor] drop click goal: boot=%d "
@@ -1784,6 +1806,19 @@ void PlannerSupervisor::timerCallback(const ros::TimerEvent &) {
         status_.stable_hover = false;
       }
     } else {
+      if (recovery_goal_pending_) {
+        if ((ros::WallTime::now() - recovery_goal_received_).toSec() >= recovery_goal_timeout_) {
+          recovery_goal_pending_ = false;
+          ROS_WARN("[planner_supervisor] queued recovery goal expired; publish a fresh goal");
+        } else if (status_.active_mode == PlannerMode::STATE2STATE && status_.ready_for_new_task &&
+                   !navigation_goal_dispatch_pending_) {
+          const auto goal = recovery_goal_;
+          const bool preserve_height = recovery_goal_preserve_height_;
+          recovery_goal_pending_ = false;
+          // Normal admission performs validation and assigns the new ARM epoch.
+          acceptNavigationGoalLocked(goal, preserve_height);
+        }
+      }
       if (navigation_goal_dispatch_pending_ &&
           (ros::WallTime::now() - navigation_request_started_).toSec() >= navigation_goal_ack_timeout_) {
         navigation_goal_dispatch_pending_ = false;

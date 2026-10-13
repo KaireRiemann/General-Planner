@@ -69,7 +69,7 @@ general_planner:
   print_log: false
   visual_process: false
   frontend_in_known_free: false
-  goal_yaw_en: false
+  goal_yaw_en: true
   goal_vel_en: false
   corridor_bound_dis: 2.0
   corridor_line_max_length: 2.0

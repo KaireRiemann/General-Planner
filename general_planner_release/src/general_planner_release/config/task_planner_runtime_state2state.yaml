@@ -43,6 +43,20 @@ fsm:
   reorient_min_duration: 0.6
   reorient_position_drift_max: 0.0
   reorient_yaw_goal_tolerance: 0.05
+
+  # Direct rest-to-rest vertical motion; x/y/yaw remain fixed.
+  vertical:
+    max_vel: 0.5
+    max_acc: 0.5
+    max_jerk: 1.0
+    min_duration: 1.0
+    max_duration: 60.0
+    start_speed_tolerance: 0.1
+    tracking_error_max: 0.3
+    goal_tolerance: 0.1
+    completion_timeout: 3.0
+    # Allow unknown space for vertical motion; occupied cells still block it.
+    unknown_as_occupied: false
   perception_replan_emergency_horizon: 0.45
 
 general_planner:
@@ -55,7 +69,7 @@ general_planner:
   print_log: false
   visual_process: false
   frontend_in_known_free: false
-  goal_yaw_en: false
+  goal_yaw_en: true
   goal_vel_en: false
   corridor_bound_dis: 2.0
   corridor_line_max_length: 2.0
