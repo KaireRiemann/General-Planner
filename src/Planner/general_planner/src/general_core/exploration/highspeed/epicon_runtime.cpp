@@ -26,8 +26,9 @@ void FastExplorationFSM::resetEpiconExecution() {
   epicon_finish_.reset(); epicon_recheck_pending_=false;
   epicon_last_audit_=epicon_last_deferral_=ros::WallTime();
   epicon_last_motion_=ros::WallTime::now();
-  epicon_normal_motion_=false; epicon_goal_best_distance_=0.0;
+  epicon_normal_motion_=false; epicon_goal_best_distance_=0.0; epicon_progress_path_.clear();
   epicon_progress_.reset(epicon_last_motion_.toSec());
+  epicon_goal_window_.reset();
   ROS_INFO_STREAM("[exploration] execution policy: audit_period=" << epicon_audit_period_
       << " goal_failure_limit=" << epicon_goal_failure_limit_
       << " stall_reselect=" << epicon_stall_reselect_ << " stall_timeout=" << epicon_stall_timeout_);
@@ -103,18 +104,25 @@ void FastExplorationFSM::updateEpiconGlobalPath() {
     }
     epicon_finish_.reset(); epicon_recheck_pending_=false;
     expl_manager_->ed_->global_tour_=epicon_frontend_->tour(); // visualization/task compatibility only
+    if(epicon_frontend_->tour().size()>=2)
+      epicon_goal_window_.select(epicon_frontend_->tour()[1],ros::WallTime::now().toSec());
     if(state_!=CAUTION && now>=fd_->next_plan_retry_time_)
       transitState(PLAN_TRAJ,"exploration: global tour ready");
   } else {
     epicon_finish_.reset(); epicon_recheck_pending_=true;
-    if(result==fast_planner::EpiconFrontend::Result::DISCONNECTED &&
+    if((result==fast_planner::EpiconFrontend::Result::DISCONNECTED ||
+        result==fast_planner::EpiconFrontend::Result::OUTSIDE_BOX) &&
        (!safe || planner_manager_->committedTrajectoryRemainingTime()<=0.03)) {
       if (epicon_normal_motion_) {
         epicon_frontend_->deferCurrentGoal(epicon_goal_cooldown_,epicon_goal_exclusion_radius_);
+        epicon_goal_window_.reset();
         epicon_normal_motion_=false;
         epicon_last_deferral_=ros::WallTime::now();
       }
-      transitState(CAUTION,"exploration: topology disconnected",true);
+      transitState(CAUTION,
+          result==fast_planner::EpiconFrontend::Result::OUTSIDE_BOX
+              ? "exploration: outside exploration box"
+              : "exploration: topology disconnected",true);
     }
     else if(result==fast_planner::EpiconFrontend::Result::BLOCKED &&
             (!safe || planner_manager_->committedTrajectoryRemainingTime()<=0.03)) {
@@ -151,18 +159,24 @@ bool FastExplorationFSM::epiconFSMCallback() {
   if(fd_->have_odom_) epicon_frontend_->setOdometry(fd_->odom_pos_,fd_->odom_vel_,fd_->odom_yaw_);
   if(fd_->trigger_ && state_!=FINISH) {
     const auto wall_now=ros::WallTime::now();
-    const double distance=(fd_->odom_pos_-epicon_progress_goal_).norm();
+    const double distance=fast_planner::epiconRemainingRoute(fd_->odom_pos_,epicon_progress_path_);
     const bool advances=epicon_normal_motion_ && distance+.35<epicon_goal_best_distance_;
-    if (advances) epicon_goal_best_distance_=distance;
-    epicon_progress_.observe(wall_now.toSec(),advances);
+    bool meaningful_progress=false;
+    if (advances) {
+      epicon_goal_best_distance_=distance;
+      epicon_goal_window_.progress(wall_now.toSec());
+      meaningful_progress=epicon_frontend_->noteExplorationProgress();
+    }
+    epicon_progress_.observe(wall_now.toSec(),meaningful_progress);
     const double stationary=epicon_progress_.idleSeconds(wall_now.toSec());
     if(stationary>=epicon_stall_timeout_) {
-      finishEpiconTask(false,"no progress toward an exploration goal after bounded audits and recovery");
+      finishEpiconTask(false,"no progress toward an exploration goal after bounded audits and recovery; " + epicon_frontend_->unresolvedSummary());
       return true;
     }
-    if(stationary>=epicon_stall_reselect_ && epicon_frontend_->hasSelectedGoal() &&
+    if(stationary>=epicon_stall_reselect_ && epicon_goal_window_.expired(wall_now.toSec(),epicon_stall_reselect_) && epicon_frontend_->hasSelectedGoal() &&
        (epicon_last_deferral_.isZero() || (wall_now-epicon_last_deferral_).toSec()>=epicon_stall_reselect_)) {
       epicon_frontend_->deferCurrentGoal(epicon_goal_cooldown_,epicon_goal_exclusion_radius_);
+      epicon_goal_window_.reset();
       epicon_last_deferral_=wall_now; epicon_recheck_pending_=true;
       epicon_finish_.reset(); fd_->consecutive_plan_failures_=0;
       epicon_normal_motion_=false;
@@ -207,7 +221,8 @@ bool FastExplorationFSM::epiconFSMCallback() {
       if (tour.size()>=2) {
         if (!epicon_normal_motion_ || (tour[1]-epicon_progress_goal_).norm()>.8f) {
           epicon_progress_goal_=tour[1];
-          epicon_goal_best_distance_=(fd_->odom_pos_-epicon_progress_goal_).norm();
+          epicon_progress_path_=epicon_frontend_->executionPath();
+          epicon_goal_best_distance_=fast_planner::epiconRemainingRoute(fd_->odom_pos_,epicon_progress_path_);
         }
         epicon_normal_motion_=true;
       }
@@ -221,6 +236,7 @@ bool FastExplorationFSM::epiconFSMCallback() {
           planner_manager_->gcopter_config_->dilateRadiusHard;
       if(!transient && fd_->consecutive_plan_failures_>=epicon_goal_failure_limit_) {
         epicon_frontend_->deferCurrentGoal(epicon_goal_cooldown_,epicon_goal_exclusion_radius_);
+        epicon_goal_window_.reset();
         epicon_last_deferral_=ros::WallTime::now(); epicon_recheck_pending_=true;
         epicon_finish_.reset(); fd_->consecutive_plan_failures_=0;
       }
@@ -254,7 +270,7 @@ bool FastExplorationFSM::epiconFSMCallback() {
   case CAUTION: {
     if(epicon_frontend_->ready() && epicon_frontend_->hasSelectedGoal() &&
         epicon_frontend_->clearance(fd_->odom_pos_.cast<double>())>
-        planner_manager_->gcopter_config_->dilateRadiusSoft) {
+        epicon_frontend_->executionClearance()) {
       transitState(PLAN_TRAJ,"exploration: execution origin reconnected");
       break;
     }
@@ -278,7 +294,7 @@ bool FastExplorationFSM::epiconFSMCallback() {
     }
     if(epicon_frontend_->ready() && epicon_frontend_->hasSelectedGoal() &&
         epicon_frontend_->clearance(fd_->odom_pos_.cast<double>())>
-        planner_manager_->gcopter_config_->dilateRadiusSoft) transitState(PLAN_TRAJ,"exploration: safe region");
+        epicon_frontend_->executionClearance()) transitState(PLAN_TRAJ,"exploration: safe region");
     break;
   }
   case FINISH:

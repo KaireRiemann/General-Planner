@@ -386,6 +386,9 @@ namespace general_planner {
         void setState2StateTopologyPolicy(bool enabled);
         void setState2StateTopologyTaskEpoch(std::uint64_t epoch);
         std::string getLatestState2StateTopologyDebugInfo() const;
+        std::string getState2StateFrontendFailure() const {
+            return state2state_topology_route_runtime_.frontendFailure();
+        }
 
         void setSwarmTrajectories(const traj_opt::SwarmTrajectories &trajectories);
         void setSwarmDroneId(int drone_id);

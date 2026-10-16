@@ -185,6 +185,8 @@ namespace general_planner {
                                             const double goal_yaw,
                                             const bool new_goal) {
         std::lock_guard<std::mutex> guard(services.replan_lock);
+        if (exp_services.frontend.topology_route_runtime)
+            exp_services.frontend.topology_route_runtime->setFrontendFailure("");
         services.latest_replan.reset();
         if (services.map_manager) {
             services.robot_state = services.map_manager->getRobotState();
@@ -221,8 +223,13 @@ namespace general_planner {
             services.time_consuming[VISUALIZATION] += t_viz.stop();
         }
 
-        Vec3f local_star_pt;
-        if (!services.map_manager->getNearestInfCellNot(GridType::OCCUPIED,
+        Vec3f local_star_pt = services.robot_state.p;
+        if (!validateTopologyStart(exp_services.frontend, local_star_pt)) {
+            services.latest_replan.setRetCode(GENERAL_RET_CODE::GENERAL_NO_START_POINT);
+            return FAILED;
+        }
+        if (!topologyStartRequired(exp_services.frontend) &&
+            !services.map_manager->getNearestInfCellNot(GridType::OCCUPIED,
                                                         services.robot_state.p,
                                                         local_star_pt,
                                                         3.0)) {

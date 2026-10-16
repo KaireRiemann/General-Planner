@@ -1,17 +1,13 @@
 #pragma once
 
+#include <general_core/corridor_result.h>
 #include <Eigen/Core>
 #include <string>
 #include <vector>
 
 namespace fast_planner {
 // Pure point-cloud geometry. No occupancy map or optimizer ownership here.
-struct EpiconCorridor {
-  std::vector<Eigen::Vector3d> path;
-  std::vector<Eigen::MatrixX4d> planes;
-  bool truncated{false};
-  std::string failure;
-};
+using EpiconCorridor = general_planner::CorridorResult;
 
 bool buildEpiconCorridor(const std::vector<Eigen::Vector3d> &path,
                         const std::vector<Eigen::Vector3d> &points,

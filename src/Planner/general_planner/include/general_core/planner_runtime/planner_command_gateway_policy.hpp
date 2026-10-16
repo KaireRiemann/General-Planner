@@ -79,4 +79,13 @@ constexpr bool shouldMonitorCommandSource(const PlannerPhase phase) {
          phase == PlannerPhase::EXECUTING;
 }
 
+// Initial state2state planning has its own finite, goal/epoch-bound deadline.
+// The gateway still holds while no trajectory exists. Once any command was
+// received, freshness protection takes precedence even during replanning.
+constexpr bool deferFirstCommandToPlanningDeadline(
+    PlannerMode mode, PlannerPhase phase, bool received_since_authorization) {
+  return mode == PlannerMode::STATE2STATE && phase == PlannerPhase::PLANNING &&
+         !received_since_authorization;
+}
+
 } // namespace general_planner::planner_runtime

@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstdint>
 #include <limits>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -53,6 +54,16 @@ struct State2StateTopologyRouteRuntime {
     GlobalTopologyRouteContext route;
     double wait_started{-1.0};
 
+    // The status callback must not read route while the planning worker writes it.
+    void setFrontendFailure(const std::string &reason) {
+        std::lock_guard<std::mutex> lock(failure_mutex_);
+        frontend_failure_ = reason;
+    }
+    std::string frontendFailure() const {
+        std::lock_guard<std::mutex> lock(failure_mutex_);
+        return frontend_failure_;
+    }
+
     // Caller supplies monotonic wall seconds; query retries must not renew this deadline.
     bool allowWait(const std::string &reason, double now, double timeout) {
         const bool transient = reason == "TOPO_QUERY_RATE_LIMIT" ||
@@ -87,6 +98,9 @@ struct State2StateTopologyRouteRuntime {
             task_generation.fetch_add(1, std::memory_order_acq_rel);
         }
     }
+private:
+    mutable std::mutex failure_mutex_;
+    std::string frontend_failure_;
 };
 
 inline void resetGlobalTopologyRoute(GlobalTopologyRouteContext &route,

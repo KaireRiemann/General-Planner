@@ -41,6 +41,10 @@ bool pathSearch(StateToStateFrontendServices &services,
                 double searching_horizon,
                 general_utils::vec_Vec3f &path);
 
+bool topologyStartRequired(const StateToStateFrontendServices &services);
+bool validateTopologyStart(StateToStateFrontendServices &services,
+                           const general_utils::Vec3f &start);
+
 bool prepareESDFGuideEndpoint(StateToStateFrontendServices &services,
                               general_utils::vec_Vec3f &guide_path,
                               std::vector<double> &guide_stamp);

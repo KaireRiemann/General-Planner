@@ -1736,14 +1736,20 @@ bool FastPlannerManager::planExploreTraj(
   if (pointcloud_frontend && !clearance_recovery) {
     const auto search=epicon_frontend_->pathFrom(head.col(0),head.col(1),yaw_init(0),execution_path);
     if (search!=EpiconFrontend::Result::SUCCEED) {
-      coverage_failure_.kind=search==EpiconFrontend::Result::DISCONNECTED
+      coverage_failure_.kind=(search==EpiconFrontend::Result::DISCONNECTED ||
+                              search==EpiconFrontend::Result::OUTSIDE_BOX)
           ? CoverageFailureKind::HEAD : CoverageFailureKind::PATH;
-      ROS_WARN("[exploration backend] no point-cloud path from execution head");
+      if (search==EpiconFrontend::Result::OUTSIDE_BOX)
+        ROS_WARN("[exploration backend] outside exploration box: execution head");
+      else
+        ROS_WARN("[exploration backend] no point-cloud path from execution head");
       return false;
     }
   }
   std::vector<Eigen::Vector3d> local_path;
   bool pointcloud_truncated=false;
+  bool narrow_pointcloud_corridor=false;
+  double pointcloud_corridor_min_overlap=1e-2;
   if (pointcloud_frontend) {
     // Same arc/radial endpoint rule as EPICON's local planner.
     std::size_t radial=execution_path.size()-1, arc=1;
@@ -1813,12 +1819,24 @@ bool FastPlannerManager::planExploreTraj(
     // certified clearance and enforce monotonically increasing clearance below.
     const double margin=clearance_recovery ? std::max(.05,std::min(gcopter_config_->dilateRadiusSoft,
         safetyDistanceToOcc(head.col(0))-.02)) : epicon_frontend_->planningClearance();
-    if (!epicon_frontend_->corridor(local_path,gcopter_config_->corridor_size,margin,native)) {
+    const double hard_margin=std::max(gcopter_config_->dilateRadiusHard,
+                                      gcopter_config_->commitKnownFreeSafeDistance)+.005;
+    if (!general_planner::selectCorridor(margin,hard_margin,!clearance_recovery,
+        [&](double requested, general_planner::CorridorResult &out) {
+          return epicon_frontend_->corridor(local_path,gcopter_config_->corridor_size,requested,out);
+        },native,narrow_pointcloud_corridor)) {
       coverage_failure_.kind=CoverageFailureKind::PATH;
       ROS_WARN_STREAM("[exploration backend] point-cloud corridor failed: " << native.failure);
       return false;
     }
+    if (native.map_revision!=epicon_frontend_->cloudRevision()) {
+      ROS_WARN("[exploration backend] map changed during corridor generation; retry");
+      return false;
+    }
+    if(narrow_pointcloud_corridor)
+      ROS_INFO_THROTTLE(1.0,"[exploration backend] narrow passage: hard-clearance corridor, reduced speed");
     local_path=native.path;
+    pointcloud_corridor_min_overlap=native.min_overlap;
     pointcloud_truncated=pointcloud_truncated || native.truncated;
     for (const auto &planes:native.planes) {
       geometry_utils::Polytope poly; poly.SetPlanes(planes); sfcs.push_back(poly);
@@ -1830,7 +1848,11 @@ bool FastPlannerManager::planExploreTraj(
     }
     try {
       general_utils::Vec3f shifted=local_path.front();
-      used_general_corridor=corridor_generator_->SearchPolytopeOnPath(toVec3fPath(local_path),sfcs,shifted,false);
+      general_planner::CorridorResult corridor;
+      used_general_corridor=corridor_generator_->buildCorridor(toVec3fPath(local_path),corridor,shifted);
+      for(const auto &planes:corridor.planes) {
+        geometry_utils::Polytope cell; cell.SetPlanes(planes); sfcs.push_back(cell);
+      }
       shifted_start_dist=(shifted-local_path.front()).norm();
     } catch (const std::exception &error) {
       ROS_WARN_STREAM("[highspeed_exp adapter] corridor exception: " << error.what());
@@ -1874,7 +1896,7 @@ bool FastPlannerManager::planExploreTraj(
     return false;
   }
   const std::size_t simplified_sfc_count = sfcs.size();
-  const double required_overlap = pointcloud_frontend ? 1e-2 :
+  const double required_overlap = pointcloud_frontend ? pointcloud_corridor_min_overlap :
       std::max(1.0e-3,
                0.25 * gcopter_config_->corridorMinOverlapThreshold);
   geometry_utils::PolytopeVec bounded_sfcs = sfcs;
@@ -2007,7 +2029,8 @@ bool FastPlannerManager::planExploreTraj(
   }
   PieceVelocityProfile piece_velocity_profile = computePieceVelocityProfile(
       local_path, sfcs, head.col(1), yaw_init(0), *gcopter_config_, velocity_limit);
-  if (pointcloud_frontend) piece_velocity_profile.bounds.setConstant(gcopter_config_->maxVelMag);
+  if (pointcloud_frontend) piece_velocity_profile.bounds.setConstant(
+      narrow_pointcloud_corridor ? std::min(.5,gcopter_config_->maxVelMag) : gcopter_config_->maxVelMag);
   if (piece_velocity_profile.bounds.size() != static_cast<int>(sfcs.size()))
   {
     ROS_WARN("[highspeed_exp adapter] cannot map path velocity profile to simplified corridor.");
@@ -2084,7 +2107,7 @@ bool FastPlannerManager::planExploreTraj(
     speed = std::clamp(speed, min_opt_speed, max_opt_speed);
     for (const double existing : opt_speed_attempts)
     {
-      if (std::abs(existing - speed) < 0.10)
+      if (std::abs(existing - speed) < 1e-3)
       {
         return;
       }

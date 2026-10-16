@@ -27,6 +27,7 @@
 
 #include <general_core/config.hpp>
 #include <general_core/ciri.h>
+#include <general_core/corridor_result.h>
 
 #include <data_structure/base/polytope.h>
 #include <data_structure/base/trajectory.h>
@@ -102,6 +103,9 @@ namespace general_planner {
         bool SearchPolytopeOnPath(const vec_Vec3f &path, PolytopeVec &sfcs,
                                   Vec3f & shifted_start_pt,
                                   bool cut_first_poly = false, bool preserve_path = false);
+
+        bool buildCorridor(const vec_Vec3f &path, CorridorResult &result,
+                           Vec3f &shifted_start);
 
         void getSeedBBox(const Vec3f &p1, const Vec3f &p2,
                          Vec3f &box_min, Vec3f &box_max);

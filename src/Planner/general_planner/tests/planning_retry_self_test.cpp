@@ -44,7 +44,12 @@ int main() {
   expect(!status.quiescent, "busy optimizer cannot acknowledge exit");
   planner_runtime::parseNavigationAdapterStatus("FAILED 43 3 IDLE QUIESCENT", status);
   expect(status.quiescent, "stopped worker acknowledgement");
+  planner_runtime::parseNavigationAdapterStatus(
+      "FAILED 43 3 IDLE QUIESCENT reason=TOPO_START_INFLATED_OCCUPIED", status);
+  expect(status.quiescent && status.reason == "TOPO_START_INFLATED_OCCUPIED",
+         "frontend failure reason preserves worker and task identity");
   planner_runtime::parseNavigationAdapterStatus("WAIT_GOAL 43 3 ACTIVE QUIESCENT", status);
   expect(!status.quiescent, "active goal cannot acknowledge stop");
+  expect(status.reason.empty(), "legacy status must not retain the preceding failure reason");
   std::cout << "planning_retry_self_test passed\n";
 }

@@ -60,6 +60,25 @@ bool segmentInTaskBounds(const LIOInterface::Ptr &map,
   }
   return false;
 }
+// Non-overlapping endpoint spheres do not prove that a segment is blocked.
+// March with steps bounded by the measured clearance surplus: distance to the
+// obstacle set is 1-Lipschitz, so every covered interval remains certified.
+bool segmentHasClearance(const LIOInterface::Ptr &map, const Eigen::Vector3f &a,
+                         const Eigen::Vector3f &b, double clearance) {
+  if(!segmentInTaskBounds(map,a,b)) return false;
+  const double length=(b-a).norm();
+  if(length<1e-6) return map->getDisToOcc(a)>clearance+1e-4;
+  const Eigen::Vector3f direction=(b-a)/length;
+  double covered=0;
+  for(int n=0;n<4096;++n) {
+    const Eigen::Vector3f point=a+covered*direction;
+    const double surplus=map->getDisToOcc(point)-clearance;
+    if(!std::isfinite(surplus) || surplus<=1e-4) return false;
+    if(length-covered<surplus-1e-4) return true;
+    covered+=std::min(.2,.8*(surplus-1e-4));
+  }
+  return false;
+}
 }
 
 void ParallelBubbleAstar::init(ros::NodeHandle &nh, const LIOInterface::Ptr &lidar_map) {
@@ -104,6 +123,9 @@ int ParallelBubbleAstar::search(const Eigen::Vector3f &start, const Eigen::Vecto
   curr_node->position=start; end_node->position=goal;
   if(!isNodeSafe(curr_node,bbox_min,bbox_max,radii)) return START_FAIL;
   if(!isNodeSafe(end_node,bbox_min,bbox_max,radii)) return END_FAIL;
+  if(segmentHasClearance(lidar_map_interface_,start,goal,safe_distance_)) {
+    path={start,goal}; return REACH_END;
+  }
   const double goal_r=std::min(1.5,end_node->radius-1e-3);
   Eigen::Vector3f curr_pos=start;
   const double length=(goal-start).norm();
@@ -230,7 +252,8 @@ int ParallelBubbleAstar::search(const Eigen::Vector3f &start, const Eigen::Vecto
       // selecting that parent used to reject the whole route at the end.
       const double next_radius=nei_node->radius;
       if (std::min(2.0,curr_radius)+std::min(2.0,next_radius)+1e-3 <
-          (nbr_pos-curr_node->position).norm()) continue;
+          (nbr_pos-curr_node->position).norm() &&
+          !segmentHasClearance(lidar_map_interface_,curr_node->position,nbr_pos,safe_distance_)) continue;
       if(!segmentInTaskBounds(lidar_map_interface_,curr_node->position,nbr_pos)) continue;
       const double tmp_g_score=(nbr_pos-curr_node->position).norm()+curr_node->g_score;
       auto node_iter=open_set_map.find(nbr_idx);
@@ -321,7 +344,9 @@ bool ParallelBubbleAstar::collisionCheck_shortenPath(vector<Eigen::Vector3f> &pa
     for (int j = 0; j < i; j++) {
       double j_raduis = raduis_lis[j];
       double distance = (path[i] - path[j]).norm();
-      if (i_raduis + j_raduis + 1e-3 > distance) {
+      if (i_raduis + j_raduis + 1e-3 > distance ||
+          ((j==i-1 || distance<=.5) &&
+           segmentHasClearance(lidar_map_interface_,path[j],path[i],safe_distance_))) {
         if(!segmentInTaskBounds(lidar_map_interface_,path[j],path[i])) continue;
         indices.push_front(j);
         connected = true;

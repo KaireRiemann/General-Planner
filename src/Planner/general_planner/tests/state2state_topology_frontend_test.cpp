@@ -89,6 +89,8 @@ int main(int argc, char **argv) {
         seed();
         vec_Vec3f path;
         require(pathSearch(services, start, goal, 8., path), "graph prefix failed");
+        require((path.front() - start).norm() < 1.e-9,
+                "strict topology changed the continuous start position");
         require((path.back() - relay).norm() < 1e-6, "local candidate replaced the relay");
         bool passed_corner = false;
         for (const auto &point : path) {
@@ -120,6 +122,27 @@ int main(int argc, char **argv) {
         grid->unknown();
         require(!pathSearch(services, start, goal, 8., path),
                 "invalid graph prefix silently fell back to unknown-space direct flight");
+        require(path.empty() && runtime.frontendFailure() == "TOPO_START_UNKNOWN" &&
+                !services.waiting_for_topology,
+                "unknown start must report a bounded failure without stale output");
+        grid->knownFree();
+        seed();
+        auto inflation = grid->inflationMap();
+        inflation->updateGridCounter(start, rog_map::UNKNOWN, rog_map::OCCUPIED);
+        require(map->getGridType(start) == rog_map::KNOWN_FREE &&
+                map->getInfGridType(start) == rog_map::OCCUPIED,
+                "inflated-only start fixture is invalid");
+        require(!pathSearch(services, start, goal, 8., path) && path.empty() &&
+                runtime.frontendFailure() == "TOPO_START_INFLATED_OCCUPIED",
+                "inflated start was projected or misreported as an attachment failure");
+        inflation->updateGridCounter(start, rog_map::OCCUPIED, rog_map::UNKNOWN);
+        seed();
+        require(pathSearch(services, start, goal, 8., path) && runtime.frontendFailure().empty(),
+                "valid planning after obstacle removal retained a failure");
+        require(!pathSearch(services, Vec3f(100,0,1.5), goal, 8., path) &&
+                runtime.frontendFailure() == "TOPO_START_OUT_OF_MAP",
+                "out-of-map start did not fail before graph search");
+        grid->unknown();
         runtime.setPolicy(false);
         require(pathSearch(services, start, goal, 8., path) &&
                 (path.back() - goal).norm() < 1e-6, "local-only navigation regressed");

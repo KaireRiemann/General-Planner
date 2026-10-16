@@ -1262,8 +1262,9 @@ void PlannerSupervisor::navigationStatusCallback(
         (!navigation_goal_dispatch_pending_ ||
          adapter_status.goal_sequence > navigation_goal_sequence_before_dispatch_)) {
       navigation_goal_dispatch_pending_ = false;
-      const std::string failure = status_.active_mode == PlannerMode::VERTICAL
+      std::string failure = status_.active_mode == PlannerMode::VERTICAL
           ? "vertical motion failed" : "navigation planning retries exhausted";
+      if (!adapter_status.reason.empty()) failure += ": " + adapter_status.reason;
       beginTransition(status_.active_mode, status_.accepted_request_id,
                       status_.task_id, failure);
       status_.task_result = PlannerTaskResult::FAILED;
@@ -1873,6 +1874,8 @@ void PlannerSupervisor::timerCallback(const ros::TimerEvent &) {
       }
       const CommandOwner active_owner = ownerForMode(status_.active_mode);
       const bool source_timeout_abort =
+          !deferFirstCommandToPlanningDeadline(status_.active_mode, status_.phase,
+              command_health.source_received_since_authorization) &&
           (shouldMonitorCommandSource(status_.phase) ||
            (status_.active_mode == PlannerMode::GATE && status_.mode_state == ModeState::GATE_END_VERIFY)) &&
           (active_owner == CommandOwner::STATE2STATE ||

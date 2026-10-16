@@ -3061,12 +3061,26 @@ double ExplorationTrajOpt::optimize(Trajectory &traj, double rel_cost_tol, doubl
   const VecDf *piece_velocity_bounds =
       opt_vars_.use_piece_velocity_bounds ? &opt_vars_.piece_velocity_bounds : nullptr;
 
+  // Reducing the requested speed alone may still leave the same soft-penalty
+  // optimum above the commit limit. Tight retries also strengthen the velocity
+  // penalty relative to time/energy, without changing any physical limit.
+  VecDf attempt_weights=opt_vars_.penalty_weights;
+  if(piece_velocity_bounds && piece_velocity_bounds->size()>0) {
+    const double ratio=cfg_.max_vel/std::max(1e-3,piece_velocity_bounds->minCoeff());
+    const double retry_weight=std::clamp(std::pow(ratio,6),1.0,64.0);
+    attempt_weights(1)*=retry_weight;
+    // Slower retries must also converge inside the corridor. Otherwise the
+    // same soft position-penalty violation survives every velocity retry and
+    // a geometrically reachable doorway repeatedly fails the commit check.
+    attempt_weights(0)*=retry_weight;
+  }
+
   exploration_cost_manager_.reset(&opt_vars_.h_polytopes,
                                   &opt_vars_.h_poly_idx,
                                   piece_velocity_bounds,
                                   opt_vars_.smooth_eps,
                                   opt_vars_.magnitude_bounds,
-                                  opt_vars_.penalty_weights,
+                                  attempt_weights,
                                   &opt_vars_.quadrotor_flatness);
 
   opt_vars_.iter_num = 0;

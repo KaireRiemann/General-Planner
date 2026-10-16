@@ -57,6 +57,15 @@ int main(int argc,char **argv) {
       for(double t=0;t<=planner.local_data_.duration_;t+=.01)
         if(frontend->clearance(planner.local_data_.minco_traj_.getPos(t))<.48)
           throw std::runtime_error("local recovery crossed the physical clearance floor");
+      for(int n=0;n<8;++n) frontend->noteRecoveryAttempt(Eigen::Vector3d(1+n*.4,0,1.5));
+      Eigen::Vector3d exhausted;
+      if(frontend->recoveryPoint(start,exhausted)) throw std::runtime_error("recovery loop exceeded episode budget");
+      frontend->noteExplorationProgress();
+      if(!frontend->recoveryPoint(start,exhausted)) throw std::runtime_error("measured progress did not reset recovery budget");
+      for(int n=0;n<8;++n) frontend->noteRecoveryAttempt(Eigen::Vector3d(1+n*.4,0,1.5));
+      if(frontend->noteExplorationProgress() || frontend->recoveryPoint(start,exhausted))
+        throw std::runtime_error("revisiting the same pose replenished recovery attempts");
+      frontend->resetTask();
       // Reproduce the recorded 0.57352 m soft-buffer stop without a graph.
       planner.clearReleasedTrajectory();
       planner.local_data_.curr_pos_=Eigen::Vector3d(.57352,0,1.5);
@@ -73,7 +82,9 @@ int main(int argc,char **argv) {
       std::cout<<"EPICON_RECOVERY PASS: graph-independent local escape, live certification, level goal, hard-safe hold, new obstacle rejection, physical floor\n";
       return 0;
     }
-    std::ifstream input(argv[1]);
+    const bool audit=std::string(argv[1])=="--audit";
+    if(audit && argc<3) throw std::runtime_error("--audit requires manifest");
+    std::ifstream input(argv[audit ? 2 : 1]);
     if(!input) throw std::runtime_error("cannot open manifest");
     std::string pcd; int frames=0,selected=0,success=0,replans=0,continuity=0;
     while(input>>pcd) {
@@ -88,7 +99,7 @@ int main(int argc,char **argv) {
       const Eigen::Vector3f position(p.x,p.y,p.z);
       frontend->setOdometry(position,Eigen::Vector3f::Zero(),tf::getYaw(q));
       frontend->ingestCloud(cloud,odom); ++frames;
-      if(frontend->update(true)!=fast_planner::EpiconFrontend::Result::SUCCEED) continue;
+      if(frontend->update(true,audit)!=fast_planner::EpiconFrontend::Result::SUCCEED) continue;
       ++selected; planner.clearReleasedTrajectory();
       planner.local_data_.curr_pos_=position.cast<double>(); planner.local_data_.curr_vel_.setZero();
       planner.local_data_.curr_yaw_=tf::getYaw(q); planner.local_data_.end_yaw_=frontend->goalYaw();

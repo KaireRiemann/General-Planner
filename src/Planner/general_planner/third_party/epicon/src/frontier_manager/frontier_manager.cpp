@@ -1293,7 +1293,10 @@ void FrontierManager::removeUnreachableViewpoints(
   // The fast pass may use direct visibility. A completion audit must also
   // try the bounded A* connector: a room around a corner is not unreachable
   // merely because its viewpoint has no straight edge to the sparse graph.
-  graph_->insertNodes(nodes2insert, !full_audit_);
+  // Temporary representatives validate attachment to the persistent graph;
+  // connecting every representative to every other one is quadratic and those
+  // edges disappear before the chosen viewpoints are inserted for execution.
+  graph_->insertNodes(nodes2insert, !full_audit_, false);
   ros::Time t2 = ros::Time::now();
   vector<bool> vp_cluster_kept;
   vp_cluster_kept.resize(nodes2insert.size(), true);
@@ -1305,15 +1308,6 @@ void FrontierManager::removeUnreachableViewpoints(
     }
     vector<TopoNode::Ptr> topo_path;
     auto closest_node = graph_->odom_node_;
-    float closest_dis =
-        (closest_node->center_ - nodes2insert[i]->center_).squaredNorm();
-    for (auto &hodom : graph_->history_odom_nodes_) {
-      if ((hodom->center_ - nodes2insert[i]->center_).squaredNorm() <
-          closest_dis) {
-        closest_dis = (hodom->center_ - nodes2insert[i]->center_).squaredNorm();
-        closest_node = hodom;
-      }
-    }
     // An audit gets a larger budget. A failed search remains unresolved and
     // cannot be used as evidence that there is nothing left to explore.
     if (!graph_->graphSearch(closest_node, nodes2insert[i], topo_path, full_audit_ ? 0.02 : 0.002)) {
@@ -1323,6 +1317,97 @@ void FrontierManager::removeUnreachableViewpoints(
           ->vp_clusters_[nodeidx2vpclusteridx[i]]
           .distance_ = graph_->getPathLength(topo_path);
     }
+  }
+  // Retry failed groups from the measured root. Round-robin across audits
+  // prevents one difficult room from consuming every retry. The whole fallback
+  // has a wall-clock budget; endpoint and segment clearance remain unchanged.
+  connection_cache_hits_=0; largest_retry_budget_=0;
+  const auto retry_now=ros::WallTime::now();
+  connection_records_.erase(std::remove_if(connection_records_.begin(),connection_records_.end(),
+      [&](const auto &r){return (retry_now-r.touched).toSec()>120.0;}),connection_records_.end());
+  const auto deadline=retry_now+ros::WallDuration(.06);
+  size_t attempted=0;
+  if(full_audit_ && !nodes2insert.empty()) {
+    for(size_t k=0;k<nodes2insert.size();++k) {
+      const size_t n=(viewpoint_retry_offset_+k)%nodes2insert.size();
+      if(ros::WallTime::now()>=deadline) break;
+      ++attempted;
+      if(vp_cluster_kept[n]) continue;
+      auto &group=clusters[nodeidx2clusteridx[n]]->vp_clusters_[nodeidx2vpclusteridx[n]];
+      PointVector candidates=group.vps_;
+      std::stable_sort(candidates.begin(),candidates.end(),[&](const auto &a,const auto &b) {
+        return (a.getVector3fMap()-graph_->odom_node_->center_).squaredNorm()<
+               (b.getVector3fMap()-graph_->odom_node_->center_).squaredNorm();
+      });
+      vector<Eigen::Vector3f> trials{group.center_};
+      for(const auto &candidate:candidates) {
+        bool distinct=true;
+        for(const auto &old:trials) if((old-candidate.getVector3fMap()).norm()<.3f) distinct=false;
+        if(distinct) trials.push_back(candidate.getVector3fMap());
+        if(trials.size()>=3) break;
+      }
+      for(const auto &point:trials) {
+        const double remaining=(deadline-ros::WallTime::now()).toSec();
+        if(remaining<=0) break;
+        auto candidate=std::make_shared<TopoNode>(); candidate->center_=point;
+        auto record=std::find_if(connection_records_.begin(),connection_records_.end(),[&](const auto &r) {
+          return (r.endpoint-point).norm()<.3f && (r.root-graph_->odom_node_->center_).norm()<2.0f;
+        });
+        if(record==connection_records_.end()) {
+          if(connection_records_.size()>=256) {
+            auto oldest=std::min_element(connection_records_.begin(),connection_records_.end(),
+                [](const auto &a,const auto &b){return a.touched<b.touched;});
+            connection_records_.erase(oldest);
+          }
+          ConnectionRecord fresh; fresh.root=graph_->odom_node_->center_; fresh.endpoint=point;
+          connection_records_.push_back(fresh); record=std::prev(connection_records_.end());
+        }
+        record->touched=retry_now;
+        int result=ParallelBubbleAstar::TIME_OUT;
+        auto route=record->route;
+        if(route.size()>=2) {
+          route.front()=graph_->odom_node_->center_; route.back()=point;
+          if(graph_->parallel_bubble_astar_->collisionCheck_shortenPath(route)) {
+            double cost=0; graph_->parallel_bubble_astar_->calculatePathCost(route,cost);
+            auto root=graph_->odom_node_;
+            root->neighbors_.insert(candidate); root->paths_[candidate]=route; root->weight_[candidate]=cost;
+            std::reverse(route.begin(),route.end());
+            candidate->neighbors_.insert(root); candidate->paths_[root]=route; candidate->weight_[root]=cost;
+            result=ParallelBubbleAstar::REACH_END; ++connection_cache_hits_;
+          } else record->route.clear();
+        }
+        if(result!=ParallelBubbleAstar::REACH_END) {
+          const double available=(deadline-ros::WallTime::now()).toSec();
+          if(available<=0) break;
+          const double budget=std::min(available,std::min(.06,.01*double(1u<<std::min(3u,record->timeouts))));
+          largest_retry_budget_=std::max(largest_retry_budget_,budget);
+          result=graph_->connectViewpointToRoot(candidate,budget);
+          if(result==ParallelBubbleAstar::TIME_OUT) {
+            record->timeouts=std::min(3u,record->timeouts+1);
+            clusters[nodeidx2clusteridx[n]]->connection_state_=3;
+          }
+        }
+        if(result==ParallelBubbleAstar::REACH_END) {
+          record->route=graph_->odom_node_->paths_.at(candidate);
+          record->root=graph_->odom_node_->center_; record->endpoint=point; record->timeouts=0;
+        }
+        // Negative outcomes are never cached as proof of permanent unreachability.
+        if(result>=0 && result<6) ++viewpoint_retry_results_[result];
+        if(result==ParallelBubbleAstar::REACH_END) {
+          const auto &path=graph_->odom_node_->paths_.at(candidate);
+          group.distance_=0;
+          for(size_t j=1;j<path.size();++j) group.distance_+=(path[j]-path[j-1]).norm();
+          group.center_=point;
+          // Score the actually certified endpoint, not a different member of
+          // the old group whose connection has never been checked.
+          group.vps_.clear(); group.vps_.emplace_back(point.x(),point.y(),point.z());
+          vp_cluster_kept[n]=true; ++viewpoint_alternatives_reached_;
+        }
+        graph_->removeNode(candidate);
+        if(vp_cluster_kept[n]) break;
+      }
+    }
+    viewpoint_retry_offset_=(viewpoint_retry_offset_+attempted)%nodes2insert.size();
   }
   graph_->removeNodes(nodes2insert);
   vector<unordered_set<int>> kept_vp_cluster;
@@ -1340,9 +1425,11 @@ void FrontierManager::removeUnreachableViewpoints(
         continue;
       clusters[i]->vp_clusters_.push_back(tmp[j]);
     }
-    if (clusters[i]->vp_clusters_.empty())
+    if (clusters[i]->vp_clusters_.empty()) {
       clusters[i]->is_reachable_ = false;
-    else {
+      if(clusters[i]->connection_state_==0) clusters[i]->connection_state_=2;
+    } else {
+      clusters[i]->connection_state_=1;
       clusters[i]->is_reachable_ = true;
       sort(clusters[i]->vp_clusters_.begin(), clusters[i]->vp_clusters_.end(),
            [](const ViewpointCluster &a, const ViewpointCluster &b) {

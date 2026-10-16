@@ -1,8 +1,29 @@
 #pragma once
 #include <algorithm>
 #include <cstdint>
+#include <Eigen/Core>
+#include <vector>
+#include <limits>
 
 namespace fast_planner {
+// Distance along a fixed certified route, including lateral tracking error.
+// Keeping the reference fixed across replans prevents goal/path reselection
+// from manufacturing progress. Around a corner Euclidean goal distance may grow.
+inline double epiconRemainingRoute(const Eigen::Vector3f &position,
+                                  const std::vector<Eigen::Vector3f> &path) {
+  if(path.size()<2) return std::numeric_limits<double>::infinity();
+  double remaining=0, best_offset=std::numeric_limits<double>::infinity(), result=remaining;
+  for(size_t n=path.size()-1;n>0;--n) {
+    const Eigen::Vector3f delta=path[n]-path[n-1];
+    const double length=delta.norm();
+    if(length<1e-6) continue;
+    const double t=std::clamp(double((position-path[n-1]).dot(delta))/(length*length),0.0,1.0);
+    const double offset=(position-(path[n-1]+t*delta)).norm();
+    if(offset<best_offset) { best_offset=offset; result=offset+remaining+(1-t)*length; }
+    remaining+=length;
+  }
+  return result;
+}
 // Only movement toward a normal exploration goal is productive. Goal reselection,
 // successful optimization and spatial recovery alone do not replenish the budget.
 class EpiconProgressWatchdog {
@@ -14,6 +35,23 @@ public:
   double idleSeconds(double now) const { return std::max(0.0,now-last_progress_); }
 private:
   double last_progress_{0.0};
+};
+// Per-goal execution window. Reselection never resets the mission watchdog.
+class EpiconGoalWindow {
+public:
+  void reset() { valid_=false; }
+  void select(const Eigen::Vector3f &goal, double now) {
+    if(!valid_ || (goal-goal_).norm()>.3f) {
+      valid_=true; goal_=goal; since_=now;
+    }
+  }
+  void progress(double now) { if(valid_) since_=now; }
+  bool expired(double now, double interval) const {
+    return valid_ && now-since_>=interval;
+  }
+private:
+  bool valid_{false}; double since_{0};
+  Eigen::Vector3f goal_{Eigen::Vector3f::Zero()};
 };
 // A native NO_FRONTIER is provisional. Mission completion needs independent
 // sensor observations acquired after the last executable trajectory settled.

@@ -193,13 +193,47 @@ namespace state2state_task {
 
 namespace state2state_task {
 
+    bool topologyStartRequired(const StateToStateFrontendServices &services) {
+        return services.cfg.state2state_topology_query_capability_enable &&
+               services.cfg.state2state_topology_enable &&
+               services.topology_route_runtime &&
+               services.topology_route_runtime->requiresTopologyLeg(services.goal_p);
+    }
+
+    bool validateTopologyStart(StateToStateFrontendServices &services, const Vec3f &start) {
+        if (!topologyStartRequired(services)) return true;
+        std::string reason;
+        if (!start.allFinite()) reason = "TOPO_START_INVALID";
+        else if (!services.map_manager->insideLocalMap(start)) reason = "TOPO_START_OUT_OF_MAP";
+        else {
+            const auto raw = services.map_manager->getGridType(start);
+            const auto inflated = services.map_manager->getInfGridType(start);
+            if (raw == rog_map::OCCUPIED) reason = "TOPO_START_OCCUPIED";
+            else if (inflated == rog_map::OCCUPIED) reason = "TOPO_START_INFLATED_OCCUPIED";
+            else if (raw == rog_map::OUT_OF_MAP || inflated == rog_map::OUT_OF_MAP)
+                reason = "TOPO_START_OUT_OF_MAP";
+            else if (raw != rog_map::KNOWN_FREE) reason = "TOPO_START_UNKNOWN";
+        }
+        if (reason.empty()) return true;
+        auto &runtime = *services.topology_route_runtime;
+        resetGlobalTopologyRoute(runtime.route, reason);
+        runtime.setFrontendFailure(reason);
+        services.ros_ptr->warn(" -- [TopologyStart] reason={} start=[{},{},{}] map_revision={}",
+                              reason, start.x(), start.y(), start.z(),
+                              services.map_manager->mapRevision());
+        return false;
+    }
+
     bool pathSearch(StateToStateFrontendServices &services,
                     const Vec3f &start_pt,
                     const Vec3f &goal,
                     const double searching_horizon,
                     vec_Vec3f &path) {
         using namespace path_search;
+        path.clear();
         services.waiting_for_topology = false;
+        if (services.topology_route_runtime) services.topology_route_runtime->setFrontendFailure("");
+        if (!validateTopologyStart(services, start_pt)) return false;
         if (searching_horizon <= 0.0) {
             services.ros_ptr->error(" -- [GeneralPlanner] Goal waypoints empty or searching horizon negative, force return.");
             return false;
@@ -221,7 +255,10 @@ namespace state2state_task {
 
         int flag_es = ON_PROB_MAP | (services.cfg.frontend_in_known_free ? UNKNOWN_AS_OCCUPIED : UNKNOWN_AS_FREE);
         vec_Vec3f out_path;
-        RET_CODE ret_es = services.astar->escapePathSearch(start_pt, flag_es, out_path);
+        // Strict topology starts at the real continuous state, never an
+        // UNKNOWN_AS_FREE escape endpoint or a snapped voxel centre.
+        RET_CODE ret_es = topologyStartRequired(services) ? NO_NEED :
+            services.astar->escapePathSearch(start_pt, flag_es, out_path);
         if (ret_es != NO_NEED) {
             if (ret_es != REACH_HORIZON && ret_es != REACH_GOAL) {
                 services.ros_ptr->error(
@@ -695,6 +732,7 @@ namespace state2state_task {
             // A failed attachment, blocked prefix or pending requery is not
             // permission to fly directly to an off-graph goal.
             auto &runtime = *services.topology_route_runtime;
+            runtime.setFrontendFailure(runtime.route.last_result);
             const double wall_now = std::chrono::duration<double>(
                 std::chrono::steady_clock::now().time_since_epoch()).count();
             services.waiting_for_topology = runtime.allowWait(

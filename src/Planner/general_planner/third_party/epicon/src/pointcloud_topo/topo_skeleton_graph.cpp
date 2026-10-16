@@ -626,7 +626,8 @@ void TopoGraph::getPreNbrs(TopoNode::Ptr &node, vector<TopoNode::Ptr> &nbrs) {
 //   }
 // }
 
-void TopoGraph::insertNodes(vector<TopoNode::Ptr> &nodes, bool only_raycast) {
+void TopoGraph::insertNodes(vector<TopoNode::Ptr> &nodes, bool only_raycast, bool connect_peers) {
+  const std::unordered_set<TopoNode::Ptr> temporary(nodes.begin(),nodes.end());
   // insert到region里
   if (nodes.empty())
     return;
@@ -652,6 +653,7 @@ void TopoGraph::insertNodes(vector<TopoNode::Ptr> &nodes, bool only_raycast) {
     vector<TopoNode::Ptr> nbrs;
     getPreNbrs(node, nbrs);
     for (auto &nbr : nbrs) {
+      if(!connect_peers && temporary.count(nbr)) continue;
       if (ptr_pair_set.find({node, nbr}) == ptr_pair_set.end()) {
         pair_vector.push_back({node, nbr});
         ptr_pair_set.insert({node, nbr});
@@ -708,6 +710,31 @@ void TopoGraph::insertNodes(vector<TopoNode::Ptr> &nodes, bool only_raycast) {
     parallel_bubble_astar_->calculatePathCost(path_vec[i], cost);
     node1->weight_[node2] = cost;
     node2->weight_[node1] = cost;
+  }
+}
+
+int TopoGraph::connectViewpointToRoot(const TopoNode::Ptr &node, double timeout) {
+  vector<Eigen::Vector3f> path;
+  const int result=parallel_bubble_astar_->search(odom_node_->center_,node->center_,path,timeout,true);
+  if(result!=ParallelBubbleAstar::REACH_END) return result;
+  if(path.size()<2 || !parallel_bubble_astar_->collisionCheck_shortenPath(path))
+    return ParallelBubbleAstar::NO_PATH;
+  double cost=0;
+  parallel_bubble_astar_->calculatePathCost(path,cost);
+  odom_node_->neighbors_.insert(node); odom_node_->paths_[node]=path; odom_node_->weight_[node]=cost;
+  std::reverse(path.begin(),path.end());
+  node->neighbors_.insert(odom_node_); node->paths_[odom_node_]=path; node->weight_[odom_node_]=cost;
+  return result;
+}
+void TopoGraph::retryViewpointConnections(vector<TopoNode::Ptr> &nodes, double budget) {
+  const auto deadline=ros::WallTime::now()+ros::WallDuration(budget);
+  for(const auto &node:nodes) {
+    double remaining=(deadline-ros::WallTime::now()).toSec();
+    if(remaining<=0) break;
+    vector<TopoNode::Ptr> path;
+    if(graphSearch(odom_node_,node,path,std::min(.002,remaining))) continue;
+    remaining=(deadline-ros::WallTime::now()).toSec();
+    if(remaining>0) connectViewpointToRoot(node,std::min(.01,remaining));
   }
 }
 

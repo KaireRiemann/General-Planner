@@ -212,7 +212,10 @@ public:
   std::ofstream log;
   void removeNodes(vector<TopoNode::Ptr> &nodes);
   void updateRemainedConnections(vector<TopoNode::Ptr> &nodes);
-  void insertNodes(vector<TopoNode::Ptr> &nodes, bool only_raycast = false);
+  void insertNodes(vector<TopoNode::Ptr> &nodes, bool only_raycast = false, bool connect_peers = true);
+  // Bounded, collision-checked point-cloud route from the actual odometry root.
+  int connectViewpointToRoot(const TopoNode::Ptr &node, double timeout);
+  void retryViewpointConnections(vector<TopoNode::Ptr> &nodes, double budget = .04);
   void insertNode(TopoNode::Ptr &new_node, vector<TopoNode::Ptr> &nbr_nodes, vector<vector<Eigen::Vector3f>> &paths);
   // void getUnreachableLocalNodes(vector<TopoNode::Ptr> &nodes_unreachable);
   void updateSkeleton(std::vector<Eigen::Vector3f, Eigen::aligned_allocator<Eigen::Vector3f>> &new_path,

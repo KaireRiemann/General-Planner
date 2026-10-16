@@ -9,28 +9,23 @@ lidar_perception/lidar_pitch: 0.0
 lidar_perception/fov_viewpoint_up: 28.0
 lidar_perception/fov_viewpoint_down: -28.0
 lidar_perception/max_ray_length: 60.0
+# Indoor task volume plus a small overlapping entrance approach.
+# The broad exterior yard is deliberately excluded from this indoor mission.
+# These are task bounds, not a substitute for obstacle clearance checks.
 box_num: 2
-# Current Unity House_01, world frame; doorway pose (30.930, 0.766, 1.500).
-# Scene floor/wall assets extend over x=[28,40], y=[-16,14]; the observed
-# first-floor surface is z=0.67, upper-floor pieces start at z=3.5, and
-# upper roof pieces start at z=6.5. Include both floors and the entrance.
-box_0/down: [30.9, -17.0, 0.67]
+box_0/down: [32.0, -17.0, 0.67]
 box_0/up: [42.0, 15.0, 6.5]
-# Overlap z=[2.0,3.5] connects the floor volumes through the staircase.
-# After viewpoint filtering insets each box by the 0.6 m planning clearance, the
-# overlap remains z=[2.6,2.9] (0.3 m); touching faces would disconnect.
-# These are task bounds. Point-cloud collision checks still apply.
-# box_1/down: [27.5, -16.5, 2.0]
-# box_1/up: [40.5, 14.5, 6.5]
+box_1/down: [30.5, -1.5, 0.67]
+box_1/up: [32.8, 1.5, 2.8]
 dynamic_bounding_box/enabled: false
 dead_area_num: 0
 
-# Same local horizon, point-cloud clearance and physical bounds as epicon_ws/unity.yaml.
+# Indoor commissioning speed; preserve hard clearance and allow slower retries.
 max_traj_len: 10.0
 MaxCorridorSize: 3.5
 DilateRadiusSoft: 0.6
 DilateRadiusHard: 0.5
-MaxVelMag: 2.0
+MaxVelMag: 0.5
 MaxAccMag: 10.0
 maxBdrMag: 10000.0
 MaxTiltAngle: 0.5
@@ -52,11 +47,11 @@ RelCostTol: 0.000001
 yaw_max_vel: 4.0
 DynamicVelocityEnable: false
 MinSegmentVel: 0.5
-TrajectoryRetryMinVel: 0.5
-OpenSegmentVel: 2.0
-TurnSoftVelocity: 2.0
-TurnHardVelocity: 1.0
-BackupMaxVel: 2.0
+TrajectoryRetryMinVel: 0.3
+OpenSegmentVel: 0.5
+TurnSoftVelocity: 0.5
+TurnHardVelocity: 0.5
+BackupMaxVel: 0.5
 ReplanCommitDelay: 0.35
 CommitKnownFreeSafeDistance: 0.5
 NonstopTerminalVelocityEnable: false
@@ -67,10 +62,9 @@ global_map/pointcloud_main_period: 0.5
 global_map/pointcloud_tracking_period: 1.0
 
 epicon:
-  FrontierManager/cluster_min_size: 0.8
-  FrontierManager/cluster_min_radius: 1.0
   bubble_topo/bubble_min_radius: 0.61
-  bubble_astar/safe_distance: 0.6
+  # Search uses the existing hard margin; corridors still prefer the soft margin.
+  bubble_astar/safe_distance: 0.5
   execution/audit_period: 0.5
   execution/goal_failure_limit: 3
   execution/goal_cooldown: 5.0

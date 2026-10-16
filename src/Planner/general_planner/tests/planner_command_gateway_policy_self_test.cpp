@@ -23,6 +23,17 @@ void expect(const bool ok, const char *message) {
 } // namespace
 
 int main() {
+  using general_planner::planner_runtime::deferFirstCommandToPlanningDeadline;
+  expect(deferFirstCommandToPlanningDeadline(PlannerMode::STATE2STATE, PlannerPhase::PLANNING, false),
+         "initial navigation must use its bounded planning deadline");
+  expect(!deferFirstCommandToPlanningDeadline(PlannerMode::STATE2STATE, PlannerPhase::PLANNING, true),
+         "replanning must retain stale-command protection");
+  expect(!deferFirstCommandToPlanningDeadline(PlannerMode::STATE2STATE, PlannerPhase::EXECUTING, false),
+         "execution without a first command must still time out");
+  for (const auto mode : {PlannerMode::TRACKING, PlannerMode::VERTICAL,
+                          PlannerMode::REORIENT, PlannerMode::EXPLORATION, PlannerMode::GATE})
+    expect(!deferFirstCommandToPlanningDeadline(mode, PlannerPhase::PLANNING, false),
+           "other modes must retain their existing first-command watchdog");
   using general_planner::planner_runtime::canFinishTrackingTimeoutHold;
   expect(canFinishTrackingTimeoutHold(true, false, true, true),
          "retired tracking source at measured rest must finish timeout hold");

@@ -1362,6 +1362,10 @@ namespace fsm {
                           (navigationGoalActive() ? "ACTIVE" : "IDLE") +
                           std::string(state2state_replan_in_progress_.load()
                                           ? " BUSY" : " QUIESCENT");
+            if (state2stateMode() && state2state_plan_failed_ && planner_ptr_) {
+                const auto reason = planner_ptr_->getState2StateFrontendFailure();
+                if (!reason.empty()) status.data += " reason=" + reason;
+            }
             navigation_status_pub_.publish(status);
         }
 

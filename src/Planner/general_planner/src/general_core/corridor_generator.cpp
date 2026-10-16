@@ -52,6 +52,22 @@ namespace general_planner {
     }
 
 
+    bool CorridorGenerator::buildCorridor(const vec_Vec3f &path,
+                                          CorridorResult &result, Vec3f &shifted_start) {
+        result={}; result.backend="ciri";
+        result.map_representation=inflated_obstacles_ ? "inflated_voxels" : "occupied_voxels";
+        result.clearance=robot_r_;
+        result.min_overlap=std::max(1e-3,.25*min_overlap_threshold_);
+        if(path.size()<2) { result.failure="empty guide"; return false; }
+        PolytopeVec cells;
+        if(!SearchPolytopeOnPath(path,cells,shifted_start,false) || cells.empty()) {
+            result.failure="CIRI generation failed"; return false;
+        }
+        for(const auto &point:path) result.path.push_back(point);
+        for(const auto &cell:cells) result.planes.push_back(cell.GetPlanes());
+        return true;
+    }
+
     void CorridorGenerator::SetLineNeighborList(const vec_E<Vec3i> &_line_seed_neighbor_list) {
         this->line_seed_neighbor_list = _line_seed_neighbor_list;
     }

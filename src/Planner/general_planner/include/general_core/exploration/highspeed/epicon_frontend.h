@@ -1,6 +1,7 @@
 #pragma once
 #include <Eigen/Core>
 #include <memory>
+#include <string>
 #include <cstdint>
 #include <vector>
 #include <ros/ros.h>
@@ -12,7 +13,7 @@ namespace fast_planner {
 // No occupancy-map or General Planner goal-selection types cross this boundary.
 class EpiconFrontend {
 public:
-  enum class Result { WAITING_MAP, NO_FRONTIER, BLOCKED, DISCONNECTED, FAIL, SUCCEED };
+  enum class Result { WAITING_MAP, NO_FRONTIER, BLOCKED, DISCONNECTED, FAIL, SUCCEED, OUTSIDE_BOX };
   EpiconFrontend();
   ~EpiconFrontend();
   void init(ros::NodeHandle &runtime_nh);
@@ -39,11 +40,14 @@ public:
   bool contains(const Eigen::Vector3d &position) const;
   bool recoveryPoint(const Eigen::Vector3d &start, Eigen::Vector3d &goal) const;
   void noteRecoveryAttempt(const Eigen::Vector3d &goal);
+  bool noteExplorationProgress();
+  const std::vector<Eigen::Vector3f> &executionPath() const;
   const std::vector<Eigen::Vector3f> &tour() const;
   double goalYaw() const;
   bool ready() const;
   bool hasCloud() const;
   std::size_t clusterCount() const;
+  std::string unresolvedSummary() const;
   std::size_t historyCount() const;
 private:
   struct Impl;

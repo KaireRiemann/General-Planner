@@ -14,7 +14,10 @@ int main(int argc,char **argv) {
   ros::NodeHandle nh("~");
   try {
     if(argc<2) throw std::runtime_error("expected snapshot manifest");
-    const bool diagnose = std::string(argv[1])=="--diagnose";
+    const bool cache_test=std::string(argv[1])=="--cache-invalidation";
+    if(cache_test && argc<3) throw std::runtime_error("cache test requires manifest");
+    const bool incremental = std::string(argv[1])=="--incremental";
+    const bool diagnose = std::string(argv[1])=="--diagnose" || incremental;
     if (diagnose && argc<3) throw std::runtime_error("--diagnose requires a snapshot manifest");
     std::string status_json = "{}";
     auto status_sub = nh.subscribe<std_msgs::String>("/planning/exploration/epicon_status", 1,
@@ -24,10 +27,53 @@ int main(int argc,char **argv) {
       nh.setParam("box_0/down",std::vector<double>{100.0,100.0,10.0});
       nh.setParam("box_0/up",std::vector<double>{110.0,110.0,15.0});
     }
+    if(std::string(argv[1])=="--invalid-policy") {
+      nh.setParam("DilateRadiusHard",.6);nh.setParam("DilateRadiusSoft",.5);
+      bool rejected=false;
+      try { fast_planner::EpiconFrontend invalid; invalid.init(nh); }
+      catch(const std::invalid_argument &) { rejected=true; }
+      if(!rejected) throw std::runtime_error("soft below physical hard margin was silently accepted");
+      std::cout<<"INVALID_POLICY PASS"<<std::endl;return 0;
+    }
     fast_planner::EpiconFrontend frontend;
     frontend.init(nh);
     if(frontend.update(true)!=fast_planner::EpiconFrontend::Result::WAITING_MAP)
       throw std::runtime_error("frontend finished before receiving a point cloud");
+    if(std::string(argv[1])=="--door-check") {
+      if(argc<3) throw std::runtime_error("--door-check requires PCD");
+      ros::NodeHandle native(nh,"epicon");
+      auto map=std::make_shared<epicon_native::fast_planner::LIOInterface>(); map->init(native);
+      auto search=std::make_shared<epicon_native::ParallelBubbleAstar>(); search->init(native,map);
+      pcl::PointCloud<pcl::PointXYZ> points;
+      if(pcl::io::loadPCDFile(argv[2],points)!=0) throw std::runtime_error("PCD load failed");
+      auto cloud=boost::make_shared<sensor_msgs::PointCloud2>();pcl::toROSMsg(points,*cloud);
+      auto odom=boost::make_shared<nav_msgs::Odometry>(); odom->pose.pose.position.x=31;
+      odom->pose.pose.position.z=1.93;odom->pose.pose.orientation.w=1;
+      cloud->header.stamp=odom->header.stamp=ros::Time::now();map->updateCloudMapOdometry(cloud,odom);
+      frontend.ingestCloud(cloud,odom);
+      for(double margin:{.6,.505}) {
+        fast_planner::EpiconCorridor corridor;
+        const bool ok=frontend.corridor({Eigen::Vector3d(31,0,1.93),Eigen::Vector3d(33,0,1.93)},3.5,margin,corridor);
+        std::cout<<"DOOR_CORRIDOR margin="<<margin<<" success="<<ok<<" truncated="<<corridor.truncated
+                 <<" failure="<<corridor.failure<<std::endl;
+        if(margin<.6 && (!ok || corridor.truncated)) throw std::runtime_error("hard-safe doorway corridor failed");
+      }
+      for(double goal_y:{0.,.4}) for(double clearance:{.6,.5}) for(double resolution:{.2,.05}) for(double budget:{.01,.1,1.0}) {
+        search->safe_distance_=clearance;search->resolution_=resolution;search->inv_resolution_=1/resolution;
+        std::vector<Eigen::Vector3f> path;
+        const auto begin=ros::WallTime::now();
+        const int result=search->search(Eigen::Vector3f(31,0,1.93),Eigen::Vector3f(33,goal_y,1.93),path,budget,true);
+        double minimum=100;
+        for(size_t n=1;n<path.size();++n) for(int k=0;k<=100;++k)
+          minimum=std::min(minimum,double(map->getDisToOcc((path[n-1]+(path[n]-path[n-1])*(float(k)/100)).eval())));
+        std::cout<<"DOOR_CHECK goal_y="<<goal_y<<" clearance="<<clearance<<" resolution="<<resolution<<" budget="<<budget
+                 <<" result="<<result<<" ms="<<(ros::WallTime::now()-begin).toSec()*1000
+                 <<" min_clearance="<<minimum<<" points="<<path.size()<<std::endl;
+        if(result==epicon_native::ParallelBubbleAstar::REACH_END && minimum<clearance-1e-4)
+          throw std::runtime_error("door path violated requested clearance");
+      }
+      return 0;
+    }
     if (std::string(argv[1])=="--clearance") {
       ros::NodeHandle native(nh,"epicon");
       auto map=std::make_shared<epicon_native::fast_planner::LIOInterface>();
@@ -71,6 +117,18 @@ int main(int argc,char **argv) {
       if(graph.odom_reused_connections_!=1 ||
          (graph.odom_node_->paths_.at(node).front()-root).norm()>1e-6)
         throw std::runtime_error("root path was not recertified from current odometry");
+      auto viewpoint=std::make_shared<epicon_native::TopoNode>(); viewpoint->center_=goal;
+      if(graph.connectViewpointToRoot(viewpoint,.5)!=epicon_native::ParallelBubbleAstar::REACH_END)
+        throw std::runtime_error("viewpoint retry could not connect around the wall");
+      const auto certified=graph.odom_node_->paths_.at(viewpoint);
+      if(certified.size()<3 || (certified.front()-root).norm()>1e-6 ||
+         (certified.back()-goal).norm()>1e-6)
+        throw std::runtime_error("viewpoint connector did not preserve its detour");
+      graph.removeNode(viewpoint);
+      if(graph.odom_node_->neighbors_.count(viewpoint)) throw std::runtime_error("temporary viewpoint leaked root edge");
+      viewpoint->center_=Eigen::Vector3f(.3,-.8,1.5);
+      if(graph.connectViewpointToRoot(viewpoint,.1)==epicon_native::ParallelBubbleAstar::REACH_END)
+        throw std::runtime_error("viewpoint retry accepted insufficient clearance");
       walls.emplace_back(node->center_.x(),node->center_.y(),node->center_.z());
       pcl::toROSMsg(walls,*cloud); cloud->header.stamp=ros::Time::now();
       map->updateCloudMapOdometry(cloud,odom);
@@ -90,6 +148,27 @@ int main(int argc,char **argv) {
       map->lp_->global_box_max_boundary_vec_[0].y()=.1;
       if(search.search(left,right,path,.1,true)!=epicon_native::ParallelBubbleAstar::REACH_END)
         throw std::runtime_error("overlapping task boxes were treated as disconnected");
+      // A 1.21 m corridor has >0.6 m clearance on its centreline, but
+      // endpoint free spheres cannot overlap across a 0.2 m grid edge.
+      auto narrow_map=std::make_shared<epicon_native::fast_planner::LIOInterface>();
+      narrow_map->init(native);
+      epicon_native::ParallelBubbleAstar narrow_search;narrow_search.init(native,narrow_map);
+      pcl::PointCloud<pcl::PointXYZ> corridor_walls;
+      for(double z=0;z<=3;z+=.04) for(double y=-2;y<=2;y+=.04) {
+        corridor_walls.emplace_back(0,y,z);corridor_walls.emplace_back(1.21,y,z);
+      }
+      pcl::toROSMsg(corridor_walls,*cloud);cloud->header.stamp=ros::Time::now();
+      narrow_map->updateCloudMapOdometry(cloud,odom);
+      if(narrow_search.search(Eigen::Vector3f(.605,-.8,1.5),Eigen::Vector3f(.605,.8,1.5),path,.1,true)!=
+         epicon_native::ParallelBubbleAstar::REACH_END || !narrow_search.collisionCheck_shortenPath(path))
+        throw std::runtime_error("safe narrow corridor rejected by endpoint sphere overlap");
+      for(int k=0;k<=200;++k) {
+        const Eigen::Vector3f point(.605,-.8+1.6*k/200.,1.5);
+        if(narrow_map->getDisToOcc(point)<.6) throw std::runtime_error("narrow test violates clearance");
+      }
+      path={Eigen::Vector3f(-.7,0,1.5),Eigen::Vector3f(.605,0,1.5)};
+      if(narrow_search.collisionCheck_shortenPath(path))
+        throw std::runtime_error("segment refinement allowed crossing a wall");
       std::cout<<"EPICON_CLEARANCE PASS: near-wall detour, unsafe-root rejection, clearance policy, root reuse/invalidation, box union\n";
       return 0;
     }
@@ -99,7 +178,7 @@ int main(int argc,char **argv) {
       std::cout<<"EPICON_SHIFTED_BOX PASS"<<std::endl;
       return 0;
     }
-    std::ifstream input(argv[diagnose ? 2 : 1]);
+    std::ifstream input(argv[(diagnose || cache_test) ? 2 : 1]);
     if(!input) throw std::runtime_error("cannot open manifest");
     std::string pcd; int frames=0, selected=0, executable=0; size_t max_clusters=0;
     double max_update_ms=0.0;
@@ -116,7 +195,10 @@ int main(int argc,char **argv) {
       frontend.setOdometry(position,Eigen::Vector3f(v.x,v.y,v.z),tf::getYaw(q));
       frontend.ingestCloud(cloud,odom);
       const auto started=ros::WallTime::now();
-      const auto result=frontend.update(true,diagnose);
+      if(incremental) frontend.update(false,false);
+      const auto result=frontend.update(true,diagnose && (!incremental || frames%4==0));
+      if(result==fast_planner::EpiconFrontend::Result::NO_FRONTIER && frontend.clusterCount()>0)
+        throw std::runtime_error("unresolved frontier was treated as coverage completion");
       const double update_ms=(ros::WallTime::now()-started).toSec()*1000.0;
       max_update_ms=std::max(max_update_ms,update_ms);
       bool frame_executable=false;
@@ -137,6 +219,33 @@ int main(int argc,char **argv) {
           for(size_t j=1;j<path.size();++j) for(int k=0;k<=20;++k)
             if(!frontend.contains((path[j-1]+(path[j]-path[j-1])*(float(k)/20)).cast<double>()))
               throw std::runtime_error("topological path left the task-box union");
+          if(cache_test) {
+            std::vector<Eigen::Vector3f> moving;
+            if(frontend.pathFrom(position.cast<double>(),Eigen::Vector3d::Zero(),tf::getYaw(q),moving)!=
+                fast_planner::EpiconFrontend::Result::SUCCEED || moving.size()<2)
+              throw std::runtime_error("reanchoring lost the selected route");
+            const Eigen::Vector3f obstacle=(moving.front()+moving[1])*.5f;
+            points.emplace_back(obstacle.x(),obstacle.y(),obstacle.z());
+            pcl::toROSMsg(points,*cloud);cloud->header.frame_id="world";
+            cloud->header.stamp=ros::Time::now()+ros::Duration(.001);
+            frontend.ingestCloud(cloud,odom);
+            if(frontend.clearance(obstacle.cast<double>())>.05)
+              throw std::runtime_error("cache test obstacle was not inserted into the map");
+            std::vector<Eigen::Vector3f> replanned;
+            const auto changed=frontend.pathFrom(position.cast<double>(),Eigen::Vector3d::Zero(),tf::getYaw(q),replanned);
+            if(changed==fast_planner::EpiconFrontend::Result::SUCCEED) {
+              for(size_t n=1;n<replanned.size();++n) for(int k=0;k<=100;++k) {
+                const Eigen::Vector3d point=(replanned[n-1]+(replanned[n]-replanned[n-1])*(float(k)/100)).cast<double>();
+                if(frontend.clearance(point)<.49)
+                  throw std::runtime_error("cached route bypassed a newly observed obstacle");
+              }
+            }
+            frontend.resetTask();
+            if(frontend.hasSelectedGoal() || !frontend.executionPath().empty())
+              throw std::runtime_error("route cache survived task reset");
+            std::cout<<"CACHE_INVALIDATION PASS: reanchor, new obstacle, task reset"<<std::endl;
+            return 0;
+          }
           if(diagnose && executable==1) {
             std::vector<Eigen::Vector3d> guide;
             for(const auto &point:path) guide.push_back(point.cast<double>());
@@ -171,8 +280,14 @@ int main(int argc,char **argv) {
           <<",\"status\":"<<status_json<<"}"<<std::endl;
     }
     frontend.setOdometry(Eigen::Vector3f(10000.f,0.f,1.f),Eigen::Vector3f::Zero(),0.f);
-    if(frontend.update(true)!=fast_planner::EpiconFrontend::Result::DISCONNECTED)
-      throw std::runtime_error("out-of-box odometry was accepted");
+    if(frontend.update(true)!=fast_planner::EpiconFrontend::Result::OUTSIDE_BOX)
+      throw std::runtime_error("out-of-box odometry was not distinguished from topology disconnection");
+    if(frontend.hasSelectedGoal() || !frontend.tour().empty())
+      throw std::runtime_error("out-of-box odometry retained a selected goal");
+    std::vector<Eigen::Vector3f> outside_path;
+    if(frontend.pathFrom(Eigen::Vector3d(10000,0,1),Eigen::Vector3d::Zero(),0,outside_path)!=
+        fast_planner::EpiconFrontend::Result::OUTSIDE_BOX)
+      throw std::runtime_error("out-of-box execution head lost its failure reason");
     frontend.resetTask();
     if(!frontend.tour().empty()) throw std::runtime_error("task reset retained old goal");
     std::cout<<"EPICON_REPLAY frames="<<frames<<" max_clusters="<<max_clusters<<" selected="<<selected

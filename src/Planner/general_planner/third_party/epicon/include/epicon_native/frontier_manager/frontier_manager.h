@@ -186,6 +186,9 @@ struct ClusterInfo {
 
   int id_;
   int odom_id_;
+  // Audit outcome, independent of observation/dormancy. Never proves coverage.
+  // 0 unchecked, 1 connected, 2 unresolved, 3 timed out, 4 no sampled viewpoint.
+  int connection_state_{0};
   vector<ViewpointCluster> vp_clusters_;
   Eigen::Vector3f best_vp_;
   float best_vp_yaw_;
@@ -272,8 +275,19 @@ public:
   // Read-only during parallel viewpoint evaluation; supplied by the adapter.
   std::function<bool(const Eigen::Vector3f &)> viewpoint_allowed_;
   bool full_audit_{false};
+  struct ConnectionRecord {
+    Eigen::Vector3f root, endpoint;
+    unsigned timeouts{0};
+    ros::WallTime touched;
+    std::vector<Eigen::Vector3f> route;
+  };
+  std::vector<ConnectionRecord> connection_records_;
+  std::size_t connection_cache_hits_{0};
+  double largest_retry_budget_{0};
   std::size_t geometry_rejected_{0}, connectivity_rejected_{0};
   std::size_t deferred_clusters_{0}, unobservable_clusters_{0};
+  std::array<int,6> viewpoint_retry_results_{};
+  std::size_t viewpoint_alternatives_reached_{0}, viewpoint_retry_offset_{0};
   void refreshAllClusters();
   Eigen::Isometry3f transform_world2lidar;
 

@@ -21,7 +21,7 @@ epicon/ViewpointManager/sample_pillar_min_radius: 0.7
 epicon/ViewpointManager/sample_pillar_max_radius: 2.5
 epicon/ViewpointManager/sample_pillar_radius_layer_num: 6
 epicon/ViewpointManager/sample_pillar_circle_sample_num: 24
-# Candidate sampling only. The adapter clamps this above graph/planning
+# Candidate sampling only. The adapter clamps this above graph/search
 # clearance; physical collision and execution clearances stay unchanged.
 # Prefer the native 0.9 m margin among connected, observable candidates.
 # A narrow room may use a 0.68 m candidate if it has no such viewpoint;
@@ -30,7 +30,9 @@ epicon/ViewpointManager/min_clearance: 0.68
 epicon/ViewpointManager/preferred_clearance: 0.9
 # Native coverage reads these namespaced values, not the legacy launch
 # arguments bubble_astar_resolution / bubble_topo_cube_discrete_size.
-epicon/bubble_astar/resolution_astar: 0.2
+# Resolve the narrow feasible band at indoor doorways. Connector time budgets
+# remain bounded; straight clear segments are certified without grid search.
+epicon/bubble_astar/resolution_astar: 0.05
 epicon/bubble_topo/cube_discrete_size: 0.25
 # Fast connectors remain cheap. A disconnected odometry root may retry with
 # 10 ms, under a 30 ms total connection budget. Batch insertion stays at 2 ms.

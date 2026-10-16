@@ -129,6 +129,7 @@ struct NavigationAdapterStatus {
   bool goal_active{false};
   bool has_lifecycle{false};
   bool quiescent{false}; // Explicit acknowledgement; legacy publishers cannot unlock recovery.
+  std::string reason; // Optional trailing reason=CODE; lifecycle fields stay compatible.
 };
 
 inline bool parseNavigationAdapterStatus(const std::string &text,
@@ -157,6 +158,9 @@ inline bool parseNavigationAdapterStatus(const std::string &text,
   std::string worker;
   if (status.has_lifecycle && stream >> worker) {
     status.quiescent = worker == "QUIESCENT" && !status.goal_active;
+    std::string detail;
+    if (stream >> detail && detail.rfind("reason=", 0) == 0)
+      status.reason = detail.substr(7);
   }
   return true;
 }

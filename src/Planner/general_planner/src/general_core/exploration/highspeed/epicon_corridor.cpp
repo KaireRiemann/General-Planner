@@ -91,9 +91,12 @@ bool buildEpiconCorridor(const std::vector<Eigen::Vector3d> &path,
                         double range, double clearance,
                         EpiconCorridor &result, bool simplify) {
   result = {};
+  result.backend="firi"; result.map_representation="obstacle_points";
+  result.clearance=clearance;
   const auto fail = [&](const char *reason) { result.failure = reason; return false; };
   if (path.size() < 2 || !lower.allFinite() || !upper.allFinite() ||
-      (upper.array() <= lower.array()).any() || range <= clearance || clearance < 0)
+      (upper.array() <= lower.array()).any() || !std::isfinite(range) ||
+      !std::isfinite(clearance) || range <= clearance || clearance < 0)
     return fail("invalid input");
   for (const auto &p : path) if (!p.allFinite()) return fail("non-finite path");
   result.path = path;

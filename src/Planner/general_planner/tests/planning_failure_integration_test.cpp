@@ -17,12 +17,16 @@ int main(int argc, char **argv) {
   const bool queued_test = argc > 1 && (std::string(argv[1]) == "queued" ||
                                      cancel_queued_test || expired_queued_test);
   const bool tracking_test = argc > 1 && std::string(argv[1]) == "tracking";
-  const bool deadline_test = argc > 1 && std::string(argv[1]) == "deadline";
+  const bool late_command_test = argc > 1 && std::string(argv[1]) == "late_command";
+  const bool initial_plan_test = late_command_test || (argc > 1 && std::string(argv[1]) == "initial_plan");
+  const bool detail_test = argc > 1 && std::string(argv[1]) == "frontend_reason";
+  const bool deadline_test = initial_plan_test || (argc > 1 && std::string(argv[1]) == "deadline");
   ros::init(argc, argv, "planning_failure_integration_test");
   ros::NodeHandle nh("~");
   nh.setParam("initial_mode", "state2state");
   nh.setParam("serial_handover", false);
-  nh.setParam("navigation_planning_timeout", 0.5);
+  nh.setParam("navigation_planning_timeout", initial_plan_test ? 1.5 : 0.5);
+  nh.setParam("source_startup_grace_duration", initial_plan_test ? 0.5 : 2.0);
   if (expired_queued_test) nh.setParam("recovery_goal_timeout", .1);
   nh.setParam("odometry_topic", "/failure_test/odom");
   general_planner::planner_runtime::PlannerCommandGateway gateway(nh);
@@ -185,7 +189,26 @@ int main(int argc, char **argv) {
   nav.data = std::string(deadline_test ? "GENERATE_TRAJ " : "FAILED ") +
              std::to_string(latest.task_epoch) + " 1 " +
              (deadline_test ? "ACTIVE" : "IDLE");
+  if (detail_test) nav.data += " QUIESCENT reason=TOPO_START_INFLATED_OCCUPIED";
   nav_pub.publish(nav);
+  if (initial_plan_test) {
+    wait([] { return false; }, .8);
+    if (latest.phase_str != "planning" || latest.task_result_str == "failed") {
+      std::cerr << "first-command watchdog preempted the planning deadline\n"; return 1;
+    }
+    if (late_command_test) {
+      endpoint.position.x = endpoint.position.y = 0.; endpoint.position.z = 1.;
+      endpoint.yaw = 0.;
+      send_endpoint = true;
+      wait([] { return false; }, .15);
+      nav.data = "FOLLOW_TRAJ " + std::to_string(latest.task_epoch) + " 1 ACTIVE";
+      nav_pub.publish(nav);
+      if (!wait([&] { return latest.phase_str == "executing"; }, .3)) {
+        std::cerr << "late first trajectory did not enter execution\n"; return 1;
+      }
+      send_endpoint = false;
+    }
+  }
   if (!wait([&] { return latest.task_result_str == "failed"; }, 3)) {
     std::cerr << "failure was not detected\n"; return 1;
   }
@@ -266,9 +289,13 @@ int main(int argc, char **argv) {
                         latest.task_result_str == "failed" && latest.ready_for_new_task; }, 2)) {
     std::cerr << "failure did not recover to ready state2state: " << latest.reason << '\n'; return 1;
   }
-  const std::string expected = deadline_test ? "deadline exceeded" : "retries exhausted";
+  const std::string expected = late_command_test ? "command source timeout" :
+      (deadline_test ? "deadline exceeded" : "retries exhausted");
   if (failure_reason.find(expected) == std::string::npos) {
     std::cerr << "wrong failure path: " << latest.reason << '\n'; return 1;
+  }
+  if (detail_test && failure_reason.find("TOPO_START_INFLATED_OCCUPIED") == std::string::npos) {
+    std::cerr << "frontend reason lost during recovery\n"; return 1;
   }
   nav.data = "FAILED " + std::to_string(canceled_epoch) + " 1 IDLE QUIESCENT";
   nav_pub.publish(nav);
