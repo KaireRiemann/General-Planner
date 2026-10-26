@@ -23,6 +23,7 @@
 
 #include <rog_map/prob_map.h>
 #include <unordered_set>
+#include <chrono>
 using namespace rog_map;
 using namespace general_utils;
 
@@ -87,6 +88,9 @@ void ProbMap::initProbMap() {
     int map_size = sc_.map_size_i.prod();
 
 
+    if (cfg_.corridor_obstacle_backend != "dense")
+        corridor_boundary_ = std::make_shared<general_planner::BoundaryMap>(cfg_.resolution);
+    else corridor_boundary_.reset();
     occupancy_buffer_.resize(map_size, 0);
     raycast_data_.raycaster.setResolution(cfg_.resolution);
     raycast_data_.operation_cnt.resize(map_size, 0);
@@ -264,6 +268,7 @@ void ProbMap::writeMapInfoToLog(std::ofstream& log_file) {
 }
 
 void ProbMap::updateOccPointCloud(const PointCloud& input_cloud) {
+    std::lock_guard<std::recursive_mutex> snapshot_lock(corridor_query_mutex_);
     /// Step 1; Raycast and add to update cache.
     const int cloud_in_size = input_cloud.size();
     Vec3f localmap_min = local_map_bound_min_d_;
@@ -300,10 +305,10 @@ void ProbMap::updateOccPointCloud(const PointCloud& input_cloud) {
     }
     probabilisticMapFromCache();
     notifyStateChangeCallback();
-    map_empty_ = false;
 }
 
 void ProbMap::slideAllMap(const rog_map::Vec3f& pos) {
+    std::lock_guard<std::recursive_mutex> snapshot_lock(corridor_query_mutex_);
     mapSliding(pos);
     inf_map_->mapSliding(pos);
     if (tracking_inf_map_ && tracking_inf_map_ != inf_map_)
@@ -353,6 +358,10 @@ void ProbMap::recordStateChange(const Vec3i& id_g,
     if (from_type == to_type) {
         return;
     }
+    if (corridor_boundary_ && (from_type == OCCUPIED || to_type == OCCUPIED)) {
+        using Type = general_planner::BoundaryMap::BoundaryType;
+        corridor_boundary_->apply({id_g, to_type == OCCUPIED ? Type::OCCUPIED : Type::NONE});
+    }
     std::lock_guard<std::mutex> lock(state_changes_mtx_);
     if (state_change_tracking_enabled_) {
         state_changes_.push_back({id_g, from_type, to_type});
@@ -399,7 +408,6 @@ void ProbMap::updateProbMap(const PointCloud& cloud, const Pose& pose) {
         TimeConsuming t_update("update", false);
         probabilisticMapFromCache();
         time_consuming_[2] = t_update.stop();
-        map_empty_ = false;
     }
     inf_map_->getInflationNumAndTime(time_consuming_[6], time_consuming_[3]);
     if (tracking_inf_map_ && tracking_inf_map_ != inf_map_) {
@@ -541,6 +549,71 @@ ProbMap::boxSearch(const Vec3f& _box_min, const Vec3f& _box_max, const GridType&
     }
 }
 
+void ProbMap::corridorOccupiedSearch(const Vec3f &min, const Vec3f &max,
+                                      vec_E<Vec3f> &out) const {
+    // Dense is the original reference path, including its live-map semantics.
+    if (!corridor_boundary_) { boxSearch(min, max, OCCUPIED, out); return; }
+    std::lock_guard<std::recursive_mutex> snapshot_lock(corridor_query_mutex_);
+    const auto begin = std::chrono::steady_clock::now();
+    out.clear();
+    if (map_empty_ || (max - min).minCoeff() <= 0) return;
+    Vec3f lo = min, hi = max;
+    boundBoxByLocalMap(lo, hi);
+    if ((hi - lo).minCoeff() <= 0) return;
+    Vec3i a, b;
+    posToGlobalIndex(lo, a); posToGlobalIndex(hi, b);
+    // Preserve boxSearch's strict integer bounds and ROG's own discretization.
+    a += Vec3i::Ones(); b -= Vec3i::Ones();
+    // 旧 boxSearch 的 Occupied 核心循环（下面使用已收缩的闭区间 a/b 作等价示意）：
+    // for (int x = a.x(); x <= b.x(); ++x)
+    //     for (int y = a.y(); y <= b.y(); ++y)
+    //         for (int z = a.z(); z <= b.z(); ++z) {
+    //             Vec3i index(x, y, z);
+    //             if (isOccupied(index)) {
+    //                 Vec3f position;
+    //                 globalIndexToPos(index, position);
+    //                 out.push_back(position);
+    //             }
+    //         }
+    // 原函数完整保留在上方 boxSearch()，dense 分支仍调用它。
+    // 当前：局部 Occupied 投影按列查询，不恢复/遍历内部 Free；虚拟障碍层在下方补齐。
+    auto indices = corridor_boundary_->occupiedIndices(a, b);
+    // Virtual floor/ceiling are procedural obstacles, not sensor evidence.
+    // Enumerate only their intersecting slabs, never the intervening volume.
+    if (a.z() < sc_.virtual_ground_height_id_g + sc_.safe_margin_i ||
+        b.z() > sc_.virtual_ceil_height_id_g) {
+        for (int x = a.x(); x <= b.x(); ++x) for (int y = a.y(); y <= b.y(); ++y) {
+            for (int z = a.z(); z <= std::min(b.z(), sc_.virtual_ground_height_id_g + sc_.safe_margin_i - 1); ++z)
+                indices.emplace_back(x, y, z);
+            for (int z = std::max(a.z(), sc_.virtual_ceil_height_id_g + 1); z <= b.z(); ++z)
+                indices.emplace_back(x, y, z);
+        }
+        std::sort(indices.begin(), indices.end(), [](const Vec3i &l, const Vec3i &r) {
+            if (l.x() != r.x()) return l.x() < r.x();
+            if (l.y() != r.y()) return l.y() < r.y();
+            return l.z() < r.z();
+        });
+        indices.erase(std::unique(indices.begin(), indices.end(),
+            [](const Vec3i &l, const Vec3i &r) { return l == r; }), indices.end());
+    }
+    out.reserve(indices.size());
+    for (const auto &index : indices) {
+        if (!insideLocalMap(index)) continue;
+        Vec3f position; globalIndexToPos(index, position); out.push_back(position);
+    }
+    if (cfg_.corridor_obstacle_backend == "verify") {
+        const auto sparse_end = std::chrono::steady_clock::now();
+        vec_E<Vec3f> dense;
+        boxSearch(min, max, OCCUPIED, dense);
+        const auto dense_end = std::chrono::steady_clock::now();
+        if (dense != out) throw std::runtime_error("BDM corridor obstacle mismatch");
+        std::cout << "[BDM_QUERY] points=" << out.size()
+                  << " bdm_us=" << std::chrono::duration<double, std::micro>(sparse_end-begin).count()
+                  << " dense_us=" << std::chrono::duration<double, std::micro>(dense_end-sparse_end).count()
+                  << std::endl;
+    }
+}
+
 void ProbMap::boxSearchInflate(const Vec3f& box_min, const Vec3f& box_max, const GridType& gt,
                                vec_E<Vec3f>& out_points) const {
     inf_map_->boxSearch(box_min, box_max, gt, out_points);
@@ -577,6 +650,11 @@ bool ProbMap::getUpdatedBox(Vec3f& box_min, Vec3f& box_max) const {
 }
 
 void ProbMap::resetCell(const int& hash_id) {
+    if (corridor_boundary_ && isOccupied(occupancy_buffer_[hash_id])) {
+        Vec3i index;
+        hashIdToGlobalIndex(hash_id, index);
+        corridor_boundary_->apply({index, general_planner::BoundaryMap::BoundaryType::NONE});
+    }
     float& ret = occupancy_buffer_[hash_id];
     if (isOccupied(ret)) {
         /// if current state is occupied
@@ -610,6 +688,7 @@ void ProbMap::resetCell(const int& hash_id) {
 }
 
 void ProbMap::probabilisticMapFromCache() {
+    std::lock_guard<std::recursive_mutex> snapshot_lock(corridor_query_mutex_);
     //    int addr = getHashIndexFromGlobalIndex(Vec3i(41,
     //                                                 -216,
     //                                                 -6));
@@ -633,6 +712,7 @@ void ProbMap::probabilisticMapFromCache() {
         raycast_data_.hit_cnt[hash_id] = 0;
         raycast_data_.operation_cnt[hash_id] = 0;
     }
+    map_empty_ = false;
 }
 
 void ProbMap::hitPointUpdate(const Vec3f& pos, const int& hash_id, const int& hit_num) {
@@ -912,6 +992,8 @@ void ProbMap::updateLocalBox(const Vec3f& cur_odom) {
 }
 
 void ProbMap::resetLocalMap() {
+    std::lock_guard<std::recursive_mutex> snapshot_lock(corridor_query_mutex_);
+    if (corridor_boundary_) corridor_boundary_->clear();
     std::cout << YELLOW << " -- [Prob-Map] Clear all local map." << RESET << std::endl;
     double unk_value = (cfg_.l_free + cfg_.l_occ)/2.0;
     // Clear local map

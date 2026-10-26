@@ -100,6 +100,10 @@ namespace rog_map {
                 pcd_name = replaceCmakeRootDir(pcd_name);
             }
 
+            loader.LoadParam(name_space + "/corridor_obstacle_backend", corridor_obstacle_backend, string("bdm"));
+            if (corridor_obstacle_backend != "dense" && corridor_obstacle_backend != "bdm" &&
+                corridor_obstacle_backend != "verify")
+                throw std::invalid_argument("corridor_obstacle_backend must be dense, bdm or verify");
             loader.LoadParam(name_space + "/map_sliding/enable", map_sliding_en, true);
             loader.LoadParam(name_space + "/map_sliding/threshold", map_sliding_thresh, -1.0);
 
@@ -332,6 +336,7 @@ namespace rog_map {
         int intensity_thresh{};
         /* aster properties */
         string frame_id{};
+        string corridor_obstacle_backend{"bdm"};
         bool map_sliding_en{true};
         Vec3f fix_map_origin{};
         string odom_topic{}, cloud_topic{};

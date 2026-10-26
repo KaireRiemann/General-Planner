@@ -23,6 +23,7 @@
 */
 
 #include <general_core/corridor_generator.h>
+#include <cstdlib>
 
 using namespace general_utils;
 
@@ -76,6 +77,7 @@ namespace general_planner {
     CorridorGenerator::SearchPolytopeOnPath(const vec_Vec3f &path, PolytopeVec &sfcs,
                                             Vec3f &shifted_start_pt,
                                             bool cut_first_poly, bool preserve_path) {
+        TimeConsuming benchmark_timer("BDM_PROFILE_corridor_path", std::getenv("GP_BDM_BENCH_PROFILE") != nullptr);
         // https://whimsical.com/flow-3TASJFwe1dASYYY2xHEmze
         // password: wtr
         //	TimeConsuming t___("SearchPolytopeOnPath");
@@ -252,6 +254,7 @@ namespace general_planner {
     }
 
     bool CorridorGenerator::GeneratePolytopeFromPoint(const Vec3f &pt, Polytope &polytope) {
+        TimeConsuming benchmark_timer("BDM_PROFILE_corridor_point", std::getenv("GP_BDM_BENCH_PROFILE") != nullptr);
         Eigen::Vector3d box_max, box_min;
         vec_E<Vec3f> pc;
         getSeedBBox(pt, pt, box_min, box_max);
@@ -262,7 +265,12 @@ namespace general_planner {
             // bounds. CIRI's radius only encloses actual obstacle voxel corners.
             trackingOccupiedVoxels(map_manager_,box_min,box_max,pc);
         } else {
-            map_manager_->boxSearch(box_min, box_max, OCCUPIED, pc);
+            // 旧实现（保留作对照）：逐格扫描 AABB 内部，筛选 Occupied。
+            // map_manager_->boxSearch(box_min, box_max, OCCUPIED, pc);
+            // 当前实现：保留同一个 AABB，按 BDM 的 XY 列和 Z 有序记录提取障碍，跳过 Free。
+            // 仅替换障碍查询；下面的半径处理、盒子平面和 CIRI 分解保持原流程。
+            // 配置 rog_map/corridor_obstacle_backend: dense 可运行原实现，无需改代码。
+            map_manager_->corridorOccupiedSearch(box_min, box_max, pc);
             box_min.z() += robot_r_;
             box_max.z() -= robot_r_;
         }
@@ -356,6 +364,7 @@ namespace general_planner {
     }
 
     bool CorridorGenerator::GeneratePolytopeFromLine(Line &line, Polytope &polytope) {
+        TimeConsuming benchmark_timer("BDM_PROFILE_corridor_line", std::getenv("GP_BDM_BENCH_PROFILE") != nullptr);
         Eigen::Vector3d box_max, box_min;
         vec_E<Vec3f> pc, pts{line.first, line.second};
         getSeedBBox(line.first, line.second, box_min, box_max);
@@ -365,7 +374,12 @@ namespace general_planner {
             // bounds. CIRI's radius only encloses actual obstacle voxel corners.
             trackingOccupiedVoxels(map_manager_,box_min,box_max,pc);
         } else {
-            map_manager_->boxSearch(box_min, box_max, OCCUPIED, pc);
+            // 旧实现（保留作对照）：逐格扫描 AABB 内部，筛选 Occupied。
+            // map_manager_->boxSearch(box_min, box_max, OCCUPIED, pc);
+            // 当前实现：保留同一个 AABB，按 BDM 的 XY 列和 Z 有序记录提取障碍，跳过 Free。
+            // 仅替换障碍查询；下面的半径处理、盒子平面和 CIRI 分解保持原流程。
+            // 配置 rog_map/corridor_obstacle_backend: dense 可运行原实现，无需改代码。
+            map_manager_->corridorOccupiedSearch(box_min, box_max, pc);
             box_min.z() += robot_r_;
             box_max.z() -= robot_r_;
         }

@@ -25,6 +25,7 @@
 #pragma once
 
 #include <cmath>
+#include <map_manager/boundary_map.hpp>
 #include <functional>
 #include <mutex>
 #include <queue>
@@ -89,6 +90,8 @@ namespace rog_map {
         void boxSearch(const Vec3f &_box_min, const Vec3f &_box_max,
                        const GridType &gt, vec_E<Vec3f> &out_points) const;
 
+        void corridorOccupiedSearch(const Vec3f &min, const Vec3f &max,
+                                    vec_E<Vec3f> &out) const;
         void boxSearchInflate(const Vec3f &box_min, const Vec3f &box_max,
                               const GridType &gt, vec_E<Vec3f> &out_points) const;
 
@@ -177,6 +180,12 @@ namespace rog_map {
         /// Spherical neighborhood lookup table
         std::vector<float> occupancy_buffer_;
 
+        // Local Occupied projection using the same BDM column representation.
+        // Unlike persistent history this index also consumes ring-buffer eviction.
+        general_planner::BoundaryMap::Ptr corridor_boundary_;
+        // Serializes corridor snapshots against occupancy commits and sliding.
+        // Recursive because occupancy-only loading can invoke cache commit.
+        mutable std::recursive_mutex corridor_query_mutex_;
         bool map_empty_{true};
         struct RaycastData {
             raycaster::RayCaster raycaster;

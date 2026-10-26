@@ -96,6 +96,16 @@ int main() {
                      observed_changes.front().id_g == Vec3i(7, 8, 9),
                  "end-of-update observer must deliver the ROG delta stream");
 
+    auto occupied = map.occupiedIndices(Vec3i(-5, -5, -5), Vec3i(5, 5, 10));
+    ok &= expect(occupied.size() == 1 && occupied[0] == Vec3i(2, 0, 3),
+                 "column range query must skip free/unknown boundaries");
+    ok &= expect(map.occupiedIndices(Vec3i(2, 0, 3), Vec3i(2, 0, 3)).size() == 1,
+                 "integer query includes both endpoints");
+    ok &= expect(map.occupiedIndices(Vec3i(2, 0, 4), Vec3i(2, 0, 3)).empty(),
+                 "inverted range is empty");
+    map.apply({Vec3i(2, 0, 3), BoundaryType::NONE});
+    ok &= expect(map.occupiedIndices(Vec3i(-5, -5, -5), Vec3i(5, 5, 10)).empty(),
+                 "deleted obstacle must disappear from column query");
     map.clear();
     stats = map.stats();
     ok &= expect(stats.column_count == 0 && stats.boundary_count == 0,

@@ -230,6 +230,29 @@ rog_map::vec_Vec3f BoundaryMap::frontierPositions(const std::size_t max_count) c
     return positions;
 }
 
+std::vector<rog_map::Vec3i> BoundaryMap::occupiedIndices(
+    const rog_map::Vec3i &min, const rog_map::Vec3i &max) const {
+    std::vector<rog_map::Vec3i> out;
+    if ((max.array() < min.array()).any()) return out;
+    std::shared_lock<std::shared_mutex> lock(mutex_);
+    // 对照 ProbMap::boxSearch：仍枚举 XY 范围，但不再逐格枚举整个 Z 区间。
+    // 空列直接跳过；非空列二分定位 Z 下界，再访问范围内记录并筛选 Occupied。
+    // 保留全部 Occupied 记录（不做表面抽稀），按 x/y/z 顺序输出。
+    for (int x = min.x(); x <= max.x(); ++x) {
+        for (int y = min.y(); y <= max.y(); ++y) {
+            const auto found = columns_.find({x, y});
+            if (found == columns_.end()) continue;
+            const auto &column = found->second;
+            auto it = std::lower_bound(column.begin(), column.end(), min.z(),
+                [](const BoundaryVoxel &v, int z) { return v.index.z() < z; });
+            for (; it != column.end() && it->index.z() <= max.z(); ++it) {
+                if (it->type == BoundaryType::OCCUPIED) out.push_back(it->index);
+            }
+        }
+    }
+    return out;
+}
+
 BoundaryMap::Stats BoundaryMap::stats() const {
     std::shared_lock<std::shared_mutex> lock(mutex_);
     Stats output;

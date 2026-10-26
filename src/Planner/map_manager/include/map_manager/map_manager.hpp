@@ -562,6 +562,11 @@ public:
         map_->boxSearch(box_min, box_max, gt, out_points);
     }
 
+    void corridorOccupiedSearch(const rog_map::Vec3f &min, const rog_map::Vec3f &max,
+                                rog_map::vec_E<rog_map::Vec3f> &out) const {
+        map_->corridorOccupiedSearch(min, max, out);
+    }
+
     void boxSearchInflate(const rog_map::Vec3f &box_min,
                           const rog_map::Vec3f &box_max,
                           const rog_map::GridType &gt,

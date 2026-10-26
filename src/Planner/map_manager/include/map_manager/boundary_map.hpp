@@ -71,6 +71,11 @@ public:
     rog_map::vec_Vec3f frontierPositions(std::size_t max_count = 0) const;
     Stats stats() const;
 
+    // Inclusive integer bounds, lexicographic output. Visits columns and boundary
+    // records only; implicit Free/Unknown volume is never materialized.
+    std::vector<rog_map::Vec3i> occupiedIndices(
+        const rog_map::Vec3i &min, const rog_map::Vec3i &max) const;
+
 private:
     struct ColumnKey {
         int x{0};

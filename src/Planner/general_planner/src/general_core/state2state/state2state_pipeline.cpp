@@ -11,6 +11,7 @@
 #include <checker/state2state_checker.hpp>
 #include <checker/trajectory_checker.hpp>
 #include <algorithm>
+#include <cstdlib>
 #include <cmath>
 #include <fmt/format.h>
 #include <general_utils/scope_timer.hpp>
@@ -103,6 +104,16 @@ namespace general_planner {
     }
 
     namespace {
+        // The task executor calls these services directly, bypassing the legacy
+        // GeneralPlanner wrappers. Record every return path before publication.
+        struct PlanningCallTimer {
+            std::vector<double> &times;
+            TimeConsuming timer;
+            PlanningCallTimer(std::vector<double> &out, const char *name)
+                : times(out), timer(name, std::getenv("GP_BDM_BENCH_PROFILE") != nullptr) {}
+            ~PlanningCallTimer() { times[LogTime::TOTAL_REPLAN] = timer.stop(); }
+        };
+
         bool backupTrajectoryPlanningEnabled(const Config &cfg) {
             return cfg.backup_traj_en && !cfg.esdf_traj_en && !cfg.plain_traj_en;
         }
@@ -184,6 +195,7 @@ namespace general_planner {
                                             const Vec3f &goal_p,
                                             const double goal_yaw,
                                             const bool new_goal) {
+        PlanningCallTimer total_timer(services.time_consuming, "BDM_PROFILE_plan_from_rest");
         std::lock_guard<std::mutex> guard(services.replan_lock);
         if (exp_services.frontend.topology_route_runtime)
             exp_services.frontend.topology_route_runtime->setFrontendFailure("");
@@ -373,6 +385,7 @@ namespace general_planner {
                                           const Vec3f &goal_p,
                                           const double goal_yaw,
                                           const bool new_goal) {
+        PlanningCallTimer total_timer(services.time_consuming, "BDM_PROFILE_replan");
         TimeConsuming replan_total_t("ReplanOnce", false);
         std::lock_guard<std::mutex> guard(services.replan_lock);
 
