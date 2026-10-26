@@ -59,7 +59,7 @@ void FastExplorationFSM::updateEpiconGlobalPath() {
   const double elapsed=(ros::Time::now()-info.start_time_).toSec();
   const bool recent=planner_manager_->hasCommittedTrajectory() && safe &&
       elapsed<fp_->replan_time_after_traj_start_ &&
-      planner_manager_->committedTrajectoryRemainingTime()>fp_->replan_time_before_traj_end_;
+      planner_manager_->committedTrajectoryRemainingTime()>.05;
   const bool select=fd_->trigger_ && state_!=WAIT_TRIGGER && (!recent || epicon_recheck_pending_);
   const auto wall_now=ros::WallTime::now();
   const bool near_goal=epicon_frontend_->tour().size()>=2 &&
@@ -106,6 +106,7 @@ void FastExplorationFSM::updateEpiconGlobalPath() {
     expl_manager_->ed_->global_tour_=epicon_frontend_->tour(); // visualization/task compatibility only
     if(epicon_frontend_->tour().size()>=2)
       epicon_goal_window_.select(epicon_frontend_->tour()[1],ros::WallTime::now().toSec());
+    if (!safe) fd_->next_plan_retry_time_=now;
     if(state_!=CAUTION && now>=fd_->next_plan_retry_time_)
       transitState(PLAN_TRAJ,"exploration: global tour ready");
   } else {
@@ -227,6 +228,10 @@ bool FastExplorationFSM::epiconFSMCallback() {
         epicon_normal_motion_=true;
       }
       fd_->consecutive_plan_failures_=0;
+      // Successful short trajectories must be allowed to execute before
+      // the end-of-trajectory threshold requests another optimization.
+      fd_->next_plan_retry_time_=ros::Time::now()+ros::Duration(
+          std::max(.05,fp_->replan_time_after_traj_start_));
       transitState(EXEC_TRAJ,"exploration: General trajectory committed");
     } else {
       ++fd_->consecutive_plan_failures_;
@@ -259,6 +264,7 @@ bool FastExplorationFSM::epiconFSMCallback() {
     double collision_time=0.0;
     const bool safe=planner_manager_->checkTrajCollision(collision_time);
     if(!safe) {
+      fd_->next_plan_retry_time_=now; // safety replans bypass the execution dwell
       if(collision_time<fp_->replan_time_+0.2) stopTraj("exploration: imminent collision");
       transitState(PLAN_TRAJ,"exploration: collision replan",true);
     } else if(!planner_manager_->checkTrajVelocity() ||

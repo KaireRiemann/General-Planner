@@ -95,6 +95,8 @@ void ProbMap::initProbMap() {
     raycast_data_.raycaster.setResolution(cfg_.resolution);
     raycast_data_.operation_cnt.resize(map_size, 0);
     raycast_data_.hit_cnt.resize(map_size, 0);
+    if (cfg_.raycast_optimized_enable)
+        raycast_data_.observation_stamp.assign(map_size, 0);
 
     resetLocalMap();
 
@@ -814,6 +816,12 @@ void ProbMap::missPointUpdate(const Vec3f& pos, const int& hash_id, const int& h
 }
 
 void ProbMap::raycastProcess(const PointCloud& input_cloud, const Vec3f& cur_odom) {
+    if (cfg_.raycast_optimized_enable) raycastProcessImpl<true>(input_cloud, cur_odom);
+    else raycastProcessImpl<false>(input_cloud, cur_odom);
+}
+
+template<bool Optimized>
+void ProbMap::raycastProcessImpl(const PointCloud& input_cloud, const Vec3f& cur_odom) {
     // bounding box of updated region
     raycast_data_.cache_box_min = cur_odom;
     raycast_data_.cache_box_max = cur_odom;
@@ -828,10 +836,39 @@ void ProbMap::raycastProcess(const PointCloud& input_cloud, const Vec3f& cur_odo
     /// Step 1; Raycast and add to update cache.
     const int& cloud_in_size = input_cloud.size();
     // new version of raycasting process
-    auto raycasting_cloud = vec_Vec3f{};
+    vec_Vec3f legacy_endpoints;
+    auto &raycasting_cloud = Optimized ? raycast_data_.ray_endpoints : legacy_endpoints;
+    raycasting_cloud.clear();
     raycasting_cloud.reserve(cloud_in_size);
     std::unordered_set<int> hit_voxels, miss_voxels;
-    hit_voxels.reserve(cloud_in_size);
+    if constexpr (!Optimized) hit_voxels.reserve(cloud_in_size);
+    uint32_t epoch = 0;
+    if constexpr (Optimized) {
+        auto &counter = raycast_data_.observation_epoch;
+        counter += 2;
+        if (counter == 0) {
+            std::fill(raycast_data_.observation_stamp.begin(),
+                      raycast_data_.observation_stamp.end(), 0);
+            counter = 2;
+        }
+        epoch = counter;
+    }
+    auto first_hit = [&](int hash) {
+        if constexpr (Optimized) {
+            auto &stamp = raycast_data_.observation_stamp[hash];
+            if (stamp == (epoch | 1u)) return false;
+            stamp = epoch | 1u;
+            return true;
+        } else return hit_voxels.insert(hash).second;
+    };
+    auto first_miss = [&](int hash) {
+        if constexpr (Optimized) {
+            auto &stamp = raycast_data_.observation_stamp[hash];
+            if (stamp == epoch || stamp == (epoch | 1u)) return false;
+            stamp = epoch;
+            return true;
+        } else return !hit_voxels.count(hash) && miss_voxels.insert(hash).second;
+    };
 
     // 1) process all non-inf points, update occupied probability
     int temperol_cnt{0};
@@ -859,7 +896,7 @@ void ProbMap::raycastProcess(const PointCloud& input_cloud, const Vec3f& cur_odo
                     continue;
                 }
                 posToGlobalIndex(p, pt_id_g);
-                if (hit_voxels.insert(getHashIndexFromGlobalIndex(pt_id_g)).second)
+                if (first_hit(getHashIndexFromGlobalIndex(pt_id_g)))
                     insertUpdateCandidate(pt_id_g, true);
                 // record cache box size;
                 raycast_data_.cache_box_min = raycast_data_.cache_box_min.cwiseMin(p);
@@ -921,7 +958,7 @@ void ProbMap::raycastProcess(const PointCloud& input_cloud, const Vec3f& cur_odo
 
         if (update_hit) {
             posToGlobalIndex(p, pt_id_g);
-            if (hit_voxels.insert(getHashIndexFromGlobalIndex(pt_id_g)).second)
+            if (first_hit(getHashIndexFromGlobalIndex(pt_id_g)))
                 insertUpdateCandidate(pt_id_g, true);
         }
     }
@@ -933,16 +970,23 @@ void ProbMap::raycastProcess(const PointCloud& input_cloud, const Vec3f& cur_odo
             // accepted return. This also bootstraps free space while hovering.
             raycast_data_.raycaster.setInput(cur_odom, p);
             Vec3f ray_pt;
-            while (raycast_data_.raycaster.step(ray_pt)) {
-                Vec3i cur_ray_id_g;
-                posToGlobalIndex(ray_pt, cur_ray_id_g);
+            Vec3i cur_ray_id_g;
+            auto step = [&]() {
+                if constexpr (Optimized) return raycast_data_.raycaster.stepIndex(cur_ray_id_g);
+                else {
+                    if (!raycast_data_.raycaster.step(ray_pt)) return false;
+                    posToGlobalIndex(ray_pt, cur_ray_id_g);
+                    return true;
+                }
+            };
+            while (step()) {
                 if (!insideLocalMap(cur_ray_id_g)) {
                     break;
                 }
                 const int hash = getHashIndexFromGlobalIndex(cur_ray_id_g);
                 // All current endpoints win over crossing miss rays. Count
                 // at most one independent miss per voxel per observation.
-                if (!hit_voxels.count(hash) && miss_voxels.insert(hash).second)
+                if (first_miss(hash))
                     insertUpdateCandidate(cur_ray_id_g, false);
             }
         }

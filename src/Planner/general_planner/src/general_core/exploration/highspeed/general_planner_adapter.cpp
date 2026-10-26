@@ -2022,15 +2022,11 @@ bool FastPlannerManager::planExploreTraj(
   const SegmentSafetyInfo segment_safety =
       evaluatePathSegmentSafety(local_path, local_data_.curr_yaw_, end_yaw);
   SegmentVelocityLimit velocity_limit = computeSegmentVelocityLimit(segment_safety);
-  if (pointcloud_frontend) {
-    velocity_limit.open=velocity_limit.known_free=velocity_limit.brake=velocity_limit.clearance=
-        velocity_limit.curvature=velocity_limit.yaw=velocity_limit.backup=velocity_limit.final_limit=gcopter_config_->maxVelMag;
-    velocity_limit.reason="pointcloud";
-  }
   PieceVelocityProfile piece_velocity_profile = computePieceVelocityProfile(
       local_path, sfcs, head.col(1), yaw_init(0), *gcopter_config_, velocity_limit);
-  if (pointcloud_frontend) piece_velocity_profile.bounds.setConstant(
-      narrow_pointcloud_corridor ? std::min(.5,gcopter_config_->maxVelMag) : gcopter_config_->maxVelMag);
+  // Preserve the turn, visible-path braking and yaw envelope computed above.
+  if (pointcloud_frontend && narrow_pointcloud_corridor)
+    piece_velocity_profile.bounds = piece_velocity_profile.bounds.cwiseMin(.5);
   if (piece_velocity_profile.bounds.size() != static_cast<int>(sfcs.size()))
   {
     ROS_WARN("[highspeed_exp adapter] cannot map path velocity profile to simplified corridor.");
@@ -2046,6 +2042,10 @@ bool FastPlannerManager::planExploreTraj(
           : std::clamp(piece_velocity_profile.bounds.minCoeff(),
                        std::max(0.1, gcopter_config_->minSegmentVel),
                        std::max(0.2, gcopter_config_->maxVelMag));
+  // Only a genuinely truncated route may carry nonzero terminal velocity;
+  // observation goals and recovery retain their terminal stop. Existing
+  // known-free and certified-backup gates below remain mandatory.
+  if (pointcloud_frontend) rolling_horizon=pointcloud_truncated && !clearance_recovery;
   general_utils::StatePVAJ tail = general_utils::StatePVAJ::Zero();
   tail.col(0) = local_path.back();
   bool terminal_velocity_used = false;

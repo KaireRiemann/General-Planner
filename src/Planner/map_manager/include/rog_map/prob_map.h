@@ -189,6 +189,12 @@ namespace rog_map {
         bool map_empty_{true};
         struct RaycastData {
             raycaster::RayCaster raycaster;
+            // One marker per ring-buffer slot: even epoch = miss, odd = hit.
+            // Valid only within one serial raycastProcess call; epochs prevent
+            // stale marks surviving slides or subsequent sensor observations.
+            std::vector<uint32_t> observation_stamp;
+            uint32_t observation_epoch{0};
+            vec_Vec3f ray_endpoints;
             std::queue<Vec3i> update_cache_id_g;
             std::vector<uint16_t> operation_cnt;
             std::vector<uint16_t> hit_cnt;
@@ -244,6 +250,8 @@ namespace rog_map {
         void notifyStateChangeCallback();
 
         void raycastProcess(const PointCloud &input_cloud, const Vec3f &cur_odom);
+        template<bool Optimized>
+        void raycastProcessImpl(const PointCloud &input_cloud, const Vec3f &cur_odom);
 
         void insertUpdateCandidate(const Vec3i &id_g, bool is_hit);
 

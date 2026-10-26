@@ -72,6 +72,9 @@ namespace rog_map {
             bool setInput(const Eigen::Vector3d &start, const Eigen::Vector3d &end);
 
             bool step(Eigen::Vector3d &ray_pt);
+            // Same traversal and excluded endpoint as step(), without converting
+            // voxel indices to world coordinates and back in map fusion.
+            bool stepIndex(Eigen::Vector3i &ray_id);
             bool validInput() const { return valid_input_; }
 
         private:

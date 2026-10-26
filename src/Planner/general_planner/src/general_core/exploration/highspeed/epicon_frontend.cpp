@@ -13,7 +13,23 @@ namespace {
 template <typename T> void defaultParam(ros::NodeHandle &nh, const std::string &key, const T &value) {
   if (!nh.hasParam(key)) nh.setParam(key, value);
 }
+// Merge leaves so a native override does not hide unrelated scene settings.
+void inheritParameters(ros::NodeHandle &parent, ros::NodeHandle &nh,
+                       const std::string &key, XmlRpc::XmlRpcValue value) {
+  if (value.getType()==XmlRpc::XmlRpcValue::TypeStruct) {
+    for (auto it=value.begin();it!=value.end();++it)
+      inheritParameters(parent,nh,key+"/"+it->first,it->second);
+  } else if (!nh.hasParam(key)) nh.setParam(key,value);
+}
 void configureNativeParameters(ros::NodeHandle &parent, ros::NodeHandle &nh) {
+  // Explicit epicon overrides > scene/launch values > native defaults.
+  for (const auto &key : {"global_planning", "view_graph", "FrontierManager",
+       "ViewpointManager", "viewpoint_param", "bubble_topo", "bubble_astar",
+       "parallel_astar", "max_update_region_num", "lidar_perception"}) {
+    XmlRpc::XmlRpcValue value;
+    if (parent.getParam(key,value)) inheritParameters(parent,nh,key,value);
+  }
+
   // EPICON unity.yaml exploration defaults. Scene and sensor geometry come
   // from the existing runtime; native algorithm overrides live under epicon/.
   defaultParam(nh, "global_planning/w_vdir", 1.2);
@@ -74,7 +90,7 @@ void configureNativeParameters(ros::NodeHandle &parent, ros::NodeHandle &nh) {
   defaultParam(nh, "fsm/hybrid_search_radius", 15.0);
   defaultParam(nh, "fsm/unknown_penalty_factor", 1.5);
   const std::vector<std::string> shared = {"box_num", "dead_area_num", "odometry_topic", "cloud_topic",
-      "lidar_perception", "MaxVelMag", "MaxTiltAngle", "GravAcc", "yaw_max_vel"};
+      "MaxVelMag", "MaxTiltAngle", "GravAcc", "yaw_max_vel"};
   for (const auto &key : shared) {
     XmlRpc::XmlRpcValue value;
     if (parent.getParam(key, value)) nh.setParam(key, value);
@@ -125,6 +141,8 @@ struct EpiconFrontend::Impl {
     explorer->ed_->global_tour_.clear(); explorer->ed_->path_next_goal_.clear();
     explorer->last_goal_cost_=5e3; selected=false; execution_path.clear(); selected_route.clear(); backtracking=false;
   }
+  ros::WallTime goal_selected_at;
+  double goal_hold_seconds{1.2};
   int valid_cubes{10};
   double sample_path{0.1}, hybrid_radius{15.0}, unknown_penalty{1.5};
   double planning_clearance{0.6}, physical_floor{0.48}, execution_clearance{0.48};
@@ -188,6 +206,8 @@ void EpiconFrontend::init(ros::NodeHandle &runtime_nh) {
   ros::NodeHandle nh(runtime_nh,"epicon");
   configureNativeParameters(runtime_nh,nh);
   auto &i=*impl_;
+  runtime_nh.param("GoalSwitchMinInterval",i.goal_hold_seconds,1.2);
+  i.goal_hold_seconds=std::clamp(i.goal_hold_seconds,0.0,5.0);
   i.planner=std::make_shared<epicon_native::fast_planner::FastPlannerManager>();
   auto &p=*i.planner;
   p.lidar_map_interface_=std::make_shared<epicon_native::fast_planner::LIOInterface>();
@@ -380,6 +400,20 @@ EpiconFrontend::Result EpiconFrontend::update(bool select_goal, bool full_audit)
     }
     i.clearGoal();
   }
+  // Retain a moving goal for a bounded interval, but always revalidate its
+  // route. Audits, arrival, exclusions and disconnections bypass the hold.
+  if (!full_audit && i.selected && tour().size()>=2 &&
+      !i.goal_selected_at.isZero() &&
+      (wall_now-i.goal_selected_at).toSec()<i.goal_hold_seconds &&
+      (tour()[1]-i.pos).norm()>.5f && i.frontier->viewpoint_allowed_(tour()[1])) {
+    std::vector<Eigen::Vector3f> certified;
+    if (pathToGoal(certified)==Result::SUCCEED &&
+        p.parallel_path_finder_->collisionCheck_shortenPath(certified)) {
+      i.explorer->ed_->global_tour_.front()=i.pos;
+      i.publish("GOAL_HELD",i.unknown.size(),i.active.size());
+      return Result::SUCCEED;
+    }
+  }
   const auto previous_tour=tour();
   const bool had_selected=i.selected;
   int result=i.explorer->planGlobalPath(i.pos.cast<double>(),i.vel.cast<double>(),i.unknown,i.active,i.hybrid_radius,i.unknown_penalty);
@@ -486,6 +520,8 @@ EpiconFrontend::Result EpiconFrontend::update(bool select_goal, bool full_audit)
   }
   i.audited=full_audit;
   i.selected=result==epicon_native::fast_planner::SUCCEED;
+  if(i.selected && tour().size()>=2 && (!had_selected || previous_tour.size()<2 ||
+      (tour()[1]-previous_tour[1]).norm()>.5f)) i.goal_selected_at=wall_now;
   p.graph_visualizer_->vizBox(p.topo_graph_);
   if(i.explorer->ep_->view_graph_) p.graph_visualizer_->vizGraph(p.topo_graph_);
   i.frontier->visfrtcluster(); i.frontier->viz_pocc();

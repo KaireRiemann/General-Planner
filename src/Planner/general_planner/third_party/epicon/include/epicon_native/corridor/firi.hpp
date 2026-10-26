@@ -1,3 +1,4 @@
+#include <chrono>
 /*
     MIT License
 
@@ -195,17 +196,34 @@ inline bool maxVolInsEllipsoid(const Eigen::MatrixX4d& hPoly,
 	epicon_native::lbfgs::lbfgs_parameter_t paramsMVIE;
 	paramsMVIE.mem_size = 18;
 	paramsMVIE.g_epsilon = 0.0;
+	// Bound each local corridor solve; a failed ellipsoid must not block ROS.
+	paramsMVIE.max_iterations = 400;
 	paramsMVIE.min_step = 1.0e-16;
 	paramsMVIE.past = 3;
 	paramsMVIE.delta = 1.0e-7;
 	*pSmoothEps = 1.0e-2;
 	*pPenaltyWt = 1.0e+3;
 
-	int ret = epicon_native::lbfgs::lbfgs_optimize(x, minCost, &costMVIE, nullptr, nullptr,
-	                                optData, paramsMVIE);
+	struct DeadlineExceeded {};
+	struct Context { void *data; std::chrono::steady_clock::time_point deadline; };
+	Context context{optData,std::chrono::steady_clock::now()+std::chrono::milliseconds(20)};
+	const auto boundedCost = [](void *raw, const Eigen::VectorXd &state, Eigen::VectorXd &gradient) {
+		auto &ctx=*static_cast<Context *>(raw);
+		if (std::chrono::steady_clock::now()>=ctx.deadline) throw DeadlineExceeded{};
+		return costMVIE(ctx.data,state,gradient);
+	};
+	int ret;
+	try {
+		ret = epicon_native::lbfgs::lbfgs_optimize(x, minCost, boundedCost, nullptr, nullptr,
+		                                       &context, paramsMVIE);
+	} catch (const DeadlineExceeded &) {
+		delete[] optData;
+		return false;
+	}
 
-	if (ret < 0) {
-		printf("FIRI WARNING: %s\n", epicon_native::lbfgs::lbfgs_strerror(ret));
+	if (ret < 0 || !x.allFinite() || !std::isfinite(minCost)) {
+		delete[] optData;
+		return false;
 	}
 
 	p = x.head<3>() + interior;
@@ -375,7 +393,7 @@ inline bool firi(const Eigen::MatrixX4d& bd, const Eigen::Matrix3Xd& pc,
 			break;
 		}
 
-		maxVolInsEllipsoid(hPoly, R, p, r); //最大内接椭球
+		if (!maxVolInsEllipsoid(hPoly, R, p, r)) return false;
 	}
 
 	return true;

@@ -376,6 +376,20 @@ yaw_time_fwd: 2.5
 
 # Point-cloud EPICON exploration; trajectory costs/optimizer stay in General Planner.
 epicon:
+  # These are observation-quality cells, not legacy occupancy frontiers.
+  # Inheriting the legacy 28 m trust distance erased the actionable frontier
+  # pool after only a short flight. Native overrides intentionally preserve
+  # the point-cloud quality model; geometry/timing/display inherit above.
+  FrontierManager/good_observation_trust_length: 6.0
+  FrontierManager/good_observation_force_trust_length: 2.0
+  FrontierManager/good_observation_direction_score: 0.8
+  FrontierManager/cell_size: 0.4
+  FrontierManager/cluster_max_size: 7.5
+  FrontierManager/update_length: 15.0
+  ViewpointManager/sample_pillar_min_radius: 0.8
+  ViewpointManager/sample_pillar_max_radius: 3.2
+  ViewpointManager/sample_pillar_radius_layer_num: 6
+  ViewpointManager/sample_pillar_circle_sample_num: 16
   execution/max_cloud_age: 1.0
   execution/audit_period: 1.0
   execution/goal_failure_limit: 3

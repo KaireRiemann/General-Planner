@@ -35,6 +35,35 @@ int main(int argc,char **argv) {
       if(!rejected) throw std::runtime_error("soft below physical hard margin was silently accepted");
       std::cout<<"INVALID_POLICY PASS"<<std::endl;return 0;
     }
+    if(std::string(argv[1])=="--parameter-inheritance") {
+      nh.deleteParam("epicon");
+      nh.setParam("box_num",1);
+      nh.setParam("box_0/down",std::vector<double>{-10,-10,-1});
+      nh.setParam("box_0/up",std::vector<double>{10,10,8});
+      nh.setParam("view_graph",false);
+      nh.setParam("max_update_region_num",32);
+      nh.setParam("bubble_astar/safe_distance",.45);
+      nh.setParam("bubble_astar/resolution_astar",.25);
+      nh.setParam("epicon/bubble_astar/resolution_astar",.15);
+      nh.setParam("lidar_perception/fov_up",52.);
+      nh.setParam("lidar_perception/fov_down",-7.);
+      nh.setParam("epicon/lidar_perception/fov_up",48.);
+      nh.setParam("DilateRadiusHard",.45);
+      nh.setParam("DilateRadiusSoft",.6);
+      nh.setParam("CommitKnownFreeSafeDistance",.45);
+      fast_planner::EpiconFrontend configured; configured.init(nh);
+      bool graph=true; int budget=0; double clearance=0,resolution=0,up=0,down=0;
+      nh.getParam("epicon/view_graph",graph);
+      nh.getParam("epicon/max_update_region_num",budget);
+      nh.getParam("epicon/bubble_astar/safe_distance",clearance);
+      nh.getParam("epicon/bubble_astar/resolution_astar",resolution);
+      nh.getParam("epicon/lidar_perception/fov_up",up);
+      nh.getParam("epicon/lidar_perception/fov_down",down);
+      if(graph || budget!=32 || std::abs(clearance-.45)>1e-6 ||
+         std::abs(resolution-.15)>1e-6 || up!=48 || down!=-7)
+        throw std::runtime_error("scene/native leaf precedence failed");
+      std::cout<<"PARAMETER_INHERITANCE PASS"<<std::endl; return 0;
+    }
     fast_planner::EpiconFrontend frontend;
     frontend.init(nh);
     if(frontend.update(true)!=fast_planner::EpiconFrontend::Result::WAITING_MAP)

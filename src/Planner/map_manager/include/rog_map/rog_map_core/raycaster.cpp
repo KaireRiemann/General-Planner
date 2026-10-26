@@ -235,5 +235,53 @@ namespace rog_map {
             return true;
         }
 
+        // Keep the legacy world-coordinate iterator available for differential
+        // tests and callers. Both iterators use the same axis/tie convention.
+        bool RayCaster::stepIndex(Eigen::Vector3i &ray_id) {
+            if (!valid_input_ || remaining_steps_ <= 0) {
+                return false;
+            }
+            --remaining_steps_;
+#ifdef ORIGIN_AT_CORNER
+#ifdef ORIGIN_AT_CENTER
+            throw std::runtime_error(" -- [RayCaster]: ORIGIN_AT_CORNER and ORIGIN_AT_CENTER cannot be both true!");
+#endif
+#endif
+
+#ifndef ORIGIN_AT_CORNER
+#ifndef ORIGIN_AT_CENTER
+            throw std::runtime_error(" -- [RayCaster]: ORIGIN_AT_CORNER and ORIGIN_AT_CENTER cannot be both false!");
+#endif
+#endif
+            step_num_++;
+            ray_id = Eigen::Vector3i(cur_ray_pt_id_x_, cur_ray_pt_id_y_, cur_ray_pt_id_z_);
+            if (cur_ray_pt_id_x_ == end_x_i_ && cur_ray_pt_id_y_ == end_y_i_ && cur_ray_pt_id_z_ == end_z_i_) {
+                return false;
+            }
+
+            if (cur_ray_pt_id_x_ == end_x_i_) t_to_bound_x_ = std::numeric_limits<double>::infinity();
+            if (cur_ray_pt_id_y_ == end_y_i_) t_to_bound_y_ = std::numeric_limits<double>::infinity();
+            if (cur_ray_pt_id_z_ == end_z_i_) t_to_bound_z_ = std::numeric_limits<double>::infinity();
+            if (t_to_bound_x_ < t_to_bound_y_) {
+                if (t_to_bound_x_ < t_to_bound_z_) {
+                    cur_ray_pt_id_x_ += expand_dir_x_;
+                    t_to_bound_x_ += t_when_step_x_;
+                } else {
+                    cur_ray_pt_id_z_ += expand_dir_z_;
+                    t_to_bound_z_ += t_when_step_z_;
+                }
+            } else {
+                if (t_to_bound_y_ < t_to_bound_z_) {
+                    cur_ray_pt_id_y_ += expand_dir_y_;
+                    t_to_bound_y_ += t_when_step_y_;
+                } else {
+                    cur_ray_pt_id_z_ += expand_dir_z_;
+                    t_to_bound_z_ += t_when_step_z_;
+
+                }
+            }
+            return true;
+        }
+
     }
 }
