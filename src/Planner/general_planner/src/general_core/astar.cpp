@@ -24,6 +24,8 @@
 #include <path_search/astar.h>
 
 #include <chrono>
+#include <cstdlib>
+#include <map_manager/bdm_interval_search.hpp>
 
 using namespace color_text;
 using namespace general_utils;
@@ -242,6 +244,23 @@ namespace path_search {
         }
         out_path.clear();
         const auto search_start = std::chrono::steady_clock::now();
+        struct SearchProfile {
+            std::chrono::steady_clock::time_point begin{std::chrono::steady_clock::now()};
+            int voxel_expanded{0};
+            std::size_t interval_expanded{0}, columns{0};
+            const char *route{"voxel"};
+            int interval_status{-1};
+            int outcome{-1};
+            ~SearchProfile() {
+                if (std::getenv("GP_BDM_BENCH_PROFILE"))
+                    std::cout << "[BDM_SEARCH] route=" << route << " status=" << interval_status
+                              << " voxel=" << voxel_expanded << " interval=" << interval_expanded
+                              << " columns=" << columns << " ms="
+                              << std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-begin).count()
+                              << " outcome=" << outcome << std::endl;
+            }
+        } profile;
+        const auto finish = [&](RET_CODE code) { profile.outcome=int(code); return code; };
         ++rounds_;
         /// 2) Switch both start and end point to local map
 
@@ -271,7 +290,7 @@ namespace path_search {
                     cout << rog_map::RED <<
                          " -- [A*] " << RET_CODE_STR[INIT_ERROR]
                          << " : start point deeply occupied, cannot find feasible path.\n" << rog_map::RESET << endl;
-                    return INIT_ERROR;
+                    return finish(INIT_ERROR);
                 }
             }
         }
@@ -294,7 +313,7 @@ namespace path_search {
                                                  0.5,
                                                  1);
                     }
-                    return INIT_ERROR;
+                    return finish(INIT_ERROR);
                 }
             }
         }
@@ -325,9 +344,64 @@ namespace path_search {
                 ros_ptr_->vizAstarPoints(local_start_pt, Color::Orange(), "local_start_pt", 0.3, 1);
                 ros_ptr_->vizAstarPoints(local_end_pt, Color::Green(), "local_end_pt", 0.3, 1);
             }
-            return INIT_ERROR;
+            return finish(INIT_ERROR);
         }
 
+
+        // Optional BDM fast path. Unknown policy and inflated geometry are
+        // inherited from this mission. A failed bounded proposal never rejects
+        // a reachable task: the original A* below remains the fallback.
+        if (cfg_.bdm_search_enable && md_.use_inf_map && !start_pt_out_local_map) {
+            using Search = general_planner::BdmIntervalSearch;
+            const Vec3i lo = md_.local_map_center_id_g - cfg_.map_size_i;
+            const Vec3i hi = md_.local_map_center_id_g + cfg_.map_size_i;
+            const double budget = time_out > 0 ? std::min(0.003, time_out * 0.15) : 0.003;
+            auto result = Search::search(start_idx, end_idx, lo, hi, cfg_.allow_diag,
+                [&](int x,int y,int zlo,int zhi,Search::Runs &runs) {
+                    return map_manager_->bdmSearchIntervals(x,y,zlo,zhi,md_.unknown_as_occ,runs);
+                }, budget, 6000, searching_horizon>0 ? searching_horizon/md_.resolution :
+                    std::numeric_limits<double>::infinity());
+            profile.interval_expanded=result.expanded;profile.columns=result.columns;
+            profile.interval_status=int(result.status);
+            if (result.status == Search::Result::FOUND) {
+                vec_Vec3f candidate{local_start_pt};
+                for (const auto &id : result.path) {
+                    Vec3f p;globalIndexToPos(id,p);
+                    if ((candidate.back()-p).norm()>1e-8) candidate.push_back(p);
+                }
+                if (result.reached_goal && (candidate.back()-local_end_pt).norm()>1e-8)
+                    candidate.push_back(local_end_pt);
+                bool reaches_goal=result.reached_goal;
+                double length=0;
+                for (std::size_t k=1;k<candidate.size();++k) {
+                    const double step=(candidate[k]-candidate[k-1]).norm();
+                    if (searching_horizon>0 && length+step>searching_horizon && step>1e-8) {
+                        candidate[k]=candidate[k-1]+(candidate[k]-candidate[k-1])*((searching_horizon-length)/step);
+                        candidate.resize(k+1);reaches_goal=false;break;
+                    }
+                    length+=step;
+                }
+                bool valid=true;
+                // Validate every segment of the actual horizon-limited proposal,
+                // including continuous endpoints, using the original live map.
+                for (std::size_t k=0;k<candidate.size();++k) {
+                    const auto type=map_manager_->getInfGridType(candidate[k]);
+                    if (type==OCCUPIED || type==OUT_OF_MAP || (md_.unknown_as_occ && type==UNKNOWN) ||
+                        (k && !map_manager_->isLineFree(candidate[k-1],candidate[k],true,md_.unknown_as_occ))) {
+                        valid=false;break;
+                    }
+                    if (std::chrono::duration<double>(std::chrono::steady_clock::now()-search_start).count()>budget) {
+                        valid=false;break;
+                    }
+                }
+                if (valid) {
+                    out_path=std::move(candidate);
+                    profile.route="interval";
+                    return finish(reaches_goal ? REACH_GOAL : REACH_HORIZON);
+                }
+                profile.route="fallback_validation";
+            } else profile.route="fallback_graph";
+        }
 
         GridNodePtr startPtr = grid_node_buffer_[getLocalIndexHash(start_idx)];
         GridNodePtr endPtr = grid_node_buffer_[getLocalIndexHash(end_idx)];
@@ -364,6 +438,7 @@ namespace path_search {
         }
 
         while (!open_set.empty()) {
+            ++profile.voxel_expanded;
             num_iter++;
             current = open_set.top();
             open_set.pop();
@@ -389,7 +464,7 @@ namespace path_search {
                     node_path.push_back(temp_ptr);
                 }
                 ConvertNodePathToPointPath(node_path, out_path);
-                return REACH_GOAL;
+                return finish(REACH_GOAL);
             }
 
             // Distance terminate condition
@@ -418,7 +493,7 @@ namespace path_search {
                     node_path.push_back(startPtr);
                 }
                 ConvertNodePathToPointPath(node_path, out_path);
-                return REACH_HORIZON;
+                return finish(REACH_HORIZON);
             }
 
 
@@ -529,7 +604,7 @@ namespace path_search {
             fmt::print(fg(fmt::color::indian_red), "Time consume in A star path finding is {} s, iter={}.\n",
                        elapsed,
                        num_iter);
-            return NO_PATH;
+            return finish(NO_PATH);
         }
 
         if (md_.unknown_as_occ && !frontier_queue.empty()) {
@@ -547,7 +622,7 @@ namespace path_search {
             }
             if (local_goal == nullptr) {
                 cout << rog_map::RED << " -- [A*] Frontier queue is empty, return." << rog_map::RESET << endl;
-                return NO_PATH;
+                return finish(NO_PATH);
             }
             retrievePath(local_goal, node_path);
             if (start_pt_out_local_map) {
@@ -555,10 +630,10 @@ namespace path_search {
             }
             ConvertNodePathToPointPath(node_path, out_path);
             cout << rog_map::BLUE << "Frontier queue: " << frontier_queue.size() << endl;
-            return REACH_HORIZON;
+            return finish(REACH_HORIZON);
         }
         ros_ptr_->error(" -- [A*] Point to point path cannot find path with iter num: {}, return.", num_iter);
-        return NO_PATH;
+        return finish(NO_PATH);
     }
 
     RET_CODE Astar::escapePathSearch(const rog_map::Vec3f &start_pt, const int flag, rog_map::vec_Vec3f &out_path) {

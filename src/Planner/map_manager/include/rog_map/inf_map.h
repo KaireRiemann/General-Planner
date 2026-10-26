@@ -24,6 +24,7 @@
 #pragma once
 
 #include <rog_map/rog_map_core/counter_map.h>
+#include <map_manager/boundary_map.hpp>
 
 namespace rog_map {
 
@@ -70,7 +71,13 @@ namespace rog_map {
 
         GridType getGridType(const Vec3i &id_g) const ;
 
+        // Complement of inflated Occupied on one bounded column. This is a
+        // traversability projection, NOT evidence that Unknown was observed Free.
+        bool bdmIntervals(int x, int y, int lo, int hi, bool unknown_blocked,
+                          std::vector<std::pair<int, int>> &out) const;
+
     private:
+        general_planner::BoundaryMap::Ptr search_boundary_;
         struct InfMapData {
             std::vector<int16_t> occ_inflate_cnt;
             std::vector<int16_t> unk_inflate_cnt;

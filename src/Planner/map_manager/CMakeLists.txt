@@ -83,3 +83,6 @@ target_link_libraries(raycaster_self_test ${catkin_LIBRARIES})
 
 add_executable(bdm_corridor_self_test tests/bdm_corridor_self_test.cpp)
 target_link_libraries(bdm_corridor_self_test map_manager)
+
+add_executable(bdm_interval_search_self_test tests/bdm_interval_search_self_test.cpp)
+target_link_libraries(bdm_interval_search_self_test map_manager)

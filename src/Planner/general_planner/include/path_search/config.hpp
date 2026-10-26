@@ -44,11 +44,13 @@ namespace path_search {
         bool debug_visualization_en;
         bool allow_diag{false};
         int heu_type{0};
+        bool bdm_search_enable{false};
 
         PathSearchConfig() {};
 
         PathSearchConfig(const string & cfg_path, const string name_space = "astar") {
             yaml_loader::YamlLoader loader(cfg_path);
+            loader.LoadParam("rog_map/bdm_search_enable", bdm_search_enable, false);
             vector<int> vox_;
             loader.LoadParam(name_space + "/map_voxel_num", vox_, vox_);
             loader.LoadParam(name_space + "/allow_diag", allow_diag, false);

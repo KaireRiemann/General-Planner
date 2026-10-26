@@ -100,6 +100,7 @@ namespace rog_map {
                 pcd_name = replaceCmakeRootDir(pcd_name);
             }
 
+            loader.LoadParam(name_space + "/bdm_search_enable", bdm_search_enable, false);
             loader.LoadParam(name_space + "/corridor_obstacle_backend", corridor_obstacle_backend, string("bdm"));
             if (corridor_obstacle_backend != "dense" && corridor_obstacle_backend != "bdm" &&
                 corridor_obstacle_backend != "verify")
@@ -337,6 +338,7 @@ namespace rog_map {
         /* aster properties */
         string frame_id{};
         string corridor_obstacle_backend{"bdm"};
+        bool bdm_search_enable{false};
         bool map_sliding_en{true};
         Vec3f fix_map_origin{};
         string odom_topic{}, cloud_topic{};

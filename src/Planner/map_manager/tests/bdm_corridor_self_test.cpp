@@ -10,6 +10,7 @@ public:
     explicit TestMap(const std::string &path) {
         cfg_ = rog_map::Config(path);
         cfg_.corridor_obstacle_backend = "bdm";
+        cfg_.bdm_search_enable = true;
         cfg_.map_size_d = rog_map::Vec3f(12, 12, 6);
         cfg_.map_sliding_en = true;
         cfg_.resetMapSize();
@@ -38,6 +39,28 @@ int main(int argc, char **argv) {
                 map.boxSearch(lo, hi, general_utils::OCCUPIED, dense);
                 map.corridorOccupiedSearch(lo, hi, sparse);
                 if (dense != sparse) throw std::runtime_error("random query differs from dense scan");
+                const auto inf = map.inflationMap(false);
+                Vec3i id; inf->infMapPosToGlobalIndex((lo+hi)*0.5,id);
+                std::vector<std::pair<int,int>> runs;
+                if (!inf->bdmIntervals(id.x(),id.y(),-30,40,false,runs))
+                    throw std::runtime_error("inflated BDM unavailable");
+                for (int k=-30;k<=40;++k) {
+                    const Vec3i index(id.x(),id.y(),k);
+                    bool represented=false;
+                    for (const auto &run:runs) represented |= k>=run.first && k<=run.second;
+                    const auto state=inf->getGridType(index);
+                    // Query conservatively excludes the outer sliding boundary;
+                    // every represented cell must be traversable, and inner
+                    // traversable cells must be represented.
+                    if (represented && (state==general_utils::OCCUPIED || state==general_utils::OUT_OF_MAP))
+                        throw std::runtime_error("inflated BDM false free");
+                    Vec3f p; inf->infMapGlobalIndexToPos(index,p);
+                    Vec3f inner_lo=p-Vec3f::Constant(.3),inner_hi=p+Vec3f::Constant(.3);
+                    map.boundBoxByLocalMap(inner_lo,inner_hi,true);
+                    if (state!=general_utils::OCCUPIED && state!=general_utils::OUT_OF_MAP &&
+                        (inner_lo.array()<p.array()).all() && (inner_hi.array()>p.array()).all() && !represented)
+                        throw std::runtime_error("inflated BDM missing free");
+                }
                 ++comparisons;
             }
         };

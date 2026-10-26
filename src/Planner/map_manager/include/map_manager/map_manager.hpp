@@ -562,6 +562,12 @@ public:
         map_->boxSearch(box_min, box_max, gt, out_points);
     }
 
+    bool bdmSearchIntervals(int x, int y, int lo, int hi, bool unknown_blocked,
+                            std::vector<std::pair<int, int>> &out) const {
+        const auto view = inflation_view_ ? inflation_view_ : map_->inflationMap(false);
+        return view->bdmIntervals(x, y, lo, hi, unknown_blocked, out);
+    }
+
     void corridorOccupiedSearch(const rog_map::Vec3f &min, const rog_map::Vec3f &max,
                                 rog_map::vec_E<rog_map::Vec3f> &out) const {
         map_->corridorOccupiedSearch(min, max, out);

@@ -77,6 +77,8 @@ namespace rog_map {
 
     InfMap::InfMap(rog_map::Config& cfg) {
         cfg_ = cfg;
+        if (cfg_.bdm_search_enable)
+            search_boundary_ = std::make_shared<general_planner::BoundaryMap>(cfg.inflation_resolution);
         int max_step = cfg_.inflation_step;
         if (cfg_.unk_inflation_en) {
             max_step = std::max(max_step, cfg_.unk_inflation_step);
@@ -177,6 +179,7 @@ namespace rog_map {
 
 
     void InfMap::resetLocalMap() {
+        if (search_boundary_) search_boundary_->clear();
         std::cout << YELLOW << " -- [Inf-Map] Clear all local map." << RESET << std::endl;
         std::fill(md_.unknown_cnt.begin(), md_.unknown_cnt.end(), md_.sub_grid_num);
         std::fill(md_.occupied_cnt.begin(), md_.occupied_cnt.end(), 0);
@@ -188,6 +191,7 @@ namespace rog_map {
 
     void InfMap::updateInflation(const Vec3i& id_g, const bool is_hit) {
         TimeConsuming tc("updateInflation", false);
+        std::vector<general_planner::BoundaryMap::BoundaryVoxel> updates;
         for (const auto& nei : cfg_.inf_spherical_neighbor) {
             const Vec3i& id_shift = id_g + nei;
 #ifdef COUNTER_MAP_DEBUG
@@ -197,6 +201,7 @@ namespace rog_map {
 #endif
             inf_num_++;
             const int& addr = getHashIndexFromGlobalIndex(id_shift);
+            const bool was_occupied = imd_.occ_inflate_cnt[addr] > 0;
             if (is_hit) {
                 imd_.occ_inflate_cnt[addr]++;
             }
@@ -204,6 +209,10 @@ namespace rog_map {
                 imd_.occ_inflate_cnt[addr]--;
             }
 
+            if (search_boundary_ && was_occupied != (imd_.occ_inflate_cnt[addr] > 0)) {
+                using Type = general_planner::BoundaryMap::BoundaryType;
+                updates.push_back({id_shift, imd_.occ_inflate_cnt[addr] > 0 ? Type::OCCUPIED : Type::NONE});
+            }
 #ifdef COUNTER_MAP_DEBUG
             if (imd_.occ_inflate_cnt[addr] < 0 || imd_.occ_inflate_cnt[addr] > imd_.occ_neighbor_num) {
                 imd_.occ_inflate_cnt[addr] = 0;
@@ -211,6 +220,7 @@ namespace rog_map {
             }
 #endif
         }
+        if (search_boundary_) search_boundary_->apply(updates);
         inf_t_ += tc.stop();
     }
 
@@ -316,4 +326,35 @@ namespace rog_map {
         // 2. get true grid type
         return getGridType(id_g);
     }
+    bool InfMap::bdmIntervals(int x, int y, int lo, int hi, bool unknown_blocked,
+                              std::vector<std::pair<int, int>> &out) const {
+        out.clear();
+        // Unknown inflation requires a second interval layer; preserve original
+        // A* frontier behaviour by declining this optional accelerator for now.
+        if (!search_boundary_ || (unknown_blocked && cfg_.unk_inflation_en)) return false;
+        Vec3i low, high;
+        posToGlobalIndex(local_map_bound_min_d_, low);
+        posToGlobalIndex(local_map_bound_max_d_, high);
+        lo = std::max(lo, low.z() + 1); hi = std::min(hi, high.z() - 1);
+        if (x <= low.x() || x >= high.x() || y <= low.y() || y >= high.y()) return true;
+        // Use ROG's conversion and the actual inflated virtual limits.
+        Vec3i floor_id, ceiling_id;
+        posToGlobalIndex(Vec3f(0,0,cfg_.virtual_ground_height), floor_id);
+        posToGlobalIndex(Vec3f(0,0,cfg_.virtual_ceil_height), ceiling_id);
+        Vec3f floor_center, ceiling_center;
+        globalIndexToPos(floor_id, floor_center); globalIndexToPos(ceiling_id, ceiling_center);
+        if (floor_center.z() < cfg_.virtual_ground_height) ++floor_id.z();
+        if (ceiling_center.z() > cfg_.virtual_ceil_height) --ceiling_id.z();
+        lo = std::max(lo, floor_id.z()); hi = std::min(hi, ceiling_id.z());
+        if (lo > hi) return true;
+        const auto occupied = search_boundary_->occupiedIndices(Vec3i(x,y,lo), Vec3i(x,y,hi));
+        int begin = lo;
+        for (const auto &v : occupied) {
+            if (begin < v.z()) out.emplace_back(begin, v.z()-1);
+            begin = v.z()+1;
+        }
+        if (begin <= hi) out.emplace_back(begin,hi);
+        return true;
+    }
+
 }
