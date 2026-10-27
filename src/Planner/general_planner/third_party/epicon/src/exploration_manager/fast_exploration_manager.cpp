@@ -485,17 +485,13 @@ int FastExplorationManager::planGlobalPath(const Eigen::Vector3d &pos,
   //allpoints.insert(allpoints.end(), activepoints.begin(), activepoints.end());
   allpoints.insert(allpoints.end(), viewpoints.begin(), viewpoints.end());
 
-  const bool unresolved = frontier_manager_ptr_->geometry_rejected_ ||
-      frontier_manager_ptr_->connectivity_rejected_ ||
-      frontier_manager_ptr_->deferred_clusters_ ||
-      frontier_manager_ptr_->unobservable_clusters_ ||
-      !frontier_manager_ptr_->cluster_list_.empty() ||
-      (!unkownpoints_.empty() && unkownpoints.empty());
-  if (allpoints.empty()) return unresolved ? BLOCKED : NO_FRONTIER;
+  // End this exploration round when no actionable candidate remains.
+  // Residual clusters are diagnostic information, not a reason to keep retrying.
+  if (allpoints.empty()) return NO_FRONTIER;
   const auto &allowed = frontier_manager_ptr_->viewpoint_allowed_;
   if (allowed) allpoints.erase(std::remove_if(allpoints.begin(), allpoints.end(),
       [&](const TopoNode::Ptr &node) { return !allowed(node->center_); }), allpoints.end());
-  if (allpoints.empty()) return BLOCKED;
+  if (allpoints.empty()) return NO_FRONTIER;
 
   std::vector<float> distance_odom2points;
 
@@ -513,7 +509,7 @@ int FastExplorationManager::planGlobalPath(const Eigen::Vector3d &pos,
   sort(idx.begin(), idx.end(), [&](int a, int b) { return distance_odom2points[a] < distance_odom2points[b]; });
 
   // Audit every cluster, but keep the quadratic TSP matrix bounded. An
-  // unreachable shortlist reports BLOCKED, never audited completion.
+  // empty reachable shortlist ends the current exploration round.
   int consider_range = min(20, (int)idx.size());
 
   std::vector<TopoNode::Ptr> unkownpoints_temp;
@@ -656,7 +652,7 @@ int FastExplorationManager::planGlobalPath(const Eigen::Vector3d &pos,
     planner_manager_->graph_visualizer_->vizTour({}, VizColor::RED, "global");
 
     if (raw_viewpoint_reachable.empty())
-      return BLOCKED;
+      return NO_FRONTIER;
     else
       return SUCCEED;
   }
@@ -804,8 +800,8 @@ int FastExplorationManager::planGlobalPath(const Eigen::Vector3d &pos,
   planner_manager_->local_data_.end_yaw_ =
       viewpoint_reachable[indices[1] - 1]->yaw_;
 
-  // The proximity heuristic may remove all unknown nodes; they still exist.
-  if (ed_->global_tour_.size() < 2) return BLOCKED;
+  // Nearby unknown nodes may remain without an executable tour.
+  if (ed_->global_tour_.size() < 2) return NO_FRONTIER;
   updateGoalNode();
   return SUCCEED;
 }

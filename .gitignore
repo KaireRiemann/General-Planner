@@ -1,6 +1,7 @@
 /build
 /devel
 /bags
+/docs
 
 **/.vscode
 src/Localization/FAST_LIO/PCD
@@ -24,3 +25,13 @@ analysis/
 # Keep out of version control; run only on the machine that owns the files.
 /src/Planner/general_planner/Tests/
 /src/Planner/general_planner/tests/target_topology_guidance_self_test.cpp
+
+# New tests and benchmarks stay local (tracked files are unaffected).
+**/tests/
+**/Tests/
+**/test/
+**/*_test.cpp
+**/*_self_test.cpp
+**/*_benchmark.cpp
+**/test_*.py
+**/*_test.py

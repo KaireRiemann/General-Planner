@@ -417,13 +417,11 @@ EpiconFrontend::Result EpiconFrontend::update(bool select_goal, bool full_audit)
   const auto previous_tour=tour();
   const bool had_selected=i.selected;
   int result=i.explorer->planGlobalPath(i.pos.cast<double>(),i.vel.cast<double>(),i.unknown,i.active,i.hybrid_radius,i.unknown_penalty);
-  if (result==epicon_native::fast_planner::NO_FRONTIER &&
-      (!i.deferred.empty() || !i.frontier->cluster_list_.empty()))
-    result=epicon_native::fast_planner::BLOCKED;
   // Unknown-space fallback candidates are generated only by a full audit.
   // Their absence on the next incremental update must not cancel a still
   // reachable selected goal before the vehicle can make any progress.
-  if(result==epicon_native::fast_planner::BLOCKED && !full_audit && had_selected &&
+  if((result==epicon_native::fast_planner::NO_FRONTIER ||
+      result==epicon_native::fast_planner::BLOCKED) && !full_audit && had_selected &&
      previous_tour.size()>=2 && (previous_tour[1]-i.pos).norm()>.5f &&
      (i.explorer->ed_->next_goal_node_->center_-previous_tour[1]).norm()<1e-3f &&
      i.frontier->viewpoint_allowed_(previous_tour[1])) {

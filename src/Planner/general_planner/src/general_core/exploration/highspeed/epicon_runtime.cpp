@@ -41,6 +41,7 @@ void FastExplorationFSM::finishEpiconTask(bool completed, const std::string &rea
   std_msgs::String msg;
   msg.data="{\"backend\":\"epicon_pointcloud\",\"result\":\""+coverage_result_+
       "\",\"reason\":\""+reason+"\",\"verified_frames\":"+std::to_string(epicon_finish_.count())+"}";
+  if(completed) msg.data.insert(msg.data.size()-1,",\"completion_scope\":\"actionable_goals\"");
   coverage_result_pub_.publish(msg);
   ROS_WARN_STREAM("[exploration] " << coverage_result_ << ": " << reason);
   if(task_control_enable_ || !completed) beginPause(reason,completed);
@@ -91,7 +92,7 @@ void FastExplorationFSM::updateEpiconGlobalPath() {
     if(audit && epicon_finish_.observe(now.toSec(),settled,fresh,true,
         epicon_frontend_->cloudRevision(),epicon_frontend_->cloudStamp().toSec(),
         fp_->finish_no_frontier_min_count_,fp_->finish_no_frontier_min_duration_)) {
-      if(state_!=FINISH) finishEpiconTask(true,"fresh point-cloud audits found no actionable frontier after settling");
+      if(state_!=FINISH) finishEpiconTask(true,"no actionable exploration goal after fresh settled audits; " + epicon_frontend_->unresolvedSummary());
       return;
     }
     ROS_INFO_STREAM_THROTTLE(1.0,"[exploration] finish pending: settled=" << settled
@@ -158,6 +159,11 @@ bool FastExplorationFSM::epiconFSMCallback() {
   if(state_==PAUSING || state_==PAUSED || state_==LAND) return false;
   const auto now=ros::Time::now();
   if(fd_->have_odom_) epicon_frontend_->setOdometry(fd_->odom_pos_,fd_->odom_vel_,fd_->odom_yaw_);
+  if(fd_->trigger_ && !epicon_frontend_->hasCloud()) {
+    // Input readiness is not an exploration stall or successful completion.
+    epicon_progress_.reset(ros::WallTime::now().toSec());
+    return true;
+  }
   if(fd_->trigger_ && state_!=FINISH) {
     const auto wall_now=ros::WallTime::now();
     const double distance=fast_planner::epiconRemainingRoute(fd_->odom_pos_,epicon_progress_path_);
