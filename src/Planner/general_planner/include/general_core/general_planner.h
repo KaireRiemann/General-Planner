@@ -310,6 +310,8 @@ namespace general_planner {
                                    bool &traj_finish);
 
         void getModuleTimeConsuming(vector<double> &time);
+        // Planner-worker snapshot; unlike the legacy getter, does not reset timers.
+        vector<double> moduleTimeSnapshot() const { return time_consuming_; }
 
         double getLatestOptimizationTime() const {
             if (time_consuming_.size() <= LogTime::BACK_TRAJ_OPT) {

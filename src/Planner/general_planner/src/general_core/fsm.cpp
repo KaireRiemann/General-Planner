@@ -31,6 +31,9 @@
 #include <iomanip>
 #include <memory>
 #include <sstream>
+#include <chrono>
+#include <cstdlib>
+#include <unistd.h>
 
 using namespace general_utils;
 
@@ -147,6 +150,96 @@ namespace fsm {
                 << static_cast<int>(event.on_backup)
                 << std::endl;
         }
+    }
+
+    std::string Fsm::logFilePath(const std::string &name) const {
+        const char *run = std::getenv("GP_RUN_DIR");
+        if (run == nullptr || *run == '\0') return std::string(ROOT_DIR) + "log/" + name;
+        const boost::filesystem::path path = boost::filesystem::path(run) /
+                ("planner_" + std::to_string(::getpid())) / name;
+        boost::system::error_code ec;
+        boost::filesystem::create_directories(path.parent_path(), ec);
+        if (ec) std::cerr << "Cannot create planning log directory: " << ec.message() << '\n';
+        return path.string();
+    }
+
+    void Fsm::snapshotSessionConfig(const std::string &path) const {
+        const char *run = std::getenv("GP_RUN_DIR");
+        if (run == nullptr || *run == '\0') return;
+        boost::system::error_code ec;
+        boost::filesystem::copy_file(path, logFilePath("loaded_planner_config.yaml"),
+                                    boost::filesystem::copy_option::overwrite_if_exists, ec);
+        std::ofstream origin(logFilePath("config_origin.txt"));
+        origin << path << '\n';
+        if (ec) std::cerr << "Cannot snapshot planner config: " << ec.message() << '\n';
+    }
+
+    void Fsm::writePlanningCycle(const char *invocation, const char *task,
+                                uint64_t task_epoch, uint64_t goal_sequence,
+                                double start_sim_s, double executor_wall_ms,
+                                int ret_code, bool context_handled, bool missing_input) {
+        // Opt-in session logging. One row per returned executor call, including
+        // skipped/failed/discarded candidates; a return is NOT a mission success.
+        const char *run = std::getenv("GP_RUN_DIR");
+        if (run == nullptr || *run == '\0') return;
+        const auto logging_begin = std::chrono::steady_clock::now();
+        if (!cycle_log_open_attempted_) {
+            cycle_log_open_attempted_ = true;
+            cycle_log_.open(logFilePath("planning_cycles.csv"));
+            if (!cycle_log_) {
+                std::cerr << "Cannot open planning_cycles.csv\n";
+                return;
+            }
+            cycle_log_ << "schema_version,replan_id,task_epoch,goal_sequence,task,invocation,"
+                          "start_sim_s,end_sim_s,executor_wall_ms,period_budget_ms,ret_code,"
+                          "context_handled,missing_input,exp_frontend_ms,exp_opt_ms,exp_generation_ms,"
+                          "backup_frontend_ms,backup_opt_ms,backup_generation_ms,backend_total_ms,"
+                          "visualization_ms,optimizer_report_valid,cost_mode,evaluations,iterations,"
+                          "line_search_evaluations,max_line_search_evaluations,fast_stop,fallback_used,"
+                          "warm_start_status,polynomial_pieces,minco_evaluation_ms,solver_ms,"
+                          "continuous_feasible,max_normalized_violation,stationarity_residual,"
+                          "solve_sequence,solver_return_code,final_objective_valid,final_objective,"
+                          "final_energy_cost,final_time_cost,final_duration_s,logging_prepare_us\n";
+        }
+        if (!cycle_log_) return;
+        const auto times = planner_ptr_->moduleTimeSnapshot();
+        const auto milliseconds = [&](int index) {
+            return index < static_cast<int>(times.size()) ? times[index] * 1000.0 : 0.0;
+        };
+        const auto report = planner_ptr_->getLatestExpTimingReport();
+        const bool valid = report.report_ready && report.solve_sequence != cycle_prior_solve_sequence_ &&
+                state2stateMode() &&
+                cfg_.backend_type == general_planner::architecture::BackendType::CORRIDOR &&
+                !context_handled && !missing_input && milliseconds(EXP_TRAJ_OPT) > 0.0;
+        cycle_log_ << std::setprecision(17) << "1," << active_replan_id_ << ','
+                   << task_epoch << ',' << goal_sequence << ',' << task << ',' << invocation << ','
+                   << start_sim_s << ',' << ros_ptr_->getSimTime() << ',' << executor_wall_ms << ','
+                   << (cfg_.replanRate() > 0 ? 1000.0 / cfg_.replanRate() : 0.0) << ','
+                   << ret_code << ',' << context_handled << ',' << missing_input;
+        for (int i = 0; i < 8; ++i) cycle_log_ << ',' << milliseconds(i);
+        cycle_log_ << ',' << valid;
+        if (valid) {
+            cycle_log_ << ',' << report.mode << ',' << report.evaluations << ',' << report.iterations
+                       << ',' << report.line_search_evaluations << ',' << report.max_line_search_evaluations
+                       << ',' << report.fast_stop_satisfied << ',' << report.fast_fallback_used
+                       << ',' << report.warm_start_status << ',' << report.polynomial_pieces
+                       << ',' << report.minco_evaluation_seconds * 1000.0
+                       << ',' << report.optimization_seconds * 1000.0
+                       << ',' << report.continuous_feasible << ',' << report.max_normalized_violation
+                       << ',' << report.stationarity_residual
+                       << ',' << report.solve_sequence << ',' << report.solver_return_code
+                       << ',' << report.final_objective_valid;
+            if (report.final_objective_valid) {
+                cycle_log_ << ',' << report.final_objective << ',' << report.final_energy_cost
+                           << ',' << report.final_time_cost << ',' << report.final_duration;
+            } else cycle_log_ << ",,,,";
+        } else {
+            // Missing reports are empty fields, never successful zero violations.
+            for (int i = 0; i < 21; ++i) cycle_log_ << ',';
+        }
+        cycle_log_ << ',' << std::chrono::duration<double, std::micro>(
+                std::chrono::steady_clock::now() - logging_begin).count() << '\n';
+        cycle_log_.flush();
     }
 
     Fsm::~Fsm() {
@@ -544,9 +637,9 @@ namespace fsm {
         }
         const auto diagnostic_events = snapshotDiagnosticEvents();
         const std::string csv_path = name.empty()
-                                     ? LOG_FILE_DIR("diagnostic_events/" +
+                                     ? logFilePath("diagnostic_events/" +
                                                     BinaryFileHandler<int>::getCurrentTimeStr() + ".csv")
-                                     : LOG_FILE_DIR("diagnostic_events/" + name + ".csv");
+                                     : logFilePath("diagnostic_events/" + name + ".csv");
         boost::system::error_code ec;
         const boost::filesystem::path log_path(csv_path);
         const boost::filesystem::path parent = log_path.parent_path();
@@ -572,9 +665,9 @@ namespace fsm {
             return;
         }
         const std::string csv_path = name.empty()
-                                     ? LOG_FILE_DIR("tracking_diagnostic_events/" +
+                                     ? logFilePath("tracking_diagnostic_events/" +
                                                     BinaryFileHandler<int>::getCurrentTimeStr() + ".csv")
-                                     : LOG_FILE_DIR("tracking_diagnostic_events/" + name + ".csv");
+                                     : logFilePath("tracking_diagnostic_events/" + name + ".csv");
         boost::system::error_code ec;
         const boost::filesystem::path log_path(csv_path);
         const boost::filesystem::path parent = log_path.parent_path();
@@ -644,6 +737,7 @@ namespace fsm {
             return;
         }
         const std::uint64_t replan_task_epoch = navigation_task_epoch_.load();
+        const std::uint64_t cycle_goal_sequence = navigation_goal_sequence_.load();
         if (release_fsm_lock_during_replan) {
             state2state_replan_start_wall_ns_.store(
                     ros::WallTime::now().toNSec(), std::memory_order_release);
@@ -702,10 +796,20 @@ namespace fsm {
         if (release_fsm_lock_during_replan) {
             tick_lock.unlock();
         }
+        std::vector<double> discarded_module_times;
+        planner_ptr_->getModuleTimeConsuming(discarded_module_times);
+        cycle_prior_solve_sequence_ = planner_ptr_->getLatestExpTimingReport().solve_sequence;
+        const double cycle_start_sim = ros_ptr_->getSimTime();
+        const auto cycle_begin = std::chrono::steady_clock::now();
         PlanResult plan_result = executor.replan(*this, replan_request);
+        const double cycle_wall_ms = std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now() - cycle_begin).count();
         if (release_fsm_lock_during_replan) {
             tick_lock.lock();
         }
+        writePlanningCycle("replan", executor.name(), replan_task_epoch, cycle_goal_sequence,
+                           cycle_start_sim, cycle_wall_ms, plan_result.ret_code,
+                           plan_result.context.handled, plan_result.context.missing_input);
         // PAUSE/CLEAR/ARM run on the navigation-control queue while an
         // expensive replan is executing on its own queue.  A result produced
         // for an invalidated task must never be applied to the new task.
@@ -1186,10 +1290,20 @@ namespace fsm {
                 if (release_fsm_lock_during_plan) {
                     tick_lock.unlock();
                 }
+                std::vector<double> discarded_module_times;
+                planner_ptr_->getModuleTimeConsuming(discarded_module_times);
+                cycle_prior_solve_sequence_ = planner_ptr_->getLatestExpTimingReport().solve_sequence;
+                const double cycle_start_sim = ros_ptr_->getSimTime();
+                const auto cycle_begin = std::chrono::steady_clock::now();
                 PlanResult plan_result = executor.plan(*this, plan_request);
+                const double cycle_wall_ms = std::chrono::duration<double, std::milli>(
+                        std::chrono::steady_clock::now() - cycle_begin).count();
                 if (release_fsm_lock_during_plan) {
                     tick_lock.lock();
                 }
+                writePlanningCycle("plan", executor.name(), plan_task_epoch, plan_goal_sequence,
+                                   cycle_start_sim, cycle_wall_ms, plan_result.ret_code,
+                                   plan_result.context.handled, plan_result.context.missing_input);
                 if (release_fsm_lock_during_plan &&
                     (!navigation_execution_enabled_.load() ||
                      navigation_task_epoch_.load() != plan_task_epoch ||
@@ -1425,6 +1539,7 @@ namespace fsm {
                         }
                         break;
                 }
+                planner_ptr_->getModuleTimeConsuming(log_module_time);
                 const auto log_id = appendLatestReplanLog();
                 const bool replan_warn = log_id.second == FAILED || log_id.second == OPT_FAILED;
                 recordDiagnosticEvent(replan_warn ? "WARN" : "INFO",
@@ -1434,6 +1549,7 @@ namespace fsm {
                                       -1,
                                       false,
                                       static_cast<int>(log_id.first));
+                WriteTimeToLog();
                 if (executor.trackingLike()) {
                     recordTrackingReplanContext("tracking_plan_from_rest_context",
                                                 retcode,

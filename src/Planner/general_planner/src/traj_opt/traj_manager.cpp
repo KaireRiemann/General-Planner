@@ -1788,6 +1788,9 @@ bool ExpTrajOpt::runPhase2PackedCorrection(
 
 double ExpTrajOpt::optimize(Trajectory &traj, double rel_cost_tol)
 {
+  const auto solve_sequence = last_timing_report_.solve_sequence + 1;
+  last_timing_report_ = TimingReport{};
+  last_timing_report_.solve_sequence = solve_sequence;
   opt_vars_.penalty_log.resize(8);
   opt_vars_.penalty_log.setZero();
 
@@ -2292,6 +2295,8 @@ double ExpTrajOpt::optimize(Trajectory &traj, double rel_cost_tol)
   last_timing_report_.stationarity_residual =
       opt_vars_.quality.stationarity_residual;
 
+  last_timing_report_.report_ready = true;
+  last_timing_report_.solver_return_code = ret;
   cumulative_timing_report_.mode = last_timing_report_.mode;
   cumulative_timing_report_.evaluations += last_timing_report_.evaluations;
   cumulative_timing_report_.iterations += last_timing_report_.iterations;
@@ -2517,6 +2522,11 @@ double ExpTrajOpt::optimize(Trajectory &traj, double rel_cost_tol)
 
   VecDf grad = VecDf::Zero(x.size());
   min_cost = evaluateMincoCost(x, grad);
+  last_timing_report_.final_objective_valid = std::isfinite(min_cost);
+  last_timing_report_.final_objective = min_cost;
+  last_timing_report_.final_energy_cost = optimizer_.lastEnergyCost();
+  last_timing_report_.final_time_cost = optimizer_.lastTimeCost();
+  last_timing_report_.final_duration = optimizer_.getTrajectory().getTotalDuration();
   fillPostSolveQualityReport(x, grad);
   last_timing_report_.continuous_feasible =
       opt_vars_.quality.continuous_feasible;

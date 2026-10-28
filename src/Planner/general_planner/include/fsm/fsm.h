@@ -69,6 +69,15 @@ namespace fsm {
         ros_interface::RosInterface::Ptr ros_ptr_;
 
         std::ofstream write_time_;
+        std::ofstream cycle_log_;
+        bool cycle_log_open_attempted_{false};
+        uint64_t cycle_prior_solve_sequence_{0};
+        void snapshotSessionConfig(const std::string &path) const;
+        std::string logFilePath(const std::string &name) const;
+        void writePlanningCycle(const char *invocation, const char *task,
+                                uint64_t task_epoch, uint64_t goal_sequence,
+                                double start_sim_s, double executor_wall_ms,
+                                int ret_code, bool context_handled, bool missing_input);
         vector<double> log_module_time;
         double yaw_{0}, yaw_dot_{0};
 

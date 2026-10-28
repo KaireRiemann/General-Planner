@@ -371,6 +371,14 @@ public:
 
   struct TimingReport
   {
+    std::uint64_t solve_sequence{0};
+    bool report_ready{false};
+    int solver_return_code{0};
+    bool final_objective_valid{false};
+    double final_objective{std::numeric_limits<double>::quiet_NaN()};
+    double final_energy_cost{std::numeric_limits<double>::quiet_NaN()};
+    double final_time_cost{std::numeric_limits<double>::quiet_NaN()};
+    double final_duration{std::numeric_limits<double>::quiet_NaN()};
     std::string mode{"not_run"};
     std::size_t evaluations{0};
     std::size_t iterations{0};

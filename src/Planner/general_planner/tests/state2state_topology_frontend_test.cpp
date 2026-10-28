@@ -67,7 +67,7 @@ int main(int argc, char **argv) {
         Vec3f local_start = start;
         bool goal_valid = true;
         State2StateTopologyRouteRuntime runtime;
-        runtime.setPolicy(true);
+        require(!runtime.policy_enabled.load(), "fresh runtime must default to local-only");
         const auto seed = [&] {
             resetGlobalTopologyRoute(runtime.route, "TEST_ROUTE");
             runtime.consumed_policy_generation = runtime.policy_generation.load();
@@ -86,8 +86,31 @@ int main(int argc, char **argv) {
         map->updateOdometrySnapshot(measured);
         StateToStateFrontendServices services{cfg, map, ros, astar, nullptr,
                                               &runtime, local_start, goal, goal_valid};
-        seed();
         vec_Vec3f path;
+        // Capability and graph availability must not opt a fresh task into
+        // topology navigation. A disabled policy must also discard old routes.
+        require(pathSearch(services, start, goal, 8., path) &&
+                (path.back() - goal).norm() < 1e-6 &&
+                runtime.route.route_id == 0 && !runtime.route.valid,
+                "default local navigation attempted a topology query");
+        runtime.setPolicy(false);
+        seed();
+        require(pathSearch(services, start, goal, 8., path) &&
+                (path.back() - goal).norm() < 1e-6,
+                "disabled policy followed a cached topology relay");
+        for (const auto &point : path)
+            require(std::abs(point.y()) < cfg.resolution,
+                    "disabled policy retained the topology dogleg");
+        runtime.setPolicy(true);
+        seed();
+        runtime.setPolicy(false);
+        require(pathSearch(services, start, goal, 8., path) &&
+                !runtime.route.valid && runtime.route.raw_topology_route.empty() &&
+                runtime.consumed_policy_generation == runtime.policy_generation.load() &&
+                (path.back() - goal).norm() < 1e-6,
+                "disable did not invalidate and consume the previous route");
+        runtime.setPolicy(true);
+        seed();
         require(pathSearch(services, start, goal, 8., path), "graph prefix failed");
         require((path.front() - start).norm() < 1.e-9,
                 "strict topology changed the continuous start position");
@@ -142,6 +165,21 @@ int main(int argc, char **argv) {
         require(!pathSearch(services, Vec3f(100,0,1.5), goal, 8., path) &&
                 runtime.frontendFailure() == "TOPO_START_OUT_OF_MAP",
                 "out-of-map start did not fail before graph search");
+        // Capability switches must also gate graph search even if a caller
+        // has retained an enabled runtime selection.
+        measured.p = start;
+        map->updateOdometrySnapshot(measured);
+        seed();
+        cfg.state2state_topology_query_capability_enable = false;
+        require(pathSearch(services, start, goal, 8., path) &&
+                (path.back() - goal).norm() < 1e-6,
+                "disabled query capability followed a topology relay");
+        cfg.state2state_topology_query_capability_enable = true;
+        cfg.state2state_topology_enable = false;
+        require(pathSearch(services, start, goal, 8., path) &&
+                (path.back() - goal).norm() < 1e-6,
+                "disabled topology capability followed a topology relay");
+        cfg.state2state_topology_enable = true;
         grid->unknown();
         runtime.setPolicy(false);
         require(pathSearch(services, start, goal, 8., path) &&

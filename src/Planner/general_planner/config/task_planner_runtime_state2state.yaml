@@ -108,6 +108,8 @@ general_planner:
       # This profile permits the M3 global-topology option. It does not turn
       # the option on: local-only remains the default until the user publishes
       # true on /planner/navigation/use_global_topology.
+      # The selection persists across goals. Publish false to return to local
+      # navigation; capability/routing parameters do not select this policy.
       query_capability_enable: true
       selection_topic: /planner/navigation/use_global_topology
       # Global bubble A* supplies a route; the local planner executes only the

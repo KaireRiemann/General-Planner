@@ -797,8 +797,8 @@ namespace fsm {
                         tracking_stream ? "tracking_replan_logs/" : "replan_logs/";
                 const std::string cmd_dir =
                         tracking_stream ? "tracking_cmd_logs/" : "cmd_logs/";
-                const std::string save_path = LOG_FILE_DIR(replan_dir + base_name + ".bin");
-                const std::string csv_path = LOG_FILE_DIR(cmd_dir + base_name + ".csv");
+                const std::string save_path = logFilePath(replan_dir + base_name + ".bin");
+                const std::string csv_path = logFilePath(cmd_dir + base_name + ".csv");
 
                 if (!replan_logs.empty()) {
                     if (ensureLogParentDirectory(save_path)) {
@@ -1331,20 +1331,13 @@ namespace fsm {
                 return;
             }
             std::lock_guard<std::mutex> lock(fsm_tick_mutex_);
-            if (state2state_replan_in_progress_.load()) {
-                // The route runtime is owned by the active backend.  A
-                // selection arriving during a blocked replan must not mutate
-                // it from the control queue. The caller can resend it after
-                // the watchdog has retired this task.
-                ROS_WARN_STREAM("[Fsm] ignore topology-policy update while "
-                                << "state2state replan is active");
-                return;
-            }
-            // This callback only records policy. The next state2state
-            // plan/replan owns route invalidation and topology work.
+            // Only atomic policy/generation are updated here. The planning
+            // worker owns route invalidation; do not drop a user's disable
+            // request just because a replan is in progress.
             planner_ptr_->setState2StateTopologyPolicy(msg->data);
             ROS_INFO_STREAM("[Fsm] global topology navigation policy="
-                            << (msg->data ? "enabled" : "disabled"));
+                            << (msg->data ? "enabled" : "disabled")
+                            << " (accepted; applied by the next frontend cycle)");
         }
 
         void navigationStatusTimerCallback(const ros::TimerEvent &) {
@@ -1681,7 +1674,8 @@ namespace fsm {
             } else {
                 time_log_file = "time_consuming.csv";
             }
-            write_time_.open(DEBUG_FILE_DIR(time_log_file), std::ios::out | std::ios::trunc);
+            snapshotSessionConfig(cfg_path);
+            write_time_.open(logFilePath(time_log_file), std::ios::out | std::ios::trunc);
             log_module_time.resize(9);
             const bool write_exp_timing =
                     state2stateMode() &&
@@ -1738,8 +1732,8 @@ namespace fsm {
             write_time_ << endl;
             machine_state_ = INIT;
             system_start_time_ = ros_ptr_->getSimTime();
-            openDiagnosticLogFile(LOG_FILE_DIR("diagnostic_events/general_runtime.csv"));
-            openTrackingDiagnosticLogFile(LOG_FILE_DIR("tracking_diagnostic_events/tracking_runtime.csv"));
+            openDiagnosticLogFile(logFilePath("diagnostic_events/general_runtime.csv"));
+            openTrackingDiagnosticLogFile(logFilePath("tracking_diagnostic_events/tracking_runtime.csv"));
             recordDiagnosticEvent("INFO",
                                   "fsm_initialized",
                                   fmt::format("task_mode={};mission={};task={};backend={};adapter={};replan_rate={:.3f};perception_replan_check_en={};perception_replan_check_rate={:.3f};dynamic_obstacle_layer_enable={};dynamic_obstacle_cloud_topic={};target_topic={};cmd_topic={};mpc_cmd_topic={}",

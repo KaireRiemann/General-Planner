@@ -208,15 +208,20 @@ namespace general_planner {
         const bool use_plain_exp_traj = services.cfg.plain_traj_en;
         const bool use_esdf_exp_traj = services.cfg.esdf_traj_en && !use_plain_exp_traj;
         const bool use_distance_field_exp_traj = use_plain_exp_traj || use_esdf_exp_traj;
-        const auto topologyLegPending = [&]() {
+        // A disable must also reach the frontend: otherwise NO_NEED or the
+        // old command guide can keep the previous topology detour alive.
+        const auto topologyRoutePending = [&]() {
             return services.cfg.state2state_topology_enable &&
                    services.cfg.state2state_topology_query_capability_enable &&
                    services.frontend.topology_route_runtime &&
-                   services.frontend.topology_route_runtime->requiresTopologyLeg(services.goal_p);
+                   (services.frontend.topology_route_runtime->consumed_policy_generation !=
+                        services.frontend.topology_route_runtime->policy_generation.load(
+                            std::memory_order_acquire) ||
+                    services.frontend.topology_route_runtime->requiresTopologyLeg(services.goal_p));
         };
         const bool reuse_command_guide_prefix =
                 !planning_from_rest && services.cfg.state2state_replan_use_command_guide &&
-                !topologyLegPending();
+                !topologyRoutePending();
 
         if (planning_from_rest) {
             pos_init_state.setZero();
@@ -272,7 +277,7 @@ namespace general_planner {
                     return NO_NEED;
                 }
 
-                if (!services.new_goal && !topologyLegPending() &&
+                if (!services.new_goal && !topologyRoutePending() &&
                     last_exp_traj_info.getSFCSize() == 1 &&
                     last_exp_traj_info.connectedToGoal() &&
                     currentTrajectorySafeForNoNeed(services, guide_pos_traj, replan_state_TT)) {
@@ -293,7 +298,7 @@ namespace general_planner {
                     }
                 }
 
-                if (!services.new_goal && !topologyLegPending() &&
+                if (!services.new_goal && !topologyRoutePending() &&
                     (services.goal_p - last_exp_traj.getPos(replan_state_TT)).norm() < services.cfg.resolution * 3 &&
                     currentTrajectorySafeForNoNeed(services, guide_pos_traj, replan_state_TT)) {
                     out_exp_traj_info = last_exp_traj_info;
@@ -340,7 +345,7 @@ namespace general_planner {
                 last_sample_pt = temp_pt;
             }
 
-            if (!services.new_goal && !topologyLegPending() &&
+            if (!services.new_goal && !topologyRoutePending() &&
                 use_distance_field_exp_traj &&
                 last_exp_traj_info.connectedToGoal() &&
                 last_exp_traj_info.wholeTrajKnownFree() &&
@@ -423,7 +428,7 @@ namespace general_planner {
         }
 
         if (temp_horizon > services.cfg.resolution * 2) {
-            if (!topologyLegPending() &&
+            if (!topologyRoutePending() &&
                 (guide_path.back() - services.goal_p).norm() < services.cfg.resolution * 5) {
                 guide_stamp.push_back(guide_stamp.back() +
                                       (guide_path.back() - services.goal_p).norm() / services.cfg.exp_traj_cfg.max_vel);
@@ -507,7 +512,7 @@ namespace general_planner {
             return FAILED;
         }
 
-        const bool connected_goal = !topologyLegPending() &&
+        const bool connected_goal = !topologyRoutePending() &&
                 (guide_path.back() - services.goal_p).norm() < services.cfg.resolution * 2;
         out_exp_traj_info.setGoalConnectedFlag(connected_goal);
 
@@ -552,9 +557,9 @@ namespace general_planner {
 
         pos_fina_state.setZero();
         pos_fina_state.col(0) = guide_path.back();
-        const bool local_endpoint_is_global_goal = !topologyLegPending() &&
+        const bool local_endpoint_is_global_goal = !topologyRoutePending() &&
                 (pos_fina_state.col(0) - services.goal_p).norm() < services.cfg.resolution * 2;
-        if (!topologyLegPending() && services.cfg.goal_vel_en && (services.goal_p - services.robot_state.p).norm() > services.cfg.planning_horizon / 2) {
+        if (!topologyRoutePending() && services.cfg.goal_vel_en && (services.goal_p - services.robot_state.p).norm() > services.cfg.planning_horizon / 2) {
             pos_fina_state.col(1) = (services.goal_p - services.robot_state.p).normalized() * services.cfg.exp_traj_cfg.max_vel / 2;
         }
         if (local_endpoint_is_global_goal) {

@@ -60,6 +60,8 @@ namespace general_planner {
         std::ostringstream oss;
         oss << ";topology_policy_enabled="
             << static_cast<int>(runtime.policy_enabled.load(std::memory_order_acquire))
+            << ";topology_policy_generation=" << runtime.policy_generation.load(std::memory_order_acquire)
+            << ";topology_consumed_policy_generation=" << runtime.consumed_policy_generation
             << ";topology_route_phase="
             << (route.phase == state2state_task::TopologyRoutePhase::LOCAL_GOAL ? "local_goal" :
                 route.phase == state2state_task::TopologyRoutePhase::FOLLOW_GRAPH ? "follow_graph" : "query")

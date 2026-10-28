@@ -214,13 +214,13 @@ namespace fsm {
 
 
             const std::string save_path = name.empty()
-                                          ? LOG_FILE_DIR(
+                                          ? logFilePath(
                                                   "replan_logs/" + BinaryFileHandler<int>::getCurrentTimeStr() + ".bin")
-                                          : LOG_FILE_DIR("replan_logs/" + name + ".bin");
+                                          : logFilePath("replan_logs/" + name + ".bin");
             const std::string csv_path = name.empty()
-                                         ? LOG_FILE_DIR(
+                                         ? logFilePath(
                                                  "cmd_logs/" + BinaryFileHandler<int>::getCurrentTimeStr() + ".csv")
-                                         : LOG_FILE_DIR("cmd_logs/" + name + ".csv");
+                                         : logFilePath("cmd_logs/" + name + ".csv");
             if (ensureLogParentDirectory(save_path)) {
                 BinaryFileHandler<vector<LogOneReplan>>::save(save_path, replan_logs);
             } else {
@@ -398,7 +398,8 @@ namespace fsm {
                 );
             }
 
-            write_time_.open(DEBUG_FILE_DIR("time_consuming.csv"), std::ios::out | std::ios::trunc);
+            snapshotSessionConfig(cfg_path);
+            write_time_.open(logFilePath("time_consuming.csv"), std::ios::out | std::ios::trunc);
             log_module_time.resize(9);
             const bool write_exp_timing =
                     state2stateMode() &&

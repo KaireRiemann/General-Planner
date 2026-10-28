@@ -259,7 +259,7 @@ namespace general_planner {
             exp_opt_t = comp_times[LogTime::EXP_TRAJ_OPT];
             backup_opt_t = comp_times[LogTime::BACK_TRAJ_OPT];
             viz_t = comp_times[LogTime::VISUALIZATION];
-            total_t = astar_t + exp_opt_t + backup_opt_t + viz_t;
+            total_t = comp_times[LogTime::TOTAL_REPLAN];
         }
 
         void setSfcPc(const vec_Vec3f &_pc) {
