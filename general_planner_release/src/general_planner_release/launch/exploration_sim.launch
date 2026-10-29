@@ -4,21 +4,18 @@
        default="$(find general_planner_release)/config/exploration.yaml"/>
   <arg name="exploration_overlay_config" default=""/>
   <arg name="indoor_frontier_config"
-       default="$(find general_planner_release)/config/exploration_indoor_frontier.yaml"/>
+       default=""/>
   <arg name="exploration_mission_mode" default=""/>
   <arg name="sim_config"
        default="$(find general_planner_release)/config/exploration_sim.yaml"/>
-  <arg name="rog_map_config"
-       default="$(find general_planner_release)/config/exploration_rog_map.yaml"/>
+  <arg name="map_config"
+       default="$(find general_planner_release)/config/map.yaml"/>
   <arg name="rviz_config"
        default="$(find general_planner_release)/config/exploration.rviz"/>
 
   <arg name="odom_topic" default="/lidar_slam/odom"/>
   <arg name="cloud_topic" default="/cloud_registered"/>
-  <arg name="auto_start" default="false"/>
-  <arg name="auto_start_delay" default="2.0"/>
   <arg name="trigger_topic" default="/move_base_simple/goal"/>
-  <arg name="coverage_guidance_mode" default="off"/>
   <arg name="traj_server" default="true"/>
   <arg name="rviz" default="true"/>
 
@@ -35,13 +32,10 @@
     <arg name="exploration_overlay_config" value="$(arg exploration_overlay_config)"/>
     <arg name="indoor_frontier_config" value="$(arg indoor_frontier_config)"/>
     <arg name="exploration_mission_mode" value="$(arg exploration_mission_mode)"/>
-    <arg name="rog_map_config" value="$(arg rog_map_config)"/>
+    <arg name="map_config" value="$(arg map_config)"/>
     <arg name="odom_topic" value="$(arg odom_topic)"/>
     <arg name="cloud_topic" value="$(arg cloud_topic)"/>
-    <arg name="auto_start" value="$(arg auto_start)"/>
-    <arg name="auto_start_delay" value="$(arg auto_start_delay)"/>
     <arg name="trigger_topic" value="$(arg trigger_topic)"/>
-    <arg name="coverage_guidance_mode" value="$(arg coverage_guidance_mode)"/>
     <arg name="traj_server" value="$(arg traj_server)"/>
   </include>
 

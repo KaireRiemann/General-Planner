@@ -3012,6 +3012,7 @@ double ExplorationTrajOpt::evaluateMincoCost(const VecDf &x, VecDf &g)
 
 double ExplorationTrajOpt::optimize(Trajectory &traj, double rel_cost_tol, double time_budget)
 {
+  const auto timing_start=std::chrono::steady_clock::now();
   deadline_=time_budget>0.0 ? std::chrono::steady_clock::now()+
       std::chrono::duration_cast<std::chrono::steady_clock::duration>(std::chrono::duration<double>(time_budget)) :
       std::chrono::steady_clock::time_point::max();
@@ -3106,6 +3107,9 @@ double ExplorationTrajOpt::optimize(Trajectory &traj, double rel_cost_tol, doubl
   try {
     ret=lbfgs::lbfgs_optimize(x,min_cost,&ExplorationTrajOpt::costFunctional,nullptr,nullptr,this,params);
   } catch (const BudgetExceeded &) {
+    ROS_DEBUG_NAMED("exploration_timing", "optimizer timeout=1 evaluations=%d pieces=%d kernel_ms=%.3f",
+        opt_vars_.iter_num, opt_vars_.piece_num,
+        1000.0*std::chrono::duration<double>(std::chrono::steady_clock::now()-timing_start).count());
     traj.clear();
     return INFINITY;
   }
@@ -3142,6 +3146,9 @@ double ExplorationTrajOpt::optimize(Trajectory &traj, double rel_cost_tol, doubl
   VecDf grad = VecDf::Zero(x.size());
   min_cost = evaluateMincoCost(x, grad);
 
+  ROS_DEBUG_NAMED("exploration_timing", "optimizer timeout=0 evaluations=%d pieces=%d kernel_ms=%.3f",
+      opt_vars_.iter_num, opt_vars_.piece_num,
+      1000.0*std::chrono::duration<double>(std::chrono::steady_clock::now()-timing_start).count());
   traj = toGeometryTrajectory(optimizer_.getTrajectory());
   return min_cost;
 }

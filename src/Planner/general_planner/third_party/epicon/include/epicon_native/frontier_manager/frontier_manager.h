@@ -215,7 +215,6 @@ private:
   FrontierData frtd_;
 
   ViewpointParam vpp_{};
-  unordered_set<int> force_recluster_;
   LIOInterface::Ptr
       lidar_map_interface_; // TODO: 改成
                             // sim_lio,去掉不必要的接口,ikd-treeh和odom存储在里面
@@ -274,21 +273,8 @@ public:
   typedef std::shared_ptr<FrontierManager> Ptr;
   // Read-only during parallel viewpoint evaluation; supplied by the adapter.
   std::function<bool(const Eigen::Vector3f &)> viewpoint_allowed_;
-  bool full_audit_{false};
-  struct ConnectionRecord {
-    Eigen::Vector3f root, endpoint;
-    unsigned timeouts{0};
-    ros::WallTime touched;
-    std::vector<Eigen::Vector3f> route;
-  };
-  std::vector<ConnectionRecord> connection_records_;
-  std::size_t connection_cache_hits_{0};
-  double largest_retry_budget_{0};
   std::size_t geometry_rejected_{0}, connectivity_rejected_{0};
   std::size_t deferred_clusters_{0}, unobservable_clusters_{0};
-  std::array<int,6> viewpoint_retry_results_{};
-  std::size_t viewpoint_alternatives_reached_{0}, viewpoint_retry_offset_{0};
-  void refreshAllClusters();
   Eigen::Isometry3f transform_world2lidar;
 
   void init(ros::NodeHandle &nh, LIOInterface::Ptr &lio_interface,

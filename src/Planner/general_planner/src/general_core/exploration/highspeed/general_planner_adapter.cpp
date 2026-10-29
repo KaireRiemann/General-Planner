@@ -1732,6 +1732,8 @@ bool FastPlannerManager::planExploreTraj(
     }
   }
 
+  ROS_DEBUG_NAMED("exploration_timing", "backend stage=head elapsed_ms=%.3f",
+      1000.0*std::chrono::duration<double>(std::chrono::steady_clock::now()-planning_wall_start).count());
   std::vector<Eigen::Vector3f> execution_path=path;
   if (pointcloud_frontend && !clearance_recovery) {
     const auto search=epicon_frontend_->pathFrom(head.col(0),head.col(1),yaw_init(0),execution_path);
@@ -1746,6 +1748,8 @@ bool FastPlannerManager::planExploreTraj(
       return false;
     }
   }
+  ROS_DEBUG_NAMED("exploration_timing", "backend stage=path elapsed_ms=%.3f",
+      1000.0*std::chrono::duration<double>(std::chrono::steady_clock::now()-planning_wall_start).count());
   std::vector<Eigen::Vector3d> local_path;
   bool pointcloud_truncated=false;
   bool narrow_pointcloud_corridor=false;
@@ -1863,6 +1867,8 @@ bool FastPlannerManager::planExploreTraj(
       return false;
     }
   }
+  ROS_DEBUG_NAMED("exploration_timing", "backend stage=corridor elapsed_ms=%.3f",
+      1000.0*std::chrono::duration<double>(std::chrono::steady_clock::now()-planning_wall_start).count());
   guide_path=toVec3fPath(local_path);
   std::vector<Eigen::MatrixX4d> h_polys = hPolysFromSfcs(sfcs);
   if (!pointInsideHPoly(h_polys.front(), local_path.front()))
@@ -2243,6 +2249,8 @@ bool FastPlannerManager::planExploreTraj(
     }
     return true;
   };
+  ROS_DEBUG_NAMED("exploration_timing", "backend stage=preopt elapsed_ms=%.3f",
+      1000.0*std::chrono::duration<double>(std::chrono::steady_clock::now()-planning_wall_start).count());
   for (const double opt_speed : opt_speed_attempts)
   {
     const double elapsed=std::chrono::duration<double>(std::chrono::steady_clock::now()-planning_wall_start).count();
@@ -2278,6 +2286,8 @@ bool FastPlannerManager::planExploreTraj(
         allocateGuideTimes(local_path, piece_velocity_profile,
                            piece_velocity_bounds);
     pos_traj.clear();
+    ROS_DEBUG_NAMED("exploration_timing", "backend stage=opt_begin attempt=%d elapsed_ms=%.3f", opt_attempt,
+        1000.0*std::chrono::duration<double>(std::chrono::steady_clock::now()-planning_wall_start).count());
     ok = exploration_traj_opt_->optimize(head,
                                          tail,
                                          pointcloud_frontend ? general_utils::vec_E<general_utils::Vec3f>{} : guide_path,
@@ -2287,6 +2297,8 @@ bool FastPlannerManager::planExploreTraj(
                                          pos_traj,
                                          pointcloud_frontend || coverage.enabled || observation_sfc_begin>0,
                                          (coverage.enabled || pointcloud_frontend) ? remaining_budget : 0.0);
+    ROS_DEBUG_NAMED("exploration_timing", "backend stage=opt_end attempt=%d ok=%d elapsed_ms=%.3f", opt_attempt, ok,
+        1000.0*std::chrono::duration<double>(std::chrono::steady_clock::now()-planning_wall_start).count());
     if (ok && !pos_traj.empty())
     {
       const double candidate_max_speed = pos_traj.getMaxVelRate();
@@ -2367,6 +2379,8 @@ bool FastPlannerManager::planExploreTraj(
     ROS_WARN("[highspeed_exp adapter] General exploration MINCO optimization failed.");
     return false;
   }
+  ROS_DEBUG_NAMED("exploration_timing", "backend stage=postcheck elapsed_ms=%.3f",
+      1000.0*std::chrono::duration<double>(std::chrono::steady_clock::now()-planning_wall_start).count());
   general_utils::Vec4f yaw_goal = general_utils::Vec4f::Zero();
   yaw_goal(0) = end_yaw;
 
@@ -2399,6 +2413,8 @@ bool FastPlannerManager::planExploreTraj(
     ROS_INFO("[exploration backend] use rate-feasible boundary yaw through local turn");
   }
 
+  ROS_DEBUG_NAMED("exploration_timing", "backend stage=yaw elapsed_ms=%.3f",
+      1000.0*std::chrono::duration<double>(std::chrono::steady_clock::now()-planning_wall_start).count());
   // Check joint position/yaw in sequence after both optimizers, before any
   // command is committed. A positional fly-through alone is insufficient.
   double observation_after=0.0;
@@ -3267,6 +3283,8 @@ bool FastPlannerManager::planExploreTraj(
                                 viz_path,
                                 gcopter_config_->maxVelMag);
 
+  ROS_DEBUG_NAMED("exploration_timing", "backend stage=commit elapsed_ms=%.3f",
+      1000.0*std::chrono::duration<double>(std::chrono::steady_clock::now()-planning_wall_start).count());
   ROS_INFO_STREAM("[highspeed_exp adapter] planned General MINCO exploration traj: pieces="
                   << committed_pos_traj_->getPieceNum()
                   << ", duration=" << committed_pos_traj_->getTotalDuration()

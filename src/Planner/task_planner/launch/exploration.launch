@@ -1,106 +1,40 @@
 <launch>
-  <!--
-    Top-level exploration entry point.
-    The default profile is the garage simulation. When dynamic selection is
-    enabled in the loaded profile, RViz 3D Nav Goal
-    first selects two opposite exploration corners; no fixed YAML box is used.
-    Exploration then waits for an RViz 2D Nav Goal on /move_base_simple/goal.
-    For a real robot, set
-    marsim:=false and override odom_topic/cloud_topic when necessary.
-  -->
   <arg name="marsim" default="true" />
   <arg name="rviz" default="true" />
   <arg name="traj_server" default="true" />
 
   <arg name="exploration_config"
-       default="$(find general_planner)/config/exploration_house.yaml" />
+       default="$(find general_planner)/config/exploration.yaml" />
   <arg name="sim_config"
        default="$(find general_planner)/config/exploration_sim.yaml" />
-  <arg name="rog_map_config"
-       default="$(find general_planner)/config/exploration_rog_map.yaml" />
+  <arg name="map_config"
+       default="$(find general_planner)/config/map.yaml" />
   <arg name="rviz_config"
        default="$(find general_planner)/config/exploration/highspeed/traj.rviz" />
 
   <arg name="odom_topic" default="/lidar_slam/odom" />
   <arg name="cloud_topic" default="/cloud_registered" />
-  <arg name="auto_start" default="false" />
-  <arg name="auto_start_delay" default="2.0" />
   <arg name="trigger_topic" default="/move_base_simple/goal" />
   <arg name="legacy_trigger_topic" default="" />
-  <arg name="coverage_guidance_mode" default="off" />
-  <!-- Empty preserves the selected YAML. Opt in with true for route trials. -->
-  <arg name="coverage_route_enabled" default="" />
-  <!-- planner_runtime serial handover: take START only from task command. -->
   <arg name="disable_local_trigger" default="false" />
   <arg name="pos_cmd_topic" default="/planning/pos_cmd" />
 
-  <!-- First-delivery frontend and replanning settings. -->
-  <arg name="fsm_replan_time" default="0.25" />
-  <arg name="fsm_replan_time_after_traj_start" default="0.35" />
-  <arg name="fsm_replan_time_before_traj_end" default="1.0" />
-  <arg name="global_path_update_min_interval" default="0.2" />
-  <arg name="cloud_subscriber_queue" default="1" />
-  <arg name="odom_subscriber_queue" default="50" />
-  <arg name="sync_queue" default="20" />
-  <arg name="cloud_odom_mode" default="approximate_sync" />
-  <arg name="latest_odom_timeout" default="0.5" />
-  <arg name="max_cloud_age" default="0.5" />
-  <arg name="heartbeat_timeout" default="1.5" />
-  <!-- Finish releases /planning/pos_cmd so an upper-layer controller may
-       start state2state or another task without stopping exploration_node. -->
   <arg name="task_control_enable" default="true" />
 
-  <arg name="original_frontend_compatibility" default="true" />
-  <arg name="use_lkh" default="true" />
-  <arg name="tsp_dir" default="/tmp" />
-  <arg name="rog_map_enable" default="true" />
-  <arg name="bubble_astar_allocate_num" default="1000000" />
-  <arg name="bubble_astar_lambda_heu" default="100.0" />
-  <!-- House-profile defaults preserve the villa doorway in the discrete
-       topology.  They remain launch arguments so wider/open scenes can
-       override them without changing the YAML. -->
-  <arg name="bubble_astar_resolution" default="0.25" />
-  <arg name="bubble_topo_cube_discrete_size" default="0.30" />
-
-  <!-- Frontier markers remain available for bags; the dense full graph is
-       opt-in because it materially slows long two-floor runs. -->
-  <arg name="view_graph" default="false" />
-  <arg name="view_frontier" default="true" />
-  <arg name="view_cluster" default="true" />
-
-  <!-- Garage simulation. This node is omitted entirely on the real robot. -->
   <node if="$(arg marsim)" pkg="perfect_drone_sim" type="perfect_drone"
         name="perfect_drone" output="screen" clear_params="true">
     <param name="config_path" value="$(arg sim_config)" type="string" />
   </node>
 
-  <!-- HighSpeedExp frontend with General Planner corridor/trajectory backend. -->
   <node pkg="general_planner" type="exploration_node" name="exploration_node"
         output="screen" clear_params="true">
     <rosparam file="$(arg exploration_config)" command="load" />
-    <param if="$(eval arg('coverage_route_enabled') != '')"
-           name="coverage_route/enabled" value="$(arg coverage_route_enabled)"
-           type="bool" />
+    <rosparam file="$(arg map_config)" command="load" />
 
     <param name="odometry_topic" value="$(arg odom_topic)" type="string" />
     <param name="cloud_topic" value="$(arg cloud_topic)" type="string" />
-    <param name="RogMapEnable" value="$(arg rog_map_enable)" type="bool" />
-    <param name="RogMapConfigPath" value="$(arg rog_map_config)" type="string" />
+    <param name="RogMapConfigPath" value="$(arg map_config)" type="string" />
 
-    <param name="view_graph" value="$(arg view_graph)" type="bool" />
-    <param name="FrontierManager/view_frt" value="$(arg view_frontier)" type="bool" />
-    <param name="FrontierManager/view_cluster" value="$(arg view_cluster)" type="bool" />
-
-    <param name="fsm/thresh_replan" value="0.5" type="double" />
-    <param name="fsm/emergency_replan_control_error" value="1.5" type="double" />
-    <param name="fsm/replan_time" value="$(arg fsm_replan_time)" type="double" />
-    <param name="fsm/replan_time_after_traj_start"
-           value="$(arg fsm_replan_time_after_traj_start)" type="double" />
-    <param name="fsm/replan_time_before_traj_end"
-           value="$(arg fsm_replan_time_before_traj_end)" type="double" />
-    <param name="fsm/debug_planner" value="false" type="bool" />
-    <param name="fsm/auto_trigger" value="$(arg auto_start)" type="bool" />
-    <param name="fsm/auto_trigger_delay" value="$(arg auto_start_delay)" type="double" />
     <param unless="$(arg disable_local_trigger)"
            name="fsm/trigger_topic" value="$(arg trigger_topic)" type="string" />
     <param if="$(arg disable_local_trigger)"
@@ -110,20 +44,6 @@
            value="$(arg legacy_trigger_topic)" type="string" />
     <param if="$(arg disable_local_trigger)"
            name="fsm/legacy_trigger_topic" value="" type="string" />
-    <param name="coverage_guidance/mode"
-           value="$(arg coverage_guidance_mode)" type="string" />
-    <param name="fsm/global_path_update_min_interval"
-           value="$(arg global_path_update_min_interval)" type="double" />
-    <param name="fsm/cloud_subscriber_queue"
-           value="$(arg cloud_subscriber_queue)" type="int" />
-    <param name="fsm/odom_subscriber_queue"
-           value="$(arg odom_subscriber_queue)" type="int" />
-    <param name="fsm/sync_queue" value="$(arg sync_queue)" type="int" />
-    <param name="fsm/cloud_odom_mode"
-           value="$(arg cloud_odom_mode)" type="string" />
-    <param name="fsm/latest_odom_timeout"
-           value="$(arg latest_odom_timeout)" type="double" />
-    <param name="fsm/max_cloud_age" value="$(arg max_cloud_age)" type="double" />
     <param name="fsm/task_control_enable"
            value="$(arg task_control_enable)" type="bool" />
     <param name="fsm/task_command_topic"
@@ -132,31 +52,13 @@
            value="/planning/exploration/status" type="string" />
     <param name="fsm/execution_enabled_topic"
            value="/planning/exploration/command_enabled" type="string" />
-    <param name="fsm/handover_slow_speed" value="0.10" type="double" />
-
-    <param name="exploration/original_frontend_compatibility"
-           value="$(arg original_frontend_compatibility)" type="bool" />
-    <param name="exploration/use_lkh" value="$(arg use_lkh)" type="bool" />
-    <param name="exploration/tsp_dir" value="$(arg tsp_dir)" type="string" />
-    <param name="bubble_astar/allocate_num"
-           value="$(arg bubble_astar_allocate_num)" type="int" />
-    <param name="bubble_astar/lambda_heu"
-           value="$(arg bubble_astar_lambda_heu)" type="double" />
-    <param name="bubble_astar/debug" value="false" type="bool" />
-    <param name="bubble_astar/resolution_astar"
-           value="$(arg bubble_astar_resolution)" type="double" />
-    <param name="bubble_topo/cube_discrete_size"
-           value="$(arg bubble_topo_cube_discrete_size)" type="double" />
   </node>
 
   <node if="$(arg traj_server)" pkg="general_planner" type="highspeed_traj_server"
         name="highspeed_traj_server" output="screen" clear_params="true">
-    <!-- Standalone triggers do not publish the supervisor's task request.
-         Do not inherit task binding from a previous planner_runtime run. -->
+    <rosparam file="$(arg exploration_config)" command="load" />
     <param name="require_task_binding" value="false" type="bool" />
     <param name="odometry_topic" value="$(arg odom_topic)" type="string" />
-    <param name="replan_time" value="$(arg fsm_replan_time)" type="double" />
-    <param name="heartbeat_timeout" value="$(arg heartbeat_timeout)" type="double" />
     <param name="pos_cmd_topic" value="$(arg pos_cmd_topic)" type="string" />
     <param name="execution_enabled_topic"
            value="/planning/exploration/command_enabled" type="string" />

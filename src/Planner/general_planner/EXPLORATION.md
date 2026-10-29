@@ -1,8 +1,9 @@
-# HighSpeedExp exploration frontend for General Planner
+# EPICON exploration frontend for General Planner
 
-This package keeps the effective HighSpeedExp exploration frontend and uses
-General Planner only for corridor generation, trajectory optimization and
-trajectory commitment.
+The default coverage mode uses the vendored EPICON point-cloud frontend under
+`third_party/epicon`, with General Planner trajectory optimization and commitment.
+The default `exploration.yaml` matches EPICON garage frontier, viewpoint and
+topology parameters; `exploration_sim.yaml` starts garage at `(5, 0, 2)`.
 
 ## Source layout
 
@@ -10,7 +11,7 @@ trajectory commitment.
   `src/general_core/exploration/highspeed` own the frontend, exploration FSM,
   General Planner adapter and trajectory server.
 - `config/exploration.yaml`, `config/exploration_sim.yaml` and
-  `config/exploration_rog_map.yaml` are the delivered garage planner,
+  `config/map.yaml` are the unified planner,
   simulator and map-backend profiles. Other scene profiles remain in
   `config/exploration/highspeed`.
 - `task_planner/launch/exploration.launch` directly owns the delivered runtime
@@ -35,51 +36,47 @@ source /root/ws/real_planner/devel/setup.bash
 roslaunch task_planner exploration.launch rviz:=true
 ```
 
-The default compatibility settings are:
+The default coverage settings are:
 
-- `auto_start:=false`: after odometry arrives the FSM remains in
-  `WAIT_TRIGGER`. Click RViz `2D Nav Goal` once to publish a
-  `geometry_msgs/PoseStamped` on `/move_base_simple/goal` and start
-  exploration. The clicked position is only a trigger and is not used as the
-  exploration target. Use `trigger_topic:=...` to select another PoseStamped
-  topic, or `auto_start:=true` to restore automatic startup.
-- `original_frontend_compatibility:=true`: instantaneous high-speed gating and
-  original frontier/LKH semantics. Controlled reorientation is deliberately
-  kept enabled: a target behind a moving vehicle is held while the vehicle
-  brakes, then planned from rest instead of clearing the goal and selecting a
-  different target on every retry.
-- `global_planning/epic_simple_cost: false` and
-  `global_planning/composite_candidate_cost_enable: true`: choose the next
-  frontier with `travel + turn/brake + future return - information gain - wait
-  age - pass debt`. Rewards are used only for the next-goal decision (putting a
-  fixed reward on every node of an all-node TSP would be a constant). The
-  directed TSP then orders the remaining clusters with the selected cluster
-  forced first.
-- Global routing contains one representative viewpoint per frontier cluster.
-  Alternate viewpoints remain attached to the cluster for local use; they are
-  no longer inserted as separate mandatory TSP visits.
-- `frontier_pass_*` parameters implement an event-based side-room debt. A
-  cluster earns debt only after the vehicle enters its pass radius and later
-  leaves it without selecting that cluster, preventing callback frequency from
-  inflating the reward.
-- `use_lkh:=true`: LKH solves the directed global tour. A deterministic exact
-  or directed-insertion fallback is used if LKH cannot run.
-- `cloud_subscriber_queue:=1`, `odom_subscriber_queue:=50`, `sync_queue:=20`:
-  old point clouds are not allowed to build a long callback backlog.
-- `cloud_odom_mode:=approximate_sync` preserves timestamp-based pairing.
-  `latest_odom` instead processes each cloud with the most recently received
-  odometry and is intended for external simulators whose header timestamps are
-  not comparable. `latest_odom_timeout` uses local wall-clock receive time.
-- `max_cloud_age:=0.5`: synchronized clouds older than 0.5 seconds are dropped.
-  Set it to `0` to disable age filtering. The header-age gate is not applied in
-  `latest_odom` mode.
+- Exploration uses the garage box `[-10, -6, -0.2]` to `[182, 150.2, 3.8]`.
+  Dynamic box selection is disabled in this simulation profile; set the bounds
+  for the actual site before deployment.
+- After odometry arrives the FSM waits for `/move_base_simple/goal`. The clicked
+  position starts exploration; the frontend selects the exploration goals.
+- Each cluster has 72 initial viewpoint samples: 3 radii, 8 angles and 3 heights.
+  Frontier cells are 0.4 m and connection A* uses 0.2 m resolution.
+- Frontier clustering updates the observed region incrementally; viewpoint
+  generation considers the nearest `local_tsp_size` eligible clusters.
+  Completion confirmation does not force global reclustering or
+  full-map viewpoint resampling. `epicon/execution/audit_period` is the minimum
+  interval between finish-confirmation observations, not a periodic global rebuild.
+- Candidate filtering and tour ordering follow native EPICON, including its
+  existing goal-continuation cost. The measured odometry root is reconnected
+  before historical edges are updated, preserving the native update order.
+  Odometry connects to nearby topology nodes
+  in parallel without an extra three-edge cap. There is no separate wrapper
+  goal hold, viewpoint retry cache, backtracking goal selector or cached local
+  route override.
+- Task reset and goal-cooldown expiry reactivate non-dormant clusters for the
+  next local candidate check, so temporary exclusions cannot persist indefinitely.
+- General Planner still owns the future execution head, trajectory stitching,
+  collision validation and command server. These are distinct from the native
+  EPICON trajectory backend and MARSIM dynamics simulator.
+- `FINISH` requires repeated fresh no-actionable-goal observations while the
+  vehicle is settled. Residual clusters do not independently block completion.
+- The default `cloud_odom_mode` is `latest_odom`. Input queue and freshness
+  settings remain in the unified YAML.
 
-Each process writes LKH files to a private directory below `tsp_dir` (default
-`/tmp`), so simultaneous robots do not overwrite each other's tours.
+The embedded LKH solver uses an instance-specific temporary directory.
+The `candidate_*` and `frontier_pass_*` composite-score settings belong to the
+alternative HighSpeedExp manager; the default EPICON coverage frontend does not
+read them. The following legacy feature notes describe that alternative path,
+not additional layers enabled in the default garage run.
 
 ## Long-horizon coverage guidance
 
-The garage profile enables `coverage_guidance/mode: full`. This layer keeps a
+The alternative HighSpeedExp path supports `coverage_guidance/mode: full`.
+The default EPICON garage profile sets this mode to `off`. This layer keeps a
 persistent coarse map from the raw ROG state (it intentionally does not use the
 LIO known-free safety fallback), splits free and unknown voxels into connected
 zones inside fine cells, and builds a free/unknown adjacency graph. Active-free
@@ -180,7 +177,7 @@ this single run; use `shadow`/`full` repeated trials when tuning for a new map.
   clusters that repeatedly produce no reachable viewpoint no longer cause an
   infinite retry, while a newly executable frontier still resumes planning.
 
-The main garage tuning parameters are `candidate_*`, `frontier_pass_*`,
+For the alternative HighSpeedExp frontend, tuning parameters include `candidate_*`, `frontier_pass_*`,
 `TurnLateralAcceleration`,
 `TurnSoftAngle`, `TurnHardAngle`, `TurnSoftVelocity`, `TurnHardVelocity`,
 `TrajectoryRetryMinVel`, `ReorientationHeadingAngle`, `ReplanCommitDelay`,
@@ -261,3 +258,14 @@ rosbag play --clock input.bag
 Useful runtime diagnostics are emitted as `[cloud input]`,
 `cloud odom callback cost`, `[global update]`, `[coverage guidance]`,
 `[candidate cost]`, `[frontend compatibility]` and `tour solver cost`.
+
+## Unified configuration
+
+`roslaunch task_planner exploration.launch` loads algorithm settings from
+`exploration.yaml` and mapping settings from `map.yaml`. Both paths can be selected
+with `exploration_config:=...` and `map_config:=...`. The trajectory server reads
+`replan_time` and `heartbeat_timeout` from the same exploration profile.
+
+Algorithm arguments (replanning intervals, sensor queues, topology resolution and
+visualization flags) have been removed from the single-UAV launch chain; edit the
+YAML instead. `sim_config` still selects the simulator PCD and initial pose.

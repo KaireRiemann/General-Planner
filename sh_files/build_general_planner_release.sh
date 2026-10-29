@@ -179,11 +179,8 @@ PLANNER_MSG_DIR="${REPO_ROOT}/src/Planner/general_planner/msg"
 RELEASE_PKG_DIR="${RELEASE_ROOT}/src/general_planner_release"
 RELEASE_CONFIG_DIR="${RELEASE_PKG_DIR}/config"
 EXPLORATION_CONFIG_SRC="${PLANNER_CONFIG_DIR}/exploration.yaml"
-EXPLORATION_HOUSE_CONFIG_SRC="${PLANNER_CONFIG_DIR}/exploration_house.yaml"
 TARGET_EXPLORATION_CONFIG_SRC="${PLANNER_CONFIG_DIR}/target_exploration.yaml"
-EXPLORATION_FOREST_OVERLAY_CONFIG_SRC="${PLANNER_CONFIG_DIR}/exploration_forest_overlay.yaml"
 EXPLORATION_SIM_CONFIG_SRC="${PLANNER_CONFIG_DIR}/exploration_sim.yaml"
-EXPLORATION_ROG_MAP_CONFIG_SRC="${PLANNER_CONFIG_DIR}/exploration_rog_map.yaml"
 MAP_CONFIG_SRC="${PLANNER_CONFIG_DIR}/map.yaml"
 M2_STATE2STATE_CONFIG_SRC="${PLANNER_CONFIG_DIR}/task_planner_runtime_state2state.yaml"
 M2_TRACKING_CONFIG_SRC="${PLANNER_CONFIG_DIR}/task_planner_runtime_tracking.yaml"
@@ -224,11 +221,8 @@ for required in \
   "${RVIZ_PLUGIN_SRC}/plugin_description.xml" \
   "${RVIZ_PLUGIN_SRC}/LICENSE" \
   "${EXPLORATION_CONFIG_SRC}" \
-  "${EXPLORATION_HOUSE_CONFIG_SRC}" \
   "${TARGET_EXPLORATION_CONFIG_SRC}" \
-  "${EXPLORATION_FOREST_OVERLAY_CONFIG_SRC}" \
   "${EXPLORATION_SIM_CONFIG_SRC}" \
-  "${EXPLORATION_ROG_MAP_CONFIG_SRC}" \
   "${M2_STATE2STATE_CONFIG_SRC}" \
   "${M2_TRACKING_CONFIG_SRC}" \
   "${MAP_CONFIG_SRC}" \
@@ -315,17 +309,14 @@ cp "${RVIZ_PLUGIN_SRC}/LICENSE" "${RVIZ_PLUGIN_DST}/LICENSE"
 echo "[build_release] Sync exploration and target-navigation configs"
 mkdir -p "${RELEASE_CONFIG_DIR}"
 cp "${EXPLORATION_CONFIG_SRC}" "${RELEASE_CONFIG_DIR}/exploration.yaml"
-cp "${EXPLORATION_HOUSE_CONFIG_SRC}" "${RELEASE_CONFIG_DIR}/exploration_house.yaml"
-cp "${PLANNER_CONFIG_DIR}/exploration_unity_overlay.yaml" "${RELEASE_CONFIG_DIR}/exploration_unity_overlay.yaml"
-cp "${PLANNER_CONFIG_DIR}/exploration_indoor_frontier.yaml" "${RELEASE_CONFIG_DIR}/exploration_indoor_frontier.yaml"
-cp "${PLANNER_CONFIG_DIR}/exploration_unity_neighborhood.yaml" "${RELEASE_CONFIG_DIR}/exploration_unity_neighborhood.yaml"
 cp "${TARGET_EXPLORATION_CONFIG_SRC}" \
   "${RELEASE_CONFIG_DIR}/target_exploration.yaml"
-cp "${EXPLORATION_FOREST_OVERLAY_CONFIG_SRC}" \
-  "${RELEASE_CONFIG_DIR}/exploration_forest_overlay.yaml"
 cp "${EXPLORATION_SIM_CONFIG_SRC}" "${RELEASE_CONFIG_DIR}/exploration_sim.yaml"
-cp "${EXPLORATION_ROG_MAP_CONFIG_SRC}" "${RELEASE_CONFIG_DIR}/exploration_rog_map.yaml"
 cp "${MAP_CONFIG_SRC}" "${RELEASE_CONFIG_DIR}/map.yaml"
+# Retire superseded exploration profiles when updating an older release.
+for profile in exploration_house exploration_rog_map exploration_forest_overlay exploration_unity_overlay exploration_indoor_frontier exploration_unity_neighborhood; do
+  rm -f "${RELEASE_CONFIG_DIR}/${profile}.yaml"
+done
 # Retire superseded map profiles when updating an older release.
 rm -f "${RELEASE_CONFIG_DIR}/tracking_rog_map.yaml" \
   "${RELEASE_CONFIG_DIR}/tracking_unity_rog_map.yaml" \

@@ -128,10 +128,8 @@ struct EpiconFrontend::Impl {
   using Points=std::vector<Eigen::Vector3f,Eigen::aligned_allocator<Eigen::Vector3f>>;
   Points unknown, active;
   Points safe_history;
-  Points backtrack_attempts, backtrack_origins, progress_regions;
-  bool backtracking{false};
-  ros::WallTime backtrack_started;
-  std::vector<Eigen::Vector3f> execution_path, selected_route;
+  Points progress_regions;
+  std::vector<Eigen::Vector3f> execution_path;
   std::vector<std::pair<Eigen::Vector3d,ros::WallTime>> recovery_history;
   struct DeferredGoal { Eigen::Vector3f position; ros::WallTime until; double radius; };
   std::vector<DeferredGoal> deferred;
@@ -139,10 +137,8 @@ struct EpiconFrontend::Impl {
     planner->topo_graph_->removeNode(explorer->ed_->next_goal_node_);
     explorer->ed_->next_goal_node_=std::make_shared<epicon_native::TopoNode>();
     explorer->ed_->global_tour_.clear(); explorer->ed_->path_next_goal_.clear();
-    explorer->last_goal_cost_=5e3; selected=false; execution_path.clear(); selected_route.clear(); backtracking=false;
+    explorer->last_goal_cost_=5e3; selected=false; execution_path.clear();
   }
-  ros::WallTime goal_selected_at;
-  double goal_hold_seconds{1.2};
   int valid_cubes{10};
   double sample_path{0.1}, hybrid_radius{15.0}, unknown_penalty{1.5};
   double planning_clearance{0.6}, physical_floor{0.48}, execution_clearance{0.48};
@@ -160,33 +156,16 @@ struct EpiconFrontend::Impl {
         << ",\"cloud_stamp\":" << std::fixed << cloud_stamp.toSec()
         << ",\"audited\":" << (audited ? "true" : "false")
         << ",\"selected\":" << (selected ? "true" : "false")
-        << ",\"backtracking\":" << (backtracking ? "true" : "false")
-        << ",\"backtrack_attempts\":" << backtrack_attempts.size()
         << ",\"deferred_goals\":" << deferred.size()
         << ",\"geometry_rejected\":" << frontier->geometry_rejected_
         << ",\"connectivity_rejected\":" << frontier->connectivity_rejected_
         << ",\"unobservable_clusters\":" << frontier->unobservable_clusters_
-        << ",\"viewpoint_retry_reached\":" << frontier->viewpoint_retry_results_[1]
-        << ",\"viewpoint_retry_no_path\":" << frontier->viewpoint_retry_results_[2]
-        << ",\"viewpoint_retry_start_fail\":" << frontier->viewpoint_retry_results_[3]
-        << ",\"viewpoint_retry_end_fail\":" << frontier->viewpoint_retry_results_[4]
-        << ",\"viewpoint_retry_timeout\":" << frontier->viewpoint_retry_results_[5]
-        << ",\"viewpoint_alternatives_reached\":" << frontier->viewpoint_alternatives_reached_
         << ",\"recovery_attempts\":" << recovery_history.size()
         << ",\"odom_clearance\":" << planner->lidar_map_interface_->getDisToOcc(pos)
         << ",\"planning_clearance\":" << planning_clearance
         << ",\"execution_clearance\":" << execution_clearance
-        << ",\"connect_reused\":" << planner->topo_graph_->odom_reused_connections_
-        << ",\"connect_retry\":" << planner->topo_graph_->odom_retry_count_
         << ",\"connect_ms\":" << planner->topo_graph_->odom_connection_ms_
         << ",\"odom_neighbors\":" << planner->topo_graph_->odom_node_->neighbors_.size()
-        << ",\"connect_reached\":" << planner->topo_graph_->odom_connection_results_[1]
-        << ",\"connect_no_path\":" << planner->topo_graph_->odom_connection_results_[2]
-        << ",\"connect_start_fail\":" << planner->topo_graph_->odom_connection_results_[3]
-        << ",\"connect_end_fail\":" << planner->topo_graph_->odom_connection_results_[4]
-        << ",\"connect_timeout\":" << planner->topo_graph_->odom_connection_results_[5]
-        << ",\"connection_cache_hits\":" << frontier->connection_cache_hits_
-        << ",\"largest_retry_budget_ms\":" << frontier->largest_retry_budget_*1000.0
         << ",\"residuals\":[";
     bool first=true;
     if(audited) for(const auto &c:frontier->cluster_list_) {
@@ -206,8 +185,6 @@ void EpiconFrontend::init(ros::NodeHandle &runtime_nh) {
   ros::NodeHandle nh(runtime_nh,"epicon");
   configureNativeParameters(runtime_nh,nh);
   auto &i=*impl_;
-  runtime_nh.param("GoalSwitchMinInterval",i.goal_hold_seconds,1.2);
-  i.goal_hold_seconds=std::clamp(i.goal_hold_seconds,0.0,5.0);
   i.planner=std::make_shared<epicon_native::fast_planner::FastPlannerManager>();
   auto &p=*i.planner;
   p.lidar_map_interface_=std::make_shared<epicon_native::fast_planner::LIOInterface>();
@@ -341,9 +318,11 @@ void EpiconFrontend::setOdometry(const Eigen::Vector3f &position,const Eigen::Ve
 }
 void EpiconFrontend::resetTask() {
   auto &i=*impl_;
-  i.clearGoal(); i.deferred.clear(); i.recovery_history.clear(); i.backtrack_attempts.clear(); i.backtrack_origins.clear();
+  i.clearGoal(); i.deferred.clear(); i.recovery_history.clear();
+  // Temporary goal exclusions must not survive into a new task as unreachable clusters.
+  for (auto &cluster:i.frontier->cluster_list_)
+    if (!cluster->is_dormant_) cluster->is_reachable_=true;
   i.progress_regions={i.pos}; i.audited=false;
-  i.frontier->connection_records_.clear(); i.frontier->viewpoint_retry_offset_=0;
 }
 void EpiconFrontend::deferCurrentGoal(double seconds, double radius) {
   auto &i=*impl_;
@@ -357,169 +336,41 @@ void EpiconFrontend::deferCurrentGoal(double seconds, double radius) {
   }
   i.clearGoal();
 }
-EpiconFrontend::Result EpiconFrontend::update(bool select_goal, bool full_audit) {
+EpiconFrontend::Result EpiconFrontend::update(bool select_goal, bool confirm_finish) {
   auto &i=*impl_; auto &p=*i.planner;
   i.audited=false;
   const auto wall_now=ros::WallTime::now();
+  const auto deferred_count=i.deferred.size();
   i.deferred.erase(std::remove_if(i.deferred.begin(),i.deferred.end(),
       [&](const Impl::DeferredGoal &g){return g.until<=wall_now;}),i.deferred.end());
+  if (i.deferred.size()!=deferred_count)
+    for (auto &cluster:i.frontier->cluster_list_)
+      if (!cluster->is_dormant_) cluster->is_reachable_=true;
   if (!i.cloud_ready) return Result::WAITING_MAP;
   if (!i.pos.allFinite() || !p.lidar_map_interface_->IsInBox(i.pos)) {
     i.clearGoal();
     i.publish("OUTSIDE_BOX",0,0); return Result::OUTSIDE_BOX;
   }
   const auto start=ros::WallTime::now();
-  i.frontier->full_audit_=full_audit;
-  if (full_audit) i.frontier->refreshAllClusters();
+  // Completion confirmations use the same incremental frontier update as flight.
   Impl::Points upper,lower;
   for(const auto &c:i.frontier->cluster_list_) if(!c->is_dormant_ && c->is_reachable_) {
     upper.push_back(c->box_max_); lower.push_back(c->box_min_);
   }
-  if (full_audit || i.topology_revision!=i.cloud_revision || !i.new_path.empty()) {
+  if (i.topology_revision!=i.cloud_revision || !i.new_path.empty()) {
     p.topo_graph_->getRegionsToUpdate();
     i.unknown.clear(); i.active.clear();
     p.topo_graph_->updateSkeleton(i.new_path,upper,lower,i.unknown,i.active,i.valid_cubes,i.sample_path);
     i.topology_revision=i.cloud_revision;
-    p.topo_graph_->updateHistoricalOdoms();
   }
   p.topo_graph_->updateOdomNode(i.pos,i.yaw);
+  // Match native EPICON: reconnect the measured root before adding its history edges.
+  p.topo_graph_->updateHistoricalOdoms();
   if (!ready()) { i.selected=false; i.publish("DISCONNECTED",i.unknown.size(),i.active.size()); return Result::DISCONNECTED; }
   if (!select_goal) return Result::SUCCEED;
-  // A retreat is a regular, revalidated navigation goal, not a clearance
-  // escape. Keep it across audits until arrival, invalidation or timeout.
-  if(i.backtracking && tour().size()>=2) {
-    std::vector<Eigen::Vector3f> certified;
-    if((tour()[1]-i.pos).norm()>.4f &&
-       (wall_now-i.backtrack_started).toSec()<45.0 &&
-       i.frontier->viewpoint_allowed_(tour()[1]) &&
-       pathToGoal(certified)==Result::SUCCEED &&
-       p.parallel_path_finder_->collisionCheck_shortenPath(certified)) {
-      i.explorer->ed_->global_tour_.front()=i.pos;
-      i.audited=full_audit; i.publish("BACKTRACKING",i.unknown.size(),i.active.size());
-      return Result::SUCCEED;
-    }
-    i.clearGoal();
-  }
-  // Retain a moving goal for a bounded interval, but always revalidate its
-  // route. Audits, arrival, exclusions and disconnections bypass the hold.
-  if (!full_audit && i.selected && tour().size()>=2 &&
-      !i.goal_selected_at.isZero() &&
-      (wall_now-i.goal_selected_at).toSec()<i.goal_hold_seconds &&
-      (tour()[1]-i.pos).norm()>.5f && i.frontier->viewpoint_allowed_(tour()[1])) {
-    std::vector<Eigen::Vector3f> certified;
-    if (pathToGoal(certified)==Result::SUCCEED &&
-        p.parallel_path_finder_->collisionCheck_shortenPath(certified)) {
-      i.explorer->ed_->global_tour_.front()=i.pos;
-      i.publish("GOAL_HELD",i.unknown.size(),i.active.size());
-      return Result::SUCCEED;
-    }
-  }
-  const auto previous_tour=tour();
-  const bool had_selected=i.selected;
-  int result=i.explorer->planGlobalPath(i.pos.cast<double>(),i.vel.cast<double>(),i.unknown,i.active,i.hybrid_radius,i.unknown_penalty);
-  // Unknown-space fallback candidates are generated only by a full audit.
-  // Their absence on the next incremental update must not cancel a still
-  // reachable selected goal before the vehicle can make any progress.
-  if((result==epicon_native::fast_planner::NO_FRONTIER ||
-      result==epicon_native::fast_planner::BLOCKED) && !full_audit && had_selected &&
-     previous_tour.size()>=2 && (previous_tour[1]-i.pos).norm()>.5f &&
-     (i.explorer->ed_->next_goal_node_->center_-previous_tour[1]).norm()<1e-3f &&
-     i.frontier->viewpoint_allowed_(previous_tour[1])) {
-    const auto rejected_tour=tour();
-    i.explorer->ed_->global_tour_=previous_tour;
-    i.explorer->ed_->global_tour_.front()=i.pos;
-    std::vector<Eigen::Vector3f> certified;
-    if(pathToGoal(certified)==Result::SUCCEED &&
-       p.parallel_path_finder_->collisionCheck_shortenPath(certified)) {
-      result=epicon_native::fast_planner::SUCCEED;
-      ROS_INFO_THROTTLE(1.0,"[exploration] retain certified goal between full audits");
-    } else i.explorer->ed_->global_tour_=rejected_tour;
-  }
-  if(result==epicon_native::fast_planner::BLOCKED && full_audit &&
-     i.backtrack_attempts.size()<3 && !i.frontier->cluster_list_.empty()) {
-    // Revisit a previously measured safe pose that approaches unresolved
-    // frontier regions. Never treat old odometry as present-day free space:
-    // reconnect it through the current map and run the normal backend.
-    std::vector<std::pair<double,Eigen::Vector3f>> candidates;
-    auto relocation_points=i.safe_history;
-    for(const auto &node:p.topo_graph_->history_odom_nodes_)
-      relocation_points.push_back(node->center_);
-    for(const auto &point:relocation_points) {
-      const double distance=(point-i.pos).norm();
-      if(distance<2.0 || !i.frontier->viewpoint_allowed_(point) ||
-         clearance(point.cast<double>())<p.topo_graph_->bubble_min_radius_) continue;
-      bool visited=false;
-      for(const auto &old:i.backtrack_attempts) if((old-point).norm()<1.0f) { visited=true; break; }
-      // Do not immediately return to the dead end that initiated a retreat.
-      for(const auto &old:i.backtrack_origins) if((old-point).norm()<2.0f) { visited=true; break; }
-      if(visited) continue;
-      double frontier=std::numeric_limits<double>::infinity();
-      for(const auto &cluster:i.frontier->cluster_list_) {
-        const Eigen::Vector3f center=(cluster->box_min_+cluster->box_max_)*.5f;
-        const double from_candidate=(point-center).norm();
-        // A valid retreat may initially move away from the unresolved frontier.
-        frontier=std::min(frontier,from_candidate);
-      }
-      if(!std::isfinite(frontier)) continue;
-      candidates.emplace_back(frontier+.1*distance,point);
-    }
-    std::sort(candidates.begin(),candidates.end(),[](const auto &a,const auto &b){return a.first<b.first;});
-    // Adjacent odometry samples must not spend the whole recovery budget on one place.
-    std::vector<std::pair<double,Eigen::Vector3f>> distinct;
-    for(const auto &candidate:candidates) {
-      bool nearby=false;
-      for(const auto &old:distinct) if((old.second-candidate.second).norm()<1.0f) { nearby=true; break; }
-      if(!nearby) distinct.push_back(candidate);
-    }
-    candidates.swap(distinct);
-    const auto deadline=ros::WallTime::now()+ros::WallDuration(.04);
-    for(const auto &candidate:candidates) {
-      const double remaining=(deadline-ros::WallTime::now()).toSec();
-      if(remaining<=0) break;
-      std::vector<Eigen::Vector3f> certified;
-      // Prefer existing global connectivity over a new long voxel search.
-      for(const auto &node:p.topo_graph_->history_odom_nodes_) {
-        if((node->center_-candidate.second).norm()>.75f) continue;
-        std::vector<epicon_native::TopoNode::Ptr> nodes;
-        const double left=(deadline-ros::WallTime::now()).toSec();
-        if(left<=0) break;
-        if(!p.topo_graph_->graphSearch(p.topo_graph_->odom_node_,node,nodes,std::min(.003,left))) continue;
-        certified={i.pos};
-        bool complete=true;
-        for(size_t n=1;n<nodes.size();++n) {
-          const auto edge=nodes[n-1]->paths_.find(nodes[n]);
-          if(edge==nodes[n-1]->paths_.end() || edge->second.empty()) { complete=false; break; }
-          certified.insert(certified.end(),edge->second.begin(),edge->second.end());
-        }
-        if(complete) certified.push_back(candidate.second);
-        if(!complete || certified.size()<2 || !p.parallel_path_finder_->collisionCheck_shortenPath(certified))
-          certified.clear();
-        if(!certified.empty()) break;
-      }
-      if(certified.empty()) {
-        const double left=(deadline-ros::WallTime::now()).toSec();
-        if(left<=0) break;
-        if(p.parallel_path_finder_->search(i.pos,candidate.second,certified,std::min(.01,left),true)!=
-            epicon_native::ParallelBubbleAstar::REACH_END ||
-           !p.parallel_path_finder_->collisionCheck_shortenPath(certified)) continue;
-      }
-      i.explorer->ed_->global_tour_={i.pos,candidate.second};
-      i.explorer->updateGoalNode();
-      i.selected_route=certified;
-      i.selected=true;
-      if(pathToGoal(certified)!=Result::SUCCEED) { i.clearGoal(); continue; }
-      i.backtracking=true; i.backtrack_started=ros::WallTime::now();
-      i.backtrack_attempts.push_back(candidate.second); i.backtrack_origins.push_back(i.pos);
-      result=epicon_native::fast_planner::SUCCEED;
-      ROS_INFO_STREAM("[exploration] bounded backtrack goal=" << candidate.second.transpose()
-                      << " attempt=" << i.backtrack_attempts.size() << "/3");
-      break;
-    }
-  }
-  i.audited=full_audit;
+  const int result=i.explorer->planGlobalPath(i.pos.cast<double>(),i.vel.cast<double>(),i.unknown,i.active,i.hybrid_radius,i.unknown_penalty);
+  i.audited=confirm_finish;
   i.selected=result==epicon_native::fast_planner::SUCCEED;
-  if(i.selected && tour().size()>=2 && (!had_selected || previous_tour.size()<2 ||
-      (tour()[1]-previous_tour[1]).norm()>.5f)) i.goal_selected_at=wall_now;
   p.graph_visualizer_->vizBox(p.topo_graph_);
   if(i.explorer->ep_->view_graph_) p.graph_visualizer_->vizGraph(p.topo_graph_);
   i.frontier->visfrtcluster(); i.frontier->viz_pocc();
@@ -539,49 +390,8 @@ EpiconFrontend::Result EpiconFrontend::pathToGoal(std::vector<Eigen::Vector3f> &
   if (!hasCloud()) return Result::WAITING_MAP;
   if(!i.selected || tour().size()<2) return Result::NO_FRONTIER;
   if(p.lidar_map_interface_->getDisToOcc(i.explorer->ed_->next_goal_node_->center_)<p.topo_graph_->bubble_min_radius_) return Result::FAIL;
-  // Reanchoring odometry deliberately deletes transient goal edges. Keep the
-  // geometric route, never its old certification: validate every segment in
-  // the current map from the exact requested root before reusing it.
-  bool reused=false;
-  if(i.selected_route.size()>=2 &&
-     (i.selected_route.back()-i.explorer->ed_->next_goal_node_->center_).norm()<1e-3f) {
-    path=i.selected_route; path.front()=p.topo_graph_->odom_node_->center_;
-    reused=p.parallel_path_finder_->collisionCheck_shortenPath(path);
-  }
-  if(!reused) {
-    path.clear();
-    const int result=p.fast_searcher_->search(p.topo_graph_->odom_node_,i.vel,i.explorer->ed_->next_goal_node_,0.2,path);
-    if(result!=epicon_native::fast_planner::BubbleAstar::REACH_END || path.size()<2) {
-      const auto root=p.topo_graph_->odom_node_->center_;
-      const auto goal=i.explorer->ed_->next_goal_node_->center_;
-      auto &records=i.frontier->connection_records_;
-      auto record=std::find_if(records.begin(),records.end(),[&](const auto &r) {
-        return (r.endpoint-goal).norm()<.3f && (r.root-root).norm()<2.0f;
-      });
-      if(record==records.end()) {
-        if(records.size()>=256) records.erase(records.begin());
-        records.emplace_back(); record=std::prev(records.end());
-        record->root=root; record->endpoint=goal;
-      }
-      record->touched=ros::WallTime::now();
-      const double budget=std::min(.06,.02*double(1u<<std::min(2u,record->timeouts)));
-      const int fallback=p.parallel_path_finder_->search(root,goal,path,budget,true);
-      if(fallback==epicon_native::ParallelBubbleAstar::TIME_OUT)
-        record->timeouts=std::min(3u,record->timeouts+1);
-      if(fallback!=epicon_native::ParallelBubbleAstar::REACH_END || path.size()<2 ||
-         !p.parallel_path_finder_->collisionCheck_shortenPath(path)) {
-        // Preserve normal graph/voxel guide selection. A saved global route is
-        // the last fallback, and must be certified again from this exact head.
-        for(const auto &record:i.frontier->connection_records_) {
-          if(record.route.size()<2 || (record.endpoint-i.explorer->ed_->next_goal_node_->center_).norm()>.3f) continue;
-          path=record.route; path.front()=p.topo_graph_->odom_node_->center_;
-          path.back()=i.explorer->ed_->next_goal_node_->center_;
-          if(p.parallel_path_finder_->collisionCheck_shortenPath(path)) { reused=true; break; }
-        }
-        if(!reused) { i.selected_route.clear(); return Result::FAIL; }
-      }
-    }
-  }
+  const int result=p.fast_searcher_->search(p.topo_graph_->odom_node_,i.vel,i.explorer->ed_->next_goal_node_,0.2,path);
+  if(result!=epicon_native::fast_planner::BubbleAstar::REACH_END || path.size()<2) return Result::FAIL;
   // Upstream's 1 m resampling. The General adapter alone owns the future
   // trajectory head; prepending it here would create a reverse path segment.
   std::vector<Eigen::Vector3f> sampled{path.front()};
@@ -591,7 +401,7 @@ EpiconFrontend::Result EpiconFrontend::pathToGoal(std::vector<Eigen::Vector3f> &
     }
     if((path[n]-sampled.back()).norm()>=.01f) sampled.push_back(path[n]);
   }
-  path.swap(sampled); i.selected_route=path; return Result::SUCCEED;
+  path.swap(sampled); return Result::SUCCEED;
 }
 EpiconFrontend::Result EpiconFrontend::pathFrom(const Eigen::Vector3d &position,
     const Eigen::Vector3d &velocity, double yaw, std::vector<Eigen::Vector3f> &path) {
@@ -603,12 +413,6 @@ EpiconFrontend::Result EpiconFrontend::pathFrom(const Eigen::Vector3d &position,
   auto &graph=*i.planner->topo_graph_;
   Eigen::Vector3f search_position=position.cast<float>();
   float search_yaw=static_cast<float>(yaw);
-  if(i.selected && i.explorer->ed_->next_goal_node_) {
-    const auto edge=graph.odom_node_->paths_.find(i.explorer->ed_->next_goal_node_);
-    if(edge!=graph.odom_node_->paths_.end() && edge->second.size()>=2 &&
-       (edge->second.back()-i.explorer->ed_->next_goal_node_->center_).norm()<1e-3f)
-      i.selected_route=edge->second;
-  }
   graph.updateOdomNode(search_position,search_yaw);
   const Eigen::Vector3f old_velocity=i.vel;
   i.vel=velocity.cast<float>();
@@ -818,13 +622,9 @@ bool EpiconFrontend::recoveryPoint(const Eigen::Vector3d &start, Eigen::Vector3d
 }
 bool EpiconFrontend::noteExplorationProgress() {
   auto &i=*impl_;
-  // Retreat navigation has its own finite budget/timeout. It can keep the
-  // motion watchdog alive, but cannot replenish recovery or retreat attempts.
-  if(i.backtracking) return true;
   for(const auto &old:i.progress_regions) if((old-i.pos).norm()<.75f) return false;
   i.progress_regions.push_back(i.pos);
   i.recovery_history.clear();
-  i.backtrack_attempts.clear(); i.backtrack_origins.clear();
   return true;
 }
 const std::vector<Eigen::Vector3f> &EpiconFrontend::executionPath() const { return impl_->execution_path; }

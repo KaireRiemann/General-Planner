@@ -236,9 +236,7 @@ void FastExplorationManager::removeUnreachableNodes(std::vector<TopoNode::Ptr> &
   if (planner_manager_->topo_graph_->odom_node_->neighbors_.empty())
     return;
 
-  planner_manager_->topo_graph_->insertNodes(node_points, !frontier_manager_ptr_->full_audit_, false);
-  if(frontier_manager_ptr_->full_audit_)
-    planner_manager_->topo_graph_->retryViewpointConnections(node_points,.06);
+  planner_manager_->topo_graph_->insertNodes(node_points, true);
 
   std::vector<bool> node_kept(node_points.size(), true);
 
@@ -251,10 +249,20 @@ void FastExplorationManager::removeUnreachableNodes(std::vector<TopoNode::Ptr> &
     }
 
     std::vector<TopoNode::Ptr> topo_path;
-    // Unknown-space fallback must obey the same current-root reachability
-    // contract as frontier viewpoints, including bounded doorway repair.
-    if (!planner_manager_->topo_graph_->graphSearch(planner_manager_->topo_graph_->odom_node_,
-          node_points[i], topo_path, frontier_manager_ptr_->full_audit_ ? .02 : .002))
+    auto closest_node = planner_manager_->topo_graph_->odom_node_;
+    float closest_dis = (closest_node->center_ - node_points[i]->center_).squaredNorm();
+
+    for (auto& hodom : planner_manager_->topo_graph_->history_odom_nodes_)
+    {
+      float dis = (hodom->center_ - node_points[i]->center_).squaredNorm();
+      if (dis < closest_dis)
+      {
+        closest_dis = dis;
+        closest_node = hodom;
+      }
+    }
+
+    if (!planner_manager_->topo_graph_->graphSearch(closest_node, node_points[i], topo_path, 3e-4))
     {
       node_kept[i] = false;
     }
@@ -447,10 +455,14 @@ int FastExplorationManager::planGlobalPath(const Eigen::Vector3d &pos,
   frontier_manager_ptr_->generateTSPViewpoints(
       planner_manager_->topo_graph_->odom_node_->center_, viewpoints);
 
+  if (viewpoints.empty()) {
+    planner_manager_->graph_visualizer_->vizTour({}, VizColor::RED, "global");
+    return NO_FRONTIER;
+  }
+
   std::vector<TopoNode::Ptr> unkownpoints;
 
-  if (!planner_manager_->topo_graph_->history_odom_nodes_.empty() &&
-      viewpoints.empty() && frontier_manager_ptr_->full_audit_)
+  if (planner_manager_->topo_graph_->history_odom_nodes_.size() > 10)
   {
     for (int i = 0; i < (int)unkownpoints_.size(); i++)
     {
@@ -538,7 +550,6 @@ int FastExplorationManager::planGlobalPath(const Eigen::Vector3d &pos,
   viewpoints.insert(viewpoints.end(), unkownpoints.begin(), unkownpoints.end());
   // viewpoints.insert(viewpoints.end(), activepoints.begin(), activepoints.end());
   planner_manager_->topo_graph_->insertNodes(viewpoints, false);
-  planner_manager_->topo_graph_->retryViewpointConnections(viewpoints);
 
   ros::Time t1 = ros::Time::now();
 
@@ -955,8 +966,6 @@ void FastExplorationManager::updateGoalNode()
       nbr->paths_[ed_->next_goal_node_] = path;
     }
   }
-  vector<TopoNode::Ptr> goal_nodes{ed_->next_goal_node_};
-  planner_manager_->topo_graph_->retryViewpointConnections(goal_nodes,.02);
 }
 }
 } // namespace epicon_native

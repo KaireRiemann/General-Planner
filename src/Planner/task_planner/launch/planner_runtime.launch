@@ -1,5 +1,9 @@
 <launch>
-  <!-- Start perception with runtime so tracking can be selected without another launch. -->
+  <!-- Single exploration profile entry. Algorithm tuning comes exclusively from
+       exploration_config; map_config owns the shared map. The same profile is
+       loaded in the trajectory server namespace for replan_time/heartbeat_timeout.
+       Topics and command ownership below are composition wiring, not tuning.
+       Start in HOLD; request exploration and trigger after mode readiness. -->
   <arg name="tracking_detector" default="true" />
   <arg name="tracking_camera_info_topic" default="/camera0/color/info" />
   <arg name="tracking_rgb_compressed" default="true" />
@@ -15,12 +19,6 @@
   <arg name="tracking_confidence" default="0.6" />
   <arg name="tracking_camera_config" default="$(find tracking_detector)/config/camera.yaml" />
   <arg name="tracking_estimator_config" default="$(find tracking_detector)/config/estimator.yaml" />
-
-  <!-- Composed runtime owns the shared occupancy map, global topology and tracking
-       inflation view. Switching task modes preserves these maps. -->
-  <!-- The base runtime consumes external odometry/cloud by default.  A
-       perfect_drone_sim run must explicitly select marsim:=true. -->
-  <!-- Detector processes run only in active Gate mode; requests also gate detection internally. -->
   <arg name="perceptor_config" default="$(find aperture_detector)/config/polygon_hole_step_viz_unity_sim.yaml" />
   <arg name="gate_overlay_config" default="" />
   <arg name="perceptor" default="true" />
@@ -36,130 +34,40 @@
   <arg name="rviz" default="true" />
   <arg name="auto_rviz_switch" default="true" />
   <arg name="traj_server" default="true" />
-  <!-- Empty in normal operation.  Kept as a launch-level diagnostic hook so
-       a crash can be reproduced under gdb without changing the node command. -->
   <arg name="planner_runtime_launch_prefix" default="" />
-  <!-- Runtime modes: hold, state2state, exploration (EPICON point-cloud coverage),
-       target_exploration, gate, tracking, or reorient. Gate keeps the world
-       map/topology alive while the internal SE3 gate task uses the same
-       command gateway.  Reorient is the in-place / near-field yaw adjustment
-       mode: it shares the navigation adapter, accepts PoseStamped goals on
-       /planner/click_goal (quaternion yaw = rotation target), and executes a
-       rate-limited cubic yaw profile at the current hover position. -->
   <arg name="gate_config" default="$(find general_planner)/config/gate_runtime.yaml" />
-  <arg name="initial_mode" default="target_exploration" />
-  <arg name="exploration_mission_mode" default="target" />
-  <!-- Grace period waiting for the first pos_cmd after an exploration START.
-       Indoor/Unity first plans can exceed 2 s; the Unity entry points raise
-       this to 8 s (mirrors the release launch override). -->
+  <arg name="initial_mode" default="hold" />
   <arg name="source_startup_grace_duration" default="2.0" />
-  <!-- Deprecated compatibility arguments: target exploration uses a sparse
-       observed domain. These do not limit targets. Explicit coverage use retains legacy behavior. -->
-  <arg name="target_exploration_auto_workspace"
-       default="false" />
-  <arg name="target_exploration_workspace_half_extent_xy" default="120.0" />
-  <arg name="target_exploration_workspace_below_odom" default="2.0" />
-  <arg name="target_exploration_workspace_above_odom" default="5.0" />
   <arg name="enable_exploration" default="true" />
-  <!-- Legacy topic retained for compatibility; external START/END are ignored. -->
   <arg name="gate_status_topic" default="/planner/gate/status" />
-
-  <arg name="sim_config"
-       default="$(find general_planner)/config/exploration_sim.yaml" />
+  <arg name="sim_config" default="$(find general_planner)/config/exploration_sim.yaml" />
   <arg name="tracking_config" default="$(find general_planner)/config/task_planner_runtime_tracking.yaml" />
-  <arg name="navigation_config"
-       default="$(find general_planner)/config/task_planner_runtime_state2state.yaml" />
-  <arg name="exploration_config"
-       default="$(find general_planner)/config/exploration_house.yaml" />
-  <!-- Target-task policy is separate from map/sensor/base exploration
-       settings. It is loaded after the base profile and before an optional
-       scene overlay, so an arena may tune only its height/progress deltas. -->
-  <arg name="target_exploration_config"
-       default="$(find general_planner)/config/target_exploration.yaml" />
-  <!-- Optional arena-specific overrides, applied after the base exploration
-       profile.  This keeps the runtime wiring identical while allowing a
-       simulator PCD to supply its own bounds and sensor model. -->
-  <!-- Unity's ROS-TCP LiDAR is a level 360-degree, 60 m sensor in `world`.
-       The overlay replaces the tilted Mid360 viewpoint assumptions in the
-       house profile.  A manual Marsim run overrides this with an empty path. -->
-  <arg name="exploration_overlay_config"
-       default="$(find general_planner)/config/exploration_unity_overlay.yaml" />
-  <!-- Coverage-only frontier granularity. Applied at MODE exploration; does
-       not replace the shared ROG or global topology. -->
-  <arg name="indoor_frontier_config"
-       default="$(find general_planner)/config/exploration_indoor_frontier.yaml" />
-  <!-- Runtime map tuning lives in config/map.yaml. Navigation YAML does
-       not configure fusion. Keep rog_map/ros_callback/enable=false. -->
-  <arg name="map_config"
-       default="$(find general_planner)/config/map.yaml" />
-
-  <arg name="rviz_config"
-       default="$(find general_planner)/rviz/planner_runtime_exploration.rviz" />
-  <arg name="exploration_rviz_config"
-       default="$(find general_planner)/rviz/planner_runtime_exploration.rviz" />
-  <arg name="state2state_rviz_config"
-       default="$(find general_planner)/rviz/planner_runtime_state2state.rviz" />
+  <arg name="navigation_config" default="$(find general_planner)/config/task_planner_runtime_state2state.yaml" />
+  <arg name="exploration_config" default="$(find general_planner)/config/exploration.yaml" />
+  <arg name="map_config" default="$(find general_planner)/config/map.yaml" />
+  <arg name="rviz_config" default="$(find general_planner)/rviz/planner_runtime_exploration.rviz" />
+  <arg name="exploration_rviz_config" default="$(find general_planner)/rviz/planner_runtime_exploration.rviz" />
+  <arg name="state2state_rviz_config" default="$(find general_planner)/rviz/planner_runtime_state2state.rviz" />
   <arg name="tracking_target_odom_topic" default="/tracking/target_odom" />
   <arg name="tracking_target_prediction_topic" default="/tracking/target_prediction" />
-  <arg name="odom_topic" default="/lidar_slam/odom" />
-  <arg name="cloud_topic" default="/cloud_registered" />
-  <!-- Filter is always on: without a selected cluster the cloud is forwarded
-       unchanged, so exploration / state2state / gate keep the original map. -->
+  <arg name="odom_topic" default="/ekf/ekf_odom" />
+  <arg name="cloud_topic" default="/laserMapping/cloud_registered" />
   <arg name="map_cloud_topic" default="/mapping/cloud_without_target" />
   <arg name="tracking_dynamic_points_topic" default="/tracking/dynamic_points" />
   <arg name="filter_mapping_cloud" default="true" />
-
-  <arg name="fsm_replan_time" default="0.25" />
-  <arg name="fsm_replan_time_after_traj_start" default="0.35" />
-  <arg name="fsm_replan_time_before_traj_end" default="1.0" />
-  <arg name="global_path_update_min_interval" default="0.2" />
-  <arg name="cloud_subscriber_queue" default="1" />
-  <arg name="odom_subscriber_queue" default="50" />
-  <arg name="sync_queue" default="20" />
-  <!-- Unity publishes point clouds at 10 Hz through ROS-TCP; pair each cloud
-       with the bridge's latest 100 Hz ROS-time odometry instead of enforcing
-       hardware-style header synchronisation. -->
-  <arg name="cloud_odom_mode" default="latest_odom" />
-  <arg name="latest_odom_timeout" default="0.5" />
-  <arg name="max_cloud_age" default="0.5" />
-  <arg name="heartbeat_timeout" default="1.5" />
   <arg name="task_control_enable" default="true" />
-  <!-- Deprecated compatibility argument. Native EPICON coverage operates
-       directly on point clouds and never starts the ROG coverage worker. -->
-  <arg name="coverage_guidance_mode"
-       default="off" />
-  <arg name="original_frontend_compatibility" default="true" />
-  <arg name="use_lkh" default="true" />
-  <arg name="tsp_dir" default="/tmp" />
   <arg name="rog_map_enable" default="true" />
-  <arg name="bubble_astar_allocate_num" default="1000000" />
-  <arg name="bubble_astar_lambda_heu" default="100.0" />
-  <arg name="bubble_astar_resolution" default="0.25" />
-  <arg name="bubble_topo_cube_discrete_size" default="0.30" />
-  <arg name="view_graph" default="false" />
-  <arg name="view_frontier" default="true" />
-  <arg name="view_cluster" default="true" />
-
-  <node if="$(arg marsim)" pkg="perfect_drone_sim" type="perfect_drone"
-        name="perfect_drone" output="screen" clear_params="true">
+  <node if="$(arg marsim)" pkg="perfect_drone_sim" type="perfect_drone" name="perfect_drone" output="screen" clear_params="true">
     <param name="config_path" value="$(arg sim_config)" type="string" />
   </node>
-
-  <!-- Trajectory execution has no map ownership; it remains a separate
-       process and publishes only the exploration source topic. -->
-  <node if="$(arg traj_server)" pkg="general_planner" type="highspeed_traj_server"
-        name="highspeed_traj_server" output="screen">
+  <node if="$(arg traj_server)" pkg="general_planner" type="highspeed_traj_server" name="highspeed_traj_server" output="screen">
+    <rosparam file="$(arg exploration_config)" command="load" />
     <param name="odometry_topic" value="$(arg odom_topic)" type="string" />
-    <param name="replan_time" value="$(arg fsm_replan_time)" type="double" />
-    <param name="heartbeat_timeout" value="$(arg heartbeat_timeout)" type="double" />
     <param name="require_task_binding" value="true" type="bool" />
     <param name="pos_cmd_topic" value="/planning/exploration/pos_cmd" type="string" />
-    <param name="execution_enabled_topic"
-           value="/planning/exploration/command_enabled" type="string" />
+    <param name="execution_enabled_topic" value="/planning/exploration/command_enabled" type="string" />
   </node>
-
-  <node if="$(arg filter_mapping_cloud)" pkg="tracking_detector" type="target_cloud_filter"
-        name="target_cloud_filter" output="screen" clear_params="true">
+  <node if="$(arg filter_mapping_cloud)" pkg="tracking_detector" type="target_cloud_filter" name="target_cloud_filter" output="screen" clear_params="true">
     <param name="frontend_voxel_resolution" value="0.10" />
     <param name="cluster_wait_seconds" value="0.50" />
     <param name="cluster_hold_seconds" value="1.00" />
@@ -167,41 +75,16 @@
     <remap from="~target_cluster" to="$(arg tracking_dynamic_points_topic)" />
     <remap from="~cloud_out" to="$(arg map_cloud_topic)" />
   </node>
-
-  <node pkg="general_planner" type="planner_runtime_node" name="planner_runtime_node"
-        output="screen" clear_params="true"
-        launch-prefix="$(arg planner_runtime_launch_prefix)">
+  <node pkg="general_planner" type="planner_runtime_node" name="planner_runtime_node" output="screen" clear_params="true" launch-prefix="$(arg planner_runtime_launch_prefix)">
     <rosparam file="$(arg exploration_config)" command="load" />
     <rosparam file="$(arg gate_config)" command="load" />
     <rosparam if="$(eval arg('gate_overlay_config') != '')" file="$(arg gate_overlay_config)" command="load" />
-    <rosparam file="$(arg target_exploration_config)" command="load" />
-    <rosparam if="$(eval arg('exploration_overlay_config') != '')"
-              file="$(arg exploration_overlay_config)" command="load" />
-    <rosparam if="$(eval arg('indoor_frontier_config') != '')"
-              file="$(arg indoor_frontier_config)" command="load" />
     <rosparam file="$(arg map_config)" command="load" />
-
     <param name="initial_mode" value="$(arg initial_mode)" type="string" />
-    <param name="source_startup_grace_duration"
-           value="$(arg source_startup_grace_duration)" type="double" />
-    <!-- Keep the standalone exploration adapter aligned at boot. Runtime mode
-         switches still issue MODE target/coverage before accepting a task. -->
-    <param name="exploration/mission_mode"
-           value="$(arg exploration_mission_mode)" type="string" />
-    <param name="target_exploration/auto_workspace/enabled"
-           value="$(arg target_exploration_auto_workspace)" type="bool" />
-    <param name="target_exploration/auto_workspace/half_extent_xy"
-           value="$(arg target_exploration_workspace_half_extent_xy)" type="double" />
-    <param name="target_exploration/auto_workspace/below_odom"
-           value="$(arg target_exploration_workspace_below_odom)" type="double" />
-    <param name="target_exploration/auto_workspace/above_odom"
-           value="$(arg target_exploration_workspace_above_odom)" type="double" />
+    <param name="source_startup_grace_duration" value="$(arg source_startup_grace_duration)" type="double" />
     <param name="navigation_enabled" value="true" type="bool" />
     <param name="exploration_enabled" value="$(arg enable_exploration)" type="bool" />
     <param name="serial_handover" value="false" type="bool" />
-    <!-- Gate requires the composed runtime gateway. Do not set
-         serial_handover=true: a separately launched fsm_node would otherwise
-         be another uncontrolled writer on /planning/pos_cmd. -->
     <param name="gate_status_topic" value="$(arg gate_status_topic)" type="string" />
     <param name="map_config" value="$(arg map_config)" type="string" />
     <param name="tracking_target_odom_topic" value="$(arg tracking_target_odom_topic)" />
@@ -222,8 +105,6 @@
     <param name="navigation_status_topic" value="/planning/navigation/status" type="string" />
     <param name="navigation_task_mode_topic" value="/planning/navigation_task_mode" type="string" />
     <param name="navigation_goal_out_topic" value="/planning/click_goal" type="string" />
-    <!-- External 3D RViz goals pass through PlannerSupervisor before the FSM.
-         The internal topic is distinct to prevent a direct bypass/feedback loop. -->
     <param name="navigation_goal_3d_in_topic" value="/goal_3d" type="string" />
     <param name="navigation_goal_3d_out_topic" value="/planning/click_goal_3d" type="string" />
     <param name="click_demo_goal_topic" value="/goal" type="string" />
@@ -231,53 +112,18 @@
     <param name="hover_yaw_rate_threshold" value="0.10" type="double" />
     <param name="hover_hold_duration" value="0.50" type="double" />
     <param name="max_odom_age" value="0.5" type="double" />
-
-    <!-- Exploration adapter configuration.  It owns only LIO/Bubble/frontier
-         task state; cloud/odom subscriptions are disabled by composition. -->
-    <param name="view_graph" value="$(arg view_graph)" type="bool" />
-    <param name="FrontierManager/view_frt" value="$(arg view_frontier)" type="bool" />
-    <param name="FrontierManager/view_cluster" value="$(arg view_cluster)" type="bool" />
-    <param name="fsm/thresh_replan" value="0.5" type="double" />
-    <param name="fsm/emergency_replan_control_error" value="1.5" type="double" />
-    <param name="fsm/replan_time" value="$(arg fsm_replan_time)" type="double" />
-    <param name="fsm/replan_time_after_traj_start" value="$(arg fsm_replan_time_after_traj_start)" type="double" />
-    <param name="fsm/replan_time_before_traj_end" value="$(arg fsm_replan_time_before_traj_end)" type="double" />
-    <param name="fsm/debug_planner" value="false" type="bool" />
-    <param name="fsm/auto_trigger" value="false" type="bool" />
-    <param name="fsm/global_path_update_min_interval" value="$(arg global_path_update_min_interval)" type="double" />
-    <param name="fsm/cloud_subscriber_queue" value="$(arg cloud_subscriber_queue)" type="int" />
-    <param name="fsm/odom_subscriber_queue" value="$(arg odom_subscriber_queue)" type="int" />
-    <param name="fsm/sync_queue" value="$(arg sync_queue)" type="int" />
-    <param name="fsm/cloud_odom_mode" value="$(arg cloud_odom_mode)" type="string" />
-    <param name="fsm/latest_odom_timeout" value="$(arg latest_odom_timeout)" type="double" />
-    <param name="fsm/max_cloud_age" value="$(arg max_cloud_age)" type="double" />
     <param name="fsm/task_control_enable" value="$(arg task_control_enable)" type="bool" />
     <param name="fsm/task_command_topic" value="/planning/exploration/command" type="string" />
     <param name="fsm/task_request_topic" value="/planning/exploration/task_request" type="string" />
     <param name="fsm/task_status_topic" value="/planning/exploration/status" type="string" />
     <param name="fsm/execution_enabled_topic" value="/planning/exploration/command_enabled" type="string" />
     <param name="fsm/trigger_topic" value="" type="string" />
-    <param name="fsm/target_goal_topic" value="/planning/exploration/target_goal" type="string" />
     <param name="fsm/legacy_trigger_topic" value="" type="string" />
-    <param name="fsm/handover_slow_speed" value="0.10" type="double" />
-    <param name="coverage_guidance/mode" value="$(arg coverage_guidance_mode)" type="string" />
-    <param name="exploration/original_frontend_compatibility" value="$(arg original_frontend_compatibility)" type="bool" />
-    <param name="exploration/use_lkh" value="$(arg use_lkh)" type="bool" />
-    <param name="exploration/tsp_dir" value="$(arg tsp_dir)" type="string" />
-    <param name="bubble_astar/allocate_num" value="$(arg bubble_astar_allocate_num)" type="int" />
-    <param name="bubble_astar/lambda_heu" value="$(arg bubble_astar_lambda_heu)" type="double" />
     <param name="bubble_astar/debug" value="false" type="bool" />
-    <param name="bubble_astar/resolution_astar" value="$(arg bubble_astar_resolution)" type="double" />
-    <param name="bubble_topo/cube_discrete_size" value="$(arg bubble_topo_cube_discrete_size)" type="double" />
   </node>
-
   <group if="$(arg rviz)">
-    <node unless="$(arg auto_rviz_switch)" pkg="rviz" type="rviz"
-          name="rvizvisualisation" output="log"
-          args="-d $(arg rviz_config)" />
-    <node if="$(arg auto_rviz_switch)" pkg="general_planner"
-          type="planner_rviz_switcher.py" name="planner_rviz_switcher"
-          output="screen">
+    <node unless="$(arg auto_rviz_switch)" pkg="rviz" type="rviz" name="rvizvisualisation" output="log" args="-d $(arg rviz_config)" />
+    <node if="$(arg auto_rviz_switch)" pkg="general_planner" type="planner_rviz_switcher.py" name="planner_rviz_switcher" output="screen">
       <param name="rviz_node_name" value="rvizvisualisation" type="string" />
       <param name="exploration_rviz_config" value="$(arg exploration_rviz_config)" type="string" />
       <param name="state2state_rviz_config" value="$(arg state2state_rviz_config)" type="string" />
@@ -285,12 +131,9 @@
       <param name="initial_mode" value="$(arg initial_mode)" type="string" />
       <param name="status_topic" value="/planner/status" type="string" />
     </node>
-    <node pkg="tf" type="static_transform_publisher" name="exploration_world_tf"
-          args="0 0 0 0 0 0 world navigation 100" />
+    <node pkg="tf" type="static_transform_publisher" name="exploration_world_tf" args="0 0 0 0 0 0 world navigation 100" />
   </group>
-  <!-- Start/stop the pipeline on confirmed runtime mode changes. -->
-  <node if="$(arg perceptor)" pkg="general_planner" type="planner_detector_switcher.py"
-        name="gate_detector_switcher" output="screen">
+  <node if="$(arg perceptor)" pkg="general_planner" type="planner_detector_switcher.py" name="gate_detector_switcher" output="screen">
     <param name="active_mode" value="gate" />
     <param name="status_topic" value="/planner/status" />
     <param name="launch_file" value="$(find aperture_detector)/launch/detector.launch" />
@@ -306,9 +149,7 @@
     <param name="launch_args/vlm_period" value="$(arg perceptor_vlm_period)" type="str" />
     <param name="launch_args/vlm_base_url" value="$(arg perceptor_vlm_base_url)" type="str" />
   </node>
-  <!-- Start/stop the pipeline on confirmed runtime mode changes. -->
-  <node if="$(arg tracking_detector)" pkg="general_planner" type="planner_detector_switcher.py"
-        name="tracking_detector_switcher" output="screen">
+  <node if="$(arg tracking_detector)" pkg="general_planner" type="planner_detector_switcher.py" name="tracking_detector_switcher" output="screen">
     <param name="active_mode" value="tracking" />
     <param name="launch_args/camera_info_topic" value="$(arg tracking_camera_info_topic)" type="str" />
     <param name="launch_args/rgb_compressed" value="$(arg tracking_rgb_compressed)" type="str" />
@@ -337,5 +178,4 @@
     <param name="launch_args/cloud_in_topic" value="$(arg cloud_topic)" type="str" />
     <param name="launch_args/dynamic_points_topic" value="$(arg tracking_dynamic_points_topic)" type="str" />
   </node>
-
 </launch>

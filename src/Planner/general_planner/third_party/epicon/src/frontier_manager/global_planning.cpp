@@ -52,7 +52,6 @@ private:
 void FrontierManager::generateTSPViewpoints(Eigen::Vector3f&center,  vector<TopoNode::Ptr> &viewpoints)
 {
   geometry_rejected_ = connectivity_rejected_ = deferred_clusters_ = unobservable_clusters_ = 0;
-  viewpoint_retry_results_.fill(0); viewpoint_alternatives_reached_=0;
   unordered_set<ClusterInfo::Ptr> revp_clusters_set; // (re)-generate viewpoints clusters
   vector<float> distance_odom2cluster;
   vector<ClusterInfo::Ptr> old_clusters_within_consideration;
@@ -75,7 +74,7 @@ void FrontierManager::generateTSPViewpoints(Eigen::Vector3f&center,  vector<Topo
 
   sort(idx.begin(), idx.end(), [&](int a, int b) { return distance_odom2cluster[a] < distance_odom2cluster[b]; });
 
-  int consider_range = full_audit_ ? idx.size() : min(vpp_.local_tsp_size_, (int)idx.size());
+  int consider_range = min(vpp_.local_tsp_size_, (int)idx.size());
   // cout << "old_clusters_within_consideration num: " << consider_range << endl;
   for (int i = 0; i < consider_range; i++) {
     old_clusters_within_consideration[idx[i]]->is_new_cluster_ = false;
@@ -84,11 +83,6 @@ void FrontierManager::generateTSPViewpoints(Eigen::Vector3f&center,  vector<Topo
   // 附近的+新生成的
   vector<ClusterInfo::Ptr> revp_clusters_vec; // revp: regenerate viewpoint
   revp_clusters_vec.insert(revp_clusters_vec.end(), revp_clusters_set.begin(), revp_clusters_set.end());
-  // Stable spatial ordering makes round-robin retries meaningful across reclusters.
-  std::sort(revp_clusters_vec.begin(),revp_clusters_vec.end(),[](const auto &a,const auto &b) {
-    for(int k=0;k<3;++k) if(a->center_[k]!=b->center_[k]) return a->center_[k]<b->center_[k];
-    return a->id_<b->id_;
-  });
   ros::Time t1 = ros::Time::now();
   omp_set_num_threads(4);
   // clang-format off

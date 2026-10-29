@@ -1,5 +1,5 @@
 # Optional decentralized coordination plane.  This file is never loaded by
-# the single-UAV launch, so the current exploration_house.yaml behavior stays
+# the single-UAV launch, so the current exploration.yaml behavior stays
 # unchanged.
 swarm_exploration:
   enabled: true

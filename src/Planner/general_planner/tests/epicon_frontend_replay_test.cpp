@@ -143,21 +143,9 @@ int main(int argc,char **argv) {
       graph.updateOdomNode(root,yaw);
       if(!graph.odom_node_->neighbors_.count(node)) throw std::runtime_error("initial root connection failed");
       root.x()=1.; graph.updateOdomNode(root,yaw);
-      if(graph.odom_reused_connections_!=1 ||
+      if(!graph.odom_node_->neighbors_.count(node) ||
          (graph.odom_node_->paths_.at(node).front()-root).norm()>1e-6)
         throw std::runtime_error("root path was not recertified from current odometry");
-      auto viewpoint=std::make_shared<epicon_native::TopoNode>(); viewpoint->center_=goal;
-      if(graph.connectViewpointToRoot(viewpoint,.5)!=epicon_native::ParallelBubbleAstar::REACH_END)
-        throw std::runtime_error("viewpoint retry could not connect around the wall");
-      const auto certified=graph.odom_node_->paths_.at(viewpoint);
-      if(certified.size()<3 || (certified.front()-root).norm()>1e-6 ||
-         (certified.back()-goal).norm()>1e-6)
-        throw std::runtime_error("viewpoint connector did not preserve its detour");
-      graph.removeNode(viewpoint);
-      if(graph.odom_node_->neighbors_.count(viewpoint)) throw std::runtime_error("temporary viewpoint leaked root edge");
-      viewpoint->center_=Eigen::Vector3f(.3,-.8,1.5);
-      if(graph.connectViewpointToRoot(viewpoint,.1)==epicon_native::ParallelBubbleAstar::REACH_END)
-        throw std::runtime_error("viewpoint retry accepted insufficient clearance");
       walls.emplace_back(node->center_.x(),node->center_.y(),node->center_.z());
       pcl::toROSMsg(walls,*cloud); cloud->header.stamp=ros::Time::now();
       map->updateCloudMapOdometry(cloud,odom);
@@ -198,7 +186,7 @@ int main(int argc,char **argv) {
       path={Eigen::Vector3f(-.7,0,1.5),Eigen::Vector3f(.605,0,1.5)};
       if(narrow_search.collisionCheck_shortenPath(path))
         throw std::runtime_error("segment refinement allowed crossing a wall");
-      std::cout<<"EPICON_CLEARANCE PASS: near-wall detour, unsafe-root rejection, clearance policy, root reuse/invalidation, box union\n";
+      std::cout<<"EPICON_CLEARANCE PASS: near-wall detour, unsafe-root rejection, clearance policy, root reconnection/invalidation, box union\n";
       return 0;
     }
     if (shifted) {
@@ -226,8 +214,8 @@ int main(int argc,char **argv) {
       const auto started=ros::WallTime::now();
       if(incremental) frontend.update(false,false);
       const auto result=frontend.update(true,diagnose && (!incremental || frames%4==0));
-      if(result==fast_planner::EpiconFrontend::Result::NO_FRONTIER && frontend.clusterCount()>0)
-        throw std::runtime_error("unresolved frontier was treated as coverage completion");
+      if(result==fast_planner::EpiconFrontend::Result::NO_FRONTIER && frontend.hasSelectedGoal())
+        throw std::runtime_error("no-frontier result retained an executable goal");
       const double update_ms=(ros::WallTime::now()-started).toSec()*1000.0;
       max_update_ms=std::max(max_update_ms,update_ms);
       bool frame_executable=false;
@@ -292,11 +280,17 @@ int main(int argc,char **argv) {
           const auto revision=frontend.cloudRevision();
           frontend.ingestCloud(cloud,odom);
           if(frontend.cloudRevision()!=revision) throw std::runtime_error("duplicate scan counted as new finish evidence");
-          frontend.deferCurrentGoal(30.0,100.0);
+          frontend.deferCurrentGoal(1.0,100.0);
           if(frontend.hasSelectedGoal()) throw std::runtime_error("deferred goal still executable");
-          if(frontend.update(true,true)!=fast_planner::EpiconFrontend::Result::BLOCKED)
-            throw std::runtime_error("excluded goals were reported as coverage completion");
+          if(frontend.update(true,true)!=fast_planner::EpiconFrontend::Result::NO_FRONTIER)
+            throw std::runtime_error("excluded goals remained actionable");
           if(!frontend.lastUpdateAudited()) throw std::runtime_error("audit was skipped");
+          ros::WallDuration(1.05).sleep();
+          if(frontend.update(true,true)!=fast_planner::EpiconFrontend::Result::SUCCEED)
+            throw std::runtime_error("expired exclusion left candidates unreachable");
+          frontend.deferCurrentGoal(30.0,100.0);
+          if(frontend.update(true,true)!=fast_planner::EpiconFrontend::Result::NO_FRONTIER)
+            throw std::runtime_error("reset fixture did not exclude candidates");
           frontend.resetTask();
           if(frontend.update(true,true)!=fast_planner::EpiconFrontend::Result::SUCCEED)
             throw std::runtime_error("fresh task could not recover excluded candidates");

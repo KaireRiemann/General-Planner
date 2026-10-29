@@ -21,7 +21,8 @@ public:
                    const nav_msgs::OdometryConstPtr &odom);
   void setOdometry(const Eigen::Vector3f &position, const Eigen::Vector3f &velocity, float yaw);
   void resetTask();
-  Result update(bool select_goal, bool full_audit = false);
+  // Finish confirmation uses the same incremental selection, without a global rebuild.
+  Result update(bool select_goal, bool confirm_finish = false);
   void deferCurrentGoal(double cooldown_seconds, double radius);
   bool hasSelectedGoal() const;
   bool lastUpdateAudited() const;

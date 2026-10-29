@@ -33,12 +33,6 @@ void TopoGraph::init(ros::NodeHandle &nh, LIOInterface::Ptr &lidar_map, Parallel
 
   nh.getParam("parallel_astar/update_connection_timeout", update_connection_timeout);
   nh.getParam("parallel_astar/insert_node_timeout", insert_node_timeout);
-  nh.param("parallel_astar/odom_connection_budget",odom_connection_budget_,0.03);
-  nh.param("parallel_astar/odom_retry_timeout",odom_retry_timeout_,0.01);
-  nh.param("parallel_astar/odom_max_connections",odom_max_connections_,3);
-  odom_connection_budget_=std::clamp(odom_connection_budget_,0.001,0.1);
-  odom_retry_timeout_=std::clamp(odom_retry_timeout_,0.001,odom_connection_budget_);
-  odom_max_connections_=std::clamp(odom_max_connections_,1,12);
 
   nh.getParam("max_update_region_num", max_update_region_num_);
   update_idx_vec_.reserve(100);
@@ -710,31 +704,6 @@ void TopoGraph::insertNodes(vector<TopoNode::Ptr> &nodes, bool only_raycast, boo
     parallel_bubble_astar_->calculatePathCost(path_vec[i], cost);
     node1->weight_[node2] = cost;
     node2->weight_[node1] = cost;
-  }
-}
-
-int TopoGraph::connectViewpointToRoot(const TopoNode::Ptr &node, double timeout) {
-  vector<Eigen::Vector3f> path;
-  const int result=parallel_bubble_astar_->search(odom_node_->center_,node->center_,path,timeout,true);
-  if(result!=ParallelBubbleAstar::REACH_END) return result;
-  if(path.size()<2 || !parallel_bubble_astar_->collisionCheck_shortenPath(path))
-    return ParallelBubbleAstar::NO_PATH;
-  double cost=0;
-  parallel_bubble_astar_->calculatePathCost(path,cost);
-  odom_node_->neighbors_.insert(node); odom_node_->paths_[node]=path; odom_node_->weight_[node]=cost;
-  std::reverse(path.begin(),path.end());
-  node->neighbors_.insert(odom_node_); node->paths_[odom_node_]=path; node->weight_[odom_node_]=cost;
-  return result;
-}
-void TopoGraph::retryViewpointConnections(vector<TopoNode::Ptr> &nodes, double budget) {
-  const auto deadline=ros::WallTime::now()+ros::WallDuration(budget);
-  for(const auto &node:nodes) {
-    double remaining=(deadline-ros::WallTime::now()).toSec();
-    if(remaining<=0) break;
-    vector<TopoNode::Ptr> path;
-    if(graphSearch(odom_node_,node,path,std::min(.002,remaining))) continue;
-    remaining=(deadline-ros::WallTime::now()).toSec();
-    if(remaining>0) connectViewpointToRoot(node,std::min(.01,remaining));
   }
 }
 
@@ -1518,76 +1487,51 @@ int TopoGraph::get_size(const Eigen::Vector3f &box_max_, const Eigen::Vector3f &
 
 void TopoGraph::updateOdomNode(Eigen::Vector3f &odom_pos, float &yaw) {
   const auto started=ros::WallTime::now();
-  const auto deadline=started+ros::WallDuration(odom_connection_budget_);
-  odom_connection_results_.fill(0);
-  odom_reused_connections_=odom_retry_count_=0;
-  Eigen::Vector3i idx;
-  getIndex(odom_pos,idx);
-  vector<TopoNode::Ptr> candidates;
-  for(int x=-1;x<=1;++x) for(int y=-1;y<=1;++y) for(int z=-1;z<=1;++z) {
-    auto region=getRegionNode(idx+Eigen::Vector3i(x,y,z));
-    if(region) for(const auto &node:region->topo_nodes_)
-      if(node!=odom_node_) candidates.push_back(node);
-  }
-  std::sort(candidates.begin(),candidates.end(),[&](const auto &a,const auto &b) {
-    const bool old_a=odom_node_->paths_.count(a),old_b=odom_node_->paths_.count(b);
-    if(old_a!=old_b) return old_a;
-    return (a->center_-odom_pos).squaredNorm()<(b->center_-odom_pos).squaredNorm();
-  });
-  std::vector<std::pair<TopoNode::Ptr,vector<Eigen::Vector3f>>> accepted;
-  std::vector<TopoNode::Ptr> detours;
-  auto remaining=[&]() { return (deadline-ros::WallTime::now()).toSec(); };
-  auto record=[&](int result) {
-    if(result>=0 && result<static_cast<int>(odom_connection_results_.size()))
-      ++odom_connection_results_[result];
+  struct PairPtrHash {
+    std::size_t operator()(const std::pair<TopoNode::Ptr, TopoNode::Ptr> &p) const {
+      return std::hash<TopoNode::Ptr>()(p.first) ^ std::hash<TopoNode::Ptr>()(p.second);
+    }
   };
-  // Reuse only an edge that still exists in the current skeleton and whose
-  // path is freshly certified from the actual execution origin. Never keep
-  // the old root position/edges merely because this update timed out.
-  for(const auto &node:candidates) {
-    if(remaining()<=0 || accepted.size()>=static_cast<size_t>(odom_max_connections_)) break;
-    auto old=odom_node_->paths_.find(node);
-    if(old!=odom_node_->paths_.end() && old->second.size()>=2) {
-      auto path=old->second; path.front()=odom_pos; path.back()=node->center_;
-      if(parallel_bubble_astar_->collisionCheck_shortenPath(path)) {
-        accepted.push_back({node,std::move(path)});
-        ++odom_reused_connections_; record(ParallelBubbleAstar::REACH_END);
-        continue;
+
+  Eigen::Vector3i idx;
+  getIndex(odom_pos, idx);
+  vector<TopoNode::Ptr> pre_nbrs;
+  for (int i = -1; i <= 1; i++)
+    for (int j = -1; j <= 1; j++)
+      for (int k = -1; k <= 1; k++) {
+        Eigen::Vector3i tmp_idx = idx;
+        tmp_idx(0) = idx(0) + i;
+        tmp_idx(1) = idx(1) + j;
+        tmp_idx(2) = idx(2) + k;
+        if (tmp_idx.x() == 0 && tmp_idx.y() == 0 && tmp_idx.z() != 0)
+          continue;
+        auto region = getRegionNode(tmp_idx);
+        if (region) {
+          for (auto &topo : region->topo_nodes_) {
+            if (topo == odom_node_)
+              continue;
+            pre_nbrs.emplace_back(topo);
+          }
+        }
       }
-    }
+  std::unordered_map<std::pair<TopoNode::Ptr, TopoNode::Ptr>, vector<Eigen::Vector3f>, PairPtrHash> edge2insert;
+  mutex edge2insert_mtx;
+  omp_set_num_threads(4);
+  // clang-format off
+  #pragma omp parallel for
+  // clang-format on
+  for (auto &nbr : pre_nbrs) {
     vector<Eigen::Vector3f> path;
-    const int result=parallel_bubble_astar_->search(odom_pos,node->center_,path,
-        std::min(update_connection_timeout,remaining()),true,true);
-    record(result);
-    if(result==ParallelBubbleAstar::REACH_END) accepted.push_back({node,std::move(path)});
-    else detours.push_back(node);
-  }
-  // Direct/revalidated edges suffice to attach the root. If none survives,
-  // spend a bounded total budget on nearby detours, including longer retries.
-  size_t attempted=0;
-  for(size_t n=0;n<detours.size();++n) {
-    if(!accepted.empty() || remaining()<=0) break;
-    const auto &node=detours[(odom_detour_offset_+n)%detours.size()];
-    ++attempted;
-    vector<Eigen::Vector3f> path;
-    int result=parallel_bubble_astar_->search(odom_pos,node->center_,path,
-        std::min(update_connection_timeout,remaining()),true);
-    record(result);
-    if(result==ParallelBubbleAstar::TIME_OUT && remaining()>0) {
-      ++odom_retry_count_;
-      result=parallel_bubble_astar_->search(odom_pos,node->center_,path,
-          std::min(odom_retry_timeout_,remaining()),true);
-      record(result);
+    int res = parallel_bubble_astar_->search(odom_pos, nbr->center_, path, update_connection_timeout, true);
+    if (res == ParallelBubbleAstar::REACH_END && parallel_bubble_astar_->collisionCheck_shortenPath(path)) {
+      edge2insert_mtx.lock();
+      edge2insert.insert({std::make_pair(odom_node_, nbr), path});
+      edge2insert_mtx.unlock();
     }
-    if(result==ParallelBubbleAstar::REACH_END) accepted.push_back({node,std::move(path)});
   }
-  if(!accepted.empty()) odom_detour_offset_=0;
-  else if(!detours.empty()) odom_detour_offset_=(odom_detour_offset_+attempted)%detours.size();
-  // Clear old edges even if the new odometry root is disconnected.
   // 更新odom节点
   odom_node_->center_ = odom_pos;
   odom_node_->yaw_ = yaw;
-  // if (edge2insert.size() > 0) {
   for (auto &nei : odom_node_->neighbors_) {
     nei->neighbors_.erase(odom_node_);
     nei->weight_.erase(odom_node_);
@@ -1598,10 +1542,10 @@ void TopoGraph::updateOdomNode(Eigen::Vector3f &odom_pos, float &yaw) {
   odom_node_->weight_.clear();
   odom_node_->paths_.clear();
   odom_node_->unreachable_nbrs_.clear();
-  for(auto &edge:accepted) {
-    odom_node_->neighbors_.insert(edge.first);
-    odom_node_->paths_[edge.first]=std::move(edge.second);
-    odom_node_->weight_[edge.first]=0;
+  for (auto &edge : edge2insert) {
+    odom_node_->neighbors_.insert(edge.first.second);
+    odom_node_->paths_.insert({edge.first.second, edge.second});
+    odom_node_->weight_[edge.first.second] = 0;
   }
   odom_connection_ms_=(ros::WallTime::now()-started).toSec()*1000.0;
 }

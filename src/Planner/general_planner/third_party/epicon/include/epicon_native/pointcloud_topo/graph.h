@@ -205,17 +205,12 @@ public:
 
   typedef std::unordered_map<Eigen::Vector3i, TopoNode::Ptr, Vector3iHash> HashMap;
   TopoNode::Ptr odom_node_;
-  std::array<int, 6> odom_connection_results_{};
-  int odom_reused_connections_{0}, odom_retry_count_{0};
   double odom_connection_ms_{0.0};
   ParallelBubbleAstar::Ptr parallel_bubble_astar_;
   std::ofstream log;
   void removeNodes(vector<TopoNode::Ptr> &nodes);
   void updateRemainedConnections(vector<TopoNode::Ptr> &nodes);
   void insertNodes(vector<TopoNode::Ptr> &nodes, bool only_raycast = false, bool connect_peers = true);
-  // Bounded, collision-checked point-cloud route from the actual odometry root.
-  int connectViewpointToRoot(const TopoNode::Ptr &node, double timeout);
-  void retryViewpointConnections(vector<TopoNode::Ptr> &nodes, double budget = .04);
   void insertNode(TopoNode::Ptr &new_node, vector<TopoNode::Ptr> &nbr_nodes, vector<vector<Eigen::Vector3f>> &paths);
   // void getUnreachableLocalNodes(vector<TopoNode::Ptr> &nodes_unreachable);
   void updateSkeleton(std::vector<Eigen::Vector3f, Eigen::aligned_allocator<Eigen::Vector3f>> &new_path,
@@ -282,9 +277,6 @@ private:
   int max_update_region_num_;
   bool use_prior_map_;
   double update_connection_timeout, insert_node_timeout;
-  double odom_connection_budget_{0.03}, odom_retry_timeout_{0.01};
-  int odom_max_connections_{3};
-  size_t odom_detour_offset_{0};
   bool hasOverlapWithBox(const Eigen::Vector3f &low_bd, const Eigen::Vector3f &high_bd);
 
   void generateBubble(const Eigen::Vector3f &low_bd, const Eigen::Vector3f &high_bd, vector<BubbleNode::Ptr> &bubble_node_vec,

@@ -11,13 +11,13 @@
   <arg name="trigger_topic" default="/move_base_simple/goal" />
   <arg name="mission_epoch" default="1" />
   <arg name="exploration_config"
-       default="$(find general_planner)/config/exploration_house.yaml" />
+       default="$(find general_planner)/config/exploration.yaml" />
   <arg name="swarm_config"
        default="$(find general_planner)/config/swarm_exploration/common.yaml" />
   <arg name="rviz_config"
        default="$(find general_planner)/config/swarm_exploration/swarm_exploration.rviz" />
   <arg name="rog_map_config"
-       default="$(find general_planner)/config/exploration_rog_map.yaml" />
+       default="$(find general_planner)/config/map.yaml" />
   <arg name="drone0_sim_config"
        default="$(find general_planner)/config/swarm_exploration/house_drone0_sim.yaml" />
   <arg name="drone1_sim_config"
