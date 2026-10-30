@@ -61,9 +61,6 @@ void FrontierManager::init(ros::NodeHandle &nh, LIOInterface::Ptr &lio_interface
   nh.param("ViewpointManager/preferred_clearance",vpp_.preferred_clearance_,vpp_.min_clearance_);
   vpp_.preferred_clearance_=std::max(vpp_.preferred_clearance_,vpp_.min_clearance_);
 
-  nh.getParam("ViewpointManager/consider_range", vpp_.consider_range_);
-  nh.getParam("ViewpointManager/global_recluster_size",
-              vpp_.global_recluster_size_);
   nh.getParam("ViewpointManager/local_tsp_size", vpp_.local_tsp_size_);
 
   nh.getParam("lidar_perception/fov_viewpoint_up", vpp_.fov_up_);

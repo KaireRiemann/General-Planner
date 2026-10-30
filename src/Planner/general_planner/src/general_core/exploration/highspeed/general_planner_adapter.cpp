@@ -1,3 +1,4 @@
+#include <general_core/exploration/highspeed/epicon_execution_policy.h>
 #include <data_structure/base/trajectory.h>
 #include <fmt/color.h>
 #include <general_core/corridor_generator.h>
@@ -1358,6 +1359,10 @@ void FastPlannerManager::initPlanModules(ros::NodeHandle &nh,
   ros_ptr_ = std::make_shared<NullRosInterface>();
   exploration_traj_opt_ =
       std::make_shared<traj_opt::ExplorationTrajOpt>(makeGeneralExpConfig(*gcopter_config_), ros_ptr_);
+  auto native_config=makeGeneralExpConfig(*gcopter_config_);
+  // EPICON's five penalties have no independent acceleration-magnitude term.
+  native_config.penna_acc=0.0;
+  epicon_traj_opt_=std::make_shared<traj_opt::ExplorationTrajOpt>(native_config,ros_ptr_);
   backup_traj_opt_ =
       std::make_shared<traj_opt::BackupTrajOpt>(makeGeneralBackupConfig(*gcopter_config_), ros_ptr_);
   yaw_traj_opt_ = std::make_shared<traj_opt::YawTrajOpt>(std::max(0.2, gcopter_config_->yaw_max_vel));
@@ -1589,6 +1594,127 @@ bool FastPlannerManager::prepareCoveragePath(std::vector<Eigen::Vector3f> &path,
   return true;
 }
 
+bool FastPlannerManager::planEpiconTraj(const std::vector<Eigen::Vector3f> &path,
+                                       bool is_static, bool recovery)
+{
+  coverage_failure_ = {};
+  if (!epicon_frontend_ || !epicon_frontend_->hasCloud() || path.size()<2 || !epicon_traj_opt_) return false;
+  last_frontend_path_=path;
+  // EPICON clips the local route by both arc length and distance from its root.
+  std::size_t radial=path.size()-1, arc=1;
+  while(radial>0 && (path[radial]-path.front()).norm()>max_traj_len_/2) --radial;
+  double length=0;
+  for(;arc<path.size();++arc) {
+    length+=(path[arc]-path[arc-1]).norm();
+    if(length>max_traj_len_ || arc+1==path.size()) break;
+  }
+  const auto end=std::min(path.size()-1,std::max(radial,arc));
+  std::vector<Eigen::Vector3d> local_path;
+  for(std::size_t k=0;k<=end;++k) local_path.push_back(path[k].cast<double>());
+  double end_yaw=local_data_.end_yaw_;
+  if(end+1<path.size()) {
+    const Eigen::Vector3d direction=local_path.back()-local_path[local_path.size()-2];
+    if(direction.head<2>().squaredNorm()>direction.z()*direction.z())
+      end_yaw=std::atan2(direction.y(),direction.x());
+  }
+
+  general_utils::StatePVAJ head=general_utils::StatePVAJ::Zero();
+  general_utils::Vec4f yaw_head=general_utils::Vec4f::Zero();
+  head.col(0)=local_data_.curr_pos_;
+  yaw_head(0)=local_data_.curr_yaw_;
+  const ros::Time trajectory_start=ros::Time::now();
+  if(!is_static && hasCommittedTrajectory()) {
+    const double elapsed=std::clamp((trajectory_start-local_data_.start_time_).toSec(),0.0,
+        std::min(local_data_.duration_,committed_pos_traj_->getTotalDuration()));
+    if(!committed_pos_traj_->getState(elapsed,head)) return false;
+    if(!committed_yaw_traj_->empty()) {
+      const double t=std::min(elapsed,committed_yaw_traj_->getTotalDuration());
+      yaw_head << committed_yaw_traj_->getPos(t).x(),committed_yaw_traj_->getVel(t).x(),
+          committed_yaw_traj_->getAcc(t).x(),committed_yaw_traj_->getJer(t).x();
+    }
+  }
+  // Search belongs to EPICON. Adapt its measured-root route to the actual
+  // polynomial boundary without re-running topology selection or adding a
+  // future-prefix commit deadline.
+  if(!alignPathStart(local_path,head.col(0),!is_static,
+      std::numeric_limits<double>::infinity(),std::numeric_limits<double>::infinity())) return false;
+  EpiconCorridor corridor;
+  if(!epicon_frontend_->nativeCorridor(local_path,gcopter_config_->corridor_size,
+      recovery ? 0.0 : gcopter_config_->dilateRadiusSoft,corridor)) {
+    ROS_WARN_STREAM("[epicon backend] corridor failed: " << corridor.failure);
+    return false;
+  }
+  local_path=corridor.path;
+  geometry_utils::PolytopeVec sfcs;
+  for(const auto &planes:corridor.planes) {
+    geometry_utils::Polytope cell; cell.SetPlanes(planes); sfcs.push_back(cell);
+  }
+  general_utils::StatePVAJ tail=general_utils::StatePVAJ::Zero();
+  tail.col(0)=local_path.back();
+  const Eigen::Vector3d first=local_path[1]-local_path.front();
+  const Eigen::Vector3d last=local_path.back()-local_path[local_path.size()-2];
+  const double first_yaw=first.head<2>().squaredNorm()>first.z()*first.z() ? std::atan2(first.y(),first.x()) : yaw_head(0);
+  const double last_yaw=last.head<2>().squaredNorm()>last.z()*last.z() ? std::atan2(last.y(),last.x()) : end_yaw;
+  epicon_traj_opt_->setYawTimeLowerBound((std::abs(yawDelta(yaw_head(0),first_yaw))+
+      std::abs(yawDelta(last_yaw,end_yaw)))/std::max(.2,gcopter_config_->yaw_max_vel));
+  geometry_utils::Trajectory position,yaw;
+  // One General MINCO solve, global EPICON limits, no dynamic speed schedule,
+  // penalty escalation, backup construction or independent peak acceptance gate.
+  if(!epicon_traj_opt_->optimize(head,tail,{}, {},sfcs,general_utils::VecDf(),position,true) || position.empty()) {
+    ROS_WARN("[epicon backend] General MINCO solve failed");
+    return false;
+  }
+  const double duration=position.getTotalDuration();
+  if(!recovery && !epiconVelocityAccepts(position,0,duration,gcopter_config_->maxVelMag)) {
+    ROS_WARN("[epicon backend] native sampled velocity check failed");
+    return false;
+  }
+  // Native acceptance rejects imminent collision; the execution checker
+  // continues inspecting the remaining trajectory as new clouds arrive.
+  for(double t=0;!recovery && t<std::min(1.0,duration);t+=.05) {
+    if(epicon_frontend_->clearance(position.getPos(t))<gcopter_config_->dilateRadiusHard) {
+      ROS_WARN("[epicon backend] native imminent collision check failed");
+      return false;
+    }
+  }
+  general_utils::Vec4f yaw_goal=general_utils::Vec4f::Zero(); yaw_goal(0)=end_yaw;
+  if(!yaw_traj_opt_->optimize(yaw_head,yaw_goal,position,yaw,3,false,false) || yaw.empty()) return false;
+
+  position.start_WT=yaw.start_WT=trajectory_start.toSec();
+  general_planner::ExpTraj trajectory;
+  trajectory.setSFC(sfcs);
+  trajectory.setGoalConnectedFlag(end+1==path.size() && !corridor.truncated);
+  trajectory.setWholeTrajKnownFreeFlag(false);
+  trajectory.setTrajectory(trajectory_start.toSec(),position,yaw);
+  commit_store_->cmd_traj_info.setTrajectory(trajectory);
+  commit_store_->last_exp_traj_info=trajectory;
+  commit_store_->pointcloud_escape=false;
+  committed_stop_active_=false;
+  *committed_pos_traj_=position; *committed_yaw_traj_=yaw;
+  *latest_exp_pos_traj_=position; *latest_exp_yaw_traj_=yaw;
+  local_data_.start_time_=trajectory_start;
+  local_data_.duration_=duration;
+  ++local_data_.traj_id_;
+  local_data_.start_pos_=position.getPos(0);
+  local_data_.end_yaw_=end_yaw;
+  local_data_.backup_available_=false;
+  local_data_.backup_start_t_=std::numeric_limits<double>::infinity();
+  local_data_.minco_traj_.setGeometryTrajectory(position);
+  local_data_.minco_yaw_traj_.setGeometryTrajectory(yaw);
+  local_data_.exp_traj_.setGeometryTrajectory(position);
+  local_data_.exp_yaw_traj_.setGeometryTrajectory(yaw);
+  local_data_.backup_traj_.clear(); local_data_.backup_yaw_traj_.clear();
+  if(gcopter_viz_) {
+    gcopter_viz_->setPlanningRevision(local_data_.traj_id_,trajectory_start);
+    gcopter_viz_->visualizePolytope(corridor.planes);
+  }
+  publishHighspeedTrajectoryViz(gcopter_viz_.get(),position,local_path,gcopter_config_->maxVelMag);
+  ROS_INFO_STREAM("[epicon backend] planned General MINCO: pieces=" << position.getPieceNum()
+      << " duration=" << duration << " max_v=" << position.getMaxVelRate()
+      << " max_a=" << position.getMaxAccRate() << " recovery=" << recovery);
+  return true;
+}
+
 bool FastPlannerManager::planExploreTraj(
     const std::vector<Eigen::Vector3f> &path,
     bool is_static,
@@ -1599,6 +1725,12 @@ bool FastPlannerManager::planExploreTraj(
     const CoverageExecutionContext &coverage,
     bool pointcloud_frontend)
 {
+  if(pointcloud_frontend || (clearance_recovery && usingPointcloudGeometry())) {
+    if(clearance_recovery) return planEpiconTraj(path,is_static,true);
+    std::vector<Eigen::Vector3f> native_path;
+    if(!epicon_frontend_ || epicon_frontend_->pathToGoal(native_path)!=EpiconFrontend::Result::SUCCEED) return false;
+    return planEpiconTraj(native_path,is_static);
+  }
   coverage_failure_ = {};
   pointcloud_frontend = pointcloud_frontend || (clearance_recovery && usingPointcloudGeometry());
   if (pointcloud_frontend && (!epicon_frontend_ || !epicon_frontend_->hasCloud())) return false;
@@ -3565,17 +3697,10 @@ bool FastPlannerManager::flyToSafeRegion(bool is_static,
                                          bool force_relocation)
 {
   if (usingPointcloudGeometry()) {
-    // Ordinary corridor/optimizer failures must not trigger arbitrary motion.
-    // CAUTION requests this only for a disconnected or unsafe execution origin.
-    if (epicon_frontend_->clearance(local_data_.curr_pos_)<recoveryPhysicalFloor(*gcopter_config_)) return false;
     Eigen::Vector3d goal;
-    if (!epicon_frontend_->recoveryPoint(local_data_.curr_pos_,goal)) return false;
-    epicon_frontend_->noteRecoveryAttempt(goal);
+    if (!epicon_frontend_->nativeRecoveryPoint(local_data_.curr_pos_,goal)) return false;
     const std::vector<Eigen::Vector3f> path{local_data_.curr_pos_.cast<float>(),goal.cast<float>()};
-    if (!planExploreTraj(path,is_static,true,false,{},{},{},true)) return false;
-    ROS_WARN_STREAM("[exploration recovery] point-cloud interior start=" << local_data_.curr_pos_.transpose()
-                    << " goal=" << goal.transpose());
-    return true;
+    return planEpiconTraj(path,is_static,true);
   }
   if (!gcopter_config_ || !lidar_map_interface_ || !corridor_generator_ ||
       !exploration_traj_opt_ || !rog_map_updated_)
@@ -3795,13 +3920,10 @@ bool FastPlannerManager::checkTrajCollision(double &collision_time, bool coverag
   const double sample_dt = coverage_checks && map_manager_
       ? std::min(0.05, 0.5*map_manager_->getResolution()/std::max(0.5,gcopter_config_->maxVelMag))
       : 0.05;
-  const double collision_clearance =
-      std::max(0.05, (coverage_checks ? std::max(gcopter_config_->dilateRadiusHard,
-                                                gcopter_config_->commitKnownFreeSafeDistance)
-                                     : (usingPointcloudGeometry() ? std::max(gcopter_config_->dilateRadiusHard,
-                                                                          gcopter_config_->commitKnownFreeSafeDistance)
-                                                                  : gcopter_config_->dilateRadiusHard)) -
-                         gcopter_config_->safetyClearanceTolerance);
+  const double collision_clearance = usingPointcloudGeometry() ? gcopter_config_->dilateRadiusHard :
+      std::max(0.05,(coverage_checks ? std::max(gcopter_config_->dilateRadiusHard,
+          gcopter_config_->commitKnownFreeSafeDistance) : gcopter_config_->dilateRadiusHard)-
+          gcopter_config_->safetyClearanceTolerance);
   double probe_t = now_t;
   Eigen::Vector3d sphere_center = committed_pos.getPos(probe_t);
   double sphere_radius =
@@ -3821,9 +3943,6 @@ bool FastPlannerManager::checkTrajCollision(double &collision_time, bool coverag
   while (probe_t < horizon)
   {
     const Eigen::Vector3d pos = committed_pos.getPos(probe_t);
-    if (usingPointcloudGeometry() && !epicon_frontend_->contains(pos)) {
-      collision_time=std::max(0.0,probe_t-now_t); return false;
-    }
     // A LIO free sphere cannot certify the separately inflated ROG map.
     // Newly occupied voxels used to invalidate all new trajectories while the
     // old command was still called safe and ran to an unrecoverable endpoint.
@@ -3884,6 +4003,11 @@ bool FastPlannerManager::checkTrajVelocity()
   if (committed_pos.empty())
   {
     return true;
+  }
+  if(usingPointcloudGeometry()) {
+    const double duration=std::min(local_data_.duration_,committed_pos.getTotalDuration());
+    return epiconVelocityAccepts(committed_pos,ros::Time::now().toSec()-committed_pos.start_WT,
+                                 duration,gcopter_config_->maxVelMag);
   }
   const double max_v = committed_pos.getMaxVelRate();
   const double max_a = committed_pos.getMaxAccRate();

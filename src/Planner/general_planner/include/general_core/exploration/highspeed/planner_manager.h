@@ -411,6 +411,7 @@ public:
   bool usingPointcloudGeometry() const;
 
   void printTimeCost(double time_threshold, double time_cost, std::string print_info);
+  bool planEpiconTraj(const std::vector<Eigen::Vector3f> &path, bool is_static, bool recovery = false);
   bool planExploreTraj(const std::vector<Eigen::Vector3f> &path,
                        bool is_static,
                        bool clearance_recovery = false,
@@ -552,6 +553,7 @@ private:
   std::shared_ptr<ros_interface::RosInterface> ros_ptr_;
   std::unique_ptr<GeneralCommitStore> commit_store_;
   std::shared_ptr<traj_opt::ExplorationTrajOpt> exploration_traj_opt_;
+  std::shared_ptr<traj_opt::ExplorationTrajOpt> epicon_traj_opt_;
   std::shared_ptr<traj_opt::BackupTrajOpt> backup_traj_opt_;
   std::shared_ptr<traj_opt::YawTrajOpt> yaw_traj_opt_;
   std::shared_ptr<rog_map::ROGMapROS> rog_map_;

@@ -91,7 +91,6 @@ bool buildEpiconCorridor(const std::vector<Eigen::Vector3d> &path,
                         const Eigen::Vector3d &upper,
                         double range, double clearance,
                         EpiconCorridor &result, bool simplify) {
-  const auto deadline=std::chrono::steady_clock::now()+std::chrono::milliseconds(120);
   result = {};
   result.backend="firi"; result.map_representation="obstacle_points";
   result.clearance=clearance;
@@ -105,7 +104,6 @@ bool buildEpiconCorridor(const std::vector<Eigen::Vector3d> &path,
   Eigen::Vector3d b = path.front();
   // EPICON convexCover: 7 m progress, local boxes, FIRI, then inward offset.
   for (std::size_t i = 1; i < path.size();) {
-    if(std::chrono::steady_clock::now()>=deadline) return fail("FIRI time budget");
     const Eigen::Vector3d a = b;
     if ((path[i] - a).norm() < 1e-6) { ++i; continue; }
     if ((path[i] - a).norm() > 7.0) b = a + (path[i] - a).normalized() * 7.0;

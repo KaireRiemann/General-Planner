@@ -1991,6 +1991,13 @@ void FastExplorationFSM::transitState(EXPL_STATE new_state, string pos_call, boo
 }
 
 void FastExplorationFSM::stopTraj(const string &reason) {
+  if (usingEpicon()) {
+    replan_pub_.publish(std_msgs::Empty());
+    const double elapsed=std::max(0.0,(ros::Time::now()-planner_manager_->local_data_.start_time_).toSec());
+    planner_manager_->local_data_.duration_=std::min(planner_manager_->local_data_.duration_,elapsed+fp_->replan_time_);
+    if(planner_manager_->local_data_.duration_<=elapsed) fd_->static_state_=true;
+    return;
+  }
   refreshRuntimeOdometry();
   const ros::Time now = ros::Time::now();
   if (expl_manager_->coverageMotionEnabled() && !coverage_emergency_stop_until_.isZero())

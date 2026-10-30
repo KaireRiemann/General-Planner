@@ -55,6 +55,14 @@ Toolbars:
 Visualization Manager:
   Class: ""
   Displays:
+    - Class: rviz/MarkerArray
+      Enabled: true
+      Marker Topic: /planner_runtime_node/dynamic_bounding_box/markers
+      Name: DynamicExplorationBox
+      Namespaces:
+        dynamic_exploration_bbox: true
+      Queue Size: 10
+      Value: true
     - Class: rviz/Image
       Enabled: true
       Image Topic: /tracking/detections/image
@@ -640,6 +648,9 @@ Visualization Manager:
       Hide Inactive Objects: true
     - Class: rviz/SetGoal
       Topic: /goal
+    - Class: general_planner_rviz_plugins/Goal3DTool
+      3D Topic: /planner_runtime_node/dynamic_bounding_box/corner_3d
+      Fallback 2D Topic: /planner_runtime_node/dynamic_bounding_box/incomplete_goal
   Value: true
   Views:
     Current:

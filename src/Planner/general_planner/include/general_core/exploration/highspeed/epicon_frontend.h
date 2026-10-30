@@ -23,7 +23,6 @@ public:
   void resetTask();
   // Finish confirmation uses the same incremental selection, without a global rebuild.
   Result update(bool select_goal, bool confirm_finish = false);
-  void deferCurrentGoal(double cooldown_seconds, double radius);
   bool hasSelectedGoal() const;
   bool lastUpdateAudited() const;
   std::uint64_t cloudRevision() const;
@@ -31,6 +30,8 @@ public:
   Result pathToGoal(std::vector<Eigen::Vector3f> &path);
   Result pathFrom(const Eigen::Vector3d &position, const Eigen::Vector3d &velocity,
                   double yaw, std::vector<Eigen::Vector3f> &path);
+  bool nativeCorridor(const std::vector<Eigen::Vector3d> &path, double range,
+                      double clearance, EpiconCorridor &result) const;
   bool corridor(const std::vector<Eigen::Vector3d> &path, double range,
                 double clearance, EpiconCorridor &result) const;
   double clearance(const Eigen::Vector3d &position) const;
@@ -39,9 +40,7 @@ public:
   double recoveryClearance() const;
   bool connectedAt(const Eigen::Vector3d &position) const;
   bool contains(const Eigen::Vector3d &position) const;
-  bool recoveryPoint(const Eigen::Vector3d &start, Eigen::Vector3d &goal) const;
-  void noteRecoveryAttempt(const Eigen::Vector3d &goal);
-  bool noteExplorationProgress();
+  bool nativeRecoveryPoint(const Eigen::Vector3d &start, Eigen::Vector3d &goal) const;
   const std::vector<Eigen::Vector3f> &executionPath() const;
   const std::vector<Eigen::Vector3f> &tour() const;
   double goalYaw() const;

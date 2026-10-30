@@ -50,12 +50,7 @@ void FastExplorationManager::initialize(
   ep_->v_max_ = planner_manager_->gcopter_config_->maxVelMag;
   ep_->yaw_v_max_ = planner_manager_->gcopter_config_->yaw_max_vel;
   nh.param("exploration/tsp_dir", ep_->tsp_dir_, string("null"));
-  nh.getParam("viewpoint_param/global_viewpoint_num",
-              ep_->global_viewpoint_num_);
   nh.getParam("view_graph", ep_->view_graph_);
-  nh.getParam("viewpoint_param/local_viewpoint_num", ep_->local_viewpoint_num_);
-  nh.getParam("global_planning/w_vdir", ep_->w_vdir_);
-  nh.getParam("global_planning/w_yawdir", ep_->w_yawdir_);
   Eigen::Vector3d origin, size;
   // The embedded solver is process-global; files belong to this frontend instance.
   std::string pattern = (std::filesystem::temp_directory_path() / "exploration_lkh_XXXXXX").string();
@@ -433,23 +428,6 @@ int FastExplorationManager::planGlobalPath(const Eigen::Vector3d &pos,
                                            double hybrid_search_radius, double unknown_penalty_factor)
 {
   bool bm_without_topo = false;
-  auto estimiateVdirCost = [&](const TopoNode::Ptr &n1,
-                               const Eigen::Vector3d &v1,
-                               const TopoNode::Ptr &n2) -> double {
-    Eigen::Vector3f dir = n2->center_ - n1->center_;
-    if (dir.norm() < 1e-6 || v1.norm() < 1e-6) return 0.0;
-    dir.normalize();
-    Eigen::Vector3f v_dir = v1.normalized().cast<float>();
-    float yaw1 = atan2(dir.y(), dir.x());
-    float yaw2 = atan2(v_dir.y(), v_dir.x());
-    float diff = yaw1 - yaw2;
-    while (diff > M_PI)
-      diff -= 2.0 * M_PI;
-    while (diff < -M_PI)
-      diff += 2.0 * M_PI;
-    return ep_->w_vdir_ *
-           (fabs(diff) / planner_manager_->gcopter_config_->yaw_max_vel);
-  };
   ros::Time start = ros::Time::now();
   vector<TopoNode::Ptr> viewpoints;
   frontier_manager_ptr_->generateTSPViewpoints(
